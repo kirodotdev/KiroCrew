@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         _CREATABLE_MODES,
         _DEFERRED_PLAIN_CREATE_KNOWN_KEYS,
         ARTIFACT_SLUG_RE,
+        BOT_IDENTITY_DENIED,
         DashboardState,
         KiroCrewConfig,
         MemoryStartupUnavailable,
@@ -30,7 +31,9 @@ if TYPE_CHECKING:
         _ChatSlot,
         _coerce_requested_mode,
         _history_key_for,
+        _loading_refusal,
         _normalize_slot_key,
+        _read_model_field,
         _rebase_rehydrated_refresh_mark,
         _record_explicit_agent_selection,
         _rehydrate_slot_title,
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
         _sync_dashboard_slots,
         _unhide_folder,
         _workspace_name_for_dir,
+        audit_app_slot_denial,
         create_session_folder,
         cron_creator_admission,
         cron_slot_creator,
@@ -64,6 +68,7 @@ if TYPE_CHECKING:
         restore_agent_selection,
         save_slot_off_loop,
         schedule_eager_spawn,
+        selects_bot_identity,
         slot_history_key,
         slot_not_found,
         tags_write_lock,
@@ -177,6 +182,7 @@ async def _check_new_slot_assignment(
     """
     from kiro_crew.dashboard.chat_persistence import (
         _member_private_selection,
+        _missing_member_database_repair,
         member_store_ownership_holds,
     )
     from kiro_crew.execution_context import resolve_member_execution
@@ -184,8 +190,12 @@ async def _check_new_slot_assignment(
 
     if agent_kind != "template":
         selected, store = _member_private_selection(agent, cfg)
-        if store and not await asyncio.to_thread(
-            member_store_ownership_holds, cfg, selected, store
+        # A deleted memory.db the assignment's pin repairs is not a refusal here.
+        if (
+            store
+            and not await asyncio.to_thread(member_store_ownership_holds, cfg, selected, store)
+            and await asyncio.to_thread(_missing_member_database_repair, cfg, selected, store)
+            is None
         ):
             raise UnknownMemoryStore(
                 f"Bot {selected!r} does not own its private memory store; " "no session was created"
@@ -208,6 +218,22 @@ async def _check_new_slot_assignment(
             app="",
             validate_memory_files=False,
         )
+
+
+async def _app_hides_own_mode(request: web.Request, body: dict[str, Any], mode: Any) -> bool:
+    """Whether *mode* is the creating app's own id and that app may hide its chats.
+
+    The creating app is the app token's (``request["app"]``), else, on the owner's
+    own request, the app whose page asks (``embed_app``). Either way the mode must
+    be that app's id, so no app can hide another app's chat or the person's.
+    """
+    request_app = request.get("app", "")
+    creator = request_app or (body.get("embed_app") if is_owner_dashboard_request(request) else "")
+    if not isinstance(mode, str) or not mode or mode != creator:
+        return False
+    from kiro_crew.apps.hidden_sessions import may_hide_sessions
+
+    return await asyncio.to_thread(may_hide_sessions, mode)
 
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
@@ -266,7 +292,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # `get_or_create_slot` normalizes the key with string operations, so a
         # non-string name would surface there as an unhandled 500.
         name = str(name)
-    agent = body.get("agent", "")
+    # A falsy agent (missing, null, "") keeps meaning "the default"; any other
+    # non-string would be stored on the new slot and break every read of it.
+    agent = body.get("agent") or ""
+    agent_error = string_field_error("agent", agent)
+    if agent_error is not None:
+        return agent_error
     # The selection NAMESPACE, when the caller states one. "member" names a
     # configured crew, "template" a shared provider template; an omitted kind
     # keeps the legacy name-only resolution. The kind is selection input, never
@@ -297,7 +328,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 status=400,
             )
         app_agent_owner = f"{app_agent_owner_raw}/{agent}"
-    model = body.get("model", "")
+    model, model_warning, model_refusal = _read_model_field(body)
+    if model_refusal is not None:
+        return model_refusal
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
     # visibly too late: get_or_create_slot broadcasts the new slot before this
     # handler returns, so the dashboard renders it at the top level for a frame
@@ -362,7 +395,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     if memory_mode not in ("persistent", "incognito", "temporary"):
         return web.json_response({"error": "invalid memory_mode"}, status=400)
     _mode = _coerce_requested_mode(body.get("mode", ""))
-    if _mode not in _CREATABLE_MODES:
+    if _mode not in _CREATABLE_MODES and not await _app_hides_own_mode(request, body, _mode):
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
     # A member-* name is RESERVED for DM threads (born only through the member
     # thread endpoint); `get_or_create_slot` below rejects it with a ValueError
@@ -410,12 +443,31 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+    # A chat recreated in place of another (a memory mode switch) keeps that
+    # chat's project, which an agent from the project's own `.kiro` needs to
+    # resolve at all. Read from the server's slot, never from the request, so
+    # the create widens agent resolution only to a project that slot already has.
+    carried_project = ""
+    source_slot = None
+    source_key = body.get("project_from_slot")
+    if (
+        isinstance(source_key, str)
+        and source_key
+        and not name
+        and is_owner_dashboard_request(request)
+    ):
+        source_slot = state._slots.get(_normalize_slot_key(source_key))
+        source_project = getattr(source_slot, "project", "")
+        if isinstance(source_project, str) and source_project:
+            source_is_dir: bool = await asyncio.to_thread(os.path.isdir, source_project)
+            if source_is_dir:
+                carried_project = source_project
     # Binding resolution checks memory readiness. A fresh conversation gets
     # the same bounded recovery grace as its first turn, before any slot or
     # protected assignment is published.
     if existing_slot is None and is_owner_dashboard_request(request):
         try:
-            await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+            await wait_for_memory_preparation(lambda: getattr(state, "memory_startup_task", None))
         except MemoryStartupUnavailable as exc:
             return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)
 
@@ -467,34 +519,43 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
         try:
             # Resolved in the STATED namespace, so a template pick takes the
-            # template's workspace rather than a same-name member's. No project
-            # scope here: a create carries no slot yet, and the catalog offers a
-            # slot-less chat global rows only, so this is the whole choice set.
+            # template's workspace rather than a same-name member's. Project
+            # scope only for a carried project: otherwise a create carries no
+            # slot yet, and the catalog offers a slot-less chat global rows only.
             bindings = await asyncio.to_thread(
                 resolve_agent_bindings,
                 cfg,
                 agent,
+                project_dir=carried_project or None,
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
-            from kiro_crew.config.loader_snapshots import rescan_if_incomplete
+            from kiro_crew.config.loader_snapshots import rescan_before_refusal
 
             if (
-                agent_kind == "template"
+                agent_kind != "member"
                 and not bindings.requested_resolved
-                and await rescan_if_incomplete()
+                and await rescan_before_refusal()
             ):
-                # A scan that could not read a spec may lack this template while
-                # its file is on disk (a member comes from the config just loaded).
-                # The staleness check below covers the extra await.
+                # The snapshot may lack a template whose file is on disk (a
+                # member comes from the config just loaded). The staleness check
+                # below covers the extra await.
                 bindings = await asyncio.to_thread(
                     resolve_agent_bindings,
                     cfg,
                     agent,
+                    project_dir=carried_project or None,
                     validate_memory_files=False,
                     selection_kind=agent_kind,
                 )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
+            if request_app and selects_bot_identity(bindings):
+                # Owning a session is not being given a Bot (``app_names_bot``): an
+                # app names an agent of its own. Refused before the slot is made.
+                audit_app_slot_denial(
+                    request_app, "chat_slot_create", str(name or ""), BOT_IDENTITY_DENIED
+                )
+                return slot_not_found()
             if agent_kind and not bindings.requested_resolved:
                 # A stated namespace never falls back to whoever answers by
                 # default -- and it is refused HERE, before get_or_create_slot,
@@ -542,6 +603,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 {"error": "slot changed during agent resolution", "code": "session_rebound"},
                 status=409,
             )
+    if carried_project and (
+        state._slots.get(_normalize_slot_key(str(source_key))) is not source_slot
+        or getattr(source_slot, "project", None) != carried_project
+    ):
+        # The agent was resolved in a project the replaced chat does not have now.
+        return web.json_response(
+            {"error": "slot changed during agent resolution", "code": "session_rebound"},
+            status=409,
+        )
     # The owner's member assignment below can refuse a new slot's agent. Ask the
     # same question here, before the mint, the session folder or the folder
     # un-hide, so the common refusal builds nothing. The assignment still runs
@@ -552,7 +622,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         and is_owner_dashboard_request(request)
         and (not preflight_key or preflight_key not in state._slots)
     ):
-        preflight_project = folder_project or await _birth_default_project(cfg, workspace)
+        preflight_project = (
+            carried_project or folder_project or await _birth_default_project(cfg, workspace)
+        )
         try:
             await _check_new_slot_assignment(cfg, agent, agent_kind, preflight_project, memory_mode)
         except Exception as exc:
@@ -579,6 +651,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # from; an omitted or degenerate name is always a mint. The creator fence
     # already read any saved cron state before this decision.
     _requested_key = _normalize_slot_key(str(name)) if name else ""
+    if _requested_key and (_refused := await _loading_refusal(request, state, _requested_key)):
+        return _refused
     reopening_persisted_cron = bool(
         cron_creator
         and _requested_key
@@ -897,6 +971,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # server owns this fallback because the client folder cache can be
         # temporarily stale; existing named slots with an explicit project keep
         # it and continue to use the project endpoint for scope changes.
+        if carried_project and is_new_slot and not slot.project:
+            slot.project = carried_project
         if folder_project and folder_applied and not slot.project:
             slot.project = folder_project
         # A fresh folder per new chat, when the owner turned it on. Only for a
@@ -932,6 +1008,28 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # Default project to workspace directory so file search works out of the box
         if not slot.project:
             slot.project = await _birth_default_project(cfg, workspace)
+        # A person's create on an app's page names that app (the app SDK's client adds
+        # it). Only a first line this create writes records it, ahead of the owner's
+        # selection record below, which writes a line of its own; so uninstalling the
+        # app drops the resume pointer of a conversation its page began, a key already
+        # on disk stays the person's, and the record grants the app nothing.
+        from kiro_crew.apps.manifest import app_name_error
+
+        embed_app = body.get("embed_app") if is_new_slot and not request_app else None
+        if isinstance(embed_app, str) and not app_name_error(embed_app):
+            from kiro_crew.history_schema import EMBED_APP_META_KEY
+            from kiro_crew.shared_crew.host_hooks import ensure_slot_recorded
+
+            if not await ensure_slot_recorded(state, slot, extra={EMBED_APP_META_KEY: embed_app}):
+                if not _retract_failed_newborn(state, slot):
+                    slot._dirty = True
+                return web.json_response(
+                    {
+                        "error": "Could not save the new session. Try again.",
+                        "code": "history_unavailable",
+                    },
+                    status=503,
+                )
         if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)
@@ -1113,6 +1211,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
 
             creation_stack.push_async_exit(_unbind_retracted_worker)
             refusal = await bind_work_item(request, slot.key, work_item)
+            if refusal is None:
+                # Reserved before the first frame, so a person's mode pick on the
+                # newborn always lands after it and clears it; armed at the end.
+                from kiro_crew.dashboard.handlers.remote_work_item import (
+                    reserve_remote_trust,
+                )
+
+                reserve_remote_trust(slot, work_item)
             if refusal is not None:
                 if _retract_failed_newborn(state, slot):
                     await drained_to_thread(
@@ -1208,7 +1314,38 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             getattr(state, "_terminal_sessions", None),
         )
     if slot.executor != "remote" and not bound_remote:
-        schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
+        # The owner's own new chat starts its session at once, with no debounce:
+        # they are about to type, and the 1.5 s debounce comes straight off the
+        # start that their first message would otherwise wait for. Not when a
+        # binding change follows this create: the client sets the project right
+        # after it (``no_session_folder``, sent by every create that does), or
+        # the owner's new chats open in Crew Mode, where the client switches the
+        # agent to the conductor right after it. That change would cancel a
+        # start already reserving the key (and, for the project, owe a reset
+        # nothing else needs), so the debounce absorbs it as before.
+        binding_follows = (
+            body.get("no_session_folder") is True
+            or cfg is None
+            or getattr(cfg.dashboard, "new_chat_crew_mode", False) is True
+        )
+        schedule_eager_spawn(
+            state,
+            slot,
+            start_priority=owner_start_priority(request),
+            debounce=(0.0 if is_owner_dashboard_request(request) and not binding_follows else None),
+        )
+    # The greeting the welcome page shows before the first message, since an
+    # unstarted chat writes no row. Read after the spawn is armed, so the two
+    # overlap, and before the answer is built, so the answer carries it.
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
+    # The read runs after the create's block, so a close or a same-name recreate
+    # can land during it, and the browser adds this answer to its list and drops
+    # the close's tombstone for that key. A slot that has lost its key answers
+    # the 404 a missing slot gets, as the switches do.
+    if state._slots.get(slot.key) is not slot:
+        return slot_not_found()
     created = _created_slot_row(state, request, slot)
     if session_folder_notice:
         created["session_folder_notice"] = session_folder_notice
@@ -1216,6 +1353,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         created["headroom"] = headroom
     if work_item is not None:
         created["work_item_id"] = work_item.item_id
+        if work_item.trust:
+            # Armed only once the create stands, so a retracted worker never holds it.
+            from kiro_crew.dashboard.handlers.remote_work_item import grant_remote_trust
+
+            await grant_remote_trust(state, slot, work_item)
+    if model_warning:
+        created["warning"] = model_warning
     return web.json_response(created)
 
 

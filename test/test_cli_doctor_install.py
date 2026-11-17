@@ -62,6 +62,29 @@ class TestPathLauncherOwnership:
         assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
         assert str(via_link) not in out
 
+    def test_the_crew_home_forwarder_counts_as_this_install(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """An agent shell on Windows finds ``kirocrew-bin\\kirocrew.cmd`` first."""
+        from kiro_crew.env_own_kirocrew import windows_forwarder
+
+        exe = tmp_path / "install" / "Scripts" / "kirocrew.cmd"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        forwarder = tmp_path / "crew" / "kirocrew-bin" / "kirocrew.cmd"
+        forwarder.parent.mkdir(parents=True)
+        body = windows_forwarder(str(exe))
+        assert body is not None
+        forwarder.write_bytes(body)
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(forwarder))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(exe))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
+        assert "different install" not in out
+
     def test_divergent_launcher_names_both_paths(self, monkeypatch, tmp_path, capsys) -> None:
         wheel = tmp_path / "crew-venv" / "bin" / "kirocrew"
         wheel.parent.mkdir(parents=True)
@@ -828,11 +851,27 @@ class TestDoctorPrintsNoBareInstallCommand:
     def test_the_fts5_fix_names_this_interpreter_and_is_gated(self) -> None:
         lines = self._source().splitlines()
         renders = [
-            i for i, ln in enumerate(lines) if "pip_install_command_for('pysqlite3-binary')" in ln
+            i
+            for i, ln in enumerate(lines)
+            if "pip_install_command_for(PYSQLITE3_REQUIREMENT)" in ln
         ]
 
         assert len(renders) == 1
         assert _CHANNEL_GUARD.search(_line_above(lines, renders[0]))
+
+    def test_the_fts5_fix_installs_the_spec_setup_cfg_declares(self, monkeypatch, capsys) -> None:
+        """A bare package name can resolve to a wheel ``setup.cfg`` excludes, such as
+        the one whose SQLite can deadlock."""
+        from kiro_crew import _sqlite_compat
+        from kiro_crew.doctor_checks import install
+
+        monkeypatch.setattr(_sqlite_compat, "fts5_available", lambda: False)
+        monkeypatch.setattr(cli_doctor, "pip_install_channel_available", lambda: True)
+
+        install._doctor_sqlite_fts5([])
+
+        spec = extras.quote_spec(_sqlite_compat.PYSQLITE3_REQUIREMENT)
+        assert f"-m pip install {spec}\n" in capsys.readouterr().out
 
     def test_the_fts5_alternative_survives_the_gate(self) -> None:
         """The one place gating must NOT hide the whole message. Where pip cannot

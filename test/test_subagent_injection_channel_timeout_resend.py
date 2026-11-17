@@ -185,13 +185,16 @@ async def test_a_reload_inside_the_retry_onto_a_new_session_sends_the_full_compl
     )
     gateway = _gateway(sessions)
     sent: list[tuple[str, str]] = []
-    never = asyncio.Event()
 
     async def stream(client: Any, message: str, **kw: Any) -> str:
         sent.append((client.session_id, message))
         if len(sent) == 1:
             client.prompts_written += 1
-            await never.wait()
+            # The timeout the route turns into attempt 2. Raised here, not waited
+            # out, so the injection timeout can stay generous: attempt 2 holds a
+            # reset, a reload and two sends inside that same timeout, and a tight
+            # one lets a loaded runner time it out before the third send.
+            raise asyncio.TimeoutError
         if len(sent) == 2:
             raise AcpError("Session not found")
         on_complete = kw.get("on_complete")
@@ -205,7 +208,10 @@ async def test_a_reload_inside_the_retry_onto_a_new_session_sends_the_full_compl
     try:
         with (
             patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 2),
-            patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", 1.0),
+            # Attempt 2's reset, reload and two sends run in milliseconds (the
+            # test's 2.0s call time is the route's own 2s pause), so this bound
+            # is the lost-run ceiling: only a hang reaches it.
+            patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", _HANG_CEILING_S),
             patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=stream),
         ):
             await asyncio.wait_for(

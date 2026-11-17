@@ -9,11 +9,13 @@ the other half -- managing the shared templates themselves:
   things a management page needs beside the spec's own fields: whether it can be
   edited here (``read_only`` names why not), and what still points at it
   (``used_by``: crews, the default agent, schedules, chat folders, webhooks,
-  private copies).
+  private copies). Beside it, ``unlisted`` names each spec file the roster
+  cannot show although it still takes its name (``agent_templates_unlisted``).
 * ``POST /api/agents/templates`` -- create a template, blank or as a copy of an
   installed one. Nothing is enrolled as a crewmate.
-* ``DELETE /api/agents/detail/{name}`` -- delete a template the user owns, refused
-  while anything still references it (``409 template_referenced`` lists what).
+* ``DELETE /api/agents/detail/{name}`` -- delete a template the user owns, or a
+  spec file that does not read by its exact stem, refused while anything still
+  references it (``409 template_referenced`` lists what).
 
 What is NOT editable here, and why each is a rule rather than a gap:
 
@@ -47,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import re
 import time
@@ -56,6 +59,7 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew import agent_state
+from kiro_crew.acp_backends import ACP_BACKENDS_MARKDOWN_AGENT_SPECS
 from kiro_crew.agent import agents_spec_lock, kiro_agents_dir_path
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
@@ -77,6 +81,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import config_dir
+from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_pin_for
 from kiro_crew.cron import (
     CronStoreBusy,
     CronStoreUnreadable,
@@ -84,6 +89,16 @@ from kiro_crew.cron import (
     dispatched_agents_from_disk,
 )
 from kiro_crew.dashboard.chat_utils import drained_to_thread
+from kiro_crew.dashboard.handlers.agent_templates_unlisted import (
+    UNLISTED_UNREADABLE,
+    holds_once_retired,
+    listed_refusal_text,
+    pinned_here,
+    spec_row,
+    unlisted_refusal_text,
+    unlisted_spec_files,
+    unreadable_spec_at,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.sel import sel
@@ -117,6 +132,10 @@ FolderPin = tuple[str, str, str]
 #: one ``mcpServers`` write a tools edit makes is the declaration of a Crew
 #: control-plane server the new ``tools`` grants (``control_plane_declarations``).
 TEMPLATE_DEFINITION_KEYS = frozenset({"description", "prompt", "tools", "allowedTools"})
+#: The spec keys the detail PATCH refuses outright (``400
+#: definition_key_read_only``) rather than ignores, for the reasons above: the
+#: tab shows them read-only, and a 200 that dropped them would read as a save.
+TEMPLATE_READ_ONLY_KEYS = frozenset({"mcpServers", "resources"})
 
 _READ_ONLY_PACKAGE = "package"
 _READ_ONLY_RUNTIME = "runtime"
@@ -268,6 +287,8 @@ def _spec_file_beneath(agents_dir: Path, filename: str) -> Path | None:
     *agents_dir*. A row's ``filename`` is discovery-supplied -- an edition
     catalog row carries whatever its provider wrote -- so the delete path never
     trusts it as a path: an absolute or traversing value names no template.
+    A symlink loop names none either; Python 3.12's ``Path.resolve`` reports one
+    with ``RuntimeError``, not ``OSError``.
     """
     if not filename or Path(filename).name != filename:
         return None
@@ -275,7 +296,7 @@ def _spec_file_beneath(agents_dir: Path, filename: str) -> Path | None:
     try:
         resolved = candidate.resolve(strict=True)
         root = agents_dir.resolve(strict=True)
-    except OSError:
+    except (OSError, RuntimeError):
         return None
     if resolved.parent != root or not resolved.is_file():
         return None
@@ -315,8 +336,9 @@ def _tombstone(spec_path: Path) -> str:
     return grave.name
 
 
-def _template_rows(folders: list[FolderPin]) -> list[dict[str, Any]]:
-    """Thread-side: the roster with editability and references attached.
+def _template_rows(folders: list[FolderPin]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Thread-side: the roster with editability and references attached, and
+    the spec files it does not show (``agent_templates_unlisted``).
 
     Every string a spec, a package, a crew record, a schedule, a folder or a
     webhook token can write reaches the browser through ``_roster_mask`` --
@@ -356,7 +378,98 @@ def _template_rows(folders: list[FolderPin]) -> list[dict[str, Any]]:
         )
         rows.append(row)
     rows.sort(key=lambda r: (r["source"] != "builtin" or r["kirocrew_owned"], r["name"].lower()))
-    return rows
+    shown = {row["filename"] for row in rows}
+    return rows, unlisted_spec_files(agents_dir, infos, shown, forks, _roster_mask)
+
+
+def _name_holder(name: str) -> dict[str, Any]:
+    """Thread-side: what the ``409 name_taken`` body adds for *name*, case-folded
+    as the create's taken check is, or ``{}`` to keep the plain refusal.
+
+    A row labelled *name* on the tab keeps the plain refusal: that row holds
+    the name whatever else does, so freeing a hidden file whose stem is *name*
+    would not free it. Otherwise a file the roster does not show whose stem is
+    *name* is named as ``unlisted``. Failing both, an unreadable entry that
+    declares *name* (a file that reads but yields no row still takes the name
+    it declares) is named as ``unlisted``, or else the spec file whose stem is
+    *name* backs a row that carries the name the file declares, and it is
+    named as ``listed`` (``{filename, name}``): a copy saved as
+    ``src-custom.json`` whose ``name`` still says ``src`` is the row ``src``,
+    and it takes ``src-custom``.
+    """
+    # circular import: see api_agent_template_create.
+    from kiro_crew.dashboard.handlers.agents import _roster_mask
+
+    agents_dir = kiro_agents_dir_path()
+    infos = list(list_agents(agents_dir=agents_dir))
+    # Only rows the roster returns: their name and filename passed the mask.
+    shown = [info for info in infos if _masked_row(info, _roster_mask) is not None]
+    key = name.lower()
+    if any(info.name.lower() == key for info in shown):
+        return {}
+    entries = unlisted_spec_files(
+        agents_dir,
+        infos,
+        {info.filename for info in shown},
+        agent_state.all_fork_info(),
+        _roster_mask,
+    )
+    held = next((e for e in entries if e["stem"].lower() == key), None)
+    if held is not None:
+        return {"error": unlisted_refusal_text(name, held), "unlisted": held}
+    held = next(
+        (
+            e
+            for e in entries
+            if e["reason"] == UNLISTED_UNREADABLE and str(e.get("declared_name", "")).lower() == key
+        ),
+        None,
+    )
+    if held is not None:
+        return {"error": unlisted_refusal_text(name, held), "unlisted": held}
+    row = next(
+        (
+            info
+            for info in shown
+            if Path(info.filename).stem.lower() == key
+            and _spec_file_beneath(agents_dir, info.filename) is not None
+        ),
+        None,
+    )
+    if row is None:
+        return {}
+    listed = {"filename": row.filename, "name": row.name}
+    return {"error": listed_refusal_text(name, listed), "listed": listed}
+
+
+async def _name_taken_response(name: str) -> web.Response:
+    """The ``409 name_taken`` refusal. When no row on the tab is labelled with
+    the name, the body names the file holding it (``_name_holder``), so the
+    refusal is not a dead end on a tab with no row of that name."""
+    try:
+        held = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _name_holder, name
+        )
+    except Exception:
+        # The refusal stands without the detail: it only explains a 409.
+        logger.warning("could not name the file holding template name %r", name, exc_info=True)
+        held = {}
+    # One dict-literal body per shape: the error-code contract
+    # (test_error_code_contract.py) reads a ``code`` only off a literal.
+    if "unlisted" in held:
+        return web.json_response(
+            {"error": held["error"], "code": "name_taken", "unlisted": held["unlisted"]},
+            status=409,
+        )
+    if "listed" in held:
+        return web.json_response(
+            {"error": held["error"], "code": "name_taken", "listed": held["listed"]},
+            status=409,
+        )
+    return web.json_response(
+        {"error": f"A template named '{name}' already exists", "code": "name_taken"},
+        status=409,
+    )
 
 
 async def api_agent_templates(request: web.Request) -> web.Response:
@@ -364,12 +477,13 @@ async def api_agent_templates(request: web.Request) -> web.Response:
 
     Global scope only, like ``/api/agents/installed``: a project template is a
     file in that checkout and is edited there, and a management action taken
-    here persists into the global agents directory.
+    here persists into the global agents directory. ``unlisted`` names every
+    spec file the roster does not show although it still takes its name.
     """
     state: DashboardState = request.app["state"]
     try:
         folders = await _folder_pins(state)
-        rows = await asyncio.get_running_loop().run_in_executor(
+        rows, unlisted = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), _template_rows, folders
         )
     except Exception:
@@ -381,7 +495,7 @@ async def api_agent_templates(request: web.Request) -> web.Response:
             },
             status=503,
         )
-    return web.json_response({"templates": rows})
+    return web.json_response({"templates": rows, "unlisted": unlisted})
 
 
 def _find_infos(name: str) -> list[AgentInfo]:
@@ -397,15 +511,24 @@ def _find_infos(name: str) -> list[AgentInfo]:
     ``foo.json`` declaring ``bar`` -- and a twin -- two files both declaring
     ``bar`` -- instead of unlinking whichever file the scan met first. The
     same walk the definition PATCH resolves against (``_agent_detail_candidates``).
+    A file that does not read, or yields no row (``spec_row``), is skipped as
+    discovery skips it: the delete reaches it by its exact stem alone
+    (``_unreadable_info``). So is one whose read raises (a document nested past
+    the parser's depth raises ``RecursionError``), which ``list_agents`` skips
+    the same way.
     """
     agents_dir = kiro_agents_dir_path()
     forks = agent_state.all_fork_info()
     found: list[AgentInfo] = []
     for f in iter_agent_spec_files(agents_dir, ordered=False):
-        spec = _read_agent_spec(f, operation="api_agent_template_delete", source="dashboard")
-        if spec is None:
+        try:
+            spec = _read_agent_spec(f, operation="api_agent_template_delete", source="dashboard")
+        except Exception:
+            logger.debug("agent spec %r does not read", f, exc_info=True)
+            spec = None
+        info = None if spec is None else spec_row(f, spec)
+        if info is None:
             continue
-        info = _global_agent_info(f, spec)
         if info.name != name and f.stem != name:
             continue
         fork = forks.get(info.name)
@@ -414,6 +537,87 @@ def _find_infos(name: str) -> list[AgentInfo]:
             info.private_to = str(fork.get("private_to", ""))
         found.append(info)
     return found
+
+
+def _every_host_reads_markdown() -> bool:
+    """Thread-side: whether every host the effective config starts sessions on
+    reads the markdown spec form (``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``).
+
+    The hosts are ``agent.acp_backend`` (a new chat, a folder's sessions),
+    ``agent.member_acp_backend`` (a crewmate's chat and its workers) and each
+    crewmate's own harness pin. A pin this gateway cannot start answers
+    ``False``: its host is unknown, so it is not taken to read markdown. A
+    harness one conversation picks for itself (a chat's switch, a sub-agent's
+    backend or its failover hop) is not configuration, and the reference guard
+    counts none, as it counts no open chat slot.
+    """
+    cfg = KiroCrewConfig.load()
+    hosts = {cfg.agent.acp_backend, cfg.agent.member_acp_backend}
+    for crew in cfg.agents:
+        pin = crewmate_pin_for(cfg, crew)
+        if pin is None:
+            continue
+        try:
+            hosts.add(pin.resolve())
+        except CrewmateHarnessUnavailable:
+            return False
+    return hosts <= ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+
+
+def _declared_elsewhere(info: AgentInfo, spec_path: Path) -> bool:
+    """Thread-side: whether a spec file other than *spec_path*, *info*'s own,
+    declares ``info.name`` and still holds it once *spec_path* is retired.
+
+    Then the name stays with that file: a crew, a folder or a schedule naming
+    it still resolves, and the sidecar entry kept under it is that file's. A
+    hidden copy (``atlas_v2.json`` still declaring ``atlas`` beside
+    ``atlas.json``) answers to its own stem alone. A declarer that holds
+    nothing of its own leaves the name with *spec_path*:
+
+    * a symlink that ends where *spec_path* ends reads the retiring file and
+      dangles once it is renamed. When *spec_path* is itself a link, the
+      regular file at its target survives the rename and counts; another link
+      to that target is taken to read through *spec_path*, the side that keeps
+      the guard. A hard link never reads as a declarer at all, since the spec
+      reader refuses a hardlinked inode;
+    * a markdown spec, unless every configured host reads that form
+      (``_every_host_reads_markdown``): the others load JSON specs alone, so
+      the name would reach no spec there.
+
+    A path that does not resolve holds nothing either. Each declarer is judged
+    by ``holds_once_retired``, the rule the roster's ``deletable`` applies to
+    the file it lists for the name.
+    """
+    try:
+        retiring = spec_path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    markdown_holds = functools.cache(_every_host_reads_markdown)
+    return any(
+        holds_once_retired(spec_path.with_name(other.filename), retiring, markdown_holds)
+        for other in _find_infos(info.name)
+        if other.name == info.name and other.filename != spec_path.name
+    )
+
+
+def _unreadable_info(name: str) -> AgentInfo | None:
+    """Thread-side: the unreadable spec file whose stem is exactly *name*
+    (``agent_templates_unlisted.unreadable_spec_at``), as a row the delete can
+    classify, or ``None``.
+
+    It is classified by what is known of it (``spec_identity``): its filename
+    (a runtime file, a markdown spec), the fork sidecar (a private copy) and,
+    when the file reads but yields no row, the name it declares and the
+    package its filename reads from that name. A file that does not read
+    answers to its stem only.
+    """
+    info = unreadable_spec_at(kiro_agents_dir_path(), name)
+    if info is None:
+        return None
+    fork = agent_state.all_fork_info().get(info.name) or {}
+    info.forked_from = str(fork.get("forked_from", ""))
+    info.private_to = str(fork.get("private_to", ""))
+    return info
 
 
 def _blank_spec(name: str, description: str) -> dict[str, Any]:
@@ -539,10 +743,7 @@ async def api_agent_template_create(request: web.Request) -> web.Response:
         # A member of this name would make the new template unreachable by bare
         # name (name-first resolution answers the member) -- refused, like publish.
         if name.lower() in taken:
-            return web.json_response(
-                {"error": f"A template named '{name}' already exists", "code": "name_taken"},
-                status=409,
-            )
+            return await _name_taken_response(name)
 
         def _create() -> Path:
             created: list[Path] = []
@@ -622,10 +823,7 @@ async def api_agent_template_create(request: web.Request) -> web.Response:
                 status=409,
             )
         except FileExistsError:
-            return web.json_response(
-                {"error": f"A template named '{name}' already exists", "code": "name_taken"},
-                status=409,
-            )
+            return await _name_taken_response(name)
         except FileNotFoundError:
             # The source vanished between the pre-lock probe and the locked read.
             return web.json_response(
@@ -715,7 +913,20 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
     private-copy spec, and with ``409 template_referenced`` (carrying the list)
     while a crew, the default agent, a schedule, a chat folder, a webhook or a
     private copy still names it: deleting underneath them would leave sessions
-    that cannot start, or that silently start on the default agent.
+    that cannot start, or that silently start on the default agent. For a file
+    whose declared name another file also declares and still holds once this
+    one goes (a hidden copy beside the listed ``atlas.json``) the guard counts
+    its stem alone and the sidecar entry of that name is kept: the name, and
+    everything naming it, stays with the other file. Saved capabilities, which
+    refuse a delete with ``409 capabilities_editor_required``, are then asked
+    of the stem alone; a delete that takes the name with it is refused over
+    that name's saved capabilities too, checked under the locks. A symlink
+    that reads this file holds nothing once it goes, and neither does a
+    markdown spec while a configured host loads JSON specs alone
+    (``_declared_elsewhere``), so beside either of them the guard counts the
+    name too. So it does when ``agent.spec_pins`` picks this file for that
+    name, by naming it or a symlink that reads it: every session of the name
+    runs it.
 
     The reference check and the unlink are ONE critical section, off the loop,
     under every lock the reference stores' writers take -- the shape
@@ -760,6 +971,16 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
         matches = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), _find_infos, name
         )
+        # A spec that does not read is reached by its own stem alone, and only
+        # when no spec that reads answers to the name. The roster lists it
+        # under ``unlisted``; until it goes, its stem stays taken.
+        unreadable = False
+        if not matches:
+            hidden = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(), _unreadable_info, name
+            )
+            if hidden is not None:
+                matches, unreadable = [hidden], True
         if not matches:
             return web.json_response(
                 {"error": f"Template '{name}' not found", "code": "template_not_found"}, status=404
@@ -797,9 +1018,11 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+        # The stem is always this file's. The declared name is checked under
+        # the locks below, once it is known whether that name stays with
+        # another file (``held_elsewhere``).
         try:
-            for identity in dict.fromkeys((Path(found.filename).stem, found.name)):
-                await asyncio.to_thread(require_unmanaged_template, identity)
+            await asyncio.to_thread(require_unmanaged_template, Path(found.filename).stem)
         except CapabilityError as exc:
             return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
 
@@ -824,35 +1047,48 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                         # one beneath agents_dir the pre-lock check accepted.
                         if _spec_file_beneath(agents_dir, found.filename) is None:
                             raise FileNotFoundError(found.filename)
-                        # The row paired a name with a filename, and both are
-                        # discovery strings -- an edition catalog row may pair
-                        # them freely. The FILE decides: it is re-read here and
-                        # classified from its own contents, the way discovery
-                        # and the definition PATCH classify a file, so the
-                        # requested name must be one this file answers to (its
-                        # declared name or its stem) and the file itself must be
-                        # deletable from this tab. A row saying ``rogue`` over
-                        # ``victim.json`` unlinks nothing.
-                        fresh = _read_agent_spec(
-                            spec_path,
-                            operation="api_agent_template_delete",
-                            source="dashboard",
-                        )
-                        if not isinstance(fresh, dict):
-                            raise FileNotFoundError(found.filename)
-                        on_disk = _global_agent_info(spec_path, fresh)
-                        if name not in (on_disk.name, spec_path.stem):
-                            raise FileNotFoundError(found.filename)
-                        # The pre-lock ambiguity check is re-run HERE, where it
-                        # decides: a package install landing a second file that
-                        # reaches this name after the probe would otherwise let
-                        # the stale single match unlink the user's own file.
-                        # Exactly one file may reach the name, and it must be
-                        # the one about to go.
-                        infos = _find_infos(name)
-                        claimants = {(agents_dir / info.filename).resolve() for info in infos}
-                        if claimants != {spec_path.resolve()}:
-                            raise _AmbiguousOnDisk(name, _claimant_paths(infos))
+                        if unreadable:
+                            # Still the same file and still unreadable: one
+                            # that now reads, or is gone, is not what the
+                            # request named. A spec that reads and answers to
+                            # the name landing meanwhile makes it two files.
+                            on_disk = _unreadable_info(name)
+                            if on_disk is None or on_disk.filename != found.filename:
+                                raise FileNotFoundError(found.filename)
+                            rivals = _find_infos(name)
+                            if rivals:
+                                raise _AmbiguousOnDisk(name, _claimant_paths([*rivals, on_disk]))
+                        else:
+                            # The row paired a name with a filename, and both
+                            # are discovery strings -- an edition catalog row
+                            # may pair them freely. The FILE decides: it is
+                            # re-read here and classified from its own
+                            # contents, the way discovery and the definition
+                            # PATCH classify a file, so the requested name must
+                            # be one this file answers to (its declared name or
+                            # its stem) and the file itself must be deletable
+                            # from this tab. A row saying ``rogue`` over
+                            # ``victim.json`` unlinks nothing.
+                            fresh = _read_agent_spec(
+                                spec_path,
+                                operation="api_agent_template_delete",
+                                source="dashboard",
+                            )
+                            if not isinstance(fresh, dict):
+                                raise FileNotFoundError(found.filename)
+                            on_disk = _global_agent_info(spec_path, fresh)
+                            if name not in (on_disk.name, spec_path.stem):
+                                raise FileNotFoundError(found.filename)
+                            # The pre-lock ambiguity check is re-run HERE, where
+                            # it decides: a package install landing a second
+                            # file that reaches this name after the probe would
+                            # otherwise let the stale single match unlink the
+                            # user's own file. Exactly one file may reach the
+                            # name, and it must be the one about to go.
+                            infos = _find_infos(name)
+                            claimants = {(agents_dir / info.filename).resolve() for info in infos}
+                            if claimants != {spec_path.resolve()}:
+                                raise _AmbiguousOnDisk(name, _claimant_paths(infos))
                         forks = agent_state.all_fork_info()
                         fork = forks.get(on_disk.name)
                         if fork:
@@ -860,10 +1096,34 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                         reason = template_read_only_reason(on_disk)
                         if reason is not None:
                             raise _ReadOnlyOnDisk(reason)
+                        # The file's own declared name joins the aliases the
+                        # row supplied, unless another file declares it too and
+                        # still holds it once this one goes
+                        # (``_declared_elsewhere``: not a symlink reading this
+                        # file, nor a markdown spec a configured host cannot
+                        # load) and no spec pin picks this file for it, by
+                        # name or through a symlink that reads it
+                        # (``pinned_here``): then that name stays with that
+                        # file, so what names it is no holder of this one and
+                        # its sidecar entry is not this file's to drop. A
+                        # pinned file is the one every session of the name
+                        # runs, so the name is this file's. The request's name
+                        # and the stem stay either way.
+                        names = aliases | {on_disk.name}
+                        pinned = pinned_here(on_disk.name, spec_path)
+                        held_elsewhere = not pinned and _declared_elsewhere(on_disk, spec_path)
+                        if held_elsewhere:
+                            names = (names - {on_disk.name}) | {name, spec_path.stem}
+                        else:
+                            # The name goes with this file, and so would its
+                            # sidecar entry (``prune`` below): saved
+                            # capabilities of it refuse the delete. Decided
+                            # here, under the spec lock, so a listed file gone
+                            # since the probe cannot let them be dropped.
+                            require_unmanaged_template(on_disk.name)
                         # Both config layers pinned: read the EFFECTIVE config
                         # (base with the overlay merged) and the sidecar that
-                        # its writers update inside this same hold. The file's
-                        # own declared name joins the aliases the row supplied.
+                        # its writers update inside this same hold.
                         # The schedule store is pinned too: its own cross-process
                         # lock is held from the walk that finds no dispatching
                         # job through the rename, so a schedule cannot be saved
@@ -873,7 +1133,7 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                         with cron_store_lock(config_dir()):
                             refs.extend(
                                 template_references(
-                                    aliases | {on_disk.name},
+                                    names,
                                     KiroCrewConfig.load(),
                                     forks,
                                     _cron_agent_ids(),
@@ -884,8 +1144,9 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                             if refs:
                                 return None
                             tombstone[0] = _tombstone(spec_path)
-                        with contextlib.suppress(Exception):
-                            agent_state.prune(on_disk.name)
+                        if not held_elsewhere:
+                            with contextlib.suppress(Exception):
+                                agent_state.prune(on_disk.name)
                         # Everything past this line OBSERVES a delete that has
                         # happened; nothing here may turn into a refusal, or
                         # the client hears "failed" about a file that is gone.
@@ -900,7 +1161,7 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                             late.extend(
                                 ref
                                 for ref in template_references(
-                                    aliases | {on_disk.name},
+                                    names,
                                     KiroCrewConfig.load(),
                                     forks,
                                     _cron_agent_ids(),
@@ -951,6 +1212,10 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
                 {"error": exc.refusal_text(), "code": "ambiguous_template_name"},
                 status=409,
             )
+        except CapabilityError as exc:
+            # The declared name's saved capabilities, checked under the locks.
+            # Nothing was unlinked.
+            return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         except CronStoreUnreadable:
             # Fail CLOSED: a present-but-unreadable crons.json is not "no
             # schedules", and a repaired store brings its jobs back naming

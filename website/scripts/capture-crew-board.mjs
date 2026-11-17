@@ -103,12 +103,6 @@ async function shoot(page, base, shot) {
   // The no-ledger shot has no payload, so it names a session that owns nothing.
   const conductor = payload ? payload.conductor.slot_key : 'chat-0-no-ledger'
 
-  await page.addInitScript((theme) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', theme)
-    localStorage.setItem('mc-onboarded', '1')
-  }, mode)
-
   // The shell opens a live socket on boot. Nothing here needs it, and left
   // unrouted it logs a handshake error on every run of this harness.
   await page.routeWebSocket(/\/api\/ws/, () => {})

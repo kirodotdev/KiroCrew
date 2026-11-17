@@ -409,6 +409,27 @@ class TestCronCalendarFieldsAgainstRealService:
 
         assert svc.list_jobs(include_disabled=True) == []
 
+    @pytest.mark.asyncio
+    async def test_a_same_named_job_another_owner_holds_does_not_block_the_app(
+        self, tmp_path: Path
+    ) -> None:
+        """Names are not unique in the store: only this app's own job counts."""
+        svc = self._service(tmp_path)
+        svc.add_job(name="digest-app/daily", message="the user's own", cron_expr="0 7 * * *")
+        sdk = CronSDK("digest-app", svc)
+
+        job = await sdk.add_job_if_absent_async(
+            name="digest-app/daily", message="go", cron_expr="0 6 * * *"
+        )
+
+        assert job is not None
+        assert job.created_by == "app:digest-app"
+        assert [j.id for j in sdk.list_jobs()] == [job.id]
+        again = await sdk.add_job_if_absent_async(
+            name="digest-app/daily", message="go", cron_expr="0 6 * * *"
+        )
+        assert again is None
+
 
 class TestCronApprovalAndTimeoutFieldsOnCreate:
     """``approval_mode``/``timeout_secs``/``timeout`` reach the service from the SDK.

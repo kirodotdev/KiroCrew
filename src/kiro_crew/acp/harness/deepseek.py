@@ -18,6 +18,7 @@ vault as an environment variable, never from a file inside the child's tree.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import json
 import logging
@@ -30,15 +31,26 @@ import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping, Protocol, cast
 from urllib.request import url2pathname
 
 from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness import pi as pi_mod
-from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
-from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
+from kiro_crew.acp.harness._common import MembershipHarness
+from kiro_crew.acp.harness.base import (
+    NotificationAliases,
+    ProcessAdapter,
+    ProcessSession,
+    SessionExtras,
+    SpawnContext,
+    SpawnPlan,
+    TeardownPolicy,
+)
+from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
+from kiro_crew.acp.types import METHOD_SESSION_CLOSE, METHOD_SESSION_UPDATE
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_DEEPSEEK
+from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -56,6 +68,7 @@ logger = logging.getLogger("kiro_crew.acp.client")
 __all__ = [
     "DEEPSEEK_GATE_EXTENSION_SHA256",
     "DEEPSEEK_PERMISSION_MODE",
+    "DeepseekHarness",
     "DeepseekLaunch",
     "deepseek_gate_extension_path",
 ]
@@ -339,7 +352,12 @@ def _validate_deepseek_env_mapping(mapping: dict[str, str]) -> None:
                 "name the harness can resolve: its credential references are POSIX "
                 "shell identifiers, matching [A-Za-z_][A-Za-z0-9_]*."
             )
-        if key.startswith(_DEEPSEEK_ENV_RESERVED_PREFIXES) or key in _DEEPSEEK_ENV_CREW_OWNED_NAMES:
+        # Windows compares env names case-insensitively: judge the name as it does.
+        held = key.upper() if os.name == "nt" else key
+        if (
+            held.startswith(_DEEPSEEK_ENV_RESERVED_PREFIXES)
+            or held in _DEEPSEEK_ENV_CREW_OWNED_NAMES
+        ):
             raise ValueError(
                 f"agent.deepseek_env entry {key!r} names a variable Kiro Crew or the "
                 "harness sets on this child itself (the DSH_ and KIROCREW_ namespaces, "
@@ -440,7 +458,7 @@ def _read_deepseek_gate_marker(marker_path: str) -> object:
             or metadata.st_size > _DSH_GATE_MARKER_MAX_BYTES
         ):
             return None
-        payload = os.read(fd, metadata.st_size + 1)
+        payload = bounded_read_fd(fd, metadata.st_size + 1)
         if len(payload) != metadata.st_size:
             return None
     except OSError:
@@ -453,8 +471,19 @@ def _read_deepseek_gate_marker(marker_path: str) -> object:
         return None
 
 
+class DeepseekProcessSession(ProcessSession, Protocol):
+    """The DeepSeek Harness session :class:`DeepseekLaunch` launches: a
+    :class:`ProcessSession` that also carries the gate nonce its launch issued and the
+    READ_ONLY proof its read-back recorded, which the permission path reads.
+    ``DeepseekAcpClient`` is the production implementation.
+    """
+
+    _deepseek_gate_nonce: str
+    _deepseek_read_only_issue: str
+
+
 def _record_deepseek_read_only_proof(
-    session: ProcessSession, marker: dict[str, Any], extension_path: str
+    session: DeepseekProcessSession, marker: dict[str, Any], extension_path: str
 ) -> None:
     """Record on *session* whether its READ_ONLY turns may approve dsh's read tools.
 
@@ -491,7 +520,7 @@ def _same_spelling_entry(row: object) -> object:
 
 
 def _verify_deepseek_gate(
-    session: ProcessSession,
+    session: DeepseekProcessSession,
     backend: str,
     argv: list[str],
     extension_path: str,
@@ -572,6 +601,8 @@ def _verify_deepseek_gate(
             stdin=subprocess_mod.PIPE,
             stdout=subprocess_mod.DEVNULL,
             stderr=subprocess_mod.DEVNULL,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
     except (OSError, subprocess_mod.SubprocessError) as exc:
         # The boot itself failed, which is not the same finding as a boot that
@@ -598,12 +629,12 @@ def _verify_deepseek_gate(
         try:
             process.wait(timeout=_DSH_GATE_PROBE_EXIT_S if published else 0)
         except subprocess_mod.TimeoutExpired:
-            process.kill()
+            platform_compat.kill_popen_tree(process)
             with suppress(subprocess_mod.SubprocessError, OSError):
                 process.wait(timeout=_DSH_GATE_PROBE_EXIT_S)
     except (OSError, subprocess_mod.SubprocessError) as exc:
         with suppress(OSError, subprocess_mod.SubprocessError):
-            process.kill()
+            platform_compat.kill_popen_tree(process)
         return (
             f"the gate's load marker could not be read back ({exc})",
             acp_tool_gate.remediation_for(backend),
@@ -643,13 +674,14 @@ class DeepseekLaunch(ProcessAdapter):
     backend = ACP_BACKEND_DEEPSEEK
 
     def __init__(self) -> None:
+        super().__init__()
         # The nonce the probe issued, carried to the session's own child.
         self._nonce = ""
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
         """Resolve the binary, mask it, compose and seal the gate, and prove it loads."""
-        session = ctx.session
-        assert session is not None, "the DeepSeek Harness is launched for one session"
+        assert ctx.session is not None, "the DeepSeek Harness is launched for one session"
+        session = cast(DeepseekProcessSession, ctx.session)
         _deepseek_bin, argv, spawn_label, stderr_label = (
             await launch_mod.resolve_self_served_launch(self.backend)
         )
@@ -908,3 +940,343 @@ class DeepseekLaunch(ProcessAdapter):
         # shells by name CLASS, not by a list Crew hands it, and nothing on this side
         # reads them later.
         deepseek_env.clear()
+
+
+# ── The DeepSeek Harness on the shared runtime (``AcpRuntime``) ──
+
+
+class _RuntimeProbeSession:
+    """What :class:`DeepseekLaunch` reads off a session to compose and prove the gate,
+    for a shared process that has no one session to read it from.
+
+    The read-back boots the harness in the environment the real child gets: the
+    gateway's own, ``agent.env`` and the runtime's ``extra_env``, and in the work
+    directory the runtime spawns in. The gate nonce and the READ_ONLY proof the
+    launch records land here and are read back by :class:`DeepseekHarness`.
+    """
+
+    def __init__(
+        self, *, work_dir: str, extra_env: Mapping[str, str], agent_env: Mapping[str, str]
+    ) -> None:
+        self._session_key = "runtime"
+        self._spawn_work_dir = work_dir
+        self._extra_env = dict(extra_env)
+        self._agent_env = dict(agent_env)
+        self._deepseek_gate_nonce = ""
+        self._deepseek_read_only_issue = "the harness composition was not read back"
+
+    def _agent_env_for_spawn(self) -> dict[str, str]:
+        return dict(self._agent_env)
+
+    async def _prepare_session_mcp(self) -> None:
+        """Nothing: on the shared runtime each session's array is built at its start."""
+
+
+class _DeepseekSession:
+    """What the shared runtime keeps per DeepSeek Harness session: its gate ledger.
+
+    *asked* holds the tool-call ids this session raised a permission request for,
+    *approved* those Crew's yes was written for. Both are consumed at the call's
+    terminal frame, because dsh forwards the provider's tool-call id verbatim and a
+    provider reuses ids across turns (``tool-call-id-reuse-live.jsonl``). Kept per
+    session, so one session's ask can never vouch for another session's call under
+    the same id. Approval is recorded rather than refusal, so every way a request
+    ends without a yes (any refusal path, a cancel, no answer yet) counts as no.
+    """
+
+    __slots__ = ("approved", "asked", "tripped")
+
+    def __init__(self) -> None:
+        self.asked: set[str] = set()
+        self.approved: set[str] = set()
+        #: ``(tool_call_id, outcome)`` of the call that tripped, for the audit row.
+        self.tripped: tuple[str, str] | None = None
+
+
+def gate_tripwire_issue(state: object, update: object) -> str:
+    """Why a ``session/update`` ends the session's process, or ``""``: the tripwire.
+
+    The ``AcpClient`` tripwire (``client_permissions._tripwire_pi_gate``) on one
+    session's own ledger: a ``completed`` call Crew's gate was never asked about,
+    or one Crew did not answer yes to, ran past the gate. Every other update, and a
+    terminal frame for a call that was asked and approved, is ``""``. The call's
+    entries are consumed at its terminal frame (``completed`` or ``failed``) either
+    way.
+    """
+    if not isinstance(state, _DeepseekSession) or not isinstance(update, dict):
+        return ""
+    if update.get("sessionUpdate") != "tool_call_update":
+        return ""
+    status = update.get("status")
+    if status not in ("completed", "failed"):
+        return ""
+    tool_call_id = update.get("toolCallId")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return ""
+    asked = tool_call_id in state.asked
+    approved = tool_call_id in state.approved
+    state.asked.discard(tool_call_id)
+    state.approved.discard(tool_call_id)
+    if status != "completed":
+        return ""
+    label = acp_tool_gate.label_for(ACP_BACKEND_DEEPSEEK)
+    if not asked:
+        state.tripped = (tool_call_id, "ran_without_gate")
+        return f"{label} ran tool call {tool_call_id} without asking Kiro Crew's gate"
+    if not approved:
+        state.tripped = (tool_call_id, "ran_without_approval")
+        return f"{label} ran tool call {tool_call_id} without Kiro Crew's gate approving it"
+    return ""
+
+
+class DeepseekHarness(MembershipHarness):
+    """The DeepSeek Harness as one ``dsh --profile acp`` process several sessions share.
+
+    Registered so the shared runtime can drive it and so it can be tested, and not
+    yet a member of ``ACP_BACKENDS_ACP_RUNTIME``: no session takes this path until
+    the routing change names it, and a process-per-session client still launches
+    deepseek through :class:`DeepseekLaunch`.
+
+    dsh 0.2.0-rc.2 keeps one record per session in one process, runs their turns in
+    parallel (a 60 s command in one session, the other answering in 0.02 s), mounts
+    each session's MCP servers on that session alone, and restores a closed session
+    with ``session/resume`` on the same process.
+
+    What differs from :class:`DeepseekLaunch`, and why:
+
+    * the gate is composed into the PROCESS: one ``--patch`` overlay, one plugin,
+      one read-back, one nonce. The plugin asks about every tool call of every
+      session alike and reads no nonce at run time, so this is the same gate each
+      per-session process got. The launch itself is :class:`DeepseekLaunch`'s, run
+      against a stand-in for the session (:class:`_RuntimeProbeSession`).
+    * the completed-unasked tripwire keys on each session's own ledger
+      (:class:`_DeepseekSession`): a permission request names its session, so an
+      ask in one session is never counted for a call in another. A call that ran
+      past the gate says the gate is gone for the whole process, so the runtime is
+      failed (:attr:`permission_state_issue_ends_process`), as the per-session
+      client stops its process.
+    * a Side Chat session is not served here: its READ_ONLY proof is recorded per
+      process, and the per-session client keeps a process for it.
+    """
+
+    backend = ACP_BACKEND_DEEPSEEK
+
+    per_session_state = True
+
+    permission_state_issue_ends_process = True
+
+    # ── Seam 1: spawn ──
+
+    async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
+        """:class:`DeepseekLaunch`'s argv, mask, sealed gate and read-back, for the process.
+
+        Any refusal of the launch's (an unsealable plugin, a provider-key mapping
+        this harness would not honour, a read-back that did not see the gate)
+        aborts the spawn the same way.
+        """
+        from kiro_crew.acp.agent_env import agent_env_overlay
+        from kiro_crew.acp.session_handle import AcpRuntimeError
+
+        agent_env = (
+            dict(ctx.agent_env)
+            if ctx.agent_env is not None
+            else await asyncio.to_thread(agent_env_overlay)
+        )
+        probe = _RuntimeProbeSession(
+            work_dir=str(ctx.work_dir or os.getcwd()),
+            extra_env=ctx.extra_env,
+            agent_env=agent_env,
+        )
+        launch = DeepseekLaunch()
+        try:
+            # The launch runs the refuse-then-mask preflight for this tier and hands
+            # back the mask the child must run under; both pass through unchanged.
+            plan = await launch.resolve_spawn(
+                dataclasses.replace(
+                    ctx, session=cast(ProcessSession, probe), sandbox_mode=ctx.sandbox_mode
+                )
+            )
+        except AcpError as exc:
+            if isinstance(exc, AcpToolGateUnroutable):
+                raise
+            raise AcpRuntimeError(str(exc)) from exc
+        # The pinned mode and the read-back's nonce reach the child the way
+        # ``DeepseekLaunch.apply_spawn_env`` puts them on a per-session child.
+        child_env: dict[str, str] = {}
+        launch.apply_spawn_env(child_env)
+        return SpawnPlan(
+            argv=plan.argv,
+            spawn_label=plan.spawn_label,
+            stderr_label=plan.stderr_label,
+            extra_hidden_dirs=plan.extra_hidden_dirs,
+            extra_expose_files=plan.extra_expose_files,
+            child_env=child_env,
+        )
+
+    def apply_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        spawned_binary: str | None = None,
+        cli_owned_auth: bool = False,
+    ) -> None:
+        """The provider key from Crew's vault; kiro-cli's own model key removed.
+
+        The pinned mode and the nonce ride :attr:`SpawnPlan.child_env`, set by the
+        spawn before this runs. Run in the launch's off-loop environment hop, so the
+        vault read is off the event loop, as :meth:`DeepseekLaunch.prepare_spawn_env`
+        reads it for a per-session child. The resolver's plaintext dict is emptied
+        once copied.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        loader_mod.strip_kiro_cli_api_key(env)
+        try:
+            deepseek_env, _ = _deepseek_vault_env()
+        except ValueError as exc:
+            try:
+                acp_tool_gate.enforce_runtime_routing(
+                    self.backend,
+                    str(exc),
+                    remedy=acp_tool_gate.remediation_for(self.backend),
+                )
+            except acp_tool_gate.ToolGateUnroutable as gate_exc:
+                raise AcpToolGateUnroutable(str(gate_exc)) from None
+            raise AcpToolGateUnroutable(str(exc)) from None
+        env.update(deepseek_env)
+        deepseek_env.clear()
+
+    @property
+    def verifies_agent_activation(self) -> bool:
+        """No: dsh takes no ``--agent``."""
+        return False
+
+    # ── Seam 2: initialize ──
+
+    @property
+    def protocol_version(self) -> Any:
+        from kiro_crew.agent_sdk.backends import launch_for
+
+        return launch_for(self.backend).protocol_version
+
+    @property
+    def client_capabilities(self) -> dict[str, Any]:
+        """What ``AcpClient`` declares to dsh, unchanged."""
+        from kiro_crew.acp.client_native_children import client_capabilities_for
+
+        return client_capabilities_for(self.backend)
+
+    # ── Seam 3: session/new and session/resume ──
+
+    async def session_extras(self, agent: str, **_kwargs: Any) -> SessionExtras:
+        """Empty: dsh has no custom-agent channel. Its per-session payload is the
+        mirrored array."""
+        return SessionExtras()
+
+    def session_mcp_servers(
+        self,
+        requested: list[dict[str, Any]],
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """The mirrored array as built: dsh mounts the stdio shape Crew sends.
+
+        An element whose command cannot start is already left out by the shared
+        runtime (``mcp_prune``, for ``ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP``), which on
+        this host would otherwise fail the whole ``session/new``.
+        """
+        return requested
+
+    @property
+    def wants_session_file_on_load(self) -> bool:
+        """No: dsh finds the session from its id."""
+        return False
+
+    async def prepare_session(
+        self,
+        *,
+        work_dir: str | Path,
+        agent: str | None,
+        model: str,
+        session_key: str,
+        channel_id: str,
+        memory_mode: str,
+        options: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """This session's own gate ledger.
+
+        A Side Chat session is refused here: its READ_ONLY proof is the process's
+        read-back, recorded for one process per session, so a shared process cannot
+        speak for it. The placement refuses such a chat before it gets here.
+        """
+        if options and options.get("side_read_only"):
+            raise AcpToolGateUnroutable(
+                "a DeepSeek Harness Side Chat session needs its own read-only proof, "
+                "which a shared process cannot give it; it runs on a process of its own."
+            )
+        return _DeepseekSession()
+
+    def permission_refusal(
+        self, state: Any, event: Any, *, unclassified: bool
+    ) -> tuple[str, str] | None:
+        """Record that this session asked about the call; refuse nothing.
+
+        The ask is what the tripwire later holds the call's completion to, with
+        Crew's yes (:meth:`note_permission_approved`): a request refused on any
+        path, here or later, never records one.
+        """
+        tool_call_id = getattr(event, "tool_call_id", "")
+        if isinstance(state, _DeepseekSession) and isinstance(tool_call_id, str) and tool_call_id:
+            state.asked.add(tool_call_id)
+            state.approved.discard(tool_call_id)
+        return None
+
+    def note_permission_approved(self, state: Any, tool_call_id: str) -> None:
+        """Hold the call to completing only now that Crew's yes is written."""
+        if isinstance(state, _DeepseekSession) and tool_call_id:
+            state.approved.add(tool_call_id)
+
+    def session_update_issue(self, state: Any, update: dict[str, Any]) -> str:
+        """The tripwire on this session's own ledger (:func:`gate_tripwire_issue`)."""
+        return gate_tripwire_issue(state, update)
+
+    def permission_state_audit(self, state: Any) -> tuple[str, str, str] | None:
+        """The row the per-session client writes for the same trip: the call's id,
+        whether it ran unasked or unapproved, and the gate tripwire's reason."""
+        tripped = getattr(state, "tripped", None) if isinstance(state, _DeepseekSession) else None
+        if tripped is None:
+            return None
+        tool_call_id, outcome = tripped
+        return tool_call_id, outcome, "pi_gate_tripwire"
+
+    # ── Seam 4: inbound requests the host answers ──
+
+    @property
+    def host_answered_methods(self) -> tuple[str, ...]:
+        """None: dsh asks Crew for no connection-level callback."""
+        return ()
+
+    async def answer_request(self, method: str) -> dict[str, Any]:
+        """Never called: :attr:`host_answered_methods` is empty."""
+        raise NotImplementedError(
+            f"deepseek harness answers no inbound request, including {method!r}"
+        )
+
+    # ── Seam 5: notification aliases ──
+
+    @property
+    def notification_aliases(self) -> NotificationAliases:
+        """Plain ACP ``session/update`` only."""
+        return NotificationAliases(session_update=(METHOD_SESSION_UPDATE,))
+
+    # ── Seam 6: teardown ──
+
+    @property
+    def teardown(self) -> TeardownPolicy:
+        """``session/close``, awaited: it ends one session and keeps its record.
+
+        dsh-acp 0.2.0-rc.2's ``closeSession`` closes that session's record alone and
+        leaves it listable; a later ``session/resume`` on the same process restores
+        it (measured: the resumed session answers, with only its own MCP tools).
+        """
+        return TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)

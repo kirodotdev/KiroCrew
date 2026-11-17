@@ -152,10 +152,42 @@ class TestControllerDispatch:
                 return_value=Platform.SYSTEMD,
             ),
             patch.object(svc_linux, "is_active", return_value=True),
-            patch.object(svc_linux, "stop") as mock_stop,
+            patch.object(svc_linux, "stop", return_value=[]) as mock_stop,
         ):
             assert controller.stop_service() is True
         mock_stop.assert_called_once()
+
+    def test_stop_service_raises_when_systemd_refuses_the_stop(self):
+        from kiro_crew.service import controller
+        from kiro_crew.service import linux as svc_linux
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.SYSTEMD,
+            ),
+            patch.object(svc_linux, "is_active", return_value=True),
+            patch.object(svc_linux, "stop", return_value=["sudo systemctl stop kirocrew"]),
+        ):
+            with pytest.raises(controller.ServiceStopRefused) as excinfo:
+                controller.stop_service()
+        assert excinfo.value.hints == ["sudo systemctl stop kirocrew"]
+
+    def test_linux_stop_names_each_refused_scope_and_tries_them_all(self):
+        from kiro_crew.service import linux as svc_linux
+
+        calls: list[bool] = []
+
+        def systemctl(*args, user=False, **_kwargs):
+            calls.append(user)
+            return MagicMock(returncode=0 if user else 1)
+
+        with (
+            patch.object(svc_linux, "_running_scopes", return_value=[False, True]),
+            patch.object(svc_linux, "_systemctl", side_effect=systemctl),
+        ):
+            assert svc_linux.stop() == [f"sudo systemctl stop {SERVICE_NAME}"]
+        assert calls == [False, True]
 
     def test_stop_service_routes_to_macos(self):
         from kiro_crew.service import controller
@@ -635,7 +667,7 @@ class TestControllerDispatch:
                 return_value=Platform.LAUNCHD,
             ),
             patch.object(svc_macos, "status", return_value='"PID" = 1234;\n'),
-            patch.object(svc_macos, "is_active", return_value=True),
+            patch.object(svc_macos, "is_up", return_value=True),
         ):
             rc = controller.service_status()
         assert rc == 0
@@ -651,10 +683,32 @@ class TestControllerDispatch:
                 return_value=Platform.LAUNCHD,
             ),
             patch.object(svc_macos, "status", return_value=""),
-            patch.object(svc_macos, "is_active", return_value=False),
+            patch.object(svc_macos, "is_up", return_value=False),
         ):
             rc = controller.service_status()
         assert rc == 1
+
+    def test_status_on_macos_reads_a_loaded_agent_with_no_pid_as_down(self, capsys):
+        """A crashed or KeepAlive-throttled agent is still loaded, so ``is_active``
+        counts it; ``status`` must exit 1 for it, as Linux does for auto-restart."""
+        from kiro_crew.service import controller
+
+        loaded_no_pid = MagicMock(
+            returncode=0,
+            stdout='{\n\t"LastExitStatus" = 256;\n\t"Label" = "dev.kirocrew.gateway";\n}\n',
+            stderr="",
+        )
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.LAUNCHD,
+            ),
+            patch("kiro_crew.service.macos.subprocess.run", return_value=loaded_no_pid),
+        ):
+            rc = controller.service_status()
+            assert controller.is_service_active() is True
+        assert rc == 1
+        assert '"LastExitStatus" = 256;' in capsys.readouterr().out
 
     def test_status_unsupported_returns_2(self):
         from kiro_crew.service import controller

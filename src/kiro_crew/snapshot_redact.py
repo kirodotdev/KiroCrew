@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Iterator
 
+from kiro_crew import memory_record_metadata
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config.loader import config_dir
 from kiro_crew.memory import INDEX_DB_FILE
@@ -885,6 +886,11 @@ def _redact_database(path: Path, report: RedactionReport, rel: str, *, product: 
     """
     try:
         with closing(sqlite3.connect(str(path))) as conn:
+            if product:
+                # The staged copy only: the startup reconcile's triggers would note every
+                # key this pass rewrites, and a restore of the copy rebuilds them anyway.
+                memory_record_metadata.strip_reconcile_state(conn)
+                conn.commit()
             _refuse_credential_in_schema(conn, rel)
             fts_tables, skip_tables = _fts_layout(conn)
             # BEFORE any UPDATE runs: a trigger's effects cannot be undone once fired.

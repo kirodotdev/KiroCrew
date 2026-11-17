@@ -42,6 +42,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: apiMocks }))
 
 import { useQueuedMessageActions, queuedSendStash, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { DICTATION_NOTE, _resetDictationProvenance, isDictated } from '../chat-core/composer/dictationProvenance'
 
 const queued = (queueId: string, content: string): ChatMessage =>
   ({ role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId } }) as ChatMessage
@@ -100,6 +101,7 @@ beforeEach(() => {
   // Module-level store: entries would otherwise leak across tests (and across
   // reused queue ids like 'q1'), making the suite order-dependent.
   queuedSendStash.clear()
+  _resetDictationProvenance()
   for (const fn of Object.values(apiMocks)) fn.mockResolvedValue({ ok: true })
 })
 
@@ -130,6 +132,34 @@ describe('useQueuedMessageActions — cancel', () => {
     expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced], undefined)
     // Consumed: a record restores exactly once.
     expect(queuedSendStash.has('q1')).toBe(false)
+  })
+
+  it('without a stash, a card ending in the note text is restored verbatim and marks nothing', async () => {
+    // A reload or another tab leaves no record of provenance, and the same
+    // words could be ones the user typed, so nothing is inferred from them.
+    const restoreDraft = vi.fn()
+    const rows = [queued('q1', `book the room\n\n${DICTATION_NOTE}`)]
+    const { get } = renderActions({ rows, restoreDraft })
+    await act(async () => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith(`book the room\n\n${DICTATION_NOTE}`, [], undefined)
+    expect(isDictated('chat-1')).toBe(false)
+  })
+
+  it('a stash hit for a dictated send restores the typed text and the provenance it recorded', async () => {
+    const sent = `book the room\n\n${DICTATION_NOTE}`
+    const restoreDraft = vi.fn()
+    queuedSendStash.set('q1', { raw: 'book the room', files: [], sent, dictated: true })
+    const { get } = renderActions({ rows: [queued('q1', sent)], restoreDraft })
+    await act(async () => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('book the room', [], undefined)
+    expect(isDictated('chat-1')).toBe(true)
+  })
+
+  it('a typed card restores no provenance', async () => {
+    const restoreDraft = vi.fn()
+    const { get } = renderActions({ restoreDraft })
+    await act(async () => { get().onCancel('q1') })
+    expect(isDictated('chat-1')).toBe(false)
   })
 
   it('without a stash, the row\'s own meta.quote is restored as the quote and its block comes off the text', async () => {

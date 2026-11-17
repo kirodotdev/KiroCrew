@@ -90,7 +90,7 @@ _RECORDS: dict[str, dict[str, Any]] = {}
 
 # Which owner token, if any, is CURRENTLY seeding each path in this process.
 # Adoption is for orphans, and only a record with no live holder is one: two
-# keyless sessions share the default work_dir (``config_dir() / "workspace"``),
+# keyless sessions share the default work_dir (``config_dir() / KEYLESS_WORK_DIR_NAME``),
 # so without this a second session would recognize the FIRST session's live seed
 # as an orphan, re-seed it with its own ``permissions.defaultMode``, and unlink it
 # on its own reset -- out from under a session still running against it. This dict

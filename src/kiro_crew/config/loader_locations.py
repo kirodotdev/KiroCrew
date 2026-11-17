@@ -260,6 +260,15 @@ def overlay_pins(*key_path: str) -> bool:
     either way. One helper rather than one per key: the shadowing mechanism is
     the overlay, not the key.
     """
+    return overlay_entry(*key_path)[0]
+
+
+def overlay_entry(*key_path: str) -> tuple[bool, object]:
+    """``(sets, value)``: whether ``config.local.json`` sets the key at *key_path*, and to what.
+
+    :func:`overlay_pins` with the value the overlay holds there, read the same
+    best-effort way; ``value`` is ``None`` when the overlay does not set the key.
+    """
     try:
         path = config_local_path()
         # Read as the load reads it, with no is_file() check first: a deleted
@@ -269,12 +278,14 @@ def overlay_pins(*key_path: str) -> bool:
         # saved in a non-UTF-8 code page raises.
         node: object = json.loads(read_endorsed_config_text(path))
     except (OSError, ValueError):
-        return False
+        return False, None
     for key in key_path[:-1]:
         if not isinstance(node, dict):
-            return False
+            return False, None
         node = node.get(key)
-    return isinstance(node, dict) and key_path[-1] in node
+    if isinstance(node, dict) and key_path[-1] in node:
+        return True, node[key_path[-1]]
+    return False, None
 
 
 def config_local_path() -> Path:
@@ -402,6 +413,48 @@ def decisions_consent_path() -> Path:
     return config_dir() / "decisions_consent.json"
 
 
+def memory_provider_consent_path() -> Path:
+    """Return path to memory_provider_consent.json — consent to send memory off this machine.
+
+    Same KEYSTONE class as :func:`decisions_consent_path`: a memory provider whose app
+    states ``egress: "remote"`` sends preferences, lessons and transcripts to a
+    service elsewhere, which is an egress authorization, not a preference. Each grant
+    is bound to one provider id and the app version the owner agreed to, so a new
+    version asks again. READONLY in the sandbox so an agent cannot grant itself the
+    egress; the only writer is the owner's ``PUT /api/memory/provider``. Every read
+    fails soft to NOT CONSENTED. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_consent.json"
+
+
+def memory_provider_migrations_dir() -> Path:
+    """Return the directory holding memory move jobs and their id ledgers.
+
+    Each job is ``<id>.json`` (state, options, checkpoint, counts) and
+    ``<id>.ledger.jsonl`` (one line per item moved: origin id, target id, outcome and
+    a text hash; never memory text). The ledger is the list a rollback deletes from
+    the target, so a writable copy would let an agent have Crew delete provider items
+    of its choosing: READONLY in the sandbox, written only by the gateway's
+    ``/api/memory/provider/migrations`` routes. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_migrations"
+
+
+def memory_provider_bench_dir() -> Path:
+    """Return the directory holding provider benchmark runs and own-memory eval sets.
+
+    A run is ``<id>.json`` (options, state, checkpoint), ``<id>.ledger.jsonl`` (one line
+    per scratch store a run created and whether its reset read back empty),
+    ``<id>.results.jsonl`` (ids and scores per query, never memory text) and
+    ``<id>.report.json``. ``evalsets/<id>/`` holds an own-memory snapshot copy and its
+    probes. The ledger names the stores a cleanup resets, so a writable copy would let
+    an agent point a reset at a store of its choosing: READONLY in the sandbox, written
+    only by the gateway's ``/api/memory/provider/bench`` routes. Respects
+    ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_bench"
+
+
 def credential_redaction_path() -> Path:
     """Return path to credential_redaction.json -- the credential-redaction switch.
 
@@ -457,14 +510,28 @@ def ssh_auth_sock_consent_path() -> Path:
     the keystone read-only for the agent's shell, so the consent is
     un-flippable from inside the sandbox.
 
-    Holds ``{"enabled": bool, "granted_at": str}``; every read fails soft to
-    DISABLED (see ``ssh_auth_sock_consent.is_granted``). The only writer is the
-    authenticated, OWNER-gated dashboard handler, which opens the path directly
-    rather than through this gate. There is deliberately NO CLI verb -- a
-    terminal command that records the grant on request is a grant an automated
-    caller can take. Respects ``KIROCREW_HOME``.
+    Holds ``{"enabled": bool, "mcp_gateway_backends": [str]}``; every read fails
+    soft to DISABLED (see ``ssh_auth_sock_consent``). The operator writes it by
+    hand from outside the agent sandbox; Kiro Crew only reads it. There is
+    deliberately NO CLI verb -- a terminal command that records the grant on
+    request is a grant an automated caller can take. Respects
+    ``KIROCREW_HOME``.
     """
     return config_dir() / "ssh_auth_sock_consent.json"
+
+
+def project_hooks_consent_path() -> Path:
+    """Return path to project_hooks_consent.json -- the per-folder project-hooks choice.
+
+    Same KEYSTONE reasoning as :func:`ssh_auth_sock_consent_path`: the record
+    decides whether the hooks in a checkout's own agent spec run as commands, so
+    it is an authorization, not a preference, and lives on
+    ``security._CREW_SECRET_LEAVES`` where neither the agent's file tools nor its
+    sandboxed shell can write it. The only writers are the OWNER-gated dashboard
+    handler and the gateway's own once-per-folder notice mark
+    (``project_hooks_consent``). Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "project_hooks_consent.json"
 
 
 def read_local_secret(port: int, dial_host: str | None = None) -> str:

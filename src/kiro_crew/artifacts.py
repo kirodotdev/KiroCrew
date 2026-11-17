@@ -420,6 +420,7 @@ class ArtifactStore:
 
     # Content writes: ``kiro_crew.artifacts_writes``.
     create = _artifacts_writes.create
+    check_create = _artifacts_writes.check_create
     create_image = _artifacts_writes.create_image
     update = _artifacts_writes.update
     settle_blank = _artifacts_writes.settle_blank

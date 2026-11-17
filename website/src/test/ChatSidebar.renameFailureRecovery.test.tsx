@@ -140,24 +140,24 @@ function renderSidebar(extraSlots: ChatSlot[] = [], connected = true) {
 // The row (and its textarea) can be remounted on every re-render under the
 // framer-motion mock (plain elements swap instead of morphing), so events must
 // fire on a freshly-queried node, never a stale reference.
-function currentTextarea(container: HTMLElement): HTMLTextAreaElement {
-  const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+function currentTextarea(container: HTMLElement, key = SLOT_KEY): HTMLTextAreaElement {
+  const wrap = container.querySelector(`[data-slot-key="${key}"]`) as HTMLElement
   const textarea = wrap?.querySelector('textarea') as HTMLTextAreaElement
   expect(textarea).toBeTruthy()
   return textarea
 }
 
-function commitRename(container: HTMLElement, draft: string) {
-  const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+function commitRename(container: HTMLElement, draft: string, key = SLOT_KEY, serverTitle = SERVER_TITLE) {
+  const wrap = container.querySelector(`[data-slot-key="${key}"]`) as HTMLElement
   expect(wrap).toBeTruthy()
   const row = wrap.querySelector('.session-row') as HTMLElement
   expect(row).toBeTruthy()
-  const title = within(row).getByTitle(SERVER_TITLE)
+  const title = within(row).getByTitle(serverTitle)
   fireEvent.click(title, { detail: 1 })
   fireEvent.click(title, { detail: 2 })
   fireEvent.doubleClick(title, { detail: 2 })
-  fireEvent.change(currentTextarea(container), { target: { value: draft } })
-  fireEvent.blur(currentTextarea(container))
+  fireEvent.change(currentTextarea(container, key), { target: { value: draft } })
+  fireEvent.blur(currentTextarea(container, key))
 }
 
 const titleInStore = (store: ReturnType<typeof createTestStore>) =>
@@ -323,8 +323,11 @@ describe('sidebar rename failure recovery (#10151)', () => {
 
     // Attempt 2: commit the SAME string X again; this one succeeds. It bumps
     // the slot's rename generation, so attempt 1's parked recovery is now stale.
+    await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
     commitRename(container, X)
     await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(2, SLOT_KEY, X))
+    // Attempt 1's notice names X, so it goes when the retry starts (#31286).
+    expect(container.querySelector('[data-testid="rename-error"]')).toBeNull()
 
     // Now the first attempt's stale recovery read resolves with an OLD server
     // title. The generation guard must reject it: the store keeps X.
@@ -352,9 +355,67 @@ describe('sidebar rename failure recovery (#10151)', () => {
     await waitFor(() => expect(chatSlotsMock).toHaveBeenCalled())
     // The failure is surfaced through ErrorNotice...
     await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
+    // ...naming the refused title and claiming nothing about the current one
+    // (#31286): the row keeps the refused title here.
+    const text = container.querySelector('[data-testid="rename-error"]')?.textContent
+    expect(text).toContain('Couldn\'t rename the session to “Optimistic Draft”')
+    expect(text).not.toContain('previous title')
     // ...and the optimistic title is deliberately left in place (no guess).
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(titleInStore(store)).toBe('Optimistic Draft')
+  })
+
+  // #31286: a notice naming a title must not outlive a newer attempt. Two
+  // attempts at the same name, the second accepted: a late refusal of the
+  // first would name the very title the row now holds as saved.
+  it('drops the late refusal of an attempt a newer rename superseded', async () => {
+    const X = 'Same Draft X'
+    let rejectFirst: (e: Error) => void = () => {}
+    renameSlotMock
+      .mockImplementationOnce(() => new Promise((_res, rej) => { rejectFirst = rej }))
+      .mockResolvedValueOnce({})
+    const { container } = renderSidebar()
+
+    commitRename(container, X)
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(1, SLOT_KEY, X))
+    commitRename(container, X)
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(2, SLOT_KEY, X))
+
+    await act(async () => { rejectFirst(new Error('rename refused')) })
+    await waitFor(() => expect(chatSlotsMock).toHaveBeenCalled())
+    expect(container.querySelector('[data-testid="rename-error"]')).toBeNull()
+  })
+
+  // #31286: one notice covers every row, so only a newer attempt on the
+  // session it names retires it.
+  it('keeps a refused session\'s notice while another session is renamed', async () => {
+    const OTHER_KEY = 'chat-rename-recovery-2'
+    const otherSlot = { key: OTHER_KEY, title: 'Other Server Title', running: false, tags: [], created: '', last_ts: '' } as unknown as ChatSlot
+    renameSlotMock
+      .mockRejectedValueOnce(new Error('rename refused'))
+      .mockResolvedValueOnce({})
+    chatSlotsMock.mockRejectedValue(new Error('gateway unreachable'))
+    const { container } = renderSidebar([otherSlot])
+
+    commitRename(container, 'Optimistic Draft')
+    await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
+    commitRename(container, 'Other Draft', OTHER_KEY, 'Other Server Title')
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(2, OTHER_KEY, 'Other Draft'))
+
+    expect(container.querySelector('[data-testid="rename-error"]')?.textContent)
+      .toContain('Couldn\'t rename the session to “Optimistic Draft”')
+  })
+
+  it('shows "Untitled session", never the key, for a refused title that counts as untitled', async () => {
+    renameSlotMock.mockRejectedValue(new Error('rename refused'))
+    const { container } = renderSidebar()
+
+    commitRename(container, SLOT_KEY)
+
+    await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
+    const text = container.querySelector('[data-testid="rename-error"]')?.textContent
+    expect(text).toContain('Couldn\'t rename the session to “Untitled session”')
+    expect(text).not.toContain(SLOT_KEY)
   })
 })
 

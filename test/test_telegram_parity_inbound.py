@@ -286,6 +286,45 @@ class TestPollingLoopAck:
         assert client._in_flight == set()
         assert client._persistable_offset() == 3
 
+    @pytest.mark.asyncio
+    async def test_a_press_with_null_fields_still_reaches_the_handler(self, tmp_path: Any) -> None:
+        # A JSON null where an object belongs must read as absent, as the message
+        # branch already treats it; raising would drop the press unanswered.
+        client = TelegramClient(token="t:1", offset_path=tmp_path / "offset.json")
+        seen: list[Any] = []
+
+        async def _cb(callback: Any) -> None:
+            seen.append(callback)
+
+        client._on_callback = _cb  # type: ignore[assignment]
+        client._dispatch(
+            {
+                "update_id": 5,
+                "callback_query": {
+                    "id": "q",
+                    "from": {"id": 7},
+                    "message": {
+                        "message_id": 9,
+                        "chat": {"id": 7, "type": "private"},
+                        "reply_markup": None,
+                    },
+                    "data": "a:1:1",
+                },
+            }
+        )
+        # A null identity reads as absent too, so the dispatcher refuses it rather
+        # than the poll dropping it.
+        client._dispatch(
+            {"update_id": 6, "callback_query": {"id": "r", "from": None, "message": None}}
+        )
+        await async_wait_until(
+            lambda: len(seen) == 2, describe=lambda: "both presses reaching the handler"
+        )
+        by_id = {cb.callback_query_id: cb for cb in seen}
+        assert by_id["q"].data == "a:1:1" and by_id["q"].user_id == 7
+        assert by_id["q"].chat_id == 7
+        assert by_id["r"].user_id == 0 and by_id["r"].chat_id == 0
+
 
 class TestCursorWriteOrdering:
     """The persisted cursor never regresses, whatever order the writes land in.

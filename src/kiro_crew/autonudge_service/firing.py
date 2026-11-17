@@ -30,6 +30,7 @@ from kiro_crew.autonudge_service.gate import (
     _WAKE_FOLLOWUP_TICKS,
     _delivery_basis,
     _DeliveryBasis,
+    _failure_streak,
     _note_ledger_wake,
     _record_delivered_reading,
     _record_delivered_revision,
@@ -97,7 +98,12 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # not retain that chain or count its writes toward that transaction.
     self._admitted_transaction_owner.set(None)
     self._admitted_transaction_submissions.set(None)
+    # A boot hold is a plain nap ahead of the countdown: the countdown itself can
+    # end early on a subject read, which would undo the boot spacing.
+    hold = self._boot_holds.pop(loop.id, 0.0)
     try:
+        if hold > 0:
+            await asyncio.sleep(hold)
         await sleep_until_cycle(self, loop, loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
@@ -494,6 +500,8 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
                 exc_info=True,
             )
             return
+    # Before the await: the turn carrying a wake can fail before delivery returns.
+    sent_streak = _failure_streak(loop)
     callback_raised = False
     try:
         delivered = await self._on_fire(loop)
@@ -525,7 +533,9 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
         tick_outcome = None
     if tick_outcome is not None:
         monitor_loop_metrics.record_tick(loop, tick_outcome)
-    await self._settle_fire_cycle(loop, delivered, delivery_basis, claim_from, claim_ts, claimed_ts)
+    await self._settle_fire_cycle(
+        loop, delivered, delivery_basis, claim_from, claim_ts, claimed_ts, sent_streak
+    )
     if not delivered:
         return
     monitor = loop.monitor
@@ -545,6 +555,7 @@ async def _settle_fire_cycle(
     claim_from: int,
     claim_ts: float,
     claimed_ts: float,
+    sent_streak: int,
 ) -> None:
     """Charge and persist one fire whose delivery has returned; re-arm a refused one.
 
@@ -555,6 +566,8 @@ async def _settle_fire_cycle(
     ``delivery_basis`` is the pull-request reading the fire body took before the
     dispatch (:func:`gate._delivery_basis`), recorded here on a delivered turn so a
     repeat of the same short reading can be held instead of delivered again.
+    ``sent_streak`` is the failure streak read before the dispatch, the baseline
+    of a delivered work-ledger wake's retry (:func:`gate._note_ledger_wake`).
     """
     claimed_wake = loop.id in self._pending_monitor_wake
     # Taken, not merely tested: the claim carries the wake's own text, and the
@@ -672,7 +685,7 @@ async def _settle_fire_cycle(
         if loop.monitor.kind != probes.WORK_LEDGER:
             loop.monitor.followup_ticks = _WAKE_FOLLOWUP_TICKS
         else:
-            _note_ledger_wake(self, loop)
+            _note_ledger_wake(self, loop, sent_streak)
     if delivered and claimed_floor and loop.monitor is not None:
         # The floor's turn happened. No follow-up allowance goes with it: the floor
         # exists to break a silence, not to protect work the agent had already
@@ -970,8 +983,8 @@ def _ledger_backstop_secs() -> int:
 async def _extend_for_open_ledger(self: AutoNudgeService, loop: NudgeLoop, bound: str) -> bool:
     """Raise *loop*'s spent *bound* when it watches a ledger that still has open work.
 
-    A work-ledger patrol ends when every item closes; a bound running out first
-    would end it with items open and nothing to re-arm it. So the spent bound is
+    A bound running out while a work-ledger patrol still has open items would end
+    it with nothing to re-arm it. So the spent bound is
     raised and logged at WARNING: ``max_cycles`` to the count plus a quarter of the
     cap (at least ``_LEDGER_EXTEND_MIN_CYCLES``), ``max_runtime_secs`` to the age
     plus a quarter of the budget (at least ``_LEDGER_EXTEND_MIN_RUNTIME_SECS``).

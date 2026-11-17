@@ -30,6 +30,7 @@ from kiro_crew.dashboard.refresh_tokens import (
     generate_refresh_token,
     refresh_cookie_name,
     refresh_token_boot,
+    refresh_token_embed_parent_port,
     refresh_token_owner_minted,
     refresh_token_peer_key,
     refresh_token_requires_peer,
@@ -594,6 +595,25 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     # within the multi-tab grace window, treat as theft and revoke.
     if state.is_consumed(jti):
         cached = state.grace_replacement(chain_id, jti, client_ip, now=now)
+        if not cached:
+            # A duplicate that lands while this jti's own rotation is still being written
+            # is the benign race, not reuse: the replacement is installed only once the
+            # write lands. Wait for that write on a worker, then read the grace entry
+            # again. A rotation that failed or outlasted the wait leaves none, and the
+            # duplicate is told to retry instead of revoking a chain nobody stole.
+            pending = await asyncio.to_thread(
+                state.await_pending_rotation, chain_id, jti, client_ip
+            )
+            cached = state.grace_replacement(chain_id, jti, client_ip, now=now)
+            if not cached and (pending or not state.is_consumed(jti)):
+                _audit(user_id, "refresh_token_use", "rotation_in_flight", chain_id)
+                return web.json_response(
+                    {
+                        "error": "This token's rotation did not complete. Retry the refresh.",
+                        "code": "refresh_state_unavailable",
+                    },
+                    status=503,
+                )
         if cached:
             # Multi-tab race: re-serve the same replacement pair.
             try:
@@ -678,6 +698,11 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     carried_owner_mint = refresh_token_owner_minted(refresh_token)
     if carried_owner_mint:
         _carried_claims["owner_mint"] = "1"
+    # The embedding parent's port, for the CSP frame-ancestors of a framed remote
+    # pane. Dropped here, the pane went blank on its first load after a refresh.
+    carried_embed_parent_port = refresh_token_embed_parent_port(refresh_token)
+    if carried_embed_parent_port:
+        _carried_claims["embed_parent_port"] = carried_embed_parent_port
     # The key the checks above proved this request satisfies. Taken from the
     # presented credential rather than re-derived from the resolved peer, for the
     # same reason ``carried_boot`` is: the rotated pair then says what the
@@ -708,6 +733,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         require_peer=require_peer,
         peer_key=bound_peer_key,
         owner_mint=carried_owner_mint,
+        embed_parent_port=carried_embed_parent_port,
     )
 
     public_payload = {
@@ -911,7 +937,9 @@ async def api_auth_logout(request: web.Request) -> web.Response:
             # rest of its TTL: exactly the replay this revocation exists to stop. The HMAC
             # and every claim were verified BEFORE that early return, so the chain id here
             # is authentic and revoking it cannot be driven by a forged token.
-            degraded = _get_state().degraded_reason()
+            # Decided from the validation's own answer, not a second read of the store: an
+            # unreadable file can read again in between, and that must not skip the revoke.
+            degraded = _reason.startswith("refresh state unavailable")
             if degraded and chain_id:
                 revocation_persisted = await asyncio.to_thread(
                     _get_state().revoke_chain,
@@ -938,8 +966,12 @@ async def api_auth_logout(request: web.Request) -> web.Response:
     # to_thread because revoke writes the denylist file (atomic-rename, 0600).
     access_cookie = request.cookies.get(f"mc_token_{cookie_port}", "")
     if access_cookie:
-        revoked = await asyncio.to_thread(revoke_access_cookie, access_cookie)
-        _audit(user_id or "", "access_cookie_revoked", "ok" if revoked else "noop")
+        try:
+            revoked = await asyncio.to_thread(revoke_access_cookie, access_cookie)
+            _audit(user_id or "", "access_cookie_revoked", "ok" if revoked else "noop")
+        except OSError:
+            revocation_persisted = False
+            _audit(user_id or "", "access_cookie_revoked", "not_persisted")
 
     # Always clear both cookies on the response, even when no refresh
     # cookie was present — the caller's intent is "log me out", and
@@ -957,7 +989,7 @@ async def api_auth_logout(request: web.Request) -> web.Response:
             {
                 "logged_out": False,
                 "error": "This session's cookies are cleared, but the revocation record "
-                "could not be stored, so the refresh token is not guaranteed dead after a "
+                "could not be stored, so this session is not guaranteed dead after a "
                 "gateway restart. Repair the gateway's storage, then log out again.",
                 "code": "refresh_state_unavailable",
             },

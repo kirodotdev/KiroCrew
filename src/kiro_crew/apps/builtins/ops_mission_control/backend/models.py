@@ -782,11 +782,11 @@ class LedgerEntry:
     #: gate would be dead code. It exists so the NEXT format change has somewhere to say so.
     #:
     #: The default is the LITERAL 1, not ``LEDGER_RECORD_V1``. A dataclass field default is
-    #: evaluated when the class object is built, and ``test_ledger_sync_git`` evicts this
-    #: module from ``sys.modules`` mid-test to simulate two instances — so a name looked up
-    #: at class-creation time can be resolved against a half-initialised module and raise
-    #: ``NameError``. Observed exactly that. The constant stays the single source of truth
-    #: for READERS; only this default is spelled out, and a test pins the two equal.
+    #: evaluated when the class object is built, so a test that evicts this module from
+    #: ``sys.modules`` to simulate two instances can resolve a name looked up at
+    #: class-creation time against a half-initialised module and raise ``NameError``. The
+    #: constant stays the single source of truth for READERS; only this default is spelled
+    #: out, and ``test_the_field_default_matches_the_constant`` pins the two equal.
     v: int = 1
     fingerprints: list[str] = field(default_factory=list)
     #: Provider-computed identities this entry has matched (see

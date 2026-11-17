@@ -1,4 +1,4 @@
-import React, { useContext, useId } from 'react'
+import React, { useContext, useId, useState } from 'react'
 import { ExternalLink, Folder, MessageSquare } from 'lucide-react'
 import { fileIcon } from '../../utils/fileIcons'
 import { wholeMatchAutolinkHref } from '../../utils/autolinkRules'
@@ -236,12 +236,23 @@ function revealHintFor(isDir: boolean, platform: GatewayPlatform, canReveal: boo
  * `data-session-key` and the accessible name; a finer vocabulary here would
  * duplicate them for no consumer. Set AFTER the inbound props, so raw HTML
  * cannot claim another.
+ *
+ * `onIntent` is for a path-shaped span whose probe is held (`PathProbeCtx`,
+ * the text of a reply still being typed): the pointer arriving starts that
+ * probe, so a span that names a file or directory becomes the path chip,
+ * usually before the bubble shows, and its click then opens it. Not on focus:
+ * the path chip is a different element, so that swap would drop a keyboard
+ * user's focus. The click itself always copies, at once: WebKit refuses a
+ * clipboard write that waits on a probe's round trip, because the click's user
+ * activation is spent by then (`utils/clipboard.ts`), and the chip's name says
+ * "Copy".
  */
-function CopyableCode({ className, safeProps, text, children }: {
+function CopyableCode({ className, safeProps, text, children, onIntent }: {
   className: string
   safeProps: Record<string, unknown>
   text: string
   children: React.ReactNode
+  onIntent?: () => void
 }) {
   const value = text.trim()
   const { press, tipHandlers, bubble } = useBubbleCuedCopy(
@@ -273,6 +284,7 @@ function CopyableCode({ className, safeProps, text, children }: {
         onClick={handleCopy}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handleCopy(e) }}
         {...tipHandlers}
+        onPointerEnter={e => { onIntent?.(); tipHandlers.onPointerEnter(e) }}
       >
         {children}
       </code>
@@ -475,6 +487,9 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const visibleText = codeTextOf(children)
   const codeStr = (visibleText ?? '').replace(/\n$/, '')
   const probeEnabled = useContext(PathProbeCtx)
+  // Where the probe is held (text still being typed), this span is probed on
+  // demand instead: once the pointer comes to it (`asked`).
+  const [asked, setAsked] = useState(false)
   const actions = useContext(PathActionCtx)
   const sessionActions = useContext(SessionActionCtx)
   const folderActions = useContext(SidebarFolderCtx)
@@ -487,7 +502,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const raw = codeStr.trim()
   // Inside a link to a web page the span never becomes a chip (see the early
   // return below), so it never asks the backend whether its text names a path.
-  const pathResolution = usePathResolution(raw, probeEnabled && insideLink !== 'external')
+  const pathResolution = usePathResolution(raw, (probeEnabled || asked) && insideLink !== 'external')
   // Before the early returns below (rules of hooks): a closed session's chip
   // waits on a gateway probe. Same text the chip branch below would see.
   const sessionTarget = useSessionChip(visibleText === null || raw === '' ? null : raw, sessionActions)
@@ -638,7 +653,11 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
         </a>,
       )
     }
-    return keep(<CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{reserve}{children}</CopyableCode>)
+    // A path-shaped span whose probe is held is probed once the pointer comes
+    // to it, and becomes the path chip below if it names a file or directory.
+    // Until then it is a copy chip, and its click copies.
+    const onIntent = !probeEnabled && pathResolution.shaped ? () => setAsked(true) : undefined
+    return keep(<CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr} onIntent={onIntent}>{reserve}{children}</CopyableCode>)
   }
   const isDir = pathResolution.kind === 'dir'
   const { path, splitPath, kind, line: targetLine, endLine: targetEndLine } = pathResolution

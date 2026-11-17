@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import redaction_seams
 from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
 from kiro_crew.dashboard.chat_utils import (
     _tool_identity_fields,
@@ -168,7 +169,45 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
         # does not have to parse ``@server/tool`` out of the title; both are
         # optional there, so a row without them still renders.
         **_tool_identity_fields(event),
+        # The argument naming a read call's file, present only when the backend
+        # marked one (``AcpEvent.read_path_arg``): the row's thumbnail strip reads
+        # the input under that name, so a live row and a replayed one preview alike.
+        **_read_path_fields(event),
     }
+
+
+def _read_path_fields(event: "LLMEvent") -> dict[str, str]:
+    """``read_path_arg`` for a tool row, present only when the event carries one."""
+    arg = getattr(event, "read_path_arg", "")
+    return {"read_path_arg": arg} if isinstance(arg, str) and arg else {}
+
+
+def _withdraw_read_path_arg(state: Any, slot: Any, tcid: str) -> None:
+    """Clear ``read_path_arg`` from the tool rows of call *tcid*, stored and live.
+
+    For a read that ended without completing (failed, refused or cancelled): it read
+    no file, so its row previews none. Claude Code's own permission refusal arrives
+    that way, as a ``failed`` update. Each marked row is patched by its own ``ts``
+    with an empty mark, which the open tab's meta merge reads as "no file named".
+    """
+    for row in slot.messages:
+        meta = row.get("meta") if row.get("role") == "tool" else None
+        if not isinstance(meta, dict) or meta.get("tool_call_id") != tcid:
+            continue
+        if meta.pop("read_path_arg", None) is None:
+            continue
+        ts = str(row.get("ts") or "")
+        if not ts:
+            continue
+        try:
+            state.broadcast_ws(
+                "chat_message_update",
+                {"slot": slot.key, "ts": ts, "meta": {"read_path_arg": ""}},
+            )
+        except Exception:
+            # The stored row is already unmarked; a client reconciles from slot
+            # detail on its next fetch.
+            logger.debug("read mark withdrawal broadcast failed", exc_info=True)
 
 
 def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:
@@ -542,8 +581,11 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 _mirror_active_task = f"tool_{_mirror_task_counter}"
                 turn._mirror_active_task = _mirror_active_task
                 _task_title = event.tool_purpose or _mirror_task_label(event)
-                _task_title, _ = redact_exfiltration_urls(_task_title)
-                _task_title, _ = redact_credentials(_task_title)
+                # The thread's task title is a channel post: it never stands down
+                # with the turn's CHAT seam.
+                with redaction_seams.output_seam(redaction_seams.CHANNELS):
+                    _task_title, _ = redact_exfiltration_urls(_task_title)
+                    _task_title, _ = redact_credentials(_task_title)
                 _task_title = _task_title[:75]
                 _mirror_active_task_title = _task_title
                 turn._mirror_active_task_title = _mirror_active_task_title

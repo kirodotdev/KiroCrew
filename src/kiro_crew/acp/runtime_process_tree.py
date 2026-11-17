@@ -42,6 +42,50 @@ logger = logging.getLogger("kiro_crew.acp.client")
 _T = TypeVar("_T")
 
 
+def walk_observes_descendants() -> bool:
+    """Whether ``_get_child_pids`` can see a descendant on this platform.
+
+    True on POSIX, where the walk reads ``/proc`` or asks ``pgrep``. False on
+    Windows: there is no pgrep, and the tree kill goes through the owned-handle
+    drain and ``kill_process_tree`` (``taskkill /T``), which walk descendants
+    themselves, so the records this walk feeds are a POSIX-only concern.
+
+    The one statement of that fact. A caller that would wait for the walk, or
+    schedule another, asks here first: an empty walk on a platform that cannot
+    observe says nothing about the tree, so looking again cannot help.
+    """
+    from kiro_crew.acp.client import platform_compat
+
+    return not platform_compat.IS_WINDOWS
+
+
+#: How long a root whose tree showed no descendant is given before the tree is
+#: read once more: a root that has only just answered may fork a moment later.
+EMPTY_WALK_RETRY_DELAY = 0.5
+
+#: How long a process created a moment ago is given to fork before its tree is
+#: read for the first time. Not the retry delay: every start that can observe
+#: pays this one, so it is the shorter of the two, and it comes before any look
+#: where the retry comes after an empty one.
+EARLY_WALK_SETTLE_DELAY = 0.3
+
+
+async def wait_for_descendants(delay: float) -> bool:
+    """Wait *delay* seconds for a root to fork, where a walk could then see it.
+
+    ``True`` after the wait: the caller walks. ``False`` at once, with no wait,
+    where the walk cannot see a descendant (``walk_observes_descendants``): the
+    caller skips the walk it was waiting for.
+
+    Every wait for the tree walk goes through here, so no caller can sleep for
+    a walk that would read back empty however long it waited.
+    """
+    if not walk_observes_descendants():
+        return False
+    await asyncio.sleep(delay)
+    return True
+
+
 def _get_child_pids(parent_pid: int | None, _visited: set[int] | None = None) -> list[int]:
     """Return PIDs of all descendants recursively (best-effort).
 
@@ -129,17 +173,16 @@ def _direct_children(pid: int) -> list[int]:
     On Linux the per-task ``children`` files, read by ``_read_task_children``, are
     the answer, empty included, so a leaf costs no spawn. proc(5) calls these files
     exact only for stopped children; the walk's callers
-    absorb that race, since ``guarded_tree_pass`` walks twice and walks again
-    after 0.5 s when the first walk finds nothing. pgrep is the fallback only for a
+    absorb that race, since ``guarded_tree_pass`` walks twice and every later
+    pass walks again. pgrep is the fallback only for a
     kernel without the files (``_CHILDREN_INTERFACE``).
 
-    Windows: returns ``[]`` — there is no pgrep, and the tree kill goes through
-    ``kill_process_tree`` (``taskkill /T``), which walks descendants itself, so
-    the escaped-child sweep this feeds is a POSIX-only concern.
+    Returns ``[]`` where the walk cannot see a descendant
+    (``walk_observes_descendants``).
     """
-    from kiro_crew.acp.client import Path, platform_compat, subprocess_mod, sys  # noqa: F811
+    from kiro_crew.acp.client import Path, subprocess_mod, sys  # noqa: F811
 
-    if platform_compat.IS_WINDOWS:
+    if not walk_observes_descendants():
         return []
     if sys.platform == "linux" and _children_interface():
         # pgrep -P scans every /proc entry: 275 to 428 ms a call at about 3,000
@@ -302,7 +345,6 @@ async def guarded_tree_pass(
     replace: bool,
     keep_unwalked: Callable[[int, ChildRecord], bool] | None = None,
     still_owner: Callable[[], bool] | None = None,
-    retry_delay: float | None = None,
 ) -> TreePass:
     """Walk *pid*'s tree once, under every guard a recorded child needs.
 
@@ -335,17 +377,15 @@ async def guarded_tree_pass(
     Every blocking probe and the write run on *executor* (the caller's own
     ``subprocess_executor()``), never on the event loop.
 
-    *retry_delay* walks once more after that many seconds when the first walk is
-    empty (a root racing its own cold start). Never catches: the caller owns
-    logging and its own failure policy, and a cancellation must reach it.
+    Never waits for a tree to appear: an empty walk returns ``"empty"`` at once,
+    and a caller that wants another look runs another pass. Never catches: the
+    caller owns logging and its own failure policy, and a cancellation must
+    reach it.
     """
     loop = asyncio.get_running_loop()
     if not root_holds():
         return TreePass("refused")
     descendants = await loop.run_in_executor(executor, probes.walk, pid)
-    if not descendants and retry_delay is not None:
-        await asyncio.sleep(retry_delay)
-        descendants = await loop.run_in_executor(executor, probes.walk, pid)
     if not descendants:
         return TreePass("empty")
     if replace:

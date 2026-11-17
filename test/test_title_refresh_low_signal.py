@@ -469,8 +469,8 @@ class TestSlotSavePersistsLowSignalFlag:
 
         state = self._make_state(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("lowsig-empty")
-        # No messages: the forced save routes through the ``_fresh_fields``
-        # builder rather than the full ``meta_line`` construction. That branch
+        # No messages: the forced save routes through ``merge_empty_window``
+        # rather than the full ``meta_line`` construction. That branch
         # merges ONLY into an existing metadata line, so seed the birth line
         # exactly as ``session_create`` does.
         state.conversation_log.update_metadata(_history_key_for(slot.key), {"folder_id": ""})

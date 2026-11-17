@@ -800,6 +800,25 @@ describe('SteeringTab', () => {
     expect((screen.getByLabelText('Edit api.md') as HTMLTextAreaElement).value).toBe('# API\nchanged')
   })
 
+  it('clears a failed save notice once a later create succeeds', async () => {
+    mockApi.updateSteering.mockRejectedValueOnce(new Error('zz-save-refused'))
+    renderTab()
+    await waitFor(() => expect(screen.getByTestId('md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Edit'))
+    fireEvent.click(screen.getByText('Save'))
+    expect(await screen.findByText(/zz-save-refused/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText('New Steering File'))
+    fireEvent.change(screen.getByPlaceholderText('api-standards.md'), { target: { value: 'new.md' } })
+    fireEvent.click(screen.getByText('Create'))
+    await waitFor(() => expect(mockApi.createSteering).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText(/zz-save-refused/)).toBeNull())
+    // Reopening and cancelling the create dialog resets the create; the old
+    // save failure must not come back.
+    fireEvent.click(screen.getByText('New Steering File'))
+    fireEvent.click(screen.getByText('Cancel'))
+    expect(screen.queryByText(/zz-save-refused/)).toBeNull()
+  })
+
   it('create dialog forwards name, content and scope', async () => {
     renderTab()
     await waitFor(() => expect(screen.getByText('New Steering File')).toBeInTheDocument())

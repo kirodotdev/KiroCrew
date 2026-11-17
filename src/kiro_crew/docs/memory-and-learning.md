@@ -68,6 +68,29 @@ of excerpts from the last three days (headings, bullets and each paragraph's
 first line), and the body arrives only when `memory_recall`
 asks for it.
 
+### Narrowing a recall by kind and time
+
+`memory_recall` also takes four optional arguments. Leave them out and the answer
+is the one it always gave.
+
+| Argument | Meaning |
+|---|---|
+| `kind` | `fact`, `episode` or `lesson`: return only that part of the answer. |
+| `since`, `until` | Keep what was written in the half-open range `[since, until)`: an episode by when it was recorded, a fact by when its current value was set (rewriting a fact moves that time). An ISO date means midnight UTC, so "October" is `since=2026-10-01`, `until=2026-11-01`. |
+| `as_of` | Keep what was valid at that moment, judged by the same validity check recall applies now. A fact with a validity window counts only inside it (`valid_from` up to, not including, `valid_until`), so a fact whose window has since closed is found by a date inside it. A fact with no window counts from when its current value was set, so one rewritten after that moment is not returned for it. |
+
+Time filters apply to facts and episodes. Lessons are standing rules, so time
+filters beside `kind=lesson` are dropped, and a timed query without a `kind` leaves
+the lessons block out. A malformed or conflicting filter (an unknown `kind`, a date
+that does not parse, `since` not earlier than `until`) is never a refusal: it is
+dropped, the recall runs without it, and the answer carries a warning saying what
+was ignored (a `Warning:` line from the tool, a `warning` field from the dashboard
+route). Valid filters beside a dropped one still apply. A fact that was replaced or forgotten is removed from the store,
+so `as_of` cannot find it; its history stays in the revision log. Pages from the
+Markdown notebook carry no dates, so a timed query does not search them. The
+filters narrow the ranked candidates: a date range asks for the best matches inside
+it, not for every record in it.
+
 ### Lessons
 
 Corrections and rules you teach Kiro Crew. Two ways to create:
@@ -112,6 +135,14 @@ Switches that change what is written or injected:
 | `memory.writes_enabled: false` | No automatic writes | Unchanged |
 | `memory.lesson_extraction_enabled: false` | No extracted lessons; other writes and `learn_add` unchanged | Unchanged |
 | `memory.kind_routing: "enforce"` | Consolidation skips a `state` fact; facts and events are written as before (`"shadow"` only logs; default `"off"` does neither) | Unchanged |
+| `memory.extraction_instructions: "<text>"` | Consolidation is asked to follow your text about what to keep and what never to store; an empty value (default) changes nothing | Unchanged |
+| `memory.lesson_origin_gate: "enforce"` | A lesson from turns no person sent is saved as an `on_topic` finding, never a standing rule (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
+| `memory.lesson_tier_policy: "enforce"` | A new consolidation lesson is a standing rule only when your own words in a message back it; otherwise it is saved as an `on_topic` finding (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
+| `memory.lesson_fold: "enforce"` | Unchanged | A rule that repeats another one takes no room in the rule block; the block says how many were folded, `learn_list` shows all, and rules you taught are never folded (`"shadow"` only records what would fold; default `"off"` does neither) |
+| `memory.rule_authority_order: "enforce"` | Unchanged | Rules saved as yours (`learn_add`, dashboard, CLI) come first in the rule block, then inferred rules (`"shadow"` only records what would change; default `"off"` does neither) |
+| `memory.member_lesson_dedup: "enforce"` | A private store skips a lesson that copies a stored one, and retires a new near-copy before a dashboard turn sees it (turning it off restores them); lessons you taught are never folded (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
+| `memory.relevance_rule: "enforce"` | Unchanged | Past findings, task facts and project and history sections join a new session only when they share a word of 3 or more letters, or a two-character Chinese or Japanese pair, with your first message; a fact also needs the private store's evidence check. The rule block is unchanged (`"shadow"` only records what would change; default `"off"` does neither) |
+| `memory.dream: "propose"` | While no chat runs, an offline pass lists copies, near-copies, work status and old untagged rules it would clean up; read the list with `kirocrew memory dream list`. Nothing is applied, and lessons you taught are never proposed for change | Unchanged |
 | `memory.inject_memory: false` | Unchanged | Stored memory block withheld |
 | `memory.inject_lessons: false` | Unchanged | Lessons and user-profile blocks withheld |
 
@@ -119,6 +150,31 @@ Incognito sessions still read stored memory but write none, and Temporary
 sessions neither read nor write it, whatever these keys say. The keys apply to
 every surface (dashboard, channels, cron, sub-agents) at once, where a memory
 mode is chosen per session.
+
+To see what the `"shadow"` (and `"propose"`) stages above have recorded, run
+`kirocrew memory shadow report`. Per stage it prints the flag, when its window
+started, the days and session starts seen against the bar (14 days and 200
+session starts), and how many items the new policy would change. It shows
+counts only, never memory text, and writes nothing. `--stage <name>` adds counts
+by day, `--since 7d` or `--since YYYY-MM-DD` moves the start, `--store <name>`
+reads another store, and `--json` prints the same data as JSON. Only `shadow`
+counters and sampled fields count; Dreaming keeps `propose`.
+
+Each stage also gets a miss rate and a verdict. A row a stage would drop counts
+as missed when something later shows it was needed: a `memory_recall` that
+returned it, or a `learn_add` close to it (cosine above 0.85). A render stage
+counts only that session's later events; a write stage counts any later one. A
+small hashed sample of rows the stage keeps is scored the same way, as a control.
+The verdict is `wait` until 14 days, 200 session starts, a control sample and at
+least one outcome line exist,
+then `pass` when the miss rate is at most 1 in 100 and no higher than the
+control's, else `fail`. While any stage flag is on, recalls and `learn_add`s write
+small outcome lines with memory keys and a session hash only, never the query or
+the rule; incognito and temporary sessions write none. If a window starts
+partway through a UTC day, the report excludes that day from counters, samples
+and session starts and reports the next UTC midnight as `window_start`. This
+conservatively undercounts readiness by at most one day, avoiding counters that
+mix policy versions. A start exactly at UTC midnight keeps that day.
 
 ## Memory Modes
 
@@ -206,8 +262,13 @@ downloading or loading, memory falls back to keyword search and switches to
 semantic search as soon as the model is ready — no restart needed. Requires
 ~610MB disk for the model and ~700MB RAM once the model is loaded. The model
 loads when something first needs a vector and unloads after 60 minutes without
-one (`memory.embedding_idle_evict_secs`, `0` keeps it loaded); the first search
-after that waits a few seconds for it to load again.
+one, or after 10 minutes on a machine with 16 GiB of memory or less
+(`memory.embedding_idle_evict_secs`, `"auto"` by default, `0` keeps it loaded, a
+number you set is always kept). On such a machine, opening, typing in or sending
+to a chat, and any channel message, load it again before your message needs it;
+elsewhere the first search after an unload waits a few seconds for it. Background work (filling in
+missing vectors, consolidation) never holds up your message: your search runs
+first and the background text starts over.
 
 The bundled model is `qwen3-embedding:0.6b` (1024 dimensions). `KIROCREW_EMBED_MODEL_URL` overrides `memory.embed_model_url` for the download URL; `KIROCREW_EMBED_MODEL_PATH` or `memory.embed_model_path` selects a local GGUF instead of the bundled model.
 
@@ -299,6 +360,37 @@ interface rather than the on-disk layout:
 
 Both run non-interactively (no TTY or editor needed), so they work from
 scheduled jobs.
+
+## Checking and Moving Memory from the CLI
+
+- `kirocrew memory stats` — counts for the default store: active and deleted
+  facts and episodes, how many episodes have embeddings, and the search index.
+  Rows that wait for embeddings are still found by keyword search.
+- `kirocrew memory audit` — scan every memory store for suspicious content,
+  such as text that tries to give the agent instructions. It lists each finding
+  with its store, or says memory is clean.
+- `kirocrew memory import <file> [--store <name>]` — load a file written by
+  `kirocrew memory export` into the default store, or into the named one. The
+  file is checked before anything is written; a bad file imports nothing and
+  exits 1. The `markdown` collection is never imported, and a private Bot (V2)
+  store refuses the import: use the dashboard copy, which keeps provenance.
+  Embeddings are built later by the gateway; `memory stats` shows the progress.
+
+## Comparing Memory Providers
+
+You can compare memory providers, Crew's own memory included, on public benchmarks or
+on questions drawn from your own memory, through the owner's
+`/api/memory/provider/bench` routes. A plan shows which providers run, whether each
+keeps data on this machine, how the test data is cleaned up, and how many model calls
+answering and grading may take. Nothing runs until you start the planned run.
+
+- A run writes only to throwaway test stores, never to the memory you use.
+- Benchmark data is downloaded when first needed, from a fixed upstream version.
+- "Your own memory" works on a read-only copy. Anything that looks like a secret is
+  dropped from the copy, not masked. A provider that keeps data elsewhere gets the copy
+  only after you tick the box for that run.
+- Results keep ids and scores, not your memory's text.
+- An agent cannot start a run: there is no tool or CLI command for it.
 
 ## Editing Memory
 

@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_model,
     read_turn_model,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── _parse_sessions ─────────────────────────────────────────────────────
 
@@ -143,6 +144,31 @@ class TestParseSessions:
             r = _parse_sessions()
             assert r["total_sessions"] == 0
             assert r["all_time_sessions"] == 0
+
+    def test_a_line_nested_past_the_decoder_costs_only_that_line(self, tmp_path):
+        """One line nested past the recursion limit is skipped like any bad line.
+
+        ``json.loads`` raises ``RecursionError`` there, which is not a
+        ``ValueError``; left uncaught it escapes the reader and the whole
+        usage page fails over one stray line in a transcript.
+        """
+        from stray_line_helpers import too_deep_line
+
+        d = tmp_path / "cli"
+        d.mkdir()
+        rows = [{"kind": "Prompt"}, {"kind": "AssistantMessage"}]
+        body = (
+            json.dumps(rows[0]).encode()
+            + b"\n"
+            + too_deep_line()
+            + json.dumps(rows[1]).encode()
+            + b"\n"
+        )
+        (d / "s1.jsonl").write_bytes(body)
+        with patch.object(usage_mod, "_SESSIONS_DIR", d):
+            r = _parse_sessions()
+        assert r["total_sessions"] == 1
+        assert r["total_messages"] == 2
 
     def test_skips_invalid_path(self, tmp_path):
         d = tmp_path / "cli"
@@ -569,6 +595,26 @@ class TestApiKiroUsage:
                 assert data["billing"]["credits_used"] == 10
                 assert data["sessions"]["total_sessions"] == 1
                 assert data["refreshing"] is False
+
+    @pytest.mark.asyncio
+    async def test_carries_the_token_history_of_the_usage_shards(self):
+        """The tokens and dollar cost a harness without a credit plan reports."""
+        history = {"total_input": 7, "cost_usd": 2.5, "daily_history": [{"date": "2026-11-10"}]}
+        with (
+            patch.object(
+                usage_mod, "_cached_parse_sessions", return_value=usage_mod._empty_session_summary()
+            ),
+            patch.object(usage_mod, "_parse_token_history", return_value=history),
+            patch.object(usage_mod, "get_usage_cache", return_value={}),
+        ):
+            app = web.Application()
+            app.router.add_get("/api/usage/kiro", api_kiro_usage)
+            async with TestClient(TestServer(app)) as client:
+                status, data = await _get_settled_usage(client)
+        assert status == 200
+        assert data["tokens"] == history
+        # The gateway's own local day, the key the token history files days under.
+        assert len(data["local_day"]) == 10 and data["local_day"][4] == "-"
 
     @pytest.mark.asyncio
     async def test_slow_session_scan_returns_billing_then_refreshes(self):
@@ -1133,6 +1179,9 @@ class TestCachedParseSessions:
             return {"total_sessions": calls["n"], "daily_history": []}
 
         monkeypatch.setattr(usage_mod, "_cached_parse_sessions", _fake_cached_parse)
+        # This test asserts the refreshed answer, so a stalled loop must not run out the
+        # route's short session wait and hand back the refreshing placeholder instead.
+        monkeypatch.setattr(usage_mod, "_USAGE_SESSION_WAIT_SECONDS", FALLBACK_TIMEOUT_SECS)
         first = usage_mod.asyncio.create_task(_fake_cached_parse())
         assert await first == {"total_sessions": 1, "daily_history": []}
         usage_mod._USAGE_SESSION_REFRESH_TASK = first

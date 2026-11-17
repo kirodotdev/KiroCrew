@@ -4,7 +4,8 @@ When a crewmate's conductor opens its own worker (``session_create``) or sends i
 work (``session_send``), the route adds a short line to that tool's result: the
 worker's MCP servers and the servers this gateway has loaded that the worker
 lacks (:func:`kiro_crew.mate_capability_catalog.dispatch_summary`, the data
-``find_capabilities`` steps 1 and 2 return; the registry stays on demand). So
+``find_capabilities`` steps 1 and 2 return; the registry stays on demand), and
+the worker's servers its session's MCP report says it cannot use. So
 the conductor learns, at the moment it hands off, whether the worker can reach
 what the work needs, and raises the capability card when the gateway has it.
 
@@ -22,7 +23,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _note(app: Any, caller_history_key: str, target_history_key: str) -> str:
+def _note(
+    app: Any, caller_history_key: str, target_history_key: str, report: dict[str, Any] | None
+) -> str:
     """The summary when caller and target are a conductor and its own worker. Blocking."""
     from kiro_crew import mate_capabilities
     from kiro_crew import mate_capability_catalog as catalog_mod
@@ -54,7 +57,7 @@ def _note(app: Any, caller_history_key: str, target_history_key: str) -> str:
         return ""
     catalog = _capability_service(app)._mate_catalog(member)
     spec = catalog_mod.worker_spec(member)
-    return catalog_mod.dispatch_summary(spec, catalog)
+    return catalog_mod.dispatch_summary(spec, catalog, report)
 
 
 async def own_worker_note(app: Any, state: Any, caller_session_key: str, target_key: str) -> str:
@@ -70,7 +73,11 @@ async def own_worker_note(app: Any, state: Any, caller_session_key: str, target_
         if caller_slot is None or target_slot is None:
             return ""
         return await asyncio.to_thread(
-            _note, app, slot_history_key(caller_slot), slot_history_key(target_slot)
+            _note,
+            app,
+            slot_history_key(caller_slot),
+            slot_history_key(target_slot),
+            target_slot.mcp_report_payload(),
         )
     except Exception:  # noqa: BLE001 - the hand-off already happened; the note is extra
         logger.warning("worker capability note failed", exc_info=True)

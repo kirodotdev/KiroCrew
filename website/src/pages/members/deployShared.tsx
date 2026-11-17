@@ -49,8 +49,16 @@ export function deployStepLabel(job: Pick<LaunchJob, 'steps'>): string {
  *
  * A missing or future timestamp renders as the unknown glyph rather than a
  * garbage age.
+ *
+ * `unitDisplay` stays fmtUnit's narrow default for a stat card's value; an age
+ * that sits inside a sentence passes `short`, where ja reads `13 分前`, not
+ * `13m 前`.
  */
-export function deployAge(atSec: number | null | undefined, nowMs = Date.now()): string {
+export function deployAge(
+  atSec: number | null | undefined,
+  nowMs = Date.now(),
+  unitDisplay: 'narrow' | 'short' = 'narrow',
+): string {
   if (atSec == null || !Number.isFinite(atSec) || atSec <= 0) return UNKNOWN
   const ms = nowMs - atSec * 1000
   if (ms < 0) return UNKNOWN
@@ -58,9 +66,9 @@ export function deployAge(atSec: number | null | undefined, nowMs = Date.now()):
   const days = Math.floor(totalMin / 1440)
   const hours = Math.floor((totalMin % 1440) / 60)
   const minutes = totalMin % 60
-  if (days >= 1) return fmtDuration([[days, 'day'], [hours, 'hour']], { dropZero: true })
-  if (hours >= 1) return fmtDuration([[hours, 'hour'], [minutes, 'minute']], { dropZero: true })
-  return fmtDuration([[minutes, 'minute']])
+  if (days >= 1) return fmtDuration([[days, 'day'], [hours, 'hour']], { dropZero: true, unitDisplay })
+  if (hours >= 1) return fmtDuration([[hours, 'hour'], [minutes, 'minute']], { dropZero: true, unitDisplay })
+  return fmtDuration([[minutes, 'minute']], { unitDisplay })
 }
 
 /** One stat card, copying the member stat vocabulary: a large number over an

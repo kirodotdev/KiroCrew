@@ -26,24 +26,10 @@ def _load_app_secret() -> str:
     global _APP_SECRET
     if _APP_SECRET is not None:
         return _APP_SECRET
-    from kiro_crew.config.loader import config_dir
-
-    secret_path = config_dir() / "apps" / APP_NAME / ".app_secret"
-    if secret_path.is_file():
-        _APP_SECRET = secret_path.read_text().strip()
-    else:
-        # Fallback: try the apps dir from manager
-        try:
-            from kiro_crew.apps.manager import app_dir
-
-            alt = app_dir(APP_NAME) / ".app_secret"
-            if alt.is_file():
-                _APP_SECRET = alt.read_text().strip()
-        except Exception:
-            pass
-    # Do NOT cache emptiness: the secret may be provisioned after this
-    # backend starts (install race) — retry on the next request, matching
-    # the gateway-side _get_app_secret semantics.
+    # The gateway hands its backend the secret at spawn (``apps.backend``); it keeps
+    # no copy in the app's folder. Do NOT cache emptiness, matching the gateway-side
+    # _get_app_secret semantics.
+    _APP_SECRET = os.environ.get("KIROCREW_PROXY_SECRET", "").strip() or None
     return _APP_SECRET or ""
 
 
@@ -263,13 +249,17 @@ async def _json_body(
     except (LookupError, RecursionError, ValueError):
         if code:
             return None, web.json_response({"error": "invalid JSON body", "code": code}, status=400)
-        return None, web.json_response({"error": "invalid JSON body"}, status=400)
+        return None, web.json_response(
+            {"error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
         if code:
             return None, web.json_response(
                 {"error": "body must be an object", "code": code}, status=400
             )
-        return None, web.json_response({"error": "body must be an object"}, status=400)
+        return None, web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     return body, None
 
 
@@ -312,9 +302,13 @@ async def api_dev_fleet_prune_run(request: web.Request) -> web.Response:
     try:
         body = await request.json() if request.content_length else {}
     except ValueError:
-        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+        return web.json_response(
+            {"ok": False, "error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
-        return web.json_response({"ok": False, "error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"ok": False, "error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     raw_names = body.get("names") or []
     if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
         return web.json_response(
@@ -615,14 +609,23 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
 # =============================================================================
 
 
+async def api_liveness(request: web.Request) -> web.Response:
+    # Served at /health (HMAC-exempt): the gateway's own liveness poll, every
+    # 15 s for the life of the backend. Answers from this process alone, with
+    # no service-manager read: each such read spawns `systemctl` scopes, and a
+    # slow manager would turn this poll into a steady stream of failed ones.
+    return web.json_response({"status": "ok"})
+
+
 async def api_health(request: web.Request) -> web.Response:
-    # Served at BOTH /health (HMAC-exempt, gateway-internal liveness poll) and
-    # /api/health (proxied, reached by the browser at /apps/dev-fleet/api/health).
-    # ``start_id`` lets the dashboard's restart handshake wait for the NEW
-    # gateway process rather than "a 200 came back" (see _gateway_start_id).
+    # Served at /api/health (proxied, reached by the browser at
+    # /apps/dev-fleet/api/health). ``start_id`` lets the dashboard's restart
+    # handshake wait for the NEW gateway process rather than "a 200 came back"
+    # (see _gateway_start_id). Read through the shared, briefly cached reader so
+    # a burst of polls costs one service-manager read.
     # None-safe: a platform that cannot report identity returns None here and
     # the frontend degrades to reload-on-first-response instead of hanging.
-    return web.json_response({"status": "ok", "start_id": await live._gateway_start_id()})
+    return web.json_response({"status": "ok", "start_id": await live._cached_gateway_start_id()})
 
 
 # NOT here: the make-live and restart-gateway handlers. Both reach the live-target
@@ -659,5 +662,6 @@ __all__ = (
     "api_dev_fleet_worktree",
     "api_dev_fleet_worktree_remove",
     "api_health",
+    "api_liveness",
     "hmac_proxy_middleware",
 )

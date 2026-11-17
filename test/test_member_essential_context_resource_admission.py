@@ -260,6 +260,131 @@ def test_unmanaged_prompt_outside_root_is_not_exempted_by_name(env, tmp_path, te
         )
 
 
+@pytest.mark.parametrize(
+    "is_windows, uri, expected",
+    [
+        (True, "file:///C:/notes/guide.md", "C:/notes/guide.md"),
+        (True, "file:///c:\\notes\\guide.md", "c:\\notes\\guide.md"),
+        (True, "file://C:/notes/guide.md", "C:/notes/guide.md"),
+        (True, "file:///home/u/guide.md", "/home/u/guide.md"),
+        (True, "file://~/guide.md", "~/guide.md"),
+        (True, "file://guide.md", "guide.md"),
+        (False, "file:///C:/notes/guide.md", "/C:/notes/guide.md"),
+    ],
+)
+def test_only_windows_drops_the_slash_before_a_drive_in_a_file_uri(
+    monkeypatch, is_windows, uri, expected
+):
+    from kiro_crew import file_uri
+    from kiro_crew import member_essential_context as mec
+
+    monkeypatch.setattr(file_uri, "IS_WINDOWS", is_windows)
+    assert mec._file_uri_path(uri) == Path(expected).expanduser()
+
+
+def test_a_file_uri_spelled_prompt_and_resource_read_the_files_they_name(env, tmp_path):
+    """``file:///C:/...``, the spelling ``Path.as_uri()`` writes on Windows, is absolute.
+
+    Windows reads the ``/C:/...`` left after the scheme as rooted but drive-less, so a
+    reader that only cuts the scheme off skips such a persona and refuses such a
+    resource as outside its root.
+    """
+
+    def uri(path: Path) -> str:
+        # The RFC 8089 spelling, without the percent-encoding ``as_uri()`` adds.
+        return "file:///" + path.as_posix().lstrip("/")
+
+    notes = env.project / "notes"
+    notes.mkdir()
+    (notes / "persona.md").write_text("URI_PERSONA", encoding="utf-8")
+    (notes / "guide.md").write_text("URI_GUIDE", encoding="utf-8")
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    declared = {"prompt": uri(notes / "persona.md"), "resources": [uri(notes / "guide.md")]}
+    spec.write_text(json.dumps({"name": "writer-template", **declared}), encoding="utf-8")
+
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+
+    assert "URI_PERSONA" in message and "URI_GUIDE" in message
+    outside = tmp_path / "outside.md"
+    outside.write_text("OUTSIDE_SECRET", encoding="utf-8")
+    spec.write_text(
+        json.dumps({"name": "writer-template", "resources": [uri(outside)]}), encoding="utf-8"
+    )
+    with pytest.raises(MemberEssentialContextError, match="outside"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+        )
+
+
+@pytest.mark.parametrize(
+    "is_windows, uri, expected",
+    [
+        (True, "file:///C:/notes/guide.md", True),
+        (True, "file:///c:\\notes\\guide.md", True),
+        (True, "file://C:/notes/guide.md", False),
+        (True, "file:///home/u/guide.md", False),
+        (False, "file:///C:/notes/guide.md", False),
+    ],
+)
+def test_only_windows_reads_a_slash_before_a_drive_as_the_drive_uri_spelling(
+    monkeypatch, is_windows, uri, expected
+):
+    from kiro_crew import file_uri
+
+    monkeypatch.setattr(file_uri, "IS_WINDOWS", is_windows)
+    assert file_uri.is_windows_drive_uri(uri) is expected
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="the POSIX stand-in names a `C:` directory; Windows has its own test"
+)
+def test_the_kiro_launch_record_leaves_out_a_drive_uri_resource(env, monkeypatch):
+    """kiro-cli cuts only the scheme off, so on Windows ``file:///C:/...`` names no file.
+
+    Crew still reads the resource, so leaving it out of the launch record makes
+    Crew send it instead of assuming kiro-cli did. On this POSIX host the Windows
+    reading leaves ``C:/notes/guide.md`` relative, so the file sits under the project.
+    """
+    from kiro_crew import file_uri
+    from kiro_crew import member_essential_context as mec
+
+    monkeypatch.setattr(file_uri, "IS_WINDOWS", True)
+    (env.project / "C:" / "notes").mkdir(parents=True)
+    (env.project / "C:" / "notes" / "guide.md").write_text("DRIVE_GUIDE", encoding="utf-8")
+    (env.project / "notes").mkdir()
+    (env.project / "notes" / "other.md").write_text("PLAIN_GUIDE", encoding="utf-8")
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    resources = ["file:///C:/notes/guide.md", "file://notes/other.md"]
+    spec.write_text(json.dumps({"name": "writer-template", "resources": resources}), "utf-8")
+
+    read = [body for _, body in mec.documents_for_member("writer-template", str(env.project))]
+    launch = [body for _, body in mec.kiro_launch_documents("writer-template", str(env.project))]
+
+    assert "DRIVE_GUIDE" in read and "PLAIN_GUIDE" in read
+    assert "DRIVE_GUIDE" not in launch and "PLAIN_GUIDE" in launch
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the drive spelling is only a drive URI on Windows")
+def test_the_kiro_launch_record_leaves_out_a_real_windows_drive_uri_resource(env):
+    from kiro_crew import member_essential_context as mec
+
+    (env.project / "notes").mkdir()
+    guide = env.project / "notes" / "guide.md"
+    guide.write_text("DRIVE_GUIDE", encoding="utf-8")
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    spec.write_text(
+        json.dumps({"name": "writer-template", "resources": ["file:///" + guide.as_posix()]}),
+        encoding="utf-8",
+    )
+
+    read = [body for _, body in mec.documents_for_member("writer-template", str(env.project))]
+    launch = [body for _, body in mec.kiro_launch_documents("writer-template", str(env.project))]
+
+    assert "DRIVE_GUIDE" in read and "DRIVE_GUIDE" not in launch
+
+
 def test_managed_source_resolves_each_declared_root_once_per_call(tmp_path, monkeypatch):
     from collections import Counter
 
@@ -343,6 +468,118 @@ def test_workspace_overlap_does_not_admit_admin_state(tmp_path, placement):
         mec._refuse_managed_source(admin / "member-rules" / "rule.txt")
 
 
+#: The directory a memory consolidation call runs in: ``memory-consolidation:<store>:<call id>``
+#: with the colons turned into ``_`` (``session_work_dir``), minted under the workspace root.
+_CONSOLIDATION_RUN_DIR = "memory-consolidation_member-writer-" + "a" * 32 + "_" + "b" * 32
+
+
+def _register_workspace(root: Path) -> None:
+    from kiro_crew.config.loader import WorkspaceConfig
+
+    cfg = KiroCrewConfig.load()
+    cfg.workspaces["registered"] = WorkspaceConfig(dir=str(root))
+    cfg.save()
+
+
+def _is_refused(call, *args) -> bool:
+    """Whether ``call(*args)`` refuses as managed state; any other outcome propagates."""
+    try:
+        call(*args)
+    except MemberEssentialContextError as exc:
+        return "managed memory/member state" in str(exc)
+    return False
+
+
+def test_consolidation_run_dir_in_a_registered_workspace_is_not_managed_state(tmp_path):
+    """A member's memory pass runs in a directory the workspace root's own sweep names.
+
+    Its name starts with ``memory``, so the prefix test took it for the store and the
+    pass could not start whenever the workspace root was also a registered workspace.
+    """
+    from kiro_crew import member_essential_context as mec
+
+    workspace = tmp_path / "registered-workspace"
+    _register_workspace(workspace)
+    assert not _is_refused(mec._refuse_managed_source, workspace / _CONSOLIDATION_RUN_DIR)
+    assert not _is_refused(
+        mec._refuse_managed_source, workspace / _CONSOLIDATION_RUN_DIR / "AGENTS.md"
+    )
+
+
+def test_member_launch_for_a_consolidation_run_dir_is_not_refused(tmp_path):
+    """The call the failing pass made: the member's project is its own run directory."""
+    from kiro_crew import member_essential_context as mec
+
+    workspace = tmp_path / "registered-workspace"
+    run_dir = workspace / _CONSOLIDATION_RUN_DIR
+    run_dir.mkdir(parents=True)
+    _register_workspace(workspace)
+    assert not _is_refused(mec.member_inherits_default_resources, str(run_dir))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "memory",
+        "memory.db",
+        "memory_index.db",
+        "memory-consolidation",
+        "memory-consolidation_notes",
+        "memory-consolidation_member-writer_" + "b" * 31,
+        "memory-consolidation_member-writer_" + "b" * 33,
+        "memory-consolidation_" + "b" * 32,
+        "memory-consolidation_member-writer_" + "B" * 32,
+        "Memory-consolidation_member-writer_" + "b" * 32,
+        "memory-consolidation_member-writer_" + "b" * 32 + ".md",
+        "lessons",
+        ".lessons",
+    ],
+)
+def test_other_memory_prefixed_names_stay_managed(tmp_path, name):
+    """Only the exact name the consolidation call mints is let through, nothing near it."""
+    from kiro_crew import member_essential_context as mec
+
+    workspace = tmp_path / "registered-workspace"
+    _register_workspace(workspace)
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        mec._refuse_managed_source(workspace / name / "record.txt")
+
+
+def test_consolidation_run_dir_name_in_an_admin_root_stays_managed():
+    """The allowance is for a workspace entry; the same name inside the data home is not one."""
+    from kiro_crew import member_essential_context as mec
+
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        mec._refuse_managed_source(mec.config_dir() / _CONSOLIDATION_RUN_DIR / "record.txt")
+
+
+@requires_symlinks
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows rejects linked ancestors at the existing path gate"
+)
+def test_run_dir_named_link_to_managed_state_is_still_refused(tmp_path):
+    """The name allowance is not what keeps a link out of the store.
+
+    A link carrying the run directory's exact name and pointing at a member's managed
+    store passes the name test, so the project admission and the no-link read have to
+    refuse it. Pinned so a later change cannot lean on the name test alone.
+    """
+    from kiro_crew import member_essential_context as mec
+
+    workspace = tmp_path / "registered-workspace"
+    workspace.mkdir()
+    _register_workspace(workspace)
+    store = mec.config_dir() / "memory_stores" / "member-writer"
+    store.mkdir(parents=True)
+    (store / "memory.db").write_text("managed", encoding="utf-8")
+    link = workspace / _CONSOLIDATION_RUN_DIR
+    make_dir_link(link, store)
+    with pytest.raises(MemberEssentialContextError):
+        mec._admitted_project_root(str(link))
+    with pytest.raises(MemberEssentialContextError):
+        mec._read(link / "memory.db", workspace)
+
+
 @requires_symlinks
 @pytest.mark.skipif(
     os.name == "nt", reason="Windows rejects linked ancestors at the existing path gate"
@@ -383,7 +620,9 @@ def test_managed_source_never_resolves_unvalidated_candidate(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("pattern", ["*/AGENTS.md", "**/AGENTS.md"])
-@pytest.mark.parametrize("leaf", ["memory", "memory_index", "lessons", ".lessons"])
+@pytest.mark.parametrize(
+    "leaf", ["memory", "memory_index", "lessons", ".lessons", _CONSOLIDATION_RUN_DIR]
+)
 def test_workspace_glob_excludes_managed_subtrees_before_scanning(env, monkeypatch, pattern, leaf):
     from kiro_crew import member_essential_context as essentials
     from kiro_crew.config import config_dir
@@ -415,9 +654,10 @@ def test_workspace_glob_excludes_managed_subtrees_before_scanning(env, monkeypat
     assert "WORKSPACE_CHILD_GUIDE" in message
     assert "MANAGED_CONTENT_MUST_NOT_LOAD" not in message
     assert "You are writer." in message
-    # The prune stays; it names only a prefix collision, never the real store.
+    # The prune stays; it names only a prefix collision, never the real store. A
+    # consolidation run directory is a collision too: the walk skips it as before.
     note_label = "[Essential source: essential-context#managed-skipped:writer-template]"
-    if leaf == "memory_index":
+    if leaf in ("memory_index", _CONSOLIDATION_RUN_DIR):
         assert note_label in message
         assert str(managed) in message
     else:

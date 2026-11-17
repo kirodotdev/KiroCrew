@@ -125,7 +125,7 @@ describe('the badge', () => {
     render(<ToolRiskBadge record={record} />)
     const badge = screen.getByTestId('tool-risk-badge')
     expect(badge).toHaveAttribute('data-tier', 'risky')
-    expect(badge.textContent).toContain('Jev: risky')
+    expect(badge.textContent).toContain('Decision model: risky')
     expect(screen.getByTestId('tool-risk-badge-confidence').textContent).toContain('0.88')
   })
 
@@ -186,14 +186,14 @@ describe('the badge', () => {
 
   it('carries each thumb’s meaning as a tooltip too, since the button renders no text', () => {
     render(<ToolRiskBadge record={record} />)
-    expect(screen.getByTestId('tool-risk-badge-right-jev')).toHaveAttribute('title', 'Jev read the risk right')
-    expect(screen.getByTestId('tool-risk-badge-wrong-jev')).toHaveAttribute('title', 'Jev read the risk wrong')
+    expect(screen.getByTestId('tool-risk-badge-right-jev')).toHaveAttribute('title', 'The decision model read the risk right')
+    expect(screen.getByTestId('tool-risk-badge-wrong-jev')).toHaveAttribute('title', 'The decision model read the risk wrong')
   })
 
-  it('says in visible text that a vote is feedback only, without repeating Jev', () => {
+  it('says in visible text that a vote is feedback only, without repeating the decision model', () => {
     render(<ToolRiskBadge record={record} />)
     expect(screen.getByTestId('tool-risk-badge-rate-label-jev').textContent).toBe('Feedback only')
-    expect(screen.getByTestId('tool-risk-badge').textContent!.split('Jev')).toHaveLength(2)
+    expect(screen.getByTestId('tool-risk-badge').textContent!.split('Decision model')).toHaveLength(2)
   })
 
   it('surfaces a refused verdict beside the thumbs rather than silently reverting', async () => {

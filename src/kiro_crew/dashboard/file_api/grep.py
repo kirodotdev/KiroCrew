@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import threading
 import time
-import zipfile
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
@@ -44,6 +43,7 @@ if TYPE_CHECKING:
         PdfExtraction,
         ZipInventoryRejected,
         _DocSegments,
+        _is_live_memory_store_file,
         _PathProbeBusy,
         _probe_busy_response,
         _run_path_probe,
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         platform_compat,
         popen_limited,
         read_bounded_json,
+        read_workbook_rows,
         redact,
         redact_log_via_context,
         redact_path_segments,
@@ -64,7 +65,6 @@ if TYPE_CHECKING:
         safe_read_prefix,
         sandbox_credential_targets,
         validate_provider_executable,
-        vet_zip_inventory_bytes,
         wrap_argv,
     )
 
@@ -478,6 +478,11 @@ def _grep_python(root: str, query: str, deadline: float) -> tuple[list[dict], bo
                 continue
             if is_sensitive_path(full):
                 continue
+            # Never opened here: closing this process's descriptor would drop the
+            # memory store's locks on it. It is binary, so ripgrep (a child process,
+            # whose close cannot touch them) reports nothing from it either.
+            if _is_live_memory_store_file(full):
+                continue
             try:
                 raw = safe_read_prefix(full, _GREP_MAX_FILE_BYTES + 1)
             except (OSError, FileTooLargeError):
@@ -497,74 +502,39 @@ def _grep_python(root: str, query: str, deadline: float) -> tuple[list[dict], bo
 
 
 def _grep_xlsx_segments(data: bytes, path: str, deadline: float) -> _DocSegments:
-    """One workbook as ``("Sheet1 · row 12", row text)`` segments.
+    """One workbook as ``("Sheet1 · row 12", row text)`` segments, cells joined by tabs.
 
-    Two gates run BEFORE openpyxl sees the bytes, because it opens the container
-    itself: the shared inventory vet bounds the declared member count, and the
-    ``infolist()`` sum bounds expansion, which the first does not. Both are the
-    sheet endpoint's own ceilings, not a second spelling of them. Neither bounds
-    TIME, and the character cap cannot see an EMPTY row, so the row loop also
-    watches the deadline: a workbook of millions of empty rows is one small
-    member that yields no text.
+    The walk is :func:`kiro_crew.workbook_rows.read_workbook_rows`, the one the
+    Knowledge Library reads workbooks with: it vets the archive against the sheet
+    endpoint's own ceilings before openpyxl sees the bytes, builds each row inside
+    ``_GREP_DOC_MAX_CHARS`` and watches the deadline, which the character cap
+    cannot see on a workbook of millions of empty rows. A refused or unreadable
+    workbook is a settled answer, not a short read. Rows read before a mid-read
+    failure are real and kept, and the answer says it is short. Each sheet title
+    is redacted whole before the walk bounds it for the row labels, because a
+    token cut short matches no pattern and ``_grep_hit`` would pass the cut piece.
     """
+    from kiro_crew.security import redact as redact_composed
+
     try:
-        vet_zip_inventory_bytes(data, max_members=_SHEET_MAX_MEMBERS)
-    except ZipInventoryRejected:
-        return (), True  # refused by policy: a settled answer, not a short read
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as probe:
-            if sum(i.file_size for i in probe.infolist()) > _SHEET_MAX_EXPANDED_BYTES:
-                logger.warning("file_grep: workbook %s expands too large; skipped", path)
-                return (), True
-    except (OSError, zipfile.BadZipFile):
-        return (), True
-    # Imported only past both ceilings: ~100ms of parser setup that a refusal
-    # should not pay for.
-    try:
-        import openpyxl
-    except ImportError:
-        return (), True
-    try:
-        book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        walk = read_workbook_rows(
+            io.BytesIO(data),
+            deadline=deadline,
+            max_chars=_GREP_DOC_MAX_CHARS,
+            separator="\t",
+            stride=_GREP_ROW_DEADLINE_STRIDE,
+            scrub_title=redact_composed,
+            max_members=_SHEET_MAX_MEMBERS,
+            max_expanded_bytes=_SHEET_MAX_EXPANDED_BYTES,
+        )
+    except (ZipInventoryRejected, ImportError):
+        return (), True  # refused by policy, or no reader installed
     except Exception:
         logger.warning("file_grep: cannot read workbook %s", path, exc_info=True)
         return (), True
-    segments: list[tuple[str, str]] = []
-    budget = _GREP_DOC_MAX_CHARS
-    whole = True
-    try:
-        for sheet in book.worksheets:
-            for index, row in enumerate(sheet.iter_rows(values_only=True), 1):
-                if index % _GREP_ROW_DEADLINE_STRIDE == 0 and time.monotonic() >= deadline:
-                    return tuple(segments), False
-                # The row is assembled INSIDE the remaining budget, never joined
-                # first and capped after: openpyxl hands back the same shared
-                # string for every cell that references it, so a wide row is N
-                # references until a join makes it N copies -- and the expansion
-                # gate counts the string once, as one zip member.
-                cells: list[str] = []
-                for cell in row:
-                    if cell is None:
-                        continue
-                    piece = str(cell)
-                    if len(piece) >= budget:
-                        cells.append(piece[:budget])
-                        budget = 0
-                        break
-                    cells.append(piece)
-                    budget -= len(piece) + 1  # the tab that joins it
-                if not cells:
-                    continue
-                segments.append((f"{sheet.title} · row {index}", "\t".join(cells)))
-                if budget <= 0:
-                    return tuple(segments), False  # a match past the cap is hidden
-    except Exception:
-        # The rows already collected are real, but the reader did not see the rest.
-        logger.warning("file_grep: workbook %s failed mid-read", path, exc_info=True)
-        whole = False
-    finally:
-        book.close()
-    return tuple(segments), whole
+    if walk.failure is not None:
+        logger.warning("file_grep: workbook %s failed mid-read", path, exc_info=walk.failure)
+    return tuple(walk.rows), not walk.cut and walk.failure is None
 
 
 def _grep_pdf_segments(data: bytes, path: str, deadline: float) -> PdfExtraction:

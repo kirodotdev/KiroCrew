@@ -14,8 +14,10 @@ from typing import Any
 import pytest
 from discord_helpers import _drop_live_config_snapshot  # noqa: F401
 from discord_helpers import FakeClient
+from redaction_structured_cases import github_classic
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.discord import renderer as discord_renderer
 from kiro_crew.discord.client import DISCORD_MAX_TEXT
 from kiro_crew.discord.renderer import (
@@ -29,6 +31,10 @@ from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.messaging.display_safety import canonicalize_display, severs_a_credential
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
+
+#: A synthetic GitHub token with a valid checksum: the plan redacts it whole, and
+#: neither half alone reads as a credential.
+_GH = github_classic(seed=64)
 
 # ── renderer.py streaming/finalization ───────────────────────────────────
 
@@ -308,8 +314,8 @@ class TestRenderer:
         monkeypatch.setattr(r, "_limit", lambda: 60)
         await r.on_turn_start()
         # Blank code lines straddling the rotation cut, with more code AFTER
-        # them. The all-newline-tail case is already pinned above; this is the
-        # one the round-2 remainder deleted -- the cut lands on the run, the
+        # them. The all-newline-tail case is already pinned above; here the
+        # cut lands on the run, the
         # sealed side keeps the code, and the blank lines belong to the tail.
         await r.on_text_chunk("```py\n" + "x = 1\n" * 6 + "\n\n" + "y = 2\n" * 6)
         sealed = cli.sent[0][0]
@@ -525,9 +531,9 @@ class TestApprovalDecider:
         decider = DiscordApprovalDecider(session_key="sk")
         ev = SimpleNamespace(request_id="r1")
         key = DiscordApprovalDecider.key("sk", "r1")
+        nonce = DiscordApprovalDecider.register_nonce(key)
         task = asyncio.ensure_future(decider(ev))
         await _registered(task, key)
-        nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce)
         assert await await_until(task, what="the decider returning the approval") is True
 
@@ -538,9 +544,9 @@ class TestApprovalDecider:
         decider = DiscordApprovalDecider(session_key="sk")
         ev = SimpleNamespace(request_id="r1")
         key = DiscordApprovalDecider.key("sk", "r1")
+        DiscordApprovalDecider.register_nonce(key)  # current prompt's nonce
         task = asyncio.ensure_future(decider(ev))
         await _registered(task, key)
-        DiscordApprovalDecider.register_nonce(key)  # current prompt's nonce
         # Press carries an OLD nonce (from a prompt before a restart).
         assert not DiscordApprovalDecider.resolve_global(key, True, nonce="deadbeefdeadbeef")
         assert not task.done()  # still pending — stale press had no effect
@@ -577,8 +583,31 @@ class TestApprovalDecider:
 
         decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
         ev = SimpleNamespace(request_id="r-timeout")
+        DiscordApprovalDecider.register_nonce(
+            DiscordApprovalDecider.key("discord:a:direct:7", "r-timeout")
+        )
         assert await finished(decider(ev), "the approval window expiring") is False
 
+        assert recorded == ["discord:a:direct:7"], "the stall was not recorded"
+
+    @pytest.mark.asyncio
+    async def test_an_undelivered_prompt_records_the_stall_too(self, monkeypatch) -> None:
+        """A muted conversation's prompt is never posted, so nobody can press:
+        a loop bound to it is held at once, as an expiry would hold it."""
+        from kiro_crew import autonudge as _an
+
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            _an,
+            "get_instance",
+            lambda: SimpleNamespace(notify_approval_stalled=recorded.append),
+        )
+
+        decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
+        ev = SimpleNamespace(request_id="r-muted")
+        assert await finished(decider(ev), "the unreserved request being denied") is False
+
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
         assert recorded == ["discord:a:direct:7"], "the stall was not recorded"
 
     @pytest.mark.asyncio
@@ -600,9 +629,9 @@ class TestApprovalDecider:
         decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
         ev = SimpleNamespace(request_id="r-deny")
         key = DiscordApprovalDecider.key("discord:a:direct:7", "r-deny")
+        nonce = DiscordApprovalDecider.register_nonce(key)
         task = asyncio.ensure_future(decider(ev))
         await _registered(task, key)
-        nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, False, nonce=nonce)
 
         assert await await_until(task, what="the decider returning the denial") is False
@@ -781,8 +810,9 @@ class TestWindowStillFailsClosed:
         """Re-arming keeps the future the waiter is blocked on."""
         decider = DiscordApprovalDecider(session_key="sk")
         key = DiscordApprovalDecider.key("sk", "r7")
+        DiscordApprovalDecider.register_nonce(key)
         task = asyncio.ensure_future(decider(SimpleNamespace(request_id="r7")))
-        await _registered(task, key)
+        await asyncio.sleep(0)  # the waiter adopts the first arm's future
         nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce) is True
         assert await await_until(task, what="the decider returning the approval") is True
@@ -1043,8 +1073,12 @@ class TestRotationSeamCredentialSafety:
     _LIMIT = 200
 
     def _straddling_source(self, head: str, tail: str) -> str:
-        """One long word whose character at offset ``_LIMIT`` splits *head*/*tail*."""
-        return "a" * (self._LIMIT - len(head)) + head + tail + "b" * self._LIMIT
+        """One long word whose character at offset ``_LIMIT`` splits *head*/*tail*.
+
+        A comma on each side gives the credential a word boundary without giving
+        the splitter a space to prefer.
+        """
+        return "a" * (self._LIMIT - len(head) - 1) + "," + head + tail + "," + "b" * self._LIMIT
 
     async def _screen(self, monkeypatch: pytest.MonkeyPatch, src: str) -> list[str]:
         """Every frame the reader ends up with, rotation then final seal."""
@@ -1085,37 +1119,6 @@ class TestRotationSeamCredentialSafety:
             assert _redact_all(reading) == reading, f"key readable across frames: {frames}"
 
     @pytest.mark.asyncio
-    async def test_a_held_image_ref_cannot_be_re_delivered_as_the_rejected_pair(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The offset search grades the source; the rotation delivers source PLUS held.
-
-        A held image ref leaves the source under budget, so the search returns the whole
-        string and the frames rebuild the pair the gate just rejected. The delivered pair
-        is graded again, and the rotation sends nothing.
-        """
-        limit = 100
-        head = "prose " * 10 + "SecretAccessKey="
-        held = "![my-secret-value](/tmp/kc-13494-missing.png)"
-        src = head + held
-        assert len(src) > limit, "fixture does not rotate"
-        assert len(head) <= limit, "fixture does not reach the search's early return"
-        assert _redact_all(head) == head and _redact_all(held) == held, "fixture leaks alone"
-        assert severs_a_credential(
-            [head, held], _redact_all, _delivered_form
-        ), "fixture is not a straddle, so the rotation never consults the search"
-
-        r, cli = self._renderer(monkeypatch, limit)
-        r._buf = [src]
-        await r._rotate_on_length()
-
-        assert cli.sent == [], "the rotation delivered the pair the gate rejected"
-        assert "".join(r._buf) == src, "withheld text must ride the next rotation intact"
-
-        await r._seal_current(extract_uploads=False)
-        self._assert_no_key_on_screen([_delivered_form(t) for t, _ in cli.sent])
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(("head", "tail"), CREDENTIAL_STRADDLE_SHAPES)
     async def test_a_straddled_credential_never_reaches_two_frames(
         self, monkeypatch: pytest.MonkeyPatch, head: str, tail: str
@@ -1149,7 +1152,7 @@ class TestRotationSeamCredentialSafety:
         seal then redacts that buffer as one string -- where the key is intact and
         matches, so it is replaced rather than shown.
         """
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = _GH[:8], _GH[8:]
         src = self._straddling_source(head, tail)
         monkeypatch.setattr("kiro_crew.discord.renderer.safe_split_offset", lambda *a, **k: 0)
         r, cli = self._renderer(monkeypatch, self._LIMIT)
@@ -1172,11 +1175,14 @@ class TestRotationSeamCredentialSafety:
         Sealed frames are not size-checked: a redaction tag is longer than the key it
         replaces, so a frame can exceed the budget.
         """
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = _GH[:8], _GH[8:]
         # One unbroken word, so the splitter cuts hard at the budget and the first
         # cut lands inside the credential. Several budgets wide, so a single graded
-        # offset would leave a remainder many times the budget.
-        src = "a" * (self._LIMIT - len(head)) + head + tail + "b" * (self._LIMIT * 6)
+        # offset would leave a remainder many times the budget. Commas give the
+        # credential its word boundary.
+        src = (
+            "a" * (self._LIMIT - len(head) - 1) + "," + head + tail + "," + "b" * (self._LIMIT * 6)
+        )
         assert severs_a_credential(
             await asyncio.to_thread(split_markdown_safe, src, self._LIMIT),
             _redact_all,
@@ -1275,8 +1281,9 @@ class TestRotationSeamCredentialSafety:
         cut lands inside the credential.
         """
         # Narrow the screen to the plain reading. The key hides in the link target,
-        # broken by a run of ``*``, so neither whole-text reading sees it; only the
-        # seal's split grading catches it.
+        # broken by line breaks and a run of blanks, so neither whole-text reading
+        # sees it; a cut there leaves two frames Discord shows trimmed and flush,
+        # so only the seal's split grading catches it.
         from kiro_crew.messaging import display_safety
         from kiro_crew.messaging import split as messaging_split
 
@@ -1289,9 +1296,10 @@ class TestRotationSeamCredentialSafety:
         )
         src = (
             "a" * (DISCORD_MAX_TEXT - 100)
-            + "[l](https://x/AKIA"
-            + "*" * 300
-            + "IOSFODNN7EXAMPLE)"
+            + f"[l](https://x/{_GH[:4]}"
+            + "\n" * 3
+            + " " * 300
+            + f"{_GH[4:]})"
             + "b" * 400
         )
         assert len(src) > DISCORD_MAX_TEXT, "fixture does not reach the platform cap"

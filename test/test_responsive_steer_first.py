@@ -213,6 +213,7 @@ async def test_closing_slot_drops_its_grace_timer(env, clock):
         ("native_permission", "waiting_for_input"),
         ("stop", "stopping"),
         ("compaction", "compacting"),
+        ("compact_command", "compacting"),
         ("no_steer_backend", "cancel_requested"),
         ("idle", "queued"),
     ],
@@ -233,6 +234,8 @@ async def test_non_steerable_states_keep_queue_behaviour(
         slot._stop_state = "soft_pending"
     elif condition == "compaction":
         state.sessions.is_compacting = lambda key: True
+    elif condition == "compact_command":
+        slot._compact_command_turn = True
     elif condition == "no_steer_backend":
         slot._acp_client.supports_steer = False
     else:

@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers.messaging import (
 from kiro_crew.dashboard.notification_coordinator import native_notification_tag, unread_count
 from kiro_crew.dashboard.state import DashboardState, _load_notifications
 from kiro_crew.notifications.bus import NotificationPayload, NotificationValidationError
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 
@@ -152,12 +153,17 @@ class TestKeyValidation:
         with pytest.raises(NotificationValidationError, match="key"):
             _agent_payload("t", key=key).validate()  # type: ignore[arg-type]
 
-    def test_meta_cannot_set_a_key_or_mark_a_note_quiet(self, monkeypatch, tmp_path):
+    def test_meta_cannot_set_a_key_or_mark_a_note_quiet_or_replaced(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
-        state.notify("cron", "t", "b", meta={"key": "forged", "quiet": True, "job_id": "j1"})
+        state.notify(
+            "cron",
+            "t",
+            "b",
+            meta={"key": "forged", "quiet": True, "replaced": True, "job_id": "j1"},
+        )
         note = state._notification_log[-1]
         assert note["job_id"] == "j1"
-        assert "key" not in note and "quiet" not in note
+        assert "key" not in note and "quiet" not in note and "replaced" not in note
 
 
 class TestReplacement:
@@ -306,6 +312,30 @@ class TestReplacement:
         assert "quiet" not in first_note
         second_note = await _push(state, _agent_payload("two", key="k", priority=second))
         assert second_note.get("quiet", False) is quiet
+
+    @pytest.mark.asyncio
+    async def test_only_a_note_that_replaced_one_is_marked_replaced_everywhere(
+        self, monkeypatch, tmp_path
+    ):
+        state = _make_state(monkeypatch, tmp_path)
+        frames: list[dict] = []
+        monkeypatch.setattr(state, "_broadcast", frames.append)
+        await _push(state, _agent_payload("one", key="k"))
+        await _push(state, _agent_payload("plain"))
+        await _push(state, _agent_payload("two", key="k"))
+        assert [(f["title"], f.get("replaced")) for f in frames] == [
+            ("one", None),
+            ("plain", None),
+            ("two", True),
+        ]
+        assert [(n["title"], n.get("replaced")) for n in state._notification_log] == [
+            ("plain", None),
+            ("two", True),
+        ]
+        assert [(n["title"], n.get("replaced")) for n in _load_notifications()] == [
+            ("plain", None),
+            ("two", True),
+        ]
 
     @pytest.mark.asyncio
     async def test_the_replacement_is_unread_even_when_the_replaced_note_was_read(
@@ -498,7 +528,9 @@ class TestReplacement:
 
         assert await await_until(dismissing, what="the keyed dismissal") == (True, True)
         assert await await_until(deleting, what="the concurrent deletion") is True
-        assert frames == [("notification_dismiss", {"ts": keyed["ts"]})]
+        # The dismissal still withdraws the note it was writing out, and the deletion
+        # withdraws it too: both name the same note, and a view drops it once.
+        assert frames == [("notification_dismiss", {"ts": keyed["ts"]})] * 2
         assert _titles(state) == _stored_titles() == ["unkeyed"]
 
     @pytest.mark.asyncio
@@ -1184,7 +1216,7 @@ class TestAgentRoutes:
     )
     async def test_a_key_that_redaction_would_rewrite_is_a_400(self, monkeypatch, tmp_path, route):
         state = _make_state(monkeypatch, tmp_path)
-        secret_like = "ghp_" + "a" * 36
+        secret_like = github_classic(seed=101)
         async with TestClient(TestServer(self._app(state))) as client:
             resp = await client.post(route, json={"title": "t", "key": secret_like})
             assert resp.status == 400

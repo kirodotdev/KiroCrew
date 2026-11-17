@@ -91,8 +91,11 @@ hatches exist for mirrored or airgapped installs:
 - `KIROCREW_EMBED_MODEL_PATH` (or `memory.embed_model_path`) runs a local GGUF
   of your own instead. In that mode the default model is never downloaded.
 
-`memory.embedding_provider` accepts only `llama_cpp`; any other value in an old
-config is coerced to it on load.
+`memory.embedding_provider` accepts `llama_cpp` (the default, in-process) and
+`ollama_http`, which sends memory and knowledge text to the Ollama server at
+`memory.ollama_url` (set `memory.ollama_model` and `memory.embedding_dim` to
+match its model). Any other value in an old config, `ollama` and `none`
+included, is coerced to `llama_cpp` on load.
 
 Global V1 retains its existing session-start memory retrieval. Crew Member V2
 injects current persona, permanent rules and admitted project guides every turn;
@@ -170,7 +173,13 @@ Once the wheel is in, the installer runs the new `kirocrew kas install` to
 download the [built-in KAS engine](#first-run) this release pins (about 55-70 MB
 for your platform). If that download fails, for example on a host with no
 access to the CDN, the install still succeeds and the installer prints the
-command to retry. Pass `--no-kas` (or set `KIROCREW_INSTALL_KAS=0`) to skip it:
+command to retry. On a host that cannot run the engine at all (no build for its
+platform, or a glibc older than the engine needs), Kiro Crew stays installed and
+the installer says why a chat on the default agent cannot start there in place
+of its next steps. A first install then exits 3; a re-run over an existing
+install, which is what `kirocrew update` does, exits 0. Pass `--no-kas` (or set
+`KIROCREW_INSTALL_KAS=0`) to skip the engine, for example on a host whose agent
+does not use it:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
@@ -201,9 +210,8 @@ installed by the installer. Every release from `0.1.2` onward can be pinned.
 **These two releases will not be backfilled.** Signing an already-published
 digest today would create a fresh attestation for bytes that no signing
 pipeline produced, which asserts a provenance the project cannot re-establish
-after the fact. [SECURITY.md](../../SECURITY.md) already limits active support
-to the latest release, so the trust surface would widen for two releases that
-are several minor versions behind current `stable` and are supported by nobody.
+after the fact. Backfilling would also widen the trust surface for two releases
+that are several minor versions behind current `stable`.
 Their artifacts stay published and their `SHA256SUMS` stays fetchable for
 archival inspection, but the installer has no checksum-only path, so it will
 not install them.
@@ -222,6 +230,14 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
+Before it downloads anything, the installer checks free space. It stops, naming
+the directory, when the disk beside the data home (where the managed venv and
+Python go) has less than about 500 MB free or the temp directory has less than
+about 100 MB (set `TMPDIR` to use another). A step that still runs out of space
+says so in plain words, and a failed first install removes the managed venv it
+started. The Python it downloaded to `~/.kiro/crew-python` stays, so a re-run
+does not fetch it again.
+
 Updates to a managed venv (`kirocrew update`, an approved in-app update, and the
 gateway's automatic update) build each new version as its own tree beside it,
 `crew-venv-<version>` (about 350 MiB with its dependencies), and switch the
@@ -236,9 +252,13 @@ finds one running (an active `kirocrew` systemd unit, the
 the data home's `gateway.lock`), it ends with a warning that names the restart
 command for that setup, such as `systemctl --user restart kirocrew`. Run it
 straight away. On a host that restricts unprivileged user
-namespaces and uses the `kirocrew-userns` AppArmor profile, run
-`kirocrew service install` again after every update so the profile follows the
-new launcher; the gateway's automatic update waits for you instead of applying
+namespaces and uses the `kirocrew-userns` AppArmor profile, the profile is
+attached to the launcher of every `crew-venv-<version>` tree, so it keeps
+applying after an update. A profile attached to one tree's exact path (one an
+earlier Kiro Crew wrote, or one written where the directory holding the install
+is not owned by the service's account alone) does not: run
+`kirocrew service install` again after the update so the profile follows the
+new launcher. The gateway's automatic update waits for you instead of applying
 there, and `kirocrew doctor` reports the attachment under Sandbox.
 
 The installer provisions its own Python by default instead of depending on the
@@ -247,7 +267,8 @@ binary (an installed `uv` on `PATH` is deliberately never executed -- `PATH`
 commonly leads with agent-writable directories), then installs a
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
 CPython 3.12 into a user-owned directory beside the data home
-(`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`). No package
+(`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`), with no
+`python3.12` link added to `~/.local/bin` (`uv python install --no-bin`). No package
 manager, no sudo, and the prebuilt interpreter runs on old-glibc distros
 (CentOS 7) whose base repos never reach 3.10. Pass `--system-python` (or set
 `KIROCREW_MANAGED_PYTHON=0`) to run on a system Python 3.12+ instead — the
@@ -266,7 +287,11 @@ interpreter cannot be downloaded and a usable system Python 3.12+ exists, the
 run falls back to it with a warning (and retries the managed default next
 time); air-gapped hosts can point `KIROCREW_UV_URL` at a mirror of the uv
 release tree and `UV_PYTHON_INSTALL_MIRROR` at a mirror of the interpreter
-archives — the pinned SHA-256 digests are enforced either way. The signed
+archives — the pinned SHA-256 digests are enforced either way. Behind a
+TLS-intercepting proxy, uv's own bundled certificate roots refuse the
+interpreter download (`UnknownIssuer`) even when the system trusts the proxy's
+CA, so the installer retries that download once on the system certificate store
+(`UV_NATIVE_TLS=1`); a `UV_NATIVE_TLS` you set yourself is left as it is. The signed
 installer never pipes an unsigned third-party script into a shell: uv is
 fetched as a tarball and verified against pinned digests, exactly like the
 wheel itself. On a terminal the wheel download draws curl's progress bar and
@@ -321,9 +346,11 @@ checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
 when `origin` has none of them. After the reset the update rebuilds the
 dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
-`logs/frontend-build.log` in the data home. If the build fails, the update still
-installs the new revision's dependencies, then stops before restarting, names
-that file, and the gateway keeps running its current version: a restart would
+`logs/frontend-build.log` in the data home; on Windows no log is written, so
+that output is not kept. If the build fails, the update still installs the new
+revision's dependencies, then stops before restarting, names that file (or, with
+no log, says so: run `npm ci` and `npm run build` in `website/` to see the
+output), and the gateway keeps running its current version: a restart would
 pair the new backend with the previous dashboard bundle. The checkout already
 holds the new revision, so a second update reports it up to date: fix the cause
 the log names, then run the frontend and stage steps below before restarting. A clone with no `website/` or no `npm` skips the build and keeps its
@@ -489,15 +516,15 @@ command installed on `PATH`.
 
 Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
 cannot resolve — install an extra's own distributions into the environment that
-runs the gateway instead (e.g. `pip install 'boto3>=1.34,<2'
-'amazon-transcribe>=0.6.3,<1' 'pywhispercpp>=1.5,<2'` for `voice`). The dashboard
+runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
+"amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
 prints the exact command, already pointed at the right interpreter.
 
 | Extra | Adds | For |
 |-------|------|-----|
 | `voice-aws` | `boto3`, `amazon-transcribe` | AWS Transcribe provider without the local recognizer |
 | `voice` | `voice-aws`, `pywhispercpp` | Full speech-to-text transcription |
-| `otlp` | `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP metrics export. Installing it does not enable egress; that still needs an explicit `telemetry.otlp_endpoint` |
+| `otlp` | `opentelemetry-exporter-otlp-proto-http` | Kept for compatibility: the OTLP/HTTP exporter is now a base dependency at the same pin. Installing it enables no egress of its own; the built-in Kiro telemetry destination and your own collectors follow the rules in [the OTLP export guide](telemetry-otlp-export.md) |
 | `perf` | `py-spy` | Out-of-process profiling (`kirocrew perf sample --pid`). The in-process sampler needs nothing extra |
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |
 | `whatsapp` | `neonize` | QR-linked WhatsApp channel |
@@ -629,7 +656,7 @@ Linux, `.\make.ps1 <target>` on Windows.
 | `make backend` | Backend only: `.venv` + editable install with the `dev` extra |
 | `make wheel` | Self-contained pip wheel with the dashboard bundled, into `dist/` |
 | `make backend-bin` | Frozen standalone backend binary (host arch only) |
-| `make desktop` | Full desktop app: DMG on macOS, AppImage on Linux, NSIS installer on Windows |
+| `make desktop` | Full desktop app: DMG on macOS, AppImage plus `.deb` and `.rpm` on Linux, NSIS installer on Windows |
 | `make test` | Build, then run the `pytest` suite |
 | `make clean` | Remove build artifacts, dists, and caches |
 
@@ -656,6 +683,9 @@ After any install, the desktop app included, install Kiro CLI from
 ```bash
 kiro-cli login
 ```
+
+On Linux the Kiro CLI installer needs `unzip`; the one-line install (`cli.sh`)
+says so before its next steps when the host has neither `unzip` nor `kiro-cli`.
 
 The desktop app does not carry its own kiro-cli: it detects the one you
 installed, and the **Set up Kiro** page shows the install and sign-in commands
@@ -770,7 +800,7 @@ it. Details: [browser module spec](../system-specs/modules/browser.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases) |
+| `KIROCREW_HOME` | `~/.kiro/crew` | Data directory (config, credentials, databases). Some folders stay under `~/.kiro` whatever it is set to (see [Folders beside the data home](#folders-beside-the-data-home)) |
 | `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
@@ -876,7 +906,11 @@ When another gateway already serves the same data home, the unit exits 78 and
 goes `failed` once instead of restarting, because the unit's
 `RestartPreventExitStatus=` names that code. A unit file without that directive
 keeps relaunching against the refusal; re-run `kirocrew service install` to
-rewrite it. See [Service Management](../system-specs/modules/cli.md#service-management)
+rewrite it. A unit installed before v0.10.0 on systemd 219 (Amazon Linux 2,
+RHEL 7) has the same fix: its restart cap sits where 219 does not read it, so a
+gateway that fails at boot restarts without end. `kirocrew service status` and
+`kirocrew doctor` name either one. See
+[Service Management](../system-specs/modules/cli.md#service-management)
 in the CLI spec for the details.
 
 ### SELinux-enforcing hosts with kirocrew under `$HOME`
@@ -1055,10 +1089,15 @@ kirocrew service install
 
 Where, and only where, this mechanism is the one in play, the installer also
 writes `/etc/apparmor.d/kirocrew-userns` and loads it. The profile grants
-exactly one permission (`userns`) and is **attached** to the resolved kirocrew
-launcher script (the same absolute path `service install` uses as `ExecStart`,
-typically something like `~/.kiro/crew-venv/bin/kirocrew`) — the same approach
-stock Ubuntu already uses for `chrome` and `brave`. The unit carries no
+exactly one permission (`userns`) and is **attached** to the kirocrew launcher
+script the unit's `ExecStart` resolves to, the same approach stock Ubuntu
+already uses for `chrome` and `brave`. For the managed install the attachment
+is `~/.kiro/crew-venv-*/bin/kirocrew`: an update installs each version as its
+own `crew-venv-<version>` tree, and the `*`, which never matches a `/`, covers
+each tree's launcher, so the profile keeps applying after an update. That form
+is used only when the directory holding those trees is owned by the service's
+account and writable by no other; anywhere else the profile is attached to the
+one resolved launcher path. The unit carries no
 `AppArmorProfile=` directive: that directive labels only the unit's own
 top-level process, and the gateway's sandbox probe runs in a child reached
 through a fork the directive's labelling never reaches.
@@ -1068,6 +1107,10 @@ it costs no additional privilege, and it **cannot fail your install**: if the
 profile cannot be written, loaded, or verified, you get a warning and the
 install continues. `kirocrew service uninstall` unloads and removes it, so a
 host is left as it was found rather than carrying an orphaned userns permission.
+
+The one-line installer (`cli.sh`) reads the same sysctl. When it is `1` and
+`/etc/apparmor.d/kirocrew-userns` is not there, the installer says, before its
+next steps, that agents cannot run until this command installs the profile.
 
 The installer skips the profile silently, with a reason it can print, when
 AppArmor is not an active LSM, when the sysctl is not `1`, when
@@ -1121,7 +1164,10 @@ that need it (`install`, `apparmor_parser`, `aa-exec`) and prompts you for a
 password when it does; running the whole thing as root would execute application
 code with privilege for no reason.
 
-Then restart the app. To check whether the launch you are looking at is covered:
+Then restart the app. The same restriction is why the AppImage starts the app
+with Chromium's sandbox off (`--no-sandbox`); the app shows a notice with this
+command when it does, and the profile turns both sandboxes back on. To check
+whether the launch you are looking at is covered:
 
 ```bash
 kirocrew sandbox status
@@ -1568,9 +1614,18 @@ the Kiro Crew home, which lives outside the install directory. Each signed Windo
 installer must pass an install, create-sentinel-under-`~/.kiro/crew`,
 uninstall, verify-sentinel smoke test before release. A separate Kiro-family
 uninstaller could remove the parent `~/.kiro/` directory; it must exclude
-`~/.kiro/crew` or prompt explicitly. That release-blocking cross-product
-sign-off is tracked in
-[issue #355](https://github.com/kirodotdev/KiroCrew/issues/355).
+`~/.kiro/crew` or prompt explicitly. Kiro Crew cannot enforce that on another
+product, so it is a documented accepted risk, not a release gate
+(UNINSTALLER-EXCLUDE-CREW in
+[config](../system-specs/modules/config.md#data-home-location)). To keep your
+data home out of reach of such a removal, set `KIROCREW_HOME` to a folder
+outside `~/.kiro/` (Kiro Crew starts a new data home there; it does not move an
+existing one). That does not move your crewmates' agent files in
+`~/.kiro/mates` (see [Folders beside the data home](#folders-beside-the-data-home)),
+so back that folder up separately. To keep your snapshots out of its reach
+too, set `snapshot_dir` in `config.json` to a folder outside `~/.kiro/`: by
+default `kirocrew snapshot` writes into the data home's `snapshots/` folder. A
+snapshot is not a full backup; see [Removing user data](#removing-user-data).
 
 ## Next steps
 

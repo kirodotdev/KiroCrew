@@ -20,8 +20,11 @@ envelope ``[Worker report]``).
 The same flush delivers a moved crewmate's one upgrade notice first
 (:mod:`kiro_crew.mate_upgrade_notice`), and the notice a thread owes once its
 crewmate is set to another agent than the thread runs
-(:func:`offer_rebind_notice`). Per-gateway state lives on the dashboard state
-object, never in module globals.
+(:func:`offer_rebind_notice`), then the reports, then the refs installed apps sent
+while the thread was busy (:func:`app_wakes`, written by
+:mod:`kiro_crew.dashboard.app_bot_wake`) as one turn with crew-log actor ``app``, so
+app wakes never hold a report back. Per-gateway state lives on
+the dashboard state object, never in module globals.
 """
 
 from __future__ import annotations
@@ -168,21 +171,17 @@ def page_line(slug: str) -> str:
     crewmate writes gets ``worker_report.dashboard_fields`` naming them; a tab still
     on the suggestions page gets ``dashboard_agentic.SUGGESTIONS_LINE``, the turn
     block's build-your-page line. No line with ``agent.crew_panel`` off (no page
-    tools), under the person's lock while the tab shows suggestions (an apply would
-    be refused), or for a page whose every field is folded. TOTAL: a page that
+    tools), or for a page whose every field is folded. TOTAL: a page that
     cannot be read costs the line. Blocking IO.
     """
     if not slug:
         return ""
     try:
         from kiro_crew import dashboard_agentic
-        from kiro_crew.dashboard_templates import instance as template_instance
 
         if not members_mod.crew_panel_enabled():
             return ""
         if dashboard_agentic.tab_shows_suggestions(slug):
-            if template_instance.is_locked(slug):
-                return ""
             return dashboard_agentic.SUGGESTIONS_LINE
         page = dashboard_agentic.page_in_force(slug)
         if page is None:
@@ -211,15 +210,23 @@ def _excerpt(text: str) -> tuple[str, bool]:
 
 
 def report_prompt(
-    reports: list[dict[str, Any]], member: str = "", *, manual: bool | None = None
+    reports: list[dict[str, Any]],
+    member: str = "",
+    *,
+    manual: bool | None = None,
+    worker_spec: dict[str, Any] | None = None,
 ) -> str:
     """The hidden turn that hands crewmate *member* its workers' latest replies.
 
     *manual* is *member*'s Dynamic capabilities preview being off
     (``crewmate_dynamic_capabilities.restricted_for``), which picks the gap line;
     when not given it is read here (a config read), and no crewmate named reads
-    as off. The wake loop reads it off the event loop and passes it in.
+    as off. The wake loop reads it off the event loop and passes it in, and with
+    it *member*'s *worker_spec*, which picks the servers a report names as ones
+    its worker could not use (``mate_capability_catalog.unusable_line``).
     """
+    from kiro_crew.mate_capability_catalog import unusable_line
+
     if manual is None:
         from kiro_crew import crewmate_dynamic_capabilities
 
@@ -249,9 +256,23 @@ def report_prompt(
             missing = missing_capability(text)
             if missing:
                 lines.append(_missing_capability_line(missing, manual))
+        unusable = unusable_line(worker_spec or {}, report.get("unusable") or {})
+        if unusable:
+            lines.append(unusable)
         lines.append("")
     lines.append(_GUIDANCE)
     return "\n".join(lines)
+
+
+def _worker_spec(member: str) -> dict[str, Any]:
+    """*member*'s worker spec, or ``{}`` when it cannot be read. Blocking."""
+    from kiro_crew.mate_capability_catalog import worker_spec
+
+    try:
+        return worker_spec(member)
+    except Exception:  # noqa: BLE001 - an unreadable spec names no server; the report still goes
+        logger.debug("worker report for %s: worker spec unreadable", member, exc_info=True)
+        return {}
 
 
 def _pending(state: Any) -> dict[str, dict[str, dict[str, Any]]]:
@@ -268,6 +289,37 @@ def _tasks(state: Any) -> dict[str, asyncio.Task[Any]]:
         tasks = {}
         state._mate_wake_tasks = tasks
     return tasks
+
+
+def app_wakes(state: Any) -> dict[str, dict[str, list[str]]]:
+    """App wakes waiting on each thread: thread key -> app name -> refs, in arrival order."""
+    wakes = getattr(state, "_mate_app_wakes", None)
+    if not isinstance(wakes, dict):
+        wakes = {}
+        state._mate_app_wakes = wakes
+    return wakes
+
+
+def _take_app_refs(state: Any, key: str, taken: dict[str, list[str]]) -> None:
+    """Remove *taken*'s refs from *key*'s held wakes, keeping any that arrived since."""
+    held = app_wakes(state).get(key)
+    if not held:
+        return
+    for app, refs in taken.items():
+        left = [r for r in held.get(app, []) if r not in refs]
+        if left:
+            held[app] = left
+        else:
+            held.pop(app, None)
+    if not held:
+        app_wakes(state).pop(key, None)
+
+
+def _put_back_app_refs(state: Any, key: str, refs_by_app: dict[str, list[str]]) -> None:
+    """Hold *refs_by_app* on *key* again, ahead of any ref that arrived since."""
+    held = app_wakes(state).setdefault(key, {})
+    for app, refs in refs_by_app.items():
+        held[app] = refs + [r for r in held.get(app, []) if r not in refs]
 
 
 def _notices(state: Any) -> set[str]:
@@ -345,7 +397,11 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if not is_crewmate_thread(slot) or slot.key in _notice_checked(state):
         return False
     _notice_checked(state).add(slot.key)
-    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice_prompt
+    from kiro_crew.mate_upgrade_notice import (
+        claim_kept_notice,
+        claim_notice_prompt,
+        claim_policy_notice,
+    )
 
     binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
     slug = members_mod.slug_from_dm_slot_key(slot.key)
@@ -355,14 +411,38 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if prompt:
         _notices(state).add(slot.key)
         _notice_prompts(state)[slot.key] = prompt
-    else:
-        # Not moved: a crewmate the migration left where it was says why, once.
+    # Owed when a start put back the restrictions an earlier upgrade dropped
+    # (``mate_policy_repair``); delivered after a moved notice still owed, which
+    # it corrects. Else a crewmate the migration left where it was says why, once.
+    kept, held = await asyncio.to_thread(claim_policy_notice, slug, slot.agent)
+    if held:
+        _notify_held(state, slot.agent)
+    if not kept and not prompt:
         kept = await asyncio.to_thread(claim_kept_notice, slug, slot.agent)
-        if not kept:
-            return False
+    if kept:
         _kept_notices(state)[slot.key] = kept
+    elif not prompt:
+        return False
     schedule_flush(state, slot.key)
     return True
+
+
+def _notify_held(state: Any, name: str) -> None:
+    """Put one bell note for Bot *name* whose limits now ask a person, and keep asking."""
+    from urllib.parse import quote
+
+    try:
+        state.notify(
+            "agent",
+            "A Bot now asks before some actions",
+            f"Some limits set for {name} could not be applied as written. It now asks "
+            "you before each action they cover, and it keeps asking. Approve or decline "
+            "each one when it asks.",
+            url=f"/members?member={quote(name, safe='')}",
+            i18n={"id": "bot_limits_held", "params": {"name": name}},
+        )
+    except Exception:  # noqa: BLE001 - the chat notice still carries it
+        logger.warning("held-limits bell note failed for %r", name, exc_info=True)
 
 
 async def offer_upgrade_notices(state: Any) -> None:
@@ -387,8 +467,12 @@ async def _flush(state: Any, key: str) -> None:
     while True:
         slot = state.get_slot(key)
         reports = _pending(state).get(key)
+        apps = app_wakes(state).get(key)
         owed = (
-            key in _notices(state) or key in _kept_notices(state) or key in _rebind_notices(state)
+            key in _notices(state)
+            or key in _kept_notices(state)
+            or key in _rebind_notices(state)
+            or bool(apps)
         )
         if not (reports or owed) or slot is None or not is_crewmate_thread(slot):
             # Nothing to say, or the thread is gone: what is pending stays, and
@@ -417,6 +501,39 @@ async def _flush(state: Any, key: str) -> None:
             dispatch_hidden_turn(state, slot, _rebind_notices(state).pop(key), human_seen=False)
             logger.info("rebind notice started on %s", key)
             continue
+        if _idle(slot) and apps and not reports:
+            # Waiting reports go first (below), so a steady run of app wakes
+            # cannot hold a worker's report back.
+            from kiro_crew.dashboard.app_bot_wake import still_granted, wake_prompt
+
+            # A ref held while the Bot was busy goes only to an app that still holds
+            # `wake` and this Bot now: the grant files are read off the loop.
+            # The read runs on a copy: a wake that arrives meanwhile is added to the
+            # live entry, stays there, and is checked on the next pass.
+            slug = members_mod.slug_from_dm_slot_key(key) or ""
+            snapshot = {app: list(refs) for app, refs in apps.items()}
+            granted = await asyncio.to_thread(still_granted, slug, snapshot)
+            if (
+                state.get_slot(key) is not slot
+                or not is_crewmate_thread(slot)
+                or getattr(slot, "is_closing", False)
+            ):
+                # The same fence as the report turn below: the thread was closed or
+                # replaced during the read, so nothing starts on it and the refs stay.
+                return
+            _take_app_refs(state, key, snapshot)
+            dropped = sorted(set(snapshot) - set(granted))
+            if dropped:
+                logger.info("app wake on %s dropped for %s: no longer granted", key, dropped)
+            if not granted:
+                continue
+            if not _idle(slot):
+                _put_back_app_refs(state, key, granted)
+                continue
+            apps = granted
+            dispatch_hidden_turn(state, slot, wake_prompt(apps), human_seen=False, actor="app")
+            logger.info("app wake started on %s (%s)", key, ", ".join(sorted(apps)))
+            continue
         # The Dashboard line reads the page store: off the loop, before the idle check.
         slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
         page = await asyncio.to_thread(page_line, slug) if slug else ""
@@ -433,7 +550,12 @@ async def _flush(state: Any, key: str) -> None:
             manual = await asyncio.to_thread(
                 crewmate_dynamic_capabilities.restricted_for, slot.agent
             )
-        if (slug or gap) and (
+        # A report naming servers its worker session could not use is matched
+        # against the worker's spec, a file read, so that runs off the loop too.
+        worker_spec = None
+        if reports and any(r.get("unusable") for r in reports.values()):
+            worker_spec = await asyncio.to_thread(_worker_spec, slot.agent)
+        if (slug or gap or worker_spec is not None) and (
             state.get_slot(key) is not slot
             or not is_crewmate_thread(slot)
             or getattr(slot, "is_closing", False)
@@ -441,17 +563,23 @@ async def _flush(state: Any, key: str) -> None:
             # The thread was closed or replaced during the read: no wake on it, and
             # what is pending stays for the thread's next turn end.
             return
-        # A rebind notice is offered from inside the thread's own turn, so its
-        # flush waits for that turn to end; the other notices wait for a later
-        # turn end to schedule them again.
-        if not reports and key not in _rebind_notices(state):
+        # A rebind notice is offered from inside the thread's own turn, and the
+        # turn-end tail schedules app wakes before that turn has released the
+        # slot, so both wait for the turn to end; the other notices wait for a
+        # later turn end to schedule them again.
+        if not reports and not apps and key not in _rebind_notices(state):
             return
         if reports and _idle(slot):
             _pending(state).pop(key, None)
             dispatch_hidden_turn(
                 state,
                 slot,
-                with_page(report_prompt(list(reports.values()), slot.agent, manual=manual), page),
+                with_page(
+                    report_prompt(
+                        list(reports.values()), slot.agent, manual=manual, worker_spec=worker_spec
+                    ),
+                    page,
+                ),
                 human_seen=False,
             )
             logger.info("worker report woke %s (%d worker(s))", key, len(reports))
@@ -492,12 +620,23 @@ def schedule_flush(state: Any, key: str) -> None:
     tasks[key] = task
 
 
-def _record_report(state: Any, thread_key: str, key: str, title: str, reply: str) -> None:
+def _record_report(
+    state: Any,
+    thread_key: str,
+    key: str,
+    title: str,
+    reply: str,
+    mcp_report: dict[str, Any] | None = None,
+) -> None:
     """Hold worker *key*'s latest reply for crewmate thread *thread_key* and schedule the wake.
 
     One entry per worker, replaced and counted by its later turn ends. The reply
-    is held as its excerpt (at most :data:`MAX_REPORT_CHARS`) with a cut flag.
+    is held as its excerpt (at most :data:`MAX_REPORT_CHARS`) with a cut flag, and
+    beside it the servers the worker session's *mcp_report* says it cannot use
+    (``mate_capability_catalog.session_unusable``).
     """
+    from kiro_crew.mate_capability_catalog import session_unusable
+
     reports = _pending(state).setdefault(thread_key, {})
     prior = reports.get(key)
     text, cut = _excerpt(reply)
@@ -507,6 +646,7 @@ def _record_report(state: Any, thread_key: str, key: str, title: str, reply: str
         "reply": text,
         "cut": cut,
         "turns": (prior["turns"] + 1) if prior else 1,
+        "unusable": session_unusable(mcp_report),
     }
     schedule_flush(state, thread_key)
 
@@ -583,10 +723,12 @@ def note_turn_end(
                 slot.key,
                 slot.display_title,
                 reply_text if isinstance(reply_text, str) else "",
+                slot.mcp_report_payload(),
             )
         elif is_crewmate_thread(slot):
             if (
                 _pending(state).get(slot.key)
+                or app_wakes(state).get(slot.key)
                 or slot.key in _notices(state)
                 or slot.key in _kept_notices(state)
                 or slot.key in _rebind_notices(state)

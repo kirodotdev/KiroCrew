@@ -147,6 +147,7 @@ describe('api/apiTransport', () => {
     }
     mod.installApiTransport({
       get: spy('get') as never,
+      getWithSignal: spy('getWithSignal') as never,
       post: spy('post') as never,
       put: spy('put') as never,
       del: spy('del') as never,
@@ -163,12 +164,16 @@ describe('api/apiTransport', () => {
     await expect(mod.apiTransport.patch('/zz-patch', { d: 4 })).resolves.toBe('patch')
     await expect(mod.apiTransport.j(r)).resolves.toBe('j')
     await expect(mod.apiTransport.jNullable(r)).resolves.toBe('jNullable')
+    const signal = new AbortController().signal
+    await expect(mod.apiTransport.getWithSignal('/zz-signal', signal)).resolves.toBe('getWithSignal')
 
-    expect(seen.map(([n]) => n)).toEqual(['get', 'post', 'put', 'del', 'patch', 'j', 'jNullable'])
+    expect(seen.map(([n]) => n)).toEqual(['get', 'post', 'put', 'del', 'patch', 'j', 'jNullable', 'getWithSignal'])
     // The arguments must arrive unchanged — a wrapper that dropped the body
     // would silently turn an edition's PUT into an empty write.
     expect(seen[2][1]).toEqual(['/zz-put', { b: 2 }])
     expect(seen[5][1]).toEqual([r])
+    // The signal is what bounds the read; a wrapper that dropped it would never abort.
+    expect(seen[7][1]).toEqual(['/zz-signal', signal])
   })
 
   it('re-resolves per call, so a later install replaces the earlier one', async () => {

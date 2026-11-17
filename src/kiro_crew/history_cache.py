@@ -138,6 +138,9 @@ class _TranscriptIndexBase(NamedTuple):
     digest: bytes
     row_count: int
     checkpoints: tuple[tuple[int, int], ...]
+    #: Bytes ``[0, clean_end)`` hold no row with a transient role (a record boundary
+    #: at or before ``scanned_end``); ``0`` when nothing is known.
+    clean_end: int = 0
 
 
 _V = TypeVar("_V")

@@ -12,6 +12,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
+        _FILE_BUSY_ERROR,
         _MAX_UPLOAD_BYTES,
         _SHEET_MAX_CDIR_ENTRY_BYTES,
         _SHEET_MAX_CELL_CHARS,
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
         _probe_busy_response,
         _run_path_probe,
         _sel,
+        bounded_read,
         logger,
         redact,
         require_owner_dashboard_request,
@@ -105,7 +107,7 @@ def _load_sheet_payload(f: BinaryIO, *, max_bytes: int) -> dict:
         # concurrent writer (the file can grow between the stat and the read,
         # e.g. an agent still generating the workbook), while reading at most
         # cap+1 bytes bounds memory unconditionally.
-        data = f.read(max_bytes + 1)
+        data = bounded_read(f, max_bytes + 1)
     if len(data) > max_bytes:
         raise _SheetRefusal(413, "file too large", "file_too_large")
     header = data[:4]
@@ -371,6 +373,9 @@ async def api_file_sheet(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "file too large", "code": "file_too_large"}, status=413
             )
+        if code == "file_busy":
+            _log("failure", res)
+            return web.json_response({"error": _FILE_BUSY_ERROR, "code": "file_busy"}, status=503)
         # read_failed: the residual code.
         _log("failure", res)
         return web.json_response({"error": "cannot read file", "code": "read_failed"}, status=500)

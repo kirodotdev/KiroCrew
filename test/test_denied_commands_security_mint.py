@@ -76,7 +76,7 @@ class TestInterpreterArgvLiteralMint:
     @pytest.mark.parametrize(
         "cmd",
         [
-            # the recorded false positive this PR exists to remove -- separated by
+            # the recorded false positive -- separated by
             # `.*`, which the separator class excludes
             f"python3 -c \"import re; re.search(r'.*{_NAME}.*{_TOK}', cmd)\"",
             f"python3 -c \"print('{_NAME}')\"; echo {_TOK}",

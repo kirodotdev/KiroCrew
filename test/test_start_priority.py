@@ -996,19 +996,51 @@ def test_a_slot_action_arms_its_eager_spawn_by_who_asked(request_fields, expecte
     ("path", "function"),
     [
         ("dashboard/ws.py", "_handle_slot_focused"),
-        ("dashboard/chat_api/session_relaunch.py", "reload_slot_session"),
         # An agent's session_create: the caller is a model, no person waits.
         ("dashboard/session_control_parts/session_create.py", "create_session"),
     ],
 )
-def test_the_focus_prefetch_and_reload_arm_background_eager_spawns(path, function):
+def test_the_focus_prefetch_arms_background_eager_spawns(path, function):
     assert _calls_in(path, function, "schedule_eager_spawn"), "the call moved"
     assert _priority_args(path, function, "schedule_eager_spawn") == []
 
 
+def test_the_tab_menu_reload_arms_its_respawn_by_who_asked():
+    """The owner pressed Reload and is about to type: the respawn is a start a
+    person waits on, so a send joining it is not queued behind background work.
+    The shared teardown passes on whatever its caller claimed."""
+    relaunch = "dashboard/chat_api/session_relaunch.py"
+    assert _priority_args(relaunch, "api_chat_slot_reload", "reload_slot_session") == [
+        "owner_start_priority(request)"
+    ]
+    assert _priority_args(relaunch, "reload_slot_session", "schedule_eager_spawn") == [
+        "start_priority"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "function"),
+    [
+        # A session's own session_reload verb: the caller is a model.
+        ("dashboard/session_control_parts/turn_control.py", "reload_target"),
+        # A Bot's worker reloaded onto its updated spec, and a Bot's chats
+        # reloaded onto a new harness: nobody is typing in them.
+        ("dashboard/crewmate_worker_reload.py", "reload_if_idle"),
+        ("dashboard/agent_admin/crew_update.py", "_reload"),
+        # The image repair re-issues the turn itself, which starts the agent.
+        ("dashboard/chat_api/slot_repair.py", "api_chat_slot_repair_images"),
+    ],
+)
+def test_every_other_reload_arms_a_background_respawn(path, function):
+    assert _calls_in(path, function, "reload_slot_session"), "the call moved"
+    assert _priority_args(path, function, "reload_slot_session") == []
+
+
 def test_the_channel_pipeline_starts_the_session_at_the_askers_priority():
-    # Both claims: a monitor wake's non-waiting one and an inbound turn's.
-    assert _priority_args("messaging/dispatch.py", "_run", "get_or_create") == [
+    # Every claim goes through the token-minting acquire: a monitor wake's
+    # non-waiting one, an inbound turn's, and the re-claim after a stale KAS batch.
+    assert _priority_args("messaging/dispatch.py", "_run", "acquire_with_token") == [
+        "asker.start_priority",
         "asker.start_priority",
         "asker.start_priority",
     ]
@@ -1056,7 +1088,8 @@ def test_every_transport_marks_what_it_receives_as_a_persons(transport):
         ("wecom/transport_dispatch.py", "ChannelTurn", 1),
         ("whatsapp/transport_dispatch.py", "ChannelTurn", 1),
         ("discord/transport_dispatch.py", "Asker", 1),
-        ("telegram/dispatch/turn_engine.py", "get_or_create", 1),
+        # The claim and the re-claim, both through the token-minting acquire.
+        ("telegram/dispatch/turn_engine.py", "acquire_with_token", 2),
     ],
 )
 def test_a_channel_dispatcher_starts_a_turn_at_the_inbounds_origin(path, callee, count):

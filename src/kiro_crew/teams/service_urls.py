@@ -299,12 +299,10 @@ class ServiceUrlStore:
             try:
                 await asyncio.to_thread(self._write, payload)
             except Exception:
-                # RE-MARK, because a transient failure must stay retryable. Leaving it
-                # clear ends the retries entirely: ``remember`` only marks the map when
-                # something CHANGES, and a conversation's serviceUrl is stable for its
-                # lifetime -- so after one failed write the common case never marks it
-                # again, nothing ever flushes, and the restart this store exists to
-                # survive loses every proactive destination anyway.
+                # RE-MARK so a transient failure stays retryable. ``remember`` marks
+                # the map only on a CHANGE, and a serviceUrl rarely changes, so a
+                # clear mark after one failed write means nothing flushes again and
+                # a restart loses every proactive destination.
                 #
                 # Setting it True cannot lose a concurrent change: it only asserts
                 # "there is unpersisted state", which is true either way.

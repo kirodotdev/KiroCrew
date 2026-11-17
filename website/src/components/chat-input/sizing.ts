@@ -12,8 +12,8 @@ import { afterSlide, forgetAfterSlide, slideHeld } from '../../utils/panelSlide'
    stacked above the textarea that the drag floor and the transient
    adjustment both count. */
 const INPUT_MIN_H = 44
-const INPUT_DEFAULT_MAX_H = 140
-const INPUT_PREFILL_MAX_H = 320
+export const INPUT_DEFAULT_MAX_H = 140
+export const INPUT_PREFILL_MAX_H = 320
 export const INPUT_DRAG_MIN_H = 93
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'

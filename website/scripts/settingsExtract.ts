@@ -121,6 +121,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'DisplayPanel.tsx': 'display',
   // The Theme page's per-part Experience toggles, mounted by DisplayPanel.
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
+  // Task Runner's switch, mounted by DisplayPanel's View page.
+  'TaskRunnerSetting.tsx': { tab: 'display', params: { sub: 'view' } },
+  // Channels' switch, mounted by DisplayPanel's View page. Drawn only while Channels
+  // is on, so a search offers it only then (`settingEntryOffered`).
+  'ChannelsSetting.tsx': { tab: 'display', params: { sub: 'view' } },
   'BrowserPanel.tsx': 'browser',
   // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
   // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's
@@ -140,14 +145,18 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelTailnet.tsx': 'security',
   'SecurityPanelTrust.tsx': 'security',
   'SecurityPanelRedaction.tsx': 'security',
+  'SecurityPanelSafetySwitches.tsx': 'security',
   'SecurityPanelLayers.tsx': 'security',
   'SecurityPanelGovernance.tsx': 'security',
+  'SecurityPanelBodyFields.tsx': 'security',
   // The review cards for settings files edited outside the dashboard, which
   // SecurityPanel.tsx mounts as its banner. No extractable primitive; mapped so
   // the hand-written `security.config-pending` entry stays anchored to its source.
   'SecurityPanelConfigPending.tsx': 'security',
-  'ConnectionsPanel.tsx': 'connections',
+  'OAuthAppPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
+  // Draws the tab while the Secrets vault redesign preview is off.
+  'SecretsPanelLegacy.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
@@ -193,6 +202,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'WeComPanel.tsx': { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
   'FeishuPanel.tsx': { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   'DeveloperPanel.tsx': 'developer',
+  // Settings > Advanced: its rows are drawn from the gateway's config schema
+  // (components/allSettings), so only the page's manual entry is indexed.
+  'AdvancedPanel.tsx': 'advanced',
   // The Feature Previews cards DeveloperPanel mounts on its Feature Previews
   // page. Indexed on purpose: a control visible on a Settings pane that
   // search cannot find is the coverage gap settingsCoverage.test.ts exists to
@@ -200,13 +212,17 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'FeaturePreviewsSection.tsx': DEVELOPER_PREVIEWS,
   // The URL is offered only while its preview is enabled (settingsSearchCore).
   'SessionEnvironmentsCard.tsx': 'session-environments',
-  // The Crewmates section DeveloperPanel mounts under Feature Previews: the
-  // server-side crewmate switches (reply threads today). Same tab, so a
-  // SettingRef to `dashboard.crewmate_threads` deep-links to the row.
-  'CrewmatesSection.tsx': DEVELOPER_PREVIEWS,
-  // The default agent's opt-in MCP sets, mounted beside the Crewmates section.
+  // The Reply threads row FeaturePreviewsSection mounts in its Crew and bots
+  // group (`dashboard.crewmate_threads`). Same tab, so a SettingRef to that
+  // key deep-links to the row.
+  'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
+  // The per-harness switches under ACP runtime sharing, mounted inside that
+  // preview's row while it is on. Their labels come from a table, so the
+  // extractor skips them as dynamic; the parent preview row is the search hit.
+  'ChatRuntimeSharingHarnessRows.tsx': DEVELOPER_PREVIEWS,
+  // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
-  // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
+  // The Decision models card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
   // reason the section above is: a control on a Settings pane that search cannot
   // find is the coverage gap this map exists to close.
@@ -223,12 +239,22 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // control added to it belongs to the same deep link, and leaving it unmapped
   // would mean the extractor never looks at the file at all.
   'DecisionsPointPanel.tsx': DEVELOPER_PREVIEWS,
+  // The hosted provider's API key, drawn inside that provider's entry of the
+  // decision model picker. Governed like the card it belongs to.
+  'DecisionsHostedKeyField.tsx': DEVELOPER_PREVIEWS,
   'AboutPanel.tsx': 'about',
   // AboutPanel.tsx's owners (the in-app update step-up and request card; a gateway
-  // install's Updates card body). Mapped with it so a control either one gains stays
-  // indexed on the About tab.
+  // install's Updates card body; the desktop app's Restart gateway row; the two
+  // auto-update switches; the upcoming update notice). Mapped
+  // with it so a control any of them gains stays indexed on the About tab.
   'AboutPanelUpdateFlow.tsx': 'about',
   'AboutPanelGatewayUpdate.tsx': 'about',
+  'AboutPanelUpdateSwitches.tsx': 'about',
+  'AboutPanelUpcomingUpdate.tsx': 'about',
+  // The release notes section at the foot of About: its anchor backs the
+  // manual about.release-notes entry.
+  'ReleasesPanel.tsx': 'about',
+  'DesktopGatewayRestartRow.tsx': 'about',
   'SttSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
@@ -251,6 +277,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // It has no extractable primitive; mapped so its hand-written search entry
   // (`agent.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
   'KiroSignInCard.tsx': 'agent',
+  'OrchestratorMemoryToggle.tsx': 'agent',
   // The conductor remote-dispatch card FeaturePreviewsSection mounts: its
   // `work_ledger.remote_dispatch` switch is a Developer-tab row.
   'RemoteDispatchCard.tsx': DEVELOPER_PREVIEWS,
@@ -268,6 +295,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatPanelLinkPatternsEditor.tsx': { tab: 'chat', params: { sub: 'transcript' } },
   // The default-folder picker ChatPanel's Sessions page mounts.
   'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
+  // The per-creator session limit ChatPanel's Sessions page mounts.
+  'SessionsPerCreatorSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
   // The per-app session mutes NotificationsPanel's Sources page mounts. Each row
   // is labelled with the app's own name, a dynamic label the extractor skips;
   // mapped so a static control added to it lands on the Sources deep link.
@@ -366,8 +395,13 @@ function extractStringProp(source: string, propName: string): string | undefined
   // duplicates DEFAULT_PRODUCT_NAME in `src/i18n/index.ts`: importing that
   // module here would drag i18next and every catalog into a build-time
   // script for one constant.
-  if (tMatch) return getEnCatalog()[tMatch[1]]?.replaceAll('{{productName}}', 'Kiro Crew')
+  if (tMatch) return withStockProductName(getEnCatalog()[tMatch[1]])
   return undefined
+}
+
+/** A catalog string with `{{productName}}` resolved to its stock default, for the reason above. */
+function withStockProductName(text: string | undefined): string | undefined {
+  return text?.replaceAll('{{productName}}', 'Kiro Crew')
 }
 
 /** Return the catalog key when a JSX prop is a supported translation call. */
@@ -527,7 +561,10 @@ export function panelRoots(srcDir: string): ExtractRoot[] {
     { dir: path.join(srcDir, 'pages', 'overview'), file: 'PortabilityTab.tsx' },
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KasBundleCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KiroSignInCard.tsx' },
+    { dir: path.join(srcDir, 'pages', 'developer'), file: 'OrchestratorMemoryToggle.tsx' },
     { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
+    // A Connections card's OAuth app part, opened in place on Settings → Connections.
+    { dir: path.join(srcDir, 'pages', 'connections'), file: 'OAuthAppPanel.tsx' },
   ]
 }
 
@@ -616,8 +653,8 @@ export function mergeManualEntries(generated: SettingEntry[], manual: ManualSett
     const { descriptionKey, ...rest } = m
     resolved.push({
       ...rest,
-      label: cat[m.labelKey],
-      ...(descriptionKey ? { description: cat[descriptionKey] } : {}),
+      label: withStockProductName(cat[m.labelKey]) as string,
+      ...(descriptionKey ? { description: withStockProductName(cat[descriptionKey]) } : {}),
     })
   }
   const byId = new Map(resolved.map(m => [m.id, m]))

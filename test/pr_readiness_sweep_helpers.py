@@ -63,6 +63,11 @@ if [ "$1 ${2:-}" = "api graphql" ]; then
 fi
 if [ "$1" = "api" ]; then
   case "${2:-}" in
+    rate_limit)
+      # The core pool's "remaining limit", when a test sets one; otherwise the
+      # read fails and the sweep keeps its MAX_DISPATCH cap alone.
+      if [ -f "$FIXTURES/rate_remaining" ]; then cat "$FIXTURES/rate_remaining"; exit 0; fi
+      exit 1 ;;
     *"/actions/workflows/"*)
       # Active workflow_dispatch runs for pr-readiness.yml; display_title
       # is set by pr-readiness.yml run-name and carries pr+sha.
@@ -312,6 +317,8 @@ class Runner:
             "STATUS_CONTEXT": "PR Readiness",
             "STALE_MINUTES": "15",
             "MAX_DISPATCH": "10",
+            "RATE_RESERVE_PERCENT": "20",
+            "DISPATCH_COST": "25",
         }
 
     def sweep(
@@ -335,6 +342,9 @@ class Runner:
         status_read_fails: bool = False,
         review_at: str | None = None,
         active_wd_runs: list[dict] | None = None,
+        running_checks: int = 0,
+        rate_remaining: int | None = None,
+        rate_limit: int = 15000,
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
 
@@ -356,6 +366,10 @@ class Runner:
         degrades when it cannot classify a pending.
 
         `review_at` is the newest human review submission or dismissal.
+
+        `running_checks` adds that many check-runs that are still in progress,
+        and `rate_remaining` / `rate_limit` are what `/rate_limit` reports for
+        the core pool (``rate_remaining=None``: the read fails).
 
         `active_wd_runs` is a list of dicts each with keys ``id`` (int),
         ``pr`` (str), ``sha`` (str) and ``status`` (``queued`` or
@@ -422,6 +436,14 @@ class Runner:
                 }
             ]
         )
+        runs += [
+            {"status": "in_progress", "conclusion": None, "completed_at": None}
+        ] * running_checks
+        rate = self.fixtures / "rate_remaining"
+        if rate_remaining is None:
+            rate.unlink(missing_ok=True)
+        else:
+            rate.write_text(f"{rate_remaining} {rate_limit}")
         # Slurped shape again: an array of PAGES, each `{"check_runs": [...]}`.
         # `extra_check_page` adds a second page so the pagination fix is exercised
         # rather than assumed -- unslurped, jq would emit one `max` per page.

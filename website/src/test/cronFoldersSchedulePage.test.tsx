@@ -213,6 +213,14 @@ describe('SchedulePage cron folders', () => {
 
     // Confirm row should appear
     await waitFor(() => expect(screen.getByText(/Delete “My Folder”\? Jobs will be ungrouped\./)).toBeInTheDocument())
+
+    // The stock transparent Btn has no edge on the row's danger tint until hovered.
+    const row = within(screen.getByText(/Delete “My Folder”\?/).closest('tr')!)
+    for (const name of ['Delete "My Folder"', 'Cancel']) {
+      expect(row.getByRole('button', { name })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(row.getByRole('button', { name })).not.toHaveClass('bg-transparent')
+      expect(row.getByRole('button', { name })).not.toHaveClass('border-border')
+    }
   })
 
   it('hides empty folders when filter is active (omitEmpty)', async () => {
@@ -571,6 +579,14 @@ describe('SchedulePage cron folders', () => {
     await waitFor(() => expect(screen.getByText(/Delete “DeleteMe”\? Jobs will be ungrouped\./)).toBeInTheDocument())
     expect(vi.mocked(api).deleteCronFolder).not.toHaveBeenCalled()
 
+    // The stock transparent Btn has no edge on the confirm's danger tint until hovered.
+    const confirmRow = within(screen.getByText(/Delete “DeleteMe”\?/).parentElement!)
+    for (const name of ['Delete "DeleteMe"', 'Cancel']) {
+      expect(confirmRow.getByRole('button', { name })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(confirmRow.getByRole('button', { name })).not.toHaveClass('bg-transparent')
+      expect(confirmRow.getByRole('button', { name })).not.toHaveClass('border-border')
+    }
+
     // Confirm the delete
     const confirmDeleteBtn = screen.getAllByRole('button').find(b => b.textContent === 'Delete "DeleteMe"' && b.className.includes('danger'))
     expect(confirmDeleteBtn).toBeTruthy()
@@ -671,5 +687,50 @@ describe('SchedulePage cron folders', () => {
       expect(errorEl).toHaveAttribute('role', 'alert')
       expect(errorEl).toHaveTextContent(/could not be moved/)
     })
+  })
+
+  it('clears the batch-move error once a retry of the failed jobs succeeds', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'Target', order: 1 }])
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob('j1', 'Job A'), mkJob('j2', 'Job B')],
+    })
+    vi.mocked(api).updateCron.mockRejectedValueOnce(new Error('Move failed'))
+    vi.mocked(api).updateCron.mockResolvedValue({})
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Job A')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('Select Job A'))
+    fireEvent.click(screen.getByLabelText('Select Job B'))
+    await openBatchMove()
+    await pickFolder('Target')
+    await screen.findByTestId('schedule-batch-move-error')
+
+    // The failed job stays selected; moving it again works.
+    await openBatchMove()
+    await pickFolder('Target')
+    await waitFor(() => expect(vi.mocked(api).updateCron).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.queryByTestId('schedule-batch-move-error')).toBeNull())
+  })
+
+  it('clears a single job move error once a retried move succeeds', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'Target', order: 1 }])
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob('j1', 'Moving Job')] })
+    vi.mocked(api).updateCron.mockRejectedValueOnce(new Error('zz-move-refused'))
+    vi.mocked(api).updateCron.mockResolvedValue({})
+    const moveViaRow = async () => {
+      fireEvent.keyDown(screen.getByLabelText('Actions'), { key: 'Enter' })
+      fireEvent.keyDown(await screen.findByText('Move to folder'), { key: 'ArrowRight' })
+      await pickFolder('Target')
+    }
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Moving Job')).toBeInTheDocument())
+    await moveViaRow()
+    expect(await screen.findByText(/zz-move-refused/)).toBeInTheDocument()
+    await moveViaRow()
+    await waitFor(() => expect(vi.mocked(api).updateCron).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText(/zz-move-refused/)).toBeNull())
   })
 })

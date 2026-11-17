@@ -11,11 +11,13 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from kiro_crew import aws_consent
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture()
@@ -70,6 +72,28 @@ def _grant(service=aws_consent.SERVICE_POLLY, *, profile="", region="us-east-1",
         arn=f"arn:aws:iam::{account}:user/x",
         granted_at="2026-08-21T00:00:00+00:00",
     )
+
+
+def _record_lockdown_sizes(monkeypatch) -> list[int]:
+    """Record each ``restrict_to_owner`` target's size at the moment it is locked down.
+
+    Only calls made on the test's own thread are recorded. The patched name is a
+    process global, and the SEL writer thread re-locks its non-empty audit log on
+    every append, so its flush landing mid-grant would read as the store's lockdown.
+    """
+    from kiro_crew import platform_compat
+
+    sizes: list[int] = []
+    test_thread = threading.get_ident()
+    real_restrict = platform_compat.restrict_to_owner
+
+    def _measuring_restrict(target):
+        if threading.get_ident() == test_thread:
+            sizes.append(os.stat(target).st_size)
+        return real_restrict(target)
+
+    monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)
+    return sizes
 
 
 def _kb_source_row(profile: str, region: str, name: str = "Team KB") -> dict:
@@ -170,16 +194,7 @@ class TestGrantIsOnTheKeystoneFloor:
         On Windows the DACL from ``restrict_to_owner`` is the only protection. The file
         size at lockdown must be zero; a post-write stat passes on either order.
         """
-        from kiro_crew import platform_compat
-
-        sizes: list[int] = []
-        real_restrict = platform_compat.restrict_to_owner
-
-        def _measuring_restrict(target):
-            sizes.append(os.stat(target).st_size)
-            return real_restrict(target)
-
-        monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)
+        sizes = _record_lockdown_sizes(monkeypatch)
 
         _grant()
 
@@ -191,18 +206,10 @@ class TestGrantIsOnTheKeystoneFloor:
     def test_sidecar_preservation_lockdown_precedes_content(self, home, monkeypatch):
         """The corrupt-store sidecar carries whatever the old store held, so its
         write gets the same lockdown-before-content ordering."""
-        from kiro_crew import platform_compat
         from kiro_crew.config.loader import aws_consent_path
 
         aws_consent_path().write_text("not json{", encoding="utf-8")
-        sizes: list[int] = []
-        real_restrict = platform_compat.restrict_to_owner
-
-        def _measuring_restrict(target):
-            sizes.append(os.stat(target).st_size)
-            return real_restrict(target)
-
-        monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)
+        sizes = _record_lockdown_sizes(monkeypatch)
 
         _grant()
 
@@ -1444,7 +1451,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
     emits the bare ``service`` with no ``": "``.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+    SECRET = github_classic(seed=114)  # synthetic 40-char GitHub token
 
     @staticmethod
     def _capture(monkeypatch):
@@ -1470,7 +1477,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
 
         assert len(calls) == 1
         resources = calls[0]["resources"]
-        assert "AKIA" not in resources, resources
+        assert self.SECRET[:4] not in resources, resources
         assert resources.startswith("polly: ")
         # Redaction ran over the full text; only the redacted text was clipped.
         assert len(resources) <= len("polly: ") + 200

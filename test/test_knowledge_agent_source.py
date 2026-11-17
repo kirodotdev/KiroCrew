@@ -7,6 +7,7 @@ covers every write path, and the per-sweep chunk budget.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -26,10 +27,15 @@ from kiro_crew.knowledge.agent_source import (
     set_state,
 )
 from kiro_crew.knowledge.folder_watcher import FolderWatcher
-from kiro_crew.knowledge.ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
+from kiro_crew.knowledge.ingestion import (
+    DUPLICATE_JOB_STATUS,
+    FileTooLargeError,
+    IngestionPipeline,
+)
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 
 
 def _one_chunk(text, **kw):
@@ -175,6 +181,36 @@ class TestAddDocument:
         assert res["reason"].isascii()
 
     @pytest.mark.asyncio
+    async def test_add_refuses_an_oversized_document_as_error(
+            self, pipeline, kstore, caplog):
+        # A document over knowledge.max_ingest_file_mb is the caller's refused
+        # document (the route's 400 document_rejected), not a gateway fault: the
+        # pipeline's one WARNING is the whole log story, nothing is stored, and
+        # this attempt's intent marker is cleared.
+        from unittest.mock import patch
+        caplog.set_level(logging.WARNING)
+        with patch("kiro_crew.knowledge.ingestion._max_ingest_file_mb",
+                   return_value=0.001):
+            try:
+                res = await add_agent_document(
+                    pipeline, title="Big", content="x" * 4096,
+                    source_uri="test://Big")
+            except FileTooLargeError as exc:
+                pytest.fail(f"the size refusal escaped add_agent_document: {exc}")
+        assert res["status"] == "error"
+        assert "knowledge.max_ingest_file_mb" in res["error"]
+        source_id, _ = ensure_agent_source(kstore)
+        for table in ("agent_ingest_intent", "agent_item_state"):
+            assert kstore.db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE source_id = ?",
+                (source_id,)).fetchone()[0] == 0, table
+        assert _items(kstore, source_id) == []
+        assert any(r.levelno == logging.WARNING
+                   and "Skipping oversized file" in r.getMessage()
+                   for r in caplog.records)
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    @pytest.mark.asyncio
     async def test_second_identical_add_ingests_once(self, pipeline, kstore):
         first = await add_agent_document(pipeline, title="Doc", content="same body", source_uri="test://Doc")
         second = await add_agent_document(pipeline, title="Doc", content="same body", source_uri="test://Doc")
@@ -225,8 +261,51 @@ class TestAddDocument:
         assert (await add_agent_document(pipeline, title="X", content="   ", source_uri="test://X"))["status"] == "error"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["title", "content", "source_uri"])
+    async def test_a_lone_surrogate_is_an_error_not_a_crash(self, pipeline, kstore, field):
+        # JSON's \ud800 decodes to a str UTF-8 cannot encode; each of these
+        # fields reaches an encode, so it raised UnicodeEncodeError before.
+        doc = {"title": "T", "content": "c", "source_uri": "test://T"}
+        doc[field] += "\ud800"
+        res = await add_agent_document(pipeline, **doc)
+        assert res == {"status": "error",
+                       "error": f"{field} contains characters that cannot be encoded"}
+        assert kstore.db.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_lone_surrogate_past_a_cap_is_cut_off_as_before(self, pipeline):
+        res = await add_agent_document(
+            pipeline,
+            title="T" * agent_source_mod._MAX_TITLE_LEN + "\ud800",
+            content="c",
+            source_uri="test://" + "u" * agent_source_mod._MAX_URI_LEN + "\ud800",
+        )
+        assert res.get("status") == "added"
+
+    @pytest.mark.asyncio
+    async def test_a_surrogate_title_on_a_duplicate_is_still_a_duplicate(self, pipeline):
+        # Neither duplicate return stores the title, so main answered them as before.
+        await add_agent_document(pipeline, title="T", content="body", source_uri="test://a")
+        same = await add_agent_document(
+            pipeline, title="T\ud800", content="body", source_uri="test://a")
+        twin = await add_agent_document(
+            pipeline, title="T\ud800", content="body", source_uri="test://b")
+        assert (same.get("status"), twin.get("status")) == ("duplicate", "duplicate")
+
+    @pytest.mark.asyncio
+    async def test_a_surrogate_inside_a_redacted_credential_is_still_added(self, pipeline):
+        # Redaction replaces the whole credential span before the content is
+        # first encoded, so main stored this document. A labelled value: an AWS
+        # secret is read only as 40 characters of its own alphabet.
+        content = "notes\npassword=" + "a" * 10 + "\ud800" + "b" * 5 + "\nend"
+        res = await add_agent_document(
+            pipeline, title="T", content=content, source_uri="test://r"
+        )
+        assert res.get("status") == "added"
+
+    @pytest.mark.asyncio
     async def test_credentials_are_redacted_before_storage(self, pipeline, kstore):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=55)
         res = await add_agent_document(
             pipeline, title="Runbook", content=f"use key {secret} to deploy", source_uri="test://Runbook")
         stored = " ".join(_items(kstore, res["source_id"]))
@@ -247,7 +326,7 @@ class TestAddDocument:
         # SEL is a persisted, readable surface, so a credential in an
         # agent-authored title or reason must not reach it. `reason` never passes
         # through the content redaction at all.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=55)
         spy = MagicMock()
         monkeypatch.setattr(agent_source_mod, "sel", lambda: spy)
         res = await add_agent_document(
@@ -632,16 +711,19 @@ async def test_folder_scan_lands_when_only_a_transient_source_holds_the_content(
 async def test_redaction_cannot_collapse_two_uris_into_one_document(pipeline, kstore):
     """Two URIs differing only in a credential-shaped segment stay separate.
 
-    Redaction is lossy: both of these become "...?key=[REDACTED: credential]".
+    Redaction is lossy: both of these become "...?access_token=[REDACTED: credential]".
     Hashing the redacted form gave them one slug, so the second add deleted the
     first document's items. The identity is hashed from the raw URI instead.
     """
-    u1 = "https://wiki.example.com/doc?key=AKIAIOSFODNN7EXAMPLE"
-    u2 = "https://wiki.example.com/doc?key=AKIAJKLMNOPQR2SAMPLE"
-    first = await add_agent_document(pipeline, title="Runbook",
-                                     content="Alpha runbook. " * 40, source_uri=u1)
-    second = await add_agent_document(pipeline, title="Runbook",
-                                      content="Beta runbook. " * 40, source_uri=u2)
+    v1, v2 = synth(32, seed=56), synth(32, seed=57)
+    u1 = f"https://wiki.example.com/doc?access_token={v1}"
+    u2 = f"https://wiki.example.com/doc?access_token={v2}"
+    first = await add_agent_document(
+        pipeline, title="Runbook", content="Alpha runbook. " * 40, source_uri=u1
+    )
+    second = await add_agent_document(
+        pipeline, title="Runbook", content="Beta runbook. " * 40, source_uri=u2
+    )
     assert first["status"] == "added" and second["status"] == "added"
     assert first["slug"] != second["slug"]
 
@@ -651,7 +733,7 @@ async def test_redaction_cannot_collapse_two_uris_into_one_document(pipeline, ks
     assert ids1 and set(ids1) <= live
 
     # The stored/returned URI is redacted even though the identity is not.
-    assert "AKIA" not in second["source_uri"]
+    assert v2 not in second["source_uri"]
     assert "REDACTED" in second["source_uri"]
 
 
@@ -856,12 +938,16 @@ class TestCitationSourceUri:
     async def test_cited_uri_is_the_redacted_form(self, pipeline, kstore):
         # The raw uri may carry a credential the agent never inspected; only the
         # redacted form may be stored, so only the redacted form can be cited.
+        value = synth(32, seed=58)
         res = await add_agent_document(
-            pipeline, title="Runbook", content="the deploy runbook body",
-            source_uri="https://wiki.example.com/doc?key=AKIAIOSFODNN7EXAMPLE")
+            pipeline,
+            title="Runbook",
+            content="the deploy runbook body",
+            source_uri=f"https://wiki.example.com/doc?access_token={value}",
+        )
         assert res["status"] == "added"
         hit = self._hit(kstore, res["source_id"], "deploy runbook")
-        assert "AKIA" not in hit["source_uri"]
+        assert value not in hit["source_uri"]
         assert "REDACTED" in hit["source_uri"]
 
     @pytest.mark.asyncio

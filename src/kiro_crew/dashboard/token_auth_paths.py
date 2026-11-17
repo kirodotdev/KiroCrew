@@ -155,6 +155,13 @@ UPDATE_REVALIDATE_PATH = "/api/update/revalidate"
 #: every other method stay behind the ordinary gate.
 AGENT_HOOK_STATUS_PATH = "/api/hooks/agent/status"
 
+#: A vendor's OAuth redirect back to a DCR Connection sign-in on a gateway with a
+#: public HTTPS URL (``connections.crew_oauth_dcr.gateway_callback``). The browser
+#: arrives from the vendor with no Crew credential; the handler admits only a
+#: pending sign-in's ``state`` (constant-time, single use, 600 s) and answers a
+#: fixed page. GET only.
+CREW_OAUTH_CALLBACK_PATH = "/api/connections/oauth/callback"
+
 #: The relay viewer's access token mint for the desktop app's main process, which
 #: holds the local secret and no dashboard token. Its handler (api_relay_viewer_token)
 #: admits only loopback or the same-user unix socket, the X-Local-Secret and a
@@ -164,6 +171,7 @@ RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
+    CREW_OAUTH_CALLBACK_PATH: frozenset({"GET"}),
     RELAY_VIEWER_TOKEN_PATH: frozenset({"POST"}),
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
@@ -446,6 +454,27 @@ def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
         # that hides every future regression here.
         return web.json_response(
             {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
+        )
+    # Function-local: the token_auth facade mirrors every module-level name of its
+    # owners, and these are not part of its surface.
+    from kiro_crew.dashboard.crew_api_errors import (
+        contract_error,
+        is_crew_api_path,
+        request_id_for,
+    )
+
+    if is_crew_api_path(request.path):
+        # The Crew API's own error body, on every /v1/ path but the frozen
+        # /v1/chat/completions. ``owner_only`` is the one
+        # refusal about what a known caller may do, so it is the one 403. Every other
+        # refusal here is a credential this layer could not accept, the contract's
+        # 401: ``invalid_token`` unless the refusal names its own reason.
+        return contract_error(
+            403 if code == "owner_only" else 401,
+            code or "invalid_token",
+            reason,
+            request_id_for(request),
+            headers,
         )
     return web.Response(
         text=_403_HTML.format(reason=reason),

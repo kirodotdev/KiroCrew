@@ -14,7 +14,11 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE, ACP_BACKENDS_KNOWN
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_KNOWN,
+)
 from kiro_crew.agent_sdk.native_allow_stores import (
     NATIVE_ALLOW_STORES,
     NATIVE_ALLOW_STORES_NONE,
@@ -49,11 +53,12 @@ def test_every_known_harness_has_a_row_or_a_reason() -> None:
 
 
 def test_each_store_moves_with_the_home_variables_host_auth_declares() -> None:
-    # opencode keeps config under XDG_CONFIG_HOME and its token under XDG_DATA_HOME.
+    # opencode, and MiMo Code after it, keep config under XDG_CONFIG_HOME and the
+    # token under XDG_DATA_HOME.
     for declaration in host_auth.AGENT_AUTH_DECLARATIONS:
-        if (
-            declaration.backend not in NATIVE_ALLOW_STORES
-            or declaration.backend == ACP_BACKEND_OPENCODE
+        if declaration.backend not in NATIVE_ALLOW_STORES or declaration.backend in (
+            ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_MIMOCODE,
         ):
             continue
         for store in NATIVE_ALLOW_STORES[declaration.backend]:

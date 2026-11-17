@@ -99,14 +99,17 @@ class TestTheTurnBlock:
         block = dashboard_agentic.turn_block(SLUG, MEMBER)
         assert f"{second} (" in block and f"{first} (" not in block, block
 
-    def test_a_locked_page_makes_no_read_and_no_nudge(self, monkeypatch) -> None:
-        """A locked page refuses dashboard_apply, so the fix the line names is one the
-        crewmate cannot make; the lock line already says the person holds it."""
-        instance.set_structure_lock(SLUG, True)
+    def test_a_leftover_lock_file_does_not_silence_the_nudge(self, monkeypatch) -> None:
+        """The structure lock was removed; a lock file it left behind is not read."""
+        from kiro_crew import agent_panel
+
+        legacy = agent_panel.panel_dir() / f"{SLUG}.dashboard-lock"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("{}", encoding="utf-8")
         calls = _reads(monkeypatch, {_fold_fields()[0]: PATH_MISSING})
         block = dashboard_agentic.turn_block(SLUG, MEMBER)
-        assert instance.LOCKED_REFUSAL in block, block
-        assert "did not resolve" not in block and calls == [], block
+        assert "LOCKED" not in block, block
+        assert "did not resolve" in block and calls, block
 
     def test_with_the_crew_panel_off_no_nudge_is_made(self, monkeypatch) -> None:
         """No kirocrew-panel means no dashboard_save to call."""
@@ -442,12 +445,9 @@ class TestAWarmV1Turn:
         _reads(monkeypatch, {_fold_fields()[0]: FOLD_UNSEEN})
         assert dashboard_agentic.unresolved_notice(SLUG, MEMBER) == ""
 
-    def test_the_notice_keeps_the_lock_and_panel_gates(self, monkeypatch) -> None:
+    def test_the_notice_keeps_the_panel_gate(self, monkeypatch) -> None:
         calls = _reads(monkeypatch, {_fold_fields()[0]: PATH_MISSING})
         monkeypatch.setattr(dashboard_agentic, "_crew_panel_on", lambda: False)
-        assert dashboard_agentic.unresolved_notice(SLUG, MEMBER) == ""
-        monkeypatch.setattr(dashboard_agentic, "_crew_panel_on", lambda: True)
-        instance.set_structure_lock(SLUG, True)
         assert dashboard_agentic.unresolved_notice(SLUG, MEMBER) == ""
         assert calls == []
 

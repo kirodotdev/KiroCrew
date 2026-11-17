@@ -35,9 +35,10 @@ describe('isHostOverlaySlot', () => {
 })
 
 describe('overlay component lookup', () => {
-  it('resolves a bundled overlay id', () => {
-    expect(hasBuiltinOverlay('command-bar')).toBe(true)
-    expect(getBuiltinOverlay('command-bar')).toBe(BUILTIN_OVERLAY_REGISTRY['command-bar'])
+  it('bundles no overlay: the Command Bar is the shell launcher, not an app overlay', () => {
+    expect(Object.keys(BUILTIN_OVERLAY_REGISTRY)).toEqual([])
+    expect(hasBuiltinOverlay('command-bar')).toBe(false)
+    expect(getBuiltinOverlay('command-bar')).toBeUndefined()
   })
 
   it('reports an unbundled id as absent instead of resolving it', () => {

@@ -65,6 +65,13 @@
 @import "./styles/design-tokens.css";
 @import "./styles/theme-palettes.css";
 
+/* react-remove-scroll (every modal Radix layer: menus, dialogs, selects) sets
+   this property on <body> while it locks the page. An unregistered custom
+   property inherits, so each write to it restyles every element under <body>,
+   once when the layer opens and once when it closes. Nothing here reads the
+   property, so it is registered as non-inherited and the write stays on <body>. */
+@property --removed-body-scroll-bar-size{syntax:"<length>";inherits:false;initial-value:0px}
+
 /* ── Base ── */
 @layer base {
   *{box-sizing:border-box;margin:0;padding:0}

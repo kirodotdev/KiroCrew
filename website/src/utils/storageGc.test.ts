@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { SIDE_PANEL_HEIGHT_KEY, SIDE_PANEL_WIDTH_KEY, sidePanelDimKey } from '../pages/chat/sidePanelWidth'
-import { gcOrphanedStorage, gcSessionStorage } from './storageGc'
+import { gcOrphanedStorage } from './storageGc'
 
 /**
  * `storageGc` runs on every app boot and DELETES localStorage keys. Its
@@ -164,80 +164,19 @@ describe('gcOrphanedStorage', () => {
   })
 })
 
-describe('gcSessionStorage', () => {
+describe('reserved slot-less sentinel', () => {
   beforeEach(() => {
     localStorage.clear()
-  })
-
-  it('removes every prefix family for the named session', () => {
-    const slot = 'slack_1785370133.085469'
-    localStorage.setItem(`${HEIGHTS}${slot}`, '{}')
-    localStorage.setItem(`${PANEL_TABS}${slot}`, '[]')
-    localStorage.setItem(`${TOUCHED}${slot}:toolClearedAt`, '1')
-    localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
-
-    gcSessionStorage(slot)
-
-    expect(localStorage.getItem(`${HEIGHTS}${slot}`)).toBeNull()
-    expect(localStorage.getItem(`${PANEL_TABS}${slot}`)).toBeNull()
-    expect(localStorage.getItem(`${TOUCHED}${slot}:toolClearedAt`)).toBeNull()
-    // A different session is untouched.
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBe('{}')
-  })
-
-  it('removes the dashboard-dismissed flag of the deleted session only', () => {
-    localStorage.setItem(`${DASHBOARD_DISMISSED}chat-1-1`, '1')
-    localStorage.setItem(`${DASHBOARD_DISMISSED}chat-1-10`, '1')
-
-    gcSessionStorage('chat-1-1')
-
-    expect(localStorage.getItem(`${DASHBOARD_DISMISSED}chat-1-1`)).toBeNull()
-    expect(localStorage.getItem(`${DASHBOARD_DISMISSED}chat-1-10`)).toBe('1')
-  })
-
-  it('is a no-op for an empty session key', () => {
-    localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
-    gcSessionStorage('')
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBe('{}')
-  })
-
-  it('stops at a boundary, so a longer sibling key survives', () => {
-    // The session id has to end where the key ends or at a ':' delimiter.
-    // Without that boundary, deleting a slot whose id prefixes a live
-    // sibling's id takes the sibling's state with it.
-    localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
-    localStorage.setItem(`${HEIGHTS}chat-1-10`, '{}')
-
-    gcSessionStorage('chat-1-1')
-
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBeNull()
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-10`)).toBe('{}')
   })
 
   it('spares the parked slot-less preference but not a same-named slot\u2019s other state', () => {
     localStorage.setItem('mc-busy-send-mode:no-slot', 'steer')
     localStorage.setItem(`${HEIGHTS}no-slot`, '{}')
 
-    gcSessionStorage('no-slot')
+    gcOrphanedStorage(new Set())
 
-    // Belongs to no slot, so no slot's teardown owns it.
     expect(localStorage.getItem('mc-busy-send-mode:no-slot')).toBe('steer')
-    // A real slot sharing the sentinel's name still loses what it does own,
-    // or deleting and recreating it would restore stale caches.
     expect(localStorage.getItem(`${HEIGHTS}no-slot`)).toBeNull()
-  })
-
-  it('removes a per-slot send-mode preference without touching a sibling', () => {
-    localStorage.setItem('mc-busy-send-mode:foo', 'queue')
-    localStorage.setItem('mc-busy-send-mode:foobar', 'steer')
-    localStorage.setItem('mc-busy-send-mode:no-slot', 'steer')
-
-    gcSessionStorage('foo')
-
-    expect(localStorage.getItem('mc-busy-send-mode:foo')).toBeNull()
-    expect(localStorage.getItem('mc-busy-send-mode:foobar')).toBe('steer')
-    // The slot-less sentinel belongs to no session.
-    expect(localStorage.getItem('mc-busy-send-mode:no-slot')).toBe('steer')
   })
 })
 
@@ -262,18 +201,6 @@ describe('per-chat side panel size keys', () => {
     expect(localStorage.getItem(heightOf('chat-1-1'))).toBeNull()
     expect(localStorage.getItem(widthOf('chat-2-2'))).toBe('640')
     expect(localStorage.getItem(heightOf('chat-2-2'))).toBe('410')
-  })
-
-  it('deleting a chat removes its sizes without touching a sibling whose id extends it', () => {
-    localStorage.setItem(widthOf('foo'), '520')
-    localStorage.setItem(heightOf('foo'), '300')
-    localStorage.setItem(widthOf('foobar'), '640')
-
-    gcSessionStorage('foo')
-
-    expect(localStorage.getItem(widthOf('foo'))).toBeNull()
-    expect(localStorage.getItem(heightOf('foo'))).toBeNull()
-    expect(localStorage.getItem(widthOf('foobar'))).toBe('640')
   })
 
   it('never collects the bare fallback size every chat reads', () => {

@@ -49,9 +49,11 @@ from kiro_crew.shared_crew.identity import (
 )
 
 
-def relay_principal(caller: RelayCaller, owner_subject: str):
+def relay_principal(
+    caller: RelayCaller, owner_subject: str, handle_email_domains: frozenset[str] = frozenset()
+):
     """Looked up at call time, so each test fails on its own before the branch."""
-    return identity.relay_principal(caller, owner_subject)
+    return identity.relay_principal(caller, owner_subject, handle_email_domains)
 
 
 pytestmark = pytest.mark.usefixtures("host_isolation")
@@ -205,6 +207,71 @@ async def test_a_teammate_with_no_name_or_email_gets_the_fallback_label() -> Non
     assert bare["principal"]["display"]["name"] == "Kiro user ...a-0002"
     assert bare["principal"]["display"]["login"] == ""
     assert email_only["principal"]["display"]["name"] == EMAIL
+
+
+HANDLE_DOMAINS = frozenset({"example.com"})
+
+
+@pytest.mark.asyncio
+async def test_a_teammate_in_a_handle_domain_is_labelled_by_their_handle() -> None:
+    ingress = RelayIngress(enabled=True, handle_email_domains=HANDLE_DOMAINS)
+    ingress.bind_host(HostBinding(crew_kind=CrewKind.TEAM))
+    async with TestClient(TestServer(_app(ingress))) as client:
+        body = await _as(client, ANA, relay_email="renee@example.com")
+    assert body["principal"]["display"]["name"] == "renee"
+    assert body["principal"]["display"]["login"] == ""
+    assert body["author"]["display"]["name"] == "renee"
+
+
+@pytest.mark.parametrize(
+    ("email", "name", "label"),
+    [
+        ("renee@example.com", "", "renee"),
+        ("renee@EXAMPLE.COM", "", "renee"),
+        ("renee@example.com", NAME, NAME),
+        ("renee@example.org", "", "renee@example.org"),
+        ("", "", "Kiro user ...a-0002"),
+        ("renee@sub.example.com", "", "renee@sub.example.com"),
+        ("renee@example.com.example.io", "", "renee@example.com.example.io"),
+        ("renee@notexample.com", "", "renee@notexample.com"),
+        ("renee@example.co", "", "renee@example.co"),
+    ],
+)
+def test_the_relayed_label_trims_only_a_handle_domain_address(
+    email: str, name: str, label: str
+) -> None:
+    caller = RelayCaller(
+        kiro_user_id=ANA, kind=RelayCallerKind.TEAMMATE, email=email, display_name=name
+    )
+    principal = relay_principal(caller, "local-app", HANDLE_DOMAINS)
+    assert principal.display.name == label
+    assert principal.display.login == ""
+
+
+def test_the_handle_domains_setting_is_empty_by_default_and_parsed_narrowly(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    assert KiroCrewConfig().tunnel.relay_handle_email_domains == []
+    config_file = tmp_path / "config.json"
+    stored = [" Example.COM ", "example.com", "", 7, "a@example.org", "example.org"]
+    config_file.write_text(
+        json.dumps({"tunnel": {"relay_handle_email_domains": stored}}), encoding="utf-8"
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
+    domains = KiroCrewConfig.load().tunnel.relay_handle_email_domains
+    assert domains == ["example.com", "example.org"]
+    config_file.write_text(
+        json.dumps({"tunnel": {"relay_handle_email_domains": "example.com"}}), encoding="utf-8"
+    )
+    assert KiroCrewConfig.load().tunnel.relay_handle_email_domains == []
+
+
+@pytest.mark.parametrize("email", ["renee@example.com", "renee@example.org"])
+def test_with_no_handle_domains_the_label_is_the_full_address(email: str) -> None:
+    caller = RelayCaller(kiro_user_id=ANA, kind=RelayCallerKind.TEAMMATE, email=email)
+    assert relay_principal(caller, "local-app").display.name == email
 
 
 @pytest.mark.asyncio

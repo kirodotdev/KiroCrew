@@ -244,7 +244,7 @@ class TestSynthesisConsultsTheHold:
         assert started and started[0] is not None, "the arrival never got the floor"
         _cancel_turn(slot)
 
-    async def test_an_ultra_mode_pause_withholds_the_synthesis_dispatch(
+    async def test_a_conductor_mode_pause_withholds_the_synthesis_dispatch(
         self, tmp_path, monkeypatch
     ):
         """Pause all holds the session: its armed synthesis waits for Resume all."""

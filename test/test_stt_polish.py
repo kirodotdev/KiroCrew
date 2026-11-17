@@ -19,6 +19,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import core
 
@@ -489,5 +490,6 @@ class TestRedaction:
         """
         cfg, sent, set_reply = polish
         set_reply("ok")
-        await _call(_request("my key is AKIAIOSFODNN7EXAMPLE please note"))
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent[0]
+        key = github_classic(seed=7)
+        await _call(_request(f"my key is {key} please note"))
+        assert key not in sent[0]

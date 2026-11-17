@@ -55,33 +55,23 @@ if TYPE_CHECKING:  # pragma: no cover - a type-only import, so no cycle at run t
 #: of a prose document to this kind would store content no reader can parse.
 DASHBOARD_KIND = "dashboard"
 
-#: Cap on an agent-written ``view.html`` page, in bytes of UTF-8.
+#: Cap on an agent-written ``view.html`` page, in bytes of UTF-8: the frame's own
+#: :data:`kiro_crew.dashboard_frame.MAX_PAGE_BYTES`, so every stored page can be drawn.
+#: Mirrored, not imported, to keep this write-path module cheap to import;
+#: ``test_the_page_cap_is_the_frames_own`` pins the two equal.
 #:
-#: The FRAME's own ceiling, :data:`kiro_crew.dashboard_frame.MAX_PAGE_BYTES`, so a page
-#: a package can hold is always a page the frame will draw. Mirrored rather than
-#: imported, because this module is on the artifact write path and must stay cheap to
-#: import; ``test_the_page_cap_is_the_frames_own`` pins the two equal.
-#:
-#: The cap bounds what a page COSTS to store, send and draw. It does not detect values
-#: baked into the layout: a page that inlines a client-side library is several MB with
-#: no data in it, so size cannot tell the two apart. The structural rules are what keep
-#: values out: every field names its source, every binding must be a declared field,
-#: the controller pushes only declared fields, and value-shaped keys are refused.
+#: Size bounds cost only; it cannot tell inlined data from an inlined library. The
+#: structural rules keep values out: every field names its source, every binding is a
+#: declared field, the controller pushes only declared fields, value-shaped keys fail.
 MAX_VIEW_HTML_BYTES = 3 * 1024 * 1024
 
-#: Hard cap on a stored package, in bytes of its STORED form, well under the artifact
-#: content cap.
+#: Hard cap on a package's STORED (JSON) form, well under the artifact content cap.
 #:
-#: Sized so a page at :data:`MAX_VIEW_HTML_BYTES` fits once escaped. The stored form is
-#: JSON, which writes a quote, a backslash or a line break in the page as two bytes, so
-#: the page can take up to twice its own size there (other control characters escape
-#: longer, and HTML has no use for them). The 128 KiB on top is the room for the rest
-#: of the package -- model, theme and structure -- as a page had beside it before. The
-#: whole package is still measured against this one number, so a model and theme near
-#: their own caps can need more, and then the refusal below names the limit. This cap
-#: also bounds the decode, which runs before any validator. The reader applies the same
-#: number to a stored package, so the cap can be raised but not lowered while packages
-#: written under a larger one are still stored: those would stop loading.
+#: JSON writes a quote, backslash or line break as two bytes, so a page at
+#: :data:`MAX_VIEW_HTML_BYTES` can take twice its size; 128 KiB more holds the model,
+#: theme and structure. The cap also bounds the decode, which runs before any
+#: validator. The reader applies it to stored packages too, so it can be raised but
+#: not lowered while larger packages are stored: those would stop loading.
 MAX_PACKAGE_BYTES = 2 * MAX_VIEW_HTML_BYTES + 128 * 1024
 
 MAX_MODEL_FIELDS = 64
@@ -137,10 +127,8 @@ _UNIVERSAL_FIELD_KEYS = ("type", "source", "label", "description")
 STALE_AFTER_KEY = "stale_after_s"
 
 
-# --------------------------------------------------------------------------- #
 # Small value validators. Each raises ValueError with a plain reason; the
 # caller that knows the path wraps it into an ArtifactValidationError.
-# --------------------------------------------------------------------------- #
 
 
 def _a_label(v: Any) -> str:
@@ -180,11 +168,8 @@ def _a_choice_list(v: Any) -> list[str]:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# The data type catalog. A STUB: a starter set so the package line is testable end
-# to end. It is ONE function, so filling it in is a single edit and the validator
-# follows -- see data/INTERFACE.md.
-# --------------------------------------------------------------------------- #
+# The data type catalog: a starter set. It is ONE function, so extending it is a
+# single edit and the validator follows -- see data/INTERFACE.md.
 
 
 @dataclass(frozen=True)
@@ -203,7 +188,7 @@ class FieldType:
     optional: Mapping[str, Callable[[Any], Any]] = _dc_field(default_factory=dict)
 
 
-#: STUB -- the data line (conductor chat-2611) owns this table.
+#: The data line owns this table.
 _STUB_DATA_TYPES: tuple[FieldType, ...] = (
     FieldType(
         name="number",
@@ -222,12 +207,9 @@ _STUB_DATA_TYPES: tuple[FieldType, ...] = (
         required={"choices": _a_choice_list},
     ),
     FieldType(name="bool", summary="a yes/no flag"),
-    # The two a PAGE needs and a host-drawn block never did. A fold's value is often a
-    # list of rows or a nested record -- `worktree.boards`, `work.items` -- and the
-    # catalog without them can express a count of a tree but not the tree, so the first
-    # page that draws one has no field to bind. Admitted with no shape keys: the write
-    # path does not check a fold's own structure, and a shape declared here would be a
-    # promise about bytes nothing validates.
+    # A page binds a fold's rows or nested record (`worktree.boards`, `work.items`)
+    # whole. No shape keys: the write path does not check a fold's structure, so a
+    # declared shape would be a promise nothing validates.
     FieldType(name="array", summary="a list of rows, walked by the page's own script"),
     FieldType(name="object", summary="a nested record, walked by the page's own script"),
 )
@@ -237,16 +219,12 @@ def data_type_catalog() -> Mapping[str, FieldType]:
     """The data types a ``model`` field may declare, by type name.
 
     THE one place the admissible types live: validation reads this and nothing
-    else, so the data line fills the catalog and the write gate moves with it.
-    The current table is a stub starter set (``number`` / ``text`` /
-    ``timestamp`` / ``enum`` / ``bool``) -- see ``data/INTERFACE.md``.
+    else, so the write gate moves with the catalog -- see ``data/INTERFACE.md``.
     """
     return {t.name: t for t in _STUB_DATA_TYPES}
 
 
-# --------------------------------------------------------------------------- #
 # Validation
-# --------------------------------------------------------------------------- #
 
 
 def _refuse(path: str, reason: str) -> ArtifactValidationError:
@@ -278,12 +256,12 @@ def _refuse_credential_shaped_name(name: str) -> None:
     would put it exactly where this check exists to keep it out of.
     """
     from kiro_crew.platform.context import redact_via_context
+    from kiro_crew.security import refuses
 
-    redacted = redact_via_context(name)
-    if redacted == name:
+    if not refuses(name, redact_via_context):
         return
     raise _refuse(
-        f"model.types.{redacted}",
+        f"model.types.{redact_via_context(name)}",
         "is shaped like a credential, so it is refused as a field NAME. Field "
         "names are served in the package's field list and written into the "
         "page's data island, where only values are redacted -- rename the field",
@@ -629,16 +607,15 @@ def _validate_model(raw: Any) -> dict[str, Any]:
     return {"types": fields}
 
 
+#: The attribute name a page binds a field with, as :data:`_HTML_BINDING_RE` reads it.
+_BINDING_RUN = "data-dashboard-field"
 #: A text binding in an agent-written page, in either quote an author may have typed.
 #:
 #: MIRRORS :data:`kiro_crew.dashboard_frame.BINDING_ATTRIBUTE`, pinned equal by test.
-#: Matched with a regex rather than parsed, because this check runs on the artifact
-#: write path and pulling in the html parser there would put it behind every caller of
-#: :mod:`kiro_crew.artifacts`. The cost is a page that MENTIONS the attribute in its own
-#: prose being read as binding it -- a refusal the author can act on, where the parse's
-#: own cost would be paid by every artifact write in the product.
-#: The attribute name a page binds a field with, as :data:`_HTML_BINDING_RE` reads it.
-_BINDING_RUN = "data-dashboard-field"
+#: A regex, not a parse: this runs on the artifact write path, and the html parser
+#: would then load for every caller of :mod:`kiro_crew.artifacts`. The cost is that
+#: a page which only MENTIONS the attribute in its prose is read as binding it, a
+#: refusal the author can act on.
 _HTML_BINDING_RE = re.compile(
     r"data-dashboard-field\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>=`]+))"
 )
@@ -997,11 +974,9 @@ def _decode_package(content: str) -> Any:
     """
     if not isinstance(content, str) or not content.strip():
         raise _refuse("package", "is empty: a dashboard artifact stores a JSON package")
-    # The submitted text is scanned before it is MEASURED, because measuring it
-    # encodes it. A surrogate reaches a package two ways and each is caught at
-    # the point it becomes a code point: written literally by a Python caller it
-    # is already one here, and written as the escape ``\\ud800`` it is six ASCII
-    # characters until the decoder below turns it into one.
+    # Scanned before it is measured, because measuring encodes it. A surrogate
+    # passed literally by a Python caller is a code point here already; the escape
+    # ``\\ud800`` only becomes one in the decoder, so the result is scanned again.
     _refuse_lone_surrogates(content)
     if len(content.encode("utf-8")) > MAX_PACKAGE_BYTES:
         raise _refuse(
@@ -1014,20 +989,17 @@ def _decode_package(content: str) -> Any:
     except ValueError as exc:
         raise _refuse("package", f"is not valid JSON: {exc}") from None
     except RecursionError:
-        # The byte cap above bounds a package's SIZE, not its DEPTH, and the two
-        # come apart: a few thousand ``[`` are small enough to pass the cap and
-        # deep enough that the decoder runs out of stack. ``RecursionError``
-        # is a ``RuntimeError``, so the ``ValueError`` arm does not see it, and
-        # letting it escape turns a refusable package into a 500 at every caller
-        # that answers an ``ArtifactValidationError`` with a 400.
+        # The byte cap bounds SIZE, not DEPTH: a few thousand ``[`` pass the cap
+        # and still exhaust the decoder's stack. ``RecursionError`` is not a
+        # ``ValueError``, so without this arm a refusable package becomes a 500
+        # where callers answer ``ArtifactValidationError`` with a 400.
         raise _refuse(
             "package",
             "nests deeper than the JSON decoder can follow: a layout is a few "
             "levels of objects and arrays, so this is not one",
         ) from None
-    # Before any validator touches a string: a validator that measures a string
-    # in bytes, and the serializer that writes one, both encode, and an encode
-    # that meets an unpaired surrogate raises where nothing catches it.
+    # Before any validator runs: byte-measuring validators and the serializer
+    # both encode, and encoding an unpaired surrogate raises where nothing catches it.
     _refuse_lone_surrogates(raw)
     return raw
 

@@ -11,6 +11,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  *   with a remove control. An inset card sharing the text area's padding, no
  *   divider: the quote reads as part of what is being written, not as a
  *   separate strip of chrome (the staged-file strip is chrome; this is content).
+ *   Its text is the jump control when the host can jump (`onJump`).
  * - `sent`: at the top of the user bubble in place of the raw `>` lines. The
  *   whole card is the jump control when the host can jump (`onJump`), a plain
  *   box otherwise (a row re-read from another client, a quote of a message the
@@ -22,7 +23,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 export default function QuoteCard({ quote, variant, onJump, onRemove }: {
   quote: MessageQuote
   variant: 'composer' | 'sent'
-  /** Scroll the transcript to the quoted message. `sent` only. */
+  /** Scroll the transcript to the quoted message. */
   onJump?: (quote: MessageQuote) => void
   /** Unstage the quote. `composer` only. */
   onRemove?: () => void
@@ -47,13 +48,31 @@ export default function QuoteCard({ quote, variant, onJump, onRemove }: {
   // only, and the box carries its own edge (border or fill step) so it stays
   // visible in kiro-light where `--card` equals `--bg`.
   if (variant === 'composer') {
+    // The remove control stays its own button beside the jump: a button
+    // cannot hold another one. No aria-label: the visible quote stays the
+    // button's name, the title its description.
+    const text = (
+      <>
+        {head}
+        <span className="block truncate text-[13px] leading-5 text-muted group-hover/quote:text-text transition-colors">{excerpt}</span>
+      </>
+    )
     return (
       <div data-testid="quote-card-composer" className="flex items-center gap-2.5 mx-3 mt-2.5 px-2.5 py-1.5 rounded-lg bg-bg-hover">
         <span aria-hidden="true" className="w-[3px] self-stretch rounded-full bg-accent shrink-0" />
-        <span className="min-w-0 flex-1 block">
-          {head}
-          <span className="block truncate text-[13px] leading-5 text-muted">{excerpt}</span>
-        </span>
+        {onJump ? (
+          <button
+            type="button"
+            onClick={() => onJump(quote)}
+            className="group/quote min-w-0 flex-1 block text-left cursor-pointer"
+            title={i18nT('pages.chat.quoteCard.jump_to_quoted_message')}
+            data-testid="quote-card-jump"
+          >
+            {text}
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 block">{text}</span>
+        )}
         {onRemove && (
           <button
             type="button"

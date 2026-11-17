@@ -260,6 +260,7 @@ def run_provider_cli(
                 )
             assert proc.stdout is not None
             assert proc.stderr is not None
+            group = _provider_group(proc)
             readers = ThreadPoolExecutor(max_workers=2)
             try:
                 stdout_future = readers.submit(
@@ -267,23 +268,25 @@ def run_provider_cli(
                     proc.stdout,
                     _MAX_STDOUT_BYTES,
                     proc,
+                    group,
                 )
                 stderr_future = readers.submit(
                     _read_limited,
                     proc.stderr,
                     _MAX_STDERR_BYTES,
                     proc,
+                    group,
                 )
                 try:
                     returncode = proc.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
-                    _stop_provider_process(proc)
+                    _stop_provider_process(proc, group)
                     raise
                 try:
                     stdout = stdout_future.result(timeout=_PIPE_JOIN_TIMEOUT_SECS)
                     stderr = stderr_future.result(timeout=_PIPE_JOIN_TIMEOUT_SECS)
                 except FutureTimeoutError as exc:
-                    _stop_provider_process(proc)
+                    _stop_provider_process(proc, group)
                     raise SetupError("provider CLI pipes did not close") from exc
             finally:
                 readers.shutdown(wait=False, cancel_futures=True)
@@ -321,6 +324,7 @@ def _read_limited(
     stream: IO[bytes],
     maximum: int,
     proc: subprocess.Popen[bytes],
+    group: int | None = None,
 ) -> bytes:
     """Drain one child pipe while terminating the process at the byte ceiling."""
     output = bytearray()
@@ -330,12 +334,35 @@ def _read_limited(
             return bytes(output)
         output.extend(chunk)
         if len(output) > maximum:
-            _kill_provider_tree(proc)
+            _kill_provider_tree(proc, group)
             raise _OutputTooLarge("provider CLI output exceeds the monitor bound")
 
 
-def _kill_provider_tree(proc: subprocess.Popen[bytes]) -> None:
-    """Terminate the sandbox wrapper and provider descendants without orphaning."""
+def _provider_group(proc: subprocess.Popen[bytes]) -> int | None:
+    """The process group the sandbox wrapper leads, or ``None`` off POSIX.
+
+    ``start_new_session`` makes the wrapper a session leader, so its pid is its
+    group id from the moment it starts. The kernel refuses a session leader both
+    ``setpgid`` and ``setsid``, so the wrapper cannot leave that group and its
+    group id needs no read-back. Recording it here, rather than reading it when
+    the probe is torn down, keeps the group addressable after the wrapper exits:
+    a provider CLI can leave a background child that still holds the output
+    pipes, and that child stays in this group.
+    """
+    return proc.pid if platform_compat.IS_POSIX else None
+
+
+def _kill_provider_tree(proc: subprocess.Popen[bytes], group: int | None = None) -> None:
+    """Terminate the sandbox wrapper and provider descendants without orphaning.
+
+    *group* is signalled even when the wrapper has already exited. Its id
+    cannot name another group while any member of this one is alive, and
+    ``pgroup_exists`` is checked first, so an emptied group is left alone.
+    """
+    if group is not None:
+        with suppress(OSError, ValueError):
+            if platform_compat.pgroup_exists(group):
+                platform_compat.kill_process_group(group, platform_compat.SIGKILL)
     if proc.poll() is not None:
         return
     try:
@@ -345,9 +372,9 @@ def _kill_provider_tree(proc: subprocess.Popen[bytes]) -> None:
             proc.kill()
 
 
-def _stop_provider_process(proc: subprocess.Popen[bytes]) -> None:
+def _stop_provider_process(proc: subprocess.Popen[bytes], group: int | None = None) -> None:
     """Bound process-tree termination and unblock both pipe readers."""
-    _kill_provider_tree(proc)
+    _kill_provider_tree(proc, group)
     for stream in (proc.stdout, proc.stderr):
         if stream is not None:
             with suppress(OSError, ValueError):

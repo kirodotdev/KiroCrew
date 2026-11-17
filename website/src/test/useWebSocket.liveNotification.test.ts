@@ -110,7 +110,7 @@ describe('useWebSocket notification -> MC_LIVE_NOTIFICATION_EVENT', () => {
     act(() => { first.simulateOpen() })
     act(() => { first.simulateClose() })
     // The reconnect backoff opens a second socket; its open handler marks the
-    // catch-up window, which stays open until fetchSlots settles. Delivering
+    // catch-up window, which stays open until its connect snapshot. Delivering
     // the replayed frame inside the same act keeps it in that window.
     act(() => { vi.runOnlyPendingTimers() })
     const second = WS_INSTANCES[1]
@@ -130,7 +130,7 @@ describe('useWebSocket notification -> MC_LIVE_NOTIFICATION_EVENT', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-live-1', slot: 'slot-a', source: 'agent', tool: 'Bash', tool_input: '{}', ts: 7 },
+        data: { id: 'ap-live-1', instance: 'inst-ap-live-1', slot: 'slot-a', source: 'agent', tool: 'Bash', tool_input: '{}', ts: 7 },
       })
     })
     expect(seen).toEqual(['7'])
@@ -148,7 +148,7 @@ describe('useWebSocket notification -> MC_LIVE_NOTIFICATION_EVENT', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-live-2', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 8 },
+        data: { id: 'ap-live-2', instance: 'inst-ap-live-2', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 8 },
       })
     })
     expect(seen).toEqual(['8'])
@@ -178,7 +178,7 @@ describe('useWebSocket notification -> MC_LIVE_NOTIFICATION_EVENT', () => {
       second.simulateOpen()
       second.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-replay-1', slot: 'slot-a', source: 'agent', tool: 'Bash', tool_input: '{}', ts: 10 },
+        data: { id: 'ap-replay-1', instance: 'inst-ap-replay-1', slot: 'slot-a', source: 'agent', tool: 'Bash', tool_input: '{}', ts: 10 },
       })
     })
     expect(seen).toEqual([])

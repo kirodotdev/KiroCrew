@@ -15,6 +15,7 @@ so the test process never exits.
 from __future__ import annotations
 
 import asyncio
+import functools
 import signal
 import sys
 import threading
@@ -31,6 +32,7 @@ from kiro_crew import eventlog_hooks
 from kiro_crew import session as session_mod
 from kiro_crew import skill_usage
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 
 @pytest.fixture
@@ -84,7 +86,11 @@ def _install(monkeypatch: pytest.MonkeyPatch, orch: Any = None) -> dict[Any, Any
     """Install the handlers on the running loop and return them by signal."""
     handlers: dict[Any, Any] = {}
     loop = asyncio.get_running_loop()
-    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, cb: handlers.__setitem__(sig, cb))
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda sig, cb, *args: handlers.__setitem__(sig, functools.partial(cb, *args)),
+    )
     if orch is None:
         orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
     orch._install_shutdown_signal_handlers()
@@ -105,7 +111,53 @@ def _join_force_exit(seams: SimpleNamespace) -> threading.Thread:
 async def test_both_signals_share_one_handler(monkeypatch, seams) -> None:
     handlers = _install(monkeypatch)
     assert set(handlers) == {signal.SIGINT, signal.SIGTERM}
-    assert handlers[signal.SIGINT] is handlers[signal.SIGTERM]
+    assert handlers[signal.SIGINT].func is handlers[signal.SIGTERM].func
+    assert handlers[signal.SIGINT].args == (signal.SIGINT,)
+    assert handlers[signal.SIGTERM].args == (signal.SIGTERM,)
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_sigterm_while_stopping_is_ignored_and_logged_once(
+    monkeypatch, seams
+) -> None:
+    """A service manager can deliver SIGTERM twice during one stop (systemd's
+    control-group kill plus a forwarded one). The repeat must not cut the
+    graceful shutdown short: no force exit, no drain thread, one log line."""
+    event = threading.Event()
+    monkeypatch.setattr(gw, "shutdown_event", event)
+    log = MagicMock(name="logger")
+    monkeypatch.setattr(gw, "logger", log)
+    orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
+    handlers = _install(monkeypatch, orch)
+
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGTERM]()
+
+    assert event.is_set()
+    assert not orch._force_exit_claimed.is_set()
+    assert seams.threads == [] and seams.timers == []
+    seams.compat.hard_exit.assert_not_called()
+    seams.flush.assert_not_called()
+    assert log.warning.call_count == 1
+    # A stop still owns any apply, on every signal.
+    assert seams.compat.cancel_wheel_applies_in_flight.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_still_force_exits_a_sigterm_shutdown(monkeypatch, seams) -> None:
+    """Only a repeat SIGTERM is ignored: Ctrl-C stays the escape from a stuck stop."""
+    monkeypatch.setattr(gw, "logger", MagicMock(name="logger"))
+    orch = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
+    handlers = _install(monkeypatch, orch)
+
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGTERM]()
+    handlers[signal.SIGINT]()
+
+    assert orch._force_exit_claimed.is_set()
+    _join_force_exit(seams)
+    seams.compat.hard_exit.assert_called_once_with(0)
 
 
 @pytest.mark.asyncio
@@ -346,7 +398,7 @@ async def test_the_park_never_returns_once_a_force_exit_is_claimed() -> None:
 
 @pytest.mark.asyncio
 async def test_off_the_main_thread_no_handler_is_installed(monkeypatch, seams) -> None:
-    def _not_main_thread(_sig: Any, _cb: Any) -> None:
+    def _not_main_thread(_sig: Any, _cb: Any, *_args: Any) -> None:
         raise RuntimeError("set_wakeup_fd only works in main thread")
 
     loop = asyncio.get_running_loop()
@@ -509,6 +561,121 @@ async def test_the_exit_path_releases_shared_crew_slices_a_timed_out_shutdown_sk
     # After the runtimes are reaped, before the hard exit.
     assert order == ["reap", "release"]
     no_exit._exit.assert_called_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_the_exit_path_stops_app_backends_a_timed_out_shutdown_never_reached(
+    monkeypatch, seams
+) -> None:
+    """The dashboard cleanup hook that stops the spawned app backends runs only once
+    the web server's in-flight requests drain, so an open log stream lets the
+    graceful deadline cut the shutdown before it. The exit path stops what is still
+    tracked before its hard exit, and leaves an adopted backend running."""
+    import kiro_crew.apps.backend as backend
+    from kiro_crew.apps import hooks_integration
+
+    no_exit = _graceful_exit_seams(monkeypatch)
+    order: list[str] = []
+    no_exit._exit.side_effect = lambda code: order.append("exit")
+    spawned = backend.AppProcess(app_name="spawned-app", proc=MagicMock(name="proc"))
+    adopted = backend.AppProcess(app_name="adopted-app", proc=None, port=4242, adopted_pids=[123])
+    monkeypatch.setattr(backend, "_processes", {"spawned-app": spawned, "adopted-app": adopted})
+
+    def _stop(name: str) -> bool:
+        order.append(f"stop {name}")
+        return True
+
+    monkeypatch.setattr(hooks_integration, "stop_app_backend", _stop)
+    orch = _bare_orchestrator()
+    orch._shutdown = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    await orch._shutdown_and_exit()
+
+    assert order == ["stop spawned-app", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_the_exit_sweep_starts_every_stop_at_once_even_past_the_shared_pool(
+    monkeypatch,
+) -> None:
+    """A stop drops its records before it signals, then waits before escalating, so a
+    stop left queued behind other stops when the hard exit lands leaves a backend
+    nothing records. The exit sweep gives every backend its own worker: with one more
+    backend than the shared subprocess pool has workers, every stop is running at
+    the same moment."""
+    import kiro_crew.apps.backend as backend
+    from kiro_crew.apps import hooks_integration
+    from kiro_crew.executors import subprocess_executor
+
+    count = subprocess_executor()._max_workers + 1
+    names = [f"app-{i}" for i in range(count)]
+    monkeypatch.setattr(
+        backend,
+        "_processes",
+        {name: backend.AppProcess(app_name=name, proc=MagicMock(name=name)) for name in names},
+    )
+    all_running = threading.Barrier(count)
+    met: list[str] = []
+
+    def _stop(name: str) -> bool:
+        # Returns only once every stop is running at once. A stop that had to queue
+        # never arrives, so the sweep's own budget ends the wait and the barrier is
+        # broken below to free the workers.
+        try:
+            all_running.wait(timeout=FALLBACK_TIMEOUT_SECS)
+        except threading.BrokenBarrierError:
+            return False
+        met.append(name)
+        return True
+
+    monkeypatch.setattr(hooks_integration, "stop_app_backend", _stop)
+
+    try:
+        await hooks_integration.stop_spawned_backends_at_exit()
+    finally:
+        all_running.abort()
+
+    assert sorted(met) == sorted(names)
+
+
+@pytest.mark.asyncio
+async def test_the_exit_sweep_waits_for_a_stop_the_cleanup_hook_left_running(
+    monkeypatch, caplog
+) -> None:
+    """The cleanup hook's sweep can reach its deadline with a stop still in its wait
+    before SIGKILL, and that stop already dropped the backend's records, so the
+    tracking table is empty at exit. The exit sweep still waits for it: the stop
+    finishes, and is logged, before the hard exit."""
+    import logging
+
+    from kiro_crew.apps import hooks_integration
+
+    started = threading.Event()
+    release = threading.Event()
+    tracked = [["slow-app"], []]
+
+    def _names() -> list[str]:
+        names = tracked.pop(0)
+        if not names:
+            release.set()  # the exit sweep has looked; only then may the stop end
+        return names
+
+    def _stop(name: str) -> bool:
+        started.set()
+        return release.wait(timeout=FALLBACK_TIMEOUT_SECS)
+
+    monkeypatch.setattr(hooks_integration, "spawned_backend_names", _names)
+    monkeypatch.setattr(hooks_integration, "stop_app_backend", _stop)
+    # A zero budget: the cleanup sweep returns at its deadline with the stop unfinished.
+    monkeypatch.setattr(hooks_integration, "_BACKEND_STOP_BUDGET_SECS", 0)
+    await hooks_integration._stop_spawned_backends()
+    await async_wait_until(started.is_set, describe=lambda: "the cleanup stop never started")
+    monkeypatch.setattr(hooks_integration, "_BACKEND_STOP_BUDGET_SECS", FALLBACK_TIMEOUT_SECS)
+
+    with caplog.at_level(logging.INFO, logger=hooks_integration.logger.name):
+        await hooks_integration.stop_spawned_backends_at_exit()
+
+    assert "Stopped app backend on gateway shutdown: slow-app" in caplog.messages
 
 
 async def _reached(barrier: asyncio.Event, task: asyncio.Task[Any]) -> None:
@@ -680,3 +847,34 @@ async def test_a_force_exit_claimed_during_the_clean_exit_mark_still_owns_the_ex
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("test_mode", [False, True])
+async def test_the_teardown_awaits_one_skill_view_prune_after_the_sessions_close(
+    monkeypatch, test_mode
+) -> None:
+    # Each closed runtime prunes its views on a daemon thread the hard exit can cut,
+    # and a home stopped then deleted has no next boot drain. So the
+    # teardown awaits one more prune once every session has ended and the cut turns
+    # have saved; test mode skips it, like the boot drain.
+    from slack_gateway_helpers import _make_orchestrator, _mock_sessions
+
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+    order: list[str] = []
+
+    async def _unwound(_state: Any) -> None:
+        order.append("unwound")
+
+    monkeypatch.setattr(gw, "wait_for_unwinding_turns", _unwound)
+    monkeypatch.setattr(
+        acp_driver, "prune_skill_view_aliases_at_stop", lambda: order.append("prune") or 0
+    )
+    orch = _make_orchestrator(test_mode=test_mode)
+    orch.sessions = _mock_sessions()
+    orch.sessions.close_all = AsyncMock(side_effect=lambda: order.append("close_all"))
+
+    await orch._stop_services_and_sessions()
+
+    assert order == ["close_all", "unwound"] + ([] if test_mode else ["prune"])

@@ -3,12 +3,14 @@
 ``test_cloud_ui.py`` pins the cursor-key mapping, the cursor-menu guard and the
 Ctrl-C re-raise. This file pins the rest of :mod:`kiro_crew.cloud.ui`:
 
-* ``prompt`` / ``confirm`` fall back to their default on empty input and on EOF,
-  which is what an unattended ``curl | bash`` install sees;
+* ``prompt`` / ``confirm`` fall back to their default on empty input; on EOF
+  ``prompt`` keeps its default and ``confirm`` answers no, because no answer is
+  never consent;
 * ``choose`` uses the numbered fallback off a TTY, and that fallback re-asks on a
-  non-number or an out-of-range number;
+  non-number or an out-of-range number typed at a terminal, while a bad piped
+  answer takes the default so the next piped line stays for the next question;
 * the cursor picker enters cbreak mode, redraws in place, and restores the terminal
-  attributes however it exits;
+  attributes however it exits; past nine items it reads a whole typed number;
 * ``_read_key`` reads a whole arrow-key escape sequence;
 * ``Steps``, the one-line helpers and ``Spinner`` in both modes.
 
@@ -96,9 +98,9 @@ class TestConfirm:
         assert asked == [f"  ? Go? {hint} "]
 
     @pytest.mark.parametrize("default", [True, False])
-    def test_eof_takes_the_default(self, monkeypatch, default) -> None:
+    def test_eof_is_no_whatever_the_default(self, monkeypatch, default) -> None:
         _answers(monkeypatch, [EOFError])
-        assert ui.confirm("Go?", default=default) is default
+        assert ui.confirm("Go?", default=default) is False
 
 
 OPTIONS = [("Small", "2 vCPU"), ("Medium", ""), ("Large", "8 vCPU")]
@@ -123,6 +125,7 @@ class TestNumberedPicker:
         )
 
     def test_a_bad_answer_is_asked_again(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(ui.sys, "stdin", _TtyStdin())
         asked = _answers(monkeypatch, ["two", "4", "0", "3"])
         assert ui.choose("Size", OPTIONS) == 2
         assert len(asked) == 4
@@ -133,6 +136,33 @@ class TestNumberedPicker:
     def test_eof_takes_the_recommended_option(self, monkeypatch) -> None:
         _answers(monkeypatch, [EOFError])
         assert ui.choose("Size", OPTIONS, default_index=2) == 2
+
+    @pytest.mark.parametrize("bad", ["y", "4", "0"])
+    def test_a_bad_piped_answer_takes_the_default_and_leaves_the_next_line(
+        self, monkeypatch, capsys, bad
+    ) -> None:
+        """Piped input is read once: the next line stays for the next question."""
+        monkeypatch.setattr(ui.sys, "stdin", io.StringIO(""))
+        # Three replies so a loop that wrongly re-reads fails on the len(asked)
+        # assertion below rather than erroring on an exhausted script.
+        asked = _answers(monkeypatch, [bad, "kept for the next prompt", "3"])
+        assert ui.choose("Size", OPTIONS, default_index=1) == 1
+        assert len(asked) == 1
+        out = capsys.readouterr().out
+        assert out.endswith(f"⚠ {bad!r} is not a choice; using 2 (Medium).\n")
+        assert "Enter a number" not in out
+
+    def test_a_good_piped_answer_is_taken(self, monkeypatch) -> None:
+        monkeypatch.setattr(ui.sys, "stdin", io.StringIO(""))
+        _answers(monkeypatch, ["3"])
+        assert ui.choose("Size", OPTIONS) == 2
+
+
+class _TtyStdin(io.StringIO):
+    """A stdin that reports a terminal, for the numbered picker's re-ask path."""
+
+    def isatty(self) -> bool:
+        return True
 
 
 class _Stdin:
@@ -183,6 +213,14 @@ class TestCursorPicker:
         monkeypatch.setattr(ui.sys, "stdin", _Stdin("2"))
         assert ui.choose("Size", OPTIONS) == 1
 
+    @pytest.mark.parametrize(("keys", "picked"), [("13", 12), ("1\r", 0), ("2", 1), ("15\r", 0)])
+    def test_a_menu_past_nine_reads_the_whole_number(
+        self, monkeypatch, terminal, keys, picked
+    ) -> None:
+        options = [(f"Item {n}", "") for n in range(1, 14)]
+        monkeypatch.setattr(ui.sys, "stdin", _Stdin(keys))
+        assert ui.choose("Stacks", options) == picked
+
     def test_the_terminal_is_restored_when_reading_fails(self, monkeypatch, terminal) -> None:
         def _boom() -> str:
             raise KeyboardInterrupt
@@ -217,11 +255,12 @@ class TestKeysAndLines:
         ]
 
     def test_an_empty_menu_finishes_at_once(self) -> None:
-        assert ui._apply_choice_key("j", 0, 0) == (0, True)
+        assert ui._apply_choice_key("j", 0, 0) == (0, True, "")
 
     def test_an_unknown_key_changes_nothing(self) -> None:
-        assert ui._apply_choice_key("x", 1, 3) == (1, False)
-        assert ui._apply_choice_key("9", 1, 3) == (1, False)  # a digit past the end
+        assert ui._apply_choice_key("x", 1, 3) == (1, False, "")
+        assert ui._apply_choice_key("9", 1, 3) == (1, False, "")  # a digit past the end
+        assert ui._apply_choice_key("²", 1, 3) == (1, False, "")  # not a decimal digit
 
 
 class TestOutput:

@@ -27,6 +27,7 @@ import TurnBlock from '../pages/chat/TurnBlock'
 import { createDisplayItemReconciler, hasToolStep, isSynthesisInjection, REASONING_ROLES } from '../pages/chat/groupDisplayItems'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { injectOpensTurn } from '../pages/chat/RecoveryCard'
+import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
 import {
   type MessageRenderer,
   type MessageRenderContext,
@@ -44,6 +45,9 @@ import NewMessagesDivider from './NewMessagesDivider'
 
 export interface ChatMessageListProps {
   messages: ChatMessage[]
+  /** The session's queued entries when `messages` leaves them out; handed to
+   *  the renderers as `ctx.queued`. */
+  queued?: readonly ChatMessage[]
   running: boolean
   contentWidth?: string
   /** Resolve a pending approval. MUST return the request's promise: rejection
@@ -64,7 +68,7 @@ export interface ChatMessageListProps {
   /** Offer the standing-trust tier on pending-approval rows. FAIL-CLOSED: set it
    *  only when `onApprove` routes to an endpoint that RECORDS standing trust
    *  (the slot approve endpoint carries the decision verbatim). Hosts resolving
-   *  through the one-shot `resolveApproval` endpoint must leave it unset — that
+   *  through the one-shot `/api/approvals/{id}/{action}` endpoint must leave it unset — that
    *  path has no trust verb, so a Trust offer there overstates the grant
    *  (#5400, #5434). */
   canTrust?: boolean
@@ -79,6 +83,9 @@ export interface ChatMessageListProps {
    *  Renderers read it as `ctx.toolDetails`; a `renderTool` row ignores it. */
   toolDetails?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a directory in the host's side panel; see
+   *  `MessageRenderContext.onFolderOpen`. */
+  onFolderOpen?: (path: string) => void
   /** Open an artifact link in the host's side panel; see
    *  `MessageRenderContext.onArtifactOpen`. */
   onArtifactOpen?: (slug: string) => void
@@ -206,6 +213,7 @@ const ListRow = memo(function ListRow({ item, index, renderItem }: {
 
 const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageListProps>(function ChatMessageList({
   messages,
+  queued,
   running,
   contentWidth = '900px',
   onApprove,
@@ -214,6 +222,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   handOff = true,
   toolDetails = true,
   onFileOpen,
+  onFolderOpen,
   onArtifactOpen,
   onQuote,
   onAsk,
@@ -249,6 +258,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       // A sub-agent completion the card cannot parse stays internal — the model
       // sees it, the reader does not.
       if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
+      if (isHiddenSupersededSteer(messages, i)) continue
       if (GROUPED_ROLES.includes(messages[i].role)) {
         if (!group.length) groupStart = i
         group.push(messages[i])
@@ -342,7 +352,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   const renderMessage = useCallback((m: ChatMessage, i: number) => {
     const key = msgKey(m, i)
     const wrapper = (children: React.ReactNode, isUser = false) => (
-      <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''}`}>
           <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
             {children}
@@ -351,7 +361,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       </div>
     )
     const row = (children: React.ReactNode, tight = false) => (
-      <div key={key} className={`px-4 mx-auto w-full ${tight ? 'py-0' : 'py-1'}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={key} className={`px-4 mx-auto w-full ${tight ? 'py-0' : 'py-1'}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         {children}
       </div>
     )
@@ -373,9 +383,11 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const ctx: MessageRenderContext = {
       index: i,
       messages: versioned.messages,
+      queued,
       running,
       key,
       onFileOpen,
+      onFolderOpen,
       onArtifactOpen,
       onQuote,
       onAsk,
@@ -390,7 +402,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       row,
     }
     return withDivider(entry.render(m, ctx))
-  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
+  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
 
 
   // Render a TurnItem (single or group)
@@ -441,7 +453,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const batchMetas = unresolvedPerms.map(m => m.meta ?? {})
 
     return (
-      <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }} data-chat-scope="">
         <CollapsibleToolGroup
           count={nonPerm.length}
           // This host groups only reasoning rows and permissions, so the rows it

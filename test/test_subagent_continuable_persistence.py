@@ -1157,7 +1157,8 @@ class TestContinuationMemoryMode:
         # The ASYNC entry, because this test body is a coroutine: the sync one
         # takes the accept and the claim as BEGIN IMMEDIATE on this loop, and
         # each waits on the lock the store's writer thread holds across a query
-        # (`_the_continuation_path_takes_no_store_call_on_the_loop`).
+        # (`test_subagent_continuable_runs.py::
+        # test_the_continuation_path_takes_no_store_call_on_the_loop`).
         info = await manager.continue_conversation_async(conv_id, "follow up")
         assert info is not None and not info.error
         assert not info._memory_mode_ready

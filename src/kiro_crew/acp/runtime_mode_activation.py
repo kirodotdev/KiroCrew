@@ -275,7 +275,10 @@ async def _spawn_agent_not_loaded_reason(self: AcpRuntime, spawn_agent: str) -> 
     so the spawn path itself gains no gate and no failure mode
     (harness-parity H13): the host answers from
     ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``, never "is kiro", and a host added
-    later that reads markdown is handed the generic text unchanged.
+    later that reads markdown is handed the generic text unchanged. A missing
+    spec named by ``agent.default_agent`` that setup does not write gets the
+    setting as its remedy instead
+    (``side_readonly_spec.missing_default_agent_explanation``).
     """
     if not self._harness.reads_markdown_agent_specs:
         markdown_spec = await asyncio.to_thread(
@@ -295,6 +298,18 @@ async def _spawn_agent_not_loaded_reason(self: AcpRuntime, spawn_agent: str) -> 
                 f"Switch agent.acp_backend to {capable} or add a JSON spec for this "
                 f"agent."
             )
+    # Setup rewrites only Kiro Crew's own specs, so for a configured
+    # agent.default_agent it does not write, the remedy is the setting.
+    from kiro_crew.dashboard.side_readonly_spec import missing_default_agent_explanation
+
+    default = await asyncio.to_thread(missing_default_agent_explanation, spawn_agent)
+    if default is not None:
+        cause, remedy = default
+        return (
+            f"{cause} Refusing to run the backend's own default agent in its place, "
+            "which would silently drop every Kiro Crew tool the agent's prompt "
+            f"relies on. {remedy}"
+        )
     return (
         f"Its ~/.kiro/agents/{spawn_agent}.json is missing, or the backend "
         f"refused to load it. Refusing to run the backend's own default "

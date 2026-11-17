@@ -65,22 +65,23 @@ async function main() {
     if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
     return false
   }
-  await stubDashboardApi(page, { slots, extra })
+  await stubDashboardApi(page, {
+    slots, extra,
+    localStorageEntries: {
+      'mc-theme': 'dark',
+      'mc-onboarded': '1',
+      'mc-active-slot-chat': SLOT,
+      ['mc-activity-open:' + SLOT]: 'true',
+      ['mc-panel-tabs:' + SLOT]: JSON.stringify({ activeId: 'files', tabs: [{ id: 'files', kind: 'files', title: 'Files' }] }),
+      'mc-files-rail-open': '1',
+      'mc-files-rail-w': '300',
+      'mc-side-panel-width': '520',
+      ['mc-git-panel-opened:' + SLOT + ':' + PROJECT]: '1',
+      'mc-chat-config': JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }),
+    },
+  })
   logPageProblems(page)
 
-  await page.addInitScript(([slot, project]) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot-chat', slot)
-    localStorage.setItem('mc-activity-open:' + slot, 'true')
-    localStorage.setItem('mc-panel-tabs:' + slot, JSON.stringify({ activeId: 'files', tabs: [{ id: 'files', kind: 'files', title: 'Files' }] }))
-    localStorage.setItem('mc-files-rail-open', '1')
-    localStorage.setItem('mc-files-rail-w', '300')
-    localStorage.setItem('mc-side-panel-width', '520')
-    localStorage.setItem('mc-git-panel-opened:' + slot + ':' + project, '1')
-    localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }))
-  }, [SLOT, PROJECT])
   await page.goto(base + '/?sid=' + encodeURIComponent(SLOT), { waitUntil: 'domcontentloaded' })
   await page.waitForFunction(() => (document.querySelector('file-tree-container')?.shadowRoot?.textContent ?? '').includes('README'), null, { timeout: 20000 })
   await page.waitForTimeout(800)

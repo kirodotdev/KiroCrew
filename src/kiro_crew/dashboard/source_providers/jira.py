@@ -13,7 +13,7 @@ import base64
 import json
 import os
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import aiohttp
 
@@ -293,8 +293,8 @@ def _jira_fix_version_milestone(version: dict[str, Any]) -> dict[str, str]:
     }
 
 
-async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
-    """Fetch a Jira issue via the REST API using configured credentials.
+async def _jira_request_headers(host: str) -> dict[str, str]:
+    """The request headers, with the credential resolved for *host*.
 
     Raises ValueError with a machine-readable prefix when no credentials are
     configured (frontend uses this to show the link-out fallback).
@@ -302,25 +302,114 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
     # Offload config I/O to a thread — KiroCrewConfig.load() is synchronous
     # (stats, reads, json.loads, jsonschema.validate) and must never run on
     # the event loop. Same discipline as hosts._load_source_link_settings.
-    auth_pair = await asyncio.to_thread(_get_jira_auth, ref.host)
+    auth_pair = await asyncio.to_thread(_get_jira_auth, host)
     if auth_pair is None:
-        per_host_name = jira_host_token_name(ref.host)
+        per_host_name = jira_host_token_name(host)
         raise ValueError(
             "jira_no_credentials: No Jira credentials configured for "
-            f"{ref.host}. Add a jira_auth entry to config.json and set "
+            f"{host}. Add a jira_auth entry to config.json and set "
             f"JIRA_API_TOKEN (or {per_host_name} for multi-host) "
             "in your .env file. This reader uses a Jira API token and is "
             "separate from the Atlassian MCP sign-in; signing in to that "
             "MCP server does not configure it."
         )
     email, token = auth_pair
-    is_cloud = _jira_is_cloud(ref.host)
+    is_cloud = _jira_is_cloud(host)
     if is_cloud and not email:
         # Cloud API tokens need Basic auth (email:token); Bearer gets a bare 403.
         raise ValueError(
             f"jira_config_error: jira_auth.email (or user) is required for Jira Cloud "
-            f"host {ref.host}. Add the Atlassian account email to its jira_auth entry."
+            f"host {host}. Add the Atlassian account email to its jira_auth entry."
         )
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if is_cloud and email:
+        # Basic auth: email:token
+        cred = base64.b64encode(f"{email}:{token}".encode()).decode()
+        headers["Authorization"] = f"Basic {cred}"
+    else:
+        # Bearer auth (PAT) for Server/DC
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+async def _jira_get_json(
+    url: str, headers: dict[str, str], *, host: str, subject: str, not_found: str, what: str
+) -> Any:
+    """GET *url* and decode its JSON, mapping every failure to SourceProviderError.
+
+    *subject* finishes the access-denied sentence ("this issue"), *not_found* is
+    the whole 404 message and *what* names the read in the other messages.
+    Redirects are not followed, so the credential is only ever sent to *host*.
+    """
+    timeout = aiohttp.ClientTimeout(total=_JIRA_FETCH_TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=False) as resp:
+                if resp.status == 401:
+                    raise SourceProviderError(
+                        "Jira authentication failed. For Cloud, verify both email and API token in "
+                        "dashboard.jira_auth settings."
+                    )
+                if resp.status == 403:
+                    raise SourceProviderError(
+                        "Jira access denied. The configured token may lack "
+                        f"permission to read {subject}."
+                    )
+                if resp.status == 404:
+                    raise SourceProviderError(not_found)
+                if resp.status != 200:
+                    raise SourceProviderError(f"Jira returned HTTP {resp.status} for {what}.")
+                # Bound response size to prevent memory exhaustion from an
+                # oversized or malicious payload before JSON decoding. Streamed
+                # to EOF: a single read(n) resolves on the first buffered chunk
+                # of a chunked response and would hand json.loads a truncated
+                # document.
+                body = await read_capped_response(resp, sanitize._MAX_PAYLOAD_BYTES)
+                if len(body) > sanitize._MAX_PAYLOAD_BYTES:
+                    raise SourceProviderError(f"Jira response for {what} exceeds the size limit.")
+                try:
+                    return json.loads(body)
+                except RecursionError:
+                    raise SourceProviderError(f"Jira response for {what} is too deeply nested.")
+    except SourceProviderError:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise SourceProviderError(f"Could not reach Jira at {host}: {type(exc).__name__}") from exc
+    except ValueError as exc:
+        raise SourceProviderError(f"Jira returned an unparseable response for {what}.") from exc
+
+
+async def search_jira_issues(host: str, params: list[tuple[str, str]]) -> Any:
+    """Run one JQL search on *host* and return the decoded response.
+
+    Cloud answers on ``/rest/api/3/search/jql`` (token paging, no total; the
+    older ``/search`` is removed there); Server/Data Center on
+    ``/rest/api/2/search`` (``startAt`` paging with a total). *params* is the
+    query string, already holding the JQL the caller built and scoped.
+
+    shortcut: no context path, so a Server/DC instance served under ``/jira`` is
+    not searchable; add a base path to the request when one needs it.
+    """
+    headers = await _jira_request_headers(host)
+    path = "/rest/api/3/search/jql" if _jira_is_cloud(host) else "/rest/api/2/search"
+    return await _jira_get_json(
+        f"https://{host}{path}?{urlencode(params, quote_via=quote)}",
+        headers,
+        host=host,
+        subject="this project",
+        not_found=f"Jira issue search is not available on {host}.",
+        what="the issue search",
+    )
+
+
+async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
+    """Fetch a Jira issue via the REST API using configured credentials.
+
+    Raises ValueError with a machine-readable prefix when no credentials are
+    configured (frontend uses this to show the link-out fallback).
+    """
+    headers = await _jira_request_headers(ref.host)
+    is_cloud = _jira_is_cloud(ref.host)
     # Cloud uses API v3 (ADF description); Server/DC uses v2 (wiki/text).
     api_version = "3" if is_cloud else "2"
     issue_key = f"{ref.owner}-{ref.number}" if ref.owner else f"{ref.repo}-{ref.number}"
@@ -337,61 +426,14 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         f"comment,priority,reporter,created,updated,resolution,resolutiondate,"
         f"issuelinks,fixVersions"
     )
-
-    # Build auth header
-    headers: dict[str, str] = {"Accept": "application/json"}
-    if is_cloud and email:
-        # Basic auth: email:token
-        cred = base64.b64encode(f"{email}:{token}".encode()).decode()
-        headers["Authorization"] = f"Basic {cred}"
-    else:
-        # Bearer auth (PAT) for Server/DC
-        headers["Authorization"] = f"Bearer {token}"
-
-    timeout = aiohttp.ClientTimeout(total=_JIRA_FETCH_TIMEOUT)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(issue_url, allow_redirects=False) as resp:
-                if resp.status == 401:
-                    raise SourceProviderError(
-                        "Jira authentication failed. For Cloud, verify both email and API token in "
-                        "dashboard.jira_auth settings."
-                    )
-                if resp.status == 403:
-                    raise SourceProviderError(
-                        "Jira access denied. The configured token may lack "
-                        "permission to read this issue."
-                    )
-                if resp.status == 404:
-                    raise SourceProviderError(f"Jira issue {issue_key} not found on {ref.host}.")
-                if resp.status != 200:
-                    raise SourceProviderError(f"Jira returned HTTP {resp.status} for {issue_key}.")
-                # Bound response size to prevent memory exhaustion from an
-                # oversized or malicious payload before JSON decoding. Streamed
-                # to EOF: a single read(n) resolves on the first buffered chunk
-                # of a chunked response and would hand json.loads a truncated
-                # document.
-                body = await read_capped_response(resp, sanitize._MAX_PAYLOAD_BYTES)
-                if len(body) > sanitize._MAX_PAYLOAD_BYTES:
-                    raise SourceProviderError(
-                        f"Jira response for {issue_key} exceeds the size limit."
-                    )
-                try:
-                    data = json.loads(body)
-                except RecursionError:
-                    raise SourceProviderError(
-                        f"Jira response for {issue_key} is too deeply nested."
-                    )
-    except SourceProviderError:
-        raise
-    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-        raise SourceProviderError(
-            f"Could not reach Jira at {ref.host}: {type(exc).__name__}"
-        ) from exc
-    except ValueError as exc:
-        raise SourceProviderError(
-            f"Jira returned an unparseable response for {issue_key}."
-        ) from exc
+    data = await _jira_get_json(
+        issue_url,
+        headers,
+        host=ref.host,
+        subject="this issue",
+        not_found=f"Jira issue {issue_key} not found on {ref.host}.",
+        what=issue_key,
+    )
 
     if not isinstance(data, dict):
         raise SourceProviderError("Jira returned an invalid issue payload")
@@ -524,4 +566,6 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         "comments": comments,
         "linkedChanges": _jira_linked_changes(fields, base_url),
         "partialSections": partial_sections,
+        # The comments ride the one issue read, so no section read can fail alone.
+        "failedSections": [],
     }

@@ -1182,8 +1182,7 @@ def test_the_retry_backoff_is_intercepted_not_slept(tmp_path: Path) -> None:
     slices out of the lane (``sleep $(( attempt * 5 ))`` for attempts 1..5), so a
     lane that changes its budget changes this list, on purpose.
     """
-    if not UPSERT_LANES:
-        pytest.skip("no lane slices an upsert harness")
+    assert UPSERT_LANES, "no lane slices an upsert harness"
     lane = UPSERT_LANES[0]
     result = _run(
         lane,

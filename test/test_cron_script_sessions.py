@@ -14,14 +14,16 @@ import urllib.error
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import cron_script
 from kiro_crew.cron_script import ScriptContext
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 _JOB = "nightly-dispatch"
-# Assembled at runtime so the source never holds a credential-shaped literal.
-_FAKE_KEY = "AKIA" + "1234567890123456"
+# Assembled at runtime so the source never holds a credential-shaped literal: a
+# GitHub token with a valid checksum, which is redacted wherever it appears.
+_FAKE_KEY = github_classic(seed=11)
 
 
 class _Resp:
@@ -339,37 +341,6 @@ class TestCrewLogAppend:
         (req,) = gateway.seen
         assert _FAKE_KEY not in req.data.decode()
 
-    def test_a_credential_spanning_a_key_and_its_value_still_sends_valid_json(self, ctx, gateway):
-        """Redacted string by string, never as one serialized blob: a pattern that
-        matches across ``"aws_secret_access_key": "..."`` would otherwise eat the
-        delimiter and leave text that is not JSON, and the script would crash with a
-        decode error instead of sending the record. The shape survives, nested strings
-        are still scrubbed, and non-string scalars pass through untouched."""
-        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
-        secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCY" + "EXAMPLEKEY"
-        # The serialized blob of this record is what the redactor turns into non-JSON.
-        blob = json.dumps({"creds": {"aws_secret_access_key": secret}})
-        with pytest.raises(json.JSONDecodeError):
-            json.loads(cron_script.redact(blob))
-
-        ctx.crew_log_append(
-            "stock_check",
-            {
-                "creds": {"aws_secret_access_key": secret},
-                "rows": [{"key": f"found {_FAKE_KEY}"}, 7],
-                "n": 1,
-            },
-        )
-
-        (req,) = gateway.seen
-        sent = json.loads(req.data)
-        assert sent["type"] == "stock_check"
-        assert _FAKE_KEY not in req.data.decode()
-        assert secret not in req.data.decode()
-        assert set(sent["data"]) == {"creds", "rows", "n"}
-        assert set(sent["data"]["creds"]) == {"aws_secret_access_key"}
-        assert sent["data"]["rows"][1] == 7 and sent["data"]["n"] == 1
-
     def test_a_credential_that_needs_its_key_to_match_is_still_redacted(self, ctx, gateway):
         """``Bearer <token>`` alone passes the redactor and ``authorization: Bearer
         <token>`` does not. The value is judged beside its key, so the token is replaced
@@ -393,8 +364,8 @@ class TestCrewLogAppend:
         assert sent["list"] == [bearer]
 
     def test_a_value_with_two_tokens_loses_both(self, ctx, gateway):
-        """The keyed judgement runs on the cleaned value, so a header carrying an access
-        key the bare scrub catches AND a bearer only its key reveals keeps neither."""
+        """The keyed judgement runs on the cleaned value, so a header carrying a token
+        the bare scrub catches AND a bearer only its key reveals keeps neither."""
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
         bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
 
@@ -407,8 +378,8 @@ class TestCrewLogAppend:
 
     def test_two_keys_that_redact_alike_both_survive(self, ctx, gateway):
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
-        first = "AKIA" + "AAAAAAAAAAAAAAAA"
-        second = "AKIA" + "BBBBBBBBBBBBBBBB"
+        first = github_classic(seed=21)
+        second = github_classic(seed=22)
 
         ctx.crew_log_append("stock_check", {first: 1, second: 2})
 

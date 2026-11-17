@@ -183,7 +183,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
         {/* Group 1: Counting toward context */}
         <GroupHeader
           label={i18nT('pages.overview.skillsTab.budget_group_counting')}
-          right={i18nT('pages.overview.skillsTab.budget_group_counting_detail', { count: String(countingRows.length), pct: String(hotPct) })}
+          right={i18nT('pages.overview.skillsTab.budget_group_counting_detail', { count: countingRows.length, pct: String(hotPct) })}
         />
         {countingRows.map(row => (
           <BudgetRow
@@ -200,7 +200,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
         {/* Group 2: Never fired in 30 days */}
         <GroupHeader
           label={i18nT('pages.overview.skillsTab.budget_group_cold')}
-          right={i18nT('pages.overview.skillsTab.budget_group_cold_detail', { count: String(coldRows.length), size: coldKB })}
+          right={i18nT('pages.overview.skillsTab.budget_group_cold_detail', { count: coldRows.length, size: coldKB })}
         />
         {coldRows.map(row => (
           <BudgetRow

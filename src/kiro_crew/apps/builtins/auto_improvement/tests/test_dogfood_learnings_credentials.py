@@ -18,6 +18,13 @@ import pytest
 from kiro_crew.apps.builtins.auto_improvement.tests.dogfood_learnings_helpers import (  # noqa: F401
     _cwd_is_the_scratch_dir,
 )
+from kiro_crew.testing.synthetic_credentials import aws_secret, github_classic, synth
+
+#: An AWS secret of the real shape (40 characters): after its label the redactor
+#: removes only a value of that shape.
+_SECRET = aws_secret(seed=61)
+#: A GitLab personal access token in its published form (``glpat-`` and 20 characters).
+_GITLAB_TOKEN = "glpat-" + synth(20, seed=7)
 
 
 class TestSubprocessFallbackIsAudited:
@@ -90,19 +97,19 @@ class TestActivityFeedIsRedacted:
     def test_a_credential_in_agent_text_is_redacted(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import _redact_activity
 
-        event = {"kind": "tool", "detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"}
+        event = {"kind": "tool", "detail": "aws_access_" f"key_id={_GITLAB_TOKEN}"}
         out = _redact_activity(event)
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(out)
+        assert _GITLAB_TOKEN not in str(out)
 
     def test_nested_agent_events_are_reached(self) -> None:
         """The agent event is nested under an "agent" key — redacting only the top level
         would miss the field that actually carries the text."""
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import _redact_activity
 
-        nested = {"agent": {"detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"}}
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(_redact_activity(nested))
-        listed = {"agent": {"lines": ["aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"]}}
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(_redact_activity(listed))
+        nested = {"agent": {"detail": "aws_access_" f"key_id={_GITLAB_TOKEN}"}}
+        assert _GITLAB_TOKEN not in str(_redact_activity(nested))
+        listed = {"agent": {"lines": ["aws_access_" f"key_id={_GITLAB_TOKEN}"]}}
+        assert _GITLAB_TOKEN not in str(_redact_activity(listed))
 
     def test_ordinary_text_and_non_strings_survive(self) -> None:
         """Fail-open feed: it must stay readable, and numbers must stay numbers."""
@@ -116,8 +123,8 @@ class TestActivityFeedIsRedacted:
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import RunSupervisor
 
         sup = RunSupervisor()
-        sup._on_agent_activity({"detail": "aws_access_" "key_id=glpat-IOSFODNN7EXAMPLE"})
-        assert "glpat-IOSFODNN7EXAMPLE" not in str(list(sup._state.activity))
+        sup._on_agent_activity({"detail": "aws_access_" f"key_id={_GITLAB_TOKEN}"})
+        assert _GITLAB_TOKEN not in str(list(sup._state.activity))
 
 
 class TestFallbackAuditsEveryToolItUses:
@@ -178,8 +185,8 @@ class TestFallbackAuditsEveryToolItUses:
         import kiro_crew.sel as sel_mod
 
         monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
-        ar._audit_fallback_tool(tool="Bash", detail="aws s3 cp glpat-IOSFODNN7EXAMPLE", cwd=None)
-        assert "glpat-IOSFODNN7EXAMPLE" not in logged[0]["metadata"]["target"]
+        ar._audit_fallback_tool(tool="Bash", detail=f"aws s3 cp {_GITLAB_TOKEN}", cwd=None)
+        assert _GITLAB_TOKEN not in logged[0]["metadata"]["target"]
         assert "REDACTED" in logged[0]["metadata"]["target"]
 
     def test_a_broken_redactor_never_emits_raw_agent_text(self, monkeypatch) -> None:
@@ -272,7 +279,7 @@ class TestBrowserServedFeedsFailClosed:
         from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
 
-        assert "REDACTED" in pr_watchers._redact("aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE")
+        assert "REDACTED" in pr_watchers._redact("aws_secret_" "access_key=" + _SECRET)
         assert pr_watchers._redact("gate: build GREEN") == "gate: build GREEN"
         assert R._redact_activity({"d": "propose: 3 candidates"}) == {"d": "propose: 3 candidates"}
 
@@ -298,7 +305,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
         this fix changed nothing."""
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as P
 
-        targets = P._write_protected_targets()
+        targets = P.write_protected_targets()
         for t in targets:
             assert Path(t).is_dir(), f"{t} is not a directory — the mask would be a no-op"
 
@@ -308,7 +315,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as P
         from kiro_crew.security import write_protected_home_paths
 
-        masked = {Path(t) for t in P._write_protected_targets()}
+        masked = {Path(t) for t in P.write_protected_targets()}
         home = Path.home()
         native = set(home_leaves())
         for rel in write_protected_home_paths():
@@ -330,7 +337,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
         crew_dir = tmp_path / ".kiro" / "crew"
         crew_dir.mkdir(parents=True, exist_ok=True)
 
-        masked = {Path(t) for t in P._write_protected_targets()}
+        masked = {Path(t) for t in P.write_protected_targets()}
         assert crew_dir in masked, "Kiro Crew's own config dir must still be hidden"
         assert not native_parents & masked, sorted(str(p) for p in native_parents & masked)
 
@@ -354,7 +361,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
 
         src = inspect.getsource(P._run)
         assert (
-            "extra_hidden_dirs=_write_protected_targets()" in src
+            "extra_hidden_dirs=write_protected_targets()" in src
         ), "the sandbox spawn does not mask Kiro Crew's write-protected paths"
 
     def test_a_broken_helper_still_runs_the_suite(self, monkeypatch) -> None:
@@ -366,7 +373,7 @@ class TestAgentTestsCannotWriteKiroCrewConfig:
             raise RuntimeError("unavailable")
 
         monkeypatch.setattr(security_mod, "write_protected_home_paths", _boom)
-        assert P._write_protected_targets() == ()
+        assert P.write_protected_targets() == ()
 
 
 class TestFallbackAgentCannotSeeCredentials:
@@ -903,9 +910,9 @@ class TestCommitMessageRedactionFailsClosed:
         # not exercising the broken-redactor path this test exists for.
         monkeypatch.setattr(commit_mod, "redact", _boom)
         body = tmp_path / "fp.pr.md"
-        body.write_text("# aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE\n", encoding="utf-8")
+        body.write_text("# aws_secret_" f"access_key={_GITLAB_TOKEN}\n", encoding="utf-8")
         subject = commit_mod._commit_message(body, "deadbeefcafe")
-        assert "glpat-IOSFODNN7EXAMPLE" not in subject, "an unscanned credential reached the commit"
+        assert _GITLAB_TOKEN not in subject, "an unscanned credential reached the commit"
         assert subject == "auto-improvement: apply verified change deadbeefcafe"
 
     def test_driver_commit_message_falls_back_on_a_broken_redactor(self, monkeypatch) -> None:
@@ -916,8 +923,8 @@ class TestCommitMessageRedactionFailsClosed:
             raise RuntimeError("scanner down")
 
         monkeypatch.setattr(security_mod, "redact", _boom)
-        out = Driver._redact_commit_message("leak aws_secret_" "access_key=glpat-IOSFODNN7EXAMPLE")
-        assert "glpat-IOSFODNN7EXAMPLE" not in out
+        out = Driver._redact_commit_message("leak aws_secret_" f"access_key={_GITLAB_TOKEN}")
+        assert _GITLAB_TOKEN not in out
         assert out == "auto-improvement: apply verified change"
 
 
@@ -936,7 +943,7 @@ class TestTerminalErrorsAreRedacted:
     def test_a_credential_in_a_terminal_error_does_not_reach_the_response(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as runner_mod
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = _SECRET
         sup = runner_mod.RunSupervisor()
         sup._fail(RuntimeError(f"clone failed: aws_secret_access_key={secret}"))
         status = sup.status()
@@ -950,9 +957,9 @@ class TestTerminalErrorsAreRedacted:
         leaves the same string on the same response."""
         from kiro_crew.apps.builtins.auto_improvement.backend import runner as runner_mod
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = _SECRET
         sup = runner_mod.RunSupervisor()
-        sup._fail(RuntimeError(f"boom {secret}"))
+        sup._fail(RuntimeError(f"boom aws_secret_access_key={secret}"))
         assert secret not in str(sup.status()["activity"]), "the feed copy is unredacted"
 
     def test_every_terminal_error_site_goes_through_the_helper(self) -> None:
@@ -1075,7 +1082,7 @@ class TestMcpErrorsAreRedacted:
     def test_a_credential_in_an_argument_does_not_come_back(self, tmp_path, monkeypatch) -> None:
         import json
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = _SECRET
         resp = self._call(tmp_path, monkeypatch, f"aws_secret_access_key={secret}")
         assert secret not in json.dumps(
             resp
@@ -1098,13 +1105,13 @@ class TestMcpErrorsAreRedacted:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.apps.builtins.auto_improvement.backend import mcp_server as m
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = _SECRET
         resp = m.handle(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": f"aws_access_key_id={secret}", "arguments": {}},
+                "params": {"name": f"aws_secret_access_key={secret}", "arguments": {}},
             }
         )
         assert secret not in json.dumps(
@@ -1205,7 +1212,7 @@ class TestWatcherSnapshotsAreRedacted:
         from kiro_crew.apps.builtins.auto_improvement.backend import pr_watchers as pw
         from kiro_crew.apps.builtins.auto_improvement.backend import routes as routes_mod
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = github_classic(seed=49)
         st = pw.WatcherState(fp="fp1", pr="https://github.com/o/r/pull/1")
         st.target = f"src/m.py::aws_secret_access_key={secret}"
         st.last_note = f"agent said {secret}"
@@ -1261,7 +1268,7 @@ class TestCommitErrorsReachTheBrowserRedacted:
     def test_a_credential_in_git_stderr_is_scrubbed(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.backend import routes as routes_mod
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = _SECRET
         stderr = f"fatal: could not read Username for 'https://x:{secret}@github.com'"
         assert secret not in routes_mod._redact_for_display(
             stderr

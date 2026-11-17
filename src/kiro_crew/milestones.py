@@ -613,7 +613,9 @@ def _op_active_day(today: date) -> Op:
     def apply(st: dict[str, Any], now: float, events: list) -> None:
         streak = st["streak"]
         iso = today.isoformat()
-        if streak["last_day"] == iso:
+        # A last day on or after today (the local date stepped back, say after a
+        # timezone change to the west) counts as today: no day was missed.
+        if streak["last_day"] >= iso:
             return
         yesterday = (today - timedelta(days=1)).isoformat()
         streak["current"] = streak["current"] + 1 if streak["last_day"] == yesterday else 1
@@ -627,9 +629,13 @@ def _op_active_day(today: date) -> Op:
 
 
 def current_streak(st: dict[str, Any], today: date) -> int:
-    """The streak to SHOW: 0 once a whole day has been missed, without a write."""
+    """The streak to SHOW: 0 once a whole day has been missed, without a write.
+
+    A last day after today counts as today, so a local date that steps back
+    a day (a timezone change to the west) does not hide the streak.
+    """
     last_day = st["streak"]["last_day"]
-    if last_day in (today.isoformat(), (today - timedelta(days=1)).isoformat()):
+    if last_day and last_day >= (today - timedelta(days=1)).isoformat():
         return int(st["streak"]["current"])
     return 0
 

@@ -106,13 +106,38 @@ async def _audit(request: web.Request, operation: str, outcome: str, error: str 
         logger.debug("Could not audit KAS login operation %s", operation, exc_info=True)
 
 
+def _load_agent_config() -> Any:
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    return KiroCrewConfig.load().agent
+
+
+def _company_sign_in() -> dict[str, str]:
+    """What the company sign-in form starts filled in with (auth/company_sign_in.py)."""
+    from kiro_crew.auth.company_sign_in import company_sign_in_default
+
+    try:
+        agent = _load_agent_config()
+    except Exception:
+        # An unreadable config still lets the edition default fill the form.
+        logger.debug("could not read config for the company sign-in default", exc_info=True)
+        agent = None
+    return company_sign_in_default(agent)
+
+
 async def api_kas_login_status(request: web.Request) -> web.Response:
-    """GET /api/kas-login — auth state + the transport this install shape supports."""
+    """GET /api/kas-login — auth state + the transport this install shape supports.
+
+    ``company_sign_in`` carries the start URL and region the company SSO form
+    starts with (both ``""`` when nothing supplies one).
+    """
     service = _service(request)
     if service is None:
         return _unavailable()
     try:
-        return web.json_response(await service.status())
+        body = await service.status()
+        body["company_sign_in"] = await asyncio.to_thread(_company_sign_in)
+        return web.json_response(body)
     except TokenStoreError as err:
         # A refused (e.g. linked) token-store directory is a coded storage
         # failure, not an anonymous 500.
@@ -184,9 +209,10 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
         return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
     except StartUrlRejectedError as err:
         # AWS refused what the user typed (the URL or the region): a 400 the form
-        # can fix, not an auth-service failure.
+        # can fix, not an auth-service failure. A bare answer names neither field.
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
-        return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
+        code = "invalid_start_url" if err.names_start_url else "start_url_or_region_rejected"
+        return web.json_response({"error": str(err), "code": code}, status=400)
     except (DeviceAuthError, BuilderIdAuthError) as err:
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
         return web.json_response(

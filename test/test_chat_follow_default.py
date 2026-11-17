@@ -23,6 +23,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from chat_runner_coverage_helpers import _drive, _slot
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from test_chat_send_agent_model_default import (
     CREW_PIN,
     GLOBAL_DEFAULT,
@@ -48,10 +49,10 @@ from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, default_timeout, finished, until_parked
 
 PATH = "/api/chat/slots/follow-default"
-#: Fake AWS access-key shapes, built by concatenation as the repo's other redaction
-#: tests build them, so no secret scanner reads a key literal here.
-_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
-_OTHER_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLF"
+#: Two distinct GitHub tokens with valid checksums, which the plan redacts (AWS
+#: key IDs are kept visible as identifiers).
+_FAKE_KEY = github_classic(seed=24)
+_OTHER_FAKE_KEY = github_classic(seed=25)
 
 OLD = "claude-fable-5"
 PICK = "claude-sonnet-5"

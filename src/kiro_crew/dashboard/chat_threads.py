@@ -27,7 +27,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import name_grant
+from kiro_crew import name_grant, redaction_seams
 from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_STRANDS,
@@ -40,8 +40,8 @@ from kiro_crew.agent_sdk.drivers.acp import (
     goose_side_home_supported,
 )
 from kiro_crew.agent_sdk.host_auth import signed_out_message
-from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
-from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.config.loader import KiroCrewConfig, rescan_before_refusal, resolve_agent_bindings
+from kiro_crew.dashboard.chat_utils import blocked_links_for_workspace, slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
@@ -248,6 +248,7 @@ def _new_reply(role: str, content: str, reply_id: str | None = None) -> dict[str
 _in_flight: set[str] = set()
 
 
+@redaction_seams.in_seam(redaction_seams.CHAT)
 def _redacted_reply(reply: dict[str, Any]) -> dict[str, Any]:
     """The reply-schema fields of *reply* -- and only those -- with the prose
     re-redacted at the output boundary, as ``chat_pins._redacted_pin`` does: a
@@ -334,6 +335,7 @@ def _find_parent(
     return None, []
 
 
+@redaction_seams.in_seam(redaction_seams.CHAT)
 def _parent_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "mid": _row_mid(row),
@@ -341,6 +343,16 @@ def _parent_payload(row: dict[str, Any]) -> dict[str, Any]:
         "content": redact(str(row.get("content", "") or "")),
         "ts": row.get("ts", ""),
     }
+
+
+def _with_link_blocks(shown: dict[str, Any], workspace: str | None) -> dict[str, Any]:
+    """*shown* (a parent or a reply as the thread read sends it) with the
+    blocked-link records of its text when the crewmate wrote it, as a main chat
+    row carries them, so the panel draws a flagged link as a Blocked link card."""
+    if shown.get("role") != ROLE_ASSISTANT:
+        return shown
+    records = blocked_links_for_workspace(shown.get("content"), workspace)
+    return {**shown, "link_blocks": records} if records else shown
 
 
 # ── Envelope ──────────────────────────────────────────────────────────────────
@@ -545,10 +557,13 @@ async def api_chat_thread_detail(request: web.Request) -> web.Response:
     if refused is not None:
         return refused
     assert threads is not None
+    workspace = slot.workspace if isinstance(slot.workspace, str) else None
     return web.json_response(
         {
-            "parent": _parent_payload(parent),
-            "replies": [_redacted_reply(r) for r in threads.get(mid, [])],
+            "parent": _with_link_blocks(_parent_payload(parent), workspace),
+            "replies": [
+                _with_link_blocks(_redacted_reply(r), workspace) for r in threads.get(mid, [])
+            ],
             "in_flight": f"{slot.key}:{mid}" in _in_flight,
         }
     )
@@ -891,6 +906,7 @@ def _is_auth_required(exc: BaseException) -> bool:
     return type(exc).__name__ == "AcpAuthRequired"
 
 
+@redaction_seams.in_seam(redaction_seams.CHAT)
 async def _run_thread_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -1026,6 +1042,16 @@ async def _thread_turn_body(
             # gateway task for the busy timeout. The main chat's resolvers pass
             # the same flag; only the kiro agent name is needed here.
             bindings = resolve_agent_bindings(cfg, slot_agent, project, validate_memory_files=False)
+            if (
+                slot_agent
+                and not slot._app
+                and not bindings.requested_resolved
+                and await rescan_before_refusal()
+            ):
+                # The snapshot may lack a spec written after it warmed.
+                bindings = resolve_agent_bindings(
+                    cfg, slot_agent, project, validate_memory_files=False
+                )
             if slot_agent and not slot._app and not bindings.requested_resolved:
                 # The crewmate this slot belongs to does not resolve (deleted
                 # or renamed while its chat stayed open). The resolver falls
@@ -1071,6 +1097,10 @@ async def _thread_turn_body(
         else:
             agent = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.REJECT_ALL
+        if slot.is_restricted:
+            # Memory withheld as in the incognito or temporary parent (on claude,
+            # Claude Code's auto-memory off), as on a Side Chat.
+            session_kwargs["include_memory"] = False
 
         # A thread turn never reuses a session: the one it acquires is destroyed
         # in the finally below, so every reply cold-starts under the agent, the

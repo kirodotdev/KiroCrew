@@ -143,6 +143,13 @@ describe('SkillContextBudget — control plane', () => {
       mount()
       await screen.findByText(/Browser Auth/i)
     })
+
+    it('says "1 skill", not "1 skills", on a group header holding one skill', async () => {
+      mount()
+      await screen.findByText(/Kirocrew Commands/i)
+      expect(screen.getByText(/^1 skill · .* idle$/)).toBeTruthy()
+      expect(screen.queryByText(/\b1 skills\b/)).toBeNull()
+    })
   })
 
   describe('sort options', () => {

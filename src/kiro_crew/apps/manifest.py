@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import agent_readonly_dirs, credential_masks
 from kiro_crew.apps.desktop_manifest import DesktopConfig
 from kiro_crew.apps.manifest_agent_tools import (  # noqa: F401
     _BLOCK_KEYS,
@@ -63,6 +63,7 @@ from kiro_crew.apps.manifest_containment import (  # noqa: F401
     _declared_agent_names,
     _has_dotdot_segment,
     _is_rooted_path,
+    _is_shipped_builtin_root,
     app_root_containment,
     contain_command_agents,
     contained_in_screened_root,
@@ -136,6 +137,17 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _normalize_status_path,
     _strict_int,
 )
+from kiro_crew.apps.manifest_memory_providers import (  # noqa: F401
+    _MEMORY_PROVIDER_KEYS,
+    MAX_MEMORY_PROVIDERS_PER_APP,
+    MEMORY_PROVIDER_DESCRIPTION_MAX,
+    MEMORY_PROVIDER_ID_RE,
+    MEMORY_PROVIDER_NAME_MAX,
+    MEMORY_PROVIDER_PAGE_RE,
+    MEMORY_PROVIDER_ROUTE_RE,
+    MemoryProviderDecl,
+    MemoryProvidersConfig,
+)
 from kiro_crew.apps.manifest_names import (  # noqa: F401
     APP_NAME_MAX_LENGTH,
     KEBAB_RE,
@@ -153,6 +165,9 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _L10N_QUOTED_CHARS,
     _L10N_QUOTED_KEYS,
     _OVERLAY_SLUG_RE,
+    BOT_GRANT_FAMILIES,
+    BOT_GRANT_FAMILY,
+    BOT_SCOPE_NAMES,
     L10N_LOCALE_RE,
     L10N_TEXT_CAPS,
     LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
@@ -180,9 +195,11 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIOverlay,
     UIPage,
     UISidebar,
+    _bot_scopes,
     _granted_list,
     _l10n_quoted,
     _sidebar_order,
+    bot_grant_entries,
     clamp_lifecycle_timeout,
     lifecycle_timeout_error,
     lifecycle_timeout_seconds,
@@ -191,6 +208,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
+from kiro_crew.user_json import loads_user_json
 
 # This module is the facade of the app manifest: every name is reached through it as
 # ``kiro_crew.apps.manifest.<name>``. It keeps ``AppManifest`` itself, the cron grant rule
@@ -254,7 +272,8 @@ def cron_permission_error(manifest: AppManifest) -> str:
 #:
 #: * ``apps/routes.py`` ``setup_routes`` -- ``manifest``, ``config``, and the lifecycle
 #:   verbs ``uninstall`` (whose ``uninstall/preview`` child is covered by the segment),
-#:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``
+#:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``,
+#:   ``bot-grants``
 #: * ``dashboard/routes/system.py`` -- ``token``
 #: * ``apps/job_routes.py`` -- ``_jobs``
 #:
@@ -266,6 +285,7 @@ def cron_permission_error(manifest: AppManifest) -> str:
 CORE_APP_ROUTE_SEGMENTS = frozenset(
     {
         "_jobs",
+        "bot-grants",
         "config",
         "dev",
         "disable",
@@ -370,7 +390,8 @@ def app_endpoint_allowed(
     # at install, so those apps could not contribute a row at all.
     #
     # It is a per-caller flag rather than a blanket widening because this is the ONE
-    # shared endpoint check (see ``test_app_endpoint_allowed_is_the_one_shared_check``)
+    # shared endpoint check (its edges are pinned by
+    # ``test_app_endpoint_allowed_is_the_one_shared_check``)
     # and its other caller, the publish-provider registry in ``routes_listing.py``, states
     # ``/api/apps/<app>/`` as its contract in its own refusal message. Widening the
     # helper for everyone would have broadened that surface silently.
@@ -431,8 +452,17 @@ _KNOWN_FIELDS = frozenset(
         "desktop",
         "agentTools",
         "credentialMasks",
+        "agentReadOnlyDirs",
     }
 )
+
+
+def _optional_text(value: Any) -> str:
+    """An optional display string from app.json: JSON ``null`` is no value.
+
+    ``str(None)`` would show the word "None" as the app's author or licence.
+    """
+    return "" if value is None else str(value)
 
 
 @dataclass
@@ -515,6 +545,9 @@ class AppManifest:
     # --- Files under the app's own data dir the sandbox hides (apps.credential_masks) ---
     credentialMasks: list[str] = field(default_factory=list)  # noqa: N815
     credential_masks_errors: list[str] = field(default_factory=list, repr=False)
+    # --- Dirs under the app's own data dir agents may read, never write (agent_readonly_dirs) ---
+    agentReadOnlyDirs: list[str] = field(default_factory=list)  # noqa: N815
+    agent_readonly_dirs_errors: list[str] = field(default_factory=list, repr=False)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -562,6 +595,9 @@ class AppManifest:
             name_error = app_name_error(self.name)
             if name_error:
                 errors.append(name_error)
+            elif self.backend.webOrigin and len(self.name) > 63:
+                # The name becomes a DNS label in its web origin's host name.
+                errors.append("backend.webOrigin needs an app name of at most 63 characters")
 
         if not self.version:
             errors.append("missing required field: version")
@@ -577,6 +613,7 @@ class AppManifest:
         if self.config_keys_error:
             errors.append(self.config_keys_error)
         errors.extend(self.credential_masks_errors)
+        errors.extend(self.agent_readonly_dirs_errors)
 
         # Path containment check on all app-root-relative resource paths.
         # Canonical (screened canonicalisation + is_relative_to) when app_root is known; lexical
@@ -655,6 +692,7 @@ class AppManifest:
                 report_path(refusal, f"ui page entryPoint {refusal}: {page.entryPoint!r}")
 
         # UI overlay validation
+        errors.extend(self.ui.frame_source_errors())
         seen_overlay_ids: set[str] = set()
         for overlay in self.ui.overlays:
             if not overlay.id:
@@ -802,6 +840,7 @@ class AppManifest:
         from kiro_crew.apps.app_frame import process_backed
 
         errors.extend(self.agentTools.validate(self.name, process_backed(self)))
+        errors.extend(self.contributes.memoryProviders.validate(process_backed(self)))
 
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an
@@ -867,6 +906,10 @@ class AppManifest:
             # must invalidate the signature. Only when non-empty, so a manifest signed
             # before this key existed keeps producing the identical payload.
             body["credentialMasks"] = sorted(self.credentialMasks)
+        if self.agentReadOnlyDirs:
+            # Dropping an entry lets agents write a directory the app fences, so tampering
+            # must invalidate the signature. Only when non-empty, like the masks above.
+            body["agentReadOnlyDirs"] = sorted(self.agentReadOnlyDirs)
         if self.notifications.channels:
             # Channel declarations gate what an app may push and at which
             # default priority -- tampering must invalidate the signature.
@@ -1088,6 +1131,8 @@ class AppManifest:
             d["config_keys"] = self.config_keys
         if self.credentialMasks:
             d["credentialMasks"] = list(self.credentialMasks)
+        if self.agentReadOnlyDirs:
+            d["agentReadOnlyDirs"] = list(self.agentReadOnlyDirs)
         if self.crons:
             d["crons"] = [c.to_dict() for c in self.crons]
         ui_d = self.ui.to_dict()
@@ -1252,8 +1297,8 @@ class AppManifest:
             version=str(data.get("version", "")),
             displayName=str(data.get("displayName", "")),  # noqa: N815
             description=str(data.get("description", "")),
-            author=str(data.get("author", "")),
-            license=str(data.get("license", "")),
+            author=_optional_text(data.get("author")),
+            license=_optional_text(data.get("license")),
             minKiroCrewVersion=str(data.get("minKiroCrewVersion", "")),  # noqa: N815
             signer=str(data.get("signer", "")),
             signature=str(data.get("signature", "")),
@@ -1292,6 +1337,16 @@ class AppManifest:
             credential_masks_errors=credential_masks.declaration_errors(
                 data.get(credential_masks.MANIFEST_KEY)
             ),
+            agentReadOnlyDirs=list(  # noqa: N815
+                agent_readonly_dirs.valid_entries(data.get(agent_readonly_dirs.MANIFEST_KEY))
+            ),
+            agent_readonly_dirs_errors=[
+                *agent_readonly_dirs.declaration_errors(data.get(agent_readonly_dirs.MANIFEST_KEY)),
+                *agent_readonly_dirs.mask_conflict_errors(
+                    data.get(agent_readonly_dirs.MANIFEST_KEY),
+                    data.get(credential_masks.MANIFEST_KEY),
+                ),
+            ],
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],
@@ -1306,7 +1361,7 @@ class AppManifest:
     @classmethod
     def from_json_file(cls, path: Path) -> AppManifest:
         """Parse from an ``app.json`` file."""
-        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        data = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"app.json must be a JSON object, got {type(data).__name__}")
         return cls.from_dict(data)

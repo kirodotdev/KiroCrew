@@ -29,6 +29,7 @@ from kiro_crew.agent import (
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.dashboard.handlers.hooks_webhook_intake import _json_object
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.shell_audit_log import platform_spec_hooks
 from kiro_crew.validation import sanitize_string
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.hooks")
@@ -453,26 +454,51 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
         bundled = raw.get("hooks", {}) if isinstance(raw, dict) else {}
     except (OSError, ValueError):
         bundled = {}
+    if not isinstance(bundled, dict):
+        bundled = {}
+    # Compare against the shipped form and the form the spec build writes: on
+    # Windows the bundled audit hook is rewritten for ``cmd /c``, and a spec not
+    # yet re-synced still holds the shipped POSIX one. Either is Crew's own hook.
+    bundled_forms = (bundled, platform_spec_hooks(bundled))
+
+    def _hook_row_key(event: str, entry: object) -> tuple[str, str, str] | None:
+        """``(event, command, matcher)`` for one hook row, or ``None`` to skip it.
+
+        The rows come from user-writable files. A row that is not an object, or whose
+        ``command`` or ``matcher`` is present but not text, is skipped like any other
+        unusable shape, since redacting or hashing such a value would fail the whole page.
+        """
+        if not isinstance(entry, dict):
+            return None
+        # Only an absent or null field reads as empty: a falsy non-text value
+        # (0, false, []) is still a row that cannot be shown.
+        command, matcher = entry.get("command"), entry.get("matcher")
+        command = "" if command is None else command
+        matcher = "" if matcher is None else matcher
+        if not isinstance(command, str) or not isinstance(matcher, str):
+            return None
+        return event, command, matcher
+
     bundled_keys: set[tuple[str, str, str]] = set()
-    for event, entries in bundled.items():
-        for e in entries if isinstance(entries, list) else []:
-            if isinstance(e, dict):
-                bundled_keys.add((event, e.get("command") or "", e.get("matcher") or ""))
+    for form in bundled_forms:
+        for event, entries in form.items():
+            for e in entries if isinstance(entries, list) else []:
+                if (key := _hook_row_key(event, e)) is not None:
+                    bundled_keys.add(key)
     result: dict[str, list[dict]] = {}
     for event, entries in hooks.items():
         if event not in _VALID_HOOK_EVENTS:
             continue  # drop unknown/injected event keys
         tagged = []
         for e in entries if isinstance(entries, list) else []:
-            if isinstance(e, dict):
-                key = (event, e.get("command") or "", e.get("matcher") or "")
+            if (key := _hook_row_key(event, e)) is not None:
                 # Context-aware redact(): runs the exfil-URL + credential passes
                 # and applies a loaded companion's extra regexes (so an internal
                 # token in a hook command is scrubbed on this egress surface too).
                 tagged.append(
                     {
-                        "command": redact(e.get("command") or ""),
-                        "matcher": redact(e.get("matcher") or ""),
+                        "command": redact(key[1]),
+                        "matcher": redact(key[2]),
                         "source": "bundled" if key in bundled_keys else "user",
                     }
                 )

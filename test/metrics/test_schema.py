@@ -179,12 +179,15 @@ class TestRedact:
         assert redact(encoded_pk) == "[REDACTED]"
 
     def test_exfiltration_url_redacted(self):
-        """Exfiltration URLs are scrubbed via canonical redact_exfiltration_urls.
+        """A URL carrying a credential value is scrubbed via redact_exfiltration_urls.
 
-        The fork's scrubber is content-based (query-param heuristics), not
-        TLD-based, so use a long-query exfil shape it flags.
+        The URL pass masks credential values inside a URL (a token, a signature,
+        a userinfo password), so a credential URL parameter is what it flags.
         """
-        assert redact("https://attacker.example/c?x=" + "q" * 300) == "[REDACTED]"
+        assert (
+            redact("https://attacker.example/c?access_token=opaque-value-1234")
+            == "[REDACTED]"
+        )
 
 
 # ---------------------------------------------------------------------------

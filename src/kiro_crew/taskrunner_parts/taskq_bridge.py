@@ -123,6 +123,13 @@ async def adopt_task_rows(self: TaskRunner) -> "_runner_adapter.AdoptReport | No
                 await self.execute_plan(run_id)
             except ValueError as exc:
                 logger.warning("taskq adopt: could not resume run %s: %s", run_id, exc)
+                continue
+            await self._notify(
+                "\u25b6\ufe0f Resumed after a gateway restart",
+                "The gateway stopped while this run was running. It continues from its "
+                "checkpoint: steps that passed are kept.",
+                run=self._runs.get(run_id),
+            )
     finally:
         # Decided, or failed: a resumed run is live again, and nothing else
         # resumes the rest on its own.

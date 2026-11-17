@@ -14,13 +14,22 @@ on:
 permissions:
   contents: read
 
-# Single-flight nightly runs. cancel-in-progress also protects the channel
-# feeds (feed/nightly/latest-mac.yml + latest-linux.yml, last-writer-wins):
-# an overlapping older run is cancelled rather than finishing last and
-# rolling a feed back to an older build for every client.
+# Single-flight nightly runs. The group keeps two runs from publishing the
+# channel feeds (feed/nightly/latest-mac.yml + latest-linux.yml,
+# last-writer-wins) at the same time, and a waiting run computes its version
+# stamp only when it starts, so the run that finishes last also carries the
+# newest stamp.
+#
+# Only the scheduled run cancels the run in progress. A manual dispatch
+# started while the scheduled run is still going waits for it instead of
+# killing it, so the nightly that is counted is never lost to a test click.
+# A scheduled run arriving on top of a manual one still takes over. GitHub
+# keeps at most one waiting run per group, so a second manual dispatch
+# replaces the first waiting one; a scheduled run never waits, because it
+# always cancels whatever holds the group.
 concurrency:
   group: nightly-build
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'schedule' }}
 
 jobs:
   version:
@@ -499,6 +508,10 @@ jobs:
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
+      # Bakes the lane into _build_info.py: a nightly build defaults
+      # agent.kas_bundle on (kiro_crew.build_channel). Every build caller
+      # below passes the same; release.yml passes none.
+      build_channel: nightly
 
   build-desktop:
     name: Build Desktop
@@ -506,6 +519,7 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      build_channel: nightly
       # A failed arm64 build must not skip the x64 publishers (#2645). Safe on
       # THIS lane specifically: a nightly run publishes per-arch keys, per-arch
       # feeds and per-arch aliases and records no cross-arch completeness claim
@@ -544,6 +558,7 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      build_channel: nightly
       soft_fail: true
       use_prod_environment: true
     # Explicit passthrough, not `secrets: inherit`: the callee declares

@@ -19,7 +19,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import functools
-import hashlib
 import importlib
 import inspect
 import re
@@ -660,23 +659,29 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: outermost, the relay-path header rule is next so it reads a verified handover before
 #: any inner layer, the client-sent relay-header strip sits just inside it so no inner
 #: layer reads a client-sent relay header, the
-#: deny-audit boundary is outer to every barrier that can refuse, the SEL request
-#: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
-#: and the audit record, and the workflow and crewmate-prune gates, the Shared Crew
+#: deny-audit boundary is outer to every barrier that can refuse, the app web origin
+#: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
+#: audit is inner to them, the redaction audience sits right after token auth, the
+#: per-slot ownership checkpoint is inner to token auth and the audit record, and the
+#: workflow and crewmate-prune gates, the Shared Crew
 #: team-config gate and the change-card hook (innermost, after auth has classified
 #: the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("card_turn_arrival_middleware", "card_turn_arrival_middleware"),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
+    ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
     ("no_cache_middleware", "_install_dashboard_middlewares.<locals>."),
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
+    ("redaction_audience_middleware", "redaction_audience_middleware"),
     ("sel_audit_middleware", "_install_dashboard_middlewares.<locals>."),
+    ("card_turn_delegation_middleware", "card_turn_delegation_middleware"),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
     ("spa_fallback", "_install_dashboard_middlewares.<locals>."),
     ("_workflow_ready", "_register_workflow_lifecycle.<locals>."),
@@ -693,6 +698,7 @@ _API_CHAIN = (
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
+    ("redaction_audience_middleware", "redaction_audience_middleware"),
     ("sel_audit_middleware", "_install_api_middlewares.<locals>."),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
     ("team_config_middleware", "team_config_middleware"),
@@ -772,13 +778,13 @@ _DASHBOARD_BOOT = tuple("""
     current_context
     _apply_builtin_adoptions
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -787,9 +793,10 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
-    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred
+    _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
+    _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
-    subprocess_executor subprocess_executor subprocess_executor subprocess_executor
+    subprocess_executor
     _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
     setup_secrets_routes setup_whatsapp_routes setup_link_meta_routes bind_address_for
@@ -841,6 +848,7 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:_write_instance_credentials T:_write_secret_file T:_write_secret_file
     T:_write_secret_file T:apply_config_duration T:cleanup_migrated_builtin
     T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
+    T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
     T:migrate_channel_transcripts T:migrate_existing_crewmates T:newest_dump_with_stacks T:open_dump_file
     T:prune_synced_crewmates T:record_healthy_boot T:refresh_config_meta_stamp
     T:refresh_materialized_agents
@@ -859,13 +867,13 @@ _API_BOOT = tuple("""
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_lts_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred _deferred _deferred _deferred _deferred
+    _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -874,7 +882,8 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
-    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred
+    _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred _deferred
+    _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
@@ -1116,19 +1125,28 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
     ]
 
 
-#: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
-#: registration order, and their count. The table is shared by both entrypoints, so a
-#: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 347
-_MCP_TABLE_DIGEST = "cda1e93ba355ff125a0ca5ae507510bacd92f050a0ca91d6f723845b8c648ec4"
+#: The MCP route table's ``"<method> <path> <handler>"`` rows in registration order,
+#: one per line. The table is shared by both entrypoints, so a route added to it on
+#: purpose edits its own row there; a stored count or digest of the whole table would
+#: make every such change rewrite one shared line (see testing-conventions.md
+#: § Merge-safe ratchets and counts).
+_MCP_TABLE_FILE = Path(__file__).resolve().parent / "fixtures" / "dashboard_mcp_route_table.txt"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
     app = web.Application()
     server._register_mcp_routes(app)
     rows = [" ".join(row) for row in _routes(app)]
-    digest = hashlib.sha256("\n".join(rows).encode()).hexdigest()
-    assert (len(rows), digest) == (_MCP_TABLE_ROWS, _MCP_TABLE_DIGEST), "\n".join(rows)
+    recorded = [
+        line
+        for line in _MCP_TABLE_FILE.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert recorded, f"{_MCP_TABLE_FILE} holds no rows"
+    assert rows == recorded, (
+        f"the MCP route table changed; if on purpose, write these rows to {_MCP_TABLE_FILE}:\n"
+        + "\n".join(rows)
+    )
 
 
 def test_a_literal_mcp_route_precedes_the_pattern_that_would_swallow_it() -> None:

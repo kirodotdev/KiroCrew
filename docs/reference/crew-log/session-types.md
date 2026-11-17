@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Fifty-one types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty-three types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -48,6 +48,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`tool/completed`](#toolcompleted) | A tool call's terminal frame. | live | `acp`, `gateway` | closer, by `call_id` |
 | [`approval/requested`](#approvalrequested) | A tool call is waiting on a human. | live | `gateway` | opener of `approval/decided` |
 | [`approval/decided`](#approvaldecided) | How an approval resolved. | live | `gateway` | closer, by `approval_id` |
+| [`approval/bridged`](#approvalbridged) | An action on an approval, taken from a chat app through the notification bridge. | live | `gateway` | none; beside the approval, by `approval_id` |
 | [`model/selected`](#modelselected) | A model swap, and why. | live | `gateway` | — |
 | [`compaction/applied`](#compactionapplied) | A compaction, as context-usage percentages. | live | `gateway` | — |
 | [`plan/updated`](#planupdated) | The session's task list, as just restated. | live | `acp` | — |
@@ -70,6 +71,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a Bot waits on the person for, after it changed. | live | `gateway` | — |
 | [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a Bot, stamped with who wrote it. | live | `gateway` | — |
 | [`dashboard/custom_failed`](#dashboardcustom_failed) | A run of a script cron bound to this Bot ended in error, stamped by the gateway. | live | `gateway` | — |
+| [`dashboard/stale_wake`](#dashboardstale_wake) | The gateway started a turn in this Bot's thread because fields on its page went out of date. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -109,6 +111,7 @@ entry's write is the point the interrupted-turn repair runs.
 | `parent` | object | when `session_create` made this session | The creating session, recorded on the child. | |
 | `parent.slot` | string | required inside `parent` | The creating session's slot key. | |
 | `parent.sid` | string | optional | The creator's ACP session id frozen at mint time; absent when no live handle was available or the retained id was unusable. | |
+| `depth` | int | optional | How many creators stand above this session in the session tree, as the writer could establish it when the log was opened: `0` for a session nobody created (a person's own tab, a fork, a channel conversation), a child's creator's depth plus one. Absent means not established, never zero. A write-time reading: a later `session/adopted` or `session/released` does not change it. | |
 
 **Invariants** — At most one per create and one per re-attach. The session's
 *starting* model rides here rather than in a `model/selected` entry, which records
@@ -791,10 +794,10 @@ row.
 |---|---|---|---|---|
 | `turn` | int | required | Turn ordinal. | |
 | `turn_id` | string | optional | The engine's turn id. The same id twice is the same measurement. | |
-| `breakdown` | object | optional | `schema`, `categories` (category name to characters, every category the engine sent), `model_calls`, `total_chars`, `compacted` and `history` (`user`, `assistant`, `thinking`, `compaction_summary`). It describes the turn's LAST model request, not the turn as a whole. `history.user` covers the user text of every turn still in the engine's context. | |
+| `breakdown` | object | optional | `schema`, `categories` (category name to characters, every category the engine sent), `model_calls`, `total_chars`, `compacted` and `history` (`user`, `assistant`, `thinking`, `compaction_summary`); when the engine sent them, also `percent` (category name to its share of the total, in tenths of a percent), `counts` (entries in the agents, skills and powers lists, by category name), `parts` (`category.part` to characters, splitting a category), `window` (`size_tokens`, the model's input window, and `usage_milli`, the backend's usage of it in thousandths of a percent) and `media` (`images`, `image_bytes`, `documents`, `document_bytes`, counted outside `total_chars`). It describes the turn's LAST model request, not the turn as a whole. `history.user` covers the user text of every turn still in the engine's context. | |
 | `ttft` | object | optional | `total_ms` (turn start to first displayed output), and when the engine captured model timing `setup_ms` and `model_ms`. | |
 
-**Invariants** — Every figure in `breakdown` is in characters and describes the turn's last model request. `history.user` covers the user text of every turn still in the engine's context, which is why the `usage` fold keeps Kiro Crew's share as a running sum rather than reading this turn's composition alone.
+**Invariants** — Every figure in `breakdown` describes the turn's last model request, and every figure outside `percent`, `counts`, `window` and `media` is in characters. `history.user` covers the user text of every turn still in the engine's context, which is why the `usage` fold keeps Kiro Crew's share as a running sum rather than reading this turn's composition alone.
 
 ```json
 {"type":"context/measured","seq":14,"time":1789000004100,"src":"gateway","data":{"turn":3,"turn_id":"e-01","breakdown":{"schema":1,"categories":{"history":4000,"toolSpecs":2865},"model_calls":1,"total_chars":6865,"history":{"user":3990,"assistant":5,"thinking":5,"compaction_summary":0}},"ttft":{"total_ms":2870,"setup_ms":59,"model_ms":1534}}}
@@ -1012,6 +1015,44 @@ not read it as an unattributed decision.
 no `by`.
 
 **Since** — type #10091; written by #11185.
+
+### `approval/bridged`
+
+An action on an approval, taken from a chat app through the notification bridge.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — Once for every action a chat app takes on a bridged approval,
+admitted or refused, by `notifications/bridge_action_audit.audit_action`. Its
+callers are Slack's approval buttons (`slack/interactions_approvals.py`) and the
+chat-reply path of the reply transports (`notifications/bridge_reply.py`).
+
+**Pairing** — None. It sits beside the approval's own entries, matched by
+`approval_id`, and never replaces `approval/decided`: an admitted action resolves
+the decision, and the waiter writes `approval/decided` as it does for any surface.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `turn` | int | optional | The turn that asked; absent when unknown. | |
+| `approval_id` | string | required | The same id as the request. | |
+| `transport` | string | required | The chat transport the action came from. | |
+| `outcome` | string | required | What the action did; `approved` and `denied` resolved the decision. | `approved`, `denied`, `expired`, `refused` |
+| `reason` | string | optional | Why the action was not admitted; absent when it was. | `already_answered`, `expired`, `not_owner`, `invalid_choice`, `unknown` |
+| `channel` | string | optional | The source notification channel, when known. | |
+| `actor` | string | optional | Who took the action, on the transport; recorded for a refused stranger too. | |
+| `owner` | string | optional | The verified owner the prompt was bridged to. | |
+
+**Invariants** — At most one entry for an approval has `outcome` `approved` or
+`denied`, and only those two carry no `reason`.
+
+```json
+{"type":"approval/bridged","seq":26,"time":1789000000700,"src":"gateway","data":{"turn":3,"approval_id":"a-1","transport":"slack","outcome":"approved"}}
+```
+
+**Reader hint** — To see refused or expired attempts on an approval, filter to
+entries that carry a `reason`.
+
+**Since** — introduced with the notification bridge actions (RFC phase B4b).
 
 ## Model, compaction and plan
 
@@ -1360,7 +1401,7 @@ another is recorded even though the engine delivered nothing for it.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `producer` | string | required | Which mechanism made the observation. Closed: the emitter refuses a value outside the vocabulary instead of coercing it, so a reader can tell a measured record from a sentence an agent typed. `probe` is the structured monitor's provider probe. | `probe` |
+| `producer` | string | required | Which mechanism made the observation. Closed: the emitter refuses a value outside the vocabulary instead of coercing it, so a reader can tell a measured record from a sentence an agent typed. `probe` is the structured monitor's provider probe, `warm_brief` the warm welcome's pull-request read. | `probe`, `warm_brief` |
 | `kind` | string | required | The monitored kind of the subject, as the monitoring registry names it — `github_pull_request`, `gitlab_merge_request`, and so on. Passed through from the armed monitor, which validated it at arm time. | |
 | `target` | string | required | The subject's full URL, exactly as the monitor was armed on it. | |
 | `fingerprint` | string | required | The probe's own dedupe digest of the facts it acts on. An entry is written only when this differs from the previous observation's, so consecutive entries for one subject are consecutive DISTINCT states. | |
@@ -1476,8 +1517,8 @@ One work-board mutation: who acted, on which item, and the fields it set.
 **Kind and `src`** — `session`; `src` is `gateway`.
 
 **When written** — One entry per work-ledger write, appended to the ACTING
-session's log: a conductor action (`work_ledger_record`) or a worker report
-(`work_report`). A worker report is written a second time into the conductor's own
+session's log: a conductor action (`work_ledger_record`), a worker report
+(`work_report`), or a person's steer typed into a worker. A worker report is written a second time into the conductor's own
 log, and the gateway relays a sub-board's entries into its parent board's log (with
 `relay` set). The `work` fold rebuilds the board from the conductor's own units
 alone, so the ledger's files are a cache of the log rather than a record beside it;
@@ -1488,9 +1529,9 @@ the routes still read that cache.
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
 | `slot` | string | required | The board's key: the conductor slot this mutation belongs to. A worker's report names the conductor's slot, not its own, so one board folds under one key whichever party wrote the entry. | |
-| `actor` | string | required | Which party wrote this entry. The field sets the two may set are disjoint. | `conductor`, `worker` (closed) |
+| `actor` | string | required | Which party wrote this entry. The field sets a conductor and a worker may set are disjoint; a `person` entry is a steer and sets no field. | `conductor`, `worker`, `person` (closed) |
 | `by` | string | required | The acting session's slot key: equal to `slot` for a conductor entry, the bound worker's key for a report. | |
-| `action` | string | required | The one mutation this entry records. The fields below are the ones that action set; an omitted field means unchanged. | `create`, `goal`, `bind`, `decide`, `verdict`, `close`, `accept`, `report`, `retire`, `destroy` (closed) |
+| `action` | string | required | The one mutation this entry records. The fields below are the ones that action set; an omitted field means unchanged. | `create`, `goal`, `bind`, `decide`, `verdict`, `close`, `accept`, `ask`, `report`, `steer`, `retire`, `destroy` (closed) |
 | `item_id` | string | optional | The item acted on. Absent only for `goal`, the board-level header write. | |
 | `goal` | string | optional | The board's objective, when `goal` set one. | |
 | `round` | int | optional | The board's or the item's round counter, when set. | |
@@ -1507,23 +1548,31 @@ the routes still read that cache.
 | `retired_bindings` | array of object | optional | The remote bindings the hub retired, oldest first, set by `retire` and `destroy`. Each holds the pair, its branch, state (retired or destroyed), reason and stamps; `retire` logs the pair as empty when it left the item unbound. | |
 | `fails` | int | optional | The item's failed-verdict count, when it moved. | |
 | `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question`, `reply` (closed) |
+| `reason` | string | optional | Why a `blocked` or `question` report waits on a person, set by `report`. A report without it clears the item's reason. | `approval`, `needs_human` (closed) |
+| `wake_at` | string | optional | When a `progress` report's worker will resume, set by `report`. A report without it clears the item's `wake_at`. | |
+| `discussion` | object | optional | Where a discussion the worker hosts stands, set by report: phase, round, minutes, direction, agreed, disputed, checking, recent and thread, checked for shape by the fold. A report without it clears the item's discussion. | |
 | `summary` | string | optional | The worker's summary, set by `report`. | |
 | `artifacts` | object | optional | String-to-string pointers replacing the item's map, set by `report`. The members are the worker's own keys and are checked for shape. | |
 | `pr` | int | optional | The pull request number, set by `report`. | |
 | `event` | string | optional | The one-line item event this mutation appends to the item's tail. | |
-| `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close`, `retire`, `destroy` (closed) |
+| `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close`, `steer`, `retire`, `destroy`, `ask` (closed) |
 | `event_id` | string | optional | The store's content-addressed id of the event this write appended. | |
 | `event_ts` | string | optional | The store's stamp on that event. | |
 | `created_at` | string | optional | The item's committed creation stamp, carried by `create`. | |
 | `last_report_at` | string | optional | The item's committed last-report stamp, carried by `report`. | |
 | `closed_at` | string | optional | The item's committed close stamp, carried by `close`. | |
+| `decided_at` | string | optional | The item's committed decide stamp, carried by `decide`. | |
 | `pending_since` | string | optional | When the item's run of `pending` verdicts began, carried by a `pending` `verdict`. Any other verdict, or an `accept`, clears it. | |
+| `ask` | object | optional | What the item needs from the person, set by `ask`: `{what, why, options: [{label, outcome}], pick, pick_why, written_at}`, `written_at` the store's stamp. `decide` and `close` clear it without logging the field. | |
 | `board_round` | int | optional | The board's committed round, carried by a baseline entry. | |
 | `board_created_at` | string | optional | The board's committed creation stamp, carried by a baseline entry. | |
 | `goal_version` | int | optional | The header's goal-write count after this write, set by `goal`. | |
 | `baseline` | bool | optional | `true` when the entry carries the WHOLE committed item rather than a delta. | |
 | `board_copy` | bool | optional | True on the copy of a worker's report the gateway wrote into the board's own log. A report without it is a worker-log copy, which the rebuild's join of worker logs never lets undo a board copy. | |
 | `mirror` | bool | optional | True on the worker's own copy of a report whose board copy landed. The work and worktree folds skip it (the board copy is the record); the workers fold reads it as the worker's own report. | |
+| `peer_event_id` | string | optional | On a report the hub ingested from a remote peer: the peer's own id for that report event, verbatim (also the entry's `event_id`). The work fold files each peer event id once per binding and derives where ingest stands from the ids it holds. | |
+| `peer_seen` | array[string] | optional | On an ingested peer report: peer ids before it the hub passes over for good (reports that can never file, or, on a binding filed before peer ids were kept, the reports filed then). The work fold holds them as filed. | |
+| `peer_skipped` | int | optional | On an ingested peer report: places before it in the peer's reports the hub could not file. A peer log that rolled past where ingest stood counts one; a report that can never file counts one. | |
 | `relay` | string | optional | Set on a copy relayed up from a sub-board's log into its parent board's log: the origin entry as `<unit>:<seq>`. | |
 
 **Invariants** — A delta: only the fields the one `action` set are present,
@@ -1762,9 +1811,13 @@ correction carries `code` `corrected` and `corrects`.
 ## A Bot's own record
 
 Two snapshots the gateway appends to a Bot's own DM session log so its
-Dashboard page can bind them (`dashboard/crewmate_feed.py`). Each replaces the
+Dashboard page can bind them (`dashboard/crewmate_feed.py`): `dashboard/goal_recorded`
+and `dashboard/waiting_changed`. Each replaces the
 last one whole in its slot fold, so a page reading it moves when the fact does,
-with no value the Bot typed.
+with no value the Bot typed. The same log also takes the records a script cron or
+an installed app writes for the Bot (`dashboard/custom_value`), a bound script
+cron's failed run (`dashboard/custom_failed`), and the gateway's stale-field wake
+(`dashboard/stale_wake`).
 
 ### `dashboard/goal_recorded`
 
@@ -1856,6 +1909,24 @@ that writer's next record replaces the row, and `custom.failures` lists the writ
 
 ```json
 {"type":"dashboard/custom_failed","seq":97,"time":1789000004600,"src":"gateway","data":{"writer":"cron:nightly-build","error":"crew_log_append() failed: this cron job has sent 30 records in the last minute; wait before sending more","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+### `dashboard/stale_wake`
+
+Kind `session`, `src` `gateway`. Written by the gateway (`dashboard/stale_wake.py`,
+preview `dashboard_stale_wake`) right after it starts a hidden turn in this Bot's thread
+because agentic fields on its page went out of date. Best-effort: a Bot with no crew log
+yet gets none. No fold reads it; it is the record of a model turn no one typed, for a
+reader adding up what wakes cost.
+
+| field | type | notes |
+| --- | --- | --- |
+| `actor` | string | always `gateway` |
+| `reason` | string | `stale_fields` |
+| `fields` | array of string | the field names the turn asks the Bot to write again, sorted |
+
+```json
+{"type":"dashboard/stale_wake","seq":98,"time":1789000004700,"src":"gateway","data":{"actor":"gateway","reason":"stale_fields","fields":["headline","open_risks"]}}
 ```
 
 ## Change cards and guides

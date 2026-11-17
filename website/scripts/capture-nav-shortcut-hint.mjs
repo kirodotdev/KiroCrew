@@ -69,16 +69,18 @@ async function shoot(page, name, expect) {
 async function openRail(browser, base, collapsed) {
   const context = await browser.newContext({ viewport: { width: 1400, height: 940 }, deviceScaleFactor: 2 })
   const page = await context.newPage()
-  await stubDashboardApi(page, { slots, theme: 'dark' })
+  // No `mc-keyboard-shortcuts` after the stub's clear: a disabled toggle would
+  // suppress every hint, making an empty rail look like the feature is missing
+  // rather than switched off.
+  await stubDashboardApi(page, {
+    slots, theme: 'dark',
+    localStorageEntries: {
+      'mc-color-theme': 'kiro-dark',
+      'mc-privacy-notice-v1': '1',
+      'mc-nav': collapsed ? '1' : '0',
+    },
+  })
   logPageProblems(page)
-  await page.addInitScript(c => {
-    localStorage.setItem('mc-color-theme', 'kiro-dark')
-    localStorage.setItem('mc-privacy-notice-v1', '1')
-    localStorage.setItem('mc-nav', c ? '1' : '0')
-    // A disabled toggle would suppress every hint, making an empty rail look
-    // like the feature is missing rather than switched off.
-    localStorage.removeItem('mc-keyboard-shortcuts')
-  }, collapsed)
   await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
   await page.waitForFunction(
     t => document.documentElement.getAttribute('data-theme') === t,

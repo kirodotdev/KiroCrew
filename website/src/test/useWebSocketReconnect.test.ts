@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { RECONNECT_SNAPSHOT_WAIT_MS, useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import chatReducer, { PANE_HYDRATE_LIMIT, refreshSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
 import type { RootState } from '../store'
@@ -231,7 +231,23 @@ describe('useWebSocket reconnect unread suppression', () => {
     expect(testStore.getState().chat.subagents['mgr-1']?.result).toBeUndefined()
   })
 
-  it('suppresses markSlotUnread during reconnect catch-up window', async () => {
+  /** First connect, a drop and the reconnect's open; returns the new socket. */
+  function reconnect(): MockWebSocket {
+    const ws1 = WS_INSTANCES[0]
+    act(() => { ws1.simulateOpen() })
+    act(() => { ws1.onclose?.(new CloseEvent('close')) })
+    act(() => { vi.advanceTimersByTime(2000) }) // reconnect backoff
+    const ws2 = WS_INSTANCES[1]
+    expect(ws2).toBeDefined()
+    vi.mocked(api.chatSlots).mockClear()
+    act(() => { ws2.simulateOpen() }) // triggers reconnect path (wasConnectedRef = true)
+    return ws2
+  }
+
+  const otherMessage = (ts: string) =>
+    ({ type: 'chat_message', data: { slot: 'chat-other', role: 'assistant', content: 'm' + ts, ts } })
+
+  it('suppresses markSlotUnread from the reconnect until its connect snapshot', () => {
     vi.useFakeTimers()
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
 
@@ -240,35 +256,75 @@ describe('useWebSocket reconnect unread suppression', () => {
     act(() => { ws1.simulateOpen() })
 
     // Verify normal messages DO mark unread
-    act(() => {
-      ws1.simulateMessage({ type: 'chat_message', data: { slot: 'chat-other', role: 'assistant', content: 'hi', ts: '1' } })
-    })
+    act(() => { ws1.simulateMessage(otherMessage('1')) })
     expect(markSlotUnreadCalls).toContain('chat-other')
     markSlotUnreadCalls.length = 0
 
-    // Simulate disconnect + wait for reconnect timer
-    act(() => { ws1.onclose?.(new CloseEvent('close')) })
-    act(() => { vi.advanceTimersByTime(2000) }) // reconnect backoff
-
-    const ws2 = WS_INSTANCES[1]
-    expect(ws2).toBeDefined()
-    act(() => { ws2.simulateOpen() }) // triggers reconnect path (wasConnectedRef = true)
+    const ws2 = reconnect()
 
     // Messages during reconnect window should NOT mark unread
     act(() => {
-      ws2.simulateMessage({ type: 'chat_message', data: { slot: 'chat-other', role: 'assistant', content: 'catch-up', ts: '2' } })
+      ws2.simulateMessage(otherMessage('2'))
       ws2.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-other', content: 'chunk', seq: 1 } })
     })
     expect(markSlotUnreadCalls).toEqual([])
 
-    // After fetchSlots resolves, messages SHOULD mark unread again
-    vi.useRealTimers()
-    await act(async () => { await new Promise(r => setTimeout(r, 50)) }) // flush fetchSlots promise
-    act(() => {
-      ws2.simulateMessage({ type: 'chat_message', data: { slot: 'chat-other', role: 'assistant', content: 'real', ts: '3' } })
-    })
+    // The connect snapshot ends the window: messages mark unread again.
+    act(() => { ws2.simulateMessage({ type: 'slots', data: [{ key: 'chat-active' }, { key: 'chat-other' }] }) })
+    act(() => { ws2.simulateMessage(otherMessage('3')) })
     expect(markSlotUnreadCalls).toContain('chat-other')
 
+    unmount()
+  })
+
+  it('a reconnect takes the slot list from its connect snapshot and reads none over HTTP', () => {
+    vi.useFakeTimers()
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws2 = reconnect()
+    act(() => { ws2.simulateMessage({ type: 'slots', data: [{ key: 'chat-active' }, { key: 'chat-other' }] }) })
+    expect(testStore.getState().dashboard.slots.map(s => s.key)).toEqual(['chat-active', 'chat-other'])
+    // Past the snapshot wait: nothing is read, the snapshot already settled it.
+    act(() => { vi.advanceTimersByTime(RECONNECT_SNAPSHOT_WAIT_MS) })
+    expect(api.chatSlots).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it('an empty connect snapshot is read once over HTTP, and the window ends when that read settles', async () => {
+    vi.useFakeTimers()
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws2 = reconnect()
+    let answer!: (rows: unknown) => void
+    const read = new Promise(resolve => { answer = resolve })
+    vi.mocked(api.chatSlots).mockReturnValueOnce(read as never)
+    expect(api.chatSlots).not.toHaveBeenCalled()
+
+    act(() => { ws2.simulateMessage({ type: 'slots', data: [] }) })
+    expect(api.chatSlots).toHaveBeenCalledTimes(1)
+    act(() => { ws2.simulateMessage(otherMessage('2')) })
+    expect(markSlotUnreadCalls).toEqual([])
+
+    // The window ends once the read settles: each try below is one more live
+    // message, suppressed until then.
+    await act(async () => {
+      answer([])
+      await read
+      await vi.waitFor(() => {
+        ws2.simulateMessage(otherMessage('3'))
+        expect(markSlotUnreadCalls).toContain('chat-other')
+      })
+    })
+    expect(api.chatSlots).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
+  it('a reconnect with no connect snapshot reads the slot list once the wait runs out', () => {
+    vi.useFakeTimers()
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    reconnect()
+    act(() => { vi.advanceTimersByTime(RECONNECT_SNAPSHOT_WAIT_MS - 1) })
+    expect(api.chatSlots).not.toHaveBeenCalled()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(api.chatSlots).toHaveBeenCalledTimes(1)
     unmount()
   })
 })

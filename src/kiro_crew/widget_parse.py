@@ -27,8 +27,9 @@ Only ``streaming=False`` semantics are implemented: the backend only ever parses
 final, complete message text (a streaming partial has no stable identity to
 register yet).
 
-``test/test_widget_parse.py`` and ``website/src/test/widgetSlug.test.ts`` share
-the same fixture strings so drift between the two parsers fails both suites.
+``test/test_widget_parse.py`` and ``website/src/test/widgetSlug.test.ts`` carry
+copies of the same fixture strings, kept in step by hand: no test compares the two
+copies, so a parser change must update both.
 """
 
 from __future__ import annotations

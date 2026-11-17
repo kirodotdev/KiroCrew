@@ -31,6 +31,13 @@ SLOW_OP_TIMEOUT_S = 75.0
 DECISION_PRE_OP_S = 6.0
 DECISION_POST_OP_S = 6.0
 DECISION_HEADROOM_S = DECISION_PRE_OP_S + DECISION_POST_OP_S
+#: ``browser.report_changes`` (``browser_harness.ops``): the most the page reads
+#: before a ``click``, ``type`` or ``select_option`` and after it may take. The route
+#: adds their sum to those ops' budget while the setting is on, so a slow read
+#: costs the report, never the action's own answer.
+CHANGE_BEFORE_S = 4.0
+CHANGE_AFTER_S = 8.0
+CHANGE_REPORT_S = CHANGE_BEFORE_S + CHANGE_AFTER_S
 #: How long an op waits for the browser to come up (Kiro's Chromium launch, or
 #: the owner's Allow click) before answering ``browser_error``.
 ENSURE_TIMEOUT_S = 60.0
@@ -68,6 +75,10 @@ HANDBACK_POLL_S = 5.0
 HANDBACK_WAIT_S = 3.0
 #: The shim's HTTP timeout for one hand-back poll.
 HANDBACK_CALL_TIMEOUT_S = HANDBACK_WAIT_S + SHIM_MARGIN_S
+#: The gateway's hub ends the hold at ``HOLD_TIMEOUT_S`` and says so on the next
+#: poll (``hold_over``); the shim's own bound is a poll and its call later, so it
+#: fires only when the gateway stopped answering.
+HOLD_GRACE_S = HANDBACK_POLL_S + HANDBACK_CALL_TIMEOUT_S
 
 #: A quick ask (the ``ask`` op, ``browser_harness.quick_ask``) waits this long for
 #: the person's answer; a human_check takeover is bounded tighter. The agent's
@@ -97,6 +108,7 @@ GATEWAY_FAST_WORST_S = (
     + OP_TIMEOUT_S
     + OP_TIMEOUT_S
     + DECISION_HEADROOM_S
+    + CHANGE_REPORT_S
 )
 GATEWAY_SLOW_WORST_S = (
     ENSURE_TIMEOUT_S
@@ -117,6 +129,9 @@ __all__ = [
     "ASK_CALL_TIMEOUT_S",
     "ASK_TIMEOUT_S",
     "ASK_WAIT_S",
+    "CHANGE_AFTER_S",
+    "CHANGE_BEFORE_S",
+    "CHANGE_REPORT_S",
     "HUMAN_CHECK_TIMEOUT_S",
     "DECISION_HEADROOM_S",
     "DECISION_POST_OP_S",
@@ -131,6 +146,7 @@ __all__ = [
     "HANDBACK_CALL_TIMEOUT_S",
     "HANDBACK_POLL_S",
     "HANDBACK_WAIT_S",
+    "HOLD_GRACE_S",
     "HOLD_TIMEOUT_S",
     "LOCK_WAIT_S",
     "OP_TIMEOUT_S",

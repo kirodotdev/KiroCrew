@@ -110,8 +110,11 @@ from kiro_crew.agent_sdk.drivers.acp import (
     context_provider_of,
     finish_suspended_spawn,
     kas_engine_gap,
+    kas_engine_start_verdict,
     kas_engine_unsupported_reason,
     kas_engine_verdict,
+    kas_start_was_refused,
+    spec_with_default_crew_servers,
 )
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
@@ -210,6 +213,24 @@ def batch_guard_refusal_outcome(reason: str | None) -> tuple[str, dict[str, str]
     return refusal_outcome(reason)
 
 
+def mcp_call_arguments(event: Any, server: str, tool: str) -> dict[str, Any]:
+    """The arguments of an MCP call to *server*/*tool*, read through the harness
+    envelopes (``{tool_id, arguments}``, Codex's ``{server, tool, arguments}``) only
+    when the envelope names that same tool. Imported lazily, as above."""
+    from kiro_crew.acp.batch_guard import _mcp_arguments
+
+    return _mcp_arguments(event, server, tool)
+
+
+def harness_id_tool_name(tool_id: str) -> str:
+    """The tool name a backend-qualified harness tool id states (``claude#Read`` is
+    ``Read``), or ``""`` for any other id. Imported lazily, as above."""
+    from kiro_crew.acp.harness_tool_names import split_harness_tool_id
+
+    parts = split_harness_tool_id(tool_id)
+    return parts[1] if parts else ""
+
+
 def watch_agent_turns(provider: object, callback: Callable[[], None] | None) -> bool:
     """Call *callback* when *provider*'s agent starts a turn between prompts; ``None`` stops it.
 
@@ -236,6 +257,7 @@ class AgentTurnUsage(Protocol):
 
 __all__ = [
     "published_stderr_tail",
+    "spec_with_default_crew_servers",
     "CODEX_CLI_ADAPTER_MISSING",
     "CODEX_CLI_OVERRIDE_UNUSABLE",
     "CODEX_CLI_UNRESOLVED",
@@ -243,6 +265,8 @@ __all__ = [
     "session_start_concurrency",
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",
+    "mcp_call_arguments",
+    "harness_id_tool_name",
     "watch_agent_turns",
     "tool_row_text",
     "agents_dir_competing_claim",
@@ -283,8 +307,10 @@ __all__ = [
     "fits_tool_result",
     "forget_for_recheck",
     "kas_engine_gap",
+    "kas_engine_start_verdict",
     "kas_engine_unsupported_reason",
     "kas_engine_verdict",
+    "kas_start_was_refused",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",

@@ -458,10 +458,10 @@ class TestTruncateHtmlSafe:
             assert len(out) <= limit, f"limit={limit} produced {len(out)}"
 
     def test_never_emits_unclosed_tags_when_closers_do_not_fit(self) -> None:
-        # Regression (HIGH): a fixed 3-iteration reserve loop bailed to a bare
-        # prefix here, leaving <b> and <i> unclosed -- the exact
-        # "Can't find end tag" 400 this helper exists to prevent. A 4th pass
-        # would have converged, so the budget, not the algorithm, was the bug.
+        # A fixed 3-iteration reserve loop bails to a bare prefix here, leaving
+        # <b> and <i> unclosed -- the exact "Can't find end tag" 400 this helper
+        # exists to prevent. A 4th pass converges, so the loop must not stop on a
+        # fixed pass count.
         text = "<b><i><u><s><code>WXYZ</code></s></u></i></b>"
         out = truncate_html_safe(text, 37)
         assert len(out) <= 37
@@ -654,10 +654,10 @@ class TestRenderedBudget:
         assert _may_exceed_rendered("just some plain prose with no markup", 4000) is False
 
     def test_split_preserves_code_indentation_across_chunks(self) -> None:
-        # Regression: the continuation used a bare lstrip(), which ate the
-        # leading indentation of the first line of every continuation chunk and
-        # silently re-indented split code blocks. Render-aware splitting fires on
-        # more shapes, making that pre-existing corruption much easier to hit.
+        # A bare lstrip() on the continuation eats the leading indentation of
+        # the first line of every continuation chunk and silently re-indents
+        # split code blocks. Render-aware splitting fires on many shapes, so
+        # that corruption is easy to hit.
         body = "\n".join(f'    if a["k{i}"] < b & c:   # <indented>' for i in range(120))
         src = f"```python\n{body}\n```"
         chunks = _split_markdown_bounded(src, 800)
@@ -670,8 +670,8 @@ class TestRenderedBudget:
             ), f"indentation lost on continuation: {code_lines[0][:60]!r}"
 
     def test_shrinks_to_the_floor_instead_of_giving_up_early(self) -> None:
-        # Regression: a fixed pass budget returned still-oversize chunks, which
-        # the client backstop then truncated -- silently dropping content. Only
+        # A fixed pass budget can return still-oversize chunks, which the
+        # client backstop then truncates -- silently dropping content. Only
         # the _MIN_SPLIT_LIMIT floor may yield oversize chunks.
         cap = 4000
         for src in (

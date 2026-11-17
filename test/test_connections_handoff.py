@@ -497,6 +497,9 @@ def cold_mint(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(mint, "start_oauth_mint", _start)
     monkeypatch.setattr(mint, "_dispose_mint", _dispose)
     monkeypatch.setattr(connections, "get_provider", lambda slug: _provider(slug))
+    # The warm table serves the kiro-cli mint; on the default KAS chat backend a
+    # Connect whose sign-in runs on the KAS engine skips it (test_connections_mint_kas.py).
+    monkeypatch.setattr(connections, "_signs_in_on_kas", lambda slug: False)
     return calls
 
 

@@ -14,7 +14,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
-from kiro_crew.dashboard import chat_fork, chat_utils_display, display_verdicts
+from kiro_crew.dashboard import chat_utils_display, display_verdicts
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 
 # Stored verdicts are off where there is no effective uid (Windows).
@@ -63,21 +63,3 @@ async def test_fork_reuses_parent_verdicts_on_a_cold_cache(tmp_path, monkeypatch
     # The read scope scans a few strings before a cold open loads the sidecar;
     # every later copied string is judged from it.
     assert len(rescanned) <= display_verdicts.COLD_MISSES, rescanned
-
-
-@pytest.mark.asyncio
-async def test_fork_skips_reuse_when_the_workspace_allows_a_link_host(tmp_path, monkeypatch):
-    """Stored tags carry the allowed hosts and the save judges with none, so
-    nothing could match: the save scans as before and seeds no dead tags."""
-    seen: list[str | None] = []
-    real_save = chat_fork.save_slot_off_loop
-
-    async def recording(state, slot, *args, **kwargs):
-        seen.append(kwargs.get("verdict_source"))
-        return await real_save(state, slot, *args, **kwargs)
-
-    monkeypatch.setattr(chat_fork, "allowed_hosts_for", lambda _ws: frozenset({"example.com"}))
-    monkeypatch.setattr(chat_fork, "save_slot_off_loop", recording)
-    rescanned = await _fork_and_count_rescans(tmp_path, monkeypatch)
-    assert None in seen and "dashboard:src" not in seen
-    assert len(rescanned) == _ROWS

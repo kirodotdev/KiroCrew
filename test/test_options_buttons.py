@@ -60,16 +60,12 @@ class TestExtractOptions:
         assert cleaned == "See [OPTIONS: in my notes\nsummary ]"
 
     def test_unterminated_options_tag_is_not_redos(self):
-        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
-        # consume a ``[`` that ALSO starts the outer ``[OPTIONS:`` literal, so
-        # over text with many ``[OPTIONS:`` prefixes ``search()`` re-explored the
-        # body from each position — polynomial. The tempered body
-        # ``(?:[^[\n]|\[(?!OPTIONS:))*`` forbids only a re-occurring ``[OPTIONS:``,
-        # so the body is unambiguous (linear). Two adversarial inputs — a long
-        # whitespace-padded unterminated tag, and many repeated ``[OPTIONS:``
-        # prefixes (the real pump) — must both be rejected in CPU time linear in
-        # the pump; see conftest.assert_rejected_without_backtracking for why this
-        # is not a 1.0 s wall-clock bound.
+        # py/polynomial-redos: a greedy ``.*`` body can eat a ``[`` that also
+        # starts ``[OPTIONS:``, so ``search()`` re-scans from each prefix. The
+        # tempered body ``(?:[^[\n]|\[(?!OPTIONS:))*`` keeps it linear. Both
+        # pumps (a padded unterminated tag, many ``[OPTIONS:`` prefixes) must
+        # reject in linear CPU time; conftest.assert_rejected_without_backtracking
+        # says why this is not a wall-clock bound.
         def reject(text: str) -> None:
             cleaned, choices = extract_options(text)
             # No terminating ']' → no match, input returned unchanged.

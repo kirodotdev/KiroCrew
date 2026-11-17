@@ -29,6 +29,7 @@ import { api } from '../api/client'
 import { downloadUrl, isAndroidWebView } from '../utils/download'
 import { useArtifactPopouts } from '../hooks/useArtifactPopouts'
 import { USER_SELECTABLE_KINDS } from '../lib/artifactKinds'
+import { COMPARE_NONE, compareChoices, isComparableKind, stateLabel } from '../lib/artifactCompare'
 import type { Artifact } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -293,7 +294,7 @@ export function ArtifactDetailPageHeader({
 }) {
   const {
     slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
-    setSelectedVersion, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
+    setSelectedVersion, compareWith, setCompareWith, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
     saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
     refocusAddTagRef, addTagButtonRef,
   } = stateRead
@@ -325,6 +326,10 @@ export function ArtifactDetailPageHeader({
     i18nT('pages.artifactDetailPage.live'),
     ...versionsDesc.map((v) => i18nT('pages.artifactDetailPage.version_label', { version: fmtNumber(v, { useGrouping: false }) })),
   ]
+  // What the "Compare with" select can offer for the state on screen. Hidden
+  // while editing (the buffer is not a saved state) and for kinds with no text.
+  const compareKeys = !editing && isComparableKind(artifact.kind) ? compareChoices(selectedVersion, versions) : []
+  const compareValue = compareKeys.includes(compareWith) ? compareWith : COMPARE_NONE
   return (
     <div className="sticky top-0 z-10 bg-bg border-b border-border">
       <PageHeader
@@ -520,6 +525,21 @@ export function ArtifactDetailPageHeader({
               })
             }}
           />
+          {compareKeys.length > 0 && (
+            <SimpleSelect
+              aria-label={i18nT('pages.artifactDetailPage.compare_with')}
+              className={TOOLBAR_SELECT_CLASS}
+              options={[COMPARE_NONE, ...compareKeys]}
+              optionLabels={[
+                i18nT('pages.artifactDetailPage.compare_with'),
+                ...compareKeys.map((key) => i18nT('pages.artifactDetailPage.compare_with_state', {
+                  state: stateLabel(key),
+                })),
+              ]}
+              value={compareValue}
+              onChange={(key) => setCompareWith(key)}
+            />
+          )}
           {/* No hand-off: editor buffer editedContent may be dirty */}
           <ErrorNotice
             variant="inline"

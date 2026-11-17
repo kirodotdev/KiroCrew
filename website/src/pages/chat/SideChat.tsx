@@ -90,7 +90,7 @@ function handBack(vars: SideSubmit): Pick<SendRecovery, 'text' | 'pastes'> {
  *  lazy-loading (the Lexical editor) before it gives up on placing the caret. */
 const SEED_FOCUS_WAIT_MS = 5000
 
-export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
+export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpen }: {
   slot: string
   /** Open a path named in a side reply as a Files tab of the panel this chat
    *  sits in — the same opener the host hands the main transcript. Capability
@@ -98,6 +98,9 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
    *  OS reveal (a clipboard copy on a remote dashboard), a path link stays a
    *  plain link. */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a folder named in a side reply as a folder tab of the same panel;
+   *  absent, the folder chip takes the same OS-reveal fallback. */
+  onFolderOpen?: (path: string) => void
   /** Open an artifact link as an artifact tab of the same panel; absent, the
    *  link navigates away from the chat. */
   onArtifactOpen?: (slug: string) => void
@@ -204,7 +207,10 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
     () => messages.map((m, i) => {
       const streaming = i === lastIdx && isStreamingLast
       const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
-      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts }
+      // A finished answer's blocked-link records ride in `meta`, where the shared
+      // bubble reads a main chat row's, so a flagged link there draws as its chip.
+      const meta = role === 'assistant' && m.link_blocks !== undefined ? { meta: { link_blocks: m.link_blocks } } : {}
+      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts, ...meta }
     }),
     [messages, lastIdx, isStreamingLast]
   )
@@ -951,7 +957,7 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
       {showBanner && (
         <div className={`flex items-center justify-between px-3 py-1.5 text-[12px] border-b border-border shrink-0 ${isStale ? 'bg-warn/10 text-warn-text' : 'bg-bg-hover/50 text-muted'}`}>
           <span className="italic">
-            {i18nT('pages.chat.sideChat.context_from')} {i18nT('pages.chat.sideChat.turn', { count: turnsBehind })} {i18nT('pages.chat.sideChat.ago')}{age ? ` · ${age}` : ''}
+            {i18nT('pages.chat.sideChat.context_from_turns_ago', { count: turnsBehind })}{age ? ` · ${age}` : ''}
           </span>
           <span className="flex items-center gap-1 shrink-0">
             <button
@@ -987,6 +993,7 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
         // The host's own openers, so a path or artifact named in a side reply
         // opens where the main transcript opens it: a tab of this panel.
         onFileOpen={onFileOpen}
+        onFolderOpen={onFolderOpen}
         onArtifactOpen={onArtifactOpen}
         transcript={{
           sessionId: `side:${slot}`,

@@ -39,8 +39,10 @@ APP_NAME = "pptx-maker"
 
 # Per-segment allow-list. Deliberately excludes "/", "\" and "." runs, so no
 # traversal or separator can survive it — this is the primary path guard and the
-# resolve()-containment check below is the backstop.
-SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# resolve()-containment check below is the backstop. It ends at ``\Z``, not ``$``,
+# which also matches before a trailing newline that would then reach a path.
+# ``test/test_regex_anchor_contract.py`` holds this package to that rule.
+SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 # Environment override, for development and tests only. Production resolves the
 # deck root from the engine's own config so this app and the engine can never

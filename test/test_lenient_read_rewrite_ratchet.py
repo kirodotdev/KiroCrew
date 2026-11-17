@@ -57,6 +57,11 @@ import functools
 import re
 from pathlib import Path
 
+import pytest
+
+# The tree-wide tests share one cached scan, so they run on one worker per run.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_lenient_read_rewrite_ratchet")
+
 _SRC = Path(__file__).resolve().parent.parent / "src"
 
 #: Caught by a handler, these mean "a read error other than a missing file".
@@ -78,22 +83,20 @@ _FOUND_ONLY = (
 #: Remove an entry when its site is fixed; ``test_every_known_site_still_matches``
 #: fails on a stale one so the list cannot outlive the code.
 _KNOWN: dict[str, str] = {
-    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid_if": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/pidfile.py::_record_app_pid": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/stale_reap.py::_reap_stale_app_backends": _UNAUDITED,
-    "kiro_crew/apps/builtins/meetings/backend/providers/tasks.py::"
-    "LocalTaskProvider._create_locked": _UNAUDITED,
+    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid": _FOUND_ONLY,
+    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid_if": _FOUND_ONLY,
     "kiro_crew/apps/builtins/ops_mission_control/backend/ledger_index.py::import_pending": (
         "union write: an empty base re-checks ids on the next import (see _read_cursor)"
     ),
     "kiro_crew/apps/builtins/pptx_maker/backend/routes.py::_write_deck_root": _UNAUDITED,
     "kiro_crew/apps/builtins/spec_builder/backend/repository.py::_forget_deleted": _UNAUDITED,
     "kiro_crew/apps/dependency_ledger.py::record_uninstall": _FOUND_ONLY,
-    "kiro_crew/apps/dev_mode.py::remove_dev_app": _UNAUDITED,
-    "kiro_crew/apps/dev_mode.py::set_dev_mode": _UNAUDITED,
-    "kiro_crew/autonudge_selfarm.py::forget_self_arm": _UNAUDITED,
-    "kiro_crew/autonudge_selfarm.py::record_self_arm": _UNAUDITED,
+    "kiro_crew/apps/dev_mode.py::remove_dev_app": _FOUND_ONLY,
+    "kiro_crew/autonudge_selfarm.py::forget_self_arm": _FOUND_ONLY,
+    "kiro_crew/autonudge_selfarm.py::record_self_arm": (
+        "an unopenable record reads as empty so an arm never fails on it; a damaged"
+        " one is set aside to a .corrupt- file before the rewrite"
+    ),
     "kiro_crew/aws_consent.py::record_grant": _PRESERVES,
     "kiro_crew/aws_consent.py::revoke": _PRESERVES,
     "kiro_crew/aws_consent.py::revoke_if_matches": (
@@ -104,10 +107,8 @@ _KNOWN: dict[str, str] = {
     "record_built": _UNAUDITED,
     "kiro_crew/connections/mint.py::_forget_mint_spec": _FOUND_ONLY,
     "kiro_crew/connections/mint.py::_sweep_mint_specs": _FOUND_ONLY,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_replace_kirocrew_spec": _UNAUDITED,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_rmw_remove_entry": _UNAUDITED,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_kirocrew_entry": _UNAUDITED,
-    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_set_tool_overrides": _UNAUDITED,
+    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_replace_kirocrew_spec": _FOUND_ONLY,
+    "kiro_crew/dashboard/handlers/mcp_config_entries.py::_rmw_remove_entry": _FOUND_ONLY,
     "kiro_crew/irq.py::run.persist": "load_state documents a lost state as one duplicate wake",
     "kiro_crew/ledger_wake.py::forget_items": "_read_rate documents a lost map as one extra wake",
     "kiro_crew/ledger_wake.py::note_wake": "_read_rate documents a lost map as one extra wake",
@@ -215,6 +216,11 @@ class _Module:
                 fn.qual.rpartition(".")[2] for fn in self.functions if is_lenient_reader(fn)
             }
 
+    def release(self) -> None:
+        """Drop the parsed tree and keep ``readers``, the one result other modules read."""
+        self.tree = None
+        self.functions = []
+
 
 def _imports(module: _Module, modules: dict[str, _Module]) -> tuple[dict[str, str], set[str]]:
     """``(alias -> imported project module, names bound to an imported lenient reader)``."""
@@ -305,12 +311,15 @@ def rewrites_from_lenient_reads(modules: dict[str, _Module]) -> dict[str, list[i
     """``<rel path>::<function>`` -> lines of each write fed by a lenient read.
 
     Two passes: modules that can define a reader are parsed first, then only the
-    modules that both call a writer and name one of the readers found.
+    modules that both call a writer and name one of the readers found. Each tree is
+    released once it is read: about a thousand parsed modules held at once cost a
+    worker over a GiB that the allocator keeps after they are freed.
     """
     for module in modules.values():
         text = module.text
         if text is not None and _HANDLER_GATE.search(text) and _EMPTY_GATE.search(text):
             module.parse()
+            module.release()
     names = sorted({name for module in modules.values() for name in module.readers})
     if not names:
         return {}
@@ -322,6 +331,7 @@ def rewrites_from_lenient_reads(modules: dict[str, _Module]) -> dict[str, list[i
             continue
         module.parse()
         found.update(_scan_module(module, modules))
+        module.release()
     return {key: sorted(lines) for key, lines in found.items()}
 
 
@@ -342,7 +352,11 @@ def load_modules(root: Path, sources: dict[str, str] | None = None) -> dict[str,
 def _src_scan() -> tuple[dict[str, _Module], dict[str, list[int]]]:
     """``src/`` is read once per worker for every tree-wide test."""
     modules = load_modules(_SRC)
-    return modules, rewrites_from_lenient_reads(modules)
+    found = rewrites_from_lenient_reads(modules)
+    # The cache outlives this module's tests on the worker; keep the readers, not the text.
+    for module in modules.values():
+        module.text = None
+    return modules, found
 
 
 def test_no_new_rewrite_starts_from_a_lenient_read() -> None:
@@ -382,6 +396,12 @@ def test_the_scan_still_sees_the_real_lenient_readers() -> None:
         ),
     ):
         assert reader not in modules[module].readers, f"{module}.{reader} is strict"
+
+
+def test_the_scan_keeps_no_parsed_tree() -> None:
+    """The cached scan outlives this module's tests, so it must release every tree it parsed."""
+    held = [m.rel for m in _src_scan()[0].values() if m.tree is not None or m.functions]
+    assert not held
 
 
 _LENIENT = """

@@ -55,23 +55,31 @@ def binary(tmp_path, monkeypatch) -> str:
     """A stand-in kiro-cli that is the pinned install."""
     path = tmp_path / "kiro-cli"
     path.write_bytes(b"")
+    path.chmod(0o755)
     monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(path), False))
     return str(path)
 
 
 @pytest.fixture
 def help_runs(monkeypatch):
-    """Answer ``acp --help`` with the given text; record every spawn."""
+    """Answer ``acp --help`` with the given text; record every sandboxed probe.
+
+    A ``raise`` answer stands for a probe that timed out, as the runner reports it.
+    """
+    from kiro_crew import kiro_prerequisite
+    from kiro_crew.kiro_prerequisite_process import ProcessResult
+
     calls: list[list[str]] = []
     answer = {"stdout": HELP_3_0_0, "returncode": 0}
 
-    def _run(argv, **kwargs):
-        calls.append(list(argv))
+    async def _run(command, args, **kwargs):
+        calls.append([command, *args])
         if isinstance(answer.get("raise"), BaseException):
-            raise answer["raise"]
-        return SimpleNamespace(stdout=answer["stdout"], stderr="", returncode=answer["returncode"])
+            return ProcessResult(ok=False, timed_out=True, error="process timed out")
+        code = answer["returncode"]
+        return ProcessResult(ok=code == 0, output=answer["stdout"], returncode=code)
 
-    monkeypatch.setattr(kiro_cli.subprocess, "run", _run)
+    monkeypatch.setattr(kiro_prerequisite, "_run_process", _run)
     # ``raising=False`` so a tree without the cache still reaches the launch
     # assertions below instead of erroring in setup.
     monkeypatch.setattr(kiro_cli, "_acp_engines_cache", {}, raising=False)
@@ -100,7 +108,7 @@ def test_a_failed_or_missing_probe_keeps_the_bare_argv(binary, help_runs, tmp_pa
 
 
 def test_a_binary_that_is_not_the_pinned_install_is_never_probed(binary, help_runs, tmp_path):
-    """A PATH-only kiro-cli could be agent-planted, and this probe runs unsandboxed."""
+    """A PATH-only kiro-cli could be agent-planted, so the launch keeps the bare argv."""
     other = tmp_path / "bin" / "kiro-cli"
     other.parent.mkdir()
     other.write_bytes(b"")

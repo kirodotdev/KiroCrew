@@ -99,6 +99,16 @@ describe('selectContinuable', () => {
     }))).toBe(true)
   })
 
+  it("reads a harness advisory as the turn's answer, and a mode report not", () => {
+    // Mirrors `test_a_turn_an_advisory_answered_does_not_read_as_interrupted`.
+    const advisory = msg('notice', '⚠️ Stop says: the test suite is still failing', { kind: 'harness_advisory' })
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), advisory] }))).toBe(false)
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), advisory, msg('error', 'boom')] }))).toBe(true)
+    // A held advisory the runner's teardown lands after the error row.
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), msg('error', 'boom'), advisory] }))).toBe(true)
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), msg('notice', 'ℹ️ This session switched to Plan mode.')] }))).toBe(true)
+  })
+
   it('is true when tool rows ran but no assistant text landed', () => {
     expect(selectContinuable(state({
       messages: [msg('user'), msg('tool_call', 'grep'), msg('tool_result', 'hit')],
@@ -292,6 +302,18 @@ describe('selectContinuable', () => {
     expect(selectContinuable(state({
       messages: [msg('user'), msg('inject', '[Continue — requested by the user]\nresume')],
     }))).toBe(true)
+  })
+
+  it("is true when a heartbeat prompt is the chat's only request and its turn failed", () => {
+    expect(selectContinuable(state({
+      messages: [msg('inject', '💓 Heartbeat\n\nreport', { injectKind: 'heartbeat' }), msg('error', 'session start timed out')],
+    }))).toBe(true)
+  })
+
+  it('is false when only a non-heartbeat inject row is present', () => {
+    expect(selectContinuable(state({
+      messages: [msg('inject', 'resume', { injectKind: 'recovery' })],
+    }))).toBe(false)
   })
 })
 

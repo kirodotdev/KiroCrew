@@ -125,7 +125,7 @@ describe('FeaturePreviewIntroButton', () => {
 
 describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
   beforeEach(() => {
-    for (const k of ['mc-preview-webhooks', 'mc-preview-remote-crew-chat', 'mc-preview-crew-mode']) localStorage.removeItem(k)
+    for (const k of ['mc-preview-webhooks', 'mc-preview-remote-crew-chat']) localStorage.removeItem(k)
     // The Decisions card reads `config.json`; stubbed so these capture-button
     // cases do not wait on a fetch that cannot succeed under vitest.
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
@@ -207,14 +207,9 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
     expect(screen.queryByRole('switch', { name: /Run KAS on .*own engine/ })).toBeNull()
   })
 
-  it('offers Ultra Mode as a plain switch, off by default, that writes the one Crew Mode flag', () => {
+  it('lists no conductor mode switch: conductor mode is on with no preview turned on', () => {
     renderSection()
-    const toggle = screen.getByRole('switch', { name: 'Ultra Mode' })
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByTitle('Lets a chat hand tasks to a crew and track them on a Board.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /See what (Ultra|Crew) Mode looks like/ })).toBeNull()
-    fireEvent.click(toggle)
-    expect(localStorage.getItem('mc-preview-crew-mode')).toBe('1')
+    expect(screen.queryByRole('switch', { name: 'Conductor mode' })).toBeNull()
     expect(crewModeEnabled()).toBe(true)
   })
 

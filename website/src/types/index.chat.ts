@@ -5,7 +5,7 @@
 // content blocks; notifications and their channels; approvals; history session
 // rows. Consumers import them from `types/index.ts`.
 import type { WebAppMetadata } from './index.artifacts'
-import type { SessionAttribution } from './index.sharedCrew'
+import type { PublicPrincipal, SessionAttribution } from './index.sharedCrew'
 import type { SourceProviderId } from './index.sources'
 
 /** One open ledger item that does not name a person (`crew_work.items`). */
@@ -20,6 +20,21 @@ export interface CrewWorkItemFacts {
   looping?: boolean
 }
 
+/** A conductor mode board's settled verdict (`dashboard/conductor_mode_run.py`):
+ *  `done` (items, every one closed, no patrol loop on), `stopped` (items open, no
+ *  patrol loop on), else `''`. */
+export interface ConductorModeRun {
+  settled: '' | 'done' | 'stopped'
+  open: number
+  accepted: number
+  not_done: number
+  /** A stop at the patrol's time or budget bound. */
+  at_limit: boolean
+  /** The conductor's patrol loop is on. An unsettled run without it (a new goal
+   *  with no item yet) is waiting on the conductor's next step, not working. */
+  patrol_on: boolean
+}
+
 /** A conductor's work ledger in brief (`crew_work` on its slot row). */
 export interface CrewWorkFacts {
   open: number
@@ -31,6 +46,9 @@ export interface CrewWorkFacts {
   /** The conductor itself holds a live loop (its patrol), which picks a stalled
    *  item up; absent from a gateway that predates it. */
   conductor_looping?: boolean
+  /** The board's settled verdict; absent for a board with no item yet, and from a
+   *  gateway that predates it. */
+  run?: ConductorModeRun
   items: CrewWorkItemFacts[]
 }
 
@@ -60,6 +78,10 @@ export interface TodoList {
   completed: number
   total: number
   current: string
+  /** True on a list the harness keeps itself (an ACP `plan`, e.g. Claude Code's
+   * checklist): no click can reach it, so the pill shows it read-only and the
+   * gateway refuses a tick with `todo_read_only`. Absent on a `todo_list` list. */
+  read_only?: boolean
 }
 
 /**
@@ -110,6 +132,32 @@ export interface McpSessionReport {
    * Optional because an older gateway sends no such key.
    */
   restart_to_load?: string[]
+  /**
+   * The servers this session cannot use right now, by what is true of each.
+   * Optional: a gateway or an agent backend that does not report it sends no
+   * such key, and then no server is known to be connecting.
+   */
+  states?: McpSessionStates
+  /**
+   * Not zero when the report left servers out because one of its lists was
+   * full: it is then partial. A total of what each list left out, not a
+   * number of servers.
+   */
+  states_omitted?: number
+}
+
+/** A session's not-ready servers by state; a state with no server is left out. */
+export interface McpSessionStates {
+  /** Declared and not reported yet: still starting. */
+  connecting?: string[]
+  /** Waits for a person to authorize it. */
+  needs_sign_in?: string[]
+  /** Reported a failed start. */
+  failed?: string[]
+  /** Switched off by its owner, or reported disabled by the host. */
+  disabled?: string[]
+  /** Dropped by the host's registry instead of started. */
+  registry_dropped?: string[]
 }
 
 /** A Slack code channel a session runs in (`slack/code_channels/dashboard_view.py`).
@@ -221,6 +269,9 @@ export interface ChatDonePayload extends TurnIdentityFields {
   slot: string
   continuing?: boolean
   needs_input?: boolean
+  /** Whole seconds from the run's first turn to this frame; only on a frame
+   *  that ends the run, and only when the gateway saw the run start. */
+  run_seconds?: number
 }
 
 export interface ChatSlot extends TurnIdentityFields {
@@ -245,7 +296,7 @@ export interface ChatSlot extends TurnIdentityFields {
    *  deliberately kept when withheld, so this must not drive a write. */
   model_withheld?: boolean | null
   /** Whether this session's turns ask Jev which model tier to run on -- the chat
-   *  picker's `Auto (Jev)` entry (`lib/jevRoute.ts`, `decisions/points/model_route.py`).
+   *  picker's `Auto (decision model)` entry (`lib/jevRoute.ts`, `decisions/points/model_route.py`).
    *
    *  Shipped on every slot, so "the owner picked a model by hand" is a positive
    *  value rather than an absent key. Unlike `model_withheld` and `served_model`
@@ -292,6 +343,11 @@ export interface ChatSlot extends TurnIdentityFields {
   incarnation?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
+  /** Of those, the restored cards no drain starts on its own (`readyQueueDepth`).
+   *  Absent on an older gateway. */
+  queue_held_depth?: number
+  /** The ISO instant this chat will resume by itself after its usage limit resets; present only while that wait is armed. */
+  limit_continue_at?: string
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
   code_channel?: CodeChannelInfo
   /** Code channels are on but not read yet, so this Slack-linked row may still
@@ -317,6 +373,11 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Shared Crew creator (`shared_crew.attribution`), public shape. Display only. */
   attribution?: SessionAttribution | null
   created_by?: string
+  /** Shared Crew: the people who have written here, creator first, then most
+   *  recent (`shared_crew.participants`), public shape. Display only. */
+  participants?: PublicPrincipal[]
+  /** How many people the gateway's capped `participants` list dropped. */
+  participants_dropped?: number
   /** True on a Crew Mode root: a root session running a conductor template
    *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */
   crew_mode_root?: boolean
@@ -329,6 +390,15 @@ export interface ChatSlot extends TurnIdentityFields {
    *  chat shows its pending approvals and question cards, and the mate's
    *  Sessions tab lists such rows. Absent elsewhere. */
   mate_root?: string
+  /** On a crewmate thread's own row: its Bot's "Show in my Sessions list" switch
+   *  (`crew_mode.MATE_LISTED_FIELD`). Off, the sessions it dispatched leave the
+   *  person's lists for the Bot's Sessions tab; on, they stay listed. */
+  show_sessions_in_list?: boolean
+  /** True on a conversation that started in Slack while
+   *  `slack.show_in_session_list` is off (`dashboard/slack_session_list.py`).
+   *  The person's session lists leave it out unless it is the open session
+   *  (`crewModeView`), and its unread entry adds to no count. Absent otherwise. */
+  slack_list_hidden?: boolean
   /** The conductor the chat runs in Crew Mode (`crew_mode_agent` on the slot), "" when
    *  it never turned on: it marks the chat as Crew Mode until the gateway moves it onto
    *  the configured `agent.crew_mode_agent`. */
@@ -406,6 +476,13 @@ export interface ChatSlot extends TurnIdentityFields {
    * accepts the turn). Only ever true while `running`; absent from an older
    * gateway. */
   wake_starting?: boolean
+  /** The directory the running turn's process works in. `project` follows a
+   * pick made mid-reply at once; this does not. Null when no turn has claimed
+   * its session yet, absent from an older gateway. */
+  turn_project?: string | null
+  /** `turn_project` is the default folder a hidden scratch project fell back
+   * to, not a pick. Absent from an older gateway. */
+  turn_project_fallback?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
   /** An automatic context compaction holds the session right now. Not a turn,
@@ -425,6 +502,12 @@ export interface ChatSlot extends TurnIdentityFields {
   /** The language `preparing_text` is written in (`en`, `zh`, ...). The client
    * shows the text only when this is its UI language. */
   preparing_lang?: string
+  /** The greeting the agent's spec carries (`welcomeMessage`), capped and
+   * redacted by the gateway, while the chat has no row: an unstarted chat
+   * writes none, so the welcome page draws it from here. "" from the first row
+   * on, when the transcript's welcome row (`meta.kind` `agent_welcome`) carries
+   * it; absent from an older gateway. Plain text, never markdown or HTML. */
+  welcome_message?: string
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean
@@ -519,7 +602,7 @@ export interface SideSnapshot {
   last_run_id?: string
   /** A side turn is in flight, so a submit would steer or queue. */
   running?: boolean
-  messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean }>
+  messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean; link_blocks?: unknown }>
   /** `rev` counts the entry's edits, as the edit frame reports it, so a reader
    *  can tell which of two copies of the entry is newer. */
   queue?: Array<{ id: string; content: string; ts: string; rev?: number }>
@@ -532,7 +615,7 @@ export interface ChatMessage {
   /** Structured metadata for role-specific data (e.g. tool_input for permission messages). */
   meta?: Record<string, unknown>
   /** Regenerated variants of an assistant message (most recent last). */
-  variants?: { content: string; ts?: string; blocked_links?: unknown; redactions?: unknown }[]
+  variants?: { content: string; ts?: string; link_blocks?: unknown; redactions?: unknown }[]
   /** Which variant index is currently active. */
   variant_idx?: number
   /** Counter for consecutive identical tool message deduplication. */
@@ -547,7 +630,7 @@ export interface ChatMessage {
   /** Gateway process generation that numbered `seq` (folded snapshot rows). */
   gen?: string
   /** One skill-selection decision the gateway stamped on the row that ends the
-   *  turn, when the Decisions (Jev) seam answered for it. Typed `unknown`
+   *  turn, when the Decisions seam answered for it. Typed `unknown`
    *  because the shape is validated at the read, by
    *  `pages/chat/decisionRecord.ts` — the strip draws nothing for a record it
    *  cannot check. The gateway stamps it under `meta` on both doors, and this
@@ -578,6 +661,10 @@ export interface ChatSlotDetailResponse extends TurnIdentityFields {
   context_pct?: number
   context_used_tokens?: number
   context_window_tokens?: number
+  /** Incremental-read cursor, present when the read asked for one (`cursor=1`). */
+  cursor?: unknown
+  /** Set on a response that carries only the rows after the echoed cursor. */
+  delta?: unknown
 }
 
 export interface SubagentActivity {
@@ -637,7 +724,10 @@ export interface SubagentActivity {
    *  while `stalled` holds there is by definition no activity to reset it. */
   stalledAt?: number
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
+  parentStopped?: boolean  // parent turn was stopped; agent still runs but is orphaned
   approval_id?: string
+  /** The coordinator request a pending spawn waits on (types/approvalTarget). */
+  approval_target?: CoordinatorApprovalTarget
   approving?: boolean
   /** The `approval_id` a resolve attempt found gone (`isTerminalApprovalRefusal`):
    *  decided or expired where this client could not see it. Scoped by id so a
@@ -680,6 +770,8 @@ export interface ToolActivity {
   execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call
   approval_id?: string  // pending approval ID
+  /** The request a pending approval entry was raised for (types/approvalTarget). */
+  approval_target?: ApprovalTarget
   approval_type?: string // 'chat' or 'spawn'
   tool_call_id?: string  // for matching tool results
   rejected?: boolean     // true when approval was rejected
@@ -751,6 +843,9 @@ export interface Notification {
   /** Server-stamped on a replacement no more urgent than the note it replaced:
    *  it lands in the bell, but no sound, banner or OS notification announces it. */
   quiet?: boolean
+  /** Server-stamped on a keyed note that replaced an earlier note under the
+   *  same source and key; the feed marks the row as edited. */
+  replaced?: boolean
   /** The crewmate that published the note, stamped by the gateway from the
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
@@ -772,10 +867,31 @@ export interface NotificationChannel {
   settings: { muted?: boolean; priority?: string; deliver_to?: string[]; deliver_min_priority?: string }
 }
 
+/** The one pending request a control decides, retires or adopts; built and
+ *  matched by types/approvalTarget. A coordinator target is bound by the
+ *  server-issued `instance` and its owning `slot` ('' when slotless), a native
+ *  target by the slot that holds the request and its permission row's `mid`.
+ *  `id` is carried for the route and for display only. */
+export interface CoordinatorApprovalTarget {
+  readonly origin: 'coordinator'
+  readonly id: string
+  readonly slot: string
+  readonly instance: string
+}
+
+export interface NativeApprovalTarget {
+  readonly origin: 'native'
+  readonly id: string
+  readonly slot: string
+  readonly mid: string
+}
+
+export type ApprovalTarget = CoordinatorApprovalTarget | NativeApprovalTarget
+
 export interface PendingApproval {
   origin?: 'native' | 'coordinator'
   request_mid?: string
-  /** A coordinator record's instance: pins a decision to that one record. */
+  /** A coordinator request's server-issued instance (see types/approvalTarget). */
   request_instance?: string
   tool_purpose?: string
   tool: string

@@ -45,6 +45,7 @@ Output is one JSON object per line on stdout, one per open pull request:
      "newest_completed_check_at": "<ISO8601>" | null,
      "newest_failed_check_at": "<ISO8601>" | null,
      "newest_review_at": "<ISO8601>" | null,
+     "running_checks": 0,
      "checks_complete": true}
 
 A 200 body can carry `errors` next to usable `data`: GitHub nulls the one field
@@ -344,17 +345,23 @@ def _readiness(commit: dict[str, Any], status_context: str) -> dict[str, str] | 
     return None
 
 
-def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> None:
+def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> int:
     """Accumulate completion timestamps from one page of rollup contexts.
+
+    Returns how many check-runs on the page have not completed yet (queued or
+    in progress). The sweep holds a "check completed later" re-fire while any
+    is still running, because the next completion would re-open it.
 
     Non-CheckRun nodes (the commit statuses the rollup mixes in) carry no
     conclusion and are skipped -- the readiness verdict is read from
     `status.contexts` instead, so nothing is lost here.
     """
+    running = 0
     for node in nodes:
         if not isinstance(node, dict) or node.get("__typename") != "CheckRun":
             continue
         if node.get("status") != "COMPLETED":
+            running += 1
             continue
         at = node.get("completedAt")
         if not at:
@@ -362,6 +369,7 @@ def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> N
         completed.append(str(at))
         if str(node.get("conclusion") or "").upper() in FAILURE_CONCLUSIONS:
             failed.append(str(at))
+    return running
 
 
 def _newest(values: list[str]) -> str | None:
@@ -406,7 +414,7 @@ def _scan_pr(
     failed: list[str] = []
 
     contexts = ((commit.get("statusCheckRollup") or {}).get("contexts")) or {}
-    _fold_checks(contexts.get("nodes") or [], completed, failed)
+    running = _fold_checks(contexts.get("nodes") or [], completed, failed)
     total = contexts.get("totalCount") or 0
     if isinstance(total, int) and total > CONTEXTS_PAGE_SIZE:
         counters.oversized += 1
@@ -440,7 +448,7 @@ def _scan_pr(
             )
             or {}
         ).get("contexts") or {}
-        _fold_checks(contexts.get("nodes") or [], completed, failed)
+        running += _fold_checks(contexts.get("nodes") or [], completed, failed)
         if document.get("errors"):
             # A field error nulled part of this page: whatever it held past the
             # nodes that did arrive was never read.
@@ -470,6 +478,7 @@ def _scan_pr(
         "newest_completed_check_at": _newest(completed),
         "newest_failed_check_at": _newest(failed),
         "newest_review_at": _newest_review(pr),
+        "running_checks": running,
         "checks_complete": checks_complete,
     }
 

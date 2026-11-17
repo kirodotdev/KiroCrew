@@ -50,6 +50,20 @@ _RESIDUE_PRUNE_INTERVAL_SECS = 3600.0
 _RESIDUE_PRUNE_SOON_SECS = 300.0
 
 
+class _LiveActiveKeys:
+    """The cron service's live keys, read again on every membership question.
+
+    The prune runs on a worker for as long as its scan takes, and a run can
+    register a key meanwhile; a snapshot taken before the hop would miss it.
+    """
+
+    def __init__(self, service: CronService) -> None:
+        self._service = service
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._service.active_session_keys()
+
+
 async def _prune_run_residue(service: CronService, now: float) -> bool:
     """Remove stale per-run transcripts off the loop; never fail the reaper.
 
@@ -60,7 +74,7 @@ async def _prune_run_residue(service: CronService, now: float) -> bool:
         prune_stale_run_transcripts,
     )
 
-    active = service.active_session_keys()
+    active = _LiveActiveKeys(service)
     try:
         removed = await asyncio.to_thread(prune_stale_run_transcripts, active_keys=active, now=now)
     except Exception:

@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { api, type MemberRosterRow } from './client'
+import { refetchWhileFailed, retryThroughRestart } from './queryClient'
 import { memberProjectionStore } from '../state/memberProjectionStore'
 import type { ProjectionsBlock } from '../state/memberProjectionTypes'
 import type { ErrorReport } from '../utils/errorReport'
@@ -35,6 +36,13 @@ export const membersRosterQuery = {
   queryKey: MEMBERS_ROSTER_QUERY_KEY,
   queryFn: async (): Promise<MemberRosterRow[]> => (await api.members()).members,
   staleTime: MEMBERS_ROSTER_STALE_MS,
+  // A failed read is a standing notice (the dock's starred Bots, the Bots
+  // page roster), so a gateway restart or a dropped link is ridden out
+  // quietly first (see `retryThroughRestart`). Every reader spreads this
+  // object, so the ladder holds for each of them.
+  retry: retryThroughRestart,
+  // ...and a failed read keeps re-reading, so its notice clears on its own.
+  refetchInterval: refetchWhileFailed,
   // Seed the per-member projection store from each row's baseline block BEFORE
   // the page renders rows — `select` runs synchronously on the query result,
   // so the first paint already reads pushed values via useMemberProjection.
@@ -203,6 +211,9 @@ export interface MemberThreadOutcome {
   collision?: string
   /** Set when the last POST failed. */
   failed?: boolean
+  /** Set with `failed` when the POST was an owner-only refusal (a relay
+   *  teammate opening a Bot): not a fault, so the notice says who may chat. */
+  ownerOnly?: boolean
   /** Redacted diagnostics for this member's failed open or repair. */
   errorReport?: ErrorReport
 }

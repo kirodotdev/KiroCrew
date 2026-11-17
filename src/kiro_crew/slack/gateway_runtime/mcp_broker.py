@@ -80,8 +80,43 @@ def _schedule_mcp_launch_approval_persist(
                 "mcp launch approvals: could not persist the approval store",
                 exc_info=True,
             )
+            return
+        # The store now holds this start's refusals: tell the owner once about a
+        # share that was approved and is paused, since no chat says so. A start
+        # with no refusal runs too, to remove an earlier note.
+        await self._publish_paused_share_note()
 
     task = asyncio.create_task(_persist(), name="mcp-launch-approval-persist")
+    self._background_tasks.add(task)
+    task.add_done_callback(self._background_tasks.discard)
+
+
+async def _publish_paused_share_note(self: GatewayOrchestrator) -> None:
+    """Publish or resolve the paused-share bell note; a failure only logs."""
+    if self.dashboard_state is None:
+        return
+    try:
+        from kiro_crew.notifications import mcp_share_paused_note
+
+        await mcp_share_paused_note.publish(self.dashboard_state)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("mcp launch approvals: paused-share note failed", exc_info=True)
+
+
+def _schedule_paused_share_note(self: GatewayOrchestrator) -> None:
+    """Resolve the paused-share note once the process is ready, on a start with no stubs."""
+    ready = getattr(self, "_mcp_launch_approval_ready", None)
+    if ready is None:
+        ready = asyncio.Event()
+        self._mcp_launch_approval_ready = ready
+
+    async def _resolve() -> None:
+        await ready.wait()  # type: ignore[union-attr]  # narrowed above
+        await self._publish_paused_share_note()
+
+    task = asyncio.create_task(_resolve(), name="mcp-share-paused-note")
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
 
@@ -109,6 +144,9 @@ async def _init_mcp_gateway(
     cfg_gw = self._cfg.mcp_gateway
     stubs = frozenset(cfg_gw.stub_servers) if stub_servers is None else stub_servers
     if not stubs:
+        # No broker, so no approval persist: a note naming servers that left
+        # the share list is removed here instead.
+        self._schedule_paused_share_note()
         return
     self._mcp_stub_servers_started = stubs
     # Runs on every platform the transport layer covers -- an AF_UNIX socket
@@ -201,7 +239,7 @@ async def _init_mcp_gateway(
     if approvals.refused:
         logger.warning(
             "mcp launch approvals: %d server launch(es) refused; review them in "
-            "Customize > Connections > MCP Servers > MCP Management",
+            "MCP Servers > Sharing",
             len(approvals.refused),
         )
     if approvals.captured or approvals.refused:
@@ -233,6 +271,9 @@ async def _init_mcp_gateway(
             idle_timeout_secs=cfg_gw.idle_timeout_secs,
             max_backends=cfg_gw.max_backends,
             mcp_target_env=target_env,
+            # The exact work dir this rewrite wrote into every stub, so the
+            # daemon spawns backends there without resolving it a second time.
+            backend_work_dir=str(rewrite_inputs.get("work_dir") or ""),
             prewarm_count=cfg_gw.prewarm_count,
             keep_alive_servers=tuple(cfg_gw.keep_alive_servers),
             # Admission keys ride the daemon's argv like max_backends.
@@ -250,6 +291,13 @@ async def _init_mcp_gateway(
             host_budget_max_fds=cfg_gw.host_budget_max_fds,
         )
     )
+    # A broker (re)started after the bind takes the port from the listener's own
+    # record, never from os.environ: the variables this process inherited may
+    # name another gateway. At boot there is no record yet, and
+    # ``_wire_mcp_gateway_dashboard`` announces the port once the listener is up.
+    bound_port = getattr(self.dashboard_state, "_listener_bound_port", 0)
+    if type(bound_port) is int and bound_port > 0:
+        manager.set_owner_port(bound_port)
     # Pre-resolve npm-launcher targets in the background. An npx spec asks the
     # registry what it means on every launch; once resolved, the daemon execs
     # the installed tree instead, so session start does no resolution and
@@ -291,6 +339,16 @@ def _mark_mcp_broker_ready(
     # later reaches the dashboard only through this.
     if self.dashboard_state is not None:
         self.dashboard_state._mcp_gateway_manager = manager
+        # A retry that comes up after the bind, on a manager that never got the
+        # port, announces it here. Detached, like the wire's announce.
+        port = getattr(self.dashboard_state, "_listener_bound_port", 0)
+        if type(port) is int and port > 0 and manager.owner_port is None:
+            manager.set_owner_port(port)
+            task = asyncio.create_task(
+                manager.announce_owner_port(port), name="mcp-gateway-owner-port"
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
     # App installs and enables write agent specs after this rewrite; this is
     # how they reach the overlay without a restart. The hook lives exactly as
     # long as the broker: ``_stop_mcp_broker`` clears it.
@@ -694,3 +752,19 @@ def _wire_mcp_gateway_dashboard(self: GatewayOrchestrator) -> None:
     # Read by the dashboard restart handler, which execs without running
     # ``_shutdown``: the broker this process owns must still die with it.
     self.dashboard_state._mcp_gateway_stop = self._stop_mcp_broker
+    # The broker started before the bind, so its daemon cannot know this
+    # gateway's port: tell it now, from the listener's own record of the bind.
+    # A broker started after this (``_init_mcp_gateway``) reads the same record.
+    # Detached: a socket round trip, and a miss is retried by the watchdog.
+    port = getattr(self.dashboard_state, "_listener_bound_port", 0)
+    if type(port) is not int or port <= 0:
+        return
+    # A boot start that failed parks its manager for the retry. Store the port
+    # on it, so the retry's successful ``start()`` sends it.
+    if self._mcp_gateway_pending is not None:
+        self._mcp_gateway_pending.set_owner_port(port)
+    manager = self._mcp_gateway_manager
+    if manager is not None:
+        task = asyncio.create_task(manager.announce_owner_port(port), name="mcp-gateway-owner-port")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)

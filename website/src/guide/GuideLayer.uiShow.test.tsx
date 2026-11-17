@@ -539,11 +539,11 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(factVerdict(discover)).toBeNull()
     window.history.pushState({}, '', '/apps/')
     expect(factVerdict(discover)).toBe('done')
-    const mcp = page('MCP Servers', '/capabilities?tab=mcp')
+    const skills = page('Skills', '/capabilities?tab=skills')
     window.history.pushState({}, '', '/capabilities?tab=crews')
-    expect(factVerdict(mcp)).toBeNull()
-    window.history.pushState({}, '', '/capabilities?tab=mcp')
-    expect(factVerdict(mcp)).toBe('done')
+    expect(factVerdict(skills)).toBeNull()
+    window.history.pushState({}, '', '/capabilities?tab=skills')
+    expect(factVerdict(skills)).toBe('done')
     window.history.pushState({}, '', '/chat')
   })
 
@@ -577,9 +577,17 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(r.action.enter.to({ pathname: '/schedule', search: '' })).toBe('/chat')
     const mcp = resolveGuideAction(show('mcp.add-server'))
     if (!mcp.ok) throw new Error('expected ok')
-    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=skills' })).toBe('/capabilities?tab=mcp')
-    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=mcp' })).toBe('/capabilities?tab=mcp')
+    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=skills' })).toBe('/capabilities?tab=mcp-servers')
+    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=mcp-servers' })).toBe('/capabilities?tab=mcp-servers')
     expect(alreadyAt('/chat', { pathname: '/chatter', search: '' })).toBe(false)
+    // An entity's own page under a list counts as already there, whatever the
+    // list's view query: starting a guide must not close the open artifact.
+    expect(alreadyAt('/artifacts?scope=all', { pathname: '/artifacts/my-doc', search: '' })).toBe(true)
+    expect(alreadyAt('/artifacts?scope=all', { pathname: '/artifacts', search: '' })).toBe(false)
+    expect(alreadyAt('/artifacts?scope=all', { pathname: '/artifacts', search: '?scope=all' })).toBe(true)
+    const versions = resolveGuideAction(show('artifacts.detail.versions'))
+    if (!versions.ok) throw new Error('expected ok')
+    expect(versions.action.enter.to({ pathname: '/artifacts/my-doc', search: '' })).toBe('/artifacts/my-doc')
   })
 
   it('every generated plan resolves, and names only registered locations', () => {

@@ -21,10 +21,10 @@ import inspect
 import json
 import logging
 import sys
-import time
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
@@ -61,6 +61,24 @@ _CRON = {"command": "/opt/kirocrew", "args": ["mcp-cron"]}
 def _wire(*names: str) -> list[dict[str, Any]]:
     """A ``session/new`` ``mcpServers`` array carrying exactly *names*."""
     return [{"name": n, "command": "/bin/x", "args": [], "env": [], "type": "stdio"} for n in names]
+
+
+class _PyEqName(str):
+    """A ``str`` whose equality runs in Python, so an interpreter-work count sees
+    every comparison a membership test makes. Slicing and ``partition`` keep the
+    type, so the server name a ref parses to compares the same way."""
+
+    __hash__ = str.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        return str.__eq__(self, other)
+
+    def __getitem__(self, key: Any) -> "_PyEqName":
+        return _PyEqName(str.__getitem__(self, key))
+
+    def partition(self, sep: str) -> tuple[str, str, str]:
+        head, mid, tail = str.partition(self, sep)
+        return _PyEqName(head), mid, tail
 
 
 class TestRefParsing:
@@ -118,21 +136,26 @@ class TestRefParsing:
 
         The spec is size-capped (``hooks.MAX_FILE_BYTES``) but not entry-capped, so a
         linear ``in`` over the result list would cost O(N**2) on session start. The
-        loose ceiling still separates linear from quadratic without flaking.
+        names compare through a Python ``__eq__``, so every membership comparison is
+        interpreter work the counter sees, and the work must grow linearly in N.
         """
-        n = 60_000
-        tools = [f"@srv{i}" for i in range(n)]
-        wire = [{"name": f"srv{i}"} for i in range(n)]
+        from denied_commands_security_helpers import _interpreter_work, _linear_work
 
-        start = time.monotonic()
-        grant_all, refs = parse_tools_refs(tools)
-        names = wire_server_names(wire)
-        elapsed = time.monotonic() - start
+        def parse(n: int) -> None:
+            tools = [_PyEqName(f"@srv{i}") for i in range(n)]
+            wire = [{"name": _PyEqName(f"srv{i}")} for i in range(n)]
+            grant_all, refs = parse_tools_refs(tools)
+            names = wire_server_names(wire)
+            assert grant_all is False
+            assert len(refs) == n
+            assert len(names) == n
+            # Plain ``str`` names compare in C, where the count sees nothing, so a
+            # parser that drops the type would make this check measure nothing.
+            assert all(type(name) is _PyEqName for name in refs), "refs lost _PyEqName"
+            assert all(type(name) is _PyEqName for name in names), "names lost _PyEqName"
 
-        assert grant_all is False
-        assert len(refs) == n
-        assert len(names) == n
-        assert elapsed < 5.0, f"parsing {n} refs took {elapsed:.1f}s -- shape is not linear"
+        work = [_interpreter_work(lambda n=n: parse(n)) for n in (1_000, 2_000, 3_000)]
+        assert _linear_work(work), f"parse work at 1k/2k/3k refs: {work} -- not linear"
 
     def test_dedup_is_set_backed_while_output_stays_ordered(self):
         """The property the timing test measures, stated directly.
@@ -394,7 +417,7 @@ class TestTheWarning:
         ring fans out to the dashboard, so a credential-shaped ref would appear
         there verbatim. Redaction is not optional on a sink like that.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=24)
         spec = {"tools": [f"@{secret}"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
             found = warn_unresolved_server_refs(
@@ -422,7 +445,7 @@ class TestTheWarning:
         second line was never the exposure there. Redaction is the half ``%r``
         cannot do: it would print a secret-shaped name in full, just quoted.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=24)
         spec = {"tools": ["@ghost"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
             warn_unresolved_server_refs(
@@ -473,11 +496,11 @@ class TestTheWarning:
     def test_the_rebuild_runs_after_the_redactors_not_instead_of_them(self, caplog):
         """Order is the load-bearing part: the alphabet alone would leak a key.
 
-        ``AKIAIOSFODNN7EXAMPLE`` is pure alphanumerics, so a rebuild would pass it
-        through verbatim. Redaction is what removes the secret; the rebuild removes
+        A GitHub token is letters, digits and ``_``, all inside the alphabet, so a
+        rebuild would pass it through verbatim. Redaction is what removes the secret; the rebuild removes
         the punctuation and the dataflow.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=24)
         assert mcp_ref_guard._log_safe(secret) == secret  # the alphabet alone: no help
         spec = {"tools": [f"@{secret}"], "mcpServers": {}}
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
@@ -644,7 +667,7 @@ class TestTheCompositionPath:
         guard's silent path rather than its finding.
         """
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=backend)
-        client._write_claude_local_settings()
+        client._write_settings_seed()
         client._mcp_ref_spec = client._read_mcp_ref_spec()
         return client
 
@@ -656,7 +679,7 @@ class TestTheCompositionPath:
         steps on that path.
         """
         wire = [
-            *(client._claude_session_mcp_servers() if client._is_claude else []),
+            *client._harness_session_mcp_servers(),
         ]
         client._begin_session_report(wire)
         client._guard_unresolved_mcp_refs(wire)
@@ -943,10 +966,11 @@ class TestTheRuntimeCallSitesAreWired:
     def test_every_runtime_roster_handoff_is_paired_with_the_guard(self):
         """Both runtime call sites (session/new, session/load), held by structure.
 
-        ``begin_session(`` marks where the wire array is final. The guard must be the
-        next statement, and must take the SAME roster, so a new establishment path
-        that hands over a roster and forgets the guard -- or guards a different list
-        than it reported -- is the omission this pins.
+        ``_open_mcp_report(`` marks where the wire array is final: it begins the
+        session's report with that roster, together with the session's queue. The
+        guard that follows in the same function must take the SAME roster, so a new
+        establishment path that hands over a roster and forgets the guard -- or
+        guards a different list than it reported -- is the omission this pins.
         """
         from kiro_crew.acp import runtime as runtime_mod
 
@@ -955,14 +979,21 @@ class TestTheRuntimeCallSitesAreWired:
             inspect.getsource(sys.modules[name])
             for name in (runtime_mod.__name__, *runtime_mod._RUNTIME_OWNERS)
         ).splitlines()
-        handoffs = [i for i, ln in enumerate(lines) if ".begin_session(" in ln]
+        # One reset, inside the helper both paths call: a second one elsewhere
+        # would wipe what frames already reported.
+        assert sum(".begin_session(" in ln for ln in lines) == 1
+        handoffs = [i for i, ln in enumerate(lines) if "self._open_mcp_report(" in ln]
         assert len(handoffs) == 2, "a runtime session-establishment path was added or removed"
         for i in handoffs:
-            roster = lines[i].split(".begin_session(", 1)[1].rstrip(")")
+            roster = lines[i].split("_open_mcp_report(", 1)[1].rstrip(")").split(",")[1]
+            # The guard of the same function: the first one before the next ``def``.
             j = i + 1
-            while j < len(lines) and (not lines[j].strip() or lines[j].lstrip().startswith("#")):
+            while j < len(lines) and not (
+                "self._guard_unresolved_mcp_refs(" in lines[j]
+                or lines[j].startswith(("def ", "async def "))
+            ):
                 j += 1
-            guard = lines[j]
+            guard = lines[j] if j < len(lines) else ""
             assert (
                 "self._guard_unresolved_mcp_refs(" in guard
             ), f"line {i} hands over a final roster and never reaches the guard: {guard!r}"
@@ -1235,7 +1266,8 @@ class TestGateWithheldServers:
         from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
         src = inspect.getsource(acp_driver.agent_spec_mcp_refs)
-        assert "drop_gate_withheld(unresolved_server_refs(" in src
+        assert "drop_gate_withheld(" in src
+        assert src.index("drop_gate_withheld(") < src.index("unresolved_server_refs(")
 
 
 class TestServersTheSpecMountsFromMcpJson:

@@ -193,6 +193,17 @@ def deny_dir_stat(home, monkeypatch):
         monkeypatch.setattr(os, key, _deny(key))
 
 
+@pytest.fixture(params=["deny_dir", "deny_dir_stat"])
+def refused_dir(request):
+    """:data:`DIR_VICTIM` refused for listing, or for its metadata too.
+
+    `os.path.isdir` answers False for a path it cannot stat, so it cannot screen the
+    second case. A test takes this before ``unpinned``: the deny fixture pins the walk
+    and ``unpinned`` must override it.
+    """
+    request.getfixturevalue(request.param)
+
+
 def _manifest_of(out, tmp_path) -> dict:
     tarballs = sorted(out.glob("kirocrew-snapshot-*.tar.gz"))
     assert tarballs, "no bundle was written"
@@ -440,7 +451,7 @@ class TestAFileWhoseBytesAloneAreRefusedOnTheByNameWalk:
 class TestARefusedDIRECTORYIsTheSameOmission:
     """A tolerance that covered only files still ended the snapshot on a directory."""
 
-    def test_a_refused_subdirectory_is_skipped_and_recorded(self, home, deny_dir, tmp_path):
+    def test_a_refused_subdirectory_is_skipped_and_recorded(self, home, refused_dir, tmp_path):
         (home / "workspace" / DIR_VICTIM).mkdir()
         (home / "workspace" / DIR_VICTIM / "inside.md").write_text("unreachable\n")
         out = tmp_path / "out"
@@ -451,7 +462,7 @@ class TestARefusedDIRECTORYIsTheSameOmission:
         assert omitted[0]["reason"] == "unreadable_entry"
 
     def test_a_refused_subdirectory_is_skipped_on_the_by_name_walk(
-        self, home, deny_dir, unpinned, tmp_path
+        self, home, refused_dir, unpinned, tmp_path
     ):
         (home / "workspace" / DIR_VICTIM).mkdir()
         (home / "workspace" / DIR_VICTIM / "inside.md").write_text("unreachable\n")
@@ -495,31 +506,6 @@ class TestTheByNameRootsOwnRefusal:
         monkeypatch.setattr(snap.pinned_fs, "supports_pinned_tree_walk", lambda: False)
         with pytest.raises((PermissionError, shutil.Error)):
             snap._copytree_safe(home / "plan_memory", tmp_path / "dst", allow_unpinned=True)
-
-
-class TestADirectoryWhoseMetadataIsRefusedToo:
-    """`os.path.isdir` answers False for a path it cannot stat, so it cannot screen."""
-
-    def test_the_pinned_walk_skips_and_records_it(self, home, deny_dir_stat, tmp_path):
-        (home / "workspace" / DIR_VICTIM).mkdir()
-        (home / "workspace" / DIR_VICTIM / "inside.md").write_text("unreachable\n")
-        out = tmp_path / "out"
-        assert snap.snapshot_main([str(out), "--components", "workspace", *unpinnable_argv()]) == 0
-        manifest = _manifest_of(out, tmp_path)
-        omitted = [s for s in manifest.get("skipped", []) if s["path"].endswith(DIR_VICTIM)]
-        assert omitted, f"manifest does not record the omission: {manifest.get('skipped')}"
-        assert omitted[0]["reason"] == "unreadable_entry"
-
-    def test_the_by_name_walk_skips_and_records_it(self, home, deny_dir_stat, unpinned, tmp_path):
-        (home / "workspace" / DIR_VICTIM).mkdir()
-        (home / "workspace" / DIR_VICTIM / "inside.md").write_text("unreachable\n")
-        out = tmp_path / "out"
-        rc = snap.snapshot_main([str(out), "--components", "workspace", "--allow-unpinned-staging"])
-        assert rc == 0
-        manifest = _manifest_of(out, tmp_path)
-        omitted = [s for s in manifest.get("skipped", []) if s["path"].endswith(DIR_VICTIM)]
-        assert omitted, f"manifest does not record the omission: {manifest.get('skipped')}"
-        assert omitted[0]["reason"] == "unreadable_entry"
 
 
 class TestARefusedDatabaseNeverReachesTheRestagePass:

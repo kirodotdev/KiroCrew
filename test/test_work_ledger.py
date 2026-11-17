@@ -54,9 +54,11 @@ def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
     assert set(worker_statuses(False)) == {"progress", "done", "blocked", "question"}
 
 
-def test_event_kinds_are_exactly_nine():
-    # ``retire`` and ``destroy`` are the hub's own remote-dispatch writes (wave 8).
+def test_event_kinds_are_exactly_ten():
+    # ``retire`` and ``destroy`` are the hub's own remote-dispatch writes (wave 8);
+    # ``ask`` is the conductor's record of what an item needs from the person.
     assert wl.EVENT_KINDS == {
+        "ask",
         "create",
         "bind",
         "report",
@@ -83,7 +85,6 @@ def test_conductor_actions_are_exactly_six():
 def test_caps_hold_their_rfc_values():
     assert wl.MAX_ITEMS_PER_CONDUCTOR == 32
     assert WORK_CLOSED_WINDOW == 32
-    assert wl.MAX_GOAL_ITEM_CAP == 256
     assert wl.MAX_EVENTS_PER_ITEM == 200
     assert wl.MAX_DEPTH == 2
     assert wl.MAX_GOAL_CHARS == 2000
@@ -368,6 +369,7 @@ def test_a_worker_may_be_rebound_once_its_prior_item_is_terminal():
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=first, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=first, state="accepted")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
     assert wl.read_binding(WORKER) == (CONDUCTOR, second)
@@ -403,6 +405,7 @@ def test_a_failed_item_write_during_bind_restores_the_prior_binding(monkeypatch)
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=first, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=first, state="accepted")
     binding_before = wl.binding_path(WORKER).read_bytes()
     item_before = wl.item_path(CONDUCTOR, second).read_bytes()
@@ -457,6 +460,7 @@ def test_decide_verdict_and_close_each_move_one_field_and_log_one_event():
     mid = wl.read_work_item(CONDUCTOR, item_id)
     assert mid is not None
     assert (mid.decision, mid.verdict, mid.fails, mid.state) == ("retry once", "fail", 1, "open")
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(
         CONDUCTOR, "close", item_id=item_id, state="accepted", decision="landed"
     )
@@ -467,6 +471,7 @@ def test_decide_verdict_and_close_each_move_one_field_and_log_one_event():
     assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == [
         "create",
         "decision",
+        "verdict",
         "verdict",
         "close",
     ]
@@ -489,6 +494,36 @@ def test_close_refuses_open_as_a_terminal_state():
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="open")
     assert caught.value.field == "state"
+
+
+@pytest.mark.parametrize(
+    "verdicts", [(), ("fail",), ("pending",), ("refused",), ("error",), ("pass", "fail")]
+)
+def test_close_accepted_needs_a_pass_verdict(verdicts):
+    """Acceptance is the evaluator's answer, so only a latest ``pass`` lets an item close accepted."""
+    item_id = _new_item()
+    for verdict in verdicts:
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict=verdict)
+    before = _bytes_on_disk(item_id)
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+    assert (caught.value.code, caught.value.field) == (wl.CODE_INVALID_VALUE, "state")
+    assert _bytes_on_disk(item_id) == before
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="rejected")
+    closed = wl.read_work_item(CONDUCTOR, item_id)
+    assert closed is not None and closed.state == "rejected"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_create_refuses_an_acceptance_that_is_not_strict_json(bad):
+    """A NaN/Infinity in the acceptance would serialise to a bare `NaN`/`Infinity`
+    token that the Crew board's strict JSON.parse rejects, so it is refused at the
+    store, never minted."""
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"x": bad})
+    assert (caught.value.code, caught.value.field) == (wl.CODE_INVALID_VALUE, "acceptance")
+    assert wl.list_work_items(CONDUCTOR) == []
 
 
 def test_an_unknown_item_and_an_unknown_action_are_named_distinctly():
@@ -535,7 +570,17 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
     import inspect
 
     names = set(inspect.signature(wl.apply_worker_report).parameters)
-    assert names == {"slot_key", "item_id", "status", "summary", "artifacts", "pr", "reason"}
+    assert names == {
+        "slot_key",
+        "item_id",
+        "status",
+        "summary",
+        "artifacts",
+        "pr",
+        "reason",
+        "wake_at",
+        "discussion",
+    }
     assert not names & {"verdict", "state", "acceptance", "decision", "fails", "round_number"}
 
 
@@ -928,6 +973,49 @@ def test_a_decide_on_a_progress_item_does_not_restart_its_window():
     assert wl.is_stale(item, worker_running=False, now=now, window_secs=900) is True
 
 
+def test_a_progress_item_waiting_until_a_time_is_not_stale_before_it():
+    """``wake_at`` is the wait a worker declared. Before it the item is not
+    stale; after it the window runs from it; the next report without one clears it."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wake = (datetime.now(timezone.utc) + timedelta(hours=6)).replace(microsecond=0)
+    # Given in any zone, stored as the UTC stamp.
+    local = wake.astimezone(timezone(timedelta(hours=5, minutes=30))).isoformat()
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="progress", summary="deploy window", wake_at=local
+    )
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.wake_at == wake.isoformat()
+    window = timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS)
+    assert wl.is_stale(item, worker_running=False, now=wake - window) is False
+    assert wl.is_stale(item, worker_running=False, now=wake + window / 2) is False
+    assert wl.is_stale(item, worker_running=False, now=wake + window * 2) is True
+    # A worker that is gone cannot come back at the time it named.
+    assert wl.is_stale(item, worker_running=False, worker_closed=True, now=wake - window) is True
+    wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="moving again")
+    cleared = wl.read_work_item(CONDUCTOR, item_id)
+    assert cleared is not None and cleared.wake_at is None
+    assert "wake_at" not in cleared.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("status", "offset", "code"),
+    [
+        ("blocked", timedelta(hours=1), "wake_at_requires_progress"),
+        ("progress", None, "wake_at_invalid"),
+        ("progress", -timedelta(minutes=1), "wake_at_in_past"),
+        ("progress", timedelta(hours=25), "wake_at_too_far"),
+    ],
+)
+def test_a_wake_at_that_is_not_a_near_future_time_on_progress_is_refused(status, offset, code):
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    before = _bytes_on_disk(item_id)
+    wake_at = "Monday" if offset is None else (datetime.now(timezone.utc) + offset).isoformat()
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="s", wake_at=wake_at)
+    assert (caught.value.code, caught.value.field) == (code, "wake_at")
+    assert _bytes_on_disk(item_id) == before
+
+
 def test_a_done_item_whose_worker_closed_is_still_not_stale():
     item_id = _new_item(acceptance={"kind": "human_approval"})
     wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="green")
@@ -997,6 +1085,7 @@ def test_accept_batch_drops_terminal_items_and_items_with_no_bar():
     kept = _new_item(acceptance={"kind": "human_approval"})
     bare = _new_item(acceptance={})
     closed = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=closed, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=closed, state="accepted")
     ids = [entry["id"] for entry in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]]
     assert ids == [kept]
@@ -1140,6 +1229,7 @@ def test_a_failed_item_write_rolls_the_event_log_back(monkeypatch):
     """State and its event must never disagree. Event goes first;
     if the item write fails the log is restored byte-for-byte, and a retry works."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     item_before, log_before = _bytes_on_disk(item_id)
     real_write = wl._write_record
 
@@ -1158,7 +1248,7 @@ def test_a_failed_item_write_rolls_the_event_log_back(monkeypatch):
     assert item is not None and item.state == "open" and item.status is None
     monkeypatch.setattr(wl, "_write_record", real_write)
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == ["create", "close"]
+    assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == ["create", "verdict", "close"]
 
 
 def test_a_failed_event_write_leaves_the_item_untouched(monkeypatch):
@@ -1319,6 +1409,7 @@ def test_orphaned_is_derived_and_is_never_a_stored_field():
 
 def test_a_terminal_item_is_neither_orphaned_nor_stale():
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     item = wl.read_work_item(CONDUCTOR, item_id)
     assert item is not None
@@ -1540,6 +1631,20 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # key is bound to, never an item and never another session's. Reads nothing
         # but the worker's own binding and item.
         "undelivered_call_watch.py",
+        # The trace's crew attributes (tracing RFC §5.5). A traced dashboard turn on a
+        # crew worker slot carries the work item that worker is bound to, so one
+        # filter selects an item across the conductor and the worker. The same
+        # argument as the undelivered-call watch above: it resolves no supplied
+        # identity (the key is the slot the dashboard turn is already running on),
+        # it reads nothing but that worker's own binding and item, it writes nothing,
+        # and it runs only while ``telemetry.traces_enabled`` is on.
+        "tracing/crew.py",
+        # The conductor mode round trace (tracing RFC §5.5). It reads the header of a
+        # board whose key the route or the slot already resolved, and lists that
+        # board's items to know which are open when a round begins and ends. The
+        # same argument as ``tracing/crew.py``: it resolves no supplied identity,
+        # writes nothing to the store, and runs only while tracing is on.
+        "tracing/work.py",
         # The hub half of remote dispatch (rfc-conductor-remote-dispatch wave 4). A
         # remote worker reports into its OWN crew's store, so the hub files those
         # reports on the conductor's read: it reads the conductor's own board (the
@@ -1547,6 +1652,14 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # ``apply_remote_report``, on an item already bound to that crew. It takes
         # no supplied identity; ``create_bound`` binds the caller's own item.
         "dashboard/handlers/remote_ingest.py",
+        # ``remote_ingest``'s owner of the report filing, split out of it with no logic
+        # change: it reads the bound item and writes it only through
+        # ``apply_remote_report``, exactly as ``remote_ingest.py`` did before the split.
+        "dashboard/handlers/remote_ingest_report.py",
+        # Its peer-report selection: which peer reports a pull files, from the peer
+        # event ids the crew log holds. It reads the conductor's board's work fold
+        # and the store's caps and id shape, takes no identity and writes nothing.
+        "dashboard/handlers/remote_ingest_peer.py",
         # Its background puller (rfc-conductor-remote-dispatch open question 1). It
         # takes no identity and writes nothing itself: it lists the boards holding an
         # open crew-bound item (``boards_with_open_remote``) and hands each to
@@ -1614,3 +1727,124 @@ def test_only_the_phase_2_seams_import_the_module():
         f"allowlisted module(s) no longer import the store: {sorted(stale)}. Either a "
         "seam moved (fix the entry) or it is gone (delete it)."
     )
+
+
+# ── the ask record ─────────────────────────────────────────────────────────
+
+
+def test_ask_records_options_and_pick_and_decide_clears_it():
+    item_id = _new_item()
+    wl.apply_ask_record(
+        CONDUCTOR,
+        item_id,
+        what="Merge PR #12?",
+        why="Only you can approve a merge.",
+        options=[{"label": "Merge it", "outcome": "ships today"}, {"label": "Hold"}],
+        pick="Merge it",
+        pick_why="all checks pass",
+    )
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask is not None
+    assert item.ask["options"] == [
+        {"label": "Merge it", "outcome": "ships today"},
+        {"label": "Hold", "outcome": ""},
+    ]
+    assert (item.ask["pick"], item.ask["pick_why"]) == ("Merge it", "all checks pass")
+    assert item.ask["written_at"]
+    assert wl.WorkItem.from_dict(item.to_dict()).ask == item.ask
+    # The event is ``ask``, never ``decision``: recording why a question waits is
+    # not its answer.
+    assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == ["create", "ask"]
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="merge")
+    cleared = wl.read_work_item(CONDUCTOR, item_id)
+    assert cleared is not None and cleared.ask is None
+    assert "ask" not in cleared.to_dict()
+
+
+def test_close_clears_the_ask_record():
+    item_id = _new_item()
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Pick a name")
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="abandoned")
+    closed = wl.read_work_item(CONDUCTOR, item_id)
+    assert closed is not None and closed.ask is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"what": ""},
+        {"what": "x", "options": [{"label": "A"}], "pick": "B"},
+        {"what": "x", "options": [{"label": "A"}, {"label": "A"}]},
+        {"what": "x", "options": [{"outcome": "no label"}]},
+        {"what": "x", "pick_why": "no pick"},
+        {"what": "x", "options": [{"label": str(i)} for i in range(7)]},
+    ],
+)
+def test_ask_refuses_a_malformed_record(fields):
+    item_id = _new_item()
+    with pytest.raises(wl.WorkLedgerError):
+        wl.apply_ask_record(CONDUCTOR, item_id, **fields)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask is None
+
+
+def test_coerce_ask_drops_a_pick_that_is_not_a_label():
+    from kiro_crew.work_vocab import coerce_ask
+
+    raw = {
+        "what": "w",
+        "written_at": "t",
+        "options": [{"label": "A"}],
+        "pick": "Z",
+        "pick_why": "y",
+    }
+    assert coerce_ask(raw)["pick"] == ""
+    assert coerce_ask(raw)["pick_why"] == ""
+    assert coerce_ask({"what": "w"}) is None
+    assert coerce_ask("text") is None
+
+
+@pytest.mark.parametrize("ask_first", [True, False])
+def test_an_ask_and_a_report_in_one_second_are_ordered_by_the_event_log(monkeypatch, ask_first):
+    """Stamps tie inside one second; the ledger's own event order decides whether the
+    ask record explains the question waiting now."""
+    from kiro_crew.dashboard.handlers import work_ledger_board as board
+
+    same_second = wl._now_iso()
+    # Through the facade, which forwards the patch to every owner that binds it.
+    monkeypatch.setattr(wl, "_now_iso", lambda: same_second)
+    item_id = _new_item()
+
+    def ask():
+        wl.apply_ask_record(CONDUCTOR, item_id, what="Merge it?")
+
+    def report():
+        wl.apply_worker_report(
+            CONDUCTOR, item_id, status="question", summary="new ask", reason="needs_human"
+        )
+
+    for write in (ask, report) if ask_first else (report, ask):
+        write()
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask["written_at"] == item.last_report_at
+    events = [event.to_dict() for event in wl.read_events(CONDUCTOR, item_id)]
+    # Ask then report: the report is a newer question. Report then ask: the ask explains it.
+    assert board.ask_is_current(events) is (not ask_first)
+
+
+def test_a_repeated_ask_in_one_second_after_a_report_stays_current(monkeypatch):
+    """Two same-`what` asks in one second stay two events, so the second one still
+    follows the report between them and explains the question waiting now."""
+    from kiro_crew.dashboard.handlers import work_ledger_board as board
+
+    same_second = wl._now_iso()
+    monkeypatch.setattr(wl, "_now_iso", lambda: same_second)
+    item_id = _new_item()
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Merge it?")
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="new ask", reason="needs_human"
+    )
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Merge it?")
+    events = [event.to_dict() for event in wl.read_events(CONDUCTOR, item_id)]
+    assert [event["kind"] for event in events].count("ask") == 2
+    assert board.ask_is_current(events) is True

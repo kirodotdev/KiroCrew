@@ -32,7 +32,7 @@ objection ids.
 Every participant's seed carries a **role card**:
 
 - **Role**: its short name.
-- **Guards**: the goal it protects, tied to the anchor question.
+- **Guards**: one goal it protects, tied to the anchor question.
 - **Finding**: what counts as one, and the evidence it must carry.
 - **Out of scope**: what it leaves to the other roles.
 - **Done for a round when**: it writes `no_blocking:` plus what it checked.
@@ -56,7 +56,7 @@ or merge it into another.
    is out of scope; the participants and their role cards; the shared inputs
    participants may read; `soft_rounds` (default 3), `hard_rounds` (default
    6), `check_every` (default 1); a budget (wall clock, default 2 hours; work
-   items, default half the goal's item cap); and `anchor_v=1`. Only the human
+   items, default 10); and `anchor_v=1`. Only the human
    changes the anchor; each change bumps `anchor_v`, and replies written
    against an older `anchor_v` are filed, not judged. A need the owner states
    later is an anchor change, not a ruling.
@@ -77,7 +77,8 @@ or merge it into another.
      the top, and after each round appends your rulings and the round log
      exactly as your message states them.
    - Never wait for a relay with the `wait` tool. Write your file, report
-     `progress` naming it, and end your turn. A relay that arrives while you
+     `done` naming its path, and end your turn. When the next relay arrives,
+     report `progress` before you start on it. A relay that arrives while you
      are inside `wait` sits in a queue until the wait ends.
    - A round file you have reported is frozen. Do not rewrite it. If a relay
      asks for a round you already filed, reply with its path. A correction
@@ -88,8 +89,20 @@ or merge it into another.
    `round-0-<aspect>.md`, its own risk list, before any proposal exists, so
    the proposers cannot frame what the critics look for. Its first entry
    always answers: what is the smallest thing that meets the acceptance, and
-   do existing parts already do it? When every critic has filed, relay the
-   round-0 paths to the proposers; they read them before writing round 1.
+   do existing parts already do it? It then names the biggest risk to the
+   owner's needs, whatever role owns it, and at most three risks it saw
+   outside its role. The biggest-risk entry may name one of its own ids
+   instead. Every blocking risk and every biggest-risk entry gets an id
+   `<aspect>-0-<n>` and a row; the outside-role list is for you and gets no
+   row. Proposers answer the rows in round 1. When every critic has filed,
+   relay the round-0 paths to the proposers; they read them before writing
+   round 1.
+
+   Before that relay, read the Round 0 lists side by side. A biggest-risk
+   entry or a blocking risk outside every card's goal: widen the closest
+   card's Finding line; its Guards goal stays one. Add a critic only when no
+   card fits and the budget has a work item. Send changed cards with the
+   round-1 critic relay and log the change.
 
 ## The debate note
 
@@ -107,13 +120,17 @@ It holds, in order:
   ruled on and how, who is expected next.
 - The human's rulings, quoted verbatim.
 
-Critics check the note keeper's copy against your message; a wrong copy is a
-blocking objection like any other.
+One critic, named on its card, checks the note keeper's copy against your
+message; a wrong copy is a blocking objection like any other.
 
 ## Objections
 
 - **Stable ids**: `<aspect>-<round>-<n>`, e.g. `security-1-2`. An id never
   changes or gets reused; a re-raised point keeps its first id.
+- The same point from two critics keeps the first id: same target, same
+  failure, one fix closes both. In Round 0, the same target means the same
+  part of the question. Rule the later one `same as <id>`. The proposer
+  answers once; both critics verify.
 - **Severity**: `blocking` (the goal fails or is unsafe as written), `major`,
   `minor`.
 - **Evidence is required.** A path and line, a command and its output, a source
@@ -134,13 +151,22 @@ that serves no need is not proposed. For a question with more than about five
 mechanisms, round 1 is this table alone (an outline); details come in round 2,
 only for the rows the critics did not reject.
 
+Any critic, in any role, may file an objection as a question. Its claim cell
+starts with `Q:`, quotes one claim (`path:line`), asks one question from this
+bank — what is the mechanism or evidence; what if it is wrong; what happens
+when this part fails; which alternative was rejected and why; what stays at
+half the scope; how is it rolled back — and gives your recommended answer.
+The proposer answers a question with evidence (a `path:line`, a command and
+its output, or a link); added text is not an answer. A mechanism-table row
+that says an existing part already does it carries a `proof` cell.
+
 ## A round
 
 Round `r` is one proposal step and one critique step.
 
 | Step | Who | Writes or does |
 |---|---|---|
-| a | each proposer | `round-<r>-<letter>.md`: response table (r > 1), then the new version or a diff |
+| a | each proposer | `round-<r>-<letter>.md`: response table (round 1: Round 0 rows only), then the new version or a diff |
 | b | you | relay to every critic |
 | c | each critic | `round-<r>-<aspect>.md`: a short steelman of the proposal, then its objection table or `no_blocking:` |
 | d | you | wait for every critic, rule, run the checkpoint, relay to the proposers |
@@ -172,7 +198,20 @@ pointer:
 | `parked` | off-topic for the anchor; may become its own item after the debate. An objection that affects the goal cannot be parked |
 | `downgraded` | blocking without evidence |
 
-A `needs-a-decision` stays open until the human rules. When critics conflict,
+A `proof` cell and an adopted critic recommendation are proposer claims. In
+each step-b relay, give one line per checker naming the ids or mechanism rows
+it checks: each new or changed one, never by its author; others may also
+check. With one critic, the author answers its own "what if it is wrong" with
+evidence. The checker asks what happens if the claim is wrong on the path the
+proposal uses it for, and lists what it checked on a `proof checked:` line.
+An assignment not on that line by step d stays open as a row under its
+original id (a `proof` cell's id is its proposal letter and mechanism row,
+e.g. `A-M3`) and is reassigned in the next step-b relay. Rule
+`fixed_verified` on a question only after a critic says, in its critique
+step, that the evidence holds; a failed answer is re-asked under the same id.
+
+A `needs-a-decision` stays open until it is ruled: ask the human only for an
+ask case (a)-(e); otherwise rule it yourself and record it. When critics conflict,
 rule on the evidence. A participant that does not file gets one nudge; after
 that it is marked absent for the round and its open objections stay open. Only
 the human can drop a participant. Before you nudge, check `session_status`: a
@@ -213,20 +252,20 @@ Then take the first rule that holds:
    its final file and lists them; each critic verifies them in its own final
    file. No extra round is opened. A wrap-up fix a critic verified counts as
    reviewed under Finishing.
-4. `hard_rounds` reached or budget spent → ask the human. No round starts
-   without their answer.
-5. Churn, drift over half, or cost over budget → ask the human, naming it.
-6. A `needs-a-decision` blocks the other answers → ask the human about it;
-   the rest continue.
+4. `hard_rounds` reached or budget spent → you decide: wrap up with open items recorded, or extend once and record why, unless going on spends past an amount the owner approved: that is (b).
+5. Churn, drift over half, or cost over budget → name it; you decide: wrap up with open items recorded, or extend once and record why, unless going on spends past an amount the owner approved: that is (b).
+6. A `needs-a-decision` blocks the other answers → ask the human only for an
+   ask case (a)-(e); otherwise rule it yourself and record it; the rest continue.
 7. No new blocking, old blocking still open, and no drop over the last two
-   checkpoints → more rounds will not help; ask the human for a ruling.
+   checkpoints → more rounds will not help; ask the human only for an ask case
+   (a)-(e); otherwise rule it yourself and record it.
 8. Otherwise continue: relay to the proposers and start round `r + 1`. From
    `soft_rounds` on, a round starts only after you write the reason to
    continue in the checkpoint line.
 
 ## The human's ruling
 
-When the debate is stuck, tell the user in your own words what the open
+When the debate is stuck on an ask case (a)-(e), tell the user in your own words what the open
 blocking objections are: id, claim, the proposer's answer, and what each
 option costs. Put it in the needs-you line on your dashboard. The user answers
 in a free-form message to you; there is no fixed set of values.
@@ -234,7 +273,7 @@ in a free-form message to you; there is no fixed set of values.
 Read the message and act on it:
 
 - Map it to the open ids it covers. If it is unclear which objection it rules
-  on, or what it wants, ask back once; never guess.
+  on, or what it wants, pick the likeliest reading, state it, apply it.
 - Send the participants the ruling as you understood it, plus the user's words
   quoted verbatim for the note keeper to file.
 - Then coordinate what it asks for: more rounds, a fix one critic verifies,
@@ -280,3 +319,24 @@ Count a participant's report only when its round file exists and its round and
 - Each round costs one relay per participant. Keep relays to paths and ids, let
   each critic list everything in one file per round, and stop early when the
   checkpoint allows.
+
+## When to offer a debate
+
+**Offer a debate for a costly, contested choice.** Offer one when the owner
+asks for it. When the owner says "discuss", "debate", "讨论" or "grill" and it
+is unclear whether they want a debate or one worker proposing a solution,
+pick the likelier reading, state it, and go on. Offer one unasked only when the task is a complex analysis: two or
+more plausible approaches, AND a wrong choice is costly. Costly means it
+crosses a security, data, approval or trust boundary, changes a contract
+others depend on, or follows a prior failed attempt or a design block from a
+reviewer. Size alone
+(about 150 lines, two or more modules) is not a reason, and neither is an RFC
+unless both conditions hold. A debate costs about 45 minutes and several work
+items. To offer it, put "debate first" in your Round 0 plan as one Assumption
+line: the question, the participants and their roles, the rounds, a time
+estimate and the work items it uses. Do not offer it for a small change with
+a clear fix, CI or rebase work, wording, an emergency, a design the owner
+already decided, or when fewer than half the goal's work items are left.
+"Skip the debate", "just do it" or any gate-skipping message drops it. A
+standing preference the owner stated ("always debate first", "stop suggesting
+debates") wins over these rules.

@@ -73,7 +73,7 @@ def test_a_denial_the_harness_reports_does_not_trip_the_ungated_call_guard() -> 
 
     from kiro_crew.acp.types import JsonRpcMessage
 
-    client = AcpClient.__new__(AcpClient)
+    client = AcpClient.__new__(AcpClient, acp_backend=ACP_BACKEND_DEEPSEEK)
     client._acp_backend = ACP_BACKEND_DEEPSEEK
     client._deepseek_gate_nonce = "n0nce"
     client._pi_gate_asked_ids = set()
@@ -233,7 +233,7 @@ def test_a_completed_call_the_gate_never_asked_about_stops_the_session() -> None
     from kiro_crew.acp.client import AcpToolGateUnroutable
     from kiro_crew.acp.types import JsonRpcMessage
 
-    client = AcpClient.__new__(AcpClient)
+    client = AcpClient.__new__(AcpClient, acp_backend=ACP_BACKEND_DEEPSEEK)
     client._acp_backend = ACP_BACKEND_DEEPSEEK
     client._deepseek_gate_nonce = "n0nce"
     client._pi_gate_asked_ids = set()
@@ -257,6 +257,9 @@ def test_a_completed_call_the_gate_never_asked_about_stops_the_session() -> None
     with pytest.raises(AcpToolGateUnroutable) as refused:
         asyncio.run(client._tripwire_pi_gate(completed))
     assert "never-asked" in str(refused.value)
+    # The remedy is the DeepSeek Harness's own (``DeepseekAcpClient``), not pi's.
+    assert "--patch overlay" in str(refused.value)
+    assert "PI_ACP_PI_COMMAND" not in str(refused.value)
     assert client._kill_process.await_count == 1
 
     # The same update for a call the gate DID ask about is not a bypass.
@@ -287,7 +290,7 @@ def test_the_permission_frame_records_the_call_the_tripwire_will_look_for() -> N
     """
     from kiro_crew.acp.types import JsonRpcMessage
 
-    client = AcpClient.__new__(AcpClient)
+    client = AcpClient.__new__(AcpClient, acp_backend=ACP_BACKEND_DEEPSEEK)
     client._acp_backend = ACP_BACKEND_DEEPSEEK
     client._deepseek_gate_nonce = "n0nce"
     client._pi_gate_asked_ids = set()
@@ -307,7 +310,7 @@ def test_the_permission_frame_records_the_call_the_tripwire_will_look_for() -> N
 
 def _deepseek_tripwire_client(monkeypatch):
     """A gated DeepSeek client whose kill is observable, shaped as the pi tripwire tests do."""
-    client = AcpClient.__new__(AcpClient)
+    client = AcpClient.__new__(AcpClient, acp_backend=ACP_BACKEND_DEEPSEEK)
     client._acp_backend = ACP_BACKEND_DEEPSEEK
     client._deepseek_gate_nonce = "n0nce"
     client._pi_gate_asked_ids = set()
@@ -598,9 +601,12 @@ def test_it_carves_nothing_out_of_the_deny_list_because_its_key_comes_from_the_v
     # ... on the same footing as every other harness's store, so the floor this mask
     # is derived from has no hole in it at all for this harness.
     assert _has_leaf(hidden, ".pi/agent/auth.json")
-    # And nothing is re-exposed read-only inside the masked directories either: a
-    # re-exposure would hand the same file back through the other door.
-    assert gate.adapter_expose_files(ACP_BACKEND_DEEPSEEK, hidden) == ()
+    # And no credential is re-exposed read-only inside the masked directories: a
+    # re-exposure would hand the same file back through the other door. Only the
+    # public host keys every enforced harness gets come back.
+    assert gate.adapter_expose_files(ACP_BACKEND_DEEPSEEK, hidden) == (
+        os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts"),
+    )
 
 
 def test_the_credential_leaves_are_declared_with_their_override_spelling() -> None:

@@ -28,6 +28,7 @@ import pytest
 from conftest import requires_symlinks
 from kiro_crew import diagnostics
 from kiro_crew.mcp_tools import logs as logs_tool
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 # All four secret shapes the issue names, in one log body.
 _LOG = (
@@ -80,24 +81,20 @@ def test_reads_and_redacts_every_secret_shape(tmp_path, monkeypatch):
 
 
 def test_redaction_is_load_bearing(tmp_path, monkeypatch):
-    """Mutation guard: disable the extra-redaction stack and the secrets leak.
+    """The core credential plan reads every shape here without the extra stack.
 
-    A redaction test that still passes with redaction disabled proves nothing.
-    Here we empty ``_EXTRA_REDACTIONS`` (the stack that covers the bearer /
-    Authorization / mc_token shapes) and assert the SAME secrets now appear —
-    so the green assertion in ``test_reads_and_redacts_every_secret_shape`` is
-    attributable to that stack, not to the secrets never being there.
+    ``_EXTRA_REDACTIONS`` once was the only cover for the bearer, Basic and
+    cookie headers; the rule table now reads them itself. Empty the extra stack
+    and the SAME secrets must still be gone, so the green assertion in
+    ``test_reads_and_redacts_every_secret_shape`` does not rest on it alone.
     """
     _source(monkeypatch, tmp_path, _LOG)
     monkeypatch.setattr(diagnostics, "_EXTRA_REDACTIONS", ())
 
     out = diagnostics.read_kiro_cli_logs()
 
-    # With the extra stack gone, the header/bearer/cookie shapes leak verbatim
-    # (redact_credentials / redact_exfiltration_urls do not cover them — that is
-    # exactly why _EXTRA_REDACTIONS exists).
     leaked = [s for s in _SECRETS if s in out]
-    assert leaked, "no secret leaked with _EXTRA_REDACTIONS disabled — the test is vacuous"
+    assert not leaked, f"the core plan left these shapes visible: {leaked}"
 
 
 def test_chat_log_is_not_a_source(tmp_path, monkeypatch):
@@ -581,7 +578,7 @@ def test_hidden_character_split_credential_does_not_survive_the_transport(tmp_pa
     """A credential split by an invisible must not be rejoined downstream.
 
     ``redact_credentials`` matches the literal shape of a secret, so an invisible
-    planted inside one defeats it: ``AKIA<ZWSP>IOSFODNN7EXAMPLE`` matches no
+    planted inside one defeats it: ``xoxb-1234567<ZWSP>890-...`` matches no
     pattern. The danger is what happens NEXT. Every MCP response leaves through
     ``validation.build_tool_response`` -> ``sanitize_response`` ->
     ``sanitize_string`` -> ``strip_hidden_unicode``, which removes the invisible
@@ -595,8 +592,8 @@ def test_hidden_character_split_credential_does_not_survive_the_transport(tmp_pa
     """
     from kiro_crew import validation
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
-    split = "AKIA\u200bIOSFODNN7EXAMPLE"
+    secret = SAMPLE_SLACK_BOT_TOKEN
+    split = secret[:12] + "\u200b" + secret[12:]
     _source(monkeypatch, tmp_path, f"2026-09-06T16:00:00 request key={split}\n")
 
     out = diagnostics.read_kiro_cli_logs()
@@ -615,12 +612,12 @@ def test_scrub_strips_hidden_characters_before_redacting(tmp_path):
     """
     from kiro_crew import validation
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = SAMPLE_SLACK_BOT_TOKEN
 
     intact, n_intact = diagnostics._scrub(f"key={secret}\n")
     assert n_intact >= 1 and secret not in intact, "control: the intact form must be redacted"
 
-    split, n_split = diagnostics._scrub("key=AKIA\u200bIOSFODNN7EXAMPLE\n")
+    split, n_split = diagnostics._scrub("key=" + secret[:12] + "\u200b" + secret[12:] + "\n")
     assert secret not in split, "the split form must not survive _scrub"
     assert secret not in validation.sanitize_response(split), "and must not be rejoinable"
 

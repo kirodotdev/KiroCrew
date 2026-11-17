@@ -22,6 +22,10 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         ValidationError,
+        _app_token_batch_refusal,
+        _app_token_caller,
+        _app_token_parent_refusal,
+        _record_isolation_denial,
         _redact,
         _session_turn_holding,
         _spawn_scope_refusal,
@@ -36,7 +40,7 @@ if TYPE_CHECKING:
         internal_memory_scope,
         ledger_of,
         parent_project_dirs,
-        parent_template_allowlists,
+        parent_template_spawn_policy,
         parent_work_supported,
         spawn_parent_claim,
         stopped_before_start,
@@ -81,6 +85,61 @@ async def _spawn_request_memory_mode(
         parent_mode if caller == parent else await resolve_session_memory_mode(state, caller)
     )
     return strictest((parent_mode, caller_mode)) or "persistent"
+
+
+async def _parent_run_is_silent(state: DashboardState, parent: str) -> bool:
+    """Whether *parent* is a run whose completions are already silent.
+
+    ``cron:{job_id}[:{run_id}]`` reads the cron job's own ``silent`` flag — the
+    source of truth the channel leg already honors
+    (``gateway_runtime/delivery._cron_job_is_silent``), through the same
+    cache-backed ``get_job`` that leg uses, because this runs once per spawned
+    member and a wave is 60-100 members. ``subagent:{id}`` reads the LIVE
+    parent run's resolved flag, which this same rule set when IT was admitted,
+    so one hop carries a silent cron down its whole spawn chain; a run no
+    longer in memory — a kept conversation's first run after eviction or a
+    gateway restart — answers from the ``silent`` its durable row recorded,
+    read off-loop. Any other key (a tab, a channel session) is a surface the
+    user watches, so its spawns stay audible.
+    """
+    key = str(parent or "")
+    if key.startswith("cron:"):
+        crons = getattr(state, "crons", None)
+        if crons is None:
+            return False
+        try:
+            job = crons.get_job(key.split(":", 2)[1])
+        except Exception:
+            return False
+        return bool(job is not None and getattr(job, "silent", False))
+    if key.startswith("subagent:"):
+        run_id = key.removeprefix("subagent:")
+        agents = getattr(getattr(state, "subagents", None), "_agents", None)
+        rows = agents if isinstance(agents, dict) else {}
+        # A kept conversation keeps its FIRST run's id in the key while a
+        # continuation runs under its own id, and a completed record is
+        # retained beside the active one — so the ACTIVE run under this key
+        # answers first (its flag is the conversation's current resolution),
+        # and only with no run still executing does a retained completed
+        # record (the direct id first) answer for the conversation.
+        candidates = [
+            live
+            for lid, live in rows.items()
+            if lid == run_id or getattr(live, "conversation_key", "") == key
+        ]
+        info = next((live for live in candidates if not getattr(live, "done", False)), None)
+        if info is None:
+            info = rows.get(run_id) or next(iter(candidates), None)
+        if info is not None:
+            return bool(getattr(info, "silent", False))
+        from kiro_crew.subagent_persistence import read_state
+
+        try:
+            row = await asyncio.to_thread(read_state, run_id)
+        except Exception:
+            return False
+        return row is not None and row.get("silent") is True
+    return False
 
 
 def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
@@ -322,6 +381,161 @@ def _qualified_model_refusal(
     return None
 
 
+async def _light_tier_pins(
+    cleaned: dict[str, Any],
+    model: str,
+    effort: str,
+    *,
+    named_elsewhere: bool,
+    execution: Any,
+    backend: str | None,
+) -> tuple[str, str, str, str]:
+    """Fill a ``light`` spawn's unset model and effort: ``(model, effort, note, warning)``.
+
+    Applies only to a run the call marked ``light`` while ``agent.subagent_light_tier``
+    is on, and fills only what the call left unset from the ``subagent_light`` role
+    pins, so a model or effort the call names wins. With the setting off the flag is
+    ignored silently, like the setting itself. Anything else that cannot apply keeps
+    the request exactly as it came, and *warning* says what was dropped; this never
+    refuses a spawn. *named_elsewhere* is a run that names an agent, a crew or a
+    backend of its own, which chose its model already. A model id belongs to one
+    backend's list, so the model pin is used only where the run starts on the gateway
+    default backend, the one the pin was written for. Where it starts is resolved
+    first, from the admitted *execution* and the run's own *backend* (``None`` for
+    none), by the resolver allocation uses (``subagent_start_backend``); a start
+    backend that cannot be resolved keeps no model pin.
+    """
+    from kiro_crew.mate_worker import subagent_start_backend
+    from kiro_crew.validation_parts.input_bounds import _MODEL_NAME_RE
+
+    if cleaned.get("light") is not True:
+        return model, effort, "", ""
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    except Exception:
+        return model, effort, "", "light ignored: the configuration could not be read"
+    agent_cfg = cfg.agent
+    if not agent_cfg.subagent_light_tier:
+        return model, effort, "", ""
+    if named_elsewhere:
+        return model, effort, "", "light ignored: the run names its own agent, crew or backend"
+    light_model = agent_cfg.role_models.get("subagent_light", "")
+    light_effort = agent_cfg.role_efforts.get("subagent_light", "")
+    pin_model = "" if model else light_model
+    pin_effort = "" if effort else light_effort
+    on_default_backend = False
+    if pin_model:
+        try:
+            starts_on = await asyncio.to_thread(subagent_start_backend, cfg, execution, backend)
+            on_default_backend = starts_on == agent_cfg.acp_backend
+        except Exception:
+            # Unknown, so not provably the default: the warning below says so.
+            on_default_backend = False
+    warning = ""
+    if pin_model and not (on_default_backend and _MODEL_NAME_RE.match(pin_model)):
+        pin_model = ""
+        warning = "light model dropped: agent.role_models.subagent_light is not usable here"
+    # Name only the pins this call needed and found empty.
+    unset = [
+        key
+        for key, needed, pin in (
+            ("agent.role_models.subagent_light", not model, light_model),
+            ("agent.role_efforts.subagent_light", not effort, light_effort),
+        )
+        if needed and not pin
+    ]
+    if not (pin_model or pin_effort) and unset and not warning:
+        warning = f"light ignored: {' and '.join(unset)} {'is' if len(unset) == 1 else 'are'} unset"
+    note = ""
+    if pin_model or pin_effort:
+        note = "light tier: " + ", ".join(
+            part
+            for part in (
+                f"model {pin_model}" if pin_model else "",
+                f"reasoning_effort {pin_effort}" if pin_effort else "",
+            )
+            if part
+        )
+    return pin_model or model, pin_effort or effort, note, warning
+
+
+def _app_bot_spawn_refusal(
+    request: web.Request, own: Any, admitted: Any, *, crew: str, config: Any = None
+) -> web.Response | None:
+    """The answer for an app caller whose run would be a Bot's, or ``None``.
+
+    An app does not reach a Bot's own memory or chat by naming the Bot, the rule
+    the App Kit SDK's spawn holds (``apps.spawn_sdk``). The claim is the request's
+    own: an app token, or an agent that runs in an app's session, scheduled run
+    or background run. *admitted* is the execution the run would take, from the
+    ``crew`` / ``target_member`` it names or from the parent session it names;
+    *own* is the caller's attested execution, which an app token does not have.
+    A caller that already runs as that Bot keeps handing work to itself
+    (``execution_context.is_same_bot``), and a row on the shared store with
+    nothing of a Bot's own is not judged
+    (``execution_context.is_bot_own_execution``).
+
+    A named Bot answers as a member that does not exist, and a Bot's parent
+    session as an identity this caller cannot vouch for: the two bodies the route
+    already gives. Nothing has been handed to the subagent manager yet, so
+    neither carries ``counted``.
+    """
+    app = request.get("app")
+    if not isinstance(app, str) or not app:
+        return None
+    from kiro_crew.execution_context import is_bot_own_execution, is_same_bot
+
+    if not is_bot_own_execution(admitted, config) or is_same_bot(own, admitted):
+        return None
+    _record_isolation_denial(
+        app,
+        "spawn.create",
+        f"crew={crew}" if crew else "parent_session",
+        "an app's run cannot be a Bot's",
+    )
+    if crew:
+        return web.json_response(
+            {"error": "The target member does not exist.", "code": "unknown_member"}, status=404
+        )
+    return web.json_response(
+        {
+            "error": "The execution identity is unavailable; Global memory was not used.",
+            "code": "member_identity_unavailable",
+        },
+        status=409,
+    )
+
+
+def _app_token_spawn_refusal(
+    request: web.Request, agent: str, parent_session: str
+) -> web.Response | None:
+    """The answer for an app token whose spawn the App Kit SDK would refuse.
+
+    An app token is not the owner. Its run is held to what ``apps.spawn_sdk``
+    holds an app's run to: it names one of the app's own agents, and it reports
+    into no session but the app's own (:func:`_app_token_parent_refusal`). An
+    empty name is refused here because it would run the host's default agent and
+    skip the agent checks; a name that is not the app's own is refused by the
+    gate, which the route hands the app (``app=``) so the same gate also judges
+    the spawn under the app's profile and records the run under the app.
+    ``approval_mode: "auto"`` is then what the SDK passes for the same run: an
+    unattended run of the app's own agent, bounded by that agent's tools.
+    Nothing has reached the subagent manager, so neither body carries
+    ``counted``.
+    """
+    app = _app_token_caller(request)
+    if not app:
+        return None
+    if not agent.strip():
+        reason = (
+            f"spawn for app {app!r} requires a named agent: an app starts only its own "
+            f"agents ({app}--*)"
+        )
+        _record_isolation_denial(app, "spawn.create", "agent=", reason)
+        return web.json_response({"error": reason, "code": _SPAWN_REJECTED_CODE}, status=400)
+    return _app_token_parent_refusal(request, parent_session, "spawn.create")
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -359,7 +573,7 @@ async def api_spawn(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -391,6 +605,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "target_member": body.get("target_member", ""),
                 "backend": body.get("backend", ""),
                 "label": body.get("label", ""),
+                **({"light": body["light"]} if isinstance(body.get("light"), bool) else {}),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -419,6 +634,8 @@ async def api_spawn(request: web.Request) -> web.Response:
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=spawn_parent_claim(request, parent_session)
     )
+    if refusal is None:
+        refusal = _app_token_spawn_refusal(request, cleaned.get("agent") or "", parent_session)
     if refusal is not None:
         return refusal
     try:
@@ -431,12 +648,13 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    # approval_mode and silent are HTTP API parameters passed by the SDK,
-    # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
-    # (mcp_core.py) does not expose these params — they are added by the
-    # SDK's spawn() method for app-level control.  Validated inline here
-    # rather than in SPAWN_RUN_SCHEMA because they are transport-layer
-    # params, not tool-schema params.
+    # approval_mode is an HTTP API parameter passed by the SDK, NOT an MCP
+    # tool argument from the LLM.  Validated inline here rather than in
+    # SPAWN_RUN_SCHEMA because it is a transport-layer param, not a
+    # tool-schema param.  `silent` arrives from both the SDK and the tools:
+    # spawn_run and spawn_sub_agents carry it as a call-level field
+    # (docs/decisions/, "a silent parent's sub-agent completions never ring
+    # the bell").
     #
     # Security: this endpoint requires X-Internal-Secret (internal_paths
     # in server.py), so only local MCP server processes can call it.
@@ -446,6 +664,13 @@ async def api_spawn(request: web.Request) -> web.Response:
     silent = body.get("silent", False)
     if not isinstance(silent, bool):
         silent = str(silent).lower() in ("true", "1", "yes")
+    # A silent parent makes every spawn under it silent (the same decision):
+    # OR, not a default the caller can override, because a silent cron's
+    # sub-agents — and any THEY spawn — never ring the bell. One hop carries
+    # the whole chain: the parent's own flag was resolved by this same rule
+    # when IT was admitted.
+    if not silent:
+        silent = await _parent_run_is_silent(state, parent_session)
     # keep=True marks the run's session as a continuable conversation
     # (spawn_continue can dispatch follow-up turns into it). Transport-layer
     # param like silent/approval_mode.
@@ -482,18 +707,32 @@ async def api_spawn(request: web.Request) -> web.Response:
         # no declaration to honour: the synthesized context below carries the
         # CHILD's template, which must not be mistaken for a parent.
         parent_spawn_policy = (
-            (
+            await asyncio.to_thread(
+                parent_template_spawn_policy,
+                parent_session,
                 parent_execution.template_id,
-                await asyncio.to_thread(
-                    parent_template_allowlists,
-                    parent_session,
-                    parent_execution.template_id,
-                    parent_dirs,
-                ),
+                parent_dirs,
             )
             if parent_execution is not None
-            else ("", ())
+            else ("", (), ())
         )
+        if parent_session.startswith("cron:"):
+            from dataclasses import replace
+
+            from kiro_crew.subagent import with_cron_dispatched_policy
+
+            parent_spawn_policy = await asyncio.to_thread(
+                with_cron_dispatched_policy,
+                parent_session,
+                parent_execution,
+                parent_spawn_policy,
+                parent_dirs,
+            )
+            dispatched = parent_spawn_policy[0]
+            if parent_execution is not None and dispatched != parent_execution.template_id:
+                # The child inherits the agent this fire runs, as the record path does;
+                # member, store and mode stay the scheduler's.
+                parent_execution = replace(parent_execution, template_id=dispatched)
         if parent_execution is None and parent_session and not agent:
             # A parent with no execution record yet (a channel conversation whose
             # first turn is not saved) hands its child its live selection, as
@@ -524,6 +763,11 @@ async def api_spawn(request: web.Request) -> web.Response:
             config=config,
             requested_mode=admitted_mode,
         )
+        refused = _app_bot_spawn_refusal(
+            request, caller.execution, admitted_execution, crew=crew, config=config
+        )
+        if refused is not None:
+            return refused
         child_memory_store = admitted_execution.store.legacy_name
     except (OSError, ValueError) as exc:
         return web.json_response(
@@ -533,12 +777,32 @@ async def api_spawn(request: web.Request) -> web.Response:
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
     reasoning_effort = cleaned.get("reasoning_effort") or ""
+    model, reasoning_effort, light_note, light_warning = await _light_tier_pins(
+        cleaned,
+        model,
+        reasoning_effort,
+        named_elsewhere=bool(agent or crew or cleaned.get("backend")),
+        execution=admitted_execution,
+        backend=backend,
+    )
+    if "light" in body and not isinstance(body["light"], bool):
+        light_warning = "light ignored: it must be true or false"
     can_work = parent_work_supported(state, parent_session)
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
     batch_id = str(body.get("batch_id", "") or "")[:32]
     if batch_id and not batch_id.isalnum():
         return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
+    if batch_id:
+        refusal = _app_token_batch_refusal(
+            request,
+            parent_session,
+            batch_id=batch_id,
+            allow_new_batch=True,
+            operation="spawn.create",
+        )
+        if refusal is not None:
+            return refusal
     # The ``spawn_sub_agents`` call this member belongs to (transport-layer, set
     # by kirocrew-core): validated like batch_id, bounded, never LLM-schema.
     call_id = body.get("call_id", "") or ""
@@ -588,8 +852,10 @@ async def api_spawn(request: web.Request) -> web.Response:
     ledger = ledger_of(getattr(state, "sessions", None)) if call_id and parent_session else None
     if ledger is not None:
         spawned_under = ledger.call_attempt(canonical_key(parent_session), call_id, spawned_under)
+    from kiro_crew.dashboard.card_send import card_turn_seen
     from kiro_crew.shared_crew.admission_entry import admitted_scope
 
+    _card_seen = bool(parent_session) and card_turn_seen(request, parent_session)
     with admitted_scope(child_admission):
         info = await _spawn_on_loop(
             state,
@@ -615,11 +881,18 @@ async def api_spawn(request: web.Request) -> web.Response:
             include_project=cleaned.get("include_project", True) is not False,
             memory_store=child_memory_store,
             crew=crew,
+            # An app token's run is the app's: the gate then holds a named agent to
+            # the app's own, judges the spawn under the app's profile and records
+            # the run under the app, as it does for the App Kit SDK.
+            **({"app": app_token} if (app_token := _app_token_caller(request)) else {}),
             _memory_mode=admitted_mode,
             _execution_context=admitted_execution.to_record(),
             _parent_spawn_policy=parent_spawn_policy,
             _parent_project_dirs=parent_dirs,
             **({"_preassigned_id": run_id} if run_id else {}),
+            # A Dashboard card's turn, seen when this request arrived (or now): the
+            # gate refuses it even if the turn was stopped during the awaits above.
+            **({"_card_turn": True} if _card_seen else {}),
         )
     if not info or (info.done and info.error):
         await child_admission.abandon()
@@ -708,7 +981,7 @@ async def api_spawn(request: web.Request) -> web.Response:
     # pin, else the session chain for the effective agent — a crew's pin, else
     # a non-sentinel global). Additive, optional key — reporting only, never
     # changes whether the spawn happened.
-    if reasoning_effort:
+    if cleaned.get("reasoning_effort"):
         # Read the allocation-owned namespace on the loop. A reporting failure
         # cannot undo the submission or turn an unknown selection into "auto".
         selection: tuple[str, str] | None
@@ -794,6 +1067,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     runtime_note = await asyncio.to_thread(_runtime_note)
     if runtime_note:
         resp["runtime_note"] = runtime_note
+    if light_note:
+        resp["light"] = _redact(light_note)
+    if light_warning:
+        # The receipt's one key for a dropped argument: a writer appends to it.
+        prior = str(resp.get("warning") or "")
+        resp["warning"] = "; ".join(w for w in (prior, _redact(light_warning)) if w)
     if keep:
         # The conversation id is the FIRST run's id: spawn_continue targets it.
         resp["conversation"] = info.id
@@ -857,6 +1136,8 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     refusal = await _spawn_scope_refusal(
         request, claimed_session=spawn_parent_claim(request, parent_session)
     )
+    if refusal is None:
+        refusal = _app_token_parent_refusal(request, parent_session, "spawn.continue")
     if refusal is not None:
         return refusal
     try:
@@ -894,11 +1175,17 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     if run_id is None:
         await child_admission.abandon()
         return Admission(None, "rejected", store_unavailable=True).refusal_response()
+    # The parent-silence rule applies to a follow-up turn exactly as to a
+    # first spawn: a silent parent's continuation never rings, whatever the
+    # kept conversation's first run resolved (the prelude's own inheritance
+    # still ORs in the run's recorded flag for every other caller).
+    silent = await _parent_run_is_silent(state, parent_session)
     with admitted_scope(child_admission):
         info = await _continue_on_loop(
             state,
             conv_id,
             task,
+            silent=silent,
             parent_session_key=parent_session,
             agent=agent,
             model=model or None,

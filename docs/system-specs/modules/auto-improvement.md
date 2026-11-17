@@ -133,12 +133,14 @@ and never drive the verdict, or one flaky optional job would nudge forever.
 | Control | Where | Behavior |
 |---|---|---|
 | Push-disabled clone | `backend/clone_setup.py:_disable_push` + `profiles/github_repo/profile.py:RepoIsolation.push_disabled` | **Every** configured fetch/push URL is replaced with exactly one `DISABLED_NO_PUSH` value; setup and runtime fail closed on extra values. The real remote lives in config (`origin_url`), handed only to trusted publishers |
+| Clone pinned to its project | `backend/clone_setup.py:_clone_identity` + `_record_clone_identity` | A new clone records the SHA-256 of its lower-cased `host/path` as the local git config `kirocrew.cloneidentity`. Reusing an existing clone directory refuses when that value names another project or is ambiguous (more than one value), and records it once on a clone that predates it; setup fails closed when it cannot be written |
 | Draft-only PRs | `profiles/github_repo/pr_recipe.py` | `gh pr create --draft`; never `--web`, merge, ready, or auto-merge |
 | Generated head branch | same | `auto-improvement/<kind>-<fingerprint>`; never a human's branch |
 | Protected-branch denylist | `spine/push_policy.py` | non-overridable; a hand-edited config cannot widen it |
 | Edit allowlist | `spine/gate.py` + profile | ruler/harness/tests/auth are mechanically off-limits |
 | Do-not-pollute gate | `spine/pollute.py` | host state hashed before/after; drift blocks the run |
 | Second reproduce | `spine/pr_pipeline.py` | an independent A/B must confirm before a PR is drafted |
+| Candidate admission check (opt-in) | `spine/candidate_admission.py:admit_candidate` | `candidateAdmissionCommand` set (file-only, so a config-API caller cannot unset it; POSIX only, a set value refuses the run on Windows): both keep paths ask it, in the tests' `strict` sandbox and its own process group (killed whole when the check ends, by an answer or the 60 s timeout), before the provisional commit; only a fresh matching `admitted` answer from a clone clean before and unchanged after the check keeps, anything else is `failed_verify` (MANUAL §7) |
 | Pre-push review gate | `spine/driver_publish.py:_prepush_review_clean` | optional, fail-closed; an unfounded "clean" cannot pass it |
 | Tool-request gate | `spine/agent_runner_gate.py:_tool_permitted` + `shell_command_refusal` | the caller's `allowed_tools` is ENFORCED, and state-mutating shell verbs are refused even when Bash is allowed |
 | Audit-or-deny approval | `spine/agent_runner.py:_approve` | the unattended auto-approve is logged to the SEL with `critical=True` **before** it is granted; an unwritable audit REJECTS the tool |
@@ -317,7 +319,11 @@ build, test and lint commands, find the root cause, and fix it". So the shell st
 and `_FORBIDDEN_BINARIES`; they cover, among others, `git push` and `git remote set-url`,
 `gh pr merge`/`ready`/`close`/`comment`/`review`/`edit`/`create`, every `gh issue` and
 `gh release` verb, `gh api`, `gh auth`, `gh secret`, `gh workflow run`, and the
-`curl`/`wget`/`nc`/`ncat`/`netcat`/`ssh`/`scp`/`sftp`/`telnet` binaries. The repo's own
+`curl`/`wget`/`nc`/`ncat`/`netcat`/`ssh`/`scp`/`sftp`/`telnet` binaries. `gh alias` is denied,
+and each `gh` verb has its `glab` twin. glab's own top-level aliases (`pipe`/`pipeline` for
+`ci`, `var` for `variable`, `sched`/`skd` for `schedule`) are read as the command they name,
+and a `glab` verb outside glab's command list (`_GLAB_COMMANDS`) is refused, because glab runs
+it as a user alias. A `gh` verb outside gh's list is not refused yet. The repo's own
 `is_sensitive_bash_command` does not cover this — it allows `gh pr merge`.
 
 **What that leaves un-confined, stated plainly.** The denylist gates the command a request
@@ -518,7 +524,8 @@ gate — can modify same-user files outside the worktree.
 
 **Kiro Crew's own control files are closed.** The paths in `security.write_protected_home_paths()`
 are protected by the platform HOOK layer, which a sandboxed subprocess never passes through. So
-`_run` passes the PARENT directory of each write-protected path as `extra_hidden_dirs`,
+`_run` passes the PARENT directory of each write-protected path as `extra_hidden_dirs`
+(`spine/push_policy.py:write_protected_targets`, shared with the candidate admission checker),
 bind-mounting an empty dir over it, and the write fails at the kernel; the interpreter and the
 real-subprocess gate tests are unaffected.
 
@@ -575,6 +582,23 @@ are seen too. An option's VALUE goes with it (`nice -n 5 git push` must not leav
 like the command), and the recursion budget REFUSES on exhaustion — for a denylist, "gave up"
 must not mean "allowed".
 
+`eval` and `script -c` / `script --command` run a script too, so their script is re-analyzed
+the same way, and `watch` runs its joined arguments through `sh -c`. Two splits find the
+commands. A quote-aware split walks the characters with quote state and splits only on
+UNQUOTED separators, so `sh -c 'git push; true'` still yields `git push` while quoted data
+(`printf '%s\n' ';' curl`, `rg -F '$(curl' src`) runs nothing. Main's quote-blind split
+always runs as well, so anything it refuses stays refused. When the quote-aware split cannot
+read the text (an unclosed quote, an apostrophe in a heredoc body), only the quote-blind
+split runs, as on main; no command is refused for being unreadable.
+The walk reads bash's `$'...'` / `$"..."` as an ordinary quote opening at the `$`, so the
+script inside is re-analyzed: `eval $'gh pr ready 1'` is refused because the command is
+found, and `bash -c "printf $'a\n'"` stays allowed.
+The walk follows bash's comment rule: an unquoted `#` at the start of a word comments out
+the rest of the line, so an apostrophe in `# it's` never pairs with a quote on another
+line. A `#` inside a word (`echo a#b`) is not a comment. Heredoc bodies are not tracked:
+quotes in a body can still pair up across lines, as on main.
+A redirect target is a file name, so `echo hi > ./curl` stays allowed.
+
 Reaching the subcommand also means skipping GLOBAL OPTIONS correctly. A valueless option must not
 swallow the verb: `git --no-pager push`, `--paginate`, `--bare`, `--literal-pathspecs` and
 `--no-replace-objects` must be refused like a bare `git push`. Value-taking global options are
@@ -605,6 +629,7 @@ pushing) and `exec pytest -q` stay allowed. A dedicated test pins that non-over-
 - Value-taking global options are enumerated per binary (`_VALUE_TAKING_OPTIONS`) and everything else is valueless, so `git --no-pager push` is refused like `git push`; `--exec-path` is excluded because its value is optional. (D-63)
 - Value-taking wrapper long options (`_WRAPPER_VALUE_TAKING_LONG_OPTIONS`, such as `env --unset`) consume their value, so the command behind them is inspected. (D-117)
 - A bare `&` splits commands like `;`, and `(` and `)` split too, so `true & gh pr comment …` and `echo $(gh pr ready)` are refused; a benign trailing `& true` passes. (D-128)
+- `eval`, `script -c` and `watch` scripts are re-analyzed; a quoted separator stays in its word, while main's quote-blind split still runs; text the quote-aware split cannot read gets only the quote-blind split, as on main, and is never refused for that alone; `$'...'` / `$"..."` opens a quote at the `$`, so `eval $'gh pr ready 1'` is refused and `bash -c "printf $'a\n'"` passes; an unquoted word-initial `#` comments out the line, so comment apostrophes cannot hide `sh -c "true;gh pr ready"` on the next line, while `eval 'echo hi' # it's`, `echo a#b` and `printf '%s\n' ';' curl` pass. (D-143)
 
 ### Why the protected-branch denylist normalizes before it matches
 
@@ -744,7 +769,7 @@ rather than starting two threads and hoping, so it is deterministic.
 - `POST /setup-clone` re-checks `_run_is_active()` inside `clone_lock` and answers 409 `run_in_progress`. (D-95)
 - `PUT /config` takes `clone_lock` and re-checks `_run_is_active()` inside it; a structural test asserts both workspace-mutating handlers do. (D-96)
 - The draft and commit routes re-check the run status inside `clone_lock`; a structural guard asserts all four clone-mutating handlers do. (D-115)
-- `POST /run` admits under `app_lifecycle_lock` and answers 403 `app_disabled` when `is_app_enabled` is false at admission; otherwise it records `RunSupervisor.stop_seq()` and passes it to `start` as `admitted_at`, which `start` re-checks after `_build_driver` and raises `RuntimeError` ("the run was stopped before it started", mapped to 409 `session_conflict`) when a `stop` or the disable hook landed meanwhile, so a run cannot launch into an app disabled or stopped while its driver was being built (`test_run_start_honors_stop`, `test_start_is_refused_once_the_app_is_disabled`).
+- `POST /run` admits under `app_lifecycle_lock` and answers 403 `app_disabled` when `is_app_enabled` is false at admission; otherwise it records `RunSupervisor.stop_seq()` and passes it to `start` as `admitted_at`, which `start` re-checks after `_build_driver` and raises `RuntimeError` ("the run was stopped before it started", mapped to 409 `session_conflict`) when a `stop` or the disable hook landed meanwhile, so a run cannot launch into an app disabled or stopped while its driver was being built (`test_start_is_refused_once_the_app_is_disabled`).
 
 ### Why the manual draft path materializes its own diff
 
@@ -1046,7 +1071,9 @@ mid-truncate ~31% of the time, reporting a calibrated ruler as uncalibrated.
 
 Session record keys are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,249}$` and
 rejected — not sanitized — when unsafe, because silently rewriting a key would
-make two subjects share one record. The frontend sanitizer strips dot-runs and
+make two subjects share one record. The pattern is applied with `fullmatch`, so
+a key with a trailing newline is refused with a 400 rather than reaching the
+file system (where Windows raises an unhandled `OSError`). The frontend sanitizer strips dot-runs and
 path separators before the key is ever sent, so the two gates agree.
 
 **Pinned invariants.**
@@ -1182,6 +1209,14 @@ So the sequence is **provisional commit → draft → amend**:
    duplicate, error), so a non-win never advances HEAD.
 
 A diff that will not apply is refused *before* the expensive reproduce A/B.
+An opt-in `candidateAdmissionCommand` checker is asked before step 1 on both tracks, and a
+refusal records `failed_verify` without reaching the provisional commit (on perf it is asked
+before the survivors are archived, and on both tracks the refused winner's archive row reads
+`failed_verify`, not `kept`); the isolation probe runs after every check and before any more
+host git, so a check that left the clone's git metadata unsafe retires it and every later
+keep refuses without running git; otherwise a check that changed the clone, or left git unable
+to read it, has the branch and tracked files restored through `_reset_provisional`, and any
+untracked file left in it refuses later keeps (`test_candidate_admission.py`).
 `TestWinnerIsInTheTreeBeforeDrafting` pins the order and the rollback in both tracks.
 
 **Pinned invariants.**
@@ -1373,8 +1408,22 @@ redaction helpers), never the other way round, so it fills no seam in
 core records and the drawer renders without knowing it. Some of those imports are
 private core names (`llm_helpers._steer_host_deny`, `llm_helpers._extract_json_of_type`,
 `agent_discovery._read_agent_spec`, `config.loader._session_work_dir`,
-`workflows.registry._await_owned`); the app's own repository has to reach them through a
-public surface before it can build against an installed Kiro Crew.
+`workflows.registry._await_owned`); the app's own repository resolves each by name from
+the running gateway through a host shim of its own, failing closed when one is missing,
+until a public surface replaces it. Such a name blocks deleting the wheel copy, not
+pinning it (driver decision 4 in #26967, comment 6729725443).
+
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-auto-improvement` with `minAppSdkLevel` 2, the level of the
+`ctx.lifecycle` admission its run start uses, so a host whose record is builtin-owned
+swaps it in place onto that tree at a restart, keeping `data/`, `.app_secret`, the
+approved grants and `enabled`; the rail keeps `/auto-improvement` and the `Brain` glyph.
+The repository's `app.json` declares the same `permissions`, `agents` and `skills` as the
+wheel copy, and its one MCP server keeps its name and `autoApprove` list, launched by
+`python3` from a launcher file in the adopted tree instead of `-m` on the wheel package
+(the stdio shape § 33 carries). A fix to the app lands in that repository first; a change
+to the wheel copy needs its `App repo:` line.
 
 `test/test_core_auto_improvement_decoupling.py` is the gate, on the shared
 `test/core_app_independence.py` scanner. The core strings left naming the app are a

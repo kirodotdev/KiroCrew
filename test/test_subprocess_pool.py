@@ -15,6 +15,7 @@ import time
 import types
 
 import pytest
+from path_gate_late_answer_helpers import LateAnswerClock
 
 from kiro_crew.security import _child_realpath as child_mod
 from kiro_crew.security.paths import _resolved_spellings_inline as _resolved_spellings
@@ -28,7 +29,8 @@ from kiro_crew.subprocess_pool.executor import (
     pack_strings,
     unpack_strings,
 )
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 _CHILD = pathlib.Path(child_mod.__file__)
 
@@ -442,20 +444,223 @@ class TestCallerBudget:
         assert len(destroyed) == 1, (before.keys(), still_held)
         assert destroyed[0].wait(timeout=10.0) is not None
 
+    @staticmethod
+    def _bound_caller_waits(
+        monkeypatch: pytest.MonkeyPatch,
+        executor: SubprocessPoolExecutor,
+        budget: float,
+        clock: ManualClock | None = None,
+    ) -> list[tuple[str, float | None]]:
+        """Record every wait the calling thread makes, refusing one past *budget*.
+
+        The caller blocks in exactly three places: the free-queue lease, ``select`` on
+        the child's pipe, and (where ``select`` cannot watch a pipe) the reader
+        future.  Each is handed a timeout derived from the caller's absolute deadline,
+        so each must be at most *budget* (plus float error from deadline minus clock).
+        A wait with no timeout, a pipe read with no deadline, or one past the budget is
+        refused at once on the calling thread, so the test fails by name instead of
+        hanging on the silent child.  Other threads are left alone.
+
+        With *clock* (a :class:`ManualClock` installed on the executor module) the
+        caller's deadline moves only through the reader wait: that wait still blocks
+        for real for the timeout it was handed, then advances the clock by it.
+        """
+        caller = threading.get_ident()
+        waits: list[tuple[str, float | None]] = []
+
+        def _check(kind: str, timeout: float | None) -> None:
+            if threading.get_ident() != caller:
+                return
+            waits.append((kind, timeout))
+            assert (
+                timeout is not None and timeout <= budget + 1e-6
+            ), f"the caller's {kind} waited {timeout!r}, past its {budget} s budget"
+
+        real_get = executor._free.get
+
+        def _bounded_get(block: bool = True, timeout: float | None = None):
+            _check("lease", timeout)
+            return real_get(block, timeout)
+
+        real_select = executor_mod.select.select
+
+        def _bounded_select(rlist, wlist, xlist, timeout=None):
+            _check("select", timeout)
+            return real_select(rlist, wlist, xlist, timeout)
+
+        real_read = executor_mod._read_exactly
+
+        def _deadlined_read(stream, count, deadline, **kwargs):
+            if threading.get_ident() == caller and executor_mod._CAN_SELECT_PIPES:
+                assert deadline is not None, "the caller read the pipe with no deadline"
+            return real_read(stream, count, deadline, **kwargs)
+
+        real_readers = executor._bounded_readers
+
+        class _BoundedFuture:
+            def __init__(self, future) -> None:
+                self._future = future
+
+            def result(self, timeout: float | None = None):
+                _check("reader", timeout)
+                try:
+                    return self._future.result(timeout=timeout)
+                finally:
+                    if clock is not None and timeout is not None:
+                        clock.advance(timeout)
+
+        def _submit(fn, *args, **kwargs):
+            return _BoundedFuture(real_readers.submit(fn, *args, **kwargs))
+
+        monkeypatch.setattr(executor._free, "get", _bounded_get)
+        monkeypatch.setattr(executor_mod, "select", types.SimpleNamespace(select=_bounded_select))
+        monkeypatch.setattr(executor_mod, "_read_exactly", _deadlined_read)
+        monkeypatch.setattr(
+            executor,
+            "_bounded_readers",
+            types.SimpleNamespace(submit=_submit, shutdown=real_readers.shutdown),
+        )
+        return waits
+
     def test_a_silent_child_raises_timeout_at_the_callers_budget(
-        self, tmp_path: pathlib.Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
-        # The ceiling is parked far away so the CALLER's budget is what fires.
+        # The ceiling is parked far away so the CALLER's budget is what fires: every
+        # wait the caller makes is handed at most that budget.
         executor = SubprocessPoolExecutor(
             workers=2, script=self._hanging(tmp_path), ceiling_secs=600.0
         )
         try:
-            started = time.monotonic()
+            waits = self._bound_caller_waits(monkeypatch, executor, budget=1.0)
             with pytest.raises(TimeoutError):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=1.0)
-            assert time.monotonic() - started < 30.0
+            assert waits and waits[0][0] == "lease", waits
         finally:
             executor.shutdown(wait=False)
+
+    @pytest.mark.skipif(
+        not executor_mod._CAN_SELECT_PIPES, reason="the per-read deadline needs select on a pipe"
+    )
+    def test_answer_in_pipe_at_deadline_is_read(self, tmp_path: pathlib.Path, monkeypatch) -> None:
+        # The calling thread can get the GIL back after its deadline although the
+        # child answered in time.  An answer already in the pipe is the child's
+        # completed realpath, so it is returned, and the healthy child is kept.
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(target)
+        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0)
+        try:
+            before = self._spawned(executor)
+            clock = LateAnswerClock(monkeypatch)
+            answer = executor.realpath_spellings(str(link), timeout=FALLBACK_TIMEOUT_SECS)
+            assert clock.late_reads >= 1, "the double never made the read late"
+            assert clock.drains == [0.0, executor_mod._ANSWERED_FRAME_DRAIN_SECS]
+            assert str(target.resolve()) in answer
+            assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+        finally:
+            executor.shutdown(wait=False)
+
+    def test_a_slot_leased_after_the_deadline_is_released_unused(
+        self, tmp_path: pathlib.Path, monkeypatch
+    ) -> None:
+        # The calling thread can get a slot only after its deadline has passed.  No
+        # answer can arrive in zero time and a timed-out child is killed, so no
+        # request is sent: the caller gets the plain ``TimeoutError`` of a lease that
+        # found no child in time, and the healthy child goes back to the queue.
+        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0)
+        try:
+            before = self._spawned(executor)
+            wait_until(
+                lambda: executor._free.qsize() >= len(before),
+                timeout=FALLBACK_TIMEOUT_SECS,
+                describe=lambda: "reaper never queued all pool children",
+            )
+            caller = threading.get_ident()
+            offset = [0.0]
+            leased: list[int] = []
+            real_time = executor_mod.time
+            real_lease = executor._lease
+
+            class _CallerScopedTime:
+                """The ``time`` module, with ``monotonic`` shifted on the calling thread only."""
+
+                def __getattr__(self, name: str):
+                    return getattr(real_time, name)
+
+                @staticmethod
+                def monotonic() -> float:
+                    shift = offset[0] if threading.get_ident() == caller else 0.0
+                    return real_time.monotonic() + shift
+
+            def lease_then_pass_deadline(deadline):
+                child = real_lease(deadline)
+                leased.append(child.proc.pid)
+                if len(leased) == 1:
+                    offset[0] += 3600.0
+                return child
+
+            monkeypatch.setattr(executor_mod, "time", _CallerScopedTime())
+            monkeypatch.setattr(executor, "_lease", lease_then_pass_deadline)
+            with pytest.raises(TimeoutError) as raised:
+                executor.call_op(OP_REALPATH_SPELLINGS, b"/", timeout=FALLBACK_TIMEOUT_SECS)
+            assert type(raised.value) is TimeoutError, type(raised.value)
+            assert leased and leased[0] in before
+            assert before[leased[0]].poll() is None
+            assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+            assert executor._free.qsize() == len(before)
+
+            offset[0] = 0.0
+            answer = executor.realpath_spellings(str(tmp_path), timeout=FALLBACK_TIMEOUT_SECS)
+            assert str(tmp_path.resolve()) in answer
+            assert {child.proc.pid for child in executor._children if child.proc} == set(before)
+        finally:
+            executor.shutdown(wait=False)
+
+    @pytest.mark.skipif(
+        not executor_mod._CAN_SELECT_PIPES, reason="the per-read deadline needs select on a pipe"
+    )
+    @pytest.mark.parametrize("deadline_offset", [-1.0, 0.5])
+    def test_the_rest_of_an_answered_frame_is_drained_after_the_deadline(
+        self, monkeypatch, deadline_offset
+    ) -> None:
+        # An answer can arrive in pieces.  Once its header is in, the child's
+        # realpath is done, so each wait for a further piece gets at least
+        # ``drain_secs``, whether the deadline has passed (-1.0) or is about to
+        # (0.5).  The second piece is written only after the read has seen the
+        # pipe empty, so a shorter wait there would refuse.
+        read_fd, write_fd = os.pipe()
+        reader = os.fdopen(read_fd, "rb", buffering=0)
+        writer = os.fdopen(write_fd, "wb", buffering=0)
+        writer.write(b"a" * 8)
+        real_select = executor_mod.select.select
+        polls: list[float] = []
+
+        def select_then_write(rlist, wlist, xlist, timeout):
+            polls.append(timeout)
+            if len(polls) == 2:
+                assert real_select(rlist, [], [], 0) == ([], [], []), "second piece came early"
+                writer.write(b"b" * 8)
+            return real_select(rlist, wlist, xlist, timeout)
+
+        monkeypatch.setattr(executor_mod, "select", types.SimpleNamespace(select=select_then_write))
+        try:
+            deadline = time.monotonic() + deadline_offset
+            got = executor_mod._read_exactly(reader, 16, deadline, drain_secs=30.0)
+        finally:
+            writer.close()
+            reader.close()
+        assert got == b"a" * 8 + b"b" * 8
+        assert polls == [30.0, 30.0]
+
+    @pytest.mark.skipif(
+        not executor_mod._CAN_SELECT_PIPES, reason="the per-read deadline needs select on a pipe"
+    )
+    def test_a_spent_deadline_with_nothing_in_the_pipe_still_times_out(self) -> None:
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(read_fd, "rb", buffering=0) as reader, os.fdopen(write_fd, "wb"):
+            with pytest.raises(executor_mod._ChildTimeout):
+                executor_mod._read_exactly(reader, 4, time.monotonic() - 1.0)
 
     def test_a_timed_out_child_is_destroyed_rather_than_reused(
         self, tmp_path: pathlib.Path
@@ -498,7 +703,7 @@ class TestCallerBudget:
             executor.shutdown(wait=False)
 
     def test_killed_but_unexited_children_are_bounded_and_a_slot_respawns_below_the_bound(
-        self, tmp_path: pathlib.Path
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A child killed at its deadline on a wedged mount dies only when its syscall
         # returns -- for a hung mount, maybe never.  Two review findings meet here: the
@@ -533,10 +738,32 @@ class TestCallerBudget:
             assert (
                 slot.proc is None or slot.proc.poll() is not None
             ), "at the bound the slot must not spawn a third process"
-            started = time.monotonic()
-            with pytest.raises(SubprocessPoolUnavailable, match="have not exited"):
-                executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
-            assert time.monotonic() - started < 1.0, "exhaustion is reported at once"
+            caller = threading.get_ident()
+            real_get = executor._free.get
+
+            def _refuse_waiting(*args, **kwargs):
+                if threading.get_ident() == caller:
+                    raise AssertionError(
+                        "exhaustion is reported at once: the caller waited on the free queue"
+                    )
+                return real_get(*args, **kwargs)
+
+            class _NoSleepOnCaller:
+                def __getattr__(self, name):
+                    return getattr(time, name)
+
+                def sleep(self, secs):
+                    if threading.get_ident() == caller:
+                        raise AssertionError("exhaustion is reported at once: the caller slept")
+                    time.sleep(secs)
+
+            # The caller may neither wait on the free queue nor sleep: the refusal
+            # comes from the pre-check, not after (part of) its 5 s budget.
+            with monkeypatch.context() as mp:
+                mp.setattr(executor._free, "get", _refuse_waiting)
+                mp.setattr(executor_mod, "time", _NoSleepOnCaller())
+                with pytest.raises(SubprocessPoolUnavailable, match="have not exited"):
+                    executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
             executor._unreaped._procs = [types.SimpleNamespace(poll=lambda: 0)]  # one exited
             wait_until(
                 lambda: slot.proc is not None and slot.proc.poll() is None,
@@ -563,18 +790,40 @@ class TestCallerBudget:
             (lost,) = executor._children
             (victim,) = self._spawned(executor).values()
             real_readers = executor._bounded_readers
+            reader_waits: list[float | None] = []
+            readers: list[object] = []
+
+            class _RecordedReader:
+                # The caller's only handle on the reader: every wait on it is recorded.
+                def __init__(self, future) -> None:
+                    self._future = future
+
+                def result(self, timeout: float | None = None):
+                    reader_waits.append(timeout)
+                    assert timeout is not None, "the caller waited on the reader unbounded"
+                    return self._future.result(timeout=timeout)
+
+            def _submit(fn, *a, **k):
+                future = real_readers.submit(release.wait)
+                readers.append(future)
+                return _RecordedReader(future)
+
             monkeypatch.setattr(
                 executor,
                 "_bounded_readers",
-                types.SimpleNamespace(
-                    submit=lambda fn, *a, **k: real_readers.submit(release.wait),
-                    shutdown=real_readers.shutdown,
-                ),
+                types.SimpleNamespace(submit=_submit, shutdown=real_readers.shutdown),
             )
-            started = time.monotonic()
             with pytest.raises(SubprocessPoolTimeout):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=0.3)
-            assert time.monotonic() - started < 1.5, "the caller must not wait on the reader"
+            # The caller waited on the reader once, inside its own budget, and returned
+            # with the reader still blocked: it never waits for the reader to finish.
+            assert len(reader_waits) == 1, f"waited on the reader {reader_waits!r}"
+            # The wait is the budget's absolute deadline minus a clock read; on a coarse
+            # clock that subtraction can round a hair above 0.3, so allow float error.
+            assert (
+                reader_waits[0] is not None and 0.0 <= reader_waits[0] <= 0.3 + 1e-6
+            ), reader_waits
+            assert len(readers) == 1 and not readers[0].done(), "the reader is still blocked"
             (fresh,) = executor._children
             assert fresh is not lost, "the slot object was replaced"
             assert victim in executor._unreaped._procs or victim.poll() is not None
@@ -623,16 +872,23 @@ class TestCallerBudget:
         # The request then runs on a pool thread and the CALLER waits with the budget,
         # so a wedge still surfaces as the timeout subclass (charged by the resolver)
         # and the child is destroyed -- not a 20 s freeze followed by an EOF fault.
+        # The executor's clock moves only through the reader wait, so however long
+        # the caller is descheduled after its lease, the deadline is still ahead when
+        # the reader is submitted; the reader wait itself (1 s, refused if unbounded)
+        # stops a lost run.
         monkeypatch.setattr(executor_mod, "_CAN_SELECT_PIPES", False)
         executor = SubprocessPoolExecutor(
             workers=2, script=self._hanging(tmp_path), ceiling_secs=600.0
         )
         try:
-            started = time.monotonic()
             before = self._spawned(executor)
+            clock = ManualClock()
+            clock.install(monkeypatch, executor_mod)
+            waits = self._bound_caller_waits(monkeypatch, executor, budget=1.0, clock=clock)
             with pytest.raises(SubprocessPoolTimeout):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=1.0)
-            assert time.monotonic() - started < 30.0
+            # The caller waited on the reader with its budget, not on the child.
+            assert [kind for kind, _ in waits] == ["lease", "reader"], waits
             self._assert_leased_child_destroyed(executor, before)
         finally:
             executor.shutdown(wait=False)
@@ -771,15 +1027,42 @@ class TestCallerBudget:
         # With the reaper spawning, that failure has to reach a caller waiting on the
         # ready queue -- and reach it NOW, not when its whole budget has drained.
         def _unspawnable(self: executor_mod._Child) -> subprocess.Popen[bytes]:
+            events.append("spawn failed")
             raise FileNotFoundError("python")
 
+        # The notes are recorded on THIS pool only.  Patching the class would also
+        # record every other live pool's reaper tick (the process-wide path-resolve
+        # pool, an earlier test's pool still winding down), and that pool, with live
+        # children, notes "no marker" before this pool's first spawn.
+        class _Recorded(SubprocessPoolExecutor):
+            def _note_spawn_errors(self) -> None:
+                super()._note_spawn_errors()
+                events.append("marker queued" if self._failed_queued else "no marker")
+
+        events: list[str] = []
         monkeypatch.setattr(executor_mod._Child, "_spawn", _unspawnable)
-        executor = SubprocessPoolExecutor(workers=2, ceiling_secs=600.0)
+        # A bystander pool's tick, run before this pool exists, must not be recorded.
+        bystander = types.SimpleNamespace(
+            _children=[], _qlock=threading.Lock(), _spawn_error=None, _failed_queued=False
+        )
+        executor_mod.SubprocessPoolExecutor._note_spawn_errors(bystander)  # type: ignore[arg-type]
+        executor = _Recorded(workers=2, ceiling_secs=600.0)
         try:
-            started = time.monotonic()
+            # A TimeoutError here would mean the caller waited out its budget; the
+            # OSError means the reaper's verdict reached it first.
             with pytest.raises(FileNotFoundError):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
-            assert time.monotonic() - started < 2.5, "the failure must not cost the budget"
+            # And the verdict is published on the very reaper tick whose spawns failed,
+            # not after further ticks: the first note after a failed spawn queues it.
+            # The caller can see the verdict before the recorder appends the note's
+            # outcome, so wait for that append (a lost-run bound, not a time budget).
+            wait_until(
+                lambda: any(e != "spawn failed" for e in events),
+                timeout=FALLBACK_TIMEOUT_SECS,
+                describe=lambda: f"the reaper never recorded a note: {events}",
+            )
+            first_note = next(i for i, e in enumerate(events) if e != "spawn failed")
+            assert first_note > 0 and events[first_note] == "marker queued", events
             with pytest.raises(FileNotFoundError):  # the marker stays for the next caller
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
         finally:

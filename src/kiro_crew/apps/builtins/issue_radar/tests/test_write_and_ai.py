@@ -12,23 +12,25 @@ Three deterministic, subprocess-free surfaces:
   * routes permission gate — ``_has_write_access`` truth table + ``_repo_can_write``
     reading stored perms vs self-healing from a live fetch.
 """
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 from typing import cast
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
 
 
 class TestAiCache(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_roundtrip_and_delete(self):
         payload = {"summary": "It crashes on start.", "suggested_labels": [{"name": "bug", "reason": "crash"}]}
@@ -50,11 +52,14 @@ class TestAiCache(unittest.TestCase):
 
 
 class TestApplyLabelChangeToCaches(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_patches_detail_and_list_and_drops_ai(self):
         store.write_issue_detail_cache(
@@ -93,11 +98,14 @@ class TestApplyLabelChangeToCaches(unittest.TestCase):
 
 
 class TestApplyStateChangeToCaches(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_close_drops_from_open_list_and_patches_detail(self):
         store.write_issue_detail_cache("o", "r", 7, {"number": 7, "state": "open", "state_reason": None}, [], root=self.tmp)
@@ -130,11 +138,14 @@ class TestApplyStateChangeToCaches(unittest.TestCase):
 
 
 class TestApplyAssigneesChangeToCaches(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        # addCleanup, not tearDown+ignore_errors: a cleanup failure must SURFACE
-        # rather than leave temp residue outliving the run (no-test-side-effects).
-        self.addCleanup(shutil.rmtree, self.tmp)
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_patches_detail_and_list_row(self):
         store.write_issue_detail_cache(
@@ -214,9 +225,14 @@ class TestApplyAssigneesChangeToCaches(unittest.TestCase):
 
 
 class TestLoadListCache(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp)
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        """Hand each test pytest's per-test directory as the store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self.tmp = tmp_path
 
     def test_non_object_root_is_unusable(self):
         store.write_issues_cache("o", "r", [{"number": 7}], root=self.tmp)

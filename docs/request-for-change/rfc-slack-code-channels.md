@@ -1,12 +1,12 @@
 ---
 title: Slack Code — agent sessions and code channels for Kiro Crew
-status: in-progress
+status: partial
 author: kseam
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: c1302956a1
+last-audited: 2026-11-16
+audited-at: 09e5482863
 doc-pr:
-implementation-prs: []
+implementation-prs: [21425, 21410, 22001, 21993]
 tracking-issues: [15175]
 supersedes: []
 superseded-by: []
@@ -14,14 +14,70 @@ superseded-by: []
 
 # RFC: Slack Code — agent sessions and code channels for Kiro Crew
 
-- Status: in-progress. Phase 1 (the switch registry, the manifest built from the
+- Status: partial. Phase 1 (the switch registry, the manifest built from the
   switches, the update flow, the capability latch and the scope probe, plus the
   Agent sessions switch and its runtime, first opened as
-  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) is in the pull
-  request that carries this document. Phase 2 (code channels: their switch, their
-  defaults and their runtime) stacks on it, starting with
-  [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410). Every switch
-  defaults off, so no default changes.
+  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) shipped in
+  [#21425](https://github.com/kirodotdev/KiroCrew/pull/21425). Phase 2 (code channels: their switch, their
+  defaults and their runtime) shipped in
+  [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410), with helper-agent
+  dispatch and restart resume in
+  [#22001](https://github.com/kirodotdev/KiroCrew/pull/22001). Every switch
+  defaults off, so no default changes; the 2026-11-16 amendment changes the
+  agent a code channel with no settings runs, and turns helper agents on with a
+  first enable of Code channels (Backward compatibility).
+- Amended 2026-11-12: Stop in a code channel also stops the channel's helper
+  agents (§3, "Stop"). The owner left this call to the Slack Code team lead, who
+  decided it; it takes effect when the owner merges this amendment. Nothing is
+  built yet: on main `6ded84fc02`, `_stop_bound` in
+  `slack/code_channels/routing.py` stops only the channel's own session; when that
+  session is idle, `!stop` answers "Nothing running." and Slack's Stop button says
+  nothing, whatever its helper agents are doing. The code follows in its own pull
+  request, after
+  [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993).
+- Amended 2026-11-16: records the owner's decisions on what a code channel shows
+  and runs, each in the section named. They take effect when the owner merges this
+  amendment. Verified at `09e5482863`, which has the work board and no reactions
+  (built in [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993)) and
+  none of the rest, as each item below says; each part's code follows in its own
+  pull request.
+  * Helper agents turn on with a first enable of Code channels (§3, "Helper
+    agents"). Decided 2026-11-13. On main, turning Code channels on never saves
+    `slack.code_channel_dispatch`.
+  * A code channel runs the owner's default agent unless told otherwise, and
+    **Always use conductor mode** makes every new code channel run the conductor
+    mode agent (§3, "Resolution order", "The auto folder", "Always use conductor
+    mode"). Decided 2026-11-13; the switch took the conductor mode name on
+    2026-11-16. On main the auto folder is created with `default_agent =
+    kirocrew-conductor` (`features.AUTO_FOLDER_AGENT`), so a code channel with no
+    settings runs the conductor.
+  * The context bar has two action items, Create PR and Stop, a Workers item and
+    one pull-request slot with its CI in the label, and Plan-canvas comments reach
+    the agent (§3, "Context bar", "Plan-canvas comments"; open question 2).
+    Decided 2026-10-23. On main the bar has link items only and nothing reads the
+    canvas's comments back.
+  * Native pull-request tabs, tab deep links, a Workers tab with a per-helper Stop
+    and Open in dashboard, and which tab gives way at Slack's five-tab limit (§3,
+    "Tabs"). The owner's design, built in
+    [#22928](https://github.com/kirodotdev/KiroCrew/pull/22928); decided
+    2026-11-16 to ship on main in its own pull request, after #22370. On main a
+    code channel has no tab beyond the Plan canvas, the Code tab and the agent's
+    own views, and nothing makes room at the limit.
+  * A bound code channel shows no reaction ladder and no queued-message hourglass;
+    its progress is the channel's session status and the pinned work board (§3,
+    "Work board"). Built in #21993 under the owner's
+    [decision of 2026-11-13](https://github.com/kirodotdev/KiroCrew/pull/21993#issuecomment-6841005122).
+    Also built there: the board files no helper agents and session creation
+    files them (§3, "Work board"), as the 2026-10-27 conductor mode decision
+    keeps a conductor mode chat's crew out of folders.
+  * The work board shows each helper agent's PR and CI, the Code tab adds each
+    helper agent's own commits, the wrap-up lists each helper agent's outcome, and
+    an idle `!stop` names and links up to five running helper agents (§3, "Work
+    board"). These are
+    the parts of the owner's work board that #21993 left for a second pull request.
+    On main a row shows no PR or CI, the Code tab shows only the channel's own
+    diff, the wrap-up lists only the channel's own PR, and an idle `!stop` gives a
+    count of running helper agents and points at the board.
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
@@ -165,7 +221,7 @@ registers:
 | Switch | Feature block | Bot scopes | Bot events |
 |---|---|---|---|
 | `agent_sessions` | `agent_view` (`agent_description`) | `assistant:write` | `app_context_changed`, `agent_session_stopped`, `agent_session_title_changed` |
-| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites` | `agent_session_stopped` |
+| `code_channels` (Phase 2) | `code_channels: {enabled: true}` | `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` | `agent_session_stopped`, `code_channel_action` (the context bar's action items, amended 2026-11-16) |
 
 `channels:read`, `groups:read`, `groups:history` and `message.groups` are already
 in the base manifest. No `slash_command_url` is set: Socket Mode delivers channel
@@ -252,12 +308,47 @@ project scope; a model goes through the same guard the crew editor uses
 (`_validate_role_model`), with `auto` stored as unset; an effort must be on the
 ladder.
 
+**Helper agents** (amended 2026-11-16). **Let code channels start helper agents**
+(`slack.code_channel_dispatch`, the sub-toggle under Code channels) lets a code
+channel's session start helper agents. It reads off when unset. A settings save
+that newly turns Code channels on also saves it on, and the sub-toggle's text
+says so, but only when Code channels are not already saved on and no value for
+it is stored. A stored value is kept, so an explicit off survives and an upgrade
+alone changes nothing; an off chosen in the enabling save is stored
+as an explicit off. A missing, unreadable or malformed value reads off, and when
+`config.local.json` sets the key or cannot be read, the save writes nothing for
+helper agents (the Code channels part of the save still goes through). The owner
+can still turn it off under Code channels. The owner-only, workspace and
+approval-mode limits on helper agents do not change. Rejected: turning it on for
+existing installs by changing the stored default.
+
+**Always use conductor mode** (amended 2026-11-16).
+`slack.code_channel_defaults.conductor_mode`, off when unset, is a switch on the
+defaults card above the default agent, shown only where conductor mode is
+offered: every build but LTS
+([2026-11-14 decision](../decisions/2026-11-14-conductor-mode-graduates-from-feature-previews.md)).
+When on, every new code channel runs `agent.crew_mode_agent`
+(`kirocrew-conductor` unless set,
+[2026-11-15 decision](../decisions/2026-11-15-conductor-mode-runs-on-the-conductor-by-default.md))
+over the code-channel default agent and the folder's agent. The channel's
+session is a conductor mode root by its agent, but it does not carry the stamp a
+dashboard chat that turned conductor mode on carries (`crew_mode_agent`), so its
+helper agents stay filed in the channel's folder ("Work board", below). While the
+switch is on, the settings page disables the default-agent picker and keeps its
+value, and shows a display-only warning while helper agents are off; the switch
+never turns helper agents on. A missing or malformed value, the LTS edition, or a
+`config.local.json` that cannot be read, reads as off. A session already bound
+keeps its agent, and a pick in the kickoff picker or `/kirocrew agent` still
+applies within the existing conductor mode lock. The `PUT` accepts only a boolean
+or null; when `config.local.json` sets the key or cannot be read, the switch is
+disabled and a `PUT` that names it is refused (409).
+
 **Resolution order** for a new code-channel session, implemented once in that
 resolver:
 
 | Value | Order |
 |---|---|
-| agent | `code_channel_defaults.agent` > the folder's `default_agent` > the agent Slack already uses (`agent.default_agent`) |
+| agent | with `code_channel_defaults.conductor_mode` on, where conductor mode is offered: `agent.crew_mode_agent`, over every other source when the channel is created (amended 2026-11-16). Otherwise `code_channel_defaults.agent` > the folder's `default_agent` (the auto folder's legacy `kirocrew-conductor` reads as unset) > the agent Slack already uses (`agent.default_agent`) |
 | model, effort | `code_channel_defaults` only; unset keeps the agent's own |
 | project | the folder's `project_dir` (nearest ancestor that declares one) > the project bound to the thread the channel was opened from > none |
 | folder | `code_channel_defaults.folder` (id or unique `Parent/Child` path) > the auto folder: a top-level sidebar folder named `Code channels` (`features.AUTO_FOLDER_NAME`). The session also inherits the folder's steering |
@@ -267,14 +358,20 @@ so a person who touches no setting gets a working channel. The resolver stays
 pure: when no top-level `Code channels` folder exists (exactly one matches,
 case-insensitively, or none counts) it returns `folder_id=None`,
 `folder_path="Code channels"` and `folder_auto_create=True`, and resolves the
-agent as if the folder had `default_agent = kirocrew-conductor`
-(`features.AUTO_FOLDER_AGENT`). The Phase 2 runtime creates that folder the
+agent as if the folder had no `default_agent` (amended 2026-11-16; it was
+`kirocrew-conductor` before). The Phase 2 runtime creates that folder the
 first time a channel needs it, through the sidebar's own folder-create path
 (`create_folder_record`, mkdir -p semantics, SEL-audited like the sidebar),
-with that `default_agent`, then files the session into its id. Once it exists
-its own settings apply, so a person can change or clear its agent. The
-settings page shows it as the default folder row, "Code channels (created
-automatically · kirocrew-conductor)", and its "New folder…" row opens the
+with no `default_agent`, then files the session into its id. Once it exists
+its own settings apply, so a person can change or clear its agent. A top-level
+`Code channels` folder whose agent is exactly `kirocrew-conductor` counts as no
+folder agent, whether an earlier release gave it that value or the owner set it
+later: a folder record keeps no edit history, so the value is the only signal.
+That is read-time only and the stored folder is not rewritten; any other value,
+or the conductor on any other folder, is the owner's and is kept. Rejected:
+clearing the legacy value on disk, which rewrites user data with no undo. The
+settings page shows it as the default folder row,
+"Code channels (created automatically)", and its "New folder…" row opens the
 sidebar's folder-create modal and selects the new folder.
 
 A folder deleted after it was saved is reported (`folder_missing`) and ignored:
@@ -345,7 +442,7 @@ crewmates' private copies.
   session works in its own worktree off the project's default branch. After each
   turn the gateway publishes the unified diff against the base as the channel's
   `diff` view (one per channel, capped at 1 MB, truncated with a note past it) and
-  sets the context bar (≤5 items: repo, branch, PR, CI) with
+  sets the context bar (≤5 items, "Context bar" below) with
   `agents.conversations.setProperties`, resending all items because the bar is
   full replacement.
 * **Agent tools.** Pinned to the session's own channel server-side:
@@ -361,6 +458,221 @@ crewmates' private copies.
   reply on the origin message.
 * **Status.** The channel's session status follows the same lifecycle as an agent
   session (§2), with no `thread_ts`.
+* **Context bar** (amended 2026-11-16). Slack keeps the first five items of a
+  longer list and only warns, so the gateway budgets the bar itself, in priority
+  order, each item at most once:
+  1. `workers`: in a conductor-led channel with helper agents, the work board's
+     tally in short words (`2 working · 1 needs you`, `3 of 3 done`), linked to
+     the pinned board message ("Work board", below);
+  2. `repo` (the folder's name when the project is not a git repository);
+  3. `branch`;
+  4. `stop`: the Stop action, only while the channel's own session runs a turn
+     (decided when the bar is sent); it runs the same Stop as Slack's Stop button
+     ("Stop", below);
+  5. ONE pull-request slot: the channel's own PR with its CI folded into the
+     label (`PR #42 is open · tests passing`); else, when the channel can open a
+     pull request, has no PR, and has commits on its branch past the Code tab's
+     base, the `create-pr` action, which runs `/create-pr`.
+
+  A slot nothing above wanted goes to the agent's own items
+  (`code_channel_set_context_bar`), then to Open in dashboard (a plain link, never
+  a sign-in token). CI shares the PR's item because five slots cannot hold repo,
+  branch, PR, CI and the actions. Each helper agent's PR is on the work board, not
+  in an item of its own. Once the board carries each helper agent's PR ("Work
+  board"), the channel's own PR keeps the slot while it is open, and after it
+  merges or closes while no helper-agent PR is open; otherwise the slot shows a
+  single helper-agent PR the same way, or several as one item linked to the board
+  (`3 PRs open`, `3 PRs: 2 open · 1 merged`). Create
+  PR and Stop are `item_type: "action"` items with no URL; a click arrives as a
+  `code_channel_action` event (open question 2) and runs an existing path with
+  that path's own checks and audit. Any other key is refused, and the agent
+  cannot set an action key.
+* **Plan-canvas comments** (amended 2026-11-16). Slack sends no event for a
+  comment on the Plan canvas, so the gateway reads the comments with
+  `agents.conversations.getCanvas` when a turn of the channel's session ends and
+  by a poll while the session is idle. New comments reach the session as one
+  message per commenter, routed exactly like a message that person typed in the
+  channel (so the same authorization applies), redacted like all channel text,
+  and framed as feedback to weigh, not instructions. Each comment is delivered
+  once (remembered across restarts once delivered), at most 20 per read, each cut
+  to 1,000 characters.
+* **Work board** (built in
+  [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993); amended
+  2026-11-16). In a conductor-led code channel the gateway posts one work board
+  message, pins it and edits it in place: a counts line, then one task per helper
+  agent with its state, what it is doing now and for how long. A helper agent
+  waiting on the owner gets one threaded reply under the board that mentions the
+  owner. `docs/system-specs/modules/slack-gateway.md` has the details.
+  * **No reactions.** While Code channels are on, a bound code channel adds no
+    reaction ladder to messages and no hourglass to a queued message. Its
+    progress is the channel's session status (between the conductor's own turns
+    it follows the helper agents) and the work board. DMs, threads and ordinary
+    channels keep both. The owner's
+    [decision of 2026-11-13](https://github.com/kirodotdev/KiroCrew/pull/21993#issuecomment-6841005122).
+  * **Filing.** The board files no helper agent: it writes no `folder_id` and
+    follows helper agents by lineage, wherever they are filed. Session creation
+    files them: `session_create` files each helper agent in the channel's own
+    folder at creation, and a channel whose session turned conductor mode on (it
+    carries the conductor mode stamp) keeps its helper agents out of folders, as
+    conductor mode does everywhere
+    ([2026-10-27 decision](../decisions/2026-10-27-crew-mode-is-a-composer-switch-to-the-conductor-template.md)).
+    A session born on the conductor through **Always use conductor mode** carries
+    no stamp, so its helper agents are filed in the channel's folder.
+  * **PR and CI per row.** Each row shows its helper agent's PR (`PR #12`, with
+    its state when not open) and, for a live PR, its CI (`CI 4/6 passing · 2
+    running`); the counts line adds `· N PRs open`. A PR is looked up only in the
+    channel's own repository, so a helper agent working in another repository
+    shows no branch, PR or CI. A failed forge read keeps the PR last read for that
+    row, or else shows only the number the helper agent reported, unlinked and
+    without state or CI; the board still goes out.
+  * **Combined Code tab.** With a board, the Code tab shows the channel's own
+    diff, then one group per helper agent that has commits of its own: from its
+    branch's merge base with the channel's branch to its branch, and only for a
+    branch whose tip the helper agent's own tree reaches. Each group passes the
+    same screen and redaction as the channel's diff, and all share one size
+    budget; a helper agent left out adds the truncation note.
+  * **Wrap-up outcomes.** The wrap-up adds one line per helper agent (`• Fix
+    login: PR #12 merged`, `rejected, PR #9 closed`, `lost, no PR`), at most
+    1,800 characters, then `+N more`. The lines are left out when the board's
+    scope refuses the channel at the post or at any later edit of the message.
+  * **Idle `!stop`.** Until the amended Stop ("Stop", below) is built, a `!stop`
+    while the channel's session is idle but helper agents run says so and names
+    up to five of them by their board title, each linked to its chat (no sign-in
+    token); the rest fold into "and N more", pointed at the lead session.
+* **Tabs** (amended 2026-11-16). Slack holds at most five views per code channel.
+  Besides the Plan canvas, the Code tab and the agent's own views:
+  * **Pull-request tabs.** A native `pull_request` tab (`pr-<n>`, "PR #<n>") for
+    each of the channel's two newest open PRs: its own, and its helper agents'
+    once the board carries each row's PR. A PR tab is removed, by the view id
+    recorded when it opened, only on evidence: its PR seen merged or closed, or
+    two newer open PRs seen. A failed read removes nothing.
+  * **Workers tab.** A `workers` block_kit tab drawn from the work board's own
+    snapshot and redaction: for each open helper agent (up to 14, then `+N
+    more`) its title, status, PR and CI, **Open in dashboard** and, while it
+    works, a **Stop** behind a confirm dialog; settled helper agents fold into
+    one line each. It is written when what it shows changes, or every 5 minutes
+    for elapsed times, and at most every 15 s.
+  * **The Workers tab's Stop** stops that one helper agent's running turn and
+    nothing else; it does not keep it stopped (the hold in "Stop" belongs to the
+    channel's Stop). It is authorized as the context bar's Stop, accepted only
+    from this channel's recorded Workers tab, and its target is resolved by the
+    gateway from an item id on this channel's board. Audited as
+    `slack.code_channel.stop`.
+  * **Deep links.** The board's header links the Workers and Code tabs, each
+    board task's PR links its PR tab, and the wrap-up links the Code tab and the
+    open PR tabs. Context-bar items take only a URL, so the bar keeps GitHub
+    links.
+  * **The limit.** Three tiers: (1) the Plan canvas, the Code tab and the Workers
+    tab, never removed to make room; (2) the PR tabs, at most two; (3) the
+    agent's own html and block_kit tabs. When Slack refuses a new tab with
+    `too_many_views`, the gateway removes ONE view of its own and retries the
+    write once: the least recently written tier-3 view first, for any write; a PR
+    tab (the oldest PR first) only to fit a tier-1 tab. Only a view the gateway
+    recorded opening is ever removed, never another agent's. With nothing of its
+    own to remove, the write fails with `too_many_views` and the caller says so.
+    So with the Plan canvas, the Code tab, the Workers tab and two PR tabs open,
+    a new agent view is refused.
+  * **Reserved keys.** `code_channel_set_view` refuses the keys `workers`,
+    `diff` and `pr-<n>`, as it already refuses `plan`.
+* **Restart resume.** A code channel's binding survives a gateway restart, so its
+  next message reaches the same session; a turn that was running does not. Once
+  per gateway start, after Slack connects, the gateway continues each interrupted
+  turn of a code channel's own session and of that session's own workers, and
+  nothing else. This is the owner's ask ("Yes, add the Resume button after
+  restarts, Auto-resume without asking").
+  * **Whose work.** Only a channel admitted right now (bound, not archived,
+    wrapped up, stopped or fenced, in an admitted workspace, admitted by the
+    per-channel policy ceiling `allowed_channel_ids`, let in by channels
+    governance), its session by strict identity (binding, Slack link and slot
+    agree), and that session's own workers: those the store recorded as its
+    workers at birth or the crew log lists under it, whose live creator still
+    names it and which are linked to no channel. "Not archived" is asked of
+    Slack itself (`conversations.info`), since an archive made while the gateway
+    was offline sent no event; a confirmed archive is recorded as the event
+    would have, and an answer that cannot be had runs nothing by itself (the
+    work is held for the Resume button, which asks Slack again). Identity and
+    admission are re-checked under the slot lock right before each continuation.
+  * **At most once per turn.** The interrupted turn is recorded in the
+    write-protected code-channel store before it is continued, and a recorded
+    turn is never continued automatically again, so a turn that takes the
+    gateway down cannot loop. A turn whose identity cannot be proven, or whose
+    record cannot be saved, is not continued automatically.
+  * **Which turn.** A turn's identity comes only from what the dispatcher
+    produced, never from how a transcript row looks: in the running process the
+    session's turn generation, and across a restart the turn marker written at
+    admission, which names the row the dispatcher started the turn from. A steer,
+    a message queued behind a running turn, a replayed or restored row, or a row
+    of an unknown kind opens no turn. No identity is read from a transcript row
+    or the metadata line, both of which the session's own agent can write: at
+    every code-channel turn's admission the gateway records the opener it
+    started the turn from (its own copy) in the store, and removes it when the
+    turn ends; each resume made here records the recovery row it dispatched.
+    The restart names the cut turn from those records only, and a session with
+    no recorded opener, or whose cut turn is that resume's own run, is held for
+    the owner's Resume. A turn that had already failed before the
+    restart is not resumed automatically, because the restart did not interrupt
+    it (the dashboard's Resume still offers it).
+  * **One notice.** The channel gets one top-level notice: "I resumed where I
+    left off" with an owner-only Stop for what was resumed, or the reason the
+    work is paused with an owner-only Resume. Stop reaches only the sessions that
+    notice resumed, at the dispatch that resumed them: a turn dispatched after it
+    is not stopped. Resume re-runs every identity and
+    admission check, and is given back when nothing could run. In a Trust channel
+    the notice says the resumed work acts without asking first.
+  * **Switch.** Restart resume is part of code channels and runs only while they
+    are on; it has no switch of its own.
+* **Stop** (amended 2026-11-12). Slack's Stop and `!stop` in a code channel stop
+  the channel's own session and its helper agents. Stop is the person's brake: a
+  Stop that leaves agents editing code is wrong.
+  * **What it stops.** The running turn of the channel's session, the running
+    turn of every helper agent that the gateway's own records tie to that session
+    (the code-channel store records each helper agent the session starts, when it
+    starts it), and the sub-agents those turns started. It never undoes anything an
+    agent wrote: files, commits, pushes, messages and work-ledger entries stay as
+    they are.
+  * **Who may press it.** Unchanged: only Kiro Crew's owner, in a channel whose
+    origin conversation still admits the bot, from an admitted workspace. Anyone
+    else is refused and audited, and nothing is stopped.
+  * **What the channel says.** How many it stopped (none, when nothing was
+    running), and that nothing starts again until someone sends a message here.
+  * **What happens next.** Nothing starts again on its own. The channel's session
+    starts no turn by itself (no patrol or timer wake, no wake from a helper
+    agent's report, no scheduled job) until a person sends it a message, in Slack
+    or in the dashboard. A stopped helper agent stays stopped, and work queued for
+    it before the Stop waits, until a person sends it a message or the channel's
+    session, working on a person's message, starts it again; a message to one
+    helper agent releases only that one. Whether a message is a person's is read
+    from the gateway's own record of who sent it, never from its text. Restart
+    resume does not resume a turn a Stop ended, including one still ending when
+    the gateway restarted.
+
+### 4. Approval modes in code channels
+
+A code channel's session has an approval mode like any session: Normal (look-ups
+run on their own, everything else asks), Reads (also searches of memory, past
+chats, skills and the knowledge library) or Trust (every tool runs without asking).
+
+* **Default.** Settings → Messaging Channels → Slack → Code channels sets the mode
+  a new code channel's session starts in; unset is Normal.
+* **Who changes it.** Only Kiro Crew's owner (or a user the owner explicitly
+  authorizes) can raise or lower a code channel's mode, checked by the identity of
+  the person clicking or sending, never by being in the channel, a wider allow-list
+  (shared users included) or a value carried in the request. That holds on every
+  path: the kickoff's Approval mode select (Reads and Trust ask first, privately),
+  its confirmation, `/kirocrew approval normal|reads|trust`, **Trust this channel**
+  and the dashboard. Anyone else is refused with a private notice and an audit row;
+  every change is audited and posts a note.
+* **Trust this channel.** A code channel's own session offers an owner-only
+  **Trust this channel** on its approval cards, behind a confirmation, which puts the
+  channel on Trust and approves that call. This is an intentional exception to the
+  group-channel rule in `docs/system-specs/modules/slack-gateway.md` (approval cards
+  in group channels offer Approve / Reject only, no Trust, to limit blast radius),
+  which every other group channel keeps: a code channel is a single task with a
+  single owner, not a shared room. The owner's decision is recorded on the PR that
+  adds it (#21991).
+* **Workers.** Approval prompts of workers the channel's session started are
+  relayed into the channel, answered by the same owner-only buttons; a mode change
+  reaches them through the creator-mode cascade, and lowering always reaches them.
 
 ## Migration plan
 
@@ -374,7 +686,16 @@ switch off.
 
 ## Backward compatibility
 
-Every switch defaults off. With all of them off, the rendered manifest and the deep-link
+Every switch defaults off. The one setting that follows a switch is helper agents
+(`slack.code_channel_dispatch`, amended 2026-11-16): a first enable of Code channels
+saves it on, a stored value is kept, and an unset one reads off, so an existing
+install changes nothing on upgrade. One default changes for a code channel with no
+settings (amended 2026-11-16): it runs the owner's default agent, not the
+conductor, including one filed in an auto folder that still holds the legacy
+`kirocrew-conductor`; a session already bound keeps its agent. The context bar's
+action items need the `code_channel_action` event (amended 2026-11-16), which an
+app set up before it does not subscribe until the person updates its manifest;
+the drift status checks scopes only, so it does not flag a missing event. With every switch off, the rendered manifest and the deep-link
 payload are byte-identical to before (pinned by a test), so an existing app needs
 no change and `kirocrew manifest` prints what it always printed. With a switch on
 but its scope not yet granted, or Slack answering `feature_disabled`, the runtime
@@ -397,7 +718,7 @@ is private to the security package.
   before any write, so a refused field changes nothing.
 * **Code channels (Phase 2) widen the bot's scopes** (`code_channels:manage`,
   `chat:write.customize`, `canvases:write`, `channels:write.invites`,
-  `groups:write.invites`), visible on Slack's consent screen and
+  `groups:write.invites`, `pins:write`), visible on Slack's consent screen and
   listed before the user reinstalls. The scope-ratchet test pins the exact set
   per switch.
 * **Phase 2 authorization** is the origin conversation's, never the new channel's
@@ -456,4 +777,15 @@ staying in place.
    pilot workspace and, if needed, make the code-channels switch imply the agent
    view.
 2. `code_channel_action` (context-bar action items) has no published event
-   payload; Phase 2 ships link items only until it does.
+   payload. Slack's [code channel properties](https://docs.slack.dev/ai/slack-code/code-channel-properties/)
+   page documents only the trigger: an item with `item_type: "action"` (no
+   `url`) delivers a `code_channel_action` event to the app when clicked.
+   Decided 2026-10-23 (amended 2026-11-16): Phase 2 ships two action items,
+   Create PR and Stop, on that documented trigger ("Context bar", §3), and reads
+   the channel, the person, the item key and the workspace from the spellings
+   Slack uses on its other events. A click whose person, channel or key cannot
+   be read is refused and SEL-audited, and two fields naming different people
+   make the click nobody's. Only the field names of the first click are logged,
+   never values, so the real shape can be pinned down from a live workspace.
+   This question closes once Slack publishes the body; then only the documented
+   fields are read.

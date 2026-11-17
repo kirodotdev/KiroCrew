@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import ALNUM, github_classic, synth
 from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
 
 from kiro_crew import dashboard_agentic, dashboard_feed
@@ -250,13 +251,15 @@ class TestTheAgenticWrite:
 class TestWhatAnAgenticValueCarriesToThePage:
     """An agentic value is drawn as the agent wrote it, so the scrub is on the way in."""
 
-    #: An AWS access key id by shape, matching the redactor's own pattern. It is a
-    #: documentation example and names no account.
-    KEY = "AKIAIOSFODNN7EXAMPLE"
+    #: A synthetic GitHub token with a valid checksum; it names no account.
+    KEY = github_classic(seed=58)
 
-    #: A long base64-looking query on a host nobody allowed, which is the shape the
-    #: exfiltration redactor removes.
-    URL = "https://evil.example.com/?d=" + "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY"
+    #: A short Slack-shaped token: its placeholder is longer than the value it replaces.
+    SHORT_KEY = "xoxb-" + synth(12, ALNUM, 59)
+
+    #: A credential parameter in a link: the URL pass masks its value and keeps the link.
+    URL_VALUE = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY"
+    URL = "https://evil.example.com/?access_token=" + URL_VALUE
 
     def array_field(self) -> dashboard_agentic.Instance:
         return instance(series={"type": "array", "source": {"agentic": True}})
@@ -272,7 +275,8 @@ class TestWhatAnAgenticValueCarriesToThePage:
         """Both helpers run, so a value carrying an address rather than a key is
         covered by the same pass."""
         written = dashboard_agentic.check_write(instance(), "risk_note", f"see {self.URL}")
-        assert "evil.example.com/?d=" not in written["value"]["v"]
+        assert self.URL_VALUE not in written["value"]["v"]
+        assert "https://evil.example.com/?access_token=[REDACTED" in written["value"]["v"]
 
     def test_the_scrub_reaches_strings_nested_in_arrays_and_objects(self) -> None:
         """A string is nested inside a row as often as it stands alone, so a scrub of
@@ -296,7 +300,7 @@ class TestWhatAnAgenticValueCarriesToThePage:
     def test_a_value_the_scrub_grows_past_the_cap_is_refused_on_what_would_be_stored(self) -> None:
         """A placeholder is longer than the secret it replaces, so the cap has to hold
         for the bytes that actually land rather than for the ones the agent sent."""
-        rows = [self.KEY] * 340
+        rows = [self.SHORT_KEY] * 340
         assert len(json.dumps(rows).encode("utf-8")) <= entry_types.DASHBOARD_VALUE_BYTES
         with pytest.raises(dashboard_agentic.WriteRefused) as caught:
             dashboard_agentic.check_write(self.array_field(), "series", rows)
@@ -662,7 +666,7 @@ class TestTheMistakeBookFold:
         it verbatim on the dashboard. Nothing between the refusal and that render
         inspects it, which is what makes this an output boundary.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"  # noqa: S105 - a public AWS doc example value
+        secret = github_classic(seed=60)
         entry = dashboard_agentic.refusal_entry(
             dashboard_agentic.WriteRefused("unknown_field", secret, f"no such field {secret}")
         )
@@ -1233,7 +1237,7 @@ class TestThePackageSeam:
             },
         )
         model = self.read().model
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=61)
         written = dashboard_agentic.check_write(model, "rows", [{"key": secret}])
         landed = json.dumps(written["value"])
         assert secret not in landed, "a credential reached the stored value unscrubbed"

@@ -8,7 +8,6 @@ name, so callers keep that import path.
 
 from __future__ import annotations
 
-import codecs
 import errno
 from pathlib import Path
 
@@ -49,16 +48,6 @@ _UNREADABLE_NOT_UTF8 = "it is not UTF-8 text; re-save it as UTF-8"
 _UNREADABLE_TOO_DEEP = "it nests deeper than the JSON limit"
 _UNREADABLE_NOT_OBJECT = "it does not hold an object of servers"
 _UNREADABLE_CHURN = "it was rewritten during every read"
-
-#: Longest mark first: a UTF-32LE mark (FF FE 00 00) begins with the UTF-16LE one.
-#: Not decoded: kiro-cli (2.34.0) refuses a UTF-16 or UTF-32 file too, so reading
-#: one here would apply restrictions kiro-cli never loads.
-_WIDE_BOMS = (
-    (codecs.BOM_UTF32_LE, "UTF-32"),
-    (codecs.BOM_UTF32_BE, "UTF-32"),
-    (codecs.BOM_UTF16_LE, "UTF-16"),
-    (codecs.BOM_UTF16_BE, "UTF-16"),
-)
 
 
 class SettingsReadRefusal(ValueError):

@@ -4,7 +4,7 @@
  * `eslint-rules/approval-one-shot-decision.js` is the only layer that sees a
  * trust verb BEFORE the mapping erases it: an inline
  * `action === 'rejected' ? 'reject' : 'approve'` converts the verb into
- * `approve` upstream of both the typed `api.resolveApproval` client and the
+ * `approve` upstream of both the typed `api.decideApproval` client and the
  * backend's 400, so no runtime guard downstream can catch the class that
  * shipped three times (#5400, #5434, #5486).
  *
@@ -53,9 +53,9 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
   it('flags the exact ternary shape all three regressions took', async () => {
     // Verbatim shape of the defect: a trust verb in `action` becomes 'approve'.
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, action === 'rejected' ? 'reject' : 'approve')
+        await api.decideApproval(id, action === 'rejected' ? 'reject' : 'approve')
       }
     `))
     expect(hits).toHaveLength(1)
@@ -63,11 +63,22 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
     expect(hits[0].severity).toBe(2)
   })
 
+  it('holds the target-bound decideApproval to the same rule', async () => {
+    // Every dashboard decide now goes through it, so it must not reopen the class.
+    const hits = ruleMessages(await lint(`
+      declare const api: { decideApproval: (target: { id: string }, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
+      export async function go(target: { id: string }, action: string) {
+        await api.decideApproval(target, action === 'rejected' ? 'reject' : 'approve')
+      }
+    `))
+    expect(hits).toHaveLength(1)
+  })
+
   it('flags the inverted spelling too — the rule is about the shape, not the operand order', async () => {
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, action === 'approved' ? 'approve' : 'reject')
+        await api.decideApproval(id, action === 'approved' ? 'approve' : 'reject')
       }
     `))
     expect(hits).toHaveLength(1)
@@ -75,9 +86,9 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
 
   it('flags a logical-operator default, which fails open the same way', async () => {
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
       export async function go(id: string, action?: string) {
-        await api.resolveApproval(id, (action as 'approve' | 'reject') || 'approve')
+        await api.decideApproval(id, (action as 'approve' | 'reject') || 'approve')
       }
     `))
     expect(hits).toHaveLength(1)
@@ -85,9 +96,9 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
 
   it('flags a bare call, not only a member call', async () => {
     const hits = ruleMessages(await lint(`
-      declare function resolveApproval(id: string, action: 'approve' | 'reject'): Promise<unknown>
+      declare function decideApproval(id: string, action: 'approve' | 'reject'): Promise<unknown>
       export async function go(id: string, action: string) {
-        await resolveApproval(id, action === 'rejected' ? 'reject' : 'approve')
+        await decideApproval(id, action === 'rejected' ? 'reject' : 'approve')
       }
     `))
     expect(hits).toHaveLength(1)
@@ -99,10 +110,10 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
     // call site, so a rule that only rejected ternaries would have caught none
     // of the three defects it cites.
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       function myMap(d: string): 'approve' | 'reject' { return d === 'rejected' ? 'reject' : 'approve' }
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, myMap(action))
+        await api.decideApproval(id, myMap(action))
       }
     `))
     expect(hits).toHaveLength(1)
@@ -110,10 +121,10 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
 
   it('flags a ternary hoisted into a local, which moves the shape one line up', async () => {
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       export async function go(id: string, action: string) {
         const decision = action === 'rejected' ? 'reject' : 'approve'
-        await api.resolveApproval(id, decision)
+        await api.decideApproval(id, decision)
       }
     `))
     expect(hits).toHaveLength(1)
@@ -121,24 +132,24 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
 
   it('flags a logical-operator default hoisted into a local', async () => {
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       export async function go(id: string, action?: string) {
         const decision = (action as 'approve' | 'reject') || 'approve'
-        await api.resolveApproval(id, decision)
+        await api.decideApproval(id, decision)
       }
     `))
     expect(hits).toHaveLength(1)
   })
 
   it('flags an unrecognized argument shape rather than passing it', async () => {
-    // Fail-closed on shapes nobody enumerated. Every resolveApproval argument
+    // Fail-closed on shapes nobody enumerated. Every decideApproval argument
     // in the repo today is a literal, a plain identifier, or a toApiDecision
     // call; a fourth shape must be judged deliberately, not admitted silently.
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       declare const table: Record<string, 'approve' | 'reject'>
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, table[action])
+        await api.decideApproval(id, table[action])
       }
     `))
     expect(hits).toHaveLength(1)
@@ -149,10 +160,10 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
     // module-private function called exactly `toApiDecision`, so a name-only
     // check waves through the one shape the rule exists to stop.
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       function toApiDecision(d: string): 'approve' | 'reject' { return d === 'rejected' ? 'reject' : 'approve' }
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, toApiDecision(action))
+        await api.decideApproval(id, toApiDecision(action))
       }
     `))
     expect(hits).toHaveLength(1)
@@ -160,10 +171,10 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
 
   it('flags a local arrow mapper declared under the shared name', async () => {
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       const toApiDecision = (d: string) => (d === 'rejected' ? 'reject' : 'approve') as 'approve' | 'reject'
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, toApiDecision(action))
+        await api.decideApproval(id, toApiDecision(action))
       }
     `))
     expect(hits).toHaveLength(1)
@@ -173,10 +184,10 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
     // `.toApiDecision` has zero occurrences in tree, so admitting any object's
     // method by that name only widens the guard for no consumer.
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       declare const anything: { toApiDecision: (d: string) => 'approve' | 'reject' }
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, anything.toApiDecision(action))
+        await api.decideApproval(id, anything.toApiDecision(action))
       }
     `))
     expect(hits).toHaveLength(1)
@@ -186,9 +197,9 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
     // Guards the unwiring failure mode specifically: if the plugin were dropped
     // from eslint.config.js, every fixture above would go quiet and read green.
     const messages = await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, action === 'rejected' ? 'reject' : 'approve')
+        await api.decideApproval(id, action === 'rejected' ? 'reject' : 'approve')
       }
     `)
     expect(messages.map(m => m.ruleId)).toContain(RULE_ID)
@@ -199,9 +210,9 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
   it('accepts a call through the shared mapping', async () => {
     const hits = ruleMessages(await lint(`
       import { toApiDecision } from './utils/approvalDecision'
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
       export async function go(id: string, action: string) {
-        await api.resolveApproval(id, toApiDecision(action))
+        await api.decideApproval(id, toApiDecision(action))
       }
     `))
     expect(hits).toHaveLength(0)
@@ -209,9 +220,9 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
 
   it('accepts a string literal and a pre-narrowed identifier', async () => {
     const hits = ruleMessages(await lint(`
-      declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
-      export async function literal(id: string) { await api.resolveApproval(id, 'approve') }
-      export async function narrowed(id: string, action: 'approve' | 'reject') { await api.resolveApproval(id, action) }
+      declare const api: { decideApproval: (id: string, action: 'approve' | 'reject') => Promise<unknown> }
+      export async function literal(id: string) { await api.decideApproval(id, 'approve') }
+      export async function narrowed(id: string, action: 'approve' | 'reject') { await api.decideApproval(id, action) }
     `))
     expect(hits).toHaveLength(0)
   })

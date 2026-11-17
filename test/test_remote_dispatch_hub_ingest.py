@@ -34,16 +34,47 @@ from work_ledger_projection_helpers import _SLOTS, ACCEPTANCE, CONDUCTOR, _recor
 import kiro_crew
 from kiro_crew import work_ledger
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
-from kiro_crew.dashboard.handlers import remote_ingest
+from kiro_crew.dashboard.handlers import remote_ingest, remote_ingest_peer
 from kiro_crew.dashboard.handlers import work_ledger as routes
 from kiro_crew.probes.work_ledger import WorkLedgerProbe
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _isolated = helpers._isolated
-recorded = helpers.recorded
+
+
+def fold_recorded(calls: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """The work fold over the captured ``work/recorded`` entries, in order, through
+    the real fold step: what the crew log would hold had they been written."""
+    from kiro_crew.crew_log import projection_work
+    from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
+    from kiro_crew.crew_log.schema import Entry
+
+    state = projection_work._work_start()
+    for seq, (_unit, data) in enumerate(list(calls), start=1):
+        entry = Entry(type=WORK_ENTRY_TYPE, seq=seq, time=seq, src="gateway", data=dict(data))
+        projection_work._work_step(state, entry)
+    return state
+
+
+@pytest.fixture
+def recorded(monkeypatch) -> list[tuple[str, dict[str, Any]]]:
+    """``helpers.recorded``, with remote ingest reading its fold from the captured
+    entries instead of a crew log nothing was written to."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
+    monkeypatch.setattr(
+        routes.crew_log_emit,
+        "on_work_recorded",
+        lambda unit, data: calls.append((unit, data)) or True,
+    )
+    monkeypatch.setattr(remote_ingest_peer, "_read_work_state", lambda board: fold_recorded(calls))
+    return calls
+
 
 CREW = "inst-lab"
 PEER_SLOT = "chat-77-1793000000"
-PLANTED = "ghp_" + "Ab3x9" * 7 + "Z"
+PLANTED = github_classic(seed=139)  # a ghp_ without a valid checksum is no token
 
 
 class _Content:
@@ -69,6 +100,8 @@ class StubCrew:
         self.events: list[dict[str, Any]] = []
         self.patch_status = 200
         self.create_echo = True
+        #: The GET reply's ``trust_active``; ``None`` leaves it out, as an older peer.
+        self.trust_active: bool | None = None
 
     def status(self, instance_id: str):
         return SimpleNamespace(state=SimpleNamespace(value=self.state))
@@ -87,7 +120,10 @@ class StubCrew:
                 reply["work_item_id"] = body["work_item"]["item_id"]
             return 200, reply
         if path.endswith("/work-item") and method == "GET":
-            return 200, {"work_item": self.work_item, "events": self.events}
+            reply = {"work_item": self.work_item, "events": self.events}
+            if self.trust_active is not None:
+                reply["trust_active"] = self.trust_active
+            return 200, reply
         if path.endswith("/work-item") and method == "PATCH":
             return self.patch_status, {"ok": self.patch_status == 200, "code": "nope"}
         return 200, {"ok": True}
@@ -103,6 +139,9 @@ class StubCrew:
         body = json.loads(data) if data else None
         self.calls.append({"method": method, "path": path, "params": params, "body": body})
         status, reply = self._answer(method, path, body)
+        if isinstance(reply, dict) and isinstance(reply.get("events"), list) and params:
+            # As the peer's route does: the newest ``limit`` events.
+            reply = {**reply, "events": reply["events"][-int(params.get("limit", 50)) :]}
         yield SimpleNamespace(
             status=status,
             headers={"Content-Type": "application/json"},
@@ -368,7 +407,7 @@ def _stall_wake(item: work_ledger.WorkItem) -> bool:
         item,
         **dict(
             zip(
-                ("worker_running", "worker_closed", "worker_looping"),
+                ("worker_running", "worker_closed", "worker_looping", "worker_loop_held"),
                 work_ledger.item_liveness(
                     CONDUCTOR,
                     item,
@@ -562,10 +601,11 @@ def test_the_decide_budget_fits_inside_the_record_tools_timeout():
     import ast
     import inspect
 
-    from kiro_crew import mcp_core
+    from kiro_crew.mcp_core_parts import gateway
 
-    # From the source: the suite stubs ``mcp_core._post`` for every test.
-    tree = ast.parse(inspect.getsource(mcp_core))
+    # From the source of the module that defines it: the suite stubs
+    # ``mcp_core._post`` for every test.
+    tree = ast.parse(inspect.getsource(gateway))
     post = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_post")
     names = [a.arg for a in post.args.kwonlyargs]
     client_timeout = ast.literal_eval(post.args.kw_defaults[names.index("timeout")])
@@ -577,7 +617,7 @@ def test_the_decide_budget_fits_inside_the_record_tools_timeout():
 
 def test_a_rebuild_keeps_the_crew_pair_and_the_ingested_report(peer, monkeypatch):
     from kiro_crew import crew_log as lg
-    from kiro_crew.crew_log import CrewLog, projection
+    from kiro_crew.crew_log import CrewLog, projection, slot_prime
 
     monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
     monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: "u-conductor")
@@ -595,6 +635,11 @@ def test_a_rebuild_keeps_the_crew_pair_and_the_ingested_report(peer, monkeypatch
         item_id = await _remote_item(peer)
         peer.report("done", "shipped", "2026-10-29T10:00:00+00:00", pr=77)
         await _read(peer)
+        # Ingest reads the work fold warm-only: a cold cell asks the background
+        # prime and that pull files nothing. Wait for the prime, then pull again.
+        assert await asyncio.to_thread(slot_prime.drain, 30.0), "a background prime never finished"
+        await _read(peer)
+        assert work_ledger.read_work_item(CONDUCTOR, item_id).status == "done"
         work_ledger.item_path(CONDUCTOR, item_id).unlink()
         resp = await routes.api_work_ledger_rebuild(
             _req("POST", "/api/work-ledger/rebuild", peer, body={})
@@ -925,7 +970,7 @@ def test_a_peer_event_id_too_long_to_keep_is_never_offered(recorded, peer):
             event["id"] = event["id"] * 8
         for _ in range(3):
             await _read(peer)
-        # Only the snapshot (the newest state) is filed, once.
+        # An id no cursor can hold drops its event: only the snapshot is filed, once.
         assert [d["status"] for _u, d in recorded if d.get("actor") == "worker"] == ["question"]
         assert _row(await _read(peer), item_id)["status"] == "question"
 
@@ -1187,18 +1232,19 @@ def test_a_pull_files_nothing_once_the_item_names_another_crew(recorded, peer, m
     asyncio.run(go())
 
 
-def test_only_the_latest_peer_report_is_filed_between_two_reads(recorded, peer):
-    """Worker fields are latest-value: statuses the worker passed through between
-    two hub reads are not kept (a Known limit), and the latest lands with all its
-    fields."""
+def test_every_peer_report_between_two_reads_is_filed_in_order(recorded, peer):
+    """The tail's earlier reports land first, with their status and summary only
+    (the peer event carries no more); the latest lands last with all its fields."""
 
     async def go() -> None:
         item_id = await _remote_item(peer)
         peer.report("blocked", "need a login", "2026-10-29T10:00:00+00:00", reason="needs_human")
         peer.report("done", "shipped", "2026-10-29T10:05:00+00:00", artifacts={"pr": "9"}, pr=9)
         row = _row(await _read(peer), item_id)
-        assert [e["status"] for e in row["events"] if e["kind"] == "report"] == ["done"]
+        statuses = [e["status"] for e in row["events"] if e["kind"] == "report"]
+        assert statuses == ["blocked", "done"]
         assert row["status"] == "done" and row["artifacts"] == {"pr": "9"} and row["pr"] == 9
+        assert row["last_report_at"] == "2026-10-29T10:05:00+00:00"
 
     asyncio.run(go())
 
@@ -1310,3 +1356,150 @@ def test_a_discard_that_cannot_delete_the_item_closes_it_instead(monkeypatch):
     # Not half-removed: the copy is closed, and its binding still names it.
     assert item is not None and item.state == "abandoned"
     assert work_ledger.read_binding("chat-74-peer") == (parsed.board, parsed.item_id)
+
+
+# ── the conductor's Trust reaches its remote worker (RFC §4) ─────────────────
+
+
+def _trust_state(peer: StubCrew, *, trust: bool = False, yolo: bool = False) -> Any:
+    state = _state(peer)
+    state.is_yolo_active = MagicMock(return_value=yolo)
+    state.yolo_reaches = MagicMock(return_value=True)
+    helpers._SLOTS[CONDUCTOR] = SimpleNamespace(_trust=trust, _trust_card_scoped=False)
+    return state
+
+
+async def _bound_with(peer: StubCrew, state: Any) -> str:
+    await _record(CONDUCTOR, {"action": "goal", "goal": "ship it", "round": 1})
+    _status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "item one", "acceptance": ACCEPTANCE}
+    )
+    item_id = body["item"]["item_id"]
+    await remote_ingest.create_bound(
+        state, peer, CONDUCTOR, CREW, item_id, {"memory_mode": "persistent"}
+    )
+    peer.work_item["item_id"] = item_id
+    return item_id
+
+
+def _create_body(peer: StubCrew) -> dict[str, Any]:
+    return next(c["body"] for c in peer.calls if c["method"] == "POST")
+
+
+@pytest.mark.parametrize(
+    ("trust", "yolo", "sent"),
+    [(True, False, True), (False, True, True), (False, False, False)],
+)
+def test_the_create_asks_for_trust_only_from_a_trust_or_yolo_conductor(
+    recorded, peer, trust, yolo, sent
+):
+    async def go() -> None:
+        await _bound_with(peer, _trust_state(peer, trust=trust, yolo=yolo))
+        work_item = _create_body(peer)["work_item"]
+        assert work_item.get("trust") is (True if sent else None)
+
+    asyncio.run(go())
+
+
+def test_a_crew_mode_card_trust_is_not_carried(recorded, peer):
+    async def go() -> None:
+        state = _trust_state(peer, trust=True)
+        helpers._SLOTS[CONDUCTOR]._trust_card_scoped = True
+        await _bound_with(peer, state)
+        assert "trust" not in _create_body(peer)["work_item"]
+
+    asyncio.run(go())
+
+
+def _trust_patches(peer: StubCrew) -> list[dict[str, Any]]:
+    return [c for c in peer.calls if c["method"] == "PATCH" and c["body"] == {"trust": False}]
+
+
+def test_a_pull_revokes_the_grant_once_the_conductor_leaves_trust(recorded, peer):
+    async def go() -> None:
+        state = _trust_state(peer, trust=True)
+        item_id = await _bound_with(peer, state)
+        peer.trust_active = True
+        await remote_ingest.ingest_board(state, CONDUCTOR)
+        assert _trust_patches(peer) == []  # still in Trust: nothing ends
+        helpers._SLOTS[CONDUCTOR]._trust = False
+        await remote_ingest.ingest_board(state, CONDUCTOR)
+        patches = _trust_patches(peer)
+        assert len(patches) == 1 and patches[0]["path"].endswith(f"{PEER_SLOT}/work-item")
+        assert work_ledger.read_work_item(CONDUCTOR, item_id).worker_instance_id == CREW
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("trust_active", [None, False])
+def test_a_pull_sends_no_revoke_when_the_peer_holds_no_grant(recorded, peer, trust_active):
+    async def go() -> None:
+        state = _trust_state(peer)
+        await _bound_with(peer, state)
+        peer.trust_active = trust_active  # None: an older peer, which knows no field
+        await remote_ingest.ingest_board(state, CONDUCTOR)
+        assert _trust_patches(peer) == []
+
+    asyncio.run(go())
+
+
+def test_closing_a_remote_item_revokes_its_grant(recorded, peer):
+    async def go() -> None:
+        item_id = await _bound_with(peer, _trust_state(peer, trust=True))
+        peer.calls.clear()
+        status, body = await _record_via(
+            peer, {"action": "close", "item_id": item_id, "state": "abandoned"}
+        )
+        assert status == 200, body
+        assert len(_trust_patches(peer)) == 1
+
+    asyncio.run(go())
+
+
+class _OlderPeer(StubCrew):
+    """A peer that predates ``trust``: it refuses the field as an unknown one."""
+
+    def _answer(self, method: str, path: str, body: Any) -> tuple[int, Any]:
+        if method == "POST" and path == "api/chat/slots" and "trust" in body["work_item"]:
+            return 400, {"code": "invalid_value", "field": "trust", "error": "unknown"}
+        return super()._answer(method, path, body)
+
+
+def test_an_older_peer_gets_the_create_again_without_trust(recorded, monkeypatch):
+    monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: True)
+    older = _OlderPeer()
+
+    async def go() -> None:
+        item_id = await _bound_with(older, _trust_state(older, trust=True))
+        creates = [c["body"]["work_item"] for c in older.calls if c["method"] == "POST"]
+        assert [w.get("trust") for w in creates] == [True, None]
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert item.worker_session_key == PEER_SLOT
+
+    asyncio.run(go())
+
+
+def test_a_stalled_peer_revoke_does_not_fail_the_committed_close(recorded, peer, monkeypatch):
+    async def go() -> None:
+        item_id = await _bound_with(peer, _trust_state(peer, trust=True))
+        stalled = asyncio.Event()
+
+        async def _stall(mgr: Any, instance_id: str, slot: str) -> bool:
+            stalled.set()
+            await asyncio.Event().wait()  # a peer that never answers
+            return True
+
+        monkeypatch.setattr(remote_ingest, "revoke_peer_trust", _stall)
+        # The peer never answers, so the deadline always expires; its length only
+        # sets how long the test takes.
+        monkeypatch.setattr(remote_ingest, "DECIDE_DEADLINE_SECS", 0.05)  # flake-ok: never-set wait
+        # Bounded, so an unbounded revoke fails here instead of hanging the worker.
+        status, body = await asyncio.wait_for(
+            _record_via(peer, {"action": "close", "item_id": item_id, "state": "abandoned"}),
+            30,
+        )
+        assert stalled.is_set()
+        assert status == 200, body
+        assert work_ledger.read_work_item(CONDUCTOR, item_id).state == "abandoned"
+
+    asyncio.run(go())

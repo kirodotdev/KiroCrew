@@ -13,11 +13,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from concurrent.futures import Executor
+from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
-from kiro_crew.auth.refresh import IdentitySignedOut, ensure_fresh
+from kiro_crew.auth.refresh import HTTP_TIMEOUT, IdentitySignedOut, ensure_fresh
 from kiro_crew.auth.store import KasToken, TokenStore
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,7 @@ class KasAuthProvider:
         *,
         session: aiohttp.ClientSession | None = None,
         allow_env_api_key: bool = True,
+        executor: Executor | None = None,
     ) -> None:
         """``allow_env_api_key`` controls the ``KIRO_API_KEY`` headless bypass.
 
@@ -71,15 +74,20 @@ class KasAuthProvider:
         ambient environment key must not stand in for an identity the operator
         just signed out of, and the engine would send it with the wrong token
         type anyway (it is not an OIDC bearer).
+
+        ``executor`` runs only the initial vault resolve; ``None`` uses the event
+        loop's default executor. Refresh-lock work and a temporary refresh session
+        stay on the default path so lock waiters cannot exhaust this caller's pool.
         """
         self._store = store
         self._session = session
         self._allow_env_api_key = allow_env_api_key
+        self._executor = executor
 
     async def _session_or_temp(self):
         if self._session is not None:
             return self._session, False
-        return aiohttp.ClientSession(), True
+        return aiohttp.ClientSession(timeout=HTTP_TIMEOUT), True
 
     def _env_api_key(self) -> str | None:
         if not self._allow_env_api_key:
@@ -97,7 +105,12 @@ class KasAuthProvider:
         api_key = self._env_api_key()
         # Vault reads do file IO (plus owner-only key checks) — off the
         # event loop.
-        token = await asyncio.to_thread(self._store.resolve)
+        if self._executor is None:
+            token = await asyncio.to_thread(self._store.resolve)
+        else:
+            token = await asyncio.get_running_loop().run_in_executor(
+                self._executor, copy_context().run, self._store.resolve
+            )
         if token is None:
             if api_key:
                 return KasToken(

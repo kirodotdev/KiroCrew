@@ -29,7 +29,7 @@ import pytest
 from kiro_crew import _llama_lib_path, cli_doctor, loopback_http
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.doctor_checks import access, install, services
+from kiro_crew.doctor_checks import access, agents, install, services
 from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.service import live_target
 
@@ -43,6 +43,7 @@ pytestmark = pytest.mark.skipif(
 _SECTIONS = (
     "_doctor_headless_auth",
     "_doctor_claude_backend",
+    "_doctor_codex_backend",
     "_doctor_agent_auth",
     "_doctor_effective_model",
     "_doctor_member_dispatchability",
@@ -110,6 +111,7 @@ _TAKES_ISSUES = frozenset(_SECTIONS) - {
 #: Sections defined in a family AFTER the move. The facade forwards only the names
 #: it held before, so these are stubbed on their family module.
 _FAMILY_ONLY = {
+    "_doctor_codex_backend": agents,
     "_doctor_signing_key": access,
     "_doctor_kiro_chat_delegate": services,
     "_doctor_service_launch": install,
@@ -227,6 +229,7 @@ class _Host:
             cli_doctor, "dump_first_stack_lines", lambda p, max_lines=5: ['File "loop.py", 1']
         )
         mp.setattr(cli_doctor, "attribute_dump", lambda p, base: self.attribution)
+        mp.setattr(cli_doctor, "dump_fired_at", lambda p: "2026-11-07T18:28:28Z")
         mp.setattr(cli_doctor, "describe", lambda a: ["surface: cron", "job: nightly"])
         mp.setattr(cli_doctor, "job_pause_state_from_disk", lambda job_id: self.paused)
         mp.setattr(cli_doctor, "machine_hostname", lambda: "devbox")
@@ -294,7 +297,7 @@ class _Host:
         self.dump_age = 0.0
         self.stalls = 0
         self.superseded = False
-        self.attribution = SimpleNamespace(is_cron=False, job=None)
+        self.attribution = SimpleNamespace(is_cron=False, job=None, host_pause_secs=None)
         self.paused: str | None = None
         self.local = True
         self.fts5 = True
@@ -385,6 +388,7 @@ Dependencies
   kiro-cli:    ✅ /opt/kiro/bin/kiro-cli
   <<_doctor_headless_auth>>
   <<_doctor_claude_backend>>
+  <<_doctor_codex_backend>>
   <<_doctor_agent_auth>>
   git:         ✅ /usr/bin/git
   node:        ✅ /usr/bin/node (v22.3.0)
@@ -455,7 +459,8 @@ Runtime
   deps:        ✅ websockets, slack_sdk, aiohttp available
   <<_doctor_import_path>>
   sqlite fts5: ✅ available
-  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)
+  tz data:     ✅ current (IANA tzdb 2026b or later)
+               Sample check on America/Vancouver, not your configured zone.
 
 Vector Memory (in-process embeddings)
   runtime:     ✅ vendored llama-cpp-python importable
@@ -677,6 +682,7 @@ Dependencies
   kiro-cli:    ⏭  not found (the default agent backend)
                Install kiro-cli per its docs, then: kiro-cli login
   <<_doctor_claude_backend>>
+  <<_doctor_codex_backend>>
   <<_doctor_agent_auth>>
   git:         ❌ not found (needed for kirocrew update)
   node:        ❌ v18.19.0 < v20.0.0
@@ -785,7 +791,7 @@ Other Channels
                The channel will not start. Set it in Settings > Messaging Channels, or in ~/.kiro/crew/.env
 
 Loop-stall Crash Dumps
-  last dump:   ⚠️  crash-1.dump (2.0h ago)
+  last dump:   ⚠️  crash-1.dump (fired 2026-11-07T18:28:28Z, 2.0h ago)
   MainThread stuck at:
     File "loop.py", 1
   attribution:
@@ -861,7 +867,7 @@ def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) 
     host.dump_age = 7200.0
     host.stalls = 1
     host.attribution = SimpleNamespace(
-        is_cron=True, job=SimpleNamespace(job_id="job-7", name="nightly")
+        is_cron=True, job=SimpleNamespace(job_id="job-7", name="nightly"), host_pause_secs=None
     )
     host.paused = "auto-paused"
     host.urls["http://127.0.0.1:9999/api/status"] = urllib.error.HTTPError(
@@ -1043,6 +1049,34 @@ def test_kiro_sandbox_row_is_fatal_only_for_a_harness_that_spawns_kiro_cli(
     assert seen == [{"required": required}]
 
 
+@pytest.mark.parametrize("unreadable", [True, False], ids=["unreadable", "readable"])
+def test_channel_sections_learn_whether_the_credentials_were_readable(
+    host, capsys, monkeypatch, unreadable
+) -> None:
+    """The Configuration section's denied credentials read reaches every channel check."""
+    from kiro_crew.doctor_checks import channels, confinement
+
+    _ready(host)
+    seen: dict[str, dict] = {}
+    for name in ("_doctor_slack", "_doctor_other_channels"):
+        monkeypatch.setattr(
+            channels, name, lambda *_a, _name=name, **kw: seen.__setitem__(_name, kw)
+        )
+    if unreadable:
+
+        def _denied(cfg, **_kw):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(KiroCrewConfig, "load_credentials", _denied)
+        monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: True)
+
+    host.run(capsys)
+
+    seen["_doctor_discord"] = host.called("_doctor_discord")[1]
+    for name in ("_doctor_slack", "_doctor_discord", "_doctor_other_channels"):
+        assert seen[name] == {"creds_unreadable": unreadable}, name
+
+
 _BUNDLE = """\
 Kiro Crew Doctor 👻
 
@@ -1137,3 +1171,34 @@ def test_bundle_route_without_node_on_path_reads_the_bundles_node(
     ) in out
     assert "Fix: install Node.js" not in out
     assert "node" not in (out.rsplit("Fix these issues:", 1)[1] if code else "")
+
+
+@pytest.mark.parametrize(("member_backend", "fails"), [(ACP_BACKEND_KAS, False), ("claude", True)])
+def test_bundle_route_judges_an_old_node_by_every_selected_role(
+    host, capsys, monkeypatch, member_backend, fails
+) -> None:
+    """An old Node on PATH is only a warning when every selected role runs on the
+    bundle; a Bot role on Claude's adapter spawns on that Node, so it still fails."""
+    _ready(host)
+    host.kiro = None
+    host.runs[("/usr/bin/node", "-v")] = _done("v18.19.0\n")
+    host.cfg.agent.acp_backend = ACP_BACKEND_KAS
+    host.cfg.agent.member_acp_backend = member_backend
+    monkeypatch.setattr(cli_doctor.kas_bundle, "kas_bundle_route", lambda: True)
+    monkeypatch.setattr(
+        cli_doctor.kas_bundle,
+        "installed_bundle",
+        lambda: SimpleNamespace(node_version="22.23.3"),
+    )
+    monkeypatch.setattr(cli_doctor.kas_bundle, "installed_engine_label", lambda: "KAS 0.66.33")
+
+    out, code = host.run(capsys)
+
+    listed = out.rsplit("Fix these issues:", 1)[1].split("\n", 1)[0] if code else ""
+    if fails:
+        assert "  node:        ❌ v18.19.0 < " in out
+        assert "node" in [item.strip() for item in listed.split(",")]
+    else:
+        assert "  node:        ⚠  v18.19.0 on PATH < " in out
+        assert "engine bundle's own Node 22.23.3" in out
+        assert "node" not in [item.strip() for item in listed.split(",")]

@@ -17,7 +17,7 @@ export const dashboardPickerSource: ComposerPickerSource = {
   // list instead of failing a fetch it could never make.
   get slashCommands() {
     return typeof api.slashCommands === 'function'
-      ? (signal?: AbortSignal) => api.slashCommands(signal) as Promise<SlashCommand[]>
+      ? (signal?: AbortSignal, slot?: string) => api.slashCommands(signal, slot) as Promise<SlashCommand[]>
       : undefined
   },
   fileSearch: (q, project, signal) => api.fileSearch(q, project, signal) as Promise<FileSearchResponse>,

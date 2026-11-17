@@ -54,6 +54,9 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             def _auto_turn(slot: Any, snap: dict) -> None:
                 try:
                     from kiro_crew.dashboard.chat import _run_chat
+                    from kiro_crew.dashboard.chat_utils_injected_rows import (
+                        WORKFLOW_FOLLOWUP_KIND,
+                    )
 
                     raw_name = snap.get("name") or snap.get("run_id", run_id)
                     name, _ = redact_exfiltration_urls(str(raw_name))
@@ -75,12 +78,18 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                     )
                     # The gateway's words, not the person's: an `inject` row on the
                     # run and queued paths alike, and a synthetic payload for its turn.
-                    started = slot.enqueue_or_run_prompt(
-                        prompt,
-                        functools.partial(_run_chat, _synthetic_payload=True),
-                        state,
-                        workflow_followup=True,
-                    )
+                    # The turn reports this run: started now, it takes the run from
+                    # the context; queued, from the entry's meta (queue_drain).
+                    from kiro_crew.tracing import workflows as trace_workflows
+
+                    with trace_workflows.delivering(run_id):
+                        started = slot.enqueue_or_run_prompt(
+                            prompt,
+                            functools.partial(_run_chat, _synthetic_payload=True),
+                            state,
+                            gateway_prompt_kind=WORKFLOW_FOLLOWUP_KIND,
+                            extra_meta={trace_workflows.META_RUN_ID: run_id},
+                        )
                     state.push_slots_update()
                     logger.info(
                         "workflow %s result -> chat slot %s: agent turn %s",

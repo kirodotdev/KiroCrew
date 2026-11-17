@@ -11,6 +11,7 @@ shipped decider is pinned here on both sides of that contract.
 from __future__ import annotations
 
 import asyncio
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,7 @@ from kiro_crew.messaging.approval import (
     open_approval,
     reset_for_tests,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 SESSION = "whatsapp:kirocrew:direct:447700900000"
 
@@ -147,19 +149,34 @@ class TestSessionDecider:
         monkeypatch.setattr(approval, "APPROVAL_TIMEOUT_S", 0.01)
         pending = PendingApprovals("webex")
         decider = SessionApprovalDecider(pending, session_key="webex:a@b.com")
+        pending.reserve("webex:a@b.com", 1)
         assert await decider(_event(1)) is False
         assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT
         # The registry's own API keeps its bool contract and exposes the cause.
+        pending.reserve("webex:a@b.com", 2)
         assert await pending.decide_with_cause("webex:a@b.com", _event(2)) == (
             False,
             DENY_CAUSE_APPROVAL_TIMEOUT,
         )
+        pending.reserve("webex:a@b.com", 3)
         assert (await pending.decide_with_cause("webex:a@b.com", _event(3)))[0] is False
+
+    @pytest.mark.asyncio
+    async def test_an_undelivered_prompt_is_denied_at_once_as_undeliverable(self):
+        """No renderer reserved the request (a muted conversation's
+        SilentRenderer drops the prompt): denied now with the undeliverable
+        cause, not after the full window as an expiry."""
+        pending = PendingApprovals("webex")
+        decider = SessionApprovalDecider(pending, session_key="webex:a@b.com")
+        assert await asyncio.wait_for(decider(_event(1)), timeout=FALLBACK_TIMEOUT_SECS) is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        assert pending.has_pending("webex:a@b.com") is False
 
     @pytest.mark.asyncio
     async def test_a_click_records_no_cause(self):
         pending = PendingApprovals("webex")
         decider = SessionApprovalDecider(pending, session_key="webex:a@b.com")
+        pending.reserve("webex:a@b.com", 1)
         task = asyncio.create_task(decider(_event(1)))
         await asyncio.sleep(0)
         assert pending.resolve("webex:a@b.com", False, request_id=1) is True
@@ -186,10 +203,12 @@ class TestButtonDeciders:
 
         monkeypatch.setattr(discord_renderer, "_APPROVAL_TIMEOUT_S", 0.01)
         decider = discord_renderer.DiscordApprovalDecider(session_key="discord:1")
+        decider.register_nonce(decider.key("discord:1", "r1"))
         assert await decider(_event("r1")) is False
         assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT
         # A press records no cause.
         monkeypatch.setattr(discord_renderer, "_APPROVAL_TIMEOUT_S", 5.0)
+        decider.register_nonce(decider.key("discord:1", "r2"))
         task = asyncio.create_task(decider(_event("r2")))
         await asyncio.sleep(0)
         discord_renderer.DiscordApprovalDecider._REGISTRY[
@@ -219,9 +238,11 @@ class TestButtonDeciders:
 
         monkeypatch.setattr(telegram_renderer, "_APPROVAL_TIMEOUT_S", 0.01)
         decider = telegram_renderer.TelegramApprovalDecider(session_key="telegram:1")
+        decider.arm(decider.key("telegram:1", "r1"), "n1")
         assert await decider(_event("r1")) is False
         assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT
         monkeypatch.setattr(telegram_renderer, "_APPROVAL_TIMEOUT_S", 5.0)
+        decider.arm(decider.key("telegram:1", "r2"), "n2")
         task = asyncio.create_task(decider(_event("r2")))
         await asyncio.sleep(0)
         telegram_renderer.TelegramApprovalDecider._REGISTRY[
@@ -236,14 +257,39 @@ class TestButtonDeciders:
 
         monkeypatch.setattr(teams_approvals, "APPROVAL_TIMEOUT_SECS", 0.01)
         decider = teams_approvals.TeamsApprovalDecider(session_key="teams:1")
+        decider.arm("r1", "n1")
         assert await decider(_event("r1")) is False
         assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT
         monkeypatch.setattr(teams_approvals, "APPROVAL_TIMEOUT_SECS", 5.0)
+        decider.arm("r2", "n2")
         task = asyncio.create_task(decider(_event("r2")))
         await asyncio.sleep(0)
         decider._futures["r2"].set_result(False)
         assert await task is False
         assert decider.last_deny_cause == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("module", "window", "decider_name"),
+        [
+            ("kiro_crew.discord.renderer", "_APPROVAL_TIMEOUT_S", "DiscordApprovalDecider"),
+            ("kiro_crew.telegram.renderer", "_APPROVAL_TIMEOUT_S", "TelegramApprovalDecider"),
+            ("kiro_crew.teams.approvals", "APPROVAL_TIMEOUT_SECS", "TeamsApprovalDecider"),
+        ],
+        ids=["discord", "telegram", "teams"],
+    )
+    async def test_an_unreserved_request_is_denied_at_once_as_undeliverable(
+        self, monkeypatch, module, window, decider_name
+    ):
+        """No renderer reserved the request (a muted conversation's
+        SilentRenderer drops the prompt): denied now with the undeliverable
+        cause, not after the full window as an expiry."""
+        mod = importlib.import_module(module)
+        # A regression waits out this window and reports an expiry; keep it under --timeout.
+        monkeypatch.setattr(mod, window, FALLBACK_TIMEOUT_SECS)
+        decider = getattr(mod, decider_name)(session_key="channel:1")
+        assert await decider(_event("r1")) is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
 
     @pytest.mark.asyncio
     async def test_teams_abandoned_card_sets_undeliverable_cause(self):

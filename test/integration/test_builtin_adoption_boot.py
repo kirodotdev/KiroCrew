@@ -42,6 +42,7 @@ from kiro_crew.apps import manager
 from kiro_crew.apps.builtin_adoption_fetch import adoption_tree_digest
 from kiro_crew.apps.builtin_adoption_pins import load_adoption_pins
 from kiro_crew.apps.builtin_adoption_state import read_adoption_markers, read_ledger
+from kiro_crew.dashboard.token_auth import read_app_secret
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
@@ -147,7 +148,11 @@ async def test_a_pinned_built_in_stages_then_adopts_and_keeps_its_lifecycle(
         assert builtin_adoption.builtin_released(NAME)
         assert read_adoption_markers()[NAME]["state"] == "adopted"
         assert (home / "data" / "store.txt").read_text(encoding="utf-8") == "kept across the move"
-        assert (home / ".app_secret").read_bytes() == b"keep-this"
+        # The adoption kept the folder secret, so the hook load on this start moved
+        # it: the gateway holds a new secret and the folder copy is gone. An
+        # adoption that lost the file would leave the app with no secret.
+        assert not (home / ".app_secret").exists()
+        assert read_app_secret(NAME) not in ("", "keep-this")
         grants = manager._read_approved_grants(NAME)
         assert grants is not None and sorted(grants["api"]) == sorted(_APPROVED_API)
 

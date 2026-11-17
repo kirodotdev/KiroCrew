@@ -792,6 +792,22 @@ class TestFirstHandshakeDeadline:
         assert backend._dead_reason is None
 
     @pytest.mark.asyncio
+    async def test_a_reply_after_expiry_leaves_the_backend_failed(self) -> None:
+        # The deadline already errored every waiter and reaped the process, so
+        # a late reply must not reopen it as ready for the next stub to use.
+        backend = _make_backend()
+        await backend.attach_stub("s1")
+        await backend.forward_from_stub("s1", self._init(1))
+        await self._expire_now(backend)
+        await backend._on_upstream_initialize(
+            {"jsonrpc": "2.0", "id": "gw-1", "result": {"capabilities": {}}}
+        )
+        assert backend._init_state == "failed"
+        assert backend._init_result is None
+        with pytest.raises(BackendGone):
+            await backend._handle_initialize("s2", self._init(2))
+
+    @pytest.mark.asyncio
     async def test_successful_handshake_disarms_the_deadline(self) -> None:
         backend = _make_backend()
         await backend.attach_stub("s1")

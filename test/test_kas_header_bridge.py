@@ -154,6 +154,7 @@ class _FakeRemote(BaseHTTPRequestHandler):
 
     seen: list[dict]
     sse = False
+    tool_result: dict | None = None
 
     def log_message(self, *_a):  # quiet
         pass
@@ -183,7 +184,7 @@ class _FakeRemote(BaseHTTPRequestHandler):
         result = (
             {"protocolVersion": "2025-06-18"}
             if body["method"] == "initialize"
-            else {"text": "authorized"}
+            else self.tool_result or {"text": "authorized"}
         )
         payload = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
         if self.sse:
@@ -334,6 +335,38 @@ class TestBridge:
         posts = [r for r in later if r["body"] is not None]
         assert all(r["headers"].get("mcp-protocol-version") == "2025-06-18" for r in posts)
         assert handler.seen[-1]["body"] is None, "close ends the server's session"
+
+    @pytest.mark.parametrize("sse", [False, True])
+    def test_a_structured_only_result_reaches_the_engine_as_text(self, remote, sse):
+        # Airtable's hosted server answers ``content: []`` with the payload only
+        # in ``structuredContent``; the engine reads only ``content``.
+        handler, base = remote
+        handler.sse = sse
+        handler.tool_result = {"content": [], "structuredContent": {"bases": ["Ü"]}}
+        bridge, out, _err = _bridge(base + "/mcp")
+        bridge.send(_msg(id=2, method="tools/call", params={}))
+        (reply,) = _lines(out)
+        assert reply["result"]["content"] == [{"type": "text", "text": '{"bases":["Ü"]}'}]
+        assert reply["result"]["structuredContent"] == {"bases": ["Ü"]}, "kept for outputSchema"
+
+    def test_every_request_names_the_bridge_not_the_python_library(self, remote):
+        # Bot filters (Atlassian Rovo's among them) answer urllib's default
+        # "Python-urllib/x.y" with 403, which reads as a bad auth header.
+        handler, base = remote
+        bridge, _out, _err = _bridge(base + "/mcp")
+        bridge.send(_msg(id=1, method="initialize", params={}))
+        bridge.close()
+        agents = [r["headers"].get("user-agent", "") for r in handler.seen]
+        assert len(agents) == 2, "the POST and the closing DELETE"
+        assert all(a.startswith("kirocrew-mcp-bridge/") for a in agents), agents
+
+    def test_a_configured_user_agent_is_kept(self, remote):
+        handler, base = remote
+        bridge, _out, _err = _bridge(
+            base + "/mcp", {"Authorization": CANARY, "user-agent": "mine/2"}
+        )
+        bridge.send(_msg(id=1, method="tools/list"))
+        assert handler.seen[0]["headers"]["user-agent"] == "mine/2"
 
     def test_a_rejection_answers_the_request_without_the_header(self, remote):
         _handler, base = remote

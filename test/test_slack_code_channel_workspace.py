@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from slack_code_channels_helpers import store_channel_binding
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import worktree as wt
@@ -29,6 +30,7 @@ from kiro_crew.slack.code_channels.workspace.diff import MAX_VIEW_BYTES, assembl
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup, PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
@@ -53,7 +55,11 @@ def _feature_on(_floor_monkeypatch):
 
 
 def _cfg(on: bool):
-    return SimpleNamespace(slack=SimpleNamespace(code_channels=on))
+    # Every channel at its default activation (a refresh obeys Off and Review).
+    return SimpleNamespace(
+        slack=SimpleNamespace(code_channels=on),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
+    )
 
 
 async def _until(predicate, timeout: float = FALLBACK_TIMEOUT_SECS) -> None:
@@ -112,6 +118,7 @@ class FakeBinding:
     project_dir: str | None = None
     title: str = "Fix the widget"
     archived_at: float = 0.0
+    origin_channel_id: str = ""  # a real Binding always carries it
 
 
 class FakeClient:
@@ -204,6 +211,18 @@ def test_non_git_project_shows_its_folder_without_a_worktree(tmp_path, audits):
     assert _bar(h.client) == [{"key": "folder", "label": "notes", "icon": "folder"}]
     assert h.client.of("set_diff_view") == []
     assert h.client.of("remove_view") == []
+
+
+def test_a_git_file_naming_a_missing_gitdir_records_and_audits_that_reason(tmp_path, audits):
+    folder = tmp_path / "linked"
+    folder.mkdir()
+    (folder / ".git").write_text(f"gitdir: {tmp_path / 'gone'}\n", newline="\n")
+    h = Harness(tmp_path)
+    rec = h.run(h.svc.ensure(FakeBinding("C1", project_dir=str(folder))))
+    assert rec.worktree_skipped == "broken_gitfile" and rec.worktree == ""
+    assert service.worktree_settled(rec)
+    rows = [a for a in audits if a[0] == "code_channel_worktree"]
+    assert rows[-1][1] == "denied" and rows[-1][3].startswith("broken_gitfile: fatal:")
 
 
 def test_git_project_gets_a_fresh_worktree_off_main_despite_a_dirty_checkout(
@@ -1076,7 +1095,7 @@ def test_a_git_timeout_finding_the_repo_is_counted_too(tmp_path, repo, audits, m
         tries.append(1)
         raise subprocess.TimeoutExpired(["git", "rev-parse"], 30)
 
-    monkeypatch.setattr(git_ops, "toplevel", slow)
+    monkeypatch.setattr(git_ops, "toplevel_or_refusal", slow)
     for _ in range(5):
         rec = h.run(h.svc.ensure(binding))
         assert rec is not None and rec.worktree_skipped == "worktree_timeout"
@@ -1207,7 +1226,7 @@ class FakeDashboard:
 
     def add_slot(self, key: str, folder_id: str, *, running: bool = False) -> SimpleNamespace:
         slot = SimpleNamespace(
-            folder_id=folder_id, turn_running=running, project="", _turn_generation=0
+            key=key, folder_id=folder_id, turn_running=running, project="", _turn_generation=0
         )
         self._slots[key] = slot
         return slot
@@ -1216,6 +1235,7 @@ class FakeDashboard:
 def _conductor_harness(tmp_path, monkeypatch):
     h = Harness(tmp_path)
     dash = FakeDashboard()
+    store_channel_binding(tmp_path, monkeypatch)
     made: list[tuple[str, str, str]] = []
 
     async def create_folder(state, parent_id, name, project_dir):
@@ -1310,6 +1330,44 @@ def test_a_turn_that_does_not_end_schedules_nothing(tmp_path, repo, audits, monk
     dash._slots["chat-elsewhere"].turn_running = False
     h.run(h.svc.watch_tick(dash))
     assert calls == [1]
+
+
+def test_a_suspended_channel_stays_suspended_while_its_workers_run(
+    tmp_path, repo, audits, monkeypatch
+):
+    """The agent's ``suspended`` outlasts its turn end and the workers' turns: only
+    the next bound turn (its start) hands the status back."""
+    from kiro_crew.slack.code_channels import status
+
+    h, dash, _made, statuses = _conductor_harness(tmp_path, monkeypatch)
+    folder_id, _wt = h.run(
+        h.svc.plan_session(
+            dash,
+            channel_id="C1",
+            team_id="T1",
+            title="t",
+            channel_name="c",
+            project_dir=str(repo),
+            parent_folder_id="F0",
+        )
+    )
+    worker = dash.add_slot("chat-worker", folder_id, running=True)
+    status.hold_after_turn("C1", "suspended")
+    try:
+        h.run(status._on_end(FakeBinding("C1", session_key="chat-conductor"), None))
+        h.run(h.svc.watch_tick(dash))  # a worker runs while the agent waits
+        worker.turn_running = False
+        h.run(h.svc.watch_tick(dash))
+        assert [s for s in statuses if s[0] == "C1"] == []
+        h.run(status._on_start(FakeBinding("C1", session_key="chat-conductor"), None))
+        assert "C1" not in status._held
+        # Once the hold is gone, a worker still running shows "Working..." again.
+        h.run(status._on_end(FakeBinding("C1", session_key="chat-conductor"), None))
+        worker.turn_running = True
+        h.run(h.svc.watch_tick(dash))
+        assert statuses[-1] == ("C1", "processing")
+    finally:
+        status.hold_after_turn("C1", None)
 
 
 def test_a_bound_turn_between_watch_passes_does_not_strand_a_running_worker_at_ready(
@@ -1499,6 +1557,7 @@ def test_core_plan_session_resolves_the_default_project_with_the_cores_own_helpe
     cfg = SimpleNamespace(
         slack=SimpleNamespace(code_channels=True),
         dashboard=SimpleNamespace(default_project=str(repo)),
+        channel_config=lambda channel_id: SimpleNamespace(activation=""),
     )
     monkeypatch.setattr(cc_binding, "live_config", lambda orch=None: cfg)
     seen: list[str] = []
@@ -1615,7 +1674,8 @@ def test_the_folder_reuse_scan_resolves_paths_off_the_event_loop(tmp_path, monke
 
 # ── outbound redaction ──────────────────────────────────────────────────────
 
-_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+# A synthetic 40-character AWS secret, split so no source line spells one.
+_FAKE_KEY = github_classic(seed=141)  # a bare 40-character run is no credential
 
 
 def test_a_credential_written_into_a_file_never_reaches_slack(tmp_path, repo, audits):
@@ -1830,7 +1890,9 @@ def test_the_installed_credential_policy_applies_to_every_slack_bound_string(
     monkeypatch.setattr(context_bar, "redact", policy)
     h = Harness(tmp_path)
     binding, rec = _bound(h, repo)
-    (Path(rec.worktree) / "README.md").write_text(f"token: {house}\n", newline="\n")
+    # No label the base table reads, so only the companion's pattern can mask it: a
+    # ``token:`` label would let the rule table mask the value first.
+    (Path(rec.worktree) / "README.md").write_text(f"see {house}\n", newline="\n")
     (Path(rec.worktree) / "new.txt").write_text(f"{house}\n", newline="\n")
     h.run(h.svc.refresh(binding))
     assert house not in repr(h.client.calls)

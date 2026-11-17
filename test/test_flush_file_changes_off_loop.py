@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 from turn_harness import (
     Do,
@@ -56,6 +57,8 @@ from kiro_crew.dashboard.chat_runner import (
     _Snapshot,
 )
 from kiro_crew.dashboard.state import _ChatSlot
+
+_KEY = github_classic(seed=22)  # a token the credential plan redacts
 
 #: A ceiling that only names a hang (rule D1): a read parked on the loop can never
 #: be released by a loop task, so the wait ends here with a failure that says so.
@@ -333,10 +336,10 @@ async def test_off_loop_flush_attaches_what_the_synchronous_composition_attaches
 @pytest.mark.asyncio
 async def test_redaction_runs_on_the_worker_too() -> None:
     slot = _slot_with_one_change()
-    with patch.object(chat_runner, "_safe_read_snapshot", _after("AKIAIOSFODNN7EXAMPLE after\n")):
+    with patch.object(chat_runner, "_safe_read_snapshot", _after(f"{_KEY} after\n")):
         await _flush_file_changes_off_loop(slot, turn_boundary=0, turn_start_mid="")
     entry = slot.messages[-1]["meta"]["file_changes"][0]
-    assert "AKIAIOSFODNN7EXAMPLE" not in entry["after"]
+    assert _KEY not in entry["after"]
     assert entry["after"].endswith(" after\n")
 
 

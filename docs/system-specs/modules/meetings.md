@@ -150,12 +150,15 @@ property: every meeting agent ships `fs_read`/`fs_write` and is handed the meeti
 directory's absolute path, so a note stored inside that directory — the first
 version used `<meeting>/_note.md`, whose underscore only proved no agent's DERIVED
 output filename could collide with it — was one prompt-injected `fs_write` away from
-being overwritten. Unlike `edits/`, `notes/` is on the shared **WRITE-only** tier
-(`security.paths._WRITE_PROTECTED_HOME_PATHS`, the `app-sources` shape), not the
-read+write floor, and the asymmetry is load-bearing: pasted images are served through
+being overwritten. Unlike `edits/`, `notes/` is fenced **WRITE-only**: the app's
+`app.json` declares it in `agentReadOnlyDirs`
+([app-kit-platform](app-kit-platform.md#39-an-apps-agent-read-only-directories-are-declared-in-its-manifest-seam-level-7)),
+which puts it on the file-tool gate's write-protected tier (the `app-sources` shape)
+and seals it read-only in every sandbox mode. It is not on the read+write floor, and
+the asymmetry is load-bearing: pasted images are served through
 `/api/file-raw`, which applies the READ floor, so a note tree on that floor answers
-403 for every image. Reads stay open — the note is the user's own text in the user's
-own meeting — and what the fence refuses is an agent file tool rewriting it. Pinned
+403 for every image. Reads stay open: the note is the user's own text in the user's
+own meeting, and what the fence refuses is an agent rewriting it. Pinned
 by `test_the_tree_is_on_the_write_only_fence_and_stays_readable`, against the live
 gate rather than this app's own list. Nothing is migrated from the old location: the
 feature never shipped with it, and a migration would import whatever an agent had
@@ -166,7 +169,8 @@ transcript, tasks, notes, and diagrams) and both app-owned sidecar directories
 (`edits/<id>` and `notes/<id>`). It removes the sidecars first and `session.json`
 last, each through `remove_with_retry`, so a file another program holds open on
 Windows is waited out for about three seconds; a longer hold answers
-`500 meeting_delete_failed` with an error naming the file and leaves
+`500 meeting_delete_failed` with a fixed message (the OS error, which names the
+file, goes to the server log only) and leaves
 `session.json`, so deleting again after the program lets go finishes. The route
 refuses a meeting with a live
 in-process session with `409 meeting_active`; the dashboard keeps the row's delete
@@ -764,8 +768,17 @@ Kiro Crew's own `/api/ws/stt` (`dashboard/stt_stream.py`).
 `hooks/useMeetingTranscription.ts` conforms to that endpoint's existing wire
 protocol — connect, wait for `{"type":"ready"}`, send 16 kHz Int16 PCM from
 `/pcm-worklet.js`, receive `partial`/`final`/`error`, send `{"type":"stop"}` and
-let the server close so trailing finals arrive. A meeting outlives any one
-socket: the endpoint caps a connection's wall-clock life
+let the server close so trailing finals arrive. The microphone is the one saved
+in Settings > Voice > Microphone, opened through `hooks/mic.ts`'s
+`acquireMicStream` as dictation opens it, so a meeting falls back to the system
+default only when that device is gone or busy. The stall watchdog reconnects a
+socket that has shown no sign of life for `STALL_TIMEOUT_MS`: any server frame is
+one, and after `ready` so is each chunk of audio the socket takes (`bufferedAmount`
+under one second of audio once it is sent), because the server sends a frame only
+on speech or an error and a quiet room must keep one socket and one microphone
+grant. Audio that backs up, audio that stops coming, and the silence an ended
+microphone track still feeds the worklet (an unplugged device) do not count, so
+the watchdog reconnects and re-acquires the microphone. A meeting outlives any one socket: the endpoint caps a connection's wall-clock life
 (`_MAX_STREAM_DURATION_SECS`, advertised as `max_duration_ms` on `ready`; a provider
 whose backend owns the session limit advertises none, and its lease is never
 rotated), so the hook holds
@@ -915,6 +928,21 @@ id>.html`: the frame's own document as one self-contained file (see the
 model-generated HTML bullet below), so its diagrams and tables open in any
 browser, offline.
 
+Below those, one `Export all outputs` item (`lib/meetingBundle.ts`) saves every
+enabled agent's output together as one self-contained HTML file,
+`<title>-<YYYY-MM-DD>.html`, with the same title/date rules and snapshot
+behaviour as the single exports (disabled only while no agent has any output).
+It is one HTML file rather than a zip because the frontend ships no zip library
+and the save path hands a file to the gateway only on an Android in-app WebView,
+which accepts `text/html` but not `application/zip`. Inside the bundle, a notes
+agent's output goes in as its Markdown text, HTML-escaped in a `<pre>` (the same
+bytes the single `.md` export preserves, never inserted as raw HTML), and each
+sketch rides in a sandboxed null-origin `<iframe srcdoc>` holding its own
+single-export document (the vendored Mermaid inlined and the frame CSP, with the
+model's scripts scrubbed), so a sketch is at least as isolated here as in its own
+export and its scripts are never inlined onto the bundle page. An agent with no
+output is kept and marked `No output`.
+
 The shared STT settings choose among `local` (resident whisper.cpp, the default),
 `apple` (on-device SpeechAnalyzer on supported macOS), and `transcribe` (paid AWS
 Transcribe with recorded operator consent). `/api/ws/stt` requires both
@@ -944,7 +972,7 @@ broadcast bar remains available when speech input is unavailable.
   are not treated as authorization.
 * **Redaction.** Transcripts, agent outputs, extracted tasks, and calendar fields
   are LLM/user content on the way to disk, the dashboard, or a task provider, so
-  `security.redact` (exfiltration URLs + credentials) is applied at each
+  `security.redact` (credentials, inside URLs too) is applied at each
   boundary: before the transcript append/fan-out, the outputs response, task
   normalization, `TaskDraft.sanitized`, and `parse_ics`.
   One deliberate asymmetry in `GET …/outputs`: the **generated** half is
@@ -981,10 +1009,13 @@ broadcast bar remains available when speech input is unavailable.
      a `<meta>` CSP is emitted as the first child of `<head>` (ahead of every
      model byte — a meta policy only binds from where it is parsed):
      `default-src 'none'`, `connect-src 'none'`, `img-src data:`, `font-src
-     data:`, `form-action 'none'`, `base-uri 'none'`, and `script-src` pinned to
-     the single vendored same-origin Mermaid FILE. The frame needs no network, so
-     it is granted none.
-  3. **Model script is stripped.** The CSP must grant `script-src
+     data:`, `form-action 'none'`, `base-uri 'none'`, `style-src
+     'unsafe-inline'`, and `script-src` pinned to the SHA-256 of Kiro Crew's own
+     Mermaid bootstrap plus the single vendored same-origin Mermaid FILE, with no
+     `'unsafe-inline'` (`cspFor`). An inline `<script>`, `on*` handler or
+     `javascript:` URL in the model's markup is refused by the browser. The frame
+     needs no network, so it is granted none.
+  3. **Model script is stripped.** The CSP once granted `script-src
      'unsafe-inline'` for the Mermaid bootstrap, which also let the *model's*
      inline script run — and script can loop `document.createElement('link')`
      with `rel="dns-prefetch"` to stream the transcript out through DNS lookups
@@ -998,7 +1029,9 @@ broadcast bar remains available when speech input is unavailable.
      handler attributes are removed; and `javascript:`/`vbscript:`/non-image
      `data:` URLs are removed from URL attributes (matched after stripping
      whitespace and control characters, which the HTML URL parser ignores).
-     Remote-URL *fetches* are left to the CSP rather than pattern-matched.
+     Remote-URL *fetches* are left to the CSP rather than pattern-matched. Now
+     that `script-src` names hashes instead of `'unsafe-inline'`, the scrub stays
+     as defense in depth.
 
   Mermaid still renders, and this is what makes control 3 affordable: it is driven
   by Kiro Crew's own bootstrap from the declarative `div.mermaid` / fenced
@@ -1010,9 +1043,9 @@ broadcast bar remains available when speech input is unavailable.
 
   The Export item's file (`buildSketchExport`) is this same document: scrubbed,
   with the same policy first in `<head>`, the vendored Mermaid runtime inlined
-  (a file has no dashboard origin to load it from) and `script-src
-  'unsafe-inline'` naming no source, so it makes no network request while it
-  renders. Nothing of the sketch is mounted in the dashboard's DOM to export it.
+  (a file has no dashboard origin to load it from) and `script-src` naming the
+  SHA-256 of the bootstrap and of the inlined runtime, no URL and no
+  `'unsafe-inline'`, so it makes no network request while it renders. Nothing of the sketch is mounted in the dashboard's DOM to export it.
 * **A client-supplied FILE path exists in exactly one place** — the audio import —
   and that route is owner-only. It goes through `hooks.validate_file_path`, then
   pins the validated device/inode while copying through a component-by-component
@@ -1104,8 +1137,7 @@ path helpers); the core needs nothing from the app, so no seam is involved.
 pinned list that may only shrink: the `meetings` skill id in
 `metrics/feature_usage.py`, the data-home floors that name its stores
 (`owner_only_files.STARTUP_SWEEP_STORES`, the HIDDEN sandbox leaf and file-tool
-fence of `apps/meetings/data/edits`, the write fence of `apps/meetings/data/notes`),
-and the `security_posture.py` rows classifying its backend modules. Because the app
+fence of `apps/meetings/data/edits`), and the `security_posture.py` rows classifying its backend modules. Because the app
 id is an ordinary word, the list also carries the Zoom connector's
 `zoom.meetings.*` operation ids, which are not the app. Its dashboard half is
 `website/src/apps/meetings/meetingsBoundary.test.ts`: outside `src/apps/meetings/`,
@@ -1117,3 +1149,17 @@ surface row, the capture harnesses under `website/capture/` and
 `website/scripts/capture-meetings-*.mjs`, and the repo-level `test/test_meetings_*`
 suites with their helpers (one of which, `test_meetings_providers.py`, the native
 IPv6 CI lane names by path).
+
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-meetings` with `minAppSdkLevel` 7, the level of the
+`agentReadOnlyDirs` entry `notes` (`ctx.turns`, `ctx.untrusted` and
+`permissions.agentTurns` need level 2), so a host whose record is builtin-owned swaps it
+in place onto that tree at a restart, keeping `data/` (meetings, transcripts, notes and
+the calendar sync state), `.app_secret`, the approved grants and `enabled`; the rail
+keeps `/meetings` and the `CalendarClock` glyph. The repository's `app.json` declares the
+same `permissions` (`/api/ws/stt` and `agentTurns` included) and the same three agents
+as the wheel copy, so E9 holds nothing back. It ships the `meetings` skill under
+`skills/meetings`; once the record is adopted the bundled `builtin_skills/meetings/` copy
+stands down (`test/test_released_builtin_skill_copies.py`). A fix to the app lands in
+that repository first; a change to the wheel copy needs its `App repo:` line.

@@ -21,12 +21,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from config_pending_helpers import HAND_EDIT, dashboard_refusal_layer
 from dashboard_owner_helpers import as_owner
 
 from kiro_crew.config import loosening_provenance as lp
 from kiro_crew.config.paths import config_dir
-
-_HAND_EDIT = (json.dumps({"agent": {"bot_name": "Hand"}}) + "\n").encode()
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +44,7 @@ def _endorse(leaf: str, doc: dict) -> Path:
 def _hand_edit(leaf: str, doc: dict) -> Path:
     """*leaf* endorsed as *doc*, then changed outside Kiro Crew: pending."""
     path = _endorse(leaf, doc)
-    path.write_bytes(_HAND_EDIT)
+    path.write_bytes(HAND_EDIT)
     assert lp.leaf_pending(leaf)
     return path
 
@@ -87,7 +86,7 @@ async def test_a_settings_save_of_a_pending_config_json_is_refused_and_keeps_the
 
     assert resp.status == 400
     assert body == {"error": lp.PENDING_SAVE_REFUSED, "code": "file_pending_review"}
-    assert path.read_bytes() == _HAND_EDIT
+    assert path.read_bytes() == HAND_EDIT
     assert _pending_leaves() == [lp.LEAF_CONFIG]
 
 
@@ -101,7 +100,7 @@ async def test_a_settings_save_of_config_json_works_while_another_file_is_pendin
 
     assert resp.status == 200
     assert json.loads(config.read_bytes())["dashboard"]["terminal"]["reuse_current"] is True
-    assert denied.read_bytes() == _HAND_EDIT
+    assert denied.read_bytes() == HAND_EDIT
     assert _pending_leaves() == [lp.LEAF_DENIED_COMMANDS]
 
 
@@ -126,7 +125,7 @@ async def test_a_denied_command_save_of_a_pending_file_is_refused_and_keeps_the_
 
     assert resp.status == 409
     assert body == {"error": lp.PENDING_SAVE_REFUSED, "code": "file_pending_review"}
-    assert path.read_bytes() == _HAND_EDIT
+    assert path.read_bytes() == HAND_EDIT
     assert _pending_leaves() == [lp.LEAF_DENIED_COMMANDS]
 
 
@@ -151,7 +150,7 @@ def test_config_set_of_a_pending_config_json_is_refused_and_keeps_the_edit(capsy
     err = capsys.readouterr().err
     assert lp.PENDING_SAVE_REFUSED in err
     assert "Traceback" not in err
-    assert path.read_bytes() == _HAND_EDIT
+    assert path.read_bytes() == HAND_EDIT
     assert _pending_leaves() == [lp.LEAF_CONFIG]
 
 
@@ -162,34 +161,8 @@ def test_config_set_local_works_while_config_json_is_pending() -> None:
 
     local = json.loads((config_dir() / lp.LEAF_CONFIG_LOCAL).read_text(encoding="utf-8"))
     assert local["agent"]["bot_name"] == "Nova"
-    assert config.read_bytes() == _HAND_EDIT
+    assert config.read_bytes() == HAND_EDIT
     assert _pending_leaves() == [lp.LEAF_CONFIG]
-
-
-def _spa_fallback() -> object:
-    """The dashboard chain's own ``spa_fallback`` layer, built by its installer."""
-    from kiro_crew.dashboard import server
-
-    @web.middleware
-    async def _through(request, handler):
-        return await handler(request)
-
-    chain = web.Application()
-    server._install_dashboard_middlewares(
-        chain,
-        deny_audit_middleware=_through,
-        host_canonical_redirect=_through,
-        host_validation_middleware=_through,
-        csrf_middleware=_through,
-        internal_secret="per-boot",
-        port=25300,
-        local_only=True,
-        tailnet_trust=None,
-        tailnet_host="",
-        configured_host="127.0.0.1",
-        dashboard_url="",
-    )
-    return next(mw for mw in chain.middlewares if mw.__name__ == "spa_fallback")
 
 
 @pytest.mark.asyncio
@@ -199,7 +172,7 @@ async def test_a_save_handler_with_no_own_catch_is_answered_409_by_the_dashboard
     from kiro_crew.dashboard.handlers.updates_channel import api_update_auto
 
     path = _hand_edit(lp.LEAF_CONFIG, {"agent": {"bot_name": "Kiro"}})
-    app = web.Application(middlewares=[_spa_fallback()])
+    app = web.Application(middlewares=[dashboard_refusal_layer()])
     app["state"] = SimpleNamespace(owner_id="", push_refresh=MagicMock())
     app.router.add_post("/api/update/auto", api_update_auto)
     async with TestClient(TestServer(as_owner(app))) as client:
@@ -208,7 +181,7 @@ async def test_a_save_handler_with_no_own_catch_is_answered_409_by_the_dashboard
 
     assert resp.status == 409
     assert body == {"error": lp.PENDING_SAVE_REFUSED, "code": "file_pending_review"}
-    assert path.read_bytes() == _HAND_EDIT
+    assert path.read_bytes() == HAND_EDIT
     assert _pending_leaves() == [lp.LEAF_CONFIG]
 
 
@@ -228,7 +201,7 @@ async def test_a_save_handler_with_a_broad_catch_still_answers_the_pending_code(
     from kiro_crew.dashboard.handlers.whatsapp_setup import whatsapp_config_save
 
     path = _hand_edit(lp.LEAF_CONFIG, {"agent": {"bot_name": "Kiro"}})
-    app = web.Application(middlewares=[_spa_fallback()])
+    app = web.Application(middlewares=[dashboard_refusal_layer()])
     app["state"] = SimpleNamespace(owner_id="", push_refresh=MagicMock())
     app.router.add_put("/api/whatsapp/config", whatsapp_config_save)
     app.router.add_put("/api/dashboard/config", api_dashboard_config)
@@ -238,8 +211,41 @@ async def test_a_save_handler_with_a_broad_catch_still_answers_the_pending_code(
 
     assert resp.status == 409, answer
     assert answer == {"error": lp.PENDING_SAVE_REFUSED, "code": "file_pending_review"}
-    assert path.read_bytes() == _HAND_EDIT
+    assert path.read_bytes() == HAND_EDIT
     assert _pending_leaves() == [lp.LEAF_CONFIG]
+
+
+@pytest.mark.asyncio
+async def test_a_tailnet_phone_access_save_hands_the_refusal_to_the_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal is a ``ValueError``, which this route answers as a ``config_invalid``
+    500 by its own arm: it is audited and reaches the chain instead."""
+    from kiro_crew.config.loader_document import PendingEditBlocksSave
+    from kiro_crew.dashboard import tailnet
+    from kiro_crew.dashboard.handlers import tailnet_mobile
+
+    path = _hand_edit(lp.LEAF_CONFIG, {"agent": {"bot_name": "Kiro"}})
+    audit = MagicMock()
+    probe = tailnet.DaemonProbe(
+        name="desk.example.ts.net",
+        installed=True,
+        reachable=True,
+        logged_in=True,
+        detail="",
+        login="owner@example.com",
+    )
+    monkeypatch.setattr(tailnet_mobile, "_guard", lambda request: None)
+    monkeypatch.setattr(tailnet_mobile, "_audit", audit)
+    monkeypatch.setattr(tailnet, "policy_off", lambda **_: False)
+    monkeypatch.setattr(tailnet, "is_governance_pinned_off", lambda **_: False)
+    monkeypatch.setattr(tailnet, "probe_daemon", lambda: probe)
+
+    with pytest.raises(PendingEditBlocksSave):
+        await tailnet_mobile.api_tailnet_mobile_configure(MagicMock())
+
+    assert path.read_bytes() == HAND_EDIT
+    assert audit.call_args.args[2:] == ("error", "file-pending-review")
 
 
 def test_a_cli_command_that_saves_a_pending_config_json_prints_one_line(
@@ -259,7 +265,7 @@ def test_a_cli_command_that_saves_a_pending_config_json_prints_one_line(
     err = capsys.readouterr().err
     assert f"❌ {lp.PENDING_SAVE_REFUSED}" in err
     assert "Traceback" not in err
-    assert path.read_bytes() == _HAND_EDIT
+    assert path.read_bytes() == HAND_EDIT
 
 
 def _writeback_warnings(caplog) -> list[str]:

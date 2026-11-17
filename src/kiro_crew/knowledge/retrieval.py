@@ -181,6 +181,7 @@ class HybridRetriever:
         limit: int = 10,
         source_id: str | None = None,
         namespace: str | None = None,
+        status: str | None = "active",
     ) -> list[dict]:
         """Hybrid search with RRF fusion. Returns [{id, title, summary, content, score, source, match_type}].
 
@@ -197,15 +198,26 @@ class HybridRetriever:
         seeds, and the graph leg stays unfiltered for the same reason. The two
         filters compose (both applied when both are given).
 
+        ``status`` keeps EVERY leg, the graph leg included, to items whose
+        ``items.status`` is that value. It decides whether an item is in search
+        at all rather than how it ranks, so it is not a seed-only scope like
+        the two above. The default ``"active"`` is what takes an item the
+        Library archives out of agent search; ``None`` searches every status,
+        which the Library's own "All statuses" filter asks for.
+
         Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
         row -- the keyword leg's protected top hit (see below).
         """
+        # A lone surrogate (a JSON "\ud83d" escape, a query cut mid-emoji)
+        # cannot be bound to SQLite and raised from every leg; swap it for
+        # U+FFFD so the rest of the query still searches.
+        query = query.encode("utf-8", "replace").decode("utf-8")
         kw = self._keyword_search(
-            query, limit=limit * 2, source_id=source_id, namespace=namespace
+            query, limit=limit * 2, source_id=source_id, namespace=namespace, status=status
         )
-        gr = self._graph_search(query, limit=limit * 2)
+        gr = self._graph_search(query, limit=limit * 2, status=status)
         vec = self._vector_search(
-            query, limit=limit * 2, source_id=source_id, namespace=namespace
+            query, limit=limit * 2, source_id=source_id, namespace=namespace, status=status
         )
 
         # Vector leg is weighted higher so semantic matches dominate when the
@@ -421,13 +433,15 @@ class HybridRetriever:
         limit: int = 20,
         source_id: str | None = None,
         namespace: str | None = None,
+        status: str | None = "active",
     ) -> list[tuple[str, int]]:
         """FTS5 search. Returns [(item_id, rank)] where rank is position (1=best).
 
         ``source_id`` narrows matches to items of one source via a
         parameterized WHERE clause (never string interpolation). ``namespace``
-        narrows to items carrying that ``items.namespace`` label the same way;
-        both compose when given together.
+        narrows to items carrying that ``items.namespace`` label the same way,
+        and ``status`` to items of that ``items.status`` (``None``: any); all
+        compose when given together.
         """
         # A legacy database still holds the pre-CJK-segmentation term
         # representation. Migrating it is a reader's job, not the constructor's,
@@ -456,6 +470,9 @@ class HybridRetriever:
             # is a plain column match -- no source_locations join.
             sql += " AND i.namespace = ?"
             params.append(namespace)
+        if status is not None:
+            sql += " AND i.status = ?"
+            params.append(status)
         sql += " ORDER BY fts.rank LIMIT ?"
         params.append(limit)
         try:
@@ -492,8 +509,14 @@ class HybridRetriever:
         # this surface's own recall policy.
         return " OR ".join(fts5_cjk_match_groups(" ".join(tokens)))
 
-    def _graph_search(self, query: str, limit: int = 20) -> list[tuple[str, int]]:
-        """Find entities matching query terms, traverse graph, rank items by mention count."""
+    def _graph_search(
+        self, query: str, limit: int = 20, status: str | None = "active"
+    ) -> list[tuple[str, int]]:
+        """Find entities matching query terms, traverse graph, rank items by mention count.
+
+        Only items of ``status`` are counted (``None``: any); the entity
+        traversal itself does not read items.
+        """
         words = query.split()
         # Try individual words and consecutive pairs
         candidates = list(words)
@@ -540,7 +563,7 @@ class HybridRetriever:
         # so the search answers rather than failing outright.
         item_counts: dict[str, int] = defaultdict(int)
         try:
-            item_counts = self._count_item_mentions(all_entity_ids, limit)
+            item_counts = self._count_item_mentions(all_entity_ids, limit, status)
         except sqlite3.OperationalError:
             logger.warning(
                 "graph leg mentions count failed; serving keyword+vector only",
@@ -551,7 +574,9 @@ class HybridRetriever:
         sorted_items = sorted(item_counts.items(), key=lambda x: x[1], reverse=True)
         return [(item_id, rank + 1) for rank, (item_id, _) in enumerate(sorted_items)]
 
-    def _count_item_mentions(self, all_entity_ids: set[str], limit: int) -> dict[str, int]:
+    def _count_item_mentions(
+        self, all_entity_ids: set[str], limit: int, status: str | None = "active"
+    ) -> dict[str, int]:
         """Top-``limit`` items by mention count over ``all_entity_ids``.
 
         Ranked ``ORDER BY cnt DESC, item_id`` and capped at ``limit`` -- the
@@ -559,14 +584,27 @@ class HybridRetriever:
         keeps it one statement; the chunked path merges per-item counts across
         chunks in Python before applying the identical order and cap, so a
         neighbourhood over the variable limit returns the same rows.
+
+        A ``status`` keeps only the items of that status, before the cap. It is
+        checked once per counted item, in ``HAVING``, rather than by joining
+        ``items``: with that join SQLite drives the count from
+        ``idx_items_status`` and so reads every item of the status, not only
+        the counted ones.
         """
         entity_ids = sorted(all_entity_ids)
+        having = (
+            ""
+            if status is None
+            else " HAVING EXISTS (SELECT 1 FROM items i"
+            " WHERE i.id = mentions.item_id AND i.status = ?)"
+        )
+        status_params: tuple[str, ...] = () if status is None else (status,)
         if _has_json1(self.store.db):
             rows = self.store.db.execute(
-                "SELECT item_id, COUNT(*) as cnt FROM mentions "
+                "SELECT item_id, COUNT(*) as cnt FROM mentions "  # noqa: S608
                 "WHERE entity_id IN (SELECT value FROM json_each(?)) "
-                "GROUP BY item_id ORDER BY cnt DESC, item_id LIMIT ?",
-                (json.dumps(entity_ids), limit),
+                f"GROUP BY item_id{having} ORDER BY cnt DESC, item_id LIMIT ?",
+                (json.dumps(entity_ids), *status_params, limit),
             ).fetchall()
             return {row["item_id"]: row["cnt"] for row in rows}
 
@@ -579,8 +617,8 @@ class HybridRetriever:
             placeholders = ",".join("?" * len(batch))
             rows = self.store.db.execute(
                 f"SELECT item_id, COUNT(*) as cnt FROM mentions "  # noqa: S608
-                f"WHERE entity_id IN ({placeholders}) GROUP BY item_id",
-                tuple(batch),
+                f"WHERE entity_id IN ({placeholders}) GROUP BY item_id{having}",
+                (*batch, *status_params),
             ).fetchall()
             for row in rows:
                 merged[row["item_id"]] += row["cnt"]
@@ -593,6 +631,7 @@ class HybridRetriever:
         limit: int = 20,
         source_id: str | None = None,
         namespace: str | None = None,
+        status: str | None = "active",
     ) -> list[tuple[str, int]] | None:
         """Brute-force cosine similarity against stored embeddings. Returns None if no embedder.
 
@@ -611,8 +650,9 @@ class HybridRetriever:
 
         ``source_id`` narrows candidates to items of one source via a
         parameterized WHERE clause (never string interpolation). ``namespace``
-        narrows to items carrying that ``items.namespace`` label the same way;
-        both compose when given together.
+        narrows to items carrying that ``items.namespace`` label the same way,
+        and ``status`` to items of that ``items.status`` (``None``: any); all
+        compose when given together.
 
         Scoring runs as one matrix-vector product when numpy is importable and
         as a per-row Python loop otherwise (:meth:`_score_rows_numpy` /
@@ -628,8 +668,11 @@ class HybridRetriever:
         query_vec = self.embedder(query)
         if not query_vec:
             return None
-        sql = "SELECT id, embedding FROM items WHERE embedding IS NOT NULL AND status = 'active'"
+        sql = "SELECT id, embedding FROM items WHERE embedding IS NOT NULL"
         params: list[object] = []
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
         if self.embed_sig != ANY_EMBEDDING_SPACE:
             sql += " AND embedding_sig = ?"
             params.append(self.embed_sig)

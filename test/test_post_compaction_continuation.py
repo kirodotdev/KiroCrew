@@ -8,7 +8,7 @@ Three layers are covered, in the order the signal travels:
    adapter emits them as ordinary ``agent_message_chunk`` text, indistinguishable
    from model prose to any ACP client, so exact-literal matching is the whole
    contract and drift in either direction is what these tests pin.
-2. ``AcpClient._settle_claude_compaction`` -- an AUTOMATIC mid-turn compaction
+2. ``ClaudeAcpClient._settle_claude_compaction`` -- an AUTOMATIC mid-turn compaction
    sends the ``started`` notice and then no terminal at all (the adapter emits
    "Compacting completed." only from the SDK's ``compact_result`` status, which
    is the MANUAL ``/compact`` signal; the automatic path takes ``compact_boundary``
@@ -34,7 +34,7 @@ import re
 import pytest
 
 from kiro_crew.acp._dispatch import parse_claude_compaction_notice
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     STOP_REASON_CANCELLED,
@@ -124,9 +124,8 @@ def _bare_client(*, claude: bool = True) -> AcpClient:
     Constructed without ``__init__`` on purpose: the real one spawns a backend
     process, and these two helpers are pure state transitions over four fields.
     """
-    client = AcpClient.__new__(AcpClient)
-    # `_is_claude` is a read-only property over `backend`; set the field it reads
-    # rather than shadowing the property, so the test exercises the real seam.
+    cls = ClaudeAcpClient if claude else AcpClient
+    client = cls.__new__(cls)
     client._acp_backend = ACP_BACKEND_CLAUDE if claude else ACP_BACKEND_KIRO
     client._claude_compaction_pending = False
     client._compaction_failed_at = None
@@ -247,8 +246,8 @@ def test_other_backends_are_never_reinterpreted() -> None:
     transcript (the caller drops the chunk once an event comes back).
     """
     client = _bare_client(claude=False)
-    assert client._claude_compaction_event("Compacting...") is None
-    assert not client._claude_compaction_pending
+    assert client._harness_compaction_event("Compacting...") is None
+    assert client._settle_harness_compaction(STOP_REASON_END_TURN) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -571,7 +570,7 @@ def test_an_observed_terminal_is_not_marked_synthesized() -> None:
 
 
 def test_no_chunk_path_drops_the_text_on_a_notice() -> None:
-    """No ``_claude_compaction_event`` call site may skip its chunk.
+    """No ``_harness_compaction_event`` call site may skip its chunk.
 
     The three chunk paths live inside very long async generators that cannot be
     driven from a unit test, and the deletion this invariant forbids is exactly a
@@ -582,7 +581,7 @@ def test_no_chunk_path_drops_the_text_on_a_notice() -> None:
     acp = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp"
     src = "".join(p.read_text(encoding="utf-8") for p in sorted(acp.glob("client*.py")))
     lines = src.splitlines()
-    calls = [i for i, ln in enumerate(lines) if "_claude_compaction_event(chunk)" in ln]
+    calls = [i for i, ln in enumerate(lines) if "_harness_compaction_event(chunk)" in ln]
     assert len(calls) == 3, f"expected the three chunk paths, found {len(calls)}"
     for i in calls:
         window = "\n".join(lines[i : i + 4])

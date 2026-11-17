@@ -51,6 +51,7 @@ from kiro_crew.apps.job_sdk import (
     forget_sdk,
     register_sdk,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import wait_until
 
 # 7. JobHandle.progress and bounded line tail
@@ -392,7 +393,7 @@ class TestRunnerOutputIsRedacted:
     def test_a_failed_runners_error_is_scrubbed_on_disk_and_in_the_record(
         self, sdk: JobSDK
     ) -> None:
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
 
         def runner(h):
             raise RuntimeError(f"upload failed: aws_secret_access_key={secret}")
@@ -560,7 +561,7 @@ class TestSanitizeInvariant:
     def test_the_writer_scrubs_an_error_set_behind_its_back(self, sdk: JobSDK) -> None:
         """The backstop. A field assigned directly, skipping the ingest site, is
         still scrubbed because the single writer re-scrubs before writing."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         run = JobRun(run_id="ef" * 16, app="test-app", kind="work", status=RUNNING)
         run.error = f"failed with aws_secret_access_key={secret}"
         assert sdk._persist(run) is True  # noqa: SLF001 - the invariant under test

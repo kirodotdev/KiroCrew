@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { JsonViewer } from '../components/FileRenderers'
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 
 describe('JsonViewer', () => {
   it('renders ASCII JSON without showing the error banner', () => {
@@ -93,7 +94,7 @@ describe('JsonViewer', () => {
 })
 
 describe('JsonViewer long string leaves', () => {
-  const showAll = (count: number) => i18nT('components.fileRenderers.json_string_show_all', { count })
+  const showAll = (count: number) => i18nT('components.fileRenderers.json_string_show_all', { count, n: fmtNumber(count) })
   const showLess = () => i18nT('components.fileRenderers.json_string_show_less')
   const preview = (value: string) => JSON.stringify(value.slice(0, 200)) + '…'
   // The element the toggle names in aria-controls: the string value itself.

@@ -1,9 +1,11 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { KiroSignInCard } from '../pages/developer/KiroSignInCard'
 import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../hooks/useSettingHighlight'
 import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
+import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../components/KiroAccountModal'
+import { usePersistedBool } from '../hooks/usePersistedBool'
 import { api, type KasLoginStatus } from '../api/client'
 
 vi.mock('../api/client', async importOriginal => {
@@ -13,6 +15,15 @@ vi.mock('../api/client', async importOriginal => {
     api: {
       ...mod.api,
       kasLoginStatus: vi.fn(),
+      // No kiro-cli sign-in beside the card's own: the card says nothing extra.
+      kasLoginSources: vi.fn().mockResolvedValue({
+        active: 'none',
+        kiro_crew: { stored: false },
+        kiro_cli: { stored: false, usable: false },
+        name_pending: false,
+        same_account: null,
+        can_use_kiro_cli: false,
+      }),
       kasLoginLogout: vi.fn().mockResolvedValue({ ok: true }),
       kasLoginBeginDevice: vi.fn().mockResolvedValue({
         login_id: 'login-1',
@@ -28,6 +39,10 @@ vi.mock('../api/client', async importOriginal => {
 })
 
 const kasLoginStatus = vi.mocked(api.kasLoginStatus)
+// #36156: the saved config with KAS as the main harness, and a usage reading naming an account.
+const ON_KAS = { agent: { acp_backend: 'kas' } }
+const ADA = { used: 1, limit: 10, bonusCredits: [], email: 'ada@example.com' }
+const fold36156 = () => screen.getByTestId('kiro-sign-in-fold-state')
 const kasLoginLogout = vi.mocked(api.kasLoginLogout)
 const kasLoginBeginDevice = vi.mocked(api.kasLoginBeginDevice)
 
@@ -98,6 +113,84 @@ describe('KiroSignInCard', () => {
     expect(screen.queryByTestId('kiro-sign-in-fold-state')).toBeNull()
     // The heading-navigation stop the section form had.
     expect(screen.getByRole('heading', { name: 'Kiro sign-in' })).toBeInTheDocument()
+  })
+
+  it('names the signed-in account next to the provider, in the card and in the folded heading (#36156)', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const { queryClient } = renderWithProviders(<KiroSignInCard compact />)
+    // The top bar's whoami-backed reading is the only place a name exists; on KAS it names the vault account.
+    act(() => {
+      queryClient.setQueryData(['kirocrewConfig'], ON_KAS)
+      queryClient.setQueryData(['kiro-usage'], ADA)
+    })
+    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
+    await act(async () => {
+      card.open = true
+      fireEvent(card, new Event('toggle'))
+    })
+    const account = () => screen.getByTestId('kiro-sign-in-account')
+    await waitFor(() => expect(account()).toHaveTextContent('ada@example.com'))
+    // Hidden by default, like the account popup: blurred, with the card's own Show toggle beside it.
+    expect(account().querySelector('[data-account-hidden="true"]')).toHaveTextContent('ada@example.com')
+    fireEvent.click(within(account()).getByRole('button', { name: 'Show email' }))
+    expect(account().querySelector('[data-account-hidden]')).toBeNull()
+    try {
+      // Shown: the folded heading names it too.
+      await act(async () => {
+        card.open = false
+        fireEvent(card, new Event('toggle'))
+      })
+      await waitFor(() => expect(fold36156()).toHaveTextContent(/Signed in with Google\s*· ada@example\.com/))
+    } finally {
+      localStorage.removeItem('kirocrew:account-email-hidden')
+    }
+  })
+
+  it('names an account name (not an e-mail) in the folded heading without blurring it (#36156)', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const { queryClient } = renderWithProviders(<KiroSignInCard compact />)
+    act(() => {
+      queryClient.setQueryData(['kirocrewConfig'], ON_KAS)
+      queryClient.setQueryData(['kiro-usage'], { used: 1, limit: 10, bonusCredits: [], account: 'Ada Lovelace' })
+    })
+    await waitFor(() => expect(fold36156()).toHaveTextContent(/Signed in with Google\s*· Ada Lovelace/))
+    expect(fold36156().querySelector('[data-account-hidden]')).toBeNull()
+  })
+
+  it('follows the account popup hide toggle on a card that is already showing (#36156)', async () => {
+    // The popup's own toggle, mounted beside the card as the dashboard has them.
+    function PopupToggle() {
+      const [hidden, setHidden] = usePersistedBool(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, true)
+      return <button onClick={() => setHidden(!hidden)}>{hidden ? 'popup: show' : 'popup: hide'}</button>
+    }
+    try {
+      kasLoginStatus.mockResolvedValue(SIGNED_IN)
+      const { queryClient } = renderWithProviders(<><KiroSignInCard compact /><PopupToggle /></>)
+      act(() => {
+        queryClient.setQueryData(['kirocrewConfig'], ON_KAS)
+        queryClient.setQueryData(['kiro-usage'], ADA)
+      })
+      // Hidden by default: the folded heading leaves the e-mail out.
+      await waitFor(() => expect(fold36156()).toHaveTextContent('Signed in with Google'))
+      expect(fold36156()).not.toHaveTextContent('ada@example.com')
+      fireEvent.click(screen.getByRole('button', { name: 'popup: show' }))
+      await waitFor(() => expect(fold36156()).toHaveTextContent('ada@example.com'))
+      fireEvent.click(screen.getByRole('button', { name: 'popup: hide' }))
+      await waitFor(() => expect(fold36156()).not.toHaveTextContent('ada@example.com'))
+    } finally {
+      localStorage.removeItem('kirocrew:account-email-hidden')
+    }
+  })
+
+  it('names no account when the main harness is kiro-cli, whose login the usage reading then names (#36156)', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const { queryClient } = renderWithProviders(<KiroSignInCard compact />)
+    act(() => {
+      queryClient.setQueryData(['kirocrewConfig'], { agent: { acp_backend: 'kiro' } })
+      queryClient.setQueryData(['kiro-usage'], ADA)
+    })
+    await waitFor(() => expect(fold36156()).toHaveTextContent('Signed in with Google'))
+    expect(fold36156()).not.toHaveTextContent('ada@example.com')
   })
 
   it('compact: re-opens when a stored sign-in lapses after the page loaded', async () => {
@@ -198,6 +291,7 @@ describe('KiroSignInCard', () => {
     )
     const { queryClient } = renderWithProviders(<KiroSignInCard />)
     queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
+    queryClient.setQueryData(['kiro-usage'], ADA)
     const reset = vi.spyOn(queryClient, 'resetQueries')
     const summary = await screen.findByTestId('kiro-sign-in-summary')
     expect(summary).toHaveAttribute('data-lapsed', 'false')
@@ -216,6 +310,8 @@ describe('KiroSignInCard', () => {
     await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
     expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    // Its usage reading names it, so that drops too (#36156): no stale name on the next sign-in.
+    expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
     // The status re-read now says signed out, which unmounts the summary; the
     // "applies to processes started from now on" note lives on the card, so
     // it is still there beside the chooser the user now sees.
@@ -321,11 +417,14 @@ describe('KiroSignInCard', () => {
     )
     const { queryClient } = renderWithProviders(<KiroSignInCard />)
     queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
+    queryClient.setQueryData(['kiro-usage'], ADA)
     const reset = vi.spyOn(queryClient, 'resetQueries')
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
     await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
     expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    // The previous account's usage reading names it: dropped, not shown until the next poll (#36156).
+    expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
     vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
   })
 
@@ -364,5 +463,126 @@ describe('KiroSignInCard', () => {
     expect(
       notice.querySelector('button[title="Open a chat with this error\'s full context attached"]'),
     ).not.toBeNull()
+  })
+})
+
+// The desktop shell's relay Crew windows ran as the signed-in account: Sign out
+// and a landed Switch account close them through the bridge, at once.
+describe('KiroSignInCard closes relay Crew windows', () => {
+  const closeAll = vi.fn().mockResolvedValue(undefined)
+  const setBridge = (bridge: unknown) => {
+    ;(window as { relayCrewAPI?: unknown }).relayCrewAPI = bridge
+  }
+
+  beforeEach(() => {
+    kasLoginStatus.mockReset()
+    kasLoginLogout.mockClear()
+    kasLoginBeginDevice.mockClear()
+    closeAll.mockClear()
+    vi.mocked(api.kasLoginCancel).mockClear()
+    setBridge({ open: vi.fn(), closeAll })
+  })
+  afterEach(() => {
+    delete (window as { relayCrewAPI?: unknown }).relayCrewAPI
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('a Sign out that lands closes them once', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    renderWithProviders(<KiroSignInCard />)
+    await screen.findByTestId('kiro-sign-in-summary')
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
+    await waitFor(() => expect(closeAll).toHaveBeenCalledTimes(1))
+    expect(closeAll).toHaveBeenCalledWith()
+  })
+
+  it('a Sign out that fails closes nothing', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    kasLoginLogout.mockRejectedValueOnce(new Error('Could not remove the stored sign-in.'))
+    renderWithProviders(<KiroSignInCard />)
+    await screen.findByTestId('kiro-sign-in-summary')
+    fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
+    expect(await screen.findByTestId('kiro-sign-in-logout-error')).toHaveTextContent('Could not remove')
+    expect(closeAll).not.toHaveBeenCalled()
+  })
+
+  it('without the bridge, or with one that rejects, a Sign out still lands', async () => {
+    for (const bridge of [undefined, { open: vi.fn(), closeAll: vi.fn().mockRejectedValue(new Error('gone')) }]) {
+      setBridge(bridge)
+      kasLoginStatus.mockResolvedValue(SIGNED_IN)
+      const { unmount } = renderWithProviders(<KiroSignInCard />)
+      await screen.findByTestId('kiro-sign-in-summary')
+      kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+      fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
+      expect(await screen.findByTestId('kas-login-card-intro')).toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('a Switch account that lands closes them once', async () => {
+    kasLoginStatus.mockResolvedValue({ ...SIGNED_IN, identity: 'identity_center', provider: 'Enterprise' })
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    renderWithProviders(<KiroSignInCard />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch account' }))
+    expect(closeAll).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() => expect(closeAll).toHaveBeenCalledTimes(1))
+  })
+
+  // A Switch account cancelled after its credential landed: settleCancel sees the
+  // changed identity, and the detached poll never reports 'authorized'.
+  const SWITCH_FROM: KasLoginStatus = { ...SIGNED_IN, identity: 'identity_center', provider: 'Enterprise' }
+  const cancelSwitch = async (after: KasLoginStatus) => {
+    kasLoginStatus.mockResolvedValue(SWITCH_FROM)
+    renderWithProviders(<KiroSignInCard />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch account' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    // The read before the cancel still sees the old account; the read after it sees `after`.
+    kasLoginStatus.mockResolvedValueOnce(SWITCH_FROM).mockResolvedValue(after)
+    const reads = kasLoginStatus.mock.calls.length
+    fireEvent.click(cancel)
+    await waitFor(() => expect(api.kasLoginCancel).toHaveBeenCalled())
+    // Both of settleCancel's reads (before and after the cancel) have answered.
+    await waitFor(() => expect(kasLoginStatus.mock.calls.length).toBeGreaterThanOrEqual(reads + 2))
+    await act(async () => { await Promise.resolve() })
+  }
+
+  it('a Switch account that lands under a cancel closes them once', async () => {
+    await cancelSwitch({ ...SIGNED_IN, identity: 'social', provider: 'GitHub', expires_at: '2099-02-01T00:00:00Z' })
+    await waitFor(() => expect(closeAll).toHaveBeenCalledTimes(1))
+  })
+
+  it('a Switch account cancelled before anything landed closes nothing', async () => {
+    // Same identity and expiry after the cancel: the old account is still the one stored.
+    await cancelSwitch(SWITCH_FROM)
+    expect(closeAll).not.toHaveBeenCalled()
+  })
+
+  it('a first sign-in that lands under a cancel closes nothing', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    renderWithProviders(<KiroSignInCard />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    const reads = kasLoginStatus.mock.calls.length
+    fireEvent.click(cancel)
+    await waitFor(() => expect(api.kasLoginCancel).toHaveBeenCalled())
+    // The cancel's one fresh read found the new sign-in, so settleCancel ran its landed branch.
+    await waitFor(() => expect(kasLoginStatus.mock.calls.length).toBeGreaterThanOrEqual(reads + 1))
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+    expect(closeAll).not.toHaveBeenCalled()
+  })
+
+  it('a first sign-in closes nothing', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    const reset = vi.spyOn(queryClient, 'resetQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    // The authorized effect ran (it drops the model list), and closed nothing.
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    expect(closeAll).not.toHaveBeenCalled()
   })
 })

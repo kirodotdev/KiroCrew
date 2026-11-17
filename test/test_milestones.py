@@ -323,6 +323,20 @@ class TestStreak:
         m.record_active_day()
         assert m.load()["streak"]["current"] == 2
 
+    def test_local_date_stepping_back_a_day_keeps_the_streak(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Three days in a row in Tokyo, then the timezone moves west to Los Angeles,
+        # where the same instant is one day earlier. No day was missed.
+        for d in (1, 2, 3):
+            _day(monkeypatch, date(2026, 10, d))
+            m.record_active_day()
+        assert m.load()["streak"] == {"current": 3, "best": 3, "last_day": "2026-10-03"}
+        assert m.snapshot(today=date(2026, 10, 2))["streak"]["current"] == 3
+        _day(monkeypatch, date(2026, 10, 2))
+        m.record_active_day()
+        assert m.load()["streak"] == {"current": 3, "best": 3, "last_day": "2026-10-03"}
+
     def test_user_turn_counts_messages_streak_mate_and_crew_mode(self) -> None:
         m.record_user_turn(mate_thread=True, crew_mode=True)
         st = m.load()

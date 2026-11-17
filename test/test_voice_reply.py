@@ -14,10 +14,10 @@ import base64
 import os
 import re
 import threading
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from voice_reply_helpers import _no_argv_prefixers  # noqa: F401
 from voice_reply_helpers import _mock_subprocess
 
@@ -125,6 +125,7 @@ class TestStripMarkdown:
         # shared with the frontend recognizer. Stacked tags all go.
         assert strip_markdown("report body\n<!-- keep-visible -->") == "report body"
         assert strip_markdown("done\n<!-- deliver:dashboard -->") == "done"
+        assert strip_markdown("done\n<!-- option-action:close=Done -->") == "done"
         assert (
             strip_markdown("report\n<!-- keep-visible -->\n<!-- deliver:slack -->") == "report"
         )
@@ -145,7 +146,7 @@ class TestStripMarkdown:
 
     def test_recognized_tag_quoted_in_inline_code_is_preserved(self) -> None:
         # A RECOGNIZED tag in inline code renders literally — quoted visible
-        # content, so speech keeps it (round-5 grammar unification).
+        # content, so speech keeps it.
         assert strip_markdown("the `<!-- keep-visible -->` tag") == (
             "the <!-- keep-visible --> tag"
         )
@@ -177,8 +178,9 @@ class TestStripMarkdown:
         # Same class, different strip: `**` emphasis markers inside a key id
         # are removed by the emphasis pass. The invariant covers every strip,
         # not just the control-tag one.
-        out = strip_markdown("key AKIAIOSF**ODNN7EXAMPLE** end")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        key = github_classic(seed=7)
+        out = strip_markdown(f"key {key[:8]}**{key[8:]}** end")
+        assert key not in out
 
     def test_credential_with_an_identifier_underscore_is_redacted_whole(self) -> None:
         # The token pattern includes "_", so the re-scan sees the underscore
@@ -191,8 +193,9 @@ class TestStripMarkdown:
         # Idempotence: a credential the pre-strip scan would catch is also
         # caught by the post-strip pass when strip_markdown is used alone
         # (split_sentences path has no pre-strip redaction).
-        out = strip_markdown("key AKIAIOSFODNN7EXAMPLE end")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        key = github_classic(seed=7)
+        out = strip_markdown(f"key {key} end")
+        assert key not in out
 
     def test_control_tag_regex_linear_on_adversarial_input(self) -> None:
         # CodeQL py/polynomial-redos, two vectors: (a) "<!--deliver:" + many
@@ -200,21 +203,20 @@ class TestStripMarkdown:
         # repeated prefix "<!--deliver:" * n, where an UNBOUNDED body lets
         # each of n start positions rescan an O(n) tail = quadratic.
         # Bounding every quantifier keeps a failed attempt constant work.
-        # This times the shared helper; strip_markdown's other passes are
-        # not under test.
-        # Polynomial time at this size hangs for minutes; linear completes
-        # in milliseconds. Generous bound for slow CI.
-        import time
-
+        # This guards the shared helper; strip_markdown's other passes are
+        # not under test. The cost is inside the regex engine, which no work
+        # counter can see, so the shared ramp holds this thread's CPU to its
+        # default budget for each vector, one unit at a time and then at growing
+        # pumps, each costing at most a linear multiple of the one before.
+        from conftest import assert_rejected_without_backtracking
         from kiro_crew.constants import strip_control_comments
 
-        start = time.monotonic()
-        out_tabs = strip_control_comments("<!--deliver:" + "\t" * 50_000)
-        out_reps = strip_control_comments("<!--deliver:" * 20_000)
-        assert time.monotonic() - start < 5.0
-        # Unterminated tags are preserved (no swallow), not stripped.
-        assert out_tabs.startswith("<!--deliver:")
-        assert out_reps.startswith("<!--deliver:")
+        def preserved(text: str) -> None:
+            # Unterminated tags are preserved (no swallow), not stripped.
+            assert strip_control_comments(text) == text
+
+        assert_rejected_without_backtracking(preserved, lambda n: "<!--deliver:" + "\t" * n)
+        assert_rejected_without_backtracking(preserved, lambda n: "<!--deliver:" * n)
 
     def test_unterminated_tag_preserved_through_full_strip(self) -> None:
         # Same no-swallow contract through the full TTS pipeline.
@@ -644,8 +646,8 @@ class TestParseSystemVoices:
         output, but a third-party installed voice supplies its own name.
 
         Asserted as SHAPE first, because that is deterministic: no separator may
-        appear in the repeated group's character class. The timing check is a
-        generously-bounded backstop for a future rewrite that reintroduces the
+        appear in the repeated group's character class. The ramped thread-CPU
+        guard is the backstop for a future rewrite that reintroduces the
         ambiguity some other way.
         """
         # The repeated group is `(?:<sep class><tail class>+)`. Ambiguity exists
@@ -659,12 +661,16 @@ class TestParseSystemVoices:
         for sep in ("-", "_"):
             assert not tail.match(sep), f"locale tail also matches {sep!r}: {classes[1]}"
 
-        adversarial = "Voice  en" + "_0" * 5_000 + "!\n"
-        start = time.perf_counter()
-        assert _parse_system_voices(SYSTEM_ENGINE_SAY, adversarial) == []
-        # Linear parsing lands near a millisecond; the ambiguous form would not
-        # finish. The ceiling is loose on purpose — this is not a benchmark.
-        assert time.perf_counter() - start < 2.0
+        from conftest import assert_rejected_without_backtracking
+
+        def rejected(text: str) -> None:
+            assert _parse_system_voices(SYSTEM_ENGINE_SAY, text) == []
+
+        # One pump unit is two repetitions: the ambiguous form grows ~1.9x per
+        # repetition, so the one-unit ramp overruns its budget by about 13 units
+        # instead of staying under it to 24 and hanging on the long pumps. The
+        # long pumps keep the original 2.0 s budget, the helper default.
+        assert_rejected_without_backtracking(rejected, lambda n: "Voice  en" + "_0_0" * n + "!\n")
 
 
 # ── list_system_voices() ─────────────────────────────────────────────────

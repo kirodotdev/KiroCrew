@@ -449,6 +449,10 @@ interface MembersPageRosterColumnProps {
   openQuick: () => void
   postCreateError: PostCreateFailure | null
   createHeld: string | null
+  /** Import from file is the owner's (a relay teammate's view): its doors are hidden. */
+  importHeld: boolean
+  /** The owner check behind `importHeld` failed: said on the roster. */
+  ownerCheckFailed: boolean
   slotKeyOf: (m: MemberRosterRow) => string
   /** The crewmate whose face is centre stage in the first Mate's entrance
    *  (#23207), so its row holds the face unpainted until it lands; `''` for none. */
@@ -459,7 +463,7 @@ interface MembersPageRosterColumnProps {
 export function MembersPageRosterColumn({
   rosterRead, teamsRead, layout, drawers, rosterView, rosterSignals, profileFlight, navigation, teamView,
   activeName, scrollActiveRowIntoView, gone, createOpen, openAdvanced, openQuick, postCreateError, createHeld,
-  slotKeyOf, faceOnStageFor,
+  importHeld, ownerCheckFailed, slotKeyOf, faceOnStageFor,
 }: MembersPageRosterColumnProps) {
   const { t } = useTranslation()
   const [importing, setImporting] = useState(false)
@@ -606,7 +610,7 @@ export function MembersPageRosterColumn({
                   </DropdownMenuItem>
                   {/* Import from file, the same dialog the switcher opens, so the
                       phone roster (where the switcher is hidden) reaches it too. */}
-                  {createHeld === null && (
+                  {createHeld === null && !importHeld && (
                     <DropdownMenuItem onSelect={() => setImporting(true)} data-testid="member-add-import">
                       <FileUp size={13} className="lucide-inline text-muted shrink-0" aria-hidden="true" />
                       <span {...uiLocation('members.add-menu.import')}>{t('pages.membersPage.import_from_file')}</span>
@@ -677,6 +681,19 @@ export function MembersPageRosterColumn({
             {/* A failed team read renders the roster FLAT, which is not "no teams"
                 -- it is unknown, and said here on the roster the grouping lives
                 on. No draft on this page, so the hand-off is safe. */}
+            {/* The owner check behind Import from file failed, so the door is held:
+                said here, where it would have been, not dropped. No draft on this
+                page, so the hand-off is safe. */}
+            {ownerCheckFailed && (
+              <div className="px-4 pb-2">
+                <ErrorNotice
+                  message={t('pages.membersPage.owner_check_failed')}
+                  variant="inline"
+                  askAgent
+                  testId="member-roster-owner-check-error"
+                />
+              </div>
+            )}
             {teamsNoticeShown && (
               <div className="px-4 pb-2">
                 <ErrorNotice
@@ -698,7 +715,6 @@ export function MembersPageRosterColumn({
               // Menu rows keep the menu open (preventDefault) so several can be
               // toggled in one visit, as the sidebar's do.
             <SearchFilterBar
-              className="px-2"
               placeholder={t('pages.membersPage.search_members')}
               clearLabel={t('pages.chatSidebar.clear_search')}
               value={filter}
@@ -859,7 +875,7 @@ export function MembersPageRosterColumn({
                 // instead (see the DM thread section), so the two panes never
                 // show the same hero twice on a wide viewport.
                 <li className="md:hidden">
-                  <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} onImport={() => setImporting(true)} />
+                  <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} onImport={importHeld ? undefined : () => setImporting(true)} />
                 </li>
               )}
               {loadError && (
@@ -883,7 +899,12 @@ export function MembersPageRosterColumn({
                   />
                   {/* The plain retry first: a failed read is usually transient,
                       and "ask about it" alone reads as the only way out. */}
-                  <Btn onClick={() => void rosterQuery.refetch()} data-testid="member-roster-retry">
+                  <Btn
+                    onClick={() => { if (!rosterQuery.isFetching) void rosterQuery.refetch() }}
+                    aria-disabled={rosterQuery.isFetching || undefined}
+                    className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                    data-testid="member-roster-retry"
+                  >
                     {t('pages.membersPage.roster_load_retry')}
                   </Btn>
                 </li>

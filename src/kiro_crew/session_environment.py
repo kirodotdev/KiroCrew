@@ -318,6 +318,13 @@ REMOTE_AGENT_RESTRICTED = (
     "this agent's own rules limit shell commands or file paths, and a remote "
     "workspace cannot enforce them yet; remove those rules or run on This machine"
 )
+#: The session-start notice naming the sub-agents a remote session leaves out of its
+#: batch for the same reason, so the session starts and only that hand-off fails.
+REMOTE_SUBAGENTS_RESTRICTED = (
+    "ℹ In this remote workspace, agent {agent} cannot hand work to {targets}. Their "
+    "own rules limit shell commands or file paths, and a remote workspace cannot "
+    "enforce them yet; remove those rules or run on This machine."
+)
 
 
 def choices_path() -> Path:

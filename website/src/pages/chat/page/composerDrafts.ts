@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
+import { clearDictated, isDictated, noteComposerEdit } from '../../../chat-core/composer/dictationProvenance'
 import type { RootState } from '../../../store'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft, appendTypedText, mergeIntoDraft, typedDuringCreate } from '../../../utils/chatDrafts'
 import { registerMainComposer } from '../../../utils/composerRestore'
@@ -10,6 +11,7 @@ import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft }
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../../../utils/chatSessionRefDrafts'
 import { PREFILL_STORAGE_KEY } from '../../../utils/navIntent'
 import { type PasteBlock, carryPastes, pruneBlocks as pruneBlocksUtil } from '../../../utils/pasteTokens'
+import { onSlotUploadFailureHeld, takeSlotUploadFailure } from '../../../utils/slotUploadFailures'
 import type { SessionRef } from '../../../utils/sessionRefs'
 import type { useKnowledgeFetch } from '../useKnowledgeFetch'
 import type { ComposerStaging } from './composerStaging'
@@ -179,6 +181,9 @@ export function useComposerDraftLifecycle({
     inputRef.current = text
     const s = composerSlotRef.current
     if (s) { setDraft(drafts.current, s, text); saveDraftsDebounced() }
+    // Keyed exactly like the draft above: an emptied composer holds no dictated
+    // words, so the slot's next message starts unmarked.
+    noteComposerEdit(s, text)
     updateHistoryQuery(text)
     reconcileFileChipsRef.current?.(text)
   }, [saveDraftsDebounced, updateHistoryQuery, inputRef, composerSlotRef, drafts])
@@ -199,17 +204,24 @@ export function useComposerDraftLifecycle({
   // activates, the carry is skipped and the whole draft stays together in the
   // old session, as it did before the carry existed, rather than moving the
   // text without its files.
-  type CreateCarry = { origin: string | null; baseline: string; staged: string }
+  // `dictated` is the origin's dictation record when the create started: the
+  // origin keeps it only for a dictated draft from before the create.
+  type CreateCarry = { origin: string | null; baseline: string; staged: string; dictated: boolean }
   const createCarryRef = useRef<Map<string, CreateCarry>>(new Map())
   // Creates that write their own composer content and must never carry: the
   // Slack-link token flow sets its prompt with setInput and auto-sends it, so
   // carried text would be overwritten or sent. Typed text stays in the old
   // session's draft for those, as on main.
   const noCarryCreateIdsRef = useRef<Set<string>>(new Set())
+  // The slot-change effect below puts a failure held for a chat that was off
+  // screen into the upload banner. Taking it removes it, so a same-slot replay
+  // of that effect (StrictMode) reuses this record instead of clearing the banner.
+  const heldFailureRef = useRef<{ slot: string | null; message: string }>({ slot: null, message: '' })
   useEffect(() => {
     if (foregroundCreateId && !noCarryCreateIdsRef.current.has(foregroundCreateId)) {
       createCarryRef.current.set(foregroundCreateId, {
         origin: composerSlotRef.current, baseline: inputRef.current, staged: stagedIdentity(stagedNowRef.current.files, stagedNowRef.current.sessions),
+        dictated: isDictated(composerSlotRef.current),
       })
     }
   }, [foregroundCreateId, composerSlotRef, inputRef, stagedNowRef])
@@ -266,8 +278,17 @@ export function useComposerDraftLifecycle({
           setDraft(drafts.current, prevSlotVal, carry.baseline)
           setPasteDraft(pasteDrafts.current, prevSlotVal, pruneBlocksUtil(carry.baseline, blocks))
         }
+        // The dictation record never moves to the new chat (see
+        // dictationProvenance): it stays with a dictated draft from before
+        // the create, and the origin is unmarked when its restored draft is
+        // typed or empty.
+        if (!carry.dictated || !carry.baseline.trim()) clearDictated(prevSlotVal)
       }
     }
+    // A composer with no chat yet keeps no draft of its own: whatever it held is
+    // gone once it shows a chat, unless the carry above moved it, so its
+    // dictation record goes too.
+    if (prevSlotVal === null && activeSlot !== null) clearDictated(null)
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
     const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
     const draftFallback = carried !== null ? appendTypedText(storedDraft, carried) : storedDraft
@@ -319,6 +340,7 @@ export function useComposerDraftLifecycle({
         baseline: restoredInput ?? inputRef.current,
         // What this switch is about to stage, not what the outgoing slot had.
         staged: stagedIdentity(activeSlot ? fileDrafts.current[activeSlot] : undefined, activeSlot ? sessionRefDrafts.current[activeSlot] : undefined),
+        dictated: isDictated(activeSlot),
       })
     }
     if (!seeded) setPrefillHint(false)
@@ -342,7 +364,9 @@ export function useComposerDraftLifecycle({
       ? (sessionRefDrafts.current[activeSlot] ?? []).map(r => ({ ...r }))
       : [])
     knowledgeFetchRef.current.clearResults()
-    setUploadError('')
+    const heldFailure = takeSlotUploadFailure(activeSlot)
+    if (heldFailure || heldFailureRef.current.slot !== activeSlot) heldFailureRef.current = { slot: activeSlot, message: heldFailure }
+    setUploadError(heldFailureRef.current.message)
     setUploadHint('')
     // A pane-level action failure ("Fork failed", "Could not read …") belongs to
     // the slot it happened in; carried over, it reads as the new slot's.
@@ -353,6 +377,15 @@ export function useComposerDraftLifecycle({
     drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, prevSlot, stagedNowRef, lastCreatedActivationRef, inputRef,
     consumedPrefillRef, foregroundCreateIdRef, setPendingFiles, setPasteBlocks, setPendingSessions, knowledgeFetchRef,
     setUploadError, setUploadHint, setActionError, setPrefillHint])
+  // A failure held while this page already shows its chat (a request an earlier
+  // page instance started, settling after the person came back) reports at once.
+  useEffect(() => onSlotUploadFailureHeld(slot => {
+    if (slot !== activeSlot) return
+    const message = takeSlotUploadFailure(slot)
+    if (!message) return
+    heldFailureRef.current = { slot, message }
+    setUploadError(message)
+  }), [activeSlot, setUploadError])
   // Persist drafts on unmount (navigating away from chat page)
   useEffect(() => () => {
     if (saveDraftsTimer.current) { clearTimeout(saveDraftsTimer.current); saveDraftsTimer.current = null }

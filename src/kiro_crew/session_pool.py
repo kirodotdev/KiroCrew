@@ -21,7 +21,12 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
+from kiro_crew import kiro_cli
+from kiro_crew.agent_sdk.kas_floor_wait import (
+    await_kas_floor_verdict,
+    note_warm_pool_start_failed,
+    warm_pool_start_held,
+)
 from kiro_crew.config.loader import resolve_agent_identity
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 
@@ -438,6 +443,12 @@ class WarmSessionPool:
                         agent=self._pool_agent or None,
                         cwd=self._pool_cwd or None,
                     )
+                # A recorded broken kiro-cli KAS extract, or a start that failed
+                # because kiro-cli is signed out, fails every retry the same way until
+                # it is fixed, so the pool stops here instead of respawning each sweep.
+                if await warm_pool_start_held(provider):
+                    provider = None  # built, never started: nothing to discard
+                    break
                 async with self._owner._start_sem:
                     # Age includes startup time. Startup takes seconds, while
                     # the warm-pool TTL is 1800 seconds; more importantly, a
@@ -516,8 +527,9 @@ class WarmSessionPool:
                 # just re-reads the installed factory next iteration.
                 if stale_identity:
                     break
-            except Exception:
+            except Exception as exc:
                 self._deps.logger.warning("Warm pool: failed to spawn process", exc_info=True)
+                note_warm_pool_start_failed(exc, provider)
                 break
             finally:
                 if provider is not None:
@@ -653,6 +665,18 @@ class WarmSessionPool:
                 )
                 discarded = True
                 await self._owner._discard_pool_provider(provider, "Warm pool identity discard")
+                claimed = self._owner._claim_from_pool(agent)
+                continue
+
+            if kiro_cli.spawned_before_tools_list_refusal(spawn_time):
+                # It read its never-defer list before a request was refused for a
+                # changed tools list, so it may still defer Kiro Crew's own tools
+                # and hand its claimant the refusal a rebuild is escaping.
+                self._deps.logger.warning(
+                    "Warm pool: claimed provider predates a tools-list refusal, discarding"
+                )
+                discarded = True
+                await self._owner._discard_pool_provider(provider, "Warm pool deferral discard")
                 claimed = self._owner._claim_from_pool(agent)
                 continue
 

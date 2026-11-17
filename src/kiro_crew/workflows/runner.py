@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import hashlib
 import inspect
 import json
@@ -41,8 +42,12 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
+from kiro_crew.tracing import provider as trace_provider
+from kiro_crew.tracing import surfaces as trace_surfaces
+from kiro_crew.tracing import workflows as trace_workflows
 
-from . import BudgetExceeded, WorkflowEvent
+from . import BudgetExceeded, WorkflowEvent, WorkflowStepInterrupted
+from .budget_watch import BudgetWatch
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
 from .dsl import _call_stage, _maybe_await
 from .dsl import parallel as _parallel
@@ -78,7 +83,7 @@ except ImportError:  # pragma: no cover - security is app-layer optional
     _redact_credentials = None  # type: ignore[assignment]
     _redact_exfil = None  # type: ignore[assignment]
 
-# Wall-clock ceiling per run (matches ``_RUN_TIMEOUT_SECS`` in the spec).
+# Wall-clock ceiling per run (the spec's ``runner.DEFAULT_RUN_TIMEOUT_SECS``).
 DEFAULT_RUN_TIMEOUT_SECS = 3600
 
 # Bounds on a caller-supplied per-run ceiling. The ceiling is the runaway
@@ -90,6 +95,13 @@ MAX_RUN_TIMEOUT_SECS = 6 * 3600
 # Cap on a persisted per-agent failure description: enough to identify the fault,
 # short enough that a wide fan-out of failures can't bloat the run record.
 MAX_AGENT_ERROR_CHARS = 500
+
+# Bounds on the ceiling error text (see ``_ceiling_error_text``). A run can fan
+# out over many agent calls with script-supplied (unbounded) labels; name only
+# the first few, truncate each label, and backstop the whole text at
+# ``MAX_AGENT_ERROR_CHARS`` so the stored/injected error can't bloat the record.
+CEILING_MAX_NAMED_AGENTS = 5
+CEILING_MAX_LABEL_CHARS = 60
 
 
 async def _drain_cleanup(task: asyncio.Future[Any]) -> bool:
@@ -166,6 +178,66 @@ def describe_agent_error(exc: BaseException) -> str:
     if len(text) > MAX_AGENT_ERROR_CHARS:
         text = text[:MAX_AGENT_ERROR_CHARS] + "…"
     return text
+
+
+def _fallback_label(prompt: str) -> str:
+    """Display label for an unlabeled agent call: the first 40 characters of its
+    prompt, taken AFTER redacting the complete prompt. Cutting first can leave a
+    fragment of a secret too short for any later redactor to match. Display only;
+    the prompt sent to the model is unchanged."""
+    if _redact_exfil is not None:
+        prompt, _ = _redact_exfil(prompt)
+    if _redact_credentials is not None:
+        prompt, _ = _redact_credentials(prompt)
+    return prompt[:40]
+
+
+def _ceiling_error_text(base: str, in_flight: list, last_event_s_ago: float) -> str:
+    """Build the ceiling ``run_failed`` error text so it names the stalled
+    agent(s), not just the wall-clock limit.
+
+    Keeps the ``run exceeded {N}s`` prefix (``base``) and appends which agent
+    calls were still running and how long the run had been silent, e.g.
+    ``run exceeded 3600s; agent a3 "compose" still running, no event for 3540s``.
+    With no call in flight (a script stuck in its own code), it reports
+    ``no agent call in flight, no event for Ns`` so the two cases read apart.
+
+    Bounded on purpose: a wide fan-out (``ctx.parallel`` over many
+    ``ctx.agent`` calls with no concurrency cap) can leave hundreds of calls in
+    flight, each with a script-supplied label of any length. This text is
+    stored on the run record and injected into chat, so it names at most
+    ``CEILING_MAX_NAMED_AGENTS`` calls ("and K more" for the rest), truncates
+    each label to ``CEILING_MAX_LABEL_CHARS`` (after redacting the full label),
+    and fits the whole string to ``MAX_AGENT_ERROR_CHARS`` by shrinking only the
+    label section, so the silence suffix is never cut.
+    """
+    suffix = f", no event for {last_event_s_ago}s"
+    more = ""
+    if in_flight:
+        shown = in_flight[:CEILING_MAX_NAMED_AGENTS]
+        parts = []
+        for c in shown:
+            label = str(c["label"])
+            # Redact the COMPLETE label first: truncating first can leave a
+            # fragment of a secret too short for the redactors to match.
+            if _redact_exfil is not None:
+                label, _ = _redact_exfil(label)
+            if _redact_credentials is not None:
+                label, _ = _redact_credentials(label)
+            if len(label) > CEILING_MAX_LABEL_CHARS:
+                label = label[:CEILING_MAX_LABEL_CHARS] + "…"
+            parts.append(f'agent {c["agent_id"]} "{label}" still running')
+        who = "; ".join(parts)
+        if len(in_flight) > len(shown):
+            more = f"; and {len(in_flight) - len(shown)} more"
+    else:
+        who = "no agent call in flight"
+    # Only the agent-label section shrinks to fit the cap; the prefix, the
+    # "and K more" count and the silence suffix always stay whole.
+    budget = MAX_AGENT_ERROR_CHARS - len(base) - len("; ") - len(more) - len(suffix)
+    if len(who) > budget:
+        who = who[: max(budget - 1, 0)] + "…"
+    return f"{base}; {who}{more}{suffix}"
 
 
 def _call_fingerprint(prompt: str, opts: dict, position: tuple) -> str:
@@ -299,12 +371,10 @@ class RunResult:
     result: Any
     events: list[WorkflowEvent]
     error: Optional[str] = None
-    # Per-agent-call results (call_index → result), so a resume/restart-subtree
-    # can replay the unchanged prefix. Populated on EVERY terminal path —
-    # success, ceiling, cancel, budget, and script crash — so an interrupted run
-    # still hands back the work it already finished. ``result`` is the script's own
-    # return value and stays None when the script never got to return one; these
-    # are the parts, not the whole.
+    # Per-agent-call results (call_index → result) for resume/restart-subtree.
+    # Populated on EVERY terminal path (success, ceiling, cancel, budget, crash),
+    # so an interrupted run still hands back finished work even when ``result``
+    # stays None.
     agent_results: dict = field(default_factory=dict)
     # call_index → bounded, redacted reason a call failed (see
     # ``describe_agent_error``). Empty for runs where every call succeeded.
@@ -313,6 +383,18 @@ class RunResult:
     # authored it from an ``intent`` — surfaced so a background run can
     # store the authored script on its handle for rerun/restart.
     source: str = ""
+    # Operator-facing terminal error for the registry snapshot / Runs detail.
+    # ``error`` stays a stable compatibility sentinel (e.g. "timeout" on a
+    # ceiling, which status mapping keys off), while this carries the enriched
+    # text — the stalled agent and silence duration — that otherwise lives only
+    # on the ``run_failed`` event. A background run forwards THIS to the
+    # registry, so the Runs detail and completion summary show the same
+    # diagnostics the event stream does. Defaults to ``error`` when unset.
+    terminal_error: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.terminal_error is None:
+            self.terminal_error = self.error
 
 
 # Signature of the injected authoring step: intent -> {ok, source, errors}.
@@ -321,16 +403,13 @@ class RunResult:
 # plumbing. ``on_progress(msg)`` lets authoring stream human-readable progress.
 AuthorFn = Callable[..., Awaitable[dict]]
 
-# Signature of the per-call checkpoint hook, mirroring how ``on_source`` publishes
-# the authored script mid-run:
+# Signature of the per-call checkpoint hook:
 #   on_agent_result(call_index: int, *, result: Any, ok: bool, error: str,
 #                   fingerprint: str) -> None
-# Called as soon as EACH agent call settles, so the host can persist that payload
-# before the run reaches a terminal state. Without it, results would live only in
-# process memory until the run finished, and any interruption would throw them away.
-# ``fingerprint`` is the call's identity for replay (see ``_call_fingerprint``, ""
-# when it has none); it lands with the result, so a record that holds a result
-# also holds what a rerun needs to replay it.
+# Called as soon as EACH agent call settles, so the host can persist it before the
+# run ends and an interruption does not lose it. ``fingerprint`` (see
+# ``_call_fingerprint``, "" when it has none) lands with the result, so a record
+# holding a result also holds what a rerun needs to replay it.
 AgentResultFn = Callable[..., None]
 
 
@@ -433,6 +512,7 @@ class _RunContext:
         # (``_CallScope``), so two branches that make the same call each get
         # their own result back. Every call in a run has its own position, so
         # no two calls of one run share a fingerprint.
+        #
         # fingerprint → the prior call index with that fingerprint. Only prior
         # calls before ``replay_before`` that carry a fingerprint are eligible;
         # any other call runs live.
@@ -450,9 +530,15 @@ class _RunContext:
         # runs them live.
         self._prefix_rerun = replay_before > 0
         self._root_scope = _CallScope(self, ())
+        self._failed_task_logs = 0
+        self._budget_watch = BudgetWatch(budget.total, run_id=run_id)
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
         self.agent_errors: dict[int, str] = {}
+        # The first step whose turn was stopped from outside (WorkflowStepInterrupted).
+        # The step still resolves to None so the script runs on, but a run holding
+        # one ends run_failed rather than run_finished.
+        self.interrupted_error = ""
         # Per-call durable checkpoint sink (see ``AgentResultFn``).
         self._on_agent_result = on_agent_result
         self._execution_guard: Optional[Callable[[], Awaitable[None]]] = None
@@ -466,6 +552,18 @@ class _RunContext:
         self._agent_slots: Optional[asyncio.Semaphore] = (
             asyncio.Semaphore(concurrency) if (concurrency and concurrency > 0) else None
         )
+        # Agent calls that have started but not settled, keyed by agent_id. The
+        # ceiling path reads this to name the calls that were in flight when a run
+        # ran out the clock; an entry stays until the call settles (or is dropped
+        # when the ceiling cancels the run mid-await, which is exactly what we
+        # want to report). Each value carries the call's monotonic start.
+        self._in_flight: dict[str, dict] = {}
+        # Shared one-element holder of the monotonic stamp of the run's most
+        # recent event, so the ceiling can say how long the run had been silent.
+        # The runner points this at the same list its lifecycle ``emit`` bumps,
+        # so in-script events (recorded here) and lifecycle events share one
+        # silence measurement. None until the runner wires it.
+        self._last_event_holder: Optional[list] = None
 
     @property
     def budget(self) -> Budget:
@@ -475,6 +573,11 @@ class _RunContext:
     # --- event sink (shared with the runner) ---
     def _record(self, event: WorkflowEvent) -> None:
         self._events.append(event)
+        # Stamp the run's last-activity time: in-script events (phase/log/agent)
+        # land here, lifecycle events land through the runner's ``emit``; both
+        # update the one holder so the ceiling reads a single run-wide silence.
+        if self._last_event_holder is not None:
+            self._last_event_holder[0] = time.monotonic()
         # Live fan-out: the registry / WS push consumes events as they happen.
         if self._on_event is not None:
             try:
@@ -513,15 +616,33 @@ class _RunContext:
         call_index = self._counter.count - 1
         agent_id = f"a{call_index}"
         use_phase = phase or self._current_phase
+        # str(): a script can pass a non-string prompt (a dict row, a number); the
+        # label is display-only, and the call's own try records what agent_fn does.
+        call_label = label or _fallback_label(str(prompt))
+        # The ordinal of the phase this call runs in; 0 when it names a phase of its
+        # own (``phase=``) or runs before any ``ctx.phase``.
+        phase_index = (
+            self._stream.phase_index
+            if self._current_phase and use_phase == self._current_phase
+            else 0
+        )
         self._record(
             self._stream.agent_started(
                 self.now,
                 agent_id=agent_id,
-                label=label or prompt[:40],
+                label=call_label,
                 phase=use_phase,
                 call_index=call_index,
+                phase_index=phase_index,
             )
         )
+        # Mark this call in flight so the ceiling can name it if the run runs out
+        # the clock before the call settles. Dropped once it settles below.
+        self._in_flight[agent_id] = {
+            "agent_id": agent_id,
+            "label": call_label,
+            "started_mono": time.monotonic(),
+        }
         opts = {
             "label": label,
             "phase": use_phase,
@@ -539,6 +660,16 @@ class _RunContext:
         fingerprint = _call_fingerprint(prompt, opts, position)
         replay_index = self._replay_indices.pop(fingerprint, None) if fingerprint else None
         error = ""
+        # A live call is one turn under its phase in the run's trace; a replayed one
+        # streams nothing, so it emits nothing. Named by the script's own label or
+        # the call id: the fallback label is prompt text and never reaches a span.
+        trace_root = (
+            None
+            if replay_index is not None
+            else trace_workflows.bind_agent(
+                self._run_id, agent_id, label or agent_id, use_phase, phase_index
+            )
+        )
         try:
             if replay_index is not None:
                 # Resume: replay the prior run's result for this same call (same
@@ -554,7 +685,10 @@ class _RunContext:
                 # is the same injected agent_fn (so prod/stub both flow through).
                 async def _produce(p: str) -> str:
                     out = await self._agent_fn(p, opts)
-                    return out if isinstance(out, str) else json.dumps(out)
+                    text = out if isinstance(out, str) else json.dumps(out)
+                    # Each re-ask is its own model turn: meter the prompt it sent.
+                    self._note_spend(p, text)
+                    return text
 
                 async with _optional_slot(self._agent_slots):
                     result = await run_with_schema(_produce, prompt, schema)
@@ -572,13 +706,22 @@ class _RunContext:
                     error = "agent returned no result"
         except BudgetExceeded:
             raise
-        except Exception as exc:  # noqa: BLE001 - captured per call, never fails the run
+        except Exception as exc:  # noqa: BLE001 - captured per call
             result, ok = None, False
             error = describe_agent_error(exc)
+            if isinstance(exc, WorkflowStepInterrupted) and not self.interrupted_error:
+                self.interrupted_error = error
+        finally:
+            trace_workflows.release_agent(trace_root)
+        # Settled: drop it from the in-flight set (only calls still running when
+        # the ceiling fires should appear in the ceiling error).
+        self._in_flight.pop(agent_id, None)
         # Record this call's result so a future resume can replay the prefix.
         self.agent_results[call_index] = result
         if error:
             self.agent_errors[call_index] = error
+        if replay_index is None and schema is None:
+            self._note_spend(prompt, result)  # a schema call metered each turn above
         # Checkpoint: hand the settled call to the host NOW so a later ceiling /
         # cancel / crash cannot discard work already paid for. The host records it
         # in memory; it reaches DISK on the record's existing write cadence, not
@@ -629,6 +772,11 @@ class _RunContext:
                 token = _CALL_SCOPE.set(_CallScope(self, group + (index,)))
                 try:
                     return await _maybe_await(thunk if inspect.isawaitable(thunk) else thunk())
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self._log_failed_task("parallel task", index, exc)
+                    raise
                 finally:
                     _CALL_SCOPE.reset(token)
 
@@ -649,12 +797,38 @@ class _RunContext:
                 token = _CALL_SCOPE.set(chain)
                 try:
                     return await _call_stage(stage, prev, item, index)
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:
+                    self._log_failed_task("pipeline item", index, exc)
+                    raise
                 finally:
                     _CALL_SCOPE.reset(token)
 
             return run
 
         return await _pipeline(items, *[in_chain(s) for s in stages], limit=self._concurrency)
+
+    # Failed-task log events per run: enough to explain the failures, few enough
+    # that a pipeline over thousands of bad items cannot flood the event stream
+    # and the checkpoints that re-serialize it.
+    _FAILED_TASK_LOG_LIMIT = 20
+
+    def _note_spend(self, prompt: Any, result: Any) -> None:
+        warning = self._budget_watch.add(prompt, result)
+        if warning:
+            self._record(self._stream.log(self.now, message=warning))
+
+    def _log_failed_task(self, where: str, index: int, exc: Exception) -> None:
+        # The combinator resolves the task to None (A5); this event is the only
+        # record of why, so a run of all-None results can be explained.
+        self._failed_task_logs += 1
+        if self._failed_task_logs > self._FAILED_TASK_LOG_LIMIT:
+            return
+        message = f"{where} {index} failed: {describe_agent_error(exc)}"
+        if self._failed_task_logs == self._FAILED_TASK_LOG_LIMIT:
+            message += " (further failed tasks in this run are not logged)"
+        self._record(self._stream.log(self.now, message=message))
 
     def _scope(self) -> _CallScope:
         """The scope of the branch this task runs in, or the run's root scope."""
@@ -849,6 +1023,40 @@ class WorkflowRunner:
         source: str,
         *,
         run_id: str,
+        session_key: str = "",
+        on_event: Optional[Callable[[WorkflowEvent], None]] = None,
+        **kwargs: Any,
+    ) -> RunResult:
+        """Execute a workflow script end-to-end; the arguments are :meth:`_run`'s.
+
+        While tracing is on the run is one trace (``tracing/workflows.py``): its root
+        is opened here, around everything the run does, and records how it ended.
+        """
+        name = ""
+        if trace_provider.peek() is not None and source:
+            vr = validate(source)
+            name = str((vr.meta or {}).get("name", "")) if vr.ok else ""
+        with trace_workflows.run_root(run_id, name, session_key) as surface:
+            res = await self._run(
+                source,
+                run_id=run_id,
+                session_key=session_key,
+                on_event=trace_workflows.observe(run_id, on_event),
+                **kwargs,
+            )
+            if not res.ok:
+                surface.status = (
+                    trace_surfaces.STATUS_CANCELLED
+                    if res.error == "cancelled"
+                    else trace_surfaces.STATUS_FAILED
+                )
+            return res
+
+    async def _run(
+        self,
+        source: str,
+        *,
+        run_id: str,
         now: str,
         args: Optional[dict] = None,
         owner_dm: str = "",
@@ -886,16 +1094,31 @@ class WorkflowRunner:
         deadline = time.monotonic() + self._timeout_secs
         stream = EventStream(run_id, clock=host_now_iso)
         events: list[WorkflowEvent] = []
+        # Monotonic time of the run's most recent event. The ceiling reports how
+        # long the run had been silent as ``now - last_event``. Seeded at run
+        # start so a run that emits nothing still has a floor. Lifecycle events
+        # bump it here; in-script events bump it via ``ctx._last_event_holder``.
+        last_event_mono = [time.monotonic()]
 
         def emit(ev: WorkflowEvent) -> WorkflowEvent:
             """Append a lifecycle event AND fan it out to the live subscriber."""
             events.append(ev)
+            last_event_mono[0] = time.monotonic()
             if on_event is not None:
                 try:
                     on_event(ev)
                 except Exception:  # noqa: BLE001 - subscriber must not break the run
                     pass
             return ev
+
+        def ceiling_silence() -> dict:
+            """The ceiling-only ``run_failed`` fields for the authoring path: no
+            ctx.agent call exists yet, so ``in_flight`` is empty; ``last_event_s_ago``
+            still reports how long the run had been silent."""
+            return {
+                "in_flight": [],
+                "last_event_s_ago": round(time.monotonic() - last_event_mono[0], 1),
+            }
 
         # B10: record run start (author/runner/args) up front, before any exec.
         self._audit(
@@ -937,25 +1160,50 @@ class WorkflowRunner:
             def _auth_progress(msg: str) -> None:
                 emit(stream.log(now, message=msg))
 
+            async def _author() -> Any:
+                # Bound here, in the task that streams the author's turns: a root
+                # bound by this task would be refused there, and the turns would
+                # root unrelated traces.
+                call = trace_workflows.bind_agent(
+                    run_id, "author", "author", "Authoring", stream.phase_index
+                )
+                try:
+                    return await author_fn(intent, on_progress=_auth_progress)
+                finally:
+                    trace_workflows.release_agent(call)
+
             # Authoring runs under the run's deadline with the same guard and the
             # same cancellation handling the script gets in _exec_validated: a
             # hung author ends at the ceiling, and a caller cancel is answered
             # with a result instead of escaping run().
             author_task: Optional["asyncio.Future[Any]"] = None
             try:
-                author_task = asyncio.ensure_future(author_fn(intent, on_progress=_auth_progress))
+                author_task = asyncio.ensure_future(_author())
                 done, _pending = await asyncio.wait(
                     {author_task}, timeout=max(0.0, deadline - time.monotonic())
                 )
                 if author_task not in done:
+                    # Snapshot the silence BEFORE cancelling: draining the author's
+                    # cleanup can emit a log (via on_progress) that bumps the
+                    # last-event stamp, so a post-cleanup snapshot would read
+                    # "no event for 0.0s". Capture at the ceiling, then clean up.
+                    silence = ceiling_silence()
                     author_task.cancel()
                     await _drain_cleanup(author_task)
-                    emit(
-                        stream.run_failed(
-                            now, error=f"run exceeded {self._timeout_secs}s", where="ceiling"
-                        )
+                    ceiling_text = _ceiling_error_text(
+                        f"run exceeded {self._timeout_secs}s",
+                        silence["in_flight"],
+                        silence["last_event_s_ago"],
                     )
-                    return RunResult(run_id, ok=False, result=None, events=events, error="timeout")
+                    emit(stream.run_failed(now, error=ceiling_text, where="ceiling"))
+                    return RunResult(
+                        run_id,
+                        ok=False,
+                        result=None,
+                        events=events,
+                        error="timeout",
+                        terminal_error=ceiling_text,
+                    )
                 authored = author_task.result()
             except asyncio.CancelledError:
                 if author_task is not None:
@@ -1013,6 +1261,7 @@ class WorkflowRunner:
                 stream=stream,
                 events=events,
                 emit=emit,
+                last_event_mono=last_event_mono,
                 on_agent_result=on_agent_result,
                 replay_fingerprints=replay_fingerprints,
             )
@@ -1052,6 +1301,7 @@ class WorkflowRunner:
             stream=stream,
             events=events,
             emit=emit,
+            last_event_mono=last_event_mono,
             on_agent_result=on_agent_result,
             replay_fingerprints=replay_fingerprints,
         )
@@ -1074,6 +1324,7 @@ class WorkflowRunner:
         stream: EventStream,
         events: list[WorkflowEvent],
         emit: Callable[[WorkflowEvent], WorkflowEvent],
+        last_event_mono: list,
         on_agent_result: Optional[AgentResultFn] = None,
         replay_fingerprints: Optional[dict] = None,
     ) -> RunResult:
@@ -1082,6 +1333,9 @@ class WorkflowRunner:
         and the author-in-run paths; assumes ``run_started`` was already emitted.
         *deadline* is the run's ``time.monotonic()`` deadline, taken when
         :meth:`run` starts, so the script gets only what authoring left of it.
+        *last_event_mono* is the run's shared one-element last-event stamp (the
+        same list :meth:`run`'s ``emit`` bumps), read by the ceiling to report
+        how long the run had been silent.
         """
         # Defense-in-depth: re-validate before exec so a future refactor that
         # bypasses the caller's validate() step cannot reach exec unchecked.
@@ -1120,7 +1374,10 @@ class WorkflowRunner:
         # 2. Build the run context + restricted exec namespace.
         ctx = _RunContext(
             run_id=run_id,
-            args=args,
+            # The script's own copy: it may edit ``ctx.args`` as scratch state, and
+            # the run record, its ``run_started`` event and a rerun keep the args
+            # the run was launched with.
+            args=copy.deepcopy(args),
             now=now,
             owner_dm=owner_dm,
             stream=stream,
@@ -1141,6 +1398,29 @@ class WorkflowRunner:
         )
         ctx._execution_guard = self._execution_guard
         ctx._events = events  # share the sink so phase/log/agent events land in order
+        # Share the one last-event stamp so in-script events count as activity
+        # toward the ceiling's silence measurement.
+        ctx._last_event_holder = last_event_mono
+
+        def ceiling_silence() -> dict:
+            """The ceiling-only ``run_failed`` fields: the agent calls still in
+            flight (naming the stalled call) and how long the run had been silent.
+            An empty ``in_flight`` tells a script stuck in its own code apart from
+            a silent agent."""
+            now_mono = time.monotonic()
+            in_flight = [
+                {
+                    "agent_id": info["agent_id"],
+                    "label": info["label"],
+                    "started_s_ago": round(now_mono - info["started_mono"], 1),
+                }
+                for info in ctx._in_flight.values()
+            ]
+            return {
+                "in_flight": in_flight,
+                "last_event_s_ago": round(now_mono - last_event_mono[0], 1),
+            }
+
         safe_globals = build_safe_globals(ctx)
 
         async def _pre_terminal() -> bool:
@@ -1183,22 +1463,31 @@ class WorkflowRunner:
                 {run_task}, timeout=max(0.0, deadline - time.monotonic())
             )
             if run_task not in done:
+                # Snapshot the ceiling diagnostics BEFORE cancelling: cancel drains
+                # the script's cleanup (a ``finally`` ctx.log() bumps the last-event
+                # stamp, and the cancelled agent call is dropped from in_flight), so
+                # a snapshot taken after cleanup would read "no event for 0.0s" and
+                # an empty in_flight. Capture the true silence at the ceiling, then
+                # run cleanup, then emit the pre-cancel snapshot.
+                silence = ceiling_silence()
                 # Runaway: cancel it and drain its cancellation quietly so no
                 # CancelledError escapes and no "task was destroyed" warning fires.
                 run_task.cancel()
                 await _drain_cleanup(run_task)
                 await _pre_terminal()
-                emit(
-                    stream.run_failed(
-                        now, error=f"run exceeded {self._timeout_secs}s", where="ceiling"
-                    )
+                ceiling_text = _ceiling_error_text(
+                    f"run exceeded {self._timeout_secs}s",
+                    silence["in_flight"],
+                    silence["last_event_s_ago"],
                 )
+                emit(stream.run_failed(now, error=ceiling_text, where="ceiling"))
                 return RunResult(
                     run_id,
                     ok=False,
                     result=None,
                     events=events,
                     error="timeout",
+                    terminal_error=ceiling_text,
                     agent_results=dict(ctx.agent_results),
                     agent_errors=dict(ctx.agent_errors),
                     source=source,
@@ -1238,9 +1527,16 @@ class WorkflowRunner:
                 agent_errors=dict(ctx.agent_errors),
                 source=source,
             )
-        except Exception as exc:  # script raised — captured, not propagated
+        except BaseException as exc:  # script raised — captured, not propagated
+            # ``BaseException`` is in the script's builtins, so a script can raise
+            # one. A closing coroutine must not await, so it goes straight up; an
+            # interrupt or exit of this process is recorded first, then goes up.
+            if isinstance(exc, GeneratorExit):
+                raise
             await _pre_terminal()
             emit(stream.run_failed(now, error=repr(exc), where="exec"))
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             return RunResult(
                 run_id,
                 ok=False,
@@ -1263,6 +1559,20 @@ class WorkflowRunner:
                 result=None,
                 events=events,
                 error="cancelled",
+                agent_results=dict(ctx.agent_results),
+                agent_errors=dict(ctx.agent_errors),
+                source=source,
+            )
+        if ctx.interrupted_error:
+            # A step was cut off from outside: its None came from a stop, not from
+            # the step's own answer, so the script's return value is not a result.
+            emit(stream.run_failed(now, error=ctx.interrupted_error, where="interrupted"))
+            return RunResult(
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error=ctx.interrupted_error,
                 agent_results=dict(ctx.agent_results),
                 agent_errors=dict(ctx.agent_errors),
                 source=source,
@@ -1337,6 +1647,8 @@ class WorkflowRunner:
         run_id instantly instead of blocking on a slow synchronous author. The
         authored script is written back onto the handle for rerun/restart.
         """
+        # Here, before the run is scheduled: the turn that launched it is still open.
+        trace_workflows.pin_launcher(run_id, session_key)
 
         def _publish_source(src: str) -> None:
             # Write the authored script onto the handle the instant authoring
@@ -1435,7 +1747,12 @@ class WorkflowRunner:
                 status = STATUS_CANCELLED
             else:
                 status = STATUS_FAILED
-            return res.result, status, res.error, res.agent_results
+            # Status keys off ``error`` (the stable sentinel, e.g. "timeout");
+            # the registry snapshot gets ``terminal_error`` — the enriched
+            # ceiling text (stalled agent + silence) when present, else the
+            # plain error — so the Runs detail shows the same diagnostics as the
+            # event stream, not a bare "timeout".
+            return res.result, status, res.terminal_error, res.agent_results
 
         return await start_background_run(
             registry,
@@ -1458,4 +1775,6 @@ class WorkflowRunner:
             fallback_title=fallback_title,
             fallback_folder_id=fallback_folder_id,
             admission_closed=admission_closed,
+            timeout_secs=self._timeout_secs,
+            budget_total=budget_total,
         )

@@ -150,6 +150,19 @@ def _manifest_records(handle: IO[str], batch: Path) -> Iterator[dict[str, Any]]:
         logger.debug("trash manifest in %r ends in a partial line (crash mid-append)", batch.name)
 
 
+def _warn_undecodable(batch: Path) -> None:
+    """Log a manifest that is not valid UTF-8, which both readers treat as unreadable.
+
+    The handle decodes strictly, so such bytes raise ``UnicodeDecodeError``, a
+    ``ValueError`` the ``OSError`` guard does not cover. Every caller already reads
+    ``None`` as "no readable manifest" and keeps the batch's files protected, so one
+    undecodable manifest is withheld like an unreadable one instead of failing the
+    whole trash listing, a restore or an empty with an exception.
+    """
+    # %r: the batch name is agent-controlled; see _manifest_records.
+    logger.warning("trash manifest in %r is not valid UTF-8; treating it as unreadable", batch.name)
+
+
 def _read_manifest(
     batch: Path, *, dir_fd: int | None = None, expect_ino: int | None = None
 ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
@@ -182,6 +195,9 @@ def _read_manifest(
                     continue
                 entries.append(record)
     except OSError:
+        return None
+    except UnicodeDecodeError:
+        _warn_undecodable(batch)
         return None
     except _OversizedManifestRecord:
         logger.warning(
@@ -238,6 +254,9 @@ def _summarize_manifest(
                 sessions += 1
                 staged_bytes += _entry_bytes(record)
     except OSError:
+        return None
+    except UnicodeDecodeError:
+        _warn_undecodable(batch)
         return None
     except _OversizedManifestRecord:
         logger.warning(

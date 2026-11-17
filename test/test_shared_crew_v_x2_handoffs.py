@@ -158,7 +158,7 @@ async def test_taskrunner_replay_never_starts_or_abandons(tmp_path, monkeypatch,
     )
     monkeypatch.setattr(entry, "admit_background_run", AsyncMock(return_value=replay))
     monkeypatch.setattr(taskrunner, "_admit_existing_run", AsyncMock(return_value=replay))
-    monkeypatch.setattr(taskrunner, "app_disabled", lambda app: False)
+    monkeypatch.setattr(taskrunner, "task_runner_off", lambda: None)
     materialize = AsyncMock(return_value=tmp_path / "spec.md")
     monkeypatch.setattr(taskrunner, "_materialize_inline_spec", materialize)
     handlers = {
@@ -185,7 +185,7 @@ async def test_taskrunner_inline_failure_releases_admission(
     runner = _runner(tmp_path)
     spec = "__inline__:" if failure == "empty" else "__inline__:# task"
     request = _request(_state(runner), json_body={"spec": spec})
-    monkeypatch.setattr(taskrunner, "app_disabled", lambda app: False)
+    monkeypatch.setattr(taskrunner, "task_runner_off", lambda: None)
     error = asyncio.CancelledError() if failure == "cancel" else OSError("write failed")
     monkeypatch.setattr(taskrunner, "_materialize_inline_spec", AsyncMock(side_effect=error))
     try:

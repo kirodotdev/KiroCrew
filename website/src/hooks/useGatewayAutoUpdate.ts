@@ -19,6 +19,10 @@
  *   held, so it cannot offer a click the gateway will refuse; the next read
  *   after the overlay is removed is what clears it. A read that fails leaves
  *   the last known answer, and with none the switch stays usable.
+ * - `overlayPolicy`: set when that answer said the entry is a policy an edition
+ *   enforces (`overlay_source: 'policy'`), with the label and detail line it
+ *   gave. The note then names the policy rather than advising a removal the
+ *   edition writes back (`autoUpdatePinNote`).
  * - `readFailed` / `refreshFailed` / `saveError`: what the row reports, each
  *   describing the position `checked` shows (no read notice while a click is
  *   in flight, since the switch shows the click). A save
@@ -37,7 +41,7 @@ import { parseErrorCode } from '../utils/errorReport'
 
 const AUTO_UPDATE_PATH = 'auto_update'
 const CONFIG_KEY = ['kirocrewConfig'] as const
-/** Whether config.local.json sets `auto_update`: read, and also set by every answer that reports it. */
+/** Whether config.local.json sets `auto_update`, and whose entry it is: read, and also set by every answer that reports it. */
 const AUTO_UPDATE_OVERLAY_KEY = ['update.auto_update.overlay'] as const
 /**
  * The value the latest successful save reported the gateway holds:
@@ -48,7 +52,47 @@ const AUTO_UPDATE_ANSWER_KEY = ['update.auto_update.answered'] as const
 
 type KirocrewConfigAutoUpdate = { auto_update?: unknown }
 /** A server answer that may carry the effective value and the overlay pin. */
-type AutoUpdateAnswer = { auto_update?: unknown; overlay_override?: unknown }
+type AutoUpdateAnswer = { auto_update?: unknown; overlay_override?: unknown; overlay_source?: unknown; overlay_policy?: unknown }
+
+/** The policy an edition says keeps config.local.json's `auto_update` entry in place. */
+export type OverlayPolicy = { label: string; detail: string }
+/** Whether config.local.json sets `auto_update`, and, for an edition's policy, which one. */
+type OverlayPin = { pinned: boolean; policy: OverlayPolicy | null }
+
+const UNPINNED: OverlayPin = { pinned: false, policy: null }
+
+/**
+ * The pin an answer reports, or `undefined` when it reports none. A pin with no
+ * usable policy (an older gateway, or `overlay_source: 'user'`) is the person's
+ * own entry.
+ */
+function pinOf(answer: AutoUpdateAnswer | undefined): OverlayPin | undefined {
+  if (typeof answer?.overlay_override !== 'boolean') return undefined
+  if (!answer.overlay_override) return UNPINNED
+  const raw = answer.overlay_policy as { label?: unknown; detail?: unknown } | null | undefined
+  const label = answer.overlay_source === 'policy' && typeof raw?.label === 'string' ? raw.label.trim() : ''
+  if (!label) return { pinned: true, policy: null }
+  return { pinned: true, policy: { label, detail: typeof raw?.detail === 'string' ? raw.detail.trim() : '' } }
+}
+
+/** The pin a 409 refusal carries; a body that names none still means pinned. */
+function refusalPin(err: ApiError): OverlayPin {
+  try {
+    return pinOf(JSON.parse(err.body) as AutoUpdateAnswer) ?? { pinned: true, policy: null }
+  } catch {
+    return { pinned: true, policy: null }
+  }
+}
+
+/**
+ * What the switch's note says about a config.local.json pin: the edition's
+ * policy by name when one owns the entry, else how to remove the person's own.
+ */
+export function autoUpdatePinNote(policy: OverlayPolicy | null): string {
+  return policy
+    ? i18nT('pages.settings.aboutPanel.auto_update_pinned_policy', { label: policy.label, detail: policy.detail }).trim()
+    : i18nT('pages.settings.aboutPanel.auto_update_pinned_user')
+}
 
 export type SwitchState = {
   /** The position the switch shows. */
@@ -67,12 +111,13 @@ export type SwitchState = {
 }
 
 /** The switch's 409 refusal: config.local.json owns the key. */
-function isOverlayRefusal(err: unknown): boolean {
+function isOverlayRefusal(err: unknown): err is ApiError {
   return err instanceof ApiError && err.status === 409 && parseErrorCode(err.body) === 'auto_update_overlay_owned'
 }
 
 function storeOverlayPin(qc: QueryClient, answer: AutoUpdateAnswer | undefined): void {
-  if (typeof answer?.overlay_override === 'boolean') qc.setQueryData(AUTO_UPDATE_OVERLAY_KEY, answer.overlay_override)
+  const pin = pinOf(answer)
+  if (pin) qc.setQueryData(AUTO_UPDATE_OVERLAY_KEY, pin)
 }
 
 /**
@@ -101,7 +146,7 @@ export function adoptCheckedAutoUpdate(qc: QueryClient, answer: AutoUpdateAnswer
 export function useGatewayAutoUpdate(
   /** `true` re-reads the saved value on every mount (the What's-new modal); otherwise a value over 30 s old. */
   { readOnMount = false }: { readOnMount?: boolean } = {},
-): SwitchState & { overlayPinned: boolean } {
+): SwitchState & { overlayPinned: boolean; overlayPolicy: OverlayPolicy | null } {
   const qc = useQueryClient()
   const q = useQuery<KirocrewConfigAutoUpdate, Error, boolean>({
     queryKey: CONFIG_KEY,
@@ -114,9 +159,9 @@ export function useGatewayAutoUpdate(
   // dashboard, and no frame says when, so a stale "pinned" would hold the
   // switch after the entry is gone. 'always' for both, because the dashboard
   // client never marks a query stale on its own (staleTime: Infinity).
-  const pin = useQuery<boolean>({
+  const pin = useQuery<OverlayPin>({
     queryKey: AUTO_UPDATE_OVERLAY_KEY,
-    queryFn: async () => (await api.autoUpdatePin())?.overlay_override === true,
+    queryFn: async () => pinOf(await api.autoUpdatePin()) ?? UNPINNED,
     refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
   })
@@ -146,7 +191,7 @@ export function useGatewayAutoUpdate(
       return opts.onSuccess(data, next, token)
     },
     onError: (err: unknown, next: boolean, token: number | undefined) => {
-      if (isOverlayRefusal(err)) qc.setQueryData(AUTO_UPDATE_OVERLAY_KEY, true)
+      if (isOverlayRefusal(err)) qc.setQueryData(AUTO_UPDATE_OVERLAY_KEY, refusalPin(err))
       opts.onError(err, next, token)
     },
   })
@@ -162,6 +207,7 @@ export function useGatewayAutoUpdate(
   // A save in flight: the switch shows the click, so no read notice applies.
   const clicked = shown<boolean | undefined>(AUTO_UPDATE_PATH, undefined)
   const refused = !!failure && isOverlayRefusal(failure.err)
+  const overlayPolicy = pin.data?.pinned ? pin.data.policy : null
   return {
     checked: clicked ?? saved ?? true,
     held: saved === undefined && !neverRead,
@@ -173,12 +219,13 @@ export function useGatewayAutoUpdate(
         : neverRead && saved !== undefined
           ? i18nT('pages.settings.aboutPanel.auto_update_save_answer_shown')
           : null,
-    overlayPinned: pin.data === true,
+    overlayPinned: pin.data?.pinned === true,
+    overlayPolicy,
     set: next => save.mutate(next),
     saveError: !failure
       ? null
       : refused
-        ? i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned')
+        ? autoUpdatePinNote(overlayPolicy)
         : errMessage(failure.err) || i18nT('pages.settings.aboutPanel.auto_update_save_failed'),
   }
 }

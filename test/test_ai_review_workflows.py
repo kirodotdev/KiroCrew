@@ -643,17 +643,18 @@ class TestPrReadiness:
         assert '(.app.slug // "") == "github-advanced-security"' in workflow
         assert 'neutral|"") pending+=("$label (results pending)")' in workflow
 
-    def test_code_review_rescans_on_retarget_and_pr_hygiene_hears_edits(self) -> None:
-        # A base retarget is an `edited` event and moves the diff, so Code Review
-        # must hear it; it reads no description. PR Hygiene reads it and must
-        # hear the edit and every event Code Review does.
+    def test_code_review_skips_edits_and_pr_hygiene_hears_them(self) -> None:
+        # Code Review reads no description, so an edit starts no scan; readiness
+        # holds a retarget pending through the base its run-name records
+        # (test_pr_readiness_evaluate.py). PR Hygiene reads the description and
+        # must hear the edit and every event Code Review does.
         def types(name: str) -> set[str]:
             doc = yaml.safe_load(_workflow(name))
             trigger = (doc.get("on") or doc[True])["pull_request"] or {}
             return set(trigger.get("types") or ("opened", "synchronize", "reopened"))
 
         code_review = _workflow("code-review.yml")
-        assert "edited" in types("code-review.yml")
+        assert "edited" not in types("code-review.yml")
         assert "pull_request.title" not in code_review
         assert "pull_request.body" not in code_review
         # fix_loop_metrics reads code-review.yml runs as proof PR Hygiene ran.

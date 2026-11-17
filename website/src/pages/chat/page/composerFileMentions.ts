@@ -9,6 +9,7 @@ import {
 } from '../../../utils/fileTokens'
 import { findTokenRanges } from '../../../utils/pasteTokens'
 import { NO_SLOT_TOKEN_KEY } from '../../../utils/chatFileTokenDrafts'
+import { fmtList } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { revealComposer } from '../composerFocus'
 import type { ComposerStaging } from './composerStaging'
@@ -593,12 +594,12 @@ export function useFileMentionActions({
       const parts: string[] = []
       if (revived.length) {
         parts.push(i18nT('components.chatInput.attachment_restored', {
-          file: revived.map(basename).join(', '),
+          file: fmtList(revived.map(basename), { style: 'narrow' }),
         }))
       }
       if (stale.length) {
         parts.push(i18nT('components.chatInput.attachment_removed', {
-          file: stale.map(basename).join(', '),
+          file: fmtList(stale.map(basename), { style: 'narrow' }),
         }))
       }
       if (parts.length) announceAttachmentChange(parts.join('. '))

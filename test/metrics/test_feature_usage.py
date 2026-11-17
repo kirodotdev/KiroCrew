@@ -210,7 +210,12 @@ def test_findings_alone_are_not_a_lesson_tier(rec):
     assert _named(rec, fu.LESSON_INJECTED) == []
 
 
-def test_composition_counters_never_raise():
+def test_composition_counters_never_raise(rec):
+    fu.record_context_composition(object(), object())
+    assert [c["attrs"] for c in _named(rec, fu.MEMORY_RECALLED)] == [
+        {"path": "context", "hit": "false"}
+    ]
+    assert _named(rec, fu.LESSON_INJECTED) == []
     with patch("kiro_crew.metrics.provider.get_recorder", side_effect=RuntimeError("x")):
         fu.record_context_composition({"memory": 1}, {"lessons": {"ids": ["a"]}})
         fu.record_context_composition(object(), object())
@@ -380,7 +385,8 @@ def _call_lines(fn: ast.AST, name: str) -> list[int]:
 
 
 def test_tool_recall_is_recorded_after_the_receipt_commit():
-    fn = _function(SRC / "dashboard/handlers/memory_member.py", "api_memory_recall")
+    # Both recall paths end in one helper, which commits and then records.
+    fn = _function(SRC / "dashboard/handlers/memory_member.py", "_commit_and_record_recall")
     (rec_line,) = _call_lines(fn, "record_memory_recalled")
     # commit_receipt runs through asyncio.to_thread, so find where it is named.
     (commit_line,) = [

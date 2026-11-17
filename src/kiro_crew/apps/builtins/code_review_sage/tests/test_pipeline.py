@@ -1,11 +1,10 @@
 """Unit tests for the review pipeline + result store."""
-import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
 from sage_lib import pipeline as P  # noqa: N812
 from sage_lib import results as R  # noqa: N812
 from sage_lib import store
@@ -209,8 +208,13 @@ class TestFetchSpec(unittest.TestCase):
 
 
 class TestResultStore(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory; pytest removes it."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
         self.rec = {
@@ -221,9 +225,6 @@ class TestResultStore(unittest.TestCase):
                        "criticality": "medium", "rationale": "ok"},
             "findings": [{"dimension": "security", "severity": "red"}],
         }
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_write_read_roundtrip(self):
         R.write_result(self.rec, self.root)

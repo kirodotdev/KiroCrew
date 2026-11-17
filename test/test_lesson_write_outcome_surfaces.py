@@ -20,6 +20,7 @@ from lesson_write_outcome_helpers import (
 )
 
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
@@ -654,7 +655,7 @@ class TestLessonsRouteReportsTheOutcome:
 
     async def test_a_credential_shaped_winner_scope_is_withheld(self):
         """A stored scope the redaction chain would alter never leaves the route."""
-        token = "ghp_" + "C" * 36
+        token = github_classic(seed=310)
         resp, _state = await self._post(
             LessonWriteResult(
                 LessonWriteOutcome.DEDUPED,
@@ -1088,7 +1089,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         from kiro_crew import cli_commands
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=318)
         store = _store(tmp_path)
         store.write_lesson(f"never commit {secret} to the repository", "tool")
         args = argparse.Namespace(
@@ -1115,7 +1116,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
     def test_the_cli_cannot_reassemble_a_credential_split_by_a_control_sequence(self, tmp_path):
         """Pins the ORDER: strip control sequences first, then redact.
 
-        Redacting first leaves ``AKIA<CSI>IOSFODNN7EXAMPLE`` unmatched, and the strip
+        Redacting first leaves ``<head><CSI><rest>`` unmatched, and the strip
         then REASSEMBLES the credential. Stripping can only join characters, never split.
         """
         import argparse
@@ -1124,8 +1125,8 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         from kiro_crew import cli_commands
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        split = "AKIA\x1b[0mIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=318)
+        split = secret[:4] + "\x1b[0m" + secret[4:]
         store = _store(tmp_path)
         store.write_lesson(f"never commit {split} to the repository", "tool")
         args = argparse.Namespace(
@@ -1155,7 +1156,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
 
         The response reaches both the dashboard and the ``learn_add`` tool.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=318)
         resp, _state = await TestLessonsRouteReportsTheOutcome()._post(
             LessonWriteResult(
                 LessonWriteOutcome.INSERTED, None, (f"never commit the key {secret}",)
@@ -1179,7 +1180,7 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
         """
         import logging
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=318)
         cases = {
             # label -> (stored rule, submitted rule) selecting one branch each
             "substring-delete": (

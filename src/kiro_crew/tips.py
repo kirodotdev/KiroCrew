@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.background_failure_log import log_background_failure
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder, ui_language_tag
@@ -31,9 +32,9 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 from kiro_crew.tips_metrics import record_tip_feedback_metric, tip_metric_labels
 
-# Re-exported: ``tips.CatalogEntry`` is the historical import path, and the
-# dataclass moved to the import-light ``tips_pool`` so an edition composition
-# root can build a pool without importing this aiohttp-bearing module.
+# Re-exported: callers import ``tips.CatalogEntry``, while the dataclass lives in
+# the import-light ``tips_pool`` so an edition composition root can build a pool
+# without importing this aiohttp-bearing module.
 from kiro_crew.tips_pool import (
     PUBLIC_POOL_ID,
     WITHHELD_POOL_ID,
@@ -849,11 +850,9 @@ def _select_tip(
     #
     # Ranking by list position instead would make a stable sort's tie order --
     # catalog insertion order, i.e. alphabetical by doc filename -- decide
-    # exposure among tips that are equally recent. That is not hypothetical: one
-    # sweeping commit that edits many docs at once gives every doc it touches the
-    # same git commit time, collapsing them into a single large tie group whose
-    # tail then sits at 0.6**20 and is effectively never surfaced. Tips that are
-    # equally recent must carry equal weight.
+    # exposure among tips that are equally recent. One commit that edits many
+    # docs gives them all the same commit time, and the tail of that tie group
+    # would sit at 0.6**20 and never surface. Equally recent tips carry equal weight.
     tier_of = {
         mtime: tier
         for tier, mtime in enumerate(sorted({mtimes[id(t)] for t in candidates}, reverse=True))
@@ -1230,8 +1229,8 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         text = await run_bg_oneliner(
             state.sessions, prompt, model=tips_model, sel_source="tips", timeout=90
         )
-    except Exception:
-        logger.warning("Tips generation failed; using catalog fallback", exc_info=True)
+    except Exception as exc:
+        log_background_failure(logger, "Tips generation failed; using catalog fallback", exc)
         return _fallback_tips(cache.catalog, st)
 
     tips = _parse_tips(text, allowed_docs={e.doc for e in cache.catalog})
@@ -1250,8 +1249,8 @@ async def refresh_tips(state: DashboardState, cache: TipsCache) -> None:
     """
     try:
         tips = await generate_tips(state)
-    except Exception:
-        logger.warning("Tips generation failed", exc_info=True)
+    except Exception as exc:
+        log_background_failure(logger, "Tips generation failed", exc)
         return
     async with cache._lock:
         cache.state.tips = tips
@@ -1584,5 +1583,5 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _save_state, st)
-    record_tip_feedback_metric(action, tip_source, tip_doc)
+    record_tip_feedback_metric(action, tip_source, tip_doc, tip_id)
     return web.json_response({"ok": True})

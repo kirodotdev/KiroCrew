@@ -19,6 +19,8 @@ import { backendRefusedNotice } from './backendRefused'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useConnected } from '../../hooks/useConnected'
+import { offlineProps } from '../../utils/offline'
 export default function SourcesPopover({ open, onOpenChange, onError, onInstalled }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -31,9 +33,12 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
   const ime = useImeGuard()
   const [installPath, setInstallPath] = useState('')
   const [installing, setInstalling] = useState(false)
+  // Install writes to the gateway, so it is refused while the gateway is
+  // offline (offlineProps names why), as on the Discover page around it.
+  const connected = useConnected()
 
   const handleInstall = async () => {
-    if (!installPath.trim() || installing) return
+    if (!installPath.trim() || installing || !connected) return
     setInstalling(true)
     try {
       const result = await api.installApp(installPath.trim())
@@ -86,7 +91,11 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
               {...ime.bindEnter({ onEnter: () => handleInstall() })}
               className="flex-1"
             />
-            <Btn onClick={handleInstall} disabled={installing || !installPath.trim()}>
+            <Btn
+              onClick={handleInstall}
+              disabled={installing || !installPath.trim() || !connected}
+              {...offlineProps(connected, i18nT('utils.offline.manage_apps'), i18nT('components.appstore.sourcesPopover.install'))}
+            >
               {installing ? i18nT('components.appstore.sourcesPopover.installing') : i18nT('components.appstore.sourcesPopover.install')}
             </Btn>
           </div>

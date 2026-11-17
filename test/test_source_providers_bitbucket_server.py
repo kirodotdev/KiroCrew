@@ -614,6 +614,7 @@ async def test_a_failed_secondary_read_marks_its_section_partial(
     assert resp.status == 200
     assert payload["comments"] == []
     assert payload["partialSections"] == ["review discussions"]
+    assert payload["failedSections"] == ["review discussions"]
 
 
 @pytest.mark.asyncio

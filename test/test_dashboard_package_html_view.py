@@ -19,6 +19,7 @@ import json
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.artifact_store import dashboard_package as dp
 from kiro_crew.artifacts import ArtifactValidationError
@@ -379,6 +380,30 @@ class TestAScriptsOffPageStillShowsItsValues:
         page = '<p data-dashboard-field="other">author text</p>'
         assert frame.fill_bindings_as_text(page, self._read(goal="land it")) == page
 
+    def test_a_field_named_missing_is_marked_not_current(self) -> None:
+        """A field the read names in ``missing`` did not resolve, so its cell must not
+        read as a current value. The bootstrap marks it with the "not current" label in
+        the reader's language; with scripts off this fill has to set the same marker."""
+        from kiro_crew import dashboard_frame as frame
+
+        read = frame.read_payload({}, missing=["goal"], locale="de")
+        out = frame.fill_bindings_as_text('<p data-dashboard-field="goal">0 open</p>', read)
+        assert out == (
+            '<p data-dashboard-field="goal" data-dashboard-missing="true"'
+            ' data-dashboard-missing-label="nicht aktuell">0 open</p>'
+        )
+
+    def test_missing_wins_over_a_value_the_read_still_carries(self) -> None:
+        """As in the bootstrap, ``missing`` wins over presence: an old value still in
+        ``fields`` is not drawn as current. The cell keeps its own text and is marked."""
+        from kiro_crew import dashboard_frame as frame
+
+        read = frame.read_payload({"goal": "old"}, missing=["goal"])
+        out = frame.fill_bindings_as_text('<p data-dashboard-field="goal">0 open</p>', read)
+        assert ">old<" not in out
+        assert 'data-dashboard-missing="true"' in out
+        assert 'data-dashboard-missing-label="not current">0 open</p>' in out
+
     @pytest.mark.timeout(60)
     @pytest.mark.parametrize(
         ("prefix", "unit", "suffix"),
@@ -543,7 +568,7 @@ class TestThePageWearsItsTheme:
         )
 
     def test_a_credential_in_the_theme_is_redacted_on_the_page(self) -> None:
-        token = "ghp_" + "a" * 36
+        token = github_classic(seed=70)
         body = self._body({"tokens": {}, "css": f".board{{content:'{token}'}}"})
         assert token not in body
         assert ".board{" in body

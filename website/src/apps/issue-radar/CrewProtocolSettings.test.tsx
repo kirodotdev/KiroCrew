@@ -442,3 +442,57 @@ describe('CrewProtocolSettings — a draft and the answer that releases it', () 
     expect(screen.getByTestId('crew-desk-protocol-status').getAttribute('data-state')).toBe('idle')
   })
 })
+
+describe('CrewProtocolSettings — the wake switches', () => {
+  it('shows both switches off unless the saved value is true', () => {
+    // An older gateway sends neither key; that is "off", the server's default.
+    mount(SETTINGS)
+    for (const id of ['crew-desk-wake-new-work', 'crew-desk-answer-mentions']) {
+      expect(screen.getByTestId(id).getAttribute('aria-checked')).toBe('false')
+    }
+  })
+
+  it('flips one switch with a one-key patch to the opposite of the saved value', async () => {
+    mount({ ...SETTINGS, crew_answer_mentions: true })
+    expect(screen.getByTestId('crew-desk-answer-mentions').getAttribute('aria-checked')).toBe('true')
+
+    await userEvent.click(screen.getByTestId('crew-desk-wake-new-work'))
+    await waitFor(() => expect(api.putCrewSettings).toHaveBeenCalledTimes(1))
+    expect(api.putCrewSettings).toHaveBeenCalledWith(PAGE_REPO, { crew_wake_on_new_work: true })
+
+    await userEvent.click(screen.getByTestId('crew-desk-answer-mentions'))
+    await waitFor(() => expect(api.putCrewSettings).toHaveBeenCalledTimes(2))
+    expect(api.putCrewSettings).toHaveBeenLastCalledWith(PAGE_REPO, { crew_answer_mentions: false })
+  })
+
+  it('holds a switch disabled until its write answers, so a double click sends one write', async () => {
+    let land: (v: { settings: CrewSettings }) => void = () => {}
+    api.putCrewSettings.mockImplementation(
+      () => new Promise<{ settings: CrewSettings }>((resolve) => { land = resolve }),
+    )
+    mount(SETTINGS)
+    const sw = screen.getByTestId('crew-desk-wake-new-work') as HTMLButtonElement
+
+    await userEvent.click(sw)
+    expect(sw.disabled).toBe(true)
+    await userEvent.click(sw)
+    expect(api.putCrewSettings).toHaveBeenCalledTimes(1)
+
+    land({ settings: { ...SETTINGS, crew_wake_on_new_work: true } })
+    await waitFor(() => expect(sw.disabled).toBe(false))
+  })
+
+  it('leaves a switch where it was when the write fails, and says so', async () => {
+    api.putCrewSettings.mockRejectedValue(new Error('403 forbidden'))
+    mount(SETTINGS)
+    const sw = screen.getByTestId('crew-desk-wake-new-work')
+
+    await userEvent.click(sw)
+
+    await waitFor(() =>
+      expect(screen.getByTestId('crew-desk-protocol-status').getAttribute('data-state')).toBe('failed'),
+    )
+    expect(sw.getAttribute('aria-checked')).toBe('false')
+    expect((sw as HTMLButtonElement).disabled).toBe(false)
+  })
+})

@@ -20,7 +20,7 @@ stamped with that root. The list and the timeline also answer a CLOSED known roo
 still reads; steer and the approval card need a live Crew Mode root.
 
 A queued steer is recorded when the drain delivers it, on either route
-(``chat_send.mark_crew_steer``); a delivered one at once.
+(``crew_steer.mark_crew_steer``); a delivered one at once.
 
 The list read keeps, per root, what only moves with the session tree or a ledger
 write: the closed workers, their titles and every ledger store's facts. The live rows
@@ -30,6 +30,7 @@ are read fresh each time, so an unchanged world costs the live rows and nothing 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -40,6 +41,7 @@ from typing import Any, NamedTuple
 from aiohttp import web
 
 from kiro_crew import crew_mode
+from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.members import _deny_app_caller
 from kiro_crew.dashboard.slot_projection import summary_rows
@@ -67,9 +69,13 @@ async def _gate(request: web.Request, operation: str) -> web.Response | None:
     return await require_owner_dashboard_request(request, operation)
 
 
-def _stamped_rows(state: Any) -> list[dict[str, Any]]:
-    """Every live slot's row, stamped with its Crew Mode root and worker fields."""
-    return list(state.serialize_slots(dashboard_user=True))
+async def _stamped_rows(state: Any) -> list[dict[str, Any]]:
+    """Every live slot's row, stamped with its Crew Mode root and worker fields.
+
+    Yielding pass: with a few hundred open sessions a synchronous pass holds the
+    loop past the stall budget, and the stall alarm restarts the gateway.
+    """
+    return list(await state.serialize_slots_yielding(dashboard_user=True))
 
 
 #: The two kinds of root these routes answer: a Crew Mode conductor, and a crewmate
@@ -127,7 +133,9 @@ def _dispatcher_of(row: Mapping[str, Any]) -> str:
 
 
 def _not_root() -> web.Response:
-    return _bad("not_crew_mode_root", "this session is not an Ultra Mode root or a Bot", status=404)
+    return _bad(
+        "not_crew_mode_root", "this session is not a conductor mode root or a Bot", status=404
+    )
 
 
 def _status(row: Mapping[str, Any]) -> str:
@@ -722,7 +730,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
         return refused
     state = request.app["state"]
     root = request.match_info.get("slot", "")
-    rows = _stamped_rows(state)
+    rows = await _stamped_rows(state)
     root_closed = False
     kind = _live_root(rows, root)[0]
     if not kind:
@@ -822,7 +830,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
     if root_closed:
         out["root_closed"] = True
         out["root_title"] = closed_meta.get(root, ("", ""))[0]
-    return web.json_response(out)
+    return await conditional_json_response(request, json.dumps(out).encode())
 
 
 #: The longest tool input an approval card shows: enough to read a command whole,
@@ -914,7 +922,7 @@ async def api_crew_worker_approve(request: web.Request) -> web.Response:
         return _bad("invalid_action", "action must be approve, reject or trust")
     if not isinstance(request_id, str) or not request_id:
         return _bad("missing_request_id", "request_id is required")
-    rows = _stamped_rows(state)
+    rows = await _stamped_rows(state)
     if _root_row(rows, root) is None:
         return _not_root()
     if not any(row.get("key") == worker for row in _tree_workers(rows, root)):
@@ -984,21 +992,29 @@ async def _load_window(slot: Any) -> None:
     await load_window_off_loop(slot)
 
 
-async def _load_worker_window(state: Any, root: str, worker: str, slot: Any) -> web.Response | None:
+async def _load_worker_window(
+    state: Any, root: str, worker: str, slot: Any, rows_out: list[dict[str, Any]] | None = None
+) -> web.Response | None:
     """Load *worker*'s transcript window off the loop before an action reads it.
 
     The route middleware loads only the conductor the path names; a worker restored
     after a restart still has its window pending, and reading it on the loop would
     stall every chat. The load awaits, so the tab and the crew are checked again
     after it: ``None`` when *slot* is still *root*'s live worker, else the refusal.
+    The stamped rows the check read are appended to *rows_out* when it is given, so
+    a caller can use them without another (yielding) pass.
     """
     await _load_window(slot)
+    rows = await _stamped_rows(state)
+    # Checked after the slot pass, which yields: a tab closed during it is refused.
     if state.get_slot(worker) is not slot:
         return _bad("worker_closed", "that crew member's tab is closed", status=409)
-    if not any(row.get("key") == worker for row in _tree_workers(_stamped_rows(state), root)):
+    if not any(row.get("key") == worker for row in _tree_workers(rows, root)):
         return _bad(
             "not_a_worker", "that session is not one of this conductor's crew members", status=404
         )
+    if rows_out is not None:
+        rows_out.extend(rows)
     return None
 
 
@@ -1082,7 +1098,7 @@ async def api_crew_timeline(request: web.Request) -> web.Response:
 
     state = request.app["state"]
     root = request.match_info.get("slot", "")
-    rows = _stamped_rows(state)
+    rows = await _stamped_rows(state)
     root_row = _root_row(rows, root)
     root_closed = False
     if root_row is None:
@@ -1229,7 +1245,7 @@ async def api_crew_worker_steer(request: web.Request) -> web.Response:
 
     if len(message) > MAX_SEND_MESSAGE_CHARS:
         return _bad("message_too_long", f"message exceeds {MAX_SEND_MESSAGE_CHARS} characters")
-    rows = _stamped_rows(state)
+    rows = await _stamped_rows(state)
     if _root_row(rows, root) is None:
         return _not_root()
     if not any(row.get("key") == worker for row in _tree_workers(rows, root)):
@@ -1250,10 +1266,10 @@ async def api_crew_worker_steer(request: web.Request) -> web.Response:
     if is_relay_archive(slot):
         return _bad(RELAY_ARCHIVE_CODE, RELAY_ARCHIVE_ERROR, status=409)
     # Delivery can start the worker's next turn, which reads its transcript.
-    refused = await _load_worker_window(state, root, worker, slot)
+    rows = []
+    refused = await _load_worker_window(state, root, worker, slot, rows)
     if refused is not None:
         return refused
-    rows = _stamped_rows(state)
     delivered = await _deliver_as_person(state, slot, message, root=root, worker=worker)
     queue_id = delivered.pop("queue_id", "")
     if delivered.pop("requeued", False):
@@ -1280,8 +1296,15 @@ async def api_crew_worker_steer(request: web.Request) -> web.Response:
             return web.json_response(delivered)
     # The steer is also the person's word on the worker's item: one ``steer`` event
     # on the ledger that holds it, which the conductor reads before it decides and
-    # never overrules. The same transaction the worker's own composer runs.
-    delivered.update(await person_steer(state, root, worker, message, rows=rows))
+    # never overrules. The same transaction the worker's own composer runs, in the
+    # background like it: the record waits on the board lock and the crew-log
+    # writer, and a failed one reaches the composer over the socket.
+    from kiro_crew.dashboard.chat_handlers import record_crew_steer_later
+
+    # The rows from the tab check: no await between delivery and the record keeps
+    # one worker's steers recorded in the order they were delivered.
+    record_crew_steer_later(state, root, worker, message, rows=rows)
+    delivered.update(ledger_event=None, ledger_error=None, ledger_pending=True)
     return web.json_response(delivered)
 
 
@@ -1372,7 +1395,7 @@ async def person_steer(
 
     if rows is None:
         try:
-            rows = _stamped_rows(state)
+            rows = await _stamped_rows(state)
         except Exception:
             rows = []
     stamped = rows

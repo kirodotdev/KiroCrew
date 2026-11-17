@@ -26,7 +26,12 @@ from collections.abc import Collection
 from typing import Any, Mapping
 
 from kiro_crew.acp.session_mcp import session_mcp_projection
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
+)
+from kiro_crew.agent_sdk.claude_worker_tools import claude_worker_builtin_tools
 from kiro_crew.providers.mirrors.base import (
     RESOURCES_NO_READER,
     TOOLS_SETTINGS_GATE_CHANNEL,
@@ -275,6 +280,20 @@ class ClaudeCodeMirror(AgentConfigMirror):
             session_key=str(kwargs.get("session_key") or ""),
             worker_mcp_tool_limits_honoured=self.backend
             in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+            worker_native_tool_limits_honoured=self.backend
+            in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
+        )
+        # A worker's native-tool excludes ride the session's ``tools`` option, which
+        # no settings file can widen, so they hold on a withheld array too. Keyed on
+        # the agent, as the read that let those excludes through is.
+        from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+        spec = projection.agent_spec
+        excluded = spec.get("excludedTools") if isinstance(spec, dict) else None
+        builtin_tools = (
+            claude_worker_builtin_tools(ref for ref in excluded if isinstance(ref, str))
+            if agent == MATE_WORKER_AGENT and isinstance(excluded, list)
+            else None
         )
         if not permission_surface_owned:
             logger.warning(
@@ -285,7 +304,11 @@ class ClaudeCodeMirror(AgentConfigMirror):
                 "client's log lines for that file name the cause and its fix; removing the "
                 "file does not help while another Crew session holds it.",
             )
-            return SessionProjection(params={"mcpServers": []}, zero_tools=projection.zero_tools)
+            return SessionProjection(
+                params={"mcpServers": []},
+                zero_tools=projection.zero_tools,
+                builtin_tools=builtin_tools,
+            )
         out: list[dict[str, Any]] = list(projection.servers)
         for stub in stub_elements:
             if not isinstance(stub, Mapping):
@@ -313,4 +336,5 @@ class ClaudeCodeMirror(AgentConfigMirror):
             derived_spec_snapshot=projection.derived_spec_snapshot,
             zero_tools=projection.zero_tools,
             agent_spec=projection.agent_spec,
+            builtin_tools=builtin_tools,
         )

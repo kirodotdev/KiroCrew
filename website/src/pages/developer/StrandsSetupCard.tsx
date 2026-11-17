@@ -212,6 +212,13 @@ export function StrandsSetupCard() {
           variant="inline"
         />
       )}
+      {/* busy while its OWN write runs, so the picker keeps keyboard focus
+          instead of a native disabled dropping it to the page. The rest stay
+          native disabled: not yet loaded, or another control (the model save, a
+          field save) is busy, which is not this control's own doing. (Kept
+          outside the element: the settings extractor scans the tag's text to a
+          4000-char ceiling and a backtick in an inline comment would hide the
+          closing tag and drop the setting from the registry.) */}
       <SettingsSelect
         label={i18nT('pages.developer.strandsSetup.provider_label')}
         value={provider.id}
@@ -220,7 +227,8 @@ export function StrandsSetupCard() {
         onChange={v => {
           if (v !== savedProvider.id) providerMut.mutate(v as StrandsProvider['id'])
         }}
-        disabled={!configQ.isSuccess || providerMut.isPending || modelMut.isPending || fieldWriting}
+        busy={providerMut.isPending}
+        disabled={!configQ.isSuccess || modelMut.isPending || fieldWriting}
         configKey={STRANDS_PROVIDER_KEY}
       />
       <p className="mb-0 text-[12px] leading-relaxed text-muted" data-testid="strands-provider-note">

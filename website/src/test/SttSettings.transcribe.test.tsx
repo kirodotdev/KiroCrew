@@ -16,6 +16,7 @@ import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
+import { setUpdateProgress } from '../store/dashboardSlice'
 import { initI18n } from '../i18n'
 import SttSettings from '../pages/settings/SttSettings'
 import { api } from '../api/client'
@@ -198,6 +199,24 @@ describe('SttSettings provider-aware install surface', () => {
     await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.getByTestId('stt-restart-gateway')).toBeDisabled())
     await act(async () => { finish() })
+  })
+
+  it('a restart refused after its 200 re-enables the button and shows why (#35351)', async () => {
+    mockApi.restartGateway.mockResolvedValue({ ok: true, status: 'restarting' })
+    mount({
+      provider: 'transcribe',
+      prereqs: ["/opt/kirocrew/bin/python -m pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'"],
+    })
+    await loaded()
+
+    fireEvent.click(screen.getByTestId('stt-restart-gateway'))
+    fireEvent.click(screen.getByTestId('stt-restart-gateway'))
+    await waitFor(() => expect(screen.getByTestId('stt-restart-gateway')).toBeDisabled())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'Sessions did not drain in time.' })) })
+    expect(await screen.findByText('Sessions did not drain in time.')).toBeTruthy()
+    expect(screen.getByTestId('stt-restart-gateway')).not.toBeDisabled()
+    act(() => { store.dispatch(setUpdateProgress(null)) })
   })
 
   it('offers the restart for the local provider too, which also needs the extra', async () => {

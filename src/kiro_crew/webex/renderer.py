@@ -72,26 +72,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Webex allows 10 edits per message. Split that budget ONCE, here, so the
-# arithmetic is readable rather than implied by a single constant: status frames
-# get the first slice and the rest is held back for the final answer. A status
-# frame that FAILS burns the whole remaining status budget (an edit-cap or
-# rate-limit 400 means further status edits will fail too), so the final edit
-# can never race the cap.
+# Webex allows 10 edits per message, split here: status frames get the first
+# slice, the rest is kept for the final answer. A FAILED status edit spends the
+# whole status budget (an edit-cap or rate-limit 400 means more would fail too),
+# so the final edit never races the cap.
 _WEBEX_EDIT_CAP = 10
 # One edit for the answer itself, plus one of margin: a follow-up chunk is a new
 # message rather than an edit, so the answer path spends exactly one.
 _RESERVED_FINAL_EDITS = 2
 _STATUS_EDIT_BUDGET = _WEBEX_EDIT_CAP - _RESERVED_FINAL_EDITS
 
-# Status frames are paced by a DOUBLING interval, not a flat one. The budget is
-# a handful of edits against a turn that can run for minutes, so a flat throttle
-# spends every frame in the first few seconds and then the indicator is frozen
-# for the rest of the turn — the exact window where the user most needs to know
-# something is still happening. Doubling from _STATUS_THROTTLE_S spreads the
-# budget across roughly eight minutes, dense early (when a turn usually
-# resolves) and sparse later (when it has not). The growth needs no ceiling of
-# its own: _STATUS_EDIT_BUDGET bounds how many times it can double.
+# Status frames are paced by a DOUBLING interval: a flat throttle would spend the
+# few edits in the first seconds and freeze the indicator for the rest of a long
+# turn. Doubling spreads the budget over roughly eight minutes; _STATUS_EDIT_BUDGET
+# bounds how many times it can double, so it needs no ceiling of its own.
 _STATUS_THROTTLE_S = 2.0
 
 # How much of the forming answer rides a status frame. Small on purpose: the
@@ -394,17 +388,11 @@ class WebexRenderer(Renderer):
             return
         self._finalized = True
         ok = stop_reason != "error"
-        # The BUFFERED default: this renderer sends the answer once, so an
-        # unfinished ``[OPTIONS`` tail here is the assistant's own prose and
-        # cutting it would be permanent -- a reply ending ``see the [OPTIONS
-        # section`` keeps its last four words. The status frame above trades the
-        # other way, because a frame is transient.
-        # Control-tag lines are peeled BEFORE the outer whitespace trim: the trim
-        # would erase the indentation that marks a quoted, 4-space-indented tag
-        # as code, and the tail grammar would then read it as protocol. Both
-        # sides of the trailer (a message carrying both puts one of them last);
-        # complete tags only, for the same reason as the trailer: the answer is
-        # sent once, so a partial tail here is prose and stays.
+        # Complete tags only: the answer is sent once, so an unfinished ``[OPTIONS``
+        # tail is the assistant's own prose and stays (the transient status frame
+        # hides partials instead). Control-tag lines are peeled on both sides of
+        # the trailer and BEFORE the whitespace trim, which would erase the
+        # indentation that marks a quoted tag as code.
         body, choices = split_options_trailer(strip_control_comments("".join(self._buf)))
         body = strip_control_comments(body).strip()
         # Cap the choices for the widget and degrade the remainder to numbered
@@ -439,26 +427,12 @@ class WebexRenderer(Renderer):
         content = webex_display_safe(body) or ("…" if ok else _ERROR_TEXT)
         if self._steered:
             content = f"{content}\n\n{_STEER_NOTE}"
-        # Byte-aware and FENCE-AWARE: Webex caps messages in UTF-8 BYTES, so the
-        # neutral character-based splitter could hand the client an oversized
-        # chunk that gets tail-truncated (silent data loss). Nothing upstream of
-        # this split seals a code fence, so the split itself must: a cut inside a
-        # fence closes it in one chunk and reopens it in the next. Each chunk is
-        # its own message, so the blank line a cut lands on is dropped rather
-        # than shipped as empty space; every content line still arrives whole.
-        #
-        # OFFLOADED, like every other site that hands this splitter a redactor:
-        # the grade redacts and rescans the text once per candidate boundary and
-        # the search tries many budgets, so a final answer where no cut is clean
-        # holds the thread for seconds. This gateway runs every channel, every turn
-        # and the liveness heartbeat on one loop, and the watchdog exits the
-        # process when that loop goes quiet.
-        #
-        # RE-BOUND after the grade, because this transport's cap is hard: when no
-        # budget cuts safely the splitter declines to cut and answers with the text
-        # whole, and this client truncates anything over its byte cap, which would
-        # drop the answer's tail with no notice. ``repaired_for_delivery`` makes a
-        # sequence safe to bound again, so the result can be re-cut to the budget.
+        # Byte-aware (Webex caps messages in UTF-8 bytes and tail-truncates the
+        # rest) and fence-aware (a cut inside a code fence closes it in one chunk
+        # and reopens it in the next). Off-loop: the redacting grade rescans each
+        # candidate boundary and can take seconds, and the watchdog exits the
+        # process when the shared loop stalls. ``_bounded_chunks`` re-cuts a
+        # whole-text answer.
         chunks = await asyncio.to_thread(_bounded_chunks, content) or ["…"]
         # The chunks that ship, not the source they were cut from: a boundary repair
         # can add a placeholder of its own, which the notice below has to count.
@@ -474,38 +448,24 @@ class WebexRenderer(Renderer):
             if delivered and self._placeholder_id is not None:
                 await self._client.delete_message(self._placeholder_id)
         if not delivered:
-            # Both the edit and the fallback send failed (transient Webex
-            # outage). Posting the follow-up chunks anyway would deliver a
-            # response that starts mid-answer — abort instead so the failure
-            # is all-or-prefix, never a headless tail.
+            # Edit and fallback send both failed: abort so the failure is
+            # all-or-prefix, never a headless tail.
             logger.warning(
                 "Webex: final answer delivery failed (edit + send); "
                 "suppressing %d follow-up chunk(s)",
                 len(rest),
             )
             return
-        # The ANSWER completes before anything else goes out. An upload or a card
-        # posted between two chunks of one answer reads as an interruption: the
-        # user sees part 1, then images, then "pick one of the options above", then
-        # part 2 resuming mid-sentence — a card asking for a choice before the
-        # question has finished arriving.
+        # The whole answer goes out before any upload or card, so a card never
+        # asks for a choice before the question has finished arriving.
         for chunk in rest:
             sent = await self._client.send_message(self._room_id, chunk, parent_id=self._thread_id)
             if sent is None:
-                # Stop at the first failed follow-up: the delivered prefix is
-                # coherent, and skipping ahead would splice a gap into the middle
-                # of the answer. BREAK rather than return, because the uploads and
-                # the card below belong to the prefix that DID land — and the card
-                # holds the only copy of the kept choices, since the answer text
-                # had them stripped precisely so widget and text are not one
-                # duplicated list. Returning here would leave the user reading a
-                # question with no visible answers anywhere.
-                #
-                # The truncation is ANNOUNCED for the same reason it is not fatal:
-                # what makes a trailing card incoherent is not that it arrives, but
-                # that it would otherwise attach to an answer the user believes is
-                # complete. Best-effort — this path is already a send failure, so a
-                # second failure changes nothing.
+                # Stop at the first failed follow-up so no gap is spliced into the
+                # answer. Break, not return: the uploads and the card belong to the
+                # prefix that landed, and the card holds the only copy of the kept
+                # choices. The truncation is announced (best-effort) so the card
+                # does not attach to an answer the user believes is complete.
                 logger.warning("Webex: follow-up chunk delivery failed; stopping")
                 await self._client.send_message(
                     self._room_id, _TRUNCATED_NOTE, parent_id=self._thread_id
@@ -514,19 +474,12 @@ class WebexRenderer(Renderer):
         if uploads:
             await self._report_failed_uploads(await self._send_uploads(uploads))
         if card is not None:
-            # Its OWN message: Webex refuses to edit a message once it carries an
-            # attachment, so folding the card into the answer would forfeit the
-            # answer's final edit AND leave the card unretireable. Threaded with
-            # the answer so a choice does not appear detached in the room root.
-            # The numbered choices ride the card message's own markdown, which is
-            # the FALLBACK Webex requires alongside an attachment — and cards.py's
-            # stated invariant is that a card is an addition, never the only
-            # affordance. Without them a client that cannot render Adaptive Cards
-            # receives "pick one of the options above" with no options anywhere:
-            # the answer text had them stripped precisely because the card was
-            # carrying them. A card-capable client sees the buttons and the same
-            # list numbered beneath, which is coherent because the numbers ARE the
-            # button order.
+            # A separate message, threaded with the answer: Webex will not edit a
+            # message with an attachment, so a card folded into the answer would
+            # block its edit and could never be retired. The numbered choices go
+            # in the card message's markdown (the fallback Webex requires next to
+            # an attachment), so clients without cards still see them; numbers
+            # match the button order.
             sent = await self._client.send_message(
                 self._room_id,
                 self._numbered_text(_CHOICE_PROMPT, kept),
@@ -534,26 +487,19 @@ class WebexRenderer(Renderer):
                 parent_id=self._thread_id,
             )
             if sent is None:
-                # The card carried the ONLY copy of the kept choices — the answer
-                # text has them stripped precisely so widget and text do not
-                # duplicate one list. A failed card would therefore leave the user
-                # reading a question with no visible answers, so the numbered form
-                # is posted as the fallback it always was. Sent only on failure:
-                # posting both unconditionally is the duplication the shared
-                # apply_options_cap contract exists to prevent.
+                # The card carried the only copy of the kept choices, so post them
+                # as numbered text. Only on failure: posting both would be the
+                # duplication apply_options_cap exists to prevent.
                 logger.warning("Webex: options card send failed; posting the choices as text")
                 await self._client.send_message(
                     self._room_id,
                     self._numbered_text("", kept).lstrip("\n"),
                     parent_id=self._thread_id,
                 )
-        # Post-answer redaction notice, counted over the assembled answer the
-        # chunks above were cut from (the reference shape iMessage uses). A
-        # follow-up chunk that failed already announced its truncation, so a
-        # count over the full content can at most describe a placeholder the
-        # reader did not receive — the safe direction. Best-effort by the
-        # shared contract: the answer is out, so a failed notice send is
-        # logged, never raised.
+        # Redaction notice, counted over the whole answer the chunks came from
+        # (as iMessage does). If a follow-up chunk failed, the count may include
+        # a placeholder the reader never got, which errs safe. Best-effort: the
+        # answer is out, so a failed send is logged, never raised.
         cred_count, url_count = count_redaction_tags(delivered_text)
         if cred_count or url_count:
             try:
@@ -582,16 +528,11 @@ class WebexRenderer(Renderer):
         frame would spend an edit to change nothing, and edits are the scarcest
         resource on this channel.
 
-        The throttle window closes as soon as it OPENS, before the frame is even
-        built, and that ordering is load-bearing. Closing it only on a successful
-        edit leaves the window open for every later chunk whenever the frame stops
-        changing — and the frame stops changing often, because it shows only the
-        last ``_STATUS_TAIL_CHARS`` of the answer. Each of those chunks would then
-        rebuild the whole buffer and re-run the trailer regex, so a long stream of
-        repetitive output (a wide markdown table, a run of blank lines, an
-        unterminated ``[OPTIONS`` trailer) turns a per-turn cost into a
-        per-chunk one. Deferring an unchanged frame to the next window loses
-        nothing: by definition there was nothing new to show.
+        The throttle window closes as soon as it opens, before the frame is built.
+        Closing it only on a successful edit would leave it open whenever the frame
+        stops changing (it shows only the last ``_STATUS_TAIL_CHARS``), so every
+        later chunk would rebuild the buffer and re-run the trailer regex. An
+        unchanged frame has nothing new to show, so deferring it loses nothing.
         """
         if self._placeholder_id is None or self._edits_used >= _STATUS_EDIT_BUDGET:
             return

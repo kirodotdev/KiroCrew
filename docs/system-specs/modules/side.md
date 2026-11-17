@@ -417,9 +417,10 @@ tab, shows nothing new.
 
 ## Backend Modules
 
-### `dashboard/ws.py` — `broadcast_side_queue`
+### `dashboard/ws_side_frames.py` — `broadcast_side_queue`
 
-Emits `chat.side_queue` frames — `{kind, slot, action, queue_id, content?, depth,
+Defined in `ws_side_frames.py` and re-exported by `dashboard/ws.py`, like the two
+broadcasts below. Emits `chat.side_queue` frames — `{kind, slot, action, queue_id, content?, depth,
 ts, front?, steer_id?, origin_client?}` where `action` is `push` | `edit` |
 `cancel` | `drain`, to owner sockets only (`broadcast_ws_owners`). Held apart from
 `chat.side_result` so a queue mutation never enters the transcript reducer, and
@@ -703,7 +704,7 @@ so it still loads. `_run_side_turn` requests the base agent's session with
 `AcpProvider` to `AcpClient`. A pooled child was started without that shape, and
 none can serve the session: a `side:` (or `thread:`) key is stateless, so it never
 claims from the warm pool (`bypass_stateless`). The claude client then starts the
-session confined (`AcpClient._claude_session_meta`):
+session confined (`ClaudeAcpClient._claude_session_meta`):
 
 - `tools` holds only the read built-ins (`Read`, `Grep`, `Glob`, `WebFetch`,
   `WebSearch`; `acp/harness_tool_names.CLAUDE_READ_ONLY_BUILTINS`), so no write
@@ -759,7 +760,8 @@ named on every session instead (`harness_tool_id`, through
 refuse a call. The shape rides
 `_meta.claudeCode.options`, which only an adapter at
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION` or newer is verified to honour. Below it
-(read from the installed package by `claude_adapter_honours_session_options`) the
+(read by `claude_adapter_honours_session_options` from the adapter's package.json,
+or for a wrapper script from the version it reported at its latest handshake) the
 turn runs `REJECT_ALL` and a warning names the upgrade, and a handshake that
 reports an older version stops the session before its first prompt. The session
 has no shell, so its boundary prompt is `SIDE_BOUNDARY_PROMPT_NO_SHELL`, which
@@ -939,13 +941,13 @@ egress from the side chat denies the two tools with an `auto_deny_tools` rule
 or a governance profile — both bind on this surface exactly as on the main
 chat.
 
-### `dashboard/ws.py` — `broadcast_side_result`
+### `dashboard/ws_side_frames.py` — `broadcast_side_result`
 
 Module-level helper emitting `chat.side_result` frames to owner sockets only
 (`broadcast_ws_owners`), never to app sockets, matching `_check_slot_ownership`.
 Deliberately separate from `broadcast_ws` main-channel events.
 
-### `dashboard/ws.py` — `broadcast_side_closed`
+### `dashboard/ws_side_frames.py` — `broadcast_side_closed`
 
 Emits `chat.side_closed` to owner sockets only, from `api_side_close`, whether or
 not a conversation was open: a tab can still show one the gateway lost in a

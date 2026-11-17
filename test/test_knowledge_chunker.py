@@ -251,3 +251,19 @@ def test_slides_over_the_chunk_cap_keep_the_last_slide():
     assert len(chunks) <= chunker_mod.MAX_CHUNKS_PER_FILE
     assert "body 59" in chunks[-1]["content"]
     assert chunks[-1]["section_title"] == "Slide 58"
+
+
+@pytest.mark.parametrize("heading", ["#", "# ", "##\t"])
+def test_an_empty_heading_does_not_take_the_next_line_as_its_title(heading):
+    text = f"{heading}\nFirst paragraph under it\n"
+    chunks = HeadingAwareChunker().chunk_markdown(text)
+    assert [c["section_title"] for c in chunks] == [None]
+    assert "First paragraph under it" in chunks[0]["content"]
+
+
+def test_a_hash_tag_line_stays_body_text():
+    text = "# Notes\n#tag\nmore text\n####### seven\n"
+    chunks = HeadingAwareChunker().chunk_markdown(text)
+    assert [c["section_title"] for c in chunks] == ["Notes"]
+    assert "#tag" in chunks[0]["content"]
+    assert "####### seven" in chunks[0]["content"]

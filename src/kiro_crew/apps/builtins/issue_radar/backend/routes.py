@@ -174,6 +174,7 @@ from .http_routes.issue_writes import (  # noqa: F401
     _reread_labels_and_patch,
 )
 from .http_routes.items import (  # noqa: F401
+    _HIDDEN_TIMELINE_KINDS,
     _handle_issue_detail,
     _handle_issues,
     _handle_issues_first_page,
@@ -183,6 +184,7 @@ from .http_routes.items import (  # noqa: F401
     _handle_pulls_search,
     _handle_ref_summary,
     _load_open_issues_for_reco,
+    _visible_timeline,
 )
 from .http_routes.pr_actions import (  # noqa: F401
     _BULK_PR_ACTIONS,
@@ -471,9 +473,13 @@ async def _handle_connect(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "request body must be JSON"}, status=400)
+        return web.json_response(
+            {"error": "request body must be JSON", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
-        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "body_not_object"}, status=400
+        )
 
     # A truthy non-string (`{"url": 1}`) would crash `.strip()` into a 500.
     url = body.get("url") or ""

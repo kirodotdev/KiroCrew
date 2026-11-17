@@ -35,6 +35,7 @@ import { appDisplayName, appDescription } from './appManifest'
 import { needsDesktopApp } from '../../lib/electron'
 
 import { i18nT } from '../../i18n/t'
+import { offlineProps } from '../../utils/offline'
 
 /**
  * One app inside a featured card: icon, name, a secondary line, and the control
@@ -57,6 +58,7 @@ function FeaturedAppRow({
   sources,
   secondary,
   busy,
+  connected,
   onOpen,
   onGet,
   onEnable,
@@ -66,6 +68,8 @@ function FeaturedAppRow({
   /** The line under the name. The app's description, or its provenance meta. */
   secondary: string
   busy?: boolean
+  /** The gateway connection flag: offline, Enable is refused. */
+  connected: boolean
   /** Omit when an ancestor already opens this app, so the row stays inert. */
   onOpen?: (e?: React.MouseEvent | React.KeyboardEvent) => void
   onGet: () => void
@@ -139,9 +143,10 @@ function FeaturedAppRow({
             <Btn
               primary
               className="rounded-full px-3.5 py-1 font-semibold"
-              disabled={busy}
+              disabled={busy || !connected}
               onClick={onEnable}
               aria-describedby={needsDesktopApp(app) ? desktopHintId : undefined}
+              {...offlineProps(connected, i18nT('utils.offline.manage_apps'), i18nT('components.appstore.featuredSpotlight.enable'))}
             >
               <Power size={13} /> {i18nT('components.appstore.featuredSpotlight.enable')}
             </Btn>
@@ -179,6 +184,7 @@ export default function FeaturedSpotlight({
   onGet,
   onEnable,
   busyName,
+  connected,
 }: {
   /** Which shape this is. `app` carries one entry in `apps`; `collection` two or more. */
   type: 'app' | 'collection'
@@ -243,6 +249,8 @@ export default function FeaturedSpotlight({
   onEnable: (name: string) => void
   /** Name of the app with an action in flight, so only its own control disables. */
   busyName?: string | null
+  /** The gateway connection flag: offline, each row's Enable is refused. */
+  connected: boolean
 }) {
   // The lead app anchors the fallback art and the single-app heading. For a
   // collection it is only the art fallback: the heading is the curator's theme,
@@ -433,6 +441,7 @@ export default function FeaturedSpotlight({
                 : `${a.author} · ${categoryLabel(categoryFor(a.tags))} · ${i18nT('components.appstore.featuredSpotlight.v')}${a.installedVersion || a.version}`
             }
             busy={busyName === a.name}
+            connected={connected}
             /* Only a collection's rows are interactive; on a single-app card the
                card itself is the target, so passing a handler here would open
                the app twice. */
@@ -559,6 +568,7 @@ export default function FeaturedSpotlight({
                     sources={sources}
                     secondary={appDescription(a)}
                     busy={busyName === a.name}
+                    connected={connected}
                     onOpen={e => onOpenApp(a.name, e)}
                     onGet={() => onGet(a.name)}
                     onEnable={() => onEnable(a.name)}

@@ -138,7 +138,36 @@ function createHangRecovery({
   };
 }
 
+/**
+ * End a hung renderer so `render-process-gone` recovery can reload it.
+ *
+ * Outside Linux, `forcefullyCrashRenderer()` first has Crashpad dump the hung
+ * process from inside the main process. When the app runs as its x86_64 slice
+ * under Rosetta, that dump cannot read the renderer's threads (Crashpad logs
+ * `thread_get_state(4): (os/kern) invalid argument`) and the main process then
+ * aborts with EXC_BREAKPOINT, so the whole app exits instead of reloading.
+ * Under translation the renderer is killed by pid instead: Electron reports
+ * the death as reason `killed`, which renderer-recovery reloads like a crash.
+ *
+ * @param {{forcefullyCrashRenderer: () => void, getOSProcessId: () => number}} webContents
+ * @param {object} [o]
+ * @param {boolean} [o.underTranslation] `app.runningUnderARM64Translation`
+ * @param {(pid: number, signal: string) => void} [o.kill]
+ * @returns {"force-crashed" | "killed" | "no-process"}
+ */
+function endHungRenderer(webContents, { underTranslation = false, kill = process.kill } = {}) {
+  if (!underTranslation) {
+    webContents.forcefullyCrashRenderer();
+    return "force-crashed";
+  }
+  const pid = webContents.getOSProcessId();
+  if (!(pid > 0)) return "no-process";
+  kill(pid, "SIGKILL");
+  return "killed";
+}
+
 module.exports = {
   createHangRecovery,
+  endHungRenderer,
   DEFAULT_GRACE_MS,
 };

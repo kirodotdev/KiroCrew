@@ -71,6 +71,11 @@ async function mounted(store = createConnectedTestStore()) {
   await waitFor(() => {
     if (!view.container.querySelector('iframe')) throw new Error('the frame never mounted')
   })
+  // The frame can be committed outside act, and a later sync act does not run the
+  // passive effects that commit left pending, among them the band's clock interval.
+  // An empty async act runs them, so a test that moves fake timers next moves a
+  // clock that exists.
+  await act(async () => {})
   return view
 }
 

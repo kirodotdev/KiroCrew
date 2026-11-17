@@ -11,6 +11,7 @@ import logging
 import re
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.crew_log.schema import KIND_MEMBER
 from kiro_crew.crew_log.store import crew_log_path
@@ -126,7 +127,7 @@ class TestMemberPinMatches:
         ("mode", "current", "requested", "expected"),
         [
             (DM_SLOT_MODE, "dr. eggbot", "dr. eggbot", True),
-            (DM_SLOT_MODE, "AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", False),
+            (DM_SLOT_MODE, github_classic(seed=7), github_classic(seed=7), False),
             (DM_SLOT_MODE, "crew password=shortvalue", "crew password=shortvalue", False),
             (DM_SLOT_MODE, "dr. eggbot", "other", False),
             ("", "dr. eggbot", "dr. eggbot", False),
@@ -185,7 +186,7 @@ class TestDispatchableLegacyNfcName:
 
 class TestReadableMemberName:
     NFD = "Cafe\u0301"
-    CREDENTIAL_SHAPED = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+    CREDENTIAL_SHAPED = github_classic(seed=7)
 
     def test_readable_member_accepts_a_safe_nfd_name(self):
         assert is_readable_member_name(self.NFD) is True

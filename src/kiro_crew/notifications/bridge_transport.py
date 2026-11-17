@@ -23,17 +23,147 @@ path ignores, so a bridged note never comes back as a turn or a note.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
+from kiro_crew.messaging.transport import sole_direct_target
 from kiro_crew.notifications.bridge import BridgeTransportUnavailable
+from kiro_crew.notifications.bridge_approval_note import (
+    ACTION_TOKEN_KEY,
+    APPROVAL_DETAIL_KEY,
+    is_pending_approval_note,
+)
+from kiro_crew.notifications.bridge_question_note import OPTIONS_KEY, is_pending_question_note
 
 #: The bridge transports this sink serves; ``DashboardState`` registers one each.
-TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex")
+TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex", "feishu")
+
+#: The transports whose owner may answer a bridged approval by replying ``approve``
+#: or ``deny`` to it (RFC bridge actions, B4d, B4g). Each needs an inbound reader that
+#: knows which message a reply quotes; the others stay read-only until they get one.
+REPLY_TRANSPORTS: tuple[str, ...] = ("discord", "telegram", "webex")
 
 #: The marker a critical note's first line carries.
 _CRITICAL_MARKER = "🚨"
+
+#: The ``user:`` prefix of a configured direct target.
+_DM_PREFIX = "user:"
+
+
+def reply_owner(state: Any, transport: str) -> str:
+    """The owner's user id on reply transport *transport*, or ``""``. Never raises.
+
+    The one owner rule the messaging layer already owns: the transport must be in
+    ``constants.CHANNEL_OWNER_DM_NAMESPACES`` and advertise exactly one available,
+    non-learned direct target (``messaging.transport.sole_direct_target``). Read
+    live, so an owner dropped from the allow-list cannot answer.
+    """
+    try:
+        if transport not in REPLY_TRANSPORTS or transport not in CHANNEL_OWNER_DM_NAMESPACES:
+            return ""
+        live = state.get_channel_transport(transport)
+        if live is None:
+            return ""
+        target = sole_direct_target(list(live.configured_targets()))
+        return target.removeprefix(_DM_PREFIX) if target.startswith(_DM_PREFIX) else ""
+    except Exception:
+        return ""
+
+
+def bound_owner(state: Any) -> str:
+    """The owner a bridged decision is bound for, or ``""``. Never raises.
+
+    Slack's configured ``owner_id``, else the owner DM of the first reply transport
+    that names one. Only the audit records it: each reader still checks its own owner.
+    """
+    owner = getattr(state, "owner_id", "")
+    if isinstance(owner, str) and owner:
+        return owner
+    return next((found for name in REPLY_TRANSPORTS if (found := reply_owner(state, name))), "")
+
+
+#: The most a reply note may render to, in characters, per reply transport: below
+#: the transport's per-message cap with room for the delivery leg's display pass, so
+#: the note is one message and a reply to it can only quote the message that carries
+#: the prompt. Telegram's counts the rendered HTML; Discord sends markdown as written
+#: and the delivery leg chunks it at 1900; Webex caps a message in UTF-8 bytes
+#: (``webex.client.WEBEX_MAX_TEXT``, 7000), so its budget is bytes too.
+_ONE_MESSAGE = 3500
+_ONE_DISCORD_MESSAGE = 1800
+_ONE_WEBEX_MESSAGE_BYTES = 6000
+
+#: The fewest characters of a cut detail still shown with a prompt: below it, what
+#: an Approve would run is not readable enough to consent to, so no prompt is sent.
+_MIN_SHOWN = 100
+
+
+def _fits_one_message(transport: str, text: str) -> bool:
+    """Whether *text* is one message on reply transport *transport*, as sent. MAY BLOCK.
+
+    Discord's and Webex's are measured after the delivery leg's display pass
+    (``messaging.renderer.display_safe_for``), which can lengthen it (Discord's
+    mention defang); Webex's in UTF-8 bytes, its cap's unit.
+    """
+    if transport == "discord":
+        from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+        from kiro_crew.messaging.renderer import display_safe_for
+
+        return len(display_safe_for(text, DISCORD_CAPABILITIES)) <= _ONE_DISCORD_MESSAGE
+    if transport == "webex":
+        from kiro_crew.messaging.renderer import display_safe_for
+        from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+
+        shown = display_safe_for(text, WEBEX_CAPABILITIES)
+        return len(shown.encode("utf-8")) <= _ONE_WEBEX_MESSAGE_BYTES
+    # Lazy: the Telegram renderer is not needed until a note is bound.
+    from kiro_crew.telegram.renderer import md_to_telegram_html_safe
+
+    return len(text) <= _ONE_MESSAGE and len(md_to_telegram_html_safe(text)) <= _ONE_MESSAGE
+
+
+#: How the owner answers a bound note by reply, by what the note asks.
+APPROVAL_PROMPT = "Reply **approve** or **deny** to this message."
+QUESTION_PROMPT = "Reply with the number of your answer to this message."
+
+#: What separates a question's numbered options on their one line.
+_OPTION_SEPARATOR = " · "
+
+
+def render_reply_text(
+    head: str, detail: str, transport: str, prompt: str = APPROVAL_PROMPT, *, whole: bool = False
+) -> str:
+    """*head* (the note) plus what it asks and how to answer, as one message, or ``""``.
+
+    *detail* is what an approval will run, or a question's numbered options;
+    *prompt* says how to answer it. *whole* refuses any cut: a question's options
+    must all be readable in full before a number can pick one.
+
+    *detail* is scrubbed for display FIRST, so the cut can never sever a credential
+    the scan would have caught, then collapsed to one line and cut the way
+    Telegram's own approval card shows a call's input; every backtick is followed
+    by a zero-width space, so untrusted input can neither close the code fence nor
+    render as markup. The cut shrinks until the whole text is one message on
+    *transport*; ``""`` when it would have to fall below :data:`_MIN_SHOWN`, and
+    then the note carries no prompt. MAY BLOCK: run it off the loop.
+    """
+    # Lazy: the shared display scrub and the input cut live with Telegram's renderer.
+    from kiro_crew.telegram.renderer_approval import _APPROVAL_INPUT_CHARS
+    from kiro_crew.telegram.renderer_display import _display_safe
+
+    shown = " ".join(_display_safe(" ".join(detail.split())).split())
+    cut = _APPROVAL_INPUT_CHARS
+    while cut >= _MIN_SHOWN:
+        if whole and len(shown) > cut:
+            return ""
+        part = shown if len(shown) <= cut else shown[: cut - 1].rstrip() + "…"
+        part = part.replace("`", "`\u200b")
+        text = f"{head}\n\n```\n{part}\n```\n{prompt}"
+        if _fits_one_message(transport, text):
+            return text
+        cut //= 2
+    return ""
 
 
 def _text(note: Mapping[str, Any], field: str) -> str:
@@ -54,7 +184,9 @@ class TransportBridgeSink:
     """Deliver bridged notes to the owner DM on one ``MessagingTransport``.
 
     *state* is the gateway's ``DashboardState``; *transport* is the channel type,
-    one of ``bridge.BRIDGE_TRANSPORTS``.
+    one of ``bridge.BRIDGE_TRANSPORTS``. On a :data:`REPLY_TRANSPORTS` transport a
+    bound pending approval also shows what it will run and how to answer, and each
+    delivered message is linked to its token by ``<chat id>:<message id>``.
     """
 
     def __init__(self, state: Any, transport: str) -> None:
@@ -75,16 +207,72 @@ class TransportBridgeSink:
         # import the bridge.
         from kiro_crew.dashboard.handlers import messaging
 
+        token, action_detail, prompt = self._reply_action(note)
+        text = render_transport_text(note)
+        if token:
+            # Off the loop: the display scan reads the whole, model-authored detail.
+            reply_text = await asyncio.to_thread(
+                render_reply_text,
+                text,
+                action_detail,
+                self.transport,
+                prompt,
+                whole=prompt == QUESTION_PROMPT,
+            )
+            text, token = (reply_text, token) if reply_text else (text, "")
+        posted: list[tuple[str, str]] = []
         sent, code, detail = await messaging._deliver_channel_dm(
             self._state,
             self.transport,
-            render_transport_text(note),
+            text,
             caller_session="",
             markdown=True,
+            posted=posted,
         )
+        registry = getattr(self._state, "bridge_actions", None)
+        if token and registry is not None and len(posted) == 1:
+            # Keyed by its chat and message id: a reply quotes one message, and a
+            # message id alone repeats across chats. Only a note that went out as ONE
+            # message is linked: a part without the prompt is not consent, so a note
+            # the leg still split, whatever lengthened it, answers nothing.
+            [(conversation_id, message_id)] = posted
+            registry.link_message(self.transport, f"{conversation_id}:{message_id}", token)
         if sent:
             return
         if not code:
             # The leg's soft miss: no single configured owner DM to address.
             raise BridgeTransportUnavailable(f"{self.transport} names no owner DM")
         raise RuntimeError(f"{self.transport} delivery refused: {code}")
+
+    def _reply_action(self, note: Mapping[str, Any]) -> tuple[str, str, str]:
+        """The note's action token, detail and prompt when its owner may answer here.
+
+        ``("", "", "")`` unless this is a reply transport whose owner DM is known, and
+        the note is a bound pending approval carrying something to show (a reply the
+        owner cannot read the call for is not consent), or a bound pending question
+        carrying its options, shown numbered from 1 as the reply names them.
+        """
+        none = ("", "", "")
+        if not reply_owner(self._state, self.transport):
+            return none
+        token = note.get(ACTION_TOKEN_KEY)
+        if not isinstance(token, str) or not token:
+            return none
+        if is_pending_approval_note(note):
+            detail = note.get(APPROVAL_DETAIL_KEY)
+            if not isinstance(detail, str) or not detail.strip():
+                return none
+            return token, detail, APPROVAL_PROMPT
+        if is_pending_question_note(note):
+            labels = note.get(OPTIONS_KEY)
+            if not isinstance(labels, list) or not labels:
+                return none
+            if not all(isinstance(label, str) and label.strip() for label in labels):
+                return none
+            # A label carrying the separator could read as another numbered option,
+            # so such a card is answered in the dashboard or on Slack instead.
+            if any(_OPTION_SEPARATOR.strip() in label for label in labels):
+                return none
+            options = _OPTION_SEPARATOR.join(f"{n}. {label}" for n, label in enumerate(labels, 1))
+            return token, options, QUESTION_PROMPT
+        return none

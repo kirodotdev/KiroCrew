@@ -955,7 +955,16 @@ def _line_change_input(fc: dict[str, Any], after: _Snapshot | None) -> dict[str,
     """
     if after is None or fc.get("truncated") or after.truncated or fc.get("unverified_write"):
         return None
-    return {"content": fc.get("content") or "", "after": after.content}
+    before = fc.get("content") or ""
+    pending = fc.get("pending_str_replace")
+    if pending:
+        # An undecidable strReplace stored its content block's fragment, not the file:
+        # settle it as the chip's flush does, or leave the pair uncounted.
+        resolved = _resolve_pending_str_replace(pending, after.content)
+        if resolved is None or resolved.truncated:
+            return None
+        before = resolved.content
+    return {"content": before, "after": after.content}
 
 
 def _turn_line_changes(changes: Any) -> int:

@@ -355,6 +355,17 @@ def fake_proxy(monkeypatch):
     return calls
 
 
+class TestUpstreamHeaderNamesAreTokens:
+    """A header name from the dev server is forwarded only when it is an HTTP token."""
+
+    def test_a_trailing_newline_is_not_part_of_a_token(self):
+        assert server._HEADER_NAME_RE.match("X-Powered-By")
+        assert not server._HEADER_NAME_RE.match("X-Powered-By\n")
+
+    def test_every_token_character_is_still_a_header_name(self):
+        assert server._HEADER_NAME_RE.match("X-A!#$%&'*+.^_`|~0z")
+
+
 class TestPersistedDevUrlIsFrontedWithProxy:
     """A persisted dev URL must be framed through the INJECTING proxy.
 
@@ -550,6 +561,110 @@ class TestPersistedMalformedPortDoesNotBreakProjects:
         h._h_projects_preview_url()
         assert h.json_sent[0][0] == 400
         assert "previewUrl" not in server._CFG["projects"][0]
+
+
+class TestChangingThePreviewUrlRebindsTheProxy:
+    """`/projects` prefers a live proxy record over the saved dev-server URL.
+
+    Saving a new URL while the old proxy is live must stop that proxy, or the
+    iframe keeps loading the old server while the UI says it switched.
+    """
+
+    OLD = "http://localhost:5173"
+
+    def _setup(self, tmp_path, monkeypatch, fake_proxy):
+        proj = {"id": "p1", "path": str(tmp_path), "name": "proj", "previewUrl": self.OLD}
+        monkeypatch.setitem(server._CFG, "projects", [proj])
+        monkeypatch.setitem(server._CFG, "activeId", "p1")
+        monkeypatch.setattr(server, "_save_cfg", lambda _cfg: None)
+        monkeypatch.setattr(server, "_static_preview_url", lambda _pid: "")
+        old_proxy = server._front_with_proxy("p1", self.OLD)
+        assert fake_proxy == [self.OLD]
+        return old_proxy
+
+    def _save(self, url):
+        h = _JsonHandler(body=json.dumps({"id": "p1", "previewUrl": url}).encode("utf-8"))
+        h._h_projects_preview_url()
+        assert h.json_sent[0][0] == 200, h.json_sent
+
+    def _row(self):
+        h = _JsonHandler()
+        h._h_projects_list()
+        return h.json_sent[0][1]["projects"][0]
+
+    def test_a_changed_url_is_served_by_a_fresh_proxy(self, tmp_path, monkeypatch, fake_proxy):
+        old_proxy = self._setup(tmp_path, monkeypatch, fake_proxy)
+        self._save("http://localhost:5174")
+        row = self._row()
+        assert (
+            row.get("devUrl") == "http://localhost:5174"
+        ), "the old proxy record masked the new URL"
+        assert row.get("previewUrl") != old_proxy
+        assert fake_proxy == [self.OLD, "http://localhost:5174"]
+
+    def test_a_cleared_url_stops_the_old_proxy(self, tmp_path, monkeypatch, fake_proxy):
+        old_proxy = self._setup(tmp_path, monkeypatch, fake_proxy)
+        self._save("")
+        assert server._DEV_PROCS.get("p1") is None, "the old proxy is still live"
+        row = self._row()
+        assert row.get("previewUrl") != old_proxy
+        assert row.get("devUrl", "") == ""
+
+    def test_saving_the_same_url_keeps_the_proxy(self, tmp_path, monkeypatch, fake_proxy):
+        old_proxy = self._setup(tmp_path, monkeypatch, fake_proxy)
+        self._save(self.OLD)
+        row = self._row()
+        assert row.get("previewUrl") == old_proxy
+        assert fake_proxy == [self.OLD], "saving the same URL restarted the proxy"
+
+    def _readd(self, tmp_path, url):
+        body = {"path": str(tmp_path), "previewUrl": url}
+        h = _JsonHandler(body=json.dumps(body).encode("utf-8"))
+        h._h_projects_add()
+        assert h.json_sent[0][0] == 200, h.json_sent
+        return h.json_sent[0][1]
+
+    def test_re_adding_the_folder_with_a_new_url_rebinds_the_proxy(
+        self, tmp_path, monkeypatch, fake_proxy
+    ):
+        """`/projects/add` on a folder already registered updates its URL the same
+        way, so it must stop the old proxy too."""
+        old_proxy = self._setup(tmp_path, monkeypatch, fake_proxy)
+        reply = self._readd(tmp_path, "http://localhost:5174")
+        assert reply.get("updated") == "previewUrl"
+        assert server._DEV_PROCS.get("p1") is None, "the old proxy is still live"
+        row = self._row()
+        assert row.get("devUrl") == "http://localhost:5174"
+        assert row.get("previewUrl") != old_proxy
+
+    def test_re_adding_the_folder_with_the_same_url_keeps_the_proxy(
+        self, tmp_path, monkeypatch, fake_proxy
+    ):
+        old_proxy = self._setup(tmp_path, monkeypatch, fake_proxy)
+        reply = self._readd(tmp_path, self.OLD)
+        assert reply.get("updated") is None
+        assert self._row().get("previewUrl") == old_proxy
+        assert fake_proxy == [self.OLD], "re-adding with the same URL restarted the proxy"
+
+    def test_a_poll_during_the_teardown_does_not_bring_the_old_proxy_back(
+        self, tmp_path, monkeypatch, fake_proxy
+    ):
+        """The dashboard polls `/projects` every few seconds. A poll that lands right
+        after the old proxy stops must find the new URL saved, or it fronts the old
+        dev server again and that record masks the new URL from then on."""
+        self._setup(tmp_path, monkeypatch, fake_proxy)
+        real_stop = server._stop_dev_proc
+
+        def _stop_then_poll(project_id):
+            stopped = real_stop(project_id)
+            self._row()
+            return stopped
+
+        monkeypatch.setattr(server, "_stop_dev_proc", _stop_then_poll)
+        self._save("http://localhost:5174")
+        live = server._DEV_PROCS.get("p1")
+        assert live is None or live.get("url") == "http://localhost:5174", live
+        assert self._row().get("devUrl") == "http://localhost:5174"
 
 
 class _RelayProbe(server._DevProxyHandler):

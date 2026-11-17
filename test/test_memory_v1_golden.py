@@ -19,6 +19,7 @@ Determinism, and what is deliberately stubbed:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -55,7 +56,7 @@ pytestmark = pytest.mark.xdist_group("memory_v1_golden")
 # One axis per topic word, so a query's similarity to a row is a number this file
 # can derive by hand rather than a property of a 610MB model. Substring matching
 # (not tokenizing) keeps it independent of the stemmer.
-_DIM = 8
+_DIM = 16
 _AXES = {"deploy": 0, "tabs": 1, "review": 2, "coffee": 3}
 
 #: The query every recall assertion ranks against. Hits axes 0, 1 and 2 once each.
@@ -69,10 +70,14 @@ def _topic_vector(text: str) -> list[float]:
         if word in low:
             vec[axis] += 1.0
     if not any(vec):
-        # A row matching no topic must still get a comparable unit vector, on an
-        # axis the query never occupies, so it scores a true 0.0 rather than being
-        # treated as "no vector stored" (which scores on the keyword floor).
-        vec[_DIM - 1] = 1.0
+        # A row matching no topic must still get a comparable nonzero vector, on
+        # axes the query never occupies, so it scores a true 0.0 rather than being
+        # treated as "no vector stored" (which scores on the keyword floor). The
+        # direction comes from the text, so two different topic-less rows are not
+        # one rule to the render-time fold (``memory.lesson_fold``).
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        for axis in range(len(_AXES), _DIM):
+            vec[axis] = digest[axis] - 127.5
     return vec
 
 
@@ -480,27 +485,29 @@ def _blocks(payload: str) -> dict[str, str]:
     return out
 
 
-#: Byte extent of every block in the normalized default session context, and the
-#: total. Regenerate ONLY as part of a reviewed change to what a block contains.
+#: Byte extent of every block in the normalized default session context.
+#: Regenerate ONLY as part of a reviewed change to what a block contains. The total
+#: is their sum, not a pinned number of its own: two changes to different blocks
+#: then edit different lines (testing-conventions.md § Merge-safe ratchets and
+#: counts), and each block's extent stays exact.
 EXPECTED_EXTENTS = {
-    "[CRITICAL RULES": 4338,
+    "[CRITICAL RULES": 5057,
     "[CURRENT DATE]": 48,
     "[CURRENT AGENT]": 196,
     "[WORKSPACE IDENTITY]": 376,
     "[DOCUMENTATION]": 235,
     "[Memory —": 2077,
     "[Skills:]": 413,
-    "[Learned corrections": 320,
+    "[Learned corrections": 374,
 }
-EXPECTED_TOTAL = 8003
 
 
 def test_session_context_char_extents(seeded: Seeded) -> None:
-    """Every block's char extent, and the total, are what they were."""
+    """Every block's char extent is what it was, and the blocks cover the payload."""
     payload = seeded.normalize(_session_context(seeded))
     extents = {marker: len(text) for marker, text in _blocks(payload).items()}
     assert extents == EXPECTED_EXTENTS
-    assert sum(extents.values()) == len(payload) == EXPECTED_TOTAL
+    assert sum(extents.values()) == len(payload)
 
 
 def test_total_stays_under_the_production_ceiling(seeded: Seeded) -> None:
@@ -642,6 +649,43 @@ def test_lesson_recall_order(seeded: Seeded) -> None:
         for row in seeded.vectors.get_lessons()
     ]
     assert store_order == [LESSON_OFF, LESSON_MID, LESSON_TOP]
+
+
+def test_topic_less_rows_get_distinct_vectors() -> None:
+    """Two rows that match no topic are not one rule to the render-time fold."""
+    from kiro_crew.memory_item_identity import SAME_ITEM_COSINE
+
+    a, b = _topic_vector("Close the laptop lid."), _topic_vector("Water the plants.")
+    assert any(a) and any(b)
+    assert not any(a[: len(_AXES)]) and not any(b[: len(_AXES)])
+    cosine = sum(x * y for x, y in zip(a, b)) / (
+        sum(x * x for x in a) ** 0.5 * sum(y * y for y in b) ** 0.5
+    )
+    assert cosine < SAME_ITEM_COSINE
+
+
+def test_the_lesson_fold_leaves_the_seed_unchanged(seeded: Seeded) -> None:
+    """The seed holds no near-duplicate rules, so ``enforce`` renders today's block.
+
+    Two topic-less inferred rules are added. With one shared fallback vector the
+    second would already merge into the first at write time, and the fold could
+    not tell them apart either.
+    """
+    from kiro_crew import memory_lesson_fold
+
+    topic_less = ("Close the laptop lid at night.", "Water the plants on Sunday.")
+    for rule in topic_less:
+        written = seeded.vectors.write_lesson(rule, source="consolidation", applies="always")
+        assert written.outcome.value == "inserted", rule
+    seeded.vectors.reconcile_embedding_space("kirocrew-test-topic-space")
+    assert memory_lesson_fold.store_space(seeded.vectors)[0] is not None
+    assert all(row["embedding"] for row in seeded.vectors.get_lessons())
+
+    def render(mode: str) -> str:
+        return seeded.vectors.get_lessons_context(QUERY, background=True, lesson_fold=mode)
+
+    assert render("enforce") == render("off")
+    assert all(rule in render("enforce") for rule in topic_less)
 
 
 def test_recall_order_is_stable_across_repeated_builds(seeded: Seeded) -> None:
@@ -883,8 +927,14 @@ def test_an_early_embed_leaves_the_first_turn_byte_identical(
     assert seeded.inference_calls == [query]
 
 
-def test_memory_written_after_an_early_embed_reaches_the_first_turn(seeded: Seeded) -> None:
+def test_memory_written_after_an_early_embed_reaches_the_first_turn(
+    seeded: Seeded, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Only the query's vector is kept: the store is read when the build runs."""
+    # The late episode shares EP_TOP's topic vector, so FAISS's near-duplicate
+    # check refuses it; the fixture built the index before this body ran.
+    monkeypatch.setattr("kiro_crew.vector_memory._HAS_FAISS", False)
+    monkeypatch.setattr(seeded.vectors, "_faiss_index", None)
     assert _early_embed(seeded, QUERY) is True
     late_lesson = "Tag every deploy review with the release train."
     late_episode = "We deploy after the review once tabs are fixed."

@@ -638,6 +638,13 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "auth/company_sign_in.py::company_sign_in_default": (
+        "no-context answer is an empty start URL and region pair, the form as it "
+        "was before edition defaults. The sign-in-only app runs without a composed "
+        "platform, so resolving one here would prevent sign-in. An edition default "
+        "only pre-fills an editable field and grants nothing; an installed "
+        "contributor's PlatformCompositionError still propagates."
+    ),
     "milestones.py::_policy_permits": (
         "no-context answer is 'not permitted': with no installed policy the "
         "milestone hooks count nothing, write no state and emit no metric, which "
@@ -667,6 +674,14 @@ PEEK_CALLERS: "dict[str, str]" = {
         "being skipped; the genuine downgrade case — a context IS installed and "
         "its policy failed to compose — is handled separately by withholding "
         "the line's text (LOG_WITHHELD_PLACEHOLDER)."
+    ),
+    "history_append.py::_redact_at_write_boundary": (
+        "no-context answer is the full OSS baseline redaction pass, the same "
+        "answer the PlatformCompositionError arm gives, so a user row is never "
+        "withheld and known credentials are still removed. Resolving instead "
+        "would re-pay a config load on every transcript write of a "
+        "non-standalone host that never booted, or install a process-wide "
+        "default context from a write path."
     ),
     "speech_providers.py::_installed_speech": (
         "no-context answer is 'no registered speech providers and no edition "
@@ -998,30 +1013,12 @@ _WIDE_PROJECTIONS: Tuple[Tuple["re.Pattern[bytes]", int, int], ...] = (
 )
 
 
-def _baseline_symbol_tables_masked(raw_text: str) -> str:
-    """*raw_text* with the standard container symbol tables blanked, for a scan.
-
-    Deferred import for the reason :func:`redact_via_context` states: keep the
-    redaction regex stack off the platform module-load path. Only the narrow binary
-    scan below reaches here, and a gate that is already scanning content pays that
-    import willingly.
-
-    Returns the argument ITSELF when nothing is masked -- both when the helper
-    masks no table and when it cannot be imported at all. The caller reads that
-    identity as "the unmasked answer stands", so a broken import weakens no
-    refusal and costs no second scan.
-    """
-    try:
-        from kiro_crew.security.redaction import mask_baseline_symbol_tables
-    except Exception:
-        return raw_text
-    return mask_baseline_symbol_tables(raw_text)
-
-
 #: Verdicts of the two content scans below, keyed on everything that decides one:
-#: which scan, the bytes (by SHA-256 digest), and the ceiling that scanned them
+#: which scan, the bytes (by SHA-256 digest), the ceiling that scanned them
 #: (:func:`governance_generation`, so installing a context retires every verdict
-#: the old one gave). A bounded LRU holding a digest and a bool per entry.
+#: the old one gave), and the owner's redaction setting as published
+#: (``redaction_seams.generation``, so no verdict outlives a change of the setting).
+#: A bounded LRU holding a digest and a bool per entry.
 #:
 #: The same bytes reach these scans again and again: ``POST /api/outbox/notify``
 #: scans a file at send time, then ``GET /api/outbox/{filename}`` scans it on every
@@ -1029,7 +1026,7 @@ def _baseline_symbol_tables_masked(raw_text: str) -> str:
 #: Each pass is GIL-bound regex work over up to the 50 MB read cap -- a 44 MB MP4
 #: measures about 12 s -- and the answer cannot change while the bytes and the
 #: detectors do not, so every pass after the first is pure cost.
-_SCAN_VERDICTS: "OrderedDict[Tuple[str, bytes, int], bool]" = OrderedDict()
+_SCAN_VERDICTS: "OrderedDict[Tuple[str, bytes, int, int], bool]" = OrderedDict()
 _SCAN_VERDICTS_MAX = 256
 _SCAN_VERDICTS_LOCK = threading.Lock()
 
@@ -1050,15 +1047,18 @@ def _scan_verdict(kind: str, raw: bytes, scan: "Callable[[bytes], bool]") -> boo
     A miss runs the scan under :data:`_SCAN_LOCK` and re-checks the cache once the
     lock is held, so concurrent callers holding the same bytes pay one scan between
     them. A verdict is stored only when nothing it depended on moved while it ran:
-    neither the governance generation nor this thread's :func:`_redact_degrades`,
-    whose change means the bare baseline may have answered in the active context's
-    place. An exception -- a :class:`PlatformCompositionError` on a host that could
+    neither the governance generation, nor the published redaction setting, nor this
+    thread's :func:`_redact_degrades`, whose change means the bare baseline may have
+    answered in the active context's place. An exception -- a :class:`PlatformCompositionError` on a host that could
     not compose -- propagates and stores nothing, so the scan still fails closed.
 
     ``hashlib`` releases the GIL while it digests a large buffer, so computing the
     key costs the event loop nothing even at the read cap.
     """
+    from kiro_crew import redaction_seams
+
     generation = governance_generation()
+    setting = redaction_seams.generation()
     # Content-addressed cache key, not a security digest: ``raw`` is hashed only to
     # recognize the same bytes again, never stored or compared as a credential, so
     # ``usedforsecurity=False`` states that intent and the strength of the hash
@@ -1071,7 +1071,7 @@ def _scan_verdict(kind: str, raw: bytes, scan: "Callable[[bytes], bool]") -> boo
     digest = hashlib.sha256(  # noqa: S324 -- content key, not a security digest
         raw, usedforsecurity=False
     ).digest()  # lgtm[py/weak-sensitive-data-hashing]
-    key = (kind, digest, generation)
+    key = (kind, digest, generation, setting)
     with _SCAN_VERDICTS_LOCK:
         cached = _SCAN_VERDICTS.get(key)
         if cached is not None:
@@ -1083,8 +1083,18 @@ def _scan_verdict(kind: str, raw: bytes, scan: "Callable[[bytes], bool]") -> boo
         if cached is not None:
             return cached
         degrades = _redact_degrades()
-        verdict = scan(raw)
-        if _redact_degrades() == degrades and governance_generation() == generation:
+        # A safety decision: it scans in full whatever the owner's redaction setting,
+        # so a verdict reached inside an output seam opened while redaction is off is
+        # the verdict every other gate reads from this cache.
+        from kiro_crew.security.redaction_switch import always_scan
+
+        with always_scan():
+            verdict = scan(raw)
+        if (
+            _redact_degrades() == degrades
+            and governance_generation() == generation
+            and redaction_seams.generation() == setting
+        ):
             with _SCAN_VERDICTS_LOCK:
                 _SCAN_VERDICTS[key] = verdict
                 while len(_SCAN_VERDICTS) > _SCAN_VERDICTS_MAX:
@@ -1132,15 +1142,8 @@ def wide_content_is_flagged(raw: bytes) -> bool:
     also what keeps the detectors from being handed a second stream of
     high-entropy bytes, which would widen the false-positive surface.
 
-    This leg does NOT ask the narrow pass's table-masked second question, because
-    no container reaches it carrying a table. A symbol table is written as
-    contiguous bytes at single-byte spacing, so it matches none of
-    :data:`_WIDE_PROJECTIONS`, whose patterns require printable ASCII alternating
-    with NUL; measured over baseline, grayscale, progressive and optimised JPEGs
-    from 692 bytes to 1.6 MB, and over palette and truecolour PNGs, every one of
-    them yields zero projections here. What does reach this leg is wide-encoded
-    TEXT -- an ID3v2 UTF-16 title, a UTF-16BE PDF string -- and a credential is
-    exactly what this leg exists to find in it.
+    What reaches this leg is wide-encoded TEXT -- an ID3v2 UTF-16 title, a UTF-16BE
+    PDF string -- and a credential is exactly what this leg exists to find in it.
 
     Synchronous, like :func:`binary_content_is_flagged`: an async gate calls it
     through ``asyncio.to_thread`` rather than on the event loop, and the verdict is
@@ -1154,7 +1157,9 @@ def wide_content_is_flagged(raw: bytes) -> bool:
     if not lifted:
         return False
     wide = b"\n".join(lifted).decode("latin-1")
-    return redact_via_context(wide) != wide
+    from kiro_crew.security import refuses
+
+    return refuses(wide, redact_via_context)
 
 
 @_kept_and_serialized("binary")
@@ -1194,19 +1199,6 @@ def binary_content_is_flagged(raw: bytes) -> bool:
     the owner-facing three honour the owner's recorded grant, the upload legs
     refuse unconditionally.
 
-    A positive answer is re-asked with the standard container symbol tables
-    masked, for the reason ``mask_baseline_symbol_tables`` documents: the standard
-    baseline Huffman table's printable tail reads as an unlabelled bot token, so
-    without the second question essentially every JPEG written with the default
-    tables is refused here. Masking is pinned to that one fixed constant, so the
-    re-ask cannot clear anything else.
-
-    The order is what keeps the cost off the common path. A buffer the detectors do
-    not flag is answered by the same single scan as ever; and when the masker finds
-    no table it returns the buffer ITSELF, which the identity test below reads as
-    "the unmasked answer stands" rather than paying the credential alternation a
-    second time over up to the read cap.
-
     Synchronous, and deliberately: the scan is CPU work over up to the 50 MB read
     cap, so an async gate must call it through ``asyncio.to_thread`` rather than
     on the event loop. A worker thread keeps the call off the loop's thread but not
@@ -1214,10 +1206,10 @@ def binary_content_is_flagged(raw: bytes) -> bool:
     scans run one at a time and a verdict is kept (:func:`_scan_verdict`).
     """
     text = raw.decode("latin-1") + "\n" + raw.decode("utf-8", errors="replace")
-    if redact_via_context(text) != text:
-        masked = _baseline_symbol_tables_masked(text)
-        if masked is text or redact_via_context(masked) != masked:
-            return True
+    from kiro_crew.security import refuses
+
+    if refuses(text, redact_via_context):
+        return True
     return wide_content_is_flagged(raw)
 
 
@@ -1237,28 +1229,6 @@ def redact_owner_view_via_context(text: str) -> str:
     from kiro_crew.security.redaction_switch import owner_view
 
     with owner_view():
-        return redact_via_context(text)
-
-
-def redact_code_via_context(text: str) -> str:
-    """:func:`redact_via_context` for text known to be CODE: it spares an alphabet and a data URI.
-
-    Runs the same context-aware redaction -- a loaded companion's extra patterns and
-    exfiltration carve-outs apply -- inside a ``redaction_switch.code_text`` scope, where pass 3
-    of the core credential pass leaves alone an ordered alphabet and a data URI payload of 64
-    characters or more, and judges every other run as it does anywhere. That pass reads a run
-    of letters and digits as a key by its entropy and shape: in prose it errs towards masking,
-    in code it rewrites an alphabet or a base64 data URI that the program reads back, which
-    breaks the program with no error. Every other rule still runs, so a key id, a PEM block,
-    a JWT or a prefixed token written into code is masked as anywhere else, and so is a key in
-    any shape a script holds it. Only text that is code may be served as this returns it.
-    ``member_dashboard._template_text_safe`` takes :func:`redact_via_context` over a whole
-    page as its baseline and puts this function's result in place of the baseline's for the
-    text of the page's ``<script>`` and ``<style>`` elements.
-    """
-    from kiro_crew.security.redaction_switch import code_text
-
-    with code_text():
         return redact_via_context(text)
 
 
@@ -1323,11 +1293,21 @@ def redact_log_via_context(text: str) -> str:
     slicing a redacted string is what keeps a credential from surviving as an
     unmatchable fragment.
     """
-    if installed_context() is None:
-        from kiro_crew.security import redact as _security_redact
+    # Not an output seam, whatever the owner's redaction setting says. Callers clip the
+    # result (``redact_log_via_context(text)[:120]``) and the clip then goes to sinks
+    # that stay redacted (the dashboard's live log stream, the SEL). A credential
+    # pass that stood down here would let the clip cut a raw value into a fragment no
+    # later pass can match, so the redact-before-clip rule above holds with the
+    # switch off too. The switch covers the log record filter alone
+    # (``log_redaction.SecretRedactionFilter``).
+    from kiro_crew.security.redaction_switch import always_scan
 
-        return _security_redact(text)
-    try:
-        return redact_via_context(text)
-    except PlatformCompositionError:
-        return LOG_WITHHELD_PLACEHOLDER
+    with always_scan():
+        if installed_context() is None:
+            from kiro_crew.security import redact as _security_redact
+
+            return _security_redact(text)
+        try:
+            return redact_via_context(text)
+        except PlatformCompositionError:
+            return LOG_WITHHELD_PLACEHOLDER

@@ -16,10 +16,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import onboarding_import, onboarding_sources
 from kiro_crew.cron import CronService
 from kiro_crew.onboarding_sources import amazon_quick
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it does not mark text as credential-bearing.
+_SECRET_TOKEN = github_classic(seed=42)
 
 # Keep apply_import's MCP sidecar lock off the real ~/.kiro/settings (see the
 # shared fixture in test/conftest.py).
@@ -1063,7 +1068,7 @@ class TestSkillsInstructionsSettings:
         profile = _profile(tmp_path)
         _write_json(
             profile / "user_preferences.json",
-            {"custom_prompt": "Use the deploy key AKIAIOSFODNN7EXAMPLE when asked."},
+            {"custom_prompt": f"Use the deploy key {_SECRET_TOKEN} when asked."},
         )
 
         plan = _preview(tmp_path)
@@ -1249,7 +1254,7 @@ class TestScheduledTasks:
         profile = _profile(tmp_path)
         _write_json(
             profile / "agents.json",
-            {"agents": [_task(prompt_override="Deploy with AKIAIOSFODNN7EXAMPLE nightly.")]},
+            {"agents": [_task(prompt_override=f"Deploy with {_SECRET_TOKEN} nightly.")]},
         )
 
         plan = _preview(tmp_path)

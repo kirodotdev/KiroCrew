@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import (
     _sanitize_blocks,
@@ -57,9 +58,11 @@ def home_patch(tmp_path):
     def fake_expanduser(p):
         return p.replace("~", str(tmp_path))
 
-    with patch("os.path.expanduser", side_effect=fake_expanduser), patch(
-        "os.path.realpath", side_effect=real_realpath
-    ), patch("pathlib.Path.home", return_value=tmp_path):
+    with (
+        patch("os.path.expanduser", side_effect=fake_expanduser),
+        patch("os.path.realpath", side_effect=real_realpath),
+        patch("pathlib.Path.home", return_value=tmp_path),
+    ):
         yield tmp_path
 
 
@@ -278,14 +281,22 @@ class TestFileRead:
             assert len(await resp.text()) == 512_000
 
     @pytest.mark.asyncio
-    async def test_read_announces_a_redacted_body_in_a_header(self, tmp_path, mock_sel, home_patch):
+    async def test_read_announces_a_redacted_body_in_a_header(
+        self, tmp_path, mock_sel, home_patch, monkeypatch
+    ):
         # The viewer keeps the last copy of a file deleted outside the dashboard
         # and offers it for download; a body the credential pass rewrote is not
         # the file as written, and only a header can say so -- a file may quote
-        # the redaction tag itself. A synthetic key shape, never a real secret.
-        import hashlib
+        # the redaction tag itself. A synthetic token shape, never a real secret.
+        # The owner's switch ships OFF, which stands the pass down on the owner's
+        # own file view; this case is about the pass, so it is ON here.
+        from kiro_crew.security import redaction_switch
 
-        key = "A" + "KIA" + hashlib.sha256(b"kc-file-read-header").hexdigest().upper()[:16]
+        monkeypatch.setattr(
+            redaction_switch, "_path", lambda: tmp_path / "redaction.json"
+        )
+        monkeypatch.setattr(redaction_switch, "DEFAULT_REDACTION_ENABLED", True)
+        key = github_classic(seed=121)
         f = tmp_path / "notes.txt"
         f.write_text(f"token = {key}\n", encoding="utf-8")
         plain = tmp_path / "plain.txt"
@@ -413,9 +424,9 @@ class TestFileRead:
 
     @pytest.mark.asyncio
     async def test_read_utf8_multibyte_round_trip(self, tmp_path, mock_sel, home_patch):
-        # Regression: the dashboard file viewer reported "Invalid JSON" for
-        # files containing CJK characters. Verify that UTF-8 bytes survive
-        # the read pipeline (open + redactors + Response.text) byte-for-byte.
+        # UTF-8 bytes (CJK here) must survive the read pipeline (open +
+        # redactors + Response.text) byte-for-byte, or the file viewer shows
+        # "Invalid JSON".
         # Synthetic fixture only — no real customer/case data.
         payload = {
             "ascii_key": "value",
@@ -973,13 +984,16 @@ class TestSendMessage:
         mock_job.session_key = "dashboard:chat-1-1712793600"
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
-        with patch(
-            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_drain, patch(
-            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
-        ) as mock_rehydrate:
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_drain,
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
+            ) as mock_rehydrate,
+        ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -1069,14 +1083,17 @@ class TestSendMessage:
         mock_job.session_key = "dashboard:chat-1-1712793600"
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
-        with patch(
-            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_drain, patch(
-            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
-            return_value=mock_slot,
-        ) as mock_rehydrate:
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_drain,
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
+                return_value=mock_slot,
+            ) as mock_rehydrate,
+        ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -1137,7 +1154,7 @@ class TestSendMessage:
 
         assert seen, (
             "the off-loop prefetch never ran: either the read is happening inline "
-            "on the loop again (the #7408 defect) or this seam moved"
+            "on the loop again or this seam moved"
         )
         assert threading.get_ident() not in seen, (
             "the transcript was read on the event-loop thread; the handler must "
@@ -1205,11 +1222,16 @@ class TestSendMessage:
         mock_job.session_key = "dashboard:chat-1-1712793600"
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
-        with patch(
-            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_drain, patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"):
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_drain,
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
+            ),
+        ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",

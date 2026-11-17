@@ -276,7 +276,7 @@ class TestNoImportTimePathResolution:
     def test_no_module_level_path_constants(self) -> None:
         offenders = _frozen_path_constants()
         assert not offenders, (
-            "Data-home path resolved at import time (issue #874). Convert each to "
+            "Data-home path resolved at import time. Convert each to "
             "an override hook + accessor -- see the module docstring of this file "
             "for the pattern:\n  " + "\n  ".join(offenders)
         )
@@ -465,10 +465,9 @@ class TestAccessorsFollowTheLiveHome:
             resolved = Path(getattr(mod, attr)())
             if not resolved.resolve().is_relative_to(home.resolve()):
                 stranded.append(f"{mod_path}.{attr}() -> {resolved}")
-        assert not stranded, (
-            "accessor did not follow KIROCREW_HOME set after import (issue #874):\n  "
-            + "\n  ".join(stranded)
-        )
+        assert (
+            not stranded
+        ), "accessor did not follow KIROCREW_HOME set after import:\n  " + "\n  ".join(stranded)
 
     def test_accessor_tracks_a_second_change(self, tmp_path, monkeypatch):
         """Not merely read-once-late: it must re-resolve on every call."""

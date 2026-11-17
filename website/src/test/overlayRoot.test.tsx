@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { useState, type ReactNode } from 'react'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
-import { LocalOverlayRoot, OverlayPortal, useLocalCrewHidden } from '../components/overlayRoot'
+import { LocalOverlayRoot, OffScreenOverlayScope, OverlayPortal, useLocalCrewHidden } from '../components/overlayRoot'
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover'
 import { Dialog, DialogContent, DialogTitle } from '../components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
@@ -283,5 +283,28 @@ describe('overlay root', () => {
       // At equal z-index, later in document order paints on top.
       expect(local[0].compareDocumentPosition(global[0]) & Node.DOCUMENT_POSITION_FOLLOWING, z).toBeTruthy()
     }
+  })
+})
+
+describe('off-screen overlay scope', () => {
+  function Reader() {
+    return <span data-testid="hidden">{String(useLocalCrewHidden())}</span>
+  }
+
+  it('reads hidden inside the scope while off screen, so a modal there stands down', () => {
+    const view = render(<OffScreenOverlayScope offScreen={false}><Reader /></OffScreenOverlayScope>)
+    expect(screen.getByTestId('hidden').textContent).toBe('false')
+    view.rerender(<OffScreenOverlayScope offScreen><Reader /></OffScreenOverlayScope>)
+    expect(screen.getByTestId('hidden').textContent).toBe('true')
+    view.rerender(<OffScreenOverlayScope offScreen={false}><Reader /></OffScreenOverlayScope>)
+    expect(screen.getByTestId('hidden').textContent).toBe('false')
+  })
+
+  it('leaves a modal open in the scope standing down on Escape while off screen', () => {
+    const onClose = vi.fn()
+    const view = render(<OffScreenOverlayScope offScreen={false}><Modal open onClose={onClose} title="Folder settings">body</Modal></OffScreenOverlayScope>)
+    view.rerender(<OffScreenOverlayScope offScreen><Modal open onClose={onClose} title="Folder settings">body</Modal></OffScreenOverlayScope>)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

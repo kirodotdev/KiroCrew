@@ -179,10 +179,31 @@ test("win/linux: Window menu is written out with Close on Ctrl+Shift+W", () => {
   assert.strictEqual(win.label, "Window");
   assert.strictEqual(win.role, undefined);
   assert.deepStrictEqual(
-    win.submenu.map((i) => i.role),
-    ["minimize", "zoom", "close"],
+    win.submenu.map((i) => i.role || i.label),
+    ["minimize", "Zoom", "close"],
   );
   assert.strictEqual(win.submenu[2].accelerator, "Ctrl+Shift+W");
+});
+
+test("win/linux: Window > Zoom maximizes the window, and restores it when maximized", () => {
+  // Electron's `zoom` role does nothing off macOS, so the item toggles maximize.
+  const { deps } = makeDeps({ isMac: false });
+  const zoom = buildMenuTemplate(deps)
+    .find((i) => i.id === "window-menu")
+    .submenu.find((i) => i.label === "Zoom");
+  assert.strictEqual(zoom.role, undefined);
+  const calls = [];
+  const win = (maximized) => ({
+    isDestroyed: () => false,
+    isMaximized: () => maximized,
+    maximize: () => calls.push("maximize"),
+    unmaximize: () => calls.push("unmaximize"),
+  });
+  zoom.click(zoom, win(false));
+  zoom.click(zoom, win(true));
+  zoom.click(zoom, undefined);
+  zoom.click(zoom, { ...win(false), isDestroyed: () => true });
+  assert.deepStrictEqual(calls, ["maximize", "unmaximize"]);
 });
 
 test("mac: Window menu keeps the stock role and adds Close on Cmd+Shift+W (Cmd+W reaches the page)", () => {

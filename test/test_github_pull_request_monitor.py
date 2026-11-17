@@ -33,6 +33,7 @@ from kiro_crew.monitoring.github_pull_request import (
     parse_github_pull_request_target,
 )
 from kiro_crew.monitoring.models import MonitorObservationStatus
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def test_blank_check_label_keeps_the_provider_state_under_an_opaque_identity() -> None:
@@ -249,7 +250,7 @@ def test_reordered_and_volatile_provider_values_keep_the_fingerprint_stable() ->
 
 def test_check_identity_is_redacted_before_it_enters_canonical_state() -> None:
     """A provider-controlled check label cannot turn monitor state into a secret sink."""
-    token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890ABCD"
+    token = github_classic(seed=133)  # a ghp_ without a valid checksum is no token
     provider, _ = _provider(
         _primary(
             statusCheckRollup=[
@@ -445,6 +446,23 @@ def test_an_oversized_displaced_bucket_does_not_report_the_board_unmeasured() ->
     assert complete is True
     assert sum(1 for check in bounded if check.state == "superseded") == 101
     assert live in bounded
+
+
+def test_a_green_board_with_more_than_100_passing_checks_is_review_ready() -> None:
+    """Every row was read; only the stored passed list is trimmed, so it stays measured."""
+    rows = [
+        {"__typename": "StatusContext", "context": f"ci-{index:03d}", "state": "SUCCESS"}
+        for index in range(101)
+    ]
+    provider, _runner = _provider(_primary(statusCheckRollup=rows))
+
+    result = _probe_one(provider)
+
+    assert result.observation.status is MonitorObservationStatus.SUCCESS
+    assert result.observation.reason_code == "review_ready"
+    # The stored list is cut, and the cut is marked, so 100 never reads as the total.
+    assert len(result.canonical["checks"]["passed"]) == 100
+    assert "checks:incomplete" in result.canonical["checks"]["unknown"]
 
 
 def test_two_rows_of_one_workflow_run_are_both_live_and_neither_is_marked() -> None:

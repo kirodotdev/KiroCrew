@@ -84,16 +84,25 @@ jobs:
     # and the checkout below still takes the base branch, never the fork.
     runs-on:
       group: kirocrew-runners
-    timeout-minutes: 5
+    # Leaves room for the rate-limit wrapper's 20-minute wait budget below.
+    timeout-minutes: 25
     steps:
       # The base branch's copy of the script, never the fork's: on
       # `pull_request_target` the default ref is the base, which is also where
-      # this workflow file itself was read from.
+      # this workflow file itself was read from. The rate-limit action comes
+      # from the same base checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts/pr-description-check.sh
+          sparse-checkout: |
+            .github/scripts/pr-description-check.sh
+            .github/actions/gh-rate-limit/action.yml
           sparse-checkout-cone-mode: false
+
+      # The check-run lookup and write draw on the installation rate limit the
+      # whole fleet shares. A spent limit used to fail this job closed until
+      # the next `edited` or `synchronize`; the wrapper waits for the reset.
+      - uses: ./.github/actions/gh-rate-limit
 
       - name: Evaluate PR description
         id: evaluate

@@ -44,6 +44,7 @@ from kiro_crew.apps.registry_pipeline.recovery import (
     app_source_dir,
 )
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE)
 
@@ -427,7 +428,9 @@ async def _clone_build_app_locked(
         app_source = contained
     cloned_manifest: dict[str, Any] | None = None
     try:
-        parsed = json.loads(await asyncio.to_thread((app_source / "app.json").read_text, "utf-8"))
+        parsed = loads_user_json(
+            await asyncio.to_thread((app_source / "app.json").read_text, "utf-8")
+        )
         if isinstance(parsed, dict):
             cloned_manifest = parsed
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:

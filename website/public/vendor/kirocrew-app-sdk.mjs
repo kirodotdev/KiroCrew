@@ -8,6 +8,8 @@ export const {
   fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText,
   // The App Kit seam level, so an app can feature-detect what this host provides.
   APP_SDK_LEVEL,
+  // An app's own origin on the dashboard's port (level 8).
+  appWebOrigin,
   // Marker protocol. Naming an export the host does not provide is a load-time failure for the
   // whole app, so this list is checked against the protocol barrel by chatProtocolBoundary.test.ts.
   parseOptions, deriveFollowUpOptions, extractSteeringAcks, stripPartialOptionMarker,
@@ -15,6 +17,12 @@ export const {
   useChatSession, ChatPanel, ChatEmbed, ChatMessageList,
   // The dashboard's pull-request panel, behind the app's declared source paths (level 2).
   PullRequestPanel,
+  // Issue lists behind the app's declared `/api/source/issues` (level 6).
+  useIssues, IssueList, IssueCard,
+  // The dashboard's project picker behind the app's declared listing paths (level 7).
+  ProjectPicker,
+  // The dashboard's live session list and session acts behind the app's declared chat paths (level 8).
+  useHostSessions,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.

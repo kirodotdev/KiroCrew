@@ -202,6 +202,60 @@ rules:
       category: correctness
       subcategory: test-determinism
 
+  - id: kirocrew.test-shared-tmp-dir
+    pattern-either:
+      # mkdtemp in any spelling: `tempfile.mkdtemp`, an imported `mkdtemp`
+      # (semgrep resolves the import) and a module-attribute chain such as
+      # `np.tempfile.mkdtemp`. A directory under tmp_path is pytest-owned.
+      - patterns:
+          - pattern-either:
+              - pattern: tempfile.mkdtemp(...)
+              - pattern: $M.tempfile.mkdtemp(...)
+          - pattern-not: $F(..., dir=tmp_path, ...)
+          - pattern-not: $F(..., dir=str(tmp_path), ...)
+      # TemporaryDirectory held past one block: assigned, stored on self,
+      # returned, passed on, `.name` read or entered by hand. The shapes that
+      # hold it are listed rather than `with` excluded, because a
+      # pattern-not-inside on a `with` also exempts every line in its body.
+      # A `with` header and an ExitStack's enter_context stay allowed: both
+      # remove the directory when the block ends.
+      - patterns:
+          - pattern-either:
+              - pattern: tempfile.TemporaryDirectory(...)
+              - pattern: $M.tempfile.TemporaryDirectory(...)
+          - pattern-not-inside: $STACK.enter_context(...)
+          - pattern-either:
+              - pattern-inside: $X = ...
+              - pattern-inside: "$X: $T = ..."
+              - pattern-inside: return ...
+              - pattern-inside: yield ...
+              - pattern-inside: $CALL.$ATTR
+              - patterns:
+                  - pattern-inside: $F(..., $ARG, ...)
+                  - focus-metavariable: $ARG
+    paths:
+      include:
+        - test/**
+        - src/kiro_crew/apps/builtins/**/tests/**
+        - src/kiro_crew/apps/builtins/**/*_tests/**
+        - conftest.py
+    message: >
+      This makes a directory in the shared temp dir that pytest does not own,
+      and nothing removes it if the test fails first: setUp failing skips
+      tearDown, and a thread or child process still running after the cleanup
+      (or a store that mkdirs its root on READ, as the Issue Radar store does)
+      re-creates it. The run's temp-residue guard then fails a later test.
+      Use tmp_path or tmp_path_factory.mktemp(); in a unittest class, an
+      autouse fixture method that sets self.root = tmp_path / "..."
+      (test_issue_radar_deps.py::_per_test_dirs). `with
+      tempfile.TemporaryDirectory() as d:` stays allowed
+      (testing-conventions.md § Rules).
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-isolation
+
   - id: kirocrew.test-autouse-shared-monkeypatch
     patterns:
       - pattern-either:

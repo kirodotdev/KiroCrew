@@ -259,7 +259,15 @@ def _facts(
     merge_status = detailed_merge_status or legacy_merge_status
     if detailed_merge_status == "mergeable":
         mergeability = "mergeable"
-    elif merge_status in {"conflict", "conflicts", "cannot_be_merged"}:
+    elif mr.get("has_conflicts") is True or merge_status in {
+        "conflict",
+        "conflicts",
+        "cannot_be_merged",
+    }:
+        # ``detailed_merge_status`` names one blocker, and GitLab lists the
+        # approval, pipeline and discussion checks before the conflict check, so a
+        # conflicting MR that also lacks approval reads ``not_approved``.
+        # ``has_conflicts`` still says it conflicts.
         mergeability = "conflicting"
     elif merge_status == "need_rebase":
         mergeability = "behind"
@@ -398,6 +406,10 @@ def _read_comments(fetch: Callable[[str], object]) -> tuple[list[object], bool]:
         return _collection(fetch("comments"))
     except (
         PullRequestProviderError,
+        # The CLI runner raises this for per-call faults too (pipes that do not
+        # close, non-UTF-8 output); left to the probe it is a SETUP error, which
+        # stops the whole watch over a comment read the MR verdict never needed.
+        SetupError,
         subprocess.TimeoutExpired,
         OSError,
         KeyError,

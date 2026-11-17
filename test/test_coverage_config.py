@@ -67,7 +67,8 @@ def _omit_patterns(section: str) -> list[str]:
 
 
 def _matcher(section: str):
-    globs = pytest.importorskip("coverage.files")
+    import coverage.files as globs
+
     return globs.GlobMatcher(_omit_patterns(section), "omit")
 
 

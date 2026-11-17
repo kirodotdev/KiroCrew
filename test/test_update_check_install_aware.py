@@ -141,7 +141,8 @@ def _stub_feed(monkeypatch, *, status: int = 200, body: bytes | None = None, exc
     seen: dict[str, str] = {}
 
     async def _fake(url: str) -> tuple[int, bytes]:
-        seen["url"] = url
+        # The first request is the manifest; the optional announcement follows it.
+        seen.setdefault("url", url)
         if exc is not None:
             raise exc
         return status, _manifest() if body is None else body
@@ -1099,7 +1100,12 @@ class TestExternallyManagedInstalls:
         def _boom(url: str):  # pragma: no cover - must not be called
             raise AssertionError(f"{dist} must not read the CLI release feed")
 
-        monkeypatch.setattr(updates, "_fetch_feed_bytes", _boom)
+        if dist == "docker":
+            # A container reads the feed only to NAME a newer pullable image
+            # (test_update_check_container_image.py); its verdict still defers.
+            _stub_feed(monkeypatch, body=_manifest(version="0.0.1"))
+        else:
+            monkeypatch.setattr(updates, "_fetch_feed_bytes", _boom)
         monkeypatch.setattr(update_capability, "distribution", lambda: dist)
         asyncio.run(updates._do_update_check())
 
@@ -1171,7 +1177,9 @@ class TestCheckIsRateLimitedEvenOnFailure:
         release = asyncio.Event()
 
         async def _blocked(url: str) -> tuple[int, bytes]:
-            calls["n"] += 1
+            # Only the manifest counts: the announcement read is a second request.
+            if url.endswith("/latest-cli.json"):
+                calls["n"] += 1
             started.set()
             await release.wait()
             return 200, _manifest(version="0.1.3rc2")

@@ -33,8 +33,8 @@ def test_resolution_preserves_platform_command_spelling(
         patch.setattr(rewriter.platform_compat, "IS_WINDOWS", is_windows)
         patch.setattr(rewriter.os.path, "isfile", lambda path: True)
         patch.setattr(rewriter.os, "access", lambda path, mode: True)
-        # The pre-fix implementation takes this branch. Returning a different
-        # spelling makes its absolute-command regression an assertion failure.
+        # An implementation that trusts realpath's spelling takes this branch.
+        # Returning a different spelling turns that bug into an assertion failure.
         patch.setattr(rewriter.os.path, "realpath", lambda path: actual)
         resolved = rewriter._resolve_target_command(raw if absolute else "demo-mcp", {}, notes)
 
@@ -146,7 +146,7 @@ def test_native_windows_stub_and_daemon_use_on_disk_casing(
     assert raw == str(bin_dir / f"{bare}.EXE")
     assert raw != str(exe)
     servers = {"demo": {"command": raw if absolute else bare, "args": ["--stdio"]}}
-    spec = {"name": "case-agent", "mcpServers": {} if injected else servers}
+    spec = {"name": "case-agent", "mcpServers": {} if injected else servers, "tools": ["*"]}
     notes = rewriter._RewritePassNotes()
     result, wrapped = rewriter._rewrite_single_spec(
         spec,

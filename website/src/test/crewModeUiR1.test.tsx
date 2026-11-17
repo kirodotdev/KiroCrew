@@ -49,7 +49,7 @@ describe('Workers on a Crew Mode slot (U1)', () => {
   })
 })
 
-describe('undoing an Ultra Mode turn-on on the strip (#26498)', () => {
+describe('undoing a conductor mode turn-on on the strip (#26498)', () => {
   beforeEach(() => { localStorage.clear(); __resetPanelTabs() })
 
   it('drops only the named tabs and brings back the tab that was in front', () => {

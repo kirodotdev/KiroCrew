@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useAppSelector } from '../store'
 import { selectContinuable, selectTurnInterrupted } from '../store/chatSlice'
-import { newestErrorOwnsRecovery } from '../pages/chat/transcriptRenderers'
+import { authRequiredIsNewest, newestErrorOwnsRecovery } from '../pages/chat/transcriptRenderers'
 import { useContinuePress } from '../hooks/useContinuePress'
 import type { ChatMessage } from '../types'
 
@@ -42,6 +42,8 @@ export function useChatPaneContinue({ slotKey, messages, turnRunning, sendPendin
   // that card; typing still works. The rule is ChatPage's own, one predicate.
   // Memoised: the pane re-renders per keystroke.
   const cardOwnsRecovery = useMemo(() => newestErrorOwnsRecovery(messages), [messages])
+  // A sign-in error keeps Resume; the composer's hint names the sign-in first.
+  const resumeAfterSignIn = useMemo(() => authRequiredIsNewest(messages), [messages])
   const [continueError, setContinueError] = useState('')
   const { continuing, press } = useContinuePress({
     slot: slotKey,
@@ -63,6 +65,7 @@ export function useChatPaneContinue({ slotKey, messages, turnRunning, sendPendin
     continuable,
     interrupted,
     composerResume: continuable && interrupted && !cardOwnsRecovery,
+    resumeAfterSignIn,
     continuing,
     onContinue,
     continueError,

@@ -16,8 +16,9 @@ testing.
 The count is asserted EXACTLY, not as a ceiling. A ceiling accumulates slack: a
 change that removes ten readers buys room for ten new ones, and the regression
 this test exists to refuse then passes. So a change that removes a site records
-the new number in the same commit, and the failure message says which number to
-write.
+its file's new number in the same commit, and the failure message says which line
+to write. The record is one line per file rather than one total, so two changes
+to different files that are each green on the same base are still green merged.
 
 Two families are counted, because a reader has two spellings. An attribute or
 call is matched as text, with comments and string literals blanked first so prose
@@ -149,16 +150,70 @@ _EXCLUDED_PARTS = ("kiro_crew/testing/", "container_tests/")
 #: tree's other in-line exemptions (``brand-ok``, ``testpaths-ok``).
 _OWNER_MARKER = "pid-owner" + "-ok"
 
-#: The pid-reader count this branch measures. The assertion is EQUALITY, not an
-#: upper bound: an upper bound accumulates slack, so a change that removes ten
-#: readers silently buys room for ten new ones. A change that removes a site
-#: lowers this number in the same commit. A change that wants a new reader takes
-#: the lease handle instead, or marks the site as the pool's own.
-_BASELINE_SITES = 143
-
-#: Owner-marked sites in ``src``. Pinned for the same reason the total is: marking
-#: an ordinary reader would otherwise move a site out of the total for free.
-_BASELINE_OWNER_MARKED = 8
+#: The pid-reader sites this branch measures, by file under ``src/kiro_crew``:
+#: ``(counted, owner-marked)``. Each entry is EQUALITY, not an upper bound: an upper
+#: bound accumulates slack, so a change that removes ten readers silently buys room
+#: for ten new ones. A change that removes a site lowers its file's entry in the same
+#: commit; a change that wants a new reader takes the lease handle instead, or marks
+#: the site as the pool's own and raises that file's owner-marked number, because
+#: marking an ordinary reader would otherwise move a site out of the count for free.
+#:
+#: One line per file, never one total: two changes that each add a site to
+#: different files edit different lines and both land with the table right, and two
+#: changes to one file edit one line and conflict. A single total is the one line
+#: two changes would both rewrite to the same number, which git merges cleanly and
+#: wrong. The residual is
+#: two changes that move the SAME file's entry to the same pair.
+_BASELINE: dict[str, tuple[int, int]] = {
+    "acp/client_class.py": (3, 0),
+    "acp/client_lifecycle.py": (8, 0),
+    "acp/client_mcp_array.py": (0, 1),
+    "acp/client_start.py": (14, 0),
+    "acp/client_turn.py": (1, 0),
+    "acp/runtime_class.py": (3, 0),
+    "acp/runtime_host_requests.py": (3, 0),
+    "acp/runtime_liveness.py": (12, 2),
+    "acp/runtime_session_create.py": (1, 0),
+    "acp/runtime_session_load.py": (1, 0),
+    "acp/runtime_session_setup.py": (0, 1),
+    "acp/runtime_spawn_launch.py": (14, 0),
+    "acp/runtime_tree_kill.py": (4, 0),
+    "acp/session_provider.py": (3, 0),
+    "acp/session_provider_context.py": (1, 0),
+    "apps/builtins/code_review_sage/sage_lib/review_pool.py": (0, 1),
+    "connections/mint.py": (2, 0),
+    "connections/mint_kas.py": (0, 4),
+    "dashboard/chat_turn/mcp_session.py": (2, 0),
+    "dashboard/chat_utils_display.py": (2, 0),
+    "kiro_prerequisite_spawn_identity.py": (1, 0),
+    "knowledge/llm_pool.py": (3, 0),
+    "mcp_core_parts/identity.py": (4, 0),
+    "messaging/identity.py": (1, 0),
+    "process_identity.py": (1, 0),
+    "providers/acp.py": (5, 0),
+    "providers/base.py": (3, 0),
+    "runtime_ownership.py": (1, 0),
+    "session_allocation.py": (3, 0),
+    "session_allocation_parts/get_or_create.py": (2, 0),
+    "session_background.py": (0, 2),
+    "session_capabilities.py": (7, 0),
+    "session_cleanup.py": (3, 0),
+    "session_lifecycle_parts/teardown.py": (1, 0),
+    "session_parts/claims.py": (2, 0),
+    "session_parts/provider_probes.py": (1, 0),
+    "session_pid_provider_kill.py": (1, 0),
+    "session_pid_sig.py": (3, 0),
+    "session_pid_tracking.py": (1, 0),
+    "session_pool.py": (9, 2),
+    "subagent_manager/cancellation.py": (1, 0),
+    "subagent_manager/monitoring.py": (9, 0),
+    "subagent_manager/run_start.py": (1, 0),
+    "subagent_manager/terminal.py": (1, 0),
+    "subagent_manager/turn_session.py": (2, 0),
+    "subagent_parts/admission_surface.py": (1, 0),
+    "subagent_parts/terminal_surface.py": (1, 0),
+    "workflows/agent_pool.py": (1, 0),
+}
 
 #: Files that hold sites at the baseline and are not yet migrated. Each must still
 #: be found, so a scanner that matches nothing cannot pass as a clean tree. Drop a
@@ -193,6 +248,8 @@ class Scan(NamedTuple):
     owner_marked: int
     #: ``file:line (name)`` for every retired spelling found, in walk order.
     retired: tuple[str, ...]
+    #: Owner-marked sites by file, what ``owner_marked`` sums.
+    owner_per_file: Counter[str]
 
 
 def _literal_cores(pattern: str) -> tuple[str, ...]:
@@ -342,6 +399,7 @@ def _scan_tree(root: Path) -> Scan:
     """
     per_needle: Counter[str] = Counter()
     per_file: Counter[str] = Counter()
+    owner_per_file: Counter[str] = Counter()
     witnesses: dict[str, list[str]] = {name: [] for name in (*_NEEDLES, _REFLECTIVE)}
     owner_marked = 0
     retired: list[str] = []
@@ -359,6 +417,7 @@ def _scan_tree(root: Path) -> Scan:
             nonlocal owner_marked
             if exempt:
                 owner_marked += count
+                owner_per_file[relative] += count
                 return
             per_needle[name] += count
             per_file[relative] += count
@@ -384,7 +443,7 @@ def _scan_tree(root: Path) -> Scan:
                 span = raw_lines[first - 1 : last]
                 record(_REFLECTIVE, 1, any(_OWNER_MARKER in line for line in span))
     frozen = tuple((name, tuple(files)) for name, files in witnesses.items())
-    return Scan(per_needle, per_file, frozen, owner_marked, tuple(retired))
+    return Scan(per_needle, per_file, frozen, owner_marked, tuple(retired), owner_per_file)
 
 
 @functools.lru_cache(maxsize=1)
@@ -401,7 +460,8 @@ def _report(scan: Scan) -> str:
     )
     return (
         f"pid-reader sites: {total} in {len(scan.per_file)} files "
-        f"(recorded {_BASELINE_SITES}, owner-marked and counted apart: {scan.owner_marked})\n"
+        f"(recorded {sum(c for c, _ in _BASELINE.values())}, "
+        f"owner-marked and counted apart: {scan.owner_marked})\n"
         f"by needle:\n{by_needle}\n"
         f"by file:\n{by_file}"
     )
@@ -621,6 +681,8 @@ def test_owner_marker_exempts_a_site_and_is_counted_apart(tmp_path: Path) -> Non
     assert scan.owner_marked == 2, (
         "both marked sites must be reported as marked rather than dropped: " f"{scan.owner_marked}"
     )
+    assert scan.owner_per_file == {"owned.py": 2}, dict(scan.owner_per_file)
+    assert _measured(scan) == {"owned.py": (1, 2)}
 
 
 def test_a_site_inside_prose_is_not_counted(tmp_path: Path) -> None:
@@ -643,34 +705,98 @@ def test_a_site_inside_prose_is_not_counted(tmp_path: Path) -> None:
     assert sum(scan.per_needle.values()) == 0, dict(scan.per_needle)
 
 
+def _measured(scan: Scan) -> dict[str, tuple[int, int]]:
+    """``(counted, owner-marked)`` per file that holds either, in ``_BASELINE``'s shape."""
+    files = set(scan.per_file) | set(scan.owner_per_file)
+    return {name: (scan.per_file[name], scan.owner_per_file[name]) for name in sorted(files)}
+
+
+def _drift(
+    measured: dict[str, tuple[int, int]], baseline: dict[str, tuple[int, int]]
+) -> dict[str, tuple[tuple[int, int], tuple[int, int]]]:
+    """``file -> (recorded, measured)`` for every file whose pair differs."""
+    return {
+        name: (baseline.get(name, (0, 0)), measured.get(name, (0, 0)))
+        for name in sorted(set(measured) | set(baseline))
+        if baseline.get(name, (0, 0)) != measured.get(name, (0, 0))
+    }
+
+
+def _lines_to_write(drift: dict[str, tuple[tuple[int, int], tuple[int, int]]]) -> str:
+    """The ``_BASELINE`` lines that make the table match, one per drifted file."""
+    return "\n".join(
+        (
+            f"  delete the line for {name!r}  # was {was}"
+            if now == (0, 0)
+            else f'    "{name}": {now},  # was {was}'
+        )
+        for name, (was, now) in drift.items()
+    )
+
+
+def test_drift_names_each_file_and_the_line_to_write() -> None:
+    baseline = {"a.py": (3, 0), "b.py": (1, 1), "gone.py": (2, 0)}
+    measured = {"a.py": (3, 0), "b.py": (1, 2), "new.py": (1, 0)}
+    drift = _drift(measured, baseline)
+    assert drift == {
+        "b.py": ((1, 1), (1, 2)),
+        "gone.py": ((2, 0), (0, 0)),
+        "new.py": ((0, 0), (1, 0)),
+    }
+    assert _lines_to_write(drift).splitlines() == [
+        '    "b.py": (1, 2),  # was (1, 1)',
+        "  delete the line for 'gone.py'  # was (2, 0)",
+        '    "new.py": (1, 0),  # was (0, 0)',
+    ]
+
+
+def test_the_baseline_holds_no_empty_entry() -> None:
+    """A ``(0, 0)`` line matches a file with no site, so it would never go stale."""
+    assert sorted(name for name, pair in _BASELINE.items() if pair == (0, 0)) == []
+
+
 def test_owner_marked_sites_match_the_recorded_count() -> None:
-    """Marking a reader is a declaration, so the number of marks is pinned too."""
+    """Marking a reader is a declaration, so each file's number of marks is pinned too."""
     scan = _scan()
-    assert scan.owner_marked == _BASELINE_OWNER_MARKED, (
-        f"{scan.owner_marked} owner-marked pid reader(s) in src, recorded "
-        f"{_BASELINE_OWNER_MARKED}. The marker says a reading belongs to the module "
-        "that owns a runtime or the one function that ends it. Adding one is a "
-        "declaration: set _BASELINE_OWNER_MARKED in the same commit, so marking an "
-        "ordinary reader cannot quietly move it out of the total.\n" + _report(scan)
+    drift = {
+        name: pair
+        for name, pair in _drift(_measured(scan), _BASELINE).items()
+        if pair[0][1] != pair[1][1]
+    }
+    assert not drift, (
+        f"owner-marked pid readers changed in {len(drift)} file(s). The marker says a reading "
+        "belongs to the module that owns a runtime or the one function that ends it. Adding "
+        "one is a declaration: set that file's entry in _BASELINE in the same commit, so "
+        "marking an ordinary reader cannot quietly move it out of the count:\n"
+        + _lines_to_write(drift)
+        + "\n"
+        + _report(scan)
     )
 
 
 def test_pid_reader_sites_match_the_recorded_count_exactly() -> None:
     scan = _scan()
-    total = sum(scan.per_needle.values())
-    if total > _BASELINE_SITES:
+    drift = {
+        name: pair
+        for name, pair in _drift(_measured(scan), _BASELINE).items()
+        if pair[0][0] != pair[1][0]
+    }
+    risen = {name: pair for name, pair in drift.items() if pair[1][0] > pair[0][0]}
+    if risen:
         raise AssertionError(
             "this change ADDS a place that reads a runtime's pid. A runtime is shared, so a "
             "per-session pid reading attributes one process to one of its tenants. Take the "
             "lease handle instead. If the reading really is the pool's own -- the module that "
             f"owns the runtime, or the one function that ends it -- put `# {_OWNER_MARKER}: "
-            "<why>` on the line and record the new mark count.\n" + _report(scan)
-        )
-    if total < _BASELINE_SITES:
-        raise AssertionError(
-            f"this change removes {_BASELINE_SITES - total} pid reader(s), which is the point -- "
-            f"now record it: set _BASELINE_SITES to {total} in this same commit. The number is an "
-            "exact count rather than a ceiling, because a ceiling would leave "
-            f"{_BASELINE_SITES - total} slot(s) of room for a future reader to fill silently.\n"
+            "<why>` on the line and raise that file's owner-marked number in _BASELINE.\n"
+            + _lines_to_write(risen)
+            + "\n"
             + _report(scan)
+        )
+    if drift:
+        raise AssertionError(
+            "this change removes pid reader(s), which is the point -- now record it: set "
+            "these _BASELINE entries in this same commit. Each entry is an exact count rather "
+            "than a ceiling, because a ceiling would leave room for a future reader to fill "
+            "silently.\n" + _lines_to_write(drift) + "\n" + _report(scan)
         )

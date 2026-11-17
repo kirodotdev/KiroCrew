@@ -107,7 +107,8 @@ function createWindowPrompts({
           window.close();
         }
         document.addEventListener('keydown', event => {
-          if (event.key === 'Enter') go();
+          // Enter on a focused button is that button's own press: Cancel must not connect.
+          if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) go();
           if (event.key === 'Escape') window.close();
         });
       </script>
@@ -179,7 +180,8 @@ function createWindowPrompts({
             window.close();
           }
           document.addEventListener('keydown', event => {
-            if (event.key === 'Enter') go();
+            // Enter on a focused button is that button's own press: Cancel must not rename.
+            if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) go();
             if (event.key === 'Escape') window.close();
           });
         </script>

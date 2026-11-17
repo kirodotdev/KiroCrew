@@ -1,7 +1,8 @@
 /**
  * Goldens for the wave-3 additions to the `schedule`, `artifacts` and
  * `capabilities` areas (Schedule's job controls, the Artifacts toolbar extras,
- * Customize > Skills and the MCP probe): the exact parent chain, entry, route,
+ * Customize > Skills, the MCP probe and Customize > Knowledge's Sources view
+ * and Add Source): the exact parent chain, entry, route,
  * label key and requirements each location carries in the generated index, and
  * the one render site its marker sits on, in the committed index.
  */
@@ -22,6 +23,8 @@ const SCHEDULE_SRC = src('../pages/SchedulePage.tsx')
 const ARTIFACTS_SRC = readPageFamily('ArtifactsPage')
 const SKILLS_SRC = src('../pages/overview/SkillsTab.tsx')
 const MCP_SRC = src('../pages/overview/McpTab.tsx')
+const KNOWLEDGE_SRC = src('../pages/knowledge/index.tsx')
+const SOURCES_SRC = src('../pages/knowledge/SourcesList.tsx')
 
 const cond = (...ids: string[]): Req[] => ids.map(id => ({ kind: 'condition', id }))
 
@@ -63,12 +66,12 @@ const EXPECTED: Record<string, Expect> = {
   },
   'artifacts.starred': {
     kind: 'toggle', labelKey: 'pages.artifactsPage.starred', aliasKeys: ['pages.artifactsPage.filter_starred'], source: ARTIFACTS_SRC,
-    placement: { surface: 'artifacts', route: '/artifacts', parents: ['page.artifacts'], entry: 'toolbar', requires: [] },
+    placement: { surface: 'artifacts', route: '/artifacts?scope=all', parents: ['page.artifacts'], entry: 'toolbar', requires: [] },
   },
   'artifacts.new-folder': {
-    kind: 'button', labelKey: 'pages.artifactsPage.new_folder',
+    kind: 'menu-item', labelKey: 'pages.artifactsPage.new_folder',
     aliasKeys: ['pages.artifactsPage.create_a_folder_to_organize_your_artifacts'], source: ARTIFACTS_SRC,
-    placement: { surface: 'artifacts', route: '/artifacts', parents: ['page.artifacts'], entry: 'toolbar', requires: [{ kind: 'viewport', value: 'desktop' }] },
+    placement: { surface: 'artifacts', route: '/artifacts', parents: ['page.artifacts', 'artifacts.add-menu'], entry: 'menu', requires: [{ kind: 'viewport', value: 'desktop' }] },
   },
   'artifacts.deploy': {
     kind: 'button', labelKey: 'pages.artifactsPage.artifact_deploy',
@@ -85,11 +88,25 @@ const EXPECTED: Record<string, Expect> = {
   'skills.create': { kind: 'button', labelKey: 'pages.overview.skillsTab.create_new_skill', source: SKILLS_SRC, placement: skills },
   'skills.add': { kind: 'button', labelKey: 'pages.overview.skillsTab.add_skill', source: SKILLS_SRC, placement: skills },
   'skills.refresh': { kind: 'button', labelKey: 'pages.overview.skillsTab.refresh_skills', source: SKILLS_SRC, placement: skills },
+  'knowledge.sources-tab': {
+    kind: 'tab', labelKey: 'pages.knowledge.index.sources_tab', source: KNOWLEDGE_SRC,
+    placement: {
+      surface: 'capabilities', route: '/capabilities?tab=knowledge',
+      parents: ['page.capabilities', 'tab.capabilities.knowledge'], entry: 'tab', requires: [],
+    },
+  },
+  'knowledge.add-source': {
+    kind: 'button', labelKey: 'pages.knowledge.sourcesList.add_source', source: SOURCES_SRC,
+    placement: {
+      surface: 'capabilities', route: '/capabilities?tab=knowledge',
+      parents: ['page.capabilities', 'tab.capabilities.knowledge', 'knowledge.sources-tab'], entry: 'toolbar', requires: [],
+    },
+  },
   'mcp.probe': {
     kind: 'button', labelKey: 'pages.overview.mcpTab.probe_mcp_servers', source: MCP_SRC,
     placement: {
-      surface: 'capabilities', route: '/capabilities?tab=mcp',
-      parents: ['page.capabilities', 'tab.capabilities.mcp', 'connections.mcp-servers-tab'], entry: 'toolbar', requires: [],
+      surface: 'capabilities', route: '/capabilities?tab=mcp-servers',
+      parents: ['page.capabilities', 'tab.capabilities.mcp-servers', 'mcp.servers-view'], entry: 'toolbar', requires: [],
     },
   },
 }
@@ -127,6 +144,22 @@ describe('schedule, artifacts and capabilities wave-3 locations', () => {
     expect(byId.get('schedule.create-first')!.placements[0].requires).toEqual(cond('no_schedules'))
     expect(byId.get('schedule.add-job')!.placements[0].requires).toEqual(cond('has_schedules'))
     expect(byId.get('artifacts.import')!.placements[0].parent_ids).toEqual(['page.artifacts', 'artifacts.add-menu'])
-    expect(byId.get('mcp.add-custom')!.placements[0].parent_ids).toEqual(['page.capabilities', 'tab.capabilities.mcp', 'connections.mcp-servers-tab'])
+    expect(byId.get('mcp.add-custom')!.placements[0].parent_ids).toEqual(['page.capabilities', 'tab.capabilities.mcp-servers', 'mcp.servers-view'])
+  })
+})
+
+describe('artifact-pick guides open All artifacts', () => {
+  // A desktop's Home draws only the latest few records, so a guide that picks
+  // a named artifact must open the list that draws every one.
+  it('routes the artifact picker and every control behind it to scope=all', () => {
+    const behindPick = index.locations.filter(l =>
+      l.id === 'artifacts.list' ||
+      l.placements.some(p => p.requires.some(r => r.kind === 'condition' && r.id === 'artifact_open')))
+    expect(behindPick.map(l => l.id)).toEqual(expect.arrayContaining([
+      'artifacts.list', 'artifacts.detail.versions', 'artifacts.detail.move-to-folder', 'artifacts.detail.more',
+    ]))
+    for (const loc of behindPick) {
+      for (const p of loc.placements) expect([loc.id, p.route]).toEqual([loc.id, '/artifacts?scope=all'])
+    }
   })
 })

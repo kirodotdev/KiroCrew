@@ -30,7 +30,8 @@ description: >-
 #
 # The job's `timeout-minutes` must leave room for `max-wait` on top of its own
 # work. Put this step after the checkout and before the job's first `gh` call.
-# test/test_scheduled_gh_rate_limit.py pins both for every scheduled workflow.
+# test/test_scheduled_gh_rate_limit.py pins both for every scheduled workflow
+# and for the event-triggered jobs it lists in EVENT_WRAPPED.
 
 inputs:
   max-wait:

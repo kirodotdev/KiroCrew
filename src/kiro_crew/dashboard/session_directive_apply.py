@@ -45,6 +45,7 @@ from __future__ import annotations
 import importlib as _importlib
 import logging
 import sys as _sys
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from kiro_crew import _facade_mirror
@@ -71,6 +72,7 @@ from kiro_crew.dashboard.session_directive_apply_outcome import (
     _surface_arm_refusal,
 )
 from kiro_crew.dashboard.session_directive_apply_slot import (
+    _apply_chat_rename,
     _apply_chat_tag,
     _nothing_to_do,
     _refuse_unvouched_wake_reset,
@@ -126,6 +128,45 @@ def refuse_user_origin_directive(session_key: str, kind: str) -> str:
         f"refused even when this session has an open dashboard tab "
         f"(this turn is {session_key!r}). Nothing was changed."
     )
+
+
+def person_only_directive_refuser(
+    session_key: str, refusals: list[str]
+) -> Callable[[Any], Awaitable[None]]:
+    """Return a ``stream_and_collect`` ``on_event`` that refuses person-only directives.
+
+    For a turn no session applier reads (a cron job, a workflow agent step): each
+    ``USER_ORIGIN_DIRECTIVES`` call the turn completes is refused with
+    :func:`refuse_user_origin_directive` and its text appended to *refusals* for
+    the caller to lead its result with. The call is named from any of its frames
+    the way the dashboard's out-of-band claim names it
+    (``directive_tool_from_call``), never from the result body, which a harness
+    may reshape (KAS). Nothing is applied, so a forged title buys only a refusal
+    line. Every other directive is left unread.
+    """
+    from kiro_crew import session_directive
+    from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL_RESULT
+    from kiro_crew.directive_origin import USER_ORIGIN_DIRECTIVES
+
+    person_only_calls: dict[str, str] = {}
+
+    async def _on_event(event: Any) -> None:
+        call_id = event.tool_call_id
+        if not call_id:
+            return
+        if event.kind != CONTEXT_EVENT_TOOL_RESULT:
+            tool = session_directive.directive_tool_from_call(
+                event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
+            )
+            if tool in USER_ORIGIN_DIRECTIVES:
+                person_only_calls[call_id] = tool
+            return
+        if event.tool_final and call_id in person_only_calls:
+            refusals.append(
+                refuse_user_origin_directive(session_key, person_only_calls.pop(call_id))
+            )
+
+    return _on_event
 
 
 async def apply_session_directive(
@@ -256,8 +297,8 @@ async def apply_session_directive_outcome(
     # deactivated, by raising that bound (``_monitor_update``).
     # Everything else -- a cron injection, an app-driven turn, a
     # sub-agent sharing the slot -- carries neither mark and is refused. This is
-    # NOT the user-surface gate above: ``set_project`` / ``chat_tag`` stay
-    # human-only, a wake must never retarget the slot's project, and
+    # NOT the user-surface gate above: ``set_project`` / ``chat_tag`` /
+    # ``chat_rename`` stay human-only, a wake must never retarget the slot's project, and
     # ``reset_conversation`` admits a wake only through
     # ``_refuse_unvouched_wake_reset``.
     self_arm_ok = bool(producer_is_user_facing or producer_is_self_wake)
@@ -329,6 +370,10 @@ async def apply_session_directive_outcome(
                 )
         elif kind == "chat_tag":
             result = await _apply_chat_tag(state, slot, session_key, args)
+        elif kind == "chat_rename":
+            result = await _apply_chat_rename(
+                state, slot, session_key, args, producer_turn_actor=producer_turn_actor
+            )
         elif kind == "suggest_followup":
             result = await _suggest_followup(state, slot, args)
         elif kind == "nothing_to_do":
@@ -458,6 +503,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _surface_arm_success,
     )
     from kiro_crew.dashboard.session_directive_apply_slot import (  # noqa: F401
+        _SELF_RENAME_REFUSALS,
         QUIET_END_REFUSED_USER_TURN,
         _push,
         _slot_has_pending_interaction,

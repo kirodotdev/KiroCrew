@@ -46,6 +46,13 @@ _WS_HEARTBEAT_SECS = 60.0
 # WeComClient, which carry the same guard for the same reason.
 _MIN_HEALTHY_CONN_SECS = 5.0
 
+# Reconnects in a row with no READY or RESUMED after which a resume is given up
+# for a fresh IDENTIFY on the main gateway URL (see ``_gateway_loop``). Seven puts
+# the fallback past the backoff cap, about two minutes in, so a short local outage
+# still resumes and gets its missed events replayed.
+# shortcut: a fixed count, not configurable; make it a setting only if asked.
+_RESUME_FAILURES_BEFORE_IDENTIFY = 7
+
 # Close code for every close that means "reconnect and resume". Discord ends
 # the session on a 1000 or 1001 close, so the RESUME that follows fails and the
 # events sent in the gap are lost. Any other code keeps the session resumable;
@@ -100,6 +107,18 @@ class DiscordInbound:
     guild_id: str = ""  # empty string == DM channel
     is_bot: bool = False
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    #: Id of the message this one REPLIES to, or "". With the channel id it names
+    #: a bridged note an ``approve`` / ``deny`` reply answers (notifications, B4g).
+    reply_to_message_id: str = ""
+
+
+def _reply_message_id(d: dict[str, Any]) -> str:
+    """The id of the message a REPLY (type 19) quotes, or "", read defensively."""
+    if d.get("type", 0) != 19:
+        return ""
+    ref = d.get("message_reference")
+    raw = ref.get("message_id") if isinstance(ref, dict) else None
+    return raw if isinstance(raw, str) and raw.isdigit() else ""
 
 
 @dataclass
@@ -181,6 +200,19 @@ async def _gateway_loop(self: DiscordClient) -> None:
                 continue
             reason = "gateway closed the connection immediately"
         attempt += 1
+        # Counted apart from ``attempt``: a READY or RESUMED resets it, so only
+        # reconnects that never got a session back count toward giving up.
+        self._failures_since_session += 1
+        if self._failures_since_session >= _RESUME_FAILURES_BEFORE_IDENTIFY and self._session_id:
+            # Session state is otherwise cleared only by a close code or an op 9,
+            # and both need a socket that connected. When the regional resume
+            # host itself is unreachable (a proxy allow-list, a regional outage)
+            # nothing would ever clear it, so every retry would go to the same
+            # dead URL and inbound would stop until a restart. Give up the
+            # replay and identify fresh on the main gateway instead.
+            logger.warning("Discord gateway resume keeps failing; identifying fresh")
+            self._session_id = ""
+            self._seq = None
         delay = min(1.0 * (2 ** (attempt - 1)), 60.0) + random.random()
         logger.warning("Discord gateway disconnected (%s), reconnect in %.1fs", reason, delay)
         await asyncio.sleep(delay)
@@ -378,15 +410,24 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
         # lose precision as a float on any round-trip through JSON.
         self.application_id = str((d.get("application") or {}).get("id", "") or "")
         logger.info("Discord gateway READY (bot user %s)", self.bot_user_id)
+        self._failures_since_session = 0
         self.ready.set()
         self._notify_state(True, "")
         return
     if event == "RESUMED":
         logger.info("Discord gateway session resumed")
+        self._failures_since_session = 0
         self.ready.set()
         self._notify_state(True, "")
         return
     if event == "MESSAGE_CREATE":
+        # Only a person's own message (DEFAULT 0, REPLY 19) is a prompt. A system
+        # notice also arrives as MESSAGE_CREATE and some carry text in
+        # ``content`` -- a thread rename (4) its new name, a thread start (18)
+        # its title -- authored by the person who acted, so no author check
+        # would stop it from running as a turn.
+        if d.get("type", 0) not in (0, 19):
+            return
         author = d.get("author") or {}
         inbound = DiscordInbound(
             channel_id=str(d.get("channel_id", "")),
@@ -401,6 +442,7 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
                 for attachment in (d.get("attachments") or [])
                 if isinstance(attachment, dict)
             ],
+            reply_to_message_id=_reply_message_id(d),
         )
         if inbound.is_bot or inbound.user_id == self.bot_user_id:
             return  # never respond to bots (incl. ourselves) — loop guard

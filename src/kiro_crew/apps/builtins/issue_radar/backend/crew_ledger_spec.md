@@ -219,7 +219,11 @@ gateway's CLI login as a dedicated crew account (a machine user on GitHub, a pro
 or group access token's bot user on GitLab) with write access to the repository, and
 answer from your own account; or keep your own login on the gateway and answer from
 another account (#22527 tracks separating the agent and operator identities inside
-the gateway). A comment alone is not an answer. Every other scope
+the gateway). The same login is what a mention wake (`#N asked <id>`) matches, so
+those wakes stay off unless the repo setting `crew_answer_mentions` is on, and it
+assumes that dedicated crew account: on a person's own login a crew would answer, in
+public and in that person's name, a question someone asked them. A comment alone is
+not an answer. Every other scope
 (`duplicate`, `already-fixed`, `not-reproducible`, `wrong-root-cause`,
 `gate-config`, `other`) is a finding about the issue and stays skipped. The gateway's sweep (`crew_runtime.detect_human_answers`) finds it
 with no LLM: only numbers whose standing pass has an answerable scope, whose issue
@@ -407,7 +411,7 @@ pre-projection state.
 | `extra_prompt` | str | appended after the brief, never replacing it: sent on every turn, before the nudge. Blank or whitespace-only adds nothing |
 | `labels` | [str] | its scope. Empty = every label |
 | `auto_resolve_conflicts` | bool | default true, structural files only |
-| `auto_merge` | bool | default true |
+| `auto_merge` | bool | default true. Decides the nudge's merge rule: true lets the crew arm the forge's own auto-merge on a green, mergeable PR; false tells it never to merge or arm, leaving the PR for a person. Governs only what the crew arms from then on: turning it off does not cancel an auto-merge already armed on a PR. Ignored on GitLab, where a crew never arms it (`merge_when_pipeline_succeeds` is a merge); see `crew_runtime_prompt.may_arm_auto_merge` |
 | `unattended` | bool | default true → per-slot trust, re-established each cycle |
 | `max_open` | int | default 3 |
 | `worktree_root` | str | one worktree per issue lives under here |
@@ -872,7 +876,7 @@ numberless call takes none of the work-item fields (they patch an item this call
 does not create, so they are refused rather than dropped). A present-but-invalid
 number stays a 400 and is never reinterpreted as "no issue".
 
-Validation lives in `kiro_crew/validation_parts/app_schemas.py` alongside the existing schemas. The handler
+Validation lives in the tool's `app.json` `agentTools` declaration and `backend/agent_tools.py`. The handler
 sends `owner`/`repo` explicitly so a same-numbered issue in another repo cannot
 overwrite this record, and refuses a second item entering an editing phase.
 

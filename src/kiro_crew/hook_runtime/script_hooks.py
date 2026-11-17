@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         HOOK_EVENTS_KAS_ONLY,
         ScriptHook,
         _audit_governance_hook_decision,
+        _coerce_bool,
         _communicate_capped,
         _context_matches,
         _decode_capped,
@@ -52,6 +53,45 @@ if TYPE_CHECKING:
         validate_hook_fields,
         webhooks,
     )
+
+
+def _script_hook_enabled_from(data: dict) -> bool:
+    """Read a stored ``enabled`` without the ``bool("false")`` trap (``ScriptHook.from_dict``).
+
+    hooks.json is hand-editable. A real bool and the ``_coerce_bool``
+    spellings (``"false"``, ``"off"``, ``"1"``, ...) map to their value. A
+    JSON integer maps like its string spelling (``0`` off, any other int on),
+    because a hand edit writes ``0`` as naturally as ``"0"``. ``null`` and an
+    empty string load off, as they did before (both were falsy). An absent
+    key keeps the long-standing default of enabled.
+
+    Anything else (``"ture"``, ``"y"``, ``[1]``, ``1.0``, and a whitespace-only
+    string such as ``"   "`` or a non-breaking space, which was truthy before)
+    loads ENABLED, with a warning naming the hook. Off is not a safe guess: a
+    PreToolUse hook is a deny gate, so reading a typo as off would silently
+    drop it. Refusing the entry is not safe either: the gateway's registered
+    store skips an entry it cannot load, so the gate would stop there too. On
+    keeps the gate running in every process, and it is not a privilege gain:
+    whoever can write hooks.json can write a real ``true``.
+    """
+    if "enabled" not in data:
+        return True
+    raw = data["enabled"]
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw != 0
+    if raw is None or raw == "":
+        return False
+    # ``_coerce_bool`` holds the one list of spellings; a value it does not
+    # recognise is the one whose answer depends on the default it is given.
+    value = _coerce_bool(raw, default=True)
+    if not value or _coerce_bool(raw, default=False):
+        return value
+    logger.warning(
+        "Script hook %r has an unrecognised 'enabled' value (%s); loading it enabled",
+        str(data.get("id", ""))[:64],
+        type(raw).__name__,
+    )
+    return True
 
 
 def _hook_subprocess_env(
@@ -194,6 +234,11 @@ async def run_script_hook(
 
         # The policy's ``events`` list names the trigger events a hook may fire on.
         gov_denied = await asyncio.to_thread(event_refusal, sk, firing_event)
+    if not gov_denied:
+        from kiro_crew.hook_event_governance import hook_refusal
+
+        # The policy's ``hooks`` list names the hooks that may run.
+        gov_denied = await asyncio.to_thread(hook_refusal, sk, hook)
     if gov_denied:
         hook.last_run = time.time()
         hook.last_status = "blocked"
@@ -316,6 +361,19 @@ async def run_script_hook(
         # on the build fleet): start_new_session=True is a no-op on Windows,
         # creationflags resolves to 0 (no-op) on POSIX. The Windows flag makes the
         # tree taskkill /T-reapable; POSIX setsid -> killpg.
+        #
+        # Both Windows spawns also carry CREATE_NO_WINDOW, so whether cmd.exe (a
+        # console program) shows a window never depends on how the gateway was
+        # started. The desktop shell and the detached restart give the gateway a
+        # hidden console, which a hook spawned without the flag inherits; a
+        # gateway with no console (started by pythonw, or by a launcher that
+        # passes DETACHED_PROCESS) makes Windows allocate one per hook. CPython
+        # hides that one on the shell spawn (STARTF_USESHOWWINDOW + SW_HIDE), but
+        # the argv fall-through gives no such hint, so its window would show. With
+        # the flag every hook gets a console with no window, which its own console
+        # children share, under any launch and on either path. stdin stays the
+        # pipe the event JSON is written to.
+        no_console_window = platform_compat._SUBPROCESS_NO_WINDOW
         if platform_compat.IS_WINDOWS and wrapped_argv == argv:
             # cmd.exe must receive the operator's command line VERBATIM. Spawning
             # ``["cmd", "/c", command]`` as an argv routes it through
@@ -340,7 +398,7 @@ async def run_script_hook(
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=cwd,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP | no_console_window,
             )
         else:
             proc = await create_subprocess_limited(
@@ -351,7 +409,7 @@ async def run_script_hook(
                 env=env,
                 cwd=cwd,
                 start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP | no_console_window,
             )
         try:
             (
@@ -1030,6 +1088,10 @@ class ScriptHookStore:
                     from kiro_crew.hook_event_governance import event_refusal
 
                     gov_denied = await asyncio.to_thread(event_refusal, sk, event)
+                if not gov_denied:
+                    from kiro_crew.hook_event_governance import hook_refusal
+
+                    gov_denied = await asyncio.to_thread(hook_refusal, sk, hook)
                 if gov_denied:
                     hook.last_run = time.time()
                     hook.last_status = "blocked"
@@ -1052,7 +1114,11 @@ class ScriptHookStore:
                     "allowed",
                     "skills-only hook permitted",
                 )
-                skills_directive = " ".join(f"${s.rpartition('/')[2]}" for s in hook.skills)
+                from kiro_crew.skill_package_key import split_package_key
+
+                skills_directive = " ".join(
+                    f"${split_package_key(s.rpartition('/')[2])[1]}" for s in hook.skills
+                )
                 hook.last_run = time.time()
                 hook.last_status = "ok"
                 hook.last_error = ""

@@ -1,8 +1,9 @@
 """Switching an installed app on and off, and opening it.
 
 ``handle_enable_app`` and ``handle_disable_app`` with the built-in service sync they
-drive and the client-install platform check (``_client_install_manifest``), and
-``handle_open_app`` with the desktop environment its ``openCommand`` launcher keeps.
+drive, and ``handle_open_app`` with the desktop environment its ``openCommand``
+launcher keeps. The ``setup.onEnable`` runner and its client-install platform check
+are in ``routes_lifecycle``, shared with the update routes.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -16,7 +17,6 @@ import importlib
 import json
 import logging
 import os
-import sys
 from typing import Any
 
 from aiohttp import web
@@ -28,9 +28,6 @@ from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
 from kiro_crew.apps.event_bus import build_broadcast_fn
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.hooks_integration import on_app_enable
-
-# Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
-from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
 from kiro_crew.apps.manager import (
     app_enabled_state,
     app_lifecycle_lock,
@@ -39,7 +36,7 @@ from kiro_crew.apps.manager import (
     enable_app,
     get_app,
 )
-from kiro_crew.apps.manifest import Dependencies, PlatformConfig
+from kiro_crew.apps.manifest import Dependencies
 from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.apps.registry import _manifest_shell_platform_refusal, minimal_env
 from kiro_crew.apps.routes_lifecycle import (
@@ -48,6 +45,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _redact_warning,
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
+    _run_on_enable_script,
     _unregister_notification_channels,
 )
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
@@ -198,34 +196,6 @@ async def _notify_builtin_service(request: web.Request, name: str) -> str | None
         return f"restart failed: {exc}"
 
 
-def _client_install_manifest(manifest: dict[str, Any]) -> PlatformConfig | None:
-    """The app's :class:`PlatformConfig` when it is a CLIENT-install app, else ``None``.
-
-    A ``client`` app's real payload is a desktop application the user installs on
-    their OWN machine; what the gateway holds is metadata plus a dashboard page.
-    So its lifecycle scripts address something that legitimately may not be on
-    this host, which is what makes them advisory rather than a health check —
-    see :func:`handle_enable_app`.
-
-    Never raises. ``PlatformConfig.from_dict`` iterates ``os`` and ``arch``
-    directly, so a hand-edited ``app.json`` carrying ``"os": null`` raises
-    ``TypeError`` there; this is the first place the enable path parses
-    ``platform`` at all, so an unguarded call would turn a malformed manifest into
-    a 500 on enable. A manifest this app cannot read is treated as "not a client
-    app", which keeps the strict rollback behavior rather than silently widening
-    the advisory path.
-    """
-    platform_raw = manifest.get("platform")
-    if not isinstance(platform_raw, dict):
-        return None
-    try:
-        platform_cfg = PlatformConfig.from_dict(platform_raw)
-    except (TypeError, ValueError) as exc:
-        logger.warning("Ignoring an unreadable platform block on app enable: %s", exc)
-        return None
-    return platform_cfg if platform_cfg.installMode == "client" else None
-
-
 async def handle_enable_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/enable — enable an app.
 
@@ -325,18 +295,6 @@ async def handle_enable_app(request: web.Request) -> web.Response:
 
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
-    on_enable = (manifest.get("setup") or {}).get("onEnable", "")
-    # The record carries the timeout as `int()` read it, the form the signature
-    # covers; the 1..300 bound is applied (and a clamp logged) here, where the script
-    # runs under the app lifecycle lock. A local import keeps this helper out of the
-    # names the routes facade serves from this module.
-    from kiro_crew.apps.manifest import lifecycle_timeout_seconds
-
-    enable_timeout = lifecycle_timeout_seconds(
-        (manifest.get("setup") or {}).get("onEnableTimeout"),
-        app_name=name,
-        field_name="onEnableTimeout",
-    )
 
     # Per-app lifecycle lock: enable mutates metadata, registers resources,
     # and starts the backend — must not interleave with a concurrent
@@ -415,59 +373,43 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         # Run onEnable script. A client-install app's script is advisory: it
         # addresses a separately-distributed desktop application, so it neither
         # gates nor rolls back the enable (see this handler's docstring).
-        client_platform = _client_install_manifest(manifest)
-        if (
-            on_enable
-            and client_platform is not None
-            and not client_platform.supports_platform(sys.platform)
-        ):
-            resp["onEnable"] = {
-                "output": "",
-                "failed": False,
-                "skipped": "unsupported_platform",
-            }
-        elif on_enable:
-            script_output = await _run_lifecycle_script(
-                name, on_enable, timeout=enable_timeout, action="on_enable"
-            )
-            if script_output.get("failed") and client_platform is None:
+        on_enable, roll_back = await _run_on_enable_script(name, manifest)
+        if on_enable is not None:
+            if roll_back:
                 # Rollback: disable the app again
                 if resources == "gateway":
                     await asyncio.get_running_loop().run_in_executor(
                         subprocess_executor(), stop_app_backend, name
                     )
                     await _deregister_app_off_loop(name)
-                await asyncio.to_thread(disable_app, name)
+                disabled = await asyncio.to_thread(disable_app, name)
+                # `disable_app` fails closed (an unrecorded disable, an unrevoked
+                # host-exec grant), so only its result may say the app is off.
+                if disabled.ok:
+                    error = "onEnable script failed — app remains disabled"
+                else:
+                    error = _redact_warning(
+                        "onEnable script failed and the app could not be disabled: "
+                        + (disabled.error or "unknown error")
+                    )
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_enable",
                     outcome="failed",
                     resources=name,
-                    error="onEnable script failed",
+                    error="onEnable script failed" if disabled.ok else error,
                 )
-                from kiro_crew.security import redact_credentials
-
-                cleaned, _ = redact_credentials(script_output.get("output", ""))
                 return web.json_response(
                     {
                         "ok": False,
                         "name": name,
-                        "error": "onEnable script failed — app remains disabled",
-                        "script_output": cleaned,
+                        "error": error,
+                        "script_output": on_enable["output"],
                         "code": "on_enable_failed",
                     },
                     status=400,
                 )
-            resp["onEnable"] = {
-                "output": "",
-                "failed": False,
-            }
-            if script_output.get("output"):
-                from kiro_crew.security import redact_credentials
-
-                cleaned, _ = redact_credentials(script_output.get("output", ""))
-                resp["onEnable"]["output"] = cleaned
-            resp["onEnable"]["failed"] = script_output.get("failed", False)
+            resp["onEnable"] = on_enable
 
         # Invoke Python lifecycle hooks (routes + on_startup) — runs AFTER shell scripts
         try:
@@ -522,7 +464,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 # stalls -- the property the previous ``to_thread`` was there for.
                 #
                 # Lock order is app_lifecycle_lock -> config lock, matching
-                # ``handle_app_uninstall`` (routes.py), which already nests them that way
+                # ``_run_uninstall`` (routes_uninstall.py), which already nests them that way
                 # for the same reason. Verified across the tree: 14 functions take
                 # ``app_lifecycle_lock`` and none of them is reachable from inside a
                 # config-lock block, so the reverse order does not exist.
@@ -543,10 +485,27 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 if svc_warn:
                     resp.setdefault("warnings", []).append(_redact_warning(svc_warn))
 
+        # The record as enabled, not as read before the lock: a reinstall it waited on
+        # may have changed the servers.
+        enabled_info = await asyncio.to_thread(get_app, name) or {}
+        reach_chats = enabled_info.get("resources", "gateway") == "gateway" and bool(
+            enabled_info.get("manifest", {}).get("mcpServers")
+        )
         sel().log_api_access(
             caller="dashboard", operation="app_enable", outcome="completed", resources=name
         )
-        return web.json_response(resp)
+
+    # After the lock: a gateway-managed app's MCP servers are in the agent spec, or will be
+    # once its backend's health watch writes an HTTP one, so end as an MCP page write does
+    # and a chat already open gets them too (app-kit-platform §1).
+    if reach_chats:
+        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+        try:
+            await _reach_sessions(request)
+        except Exception:  # noqa: BLE001 - the enable has committed
+            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    return web.json_response(resp)
 
 
 async def handle_disable_app(request: web.Request) -> web.Response:
@@ -652,7 +611,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
                 # stalls -- the property the previous ``to_thread`` was there for.
                 #
                 # Lock order is app_lifecycle_lock -> config lock, matching
-                # ``handle_app_uninstall`` (routes.py), which already nests them that way
+                # ``_run_uninstall`` (routes_uninstall.py), which already nests them that way
                 # for the same reason. Verified across the tree: 14 functions take
                 # ``app_lifecycle_lock`` and none of them is reachable from inside a
                 # config-lock block, so the reverse order does not exist.

@@ -49,7 +49,7 @@ async def test_accepts_zero_auto_sentinel(tmp_path):
 @pytest.mark.asyncio
 async def test_accepts_value_up_to_hard_cap(tmp_path):
     cfg = tmp_path / "config.json"
-    # Default hard cap is 16, so 12 is accepted.
+    # Default hard cap is the loader's subagent_auto_max default (32), so 12 is accepted.
     res = await _put({"max_subagents": 12}, cfg)
     assert res.status == 200
     assert _written(cfg)["agent"]["max_subagents"] == 12
@@ -74,10 +74,20 @@ async def test_same_request_cannot_widen_hard_cap(tmp_path):
     cfg = tmp_path / "config.json"
     # Security: the ceiling MUST come from persisted config only. A request that
     # tries to raise subagent_auto_max in the same payload must NOT widen the
-    # bound — with no persisted value the default hard cap (16) applies, so 30 is
+    # bound — with no persisted value the default hard cap (32) applies, so 40 is
     # rejected (deny-by-default; prevents {auto_max:9999, max_subagents:9999}).
-    res = await _put({"subagent_auto_max": 32, "max_subagents": 30}, cfg)
+    res = await _put({"subagent_auto_max": 64, "max_subagents": 40}, cfg)
     assert res.status == 400
+
+
+@pytest.mark.asyncio
+async def test_default_config_accepts_the_cap_the_page_shows(tmp_path):
+    cfg = tmp_path / "config.json"
+    # With nothing persisted the page shows the loader's default cap (32) as the
+    # input's max and sends it back on Save; a count under it must save.
+    res = await _put({"subagent_max_turns": 100, "max_subagents": 20, "subagent_auto_max": 32}, cfg)
+    assert res.status == 200
+    assert _written(cfg)["agent"]["max_subagents"] == 20
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,8 @@ registers a delivery hook into, keyed by the channel namespace it owns
 given the spawn's ``parent_session_key``, and:
 
 * a hook returning ``True``/``False`` is the user's in-channel decision — run or
-  reject — and the callback returns it verbatim;
+  reject — and the callback returns it verbatim, as it does the host decline
+  :func:`unpressed_wait_answer` gives for a wait that elapsed unpressed;
 * a hook returning ``None`` means "this channel is registered but could not
   surface the prompt for THIS session" (an unroutable key, a send that failed),
   so the callback falls through to the existing Slack-DM/dashboard path exactly
@@ -45,19 +46,23 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.link import channel_namespace_of
+from kiro_crew.subagent_host_decision import HostSpawnDecision
 
 logger = logging.getLogger(__name__)
 
 #: A channel's spawn-approval delivery hook.
 #:
-#: ``async def(request_id, description, parent_session_key) -> bool | None`` — the
-#: SAME three arguments the host ``SpawnApprovalCallback`` receives, so a channel
-#: can post its prompt and await the press without the seam reshaping anything.
-#: ``True``/``False`` is the user's decision; ``None`` means "not surfaced here,
-#: fall through" (see the module docstring).
-SpawnApprovalDeliveryHook = Callable[[str, str, str], Awaitable["bool | None"]]
+#: ``async def(request_id, description, parent_session_key)`` returning
+#: ``bool | HostSpawnDecision | None`` — the SAME three arguments the host
+#: ``SpawnApprovalCallback`` receives, so a channel can post its prompt and await
+#: the press without the seam reshaping anything.
+#: ``True``/``False`` is the user's decision; a ``HostSpawnDecision`` is a wait
+#: that elapsed unpressed (:func:`unpressed_wait_answer`); ``None`` means "not
+#: surfaced here, fall through" (see the module docstring).
+SpawnApprovalDeliveryHook = Callable[[str, str, str], Awaitable["bool | HostSpawnDecision | None"]]
 
 #: Channel namespace (``telegram``, ``slack``, …) -> its live delivery hook. One
 #: dispatcher per channel per process, so a namespace maps to at most one hook.
@@ -125,14 +130,15 @@ def resolve_channel_delivery(parent_session_key: str) -> "SpawnApprovalDeliveryH
 
 async def deliver_spawn_approval(
     request_id: str, description: str, parent_session_key: str
-) -> "bool | None":
+) -> "bool | HostSpawnDecision | None":
     """Offer the spawn prompt to the originating channel; ``None`` = fall through.
 
     Consulted FIRST by the host spawn-approval callback. Returns the channel's
-    ``True``/``False`` decision when a hook answered, or ``None`` when no hook is
-    registered for the session's channel, the operator's ``channels`` governance
-    ceiling denies that channel, or the hook itself returned ``None`` (it could
-    not surface the prompt here). A hook that RAISES is contained and read as
+    ``True``/``False`` decision, or the host decline of a wait that elapsed
+    unpressed, when a hook answered, or ``None`` when no hook is registered for
+    the session's channel, the operator's ``channels`` governance ceiling denies
+    that channel, or the hook itself returned ``None`` (it could not surface the
+    prompt here). A hook that RAISES is contained and read as
     ``None``: a channel-delivery bug must degrade to the existing fallback, never
     turn a spawn the operator could still answer on Slack/dashboard into a hard
     failure.
@@ -156,7 +162,7 @@ async def deliver_spawn_approval(
     a spawn for as long as its approval takes and a deny can land while the prompt
     is already pending. :func:`unpressed_wait_answer` is the other half: a hook
     whose wait elapsed with no press asks it what that means, and gets ``None``
-    rather than ``False`` once the channel is denied.
+    rather than a decline once the channel is denied.
     """
     hook = resolve_channel_delivery(parent_session_key)
     if hook is None:
@@ -188,10 +194,11 @@ async def deliver_spawn_approval(
         return None
 
 
-async def unpressed_wait_answer(channel: str, request_id: str) -> "bool | None":
+async def unpressed_wait_answer(channel: str, request_id: str) -> "HostSpawnDecision | None":
     """What a hook answers when its deny-by-default wait elapsed UNPRESSED.
 
-    ``False`` — a real deny-by-default the operator declined to answer — while
+    A host decline with ``DENY_CAUSE_APPROVAL_TIMEOUT`` — a real deny-by-default the
+    operator declined to answer, which the spawn gate records as the host's — while
     *channel* is still permitted, and ``None`` (fall through) once the operator's
     ``channels`` ceiling denies it.
 
@@ -200,8 +207,8 @@ async def unpressed_wait_answer(channel: str, request_id: str) -> "bool | None":
     gate holds a spawn for as long as its approval takes, so a deny can land while
     the prompt is pending. From that moment the channel's callback path drops the
     answering press — every press except an explicit reject — so the prompt is no
-    longer answerable, the wait elapses, and a bare ``False`` would hand the host
-    gate a refusal the operator never made. A deny withholds the channel; it does
+    longer answerable, the wait elapses, and a decline would hand the host gate a
+    refusal the operator never made. A deny withholds the channel; it does
     not vote in the operator's name.
 
     The split of duties is why this is a seam function a hook calls rather than
@@ -219,7 +226,7 @@ async def unpressed_wait_answer(channel: str, request_id: str) -> "bool | None":
     they just refused.
     """
     if await channel_inbound_permitted(channel):
-        return False
+        return HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
     logger.info(
         "Spawn-approval prompt on %s for %s went unanswered and the channel is now "
         "denied by channels governance policy; falling through to the "

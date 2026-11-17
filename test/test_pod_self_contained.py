@@ -355,7 +355,11 @@ def test_the_restart_refusal_keeps_down_and_up_on_windows(monkeypatch):
     monkeypatch.setattr(rt, "IS_WINDOWS", True)
     with pytest.raises(rt.PodError) as exc:
         rt.require_pod_safe_verb(["restart"], "wt-feature")
-    assert "kirocrew pod down wt-feature && kirocrew pod up wt-feature" in str(exc.value)
+    # One command per backtick span: Windows PowerShell 5.1 rejects `&&`.
+    assert "&&" not in str(exc.value)
+    assert "Use `kirocrew pod down wt-feature`, then `kirocrew pod up wt-feature` instead." in str(
+        exc.value
+    )
 
 
 def test_the_refusal_lists_the_allowed_verbs_otherwise():

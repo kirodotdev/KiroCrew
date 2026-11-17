@@ -25,6 +25,7 @@ import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.messaging import auto_title
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import finished
 
 #: These tests start background helper turns, which are skipped while the host's
@@ -32,6 +33,10 @@ from kiro_crew.testing.wait import finished
 pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 _KEY = "telegram:kirocrew:direct:4242"
+
+
+# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
+_PLANTED = github_classic(seed=201)  # a token; a bare 40-character run stays visible
 
 
 def _ev(kind: str, **kw):
@@ -1189,8 +1194,8 @@ class TestCleaning:
         """The model can echo a secret back in the name it proposes, and a title
         is displayed everywhere the conversation is listed. Mutation: drop the two
         redactor calls — red."""
-        cleaned = auto_title.clean_title("AKIAIOSFODNN7EXAMPLE key rotation")
-        assert "AKIAIOSFODNN7EXAMPLE" not in cleaned
+        cleaned = auto_title.clean_title(f"{_PLANTED} key rotation")
+        assert _PLANTED not in cleaned
 
     def test_the_title_is_capped(self):
         """Mutation: drop the ``[:TITLE_MAX_CHARS]`` slice — red."""

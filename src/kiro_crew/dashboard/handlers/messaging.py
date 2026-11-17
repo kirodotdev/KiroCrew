@@ -23,7 +23,7 @@ from typing import Any, Callable, cast  # noqa: F401
 
 from aiohttp import web
 
-from kiro_crew import platform_compat  # noqa: F401
+from kiro_crew import platform_compat, redaction_seams  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.agent_sdk.drivers.acp_vocab import NATIVE_CHILD_NOT_RESUMABLE  # noqa: F401
 from kiro_crew.config import live  # noqa: F401
@@ -84,6 +84,11 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     string_field_error,
 )
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write  # noqa: F401
+from kiro_crew.dashboard.handlers.spawn_resume import (  # noqa: F401
+    INVALID_WAIT_CODE,
+    MAX_HOLD_SECS,
+    _wait_secs,
+)
 from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate  # noqa: F401
 from kiro_crew.dashboard.kiro_relay.ingress import refuse_relayed  # noqa: F401
 from kiro_crew.dashboard.kiro_relay.limits import APPS_OFF_FOR_TEAMMATES  # noqa: F401
@@ -130,6 +135,8 @@ from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _cron_job_for,
     _deliver_channel_dm,
     _deliver_to_channel,
+    _fresh_governance,
+    _generation_now,
     _owner_dm_target,
     _send_to_channel_target,
     _vet_app_messaging,
@@ -176,9 +183,11 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _deliver_send_message_fallback,
     _post_send_message_to_slack,
     _proactive_source_line,
+    _published_blocks_refusal,
     _publishing_session_meta,
     _read_send_message,
     _redact_all,
+    _reserved_action_refusal,
     _resolve_session_link_url,
     _resolve_session_target,
     _sanitize_blocks,
@@ -188,11 +197,14 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _session_link_blocks,
     _slack_rate_limited,
     _slack_rejected_outright,
+    _update_message,
     _with_source_line,
     api_delete_message,
-    api_update_message,
 )
 from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
+    _app_token_batch_refusal,
+    _app_token_caller,
+    _app_token_parent_refusal,
     _flag_collected_inline,
     _log_panel_dismissal,
     _native_child_refusal,
@@ -225,12 +237,15 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     api_spawn_status,
 )
 from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
+    _save_code_channel_dispatch_locked,
     _slack_config_save_locked,
     _validate_slack_token,
     api_slack_code_channel_agents,
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest_status,
+    api_slack_reconnect,
+    save_code_channel_dispatch,
 )
 from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     _missing_scope_message,
@@ -242,12 +257,16 @@ from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     STOPPED_BEFORE_START_CODE,
+    _app_bot_spawn_refusal,
+    _app_token_spawn_refusal,
     _backend_name,
     _chain_note,
     _continue_on_loop,
     _failover_backend,
     _inherited_backend_name,
+    _light_tier_pins,
     _lts_kiro_successor,
+    _parent_run_is_silent,
     _qualified_model_refusal,
     _requested_backend,
     _slot_for_parent,
@@ -286,6 +305,9 @@ from kiro_crew.dashboard.messaging_api.wecom_settings import (  # noqa: F401
 )
 from kiro_crew.dashboard.notification_coordinator import unread_count  # noqa: F401
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request  # noqa: F401
+from kiro_crew.dashboard.slot_ownership import (  # noqa: F401 -- read by messaging_api.run_control, .spawn
+    _record_isolation_denial,
+)
 from kiro_crew.dashboard.state import (  # noqa: F401
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
@@ -361,6 +383,8 @@ from kiro_crew.subagent import (  # noqa: F401
     effort_pending_note,
     parent_project_dirs,
     parent_template_allowlists,
+    parent_template_spawn_policy,
+    wait_done,
 )
 from kiro_crew.subagent_manager.admission.types import (  # noqa: F401
     QueuedReadUnavailable,
@@ -372,6 +396,7 @@ from kiro_crew.subagent_persistence import (  # noqa: F401
     DISMISSAL_NO_FOLDER,
     PanelRecords,
     _agent_dir,
+    agent_dir_for_display,
     classify_persisted_ending,
     read_panel_records,
     read_state,
@@ -596,6 +621,13 @@ _SLACK_ONLY_BODY_FIELDS = (
 _SLACK_SECTION_TEXT_MAX = 3000
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
+async def api_update_message(request: web.Request) -> web.Response:
+    """POST /api/update-message: :func:`_update_message` inside the channel egress seam."""
+    return await _update_message(request)
+
+
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 async def api_send_message(request: web.Request) -> web.Response:
     """POST /api/send-message — send a message to a chat surface and/or dashboard.
 
@@ -654,6 +686,9 @@ async def api_send_message(request: web.Request) -> web.Response:
         blocks = _sanitize_blocks(
             blocks, redact_exfiltration_urls, redact_credentials, display_form=True
         )
+        # Every Block Kit guard again, on the tree that is published.
+        if (refused := _published_blocks_refusal(blocks)) is not None:
+            return refused
 
     # render [OPTIONS: ...] tags as interactive buttons on the
     # plain-text path (when the caller did not supply explicit blocks — those

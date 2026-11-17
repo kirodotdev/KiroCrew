@@ -30,6 +30,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
+import TruncatedText from '../../components/TruncatedText'
 import { useAppSelector } from '../../store'
 import { selectComposerBusy, selectSlotStreamState } from '../../store/chatSlice'
 import { i18nT } from '../../i18n/t'
@@ -714,11 +715,14 @@ function SubagentsBody({ value }: { value: Record<string, unknown> }) {
                 {/* Both cells truncate, and a truncated name with no recovery is a name the
                     reader cannot read at all: agent templates and model ids are long and
                     differ in their TAILS (`kirocrew-worker` / `kirocrew-writer-critic`), so
-                    an ellipsis can hide the part that identifies the row. The full value is
-                    the element's own `title`, which is where the rest of this panel puts a
-                    value it had to shorten. */}
-                <td className="py-[3px] border-b border-border text-text truncate max-w-[110px]" title={str(row.agent) || agentId}>{str(row.agent) || agentId}</td>
-                <td className="py-[3px] border-b border-border text-muted truncate max-w-[80px]" title={str(row.model)}>{str(row.model) || '—'}</td>
+                    an ellipsis can hide the part that identifies the row. The full value
+                    shows in the shared bubble on hover and on keyboard focus. */}
+                <td className="py-[3px] border-b border-border text-text">
+                  <TruncatedText full={str(row.agent) || agentId} className="block max-w-[110px]" />
+                </td>
+                <td className="py-[3px] border-b border-border text-muted">
+                  {str(row.model) ? <TruncatedText full={str(row.model)} className="block max-w-[80px]" /> : '—'}
+                </td>
                 <td className="py-[3px] border-b border-border">
                   {outcome
                     ? <Pill tone={outcome === 'completed' ? 'accent' : outcome === 'stopped' ? 'muted' : 'danger'}>{outcomeLabel(outcome)}</Pill>

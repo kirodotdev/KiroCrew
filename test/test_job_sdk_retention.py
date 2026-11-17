@@ -95,9 +95,9 @@ def _plant(
 class TestTheCap:
     def test_a_kind_without_retention_keeps_every_record(self, sdk: JobSDK) -> None:
         sdk.register("plain", lambda h: None)
-        for _ in range(5):
-            _finish(sdk, "plain")
+        finished = {_finish(sdk, "plain") for _ in range(5)}
         _settle(sdk, 5)
+        assert _ids_on_disk(sdk) == finished
 
     def test_the_store_settles_at_the_cap_and_keeps_the_newest(self, sdk: JobSDK) -> None:
         sdk.register("capped", lambda h: None, retention=3)
@@ -110,10 +110,12 @@ class TestTheCap:
     def test_a_cap_on_one_kind_leaves_another_kind_alone(self, sdk: JobSDK) -> None:
         sdk.register("capped", lambda h: None, retention=1)
         sdk.register("plain", lambda h: None)
+        capped, plain = [], []
         for _ in range(3):
-            _finish(sdk, "capped")
-            _finish(sdk, "plain")
+            capped.append(_finish(sdk, "capped"))
+            plain.append(_finish(sdk, "plain"))
         _settle(sdk, 1 + 3)
+        assert _ids_on_disk(sdk) == {capped[-1], *plain}
 
     def test_the_run_that_just_finished_is_kept_whatever_its_stamp(self, sdk: JobSDK) -> None:
         # The stamps are whole seconds, so an older run can tie with the one that
@@ -244,8 +246,11 @@ class TestTheCap:
 
     def test_a_kind_without_a_cap_still_takes_a_long_key(self, sdk: JobSDK) -> None:
         sdk.register("plain", lambda h: None)
-        run_id = sdk.start("plain", dedupe_key="k" * (job_sdk._MAX_DEDUPE_KEY + 1))
-        _wait_terminal(sdk, run_id)
+        long_key = "k" * (job_sdk._MAX_DEDUPE_KEY + 1)
+        run_id = sdk.start("plain", dedupe_key=long_key)
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == DONE
+        assert run.dedupe_key == long_key
 
     def test_the_largest_capped_record_fits_the_scan(self) -> None:
         # Every caller and runner field at its bound, in characters JSON escapes

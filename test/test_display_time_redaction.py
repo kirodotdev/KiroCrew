@@ -27,6 +27,7 @@ import pathlib
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import mcp_oauth_provenance
 from kiro_crew.dashboard.chat_persistence import (
@@ -40,7 +41,7 @@ from kiro_crew.dashboard.chat_utils import _history_key_for, _prepare_messages
 
 # A credential shape `redact_credentials` catches, kept in one place so a change
 # to the detector surfaces as one failure rather than six.
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = github_classic(seed=41)
 
 
 def _seed(state, slot_key: str, role: str, content: str) -> None:
@@ -136,12 +137,11 @@ def test_history_prefix_keeps_user_text() -> None:
     assert "my own note" in _build_history_prefix(slot)
 
 
-# ── 3b. the OTHER prompt paths, found by the CI GPT lane ─────────────────────
+# ── 3b. the OTHER prompt paths ───────────────────────────────────────────────
 #
-# My own egress audit covered client-facing routes thoroughly and under-covered
-# prompt builders. The GPT review lane caught `side_context`; auditing that class
-# properly then turned up `chat_orchestrator` as the same defect writing to disk.
-# Both are pinned here so the class stays closed.
+# Prompt builders are egress too: `side_context` sends to the model and
+# `chat_orchestrator` writes the same text to disk. Both are pinned here so the
+# class stays closed.
 
 
 def test_side_chat_parent_snapshot_redacts_assistant_content() -> None:
@@ -296,8 +296,11 @@ def test_load_leaves_user_content_raw(tmp_path, monkeypatch) -> None:
     log = state.conversation_log
     assert log is not None
     key = _history_key_for("chat-1-userraw")
-    log.append(key, "user", f"my key is {SECRET}")
     log.append(key, "assistant", f"noted {SECRET}")
+    # A legacy row, written before the boundary scrubbed user rows.
+    row = {"role": "user", "content": f"my key is {SECRET}", "ts": "2026-01-01T00:00:00+00:00"}
+    with open(log._path(key), "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
 
     state2 = _make_state(tmp_path / "sessions")
     slot = _rehydrate_slot_from_history(state2, "chat-1-userraw")

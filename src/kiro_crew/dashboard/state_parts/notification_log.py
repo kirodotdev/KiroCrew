@@ -386,6 +386,15 @@ def _maybe_trim_notifications(path: Path) -> None:
         kept = sorted(
             set(live[-_MAX_PERSISTED_NOTIFICATIONS:]) | set(unservable[-_unservable_cap() :])
         )
-        path.write_text("".join(lines[index] for index in kept), encoding="utf-8", newline="")
+        # atomic_write, not path.write_text: a plain write truncates the file first,
+        # so a failure part-way (full disk, crash) would leave a truncated or empty
+        # notifications.jsonl and lose the whole history. _rewrite_notifications
+        # writes through atomic_write for exactly this reason.
+        atomic_write(
+            path,
+            "".join(lines[index] for index in kept),
+            mode=0o600,
+            newline="",
+        )
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("notification trim failed", exc_info=True)

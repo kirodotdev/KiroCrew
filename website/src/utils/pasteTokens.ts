@@ -396,9 +396,9 @@ export function recollapsePastes(content: string, blocks: PasteBlock[], from = 0
  * repeated paste sent with different files cannot have its FIFO entry consumed
  * by the wrong send.
  *
- * Falls back to `readStoredPaste(incoming.content)` for messages that have no
- * in-memory counterpart (e.g. after page reload or chat switch) — this reads
- * from the localStorage side table populated by `saveStoredPaste` — and
+ * Falls back to `readStoredPasteForSend` for messages that have no in-memory
+ * counterpart (e.g. after page reload or chat switch) — the localStorage side
+ * table populated by `saveStoredPaste`, for a row whose `sendId` saved it — and
  * finally to self-contained re-collapse from the row's own `meta.pastes`.
  *
  * Why: the backend only sees/stores the LLM-facing expanded text. Without
@@ -470,7 +470,7 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
   if (
     !queue.length &&
     !byId.size &&
-    !incoming.some(m => m.role === 'user' && readStoredPaste(m.content.trimEnd())) &&
+    !incoming.some(m => m.role === 'user' && readStoredPasteForSend(m.content.trimEnd(), m.meta?.sendId)) &&
     !incoming.some(needsSelfCollapse)
   ) {
     return incoming
@@ -561,7 +561,7 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
           consumeHeld()
           return { ...m, content: held.content, meta: newMeta }
         }
-        const storedForWire = readStoredPaste(m.content.trimEnd())
+        const storedForWire = readStoredPasteForSend(m.content.trimEnd(), sid)
         if (storedForWire) {
           consumeHeld()
           const sideMeta: Record<string, unknown> = { ...m.meta, pastes: storedForWire.pastes }
@@ -604,8 +604,8 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
         return { ...m, content: match.content, meta: newMeta }
       }
     }
-    // 3) localStorage side table (survives refresh/chat-switch)
-    const stored = readStoredPaste(m.content.trimEnd())
+    // 3) localStorage side table, for a row whose sendId saved the entry
+    const stored = readStoredPasteForSend(m.content.trimEnd(), m.meta?.sendId)
     if (stored) {
       const newMeta: Record<string, unknown> = { ...m.meta, pastes: stored.pastes }
       if (stored.files && stored.files.length) newMeta.files = stored.files
@@ -792,7 +792,10 @@ export const STORE_MAX_BYTES = 2 * 1024 * 1024
 // a "newest-first" sort and evicting newer ones. `seq` is strictly increasing
 // per write (derived as max(existing)+1, so it survives reloads), giving an
 // unambiguous recency order under sub-millisecond writes.
-interface StoredPaste { displayTxt: string; pastes: PasteBlock[]; files?: string[]; savedAt: number; seq?: number }
+// `sendIds`: the sends that saved this entry. The text key alone is shared by
+// any row with the same text in any chat, e.g. an injected message.
+interface StoredPaste { displayTxt: string; pastes: PasteBlock[]; files?: string[]; savedAt: number; seq?: number; sendIds?: string[] }
+export const STORE_SEND_IDS_CAP = 20
 type Store = Record<string, StoredPaste>
 
 /** True if a stored entry is structurally valid and within the TTL window. */
@@ -869,6 +872,7 @@ export function saveStoredPaste(
   displayTxt: string,
   pastes: PasteBlock[],
   files?: string[],
+  sendId?: string,
 ): void {
   if (!pastes.length || !expandedContent) return
   const store = readStore()
@@ -877,12 +881,16 @@ export function saveStoredPaste(
   // Compute seq BEFORE inserting so a re-save of an existing key still advances
   // its recency. Delete-then-reinsert isn't needed — eviction sorts on seq.
   const seq = nextStoreSeq(store)
+  const old = store[key]
+  const prior = old && Array.isArray(old.sendIds) ? old.sendIds : []
+  const sendIds = sendId && !prior.includes(sendId) ? [...prior, sendId].slice(-STORE_SEND_IDS_CAP) : prior
   store[key] = {
     displayTxt,
     pastes,
     ...(files && files.length ? { files } : {}),
     savedAt: Date.now(),
     seq,
+    ...(sendIds.length ? { sendIds } : {}),
   }
   writeStore(store)
 }
@@ -892,4 +900,11 @@ export function readStoredPaste(expandedContent: string): StoredPaste | null {
   if (!expandedContent) return null
   const store = readStore()
   return store[expandedContent] ?? null
+}
+
+/** The stored paste for a row whose text matches AND whose `sendId` saved it. */
+export function readStoredPasteForSend(expandedContent: string, sendId: unknown): StoredPaste | null {
+  if (typeof sendId !== 'string' || !sendId) return null
+  const stored = readStoredPaste(expandedContent)
+  return stored && Array.isArray(stored.sendIds) && stored.sendIds.includes(sendId) ? stored : null
 }

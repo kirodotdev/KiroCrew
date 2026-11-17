@@ -19,6 +19,7 @@ handler and a plain ``artifact_update`` all reach
 from __future__ import annotations
 
 import json
+import string
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -29,6 +30,8 @@ from kiro_crew.artifact_store import dashboard_package as dp
 from kiro_crew.artifact_store.records import ALLOWED_EVENT_TYPES
 from kiro_crew.artifact_store.rules import ALLOWED_KINDS, USER_SELECTABLE_KINDS
 from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError
+from kiro_crew.security.redaction_structured.checks import base62_crc32
+from kiro_crew.testing.synthetic_credentials import synth
 from kiro_crew.validation import (
     _ARTIFACT_KIND_RE,
     ARTIFACT_LIST_SCHEMA,
@@ -725,6 +728,21 @@ class TestRevertRestoresLayoutOnly:
         assert art.version == before
 
 
+def _lowercase_classic() -> str:
+    """A GitHub classic token with a valid checksum that fits the lower-case name rule.
+
+    A ``ghp_`` shape without a valid checksum is no token, so the search walks
+    lower-case bodies until the checksum is lower-case too.
+    """
+    alphabet = string.ascii_lowercase + string.digits
+    for seed in range(10_000):
+        body = synth(30, alphabet, seed)
+        token = "ghp" + "_" + body + base62_crc32(body)
+        if dp._FIELD_NAME_RE.fullmatch(token):
+            return token
+    raise AssertionError("no lower-case token in the search range")
+
+
 class TestAFieldNameIsNotAPlaceToHideACredential:
     """A field NAME travels further than its value, so it needs the same gate.
 
@@ -733,8 +751,9 @@ class TestAFieldNameIsNotAPlaceToHideACredential:
     the page's data island, so a name shaped like a token is published in clear
     by the one surface that scrubs everything else.
 
-    `_FIELD_NAME_RE` does not stop it. A lower-case fine-grained-PAT shape fits
-    inside `[a-z][a-z0-9_]{0,63}` with room to spare, and so does a `ghp_` shape.
+    `_FIELD_NAME_RE` does not stop it. A Shopify access token (lower-case hex)
+    fits inside `[a-z][a-z0-9_]{0,63}` with room to spare, and so does a `ghp_`
+    shape.
 
     The gate is the REDACTOR ITSELF rather than a second copy of its patterns:
     run the name through the same shim every egress site uses and refuse if it
@@ -744,16 +763,20 @@ class TestAFieldNameIsNotAPlaceToHideACredential:
 
     #: Assembled from parts on purpose. A literal token shape in the tree trips
     #: GitHub's push protection, and the point here is the SHAPE, not a secret.
-    FINE_GRAINED = "github" + "_pat_" + "a1b2c3d4e5" * 4
-    CLASSIC = "ghp" + "_" + "a1b2c3d4e5" * 3
+    #: A real fine-grained PAT is 93 characters, so the 64-character name rule
+    #: already refuses one; a Shopify token is a lower-case credential that fits.
+    SHOPIFY = "shpat" + "_" + "a1b2c3d4" * 4
+    CLASSIC = _lowercase_classic()
 
-    @pytest.mark.parametrize("shape", [FINE_GRAINED, CLASSIC])
+    # Labels, not the values: a token with a valid checksum must not land in a test ID.
+    @pytest.mark.parametrize("shape", [SHOPIFY, CLASSIC], ids=["shopify", "classic"])
     def test_the_name_rule_alone_would_have_allowed_it(self, shape: str) -> None:
         """Why the extra gate is needed and not redundant with the regex."""
         assert dp._FIELD_NAME_RE.fullmatch(shape) is not None
         assert len(shape) <= 64
 
-    @pytest.mark.parametrize("shape", [FINE_GRAINED, CLASSIC])
+    # Labels, not the values: a token with a valid checksum must not land in a test ID.
+    @pytest.mark.parametrize("shape", [SHOPIFY, CLASSIC], ids=["shopify", "classic"])
     def test_a_credential_shaped_field_name_is_refused(
         self, store: ArtifactStore, shape: str
     ) -> None:

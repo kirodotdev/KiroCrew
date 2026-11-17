@@ -41,13 +41,18 @@ _TASK_GLOBALS = (
 class _OneWakeAsyncio:
     """The facade's ``asyncio`` with a ``sleep`` that wakes each task once.
 
-    The first ``sleep`` a task makes returns at once; its second cancels the task,
-    so a ``while True`` loop runs its body exactly once and then ends. Everything
-    else is the real module.
+    The first ``sleep`` a task makes returns once ``booted`` is set; its second
+    cancels the task, so a ``while True`` loop runs its body exactly once and then
+    ends. Everything else is the real module.
+
+    ``booted`` stands for the hour a real first sleep lasts: the hourly sweep reads
+    the ``orchestrator`` that ``run_gateway`` binds only after its credentials
+    thread returns, so a wake that beat that thread read an unbound name.
     """
 
     def __init__(self) -> None:
         self._wakes: dict[Any, int] = {}
+        self.booted = asyncio.Event()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(asyncio, name)
@@ -57,6 +62,7 @@ class _OneWakeAsyncio:
         self._wakes[task] = self._wakes.get(task, 0) + 1
         if self._wakes[task] > 1:
             raise asyncio.CancelledError
+        await asyncio.wait_for(self.booted.wait(), timeout=30)
 
 
 class _InlineThread:
@@ -94,7 +100,8 @@ def _seams(monkeypatch: pytest.MonkeyPatch, *, fail: bool) -> SimpleNamespace:
     seams.orchestrator.sessions = None
     for name in _TASK_GLOBALS:
         monkeypatch.setattr(gw, name, None)
-    monkeypatch.setattr(gw, "asyncio", _OneWakeAsyncio())
+    one_wake = _OneWakeAsyncio()
+    monkeypatch.setattr(gw, "asyncio", one_wake)
     monkeypatch.setattr(gw, "threading", SimpleNamespace(Thread=_InlineThread))
     monkeypatch.setattr(gw, "configure_default_executor", MagicMock())
     monkeypatch.setattr(gw, "set_publish_disabled", MagicMock())
@@ -119,7 +126,12 @@ def _seams(monkeypatch: pytest.MonkeyPatch, *, fail: bool) -> SimpleNamespace:
     monkeypatch.setattr(gw, "work_root", SimpleNamespace(sweep_work_root=seams.work_root))
     monkeypatch.setattr(gw, "_sweep_predecessor_session_work_dirs", seams.session_dirs)
     monkeypatch.setattr(gw, "beacon", SimpleNamespace(send=seams.beacon))
-    monkeypatch.setattr(gw, "GatewayOrchestrator", MagicMock(return_value=seams.orchestrator))
+
+    def _build(*_args: Any, **_kwargs: Any) -> MagicMock:
+        one_wake.booted.set()
+        return seams.orchestrator
+
+    monkeypatch.setattr(gw, "GatewayOrchestrator", MagicMock(side_effect=_build))
     return seams
 
 

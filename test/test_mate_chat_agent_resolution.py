@@ -66,7 +66,11 @@ def _record(member_id: str, template_id: str, kind: str = "member") -> Execution
 
 
 def _resolve(monkeypatch, cfg, record) -> ResolvedBindings:
-    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _k: record)
+    monkeypatch.setattr(
+        session_agent_selection,
+        "read_session_execution",
+        lambda _k, *, repair_project=None: record,
+    )
 
     def resolver(config, selected, *project_dir, **_kwargs):
         return ResolvedBindings(

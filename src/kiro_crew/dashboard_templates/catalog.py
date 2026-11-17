@@ -254,8 +254,8 @@ def list_templates() -> Catalog:
     only directories, so the two never collide. A built-in id always wins: an operator
     page with the same id is reported, never served in its place.
 
-    ``agent_panel`` is imported at call time, as ``instance.lock_path`` does, because it
-    pulls in more of the tree than this module needs at import.
+    ``agent_panel`` is imported at call time, as ``instance._page_snapshot_path`` does,
+    because it pulls in more of the tree than this module needs at import.
     """
     from kiro_crew.agent_panel import TEMPLATES_DIRNAME, PanelError, override_templates_dir
 

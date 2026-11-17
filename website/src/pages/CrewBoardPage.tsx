@@ -32,7 +32,7 @@
  * just ran disagree about what an item is. Only prose is localized.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown, ChevronRight, Inbox } from 'lucide-react'
@@ -43,16 +43,19 @@ import ErrorNotice from '../components/ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
-import { fmtRelative } from '../i18n/format'
+import { fmtNumber, fmtRelative } from '../i18n/format'
 import { isNotFoundError } from '../api/apiError'
+import { timedPoll, usePollRule } from '../lib/pollRule'
 import {
   CREW_BOARD_POLL_MS,
   crewBoardQueryKey,
   type CrewBoardAction,
+  type CrewPrFacts,
   type WorkBoardItem,
   type WorkBoardResponse,
 } from '../api/crewBoard'
 import { artifactEntries, partitionBoardRows, rowKindLabelKey } from './crewBoardRows'
+import { prFactTags } from '../components/crew/prFactTags'
 
 /** Theme tokens only. A literal hex or a palette class fails `no-raw-colors`,
  *  and more to the point a fixed palette would ignore the user's theme. */
@@ -159,12 +162,27 @@ function RowActions({
   item,
   conductor,
   takeOverAvailable,
+  returnFocusTo,
 }: {
   item: WorkBoardItem
   conductor: string
   takeOverAvailable: boolean
+  /** Takes focus if these controls unmount while holding it. */
+  returnFocusTo: RefObject<HTMLElement>
 }) {
   const queryClient = useQueryClient()
+  // Any re-read that finds the item no longer orphaned (the poll, or the one after
+  // a Stop or a 409) unmounts these controls, and a focused Stop would drop focus
+  // to <body>. A layout-effect cleanup runs before React removes the button, so it
+  // can still see the focus and hand it to the row's title.
+  const rootRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const title = returnFocusTo.current
+    return () => {
+      if (root?.contains(document.activeElement)) title?.focus()
+    }
+  }, [returnFocusTo])
   // Two parts, because `ErrorNotice` treats them differently: `message` is the
   // error journal's lookup key that recovers the route, endpoint, HTTP status and
   // backend code for the agent hand-off, so the backend's own sentence belongs
@@ -240,7 +258,7 @@ function RowActions({
   const hint = stopReason || i18nT('pages.crewBoard.stop_consequence')
 
   return (
-    <div className="ml-[15px] mt-1 flex flex-col gap-1">
+    <div ref={rootRef} className="ml-[15px] mt-1 flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
         <Btn
           danger
@@ -292,14 +310,19 @@ function ItemRow({
   item,
   conductor,
   takeOverAvailable,
+  prFacts,
 }: {
   item: WorkBoardItem
   conductor: string
   takeOverAvailable: boolean
+  /** What gateway code last read about this item's PR, with its read time. */
+  prFacts?: CrewPrFacts
 }) {
+  const prTags = prFactTags(prFacts)
   const [open, setOpen] = useState(false)
   const kindKey = rowKindLabelKey(item)
   const artifacts = artifactEntries(item)
+  const titleRef = useRef<HTMLSpanElement>(null)
 
   return (
     <div className="border-b py-2" style={{ borderColor: C.border }}>
@@ -312,7 +335,8 @@ function ItemRow({
 
           <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <span className="text-[12px] font-medium" style={{ color: C.text }}>
+            {/* `tabIndex={-1}`: a focus target for RowActions only, not a tab stop. */}
+            <span ref={titleRef} tabIndex={-1} className="text-[12px] font-medium" style={{ color: C.text }}>
               {item.title || item.item_id}
             </span>
 
@@ -401,7 +425,7 @@ function ItemRow({
       {/* Only an orphaned item gets them, which is also the only state the action
           route accepts — so the page cannot offer a click the server will refuse. */}
       {item.orphaned ? (
-        <RowActions item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+        <RowActions item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} returnFocusTo={titleRef} />
       ) : null}
 
       <div className="ml-[15px] mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -413,6 +437,19 @@ function ItemRow({
             {i18nT('components.pullRequestPanel.pr_number', { number: item.pr })}
           </span>
         ) : null}
+        {/* The facts below are about the PR they were read for, named by its own
+            label: it can differ from the worker's reported PR above. */}
+        {prFacts?.label && prTags.length > 0 ? (
+          <span className="text-[11px] tabular-nums" style={{ color: C.dim }} data-testid="crew-board-pr-facts-label">{prFacts.label}</span>
+        ) : null}
+        {/* PR state and checks are status badges; the read time stays plain metadata. */}
+        {prTags.map((tag, i) => tag.read ? (
+          <span key={i} className="text-[11px]" style={{ color: C.dim }} data-testid="crew-board-pr-fact">{tag.text}</span>
+        ) : (
+          <span key={i} data-testid="crew-board-pr-fact" data-bad={tag.bad || undefined}>
+            <StatusBadge tone={tag.bad ? 'warn' : undefined}>{tag.text}</StatusBadge>
+          </span>
+        ))}
         {artifacts.map(([key, value]) => (
           <span key={key} className="text-[11px]" style={{ color: C.dim }}>
             <span className="mr-1 opacity-70">{key}</span>
@@ -421,7 +458,7 @@ function ItemRow({
         ))}
         {item.fails > 0 ? (
           <span className="text-[11px] tabular-nums" style={{ color: C.warn }}>
-            {i18nT('pages.crewBoard.fails')} {item.fails}
+            {i18nT('pages.crewBoard.fails', { count: item.fails, n: fmtNumber(item.fails) })}
           </span>
         ) : null}
 
@@ -465,10 +502,11 @@ function ItemRow({
 export function CrewBoard({ conductor }: { conductor: string }) {
   const [showFinished, setShowFinished] = useState(false)
 
+  const boardInterval = usePollRule(`crew-board:${conductor}`, CREW_BOARD_POLL_MS, true, crewBoardQueryKey(conductor))
   const board = useQuery<WorkBoardResponse>({
     queryKey: crewBoardQueryKey(conductor),
-    queryFn: () => api.crewBoard(conductor),
-    refetchInterval: CREW_BOARD_POLL_MS,
+    queryFn: () => timedPoll(`crew-board:${conductor}`, () => api.crewBoard(conductor)),
+    refetchInterval: boardInterval,
     enabled: Boolean(conductor),
   })
 
@@ -599,7 +637,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
         <>
           <BandHeading label={i18nT('pages.crewBoard.band_ruling')} count={bands.ruling.length} />
           {bands.ruling.map((item) => (
-            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} prFacts={board.data?.pr_facts?.[item.item_id]} />
           ))}
         </>
       ) : null}
@@ -607,7 +645,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
         <>
           <BandHeading label={i18nT('pages.crewBoard.band_working')} count={bands.working.length} />
           {bands.working.map((item) => (
-            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+            <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} prFacts={board.data?.pr_facts?.[item.item_id]} />
           ))}
         </>
       ) : null}
@@ -626,7 +664,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
           </Btn>
           {showFinished
             ? bands.finished.map((item) => (
-                <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} />
+                <ItemRow key={item.item_id} item={item} conductor={conductor} takeOverAvailable={takeOverAvailable} prFacts={board.data?.pr_facts?.[item.item_id]} />
               ))
             : null}
         </>

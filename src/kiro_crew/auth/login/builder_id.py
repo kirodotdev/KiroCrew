@@ -15,7 +15,8 @@ Endpoints (all under ``https://oidc.<region>.amazonaws.com``):
 
 RegisterClient returns a client_id + client_secret; both are persisted with the token so
 refresh (a separate CreateToken call) can reuse them, with the registration's expiry so a
-refresh refused past it can be told apart from any other refusal.
+refresh refused past it can be told apart from any other refusal. The next sign-in into
+the same slot reuses that registration while it is in date (:func:`stored_client`).
 """
 
 from __future__ import annotations
@@ -32,15 +33,21 @@ from kiro_crew.auth.login.endpoints import (
     BUILDER_ID_START_URL,
     OIDC_CLIENT_NAME,
     OIDC_SCOPES,
+    OIDC_SCOPES_EXTRA_KEY,
     USER_AGENT,
     oidc_url,
 )
 from kiro_crew.auth.store import KasToken
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
 _HEADERS = {"Content-Type": "application/x-amz-json-1.1", "User-Agent": USER_AGENT}
 _DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+# A reused registration should outlive the sign-in it starts, since every refresh
+# past its lapse is refused. One with under a week left is replaced instead.
+REUSE_MARGIN_SECS = 7 * 24 * 3600
 
 
 class BuilderIdAuthError(Exception):
@@ -52,8 +59,13 @@ class StartUrlRejectedError(BuilderIdAuthError):
 
     The message says what to change, because AWS's own text ("Invalid start url
     provided", "Invalid request") names neither the expected URL shape nor the
-    region the portal was looked up in.
+    region the portal was looked up in. ``names_start_url`` is False for the bare
+    "Invalid request", which leaves the start URL and the region both in doubt.
     """
+
+    def __init__(self, message: str, *, names_start_url: bool = True) -> None:
+        super().__init__(message)
+        self.names_start_url = names_start_url
 
 
 def _start_url_rejection(body: str, *, start_url: str, region: str) -> StartUrlRejectedError | None:
@@ -65,20 +77,23 @@ def _start_url_rejection(body: str, *, start_url: str, region: str) -> StartUrlR
     if not isinstance(data, dict) or data.get("error") != "invalid_request":
         return None
     detail = str(data.get("error_description") or "")[:200]
-    if "start url" in detail.lower():
+    names_start_url = "start url" in detail.lower()
+    if names_start_url:
         advice = (
             f"AWS did not accept the start URL {start_url!r}. Use your company's AWS "
             "access portal URL, which looks like https://your-company.awsapps.com/start."
         )
     else:
-        # A well-formed portal looked up in the wrong region gets this bare
-        # answer, the most likely cause a user can fix; AWS does not say so.
+        # A portal that does not exist and one looked up in the wrong region get
+        # this same bare answer, so the likelier slip, the start URL, comes first.
         advice = (
-            f"AWS refused to start a sign-in for {start_url!r} in region {region}. "
-            "This usually means the region is wrong: set Region to the region your "
-            "company's Identity Center is in, and check the start URL."
+            f"AWS found no Identity Center for {start_url!r} in region {region}. "
+            "Check the start URL for a typo; if it is right, set Region to the "
+            "region your company's Identity Center is in."
         )
-    return StartUrlRejectedError(f"{advice} (AWS: {detail or 'invalid_request'})")
+    return StartUrlRejectedError(
+        f"{advice} (AWS: {detail or 'invalid_request'})", names_start_url=names_start_url
+    )
 
 
 async def _parse_json(resp: aiohttp.ClientResponse, step: str) -> dict:
@@ -109,6 +124,15 @@ class RegisteredClient:
     client_id: str
     client_secret: str
     client_secret_expires_at: int | None = None
+    scopes: tuple[str, ...] = OIDC_SCOPES
+
+
+def _token_scopes(token: KasToken) -> tuple[str, ...]:
+    """The scopes ``token``'s registration was made with (unrecorded: OIDC_SCOPES)."""
+    recorded = token.extra.get(OIDC_SCOPES_EXTRA_KEY)
+    if isinstance(recorded, list) and all(isinstance(s, str) for s in recorded):
+        return tuple(recorded)
+    return OIDC_SCOPES
 
 
 @dataclass
@@ -121,15 +145,24 @@ class DeviceAuthorization:
     interval_secs: float
 
 
-async def register_client(region: str, *, session: aiohttp.ClientSession) -> RegisteredClient:
-    """Dynamic client registration — no Kiro-controlled gate, any app may do this."""
+async def register_client(
+    region: str,
+    *,
+    session: aiohttp.ClientSession,
+    scopes: tuple[str, ...] = OIDC_SCOPES,
+) -> RegisteredClient:
+    """Dynamic client registration — no Kiro-controlled gate, any app may do this.
+
+    ``scopes`` is bound to the registration, so the device-code token and every
+    refresh of it (which sends only the client credentials) carry the same ones.
+    """
     url = f"{oidc_url(region)}/client/register"
     payload = {
         "clientName": OIDC_CLIENT_NAME,
         "clientType": "public",
-        "scopes": list(OIDC_SCOPES),
+        "scopes": list(scopes),
     }
-    async with session.post(url, json=payload, headers=_HEADERS) as resp:
+    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         if resp.status not in (200, 201):
             body = await resp.text()
             raise BuilderIdAuthError(f"RegisterClient failed: HTTP {resp.status} {body}")
@@ -139,7 +172,30 @@ async def register_client(region: str, *, session: aiohttp.ClientSession) -> Reg
         client_id=_require_str(data, "clientId", "RegisterClient"),
         client_secret=_require_str(data, "clientSecret", "RegisterClient"),
         client_secret_expires_at=expires_at if isinstance(expires_at, int) else None,
+        scopes=tuple(scopes),
     )
+
+
+def stored_client(
+    token: KasToken | None, region: str, scopes: tuple[str, ...] = OIDC_SCOPES
+) -> RegisteredClient | None:
+    """The registration ``token`` carries, when a sign-in in ``region`` may reuse it.
+
+    It must be from the same region, made with the same ``scopes``, and have a
+    known expiry more than ``REUSE_MARGIN_SECS`` away. An entry stored before the
+    expiry was kept has none, so its next sign-in registers anew.
+    """
+    if token is None or token.region != region:
+        return None
+    if _token_scopes(token) != tuple(scopes):
+        return None
+    if not (token.client_id and token.client_secret):
+        return None
+    lapses = token.client_secret_expires_at
+    now = datetime.now(timezone.utc).timestamp()
+    if not isinstance(lapses, int) or lapses <= now + REUSE_MARGIN_SECS:
+        return None
+    return RegisteredClient(token.client_id, token.client_secret, lapses, tuple(scopes))
 
 
 async def start_device_authorization(
@@ -155,7 +211,7 @@ async def start_device_authorization(
         "clientSecret": client.client_secret,
         "startUrl": start_url,
     }
-    async with session.post(url, json=payload, headers=_HEADERS) as resp:
+    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         if resp.status != 200:
             body = await resp.text()
             if resp.status == 400 and start_url != BUILDER_ID_START_URL:
@@ -204,7 +260,7 @@ async def poll_token_once(
         "grantType": _DEVICE_GRANT,
         "deviceCode": auth.device_code,
     }
-    async with session.post(url, json=payload, headers=_HEADERS) as resp:
+    async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         try:
             data = await resp.json(content_type=None)
         except (aiohttp.ClientError, ValueError, asyncio.TimeoutError):
@@ -243,7 +299,9 @@ async def poll_token(
         "deviceCode": auth.device_code,
     }
     while datetime.now(timezone.utc) < auth.expires_at:
-        async with session.post(url, json=payload, headers=_HEADERS) as resp:
+        async with session.post(
+            url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)
+        ) as resp:
             data = await resp.json()
             if resp.status == 200:
                 return _token_from_create(data, client, region, identity, provider)
@@ -279,4 +337,8 @@ def _token_from_create(
         client_id=client.client_id,
         client_secret=client.client_secret,
         client_secret_expires_at=client.client_secret_expires_at,
+        # Recorded only when not the default, so a prod token is stored as before.
+        extra=(
+            {} if client.scopes == OIDC_SCOPES else {OIDC_SCOPES_EXTRA_KEY: list(client.scopes)}
+        ),
     )

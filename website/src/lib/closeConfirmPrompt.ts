@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import type { RootState } from '../store'
 import type { ConfirmOptions } from '../components/ConfirmDialog'
+import { joinSentences } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { closeBusyReasons, type CloseBusyReason } from './closeBusyGate'
 
@@ -49,7 +50,7 @@ export function closeConfirmPrompt(
   if (!settingOn && (!checkBusy || reasons.length === 0)) return null
   // The reasons share one paragraph however many there are.
   const why = reasons.length > 0
-    ? reasons.map(reasonLine).join(' ')
+    ? joinSentences(reasons.map(reasonLine))
     : i18nT('hooks.useSessionActions.close_confirm.reason_setting', {
       // The path to the toggle, so the user can find it and turn it off.
       setting: `${i18nT('settings.tabs.chat.label')} › ${i18nT('pages.settings.chatPanel.confirm_before_closing_session')}`,

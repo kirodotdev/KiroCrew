@@ -37,6 +37,7 @@ from kiro_crew.instances.constants import (
     RECOVER_BACKOFF_MAX_CEILING_SECS as _RECOVER_BACKOFF_CEILING,
 )
 from kiro_crew.instances.constants import WARM_SET_CAP_AUTO as _WARM_SET_CAP_AUTO
+from kiro_crew.remote_control.defaults import REMOTE_CONTROL_ON_BY_DEFAULT
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -181,16 +182,45 @@ def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
     Roster order is preserved (the resolver has always handed back what the file
     held, duplicates included, and ``_freeze_stub_servers`` is what normalizes on
     write); servers added by an override are appended in sorted order, because
-    they have no position in the file to preserve.
+    they have no position in the file to preserve. A server ``mcp_gateway.cwd_use``
+    answers ``uses_cwd`` is dropped last, whatever put it in.
     """
     roster = _resolve_stub_base(mcp_gateway_data)
     overrides = _resolve_stub_overrides(mcp_gateway_data)
-    if not overrides:
-        return roster
-    resolved = [name for name in roster if overrides.get(name, True)]
-    already = set(resolved)
-    resolved.extend(name for name, on in sorted(overrides.items()) if on and name not in already)
-    return resolved
+    if overrides:
+        resolved = [name for name in roster if overrides.get(name, True)]
+        already = set(resolved)
+        resolved.extend(
+            name for name, on in sorted(overrides.items()) if on and name not in already
+        )
+    else:
+        resolved = roster
+    # A server the operator said works on the project folder is never routed: a
+    # routed backend runs in one fixed directory, so it would act on the wrong one.
+    cwd_use = _resolve_cwd_use(mcp_gateway_data)
+    return [name for name in resolved if cwd_use.get(name) != _CWD_USES]
+
+
+#: ``mcp_gateway.cwd_use`` values: the operator's answer to "does this server
+#: work on the files of the project a chat runs in?". Absent means unanswered.
+_CWD_USES = "uses_cwd"
+_CWD_NOT_USED = "not_used"
+_CWD_ANSWERS = frozenset({_CWD_USES, _CWD_NOT_USED})
+
+
+def _resolve_cwd_use(mcp_gateway_data: dict) -> dict[str, str]:
+    """The operator's per-server working-directory answers, unknown values dropped.
+
+    A dropped value reads as unanswered, which never routes a server that is not
+    routed already (the dashboard asks before routing), so a typo cannot share a
+    server the operator did not clear.
+    """
+    raw = _safe_dict(mcp_gateway_data.get("cwd_use", {}))
+    return {
+        name: value
+        for name, value in raw.items()
+        if isinstance(name, str) and name and isinstance(value, str) and value in _CWD_ANSWERS
+    }
 
 
 @dataclass
@@ -661,6 +691,20 @@ class McpGatewayConfig:
             restart=True,
         ),
     )
+    cwd_use: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Working Folder Answers",
+            "Per server, whether it works on the files of the project a chat runs "
+            "in: uses_cwd (it does) or not_used (it does not care which folder). "
+            "A routed server runs in one fixed folder outside the project, shared "
+            "by every chat, so MCP Management routes a server only after it is "
+            "answered not_used, and a server answered uses_cwd is never routed. "
+            "Kiro Crew's own servers are not asked: they never read the folder. "
+            "A server missing here is unanswered. Written by MCP Management.",
+            restart=True,
+        ),
+    )
     #: The roster EXACTLY as the file states it, carried so a full-file rewrite
     #: can put it back.
     #:
@@ -812,11 +856,12 @@ class McpConfig:
         default=True,
         metadata=_meta(
             "Honour MCP autoApprove",
-            "Keep an ``autoApprove`` list you wrote yourself -- one hand-added to "
-            "``mcp.json`` or to an agent file -- in the agent config Kiro Crew "
-            "writes. On by default: an ``autoApprove`` is a deliberate choice about "
-            "your own tools and is respected, so those verbs run without an approval "
-            "card. Know what it costs before writing one: the agent runtime approves "
+            "Keep an ``autoApprove`` list in ``mcp.json`` or in an agent file when "
+            "Kiro Crew writes the agent config, so those verbs run without an "
+            "approval card. On by default. Kiro Crew does not check who wrote a "
+            "list: one the agent wrote into ``mcp.json`` is honoured the same as "
+            "yours. An app's own ``autoApprove`` lists are never kept. Know what "
+            "it costs: the agent runtime approves "
             "such a call locally and emits no permission request, so Kiro Crew's "
             "own tool gate never runs for it. Turn this OFF to drop every verb no "
             "server spec declares, which puts those tools back through the gate. A "
@@ -825,6 +870,20 @@ class McpConfig:
             "rebuilt, so a change does not retract or restore a grant already in the "
             "file.",
             restart=True,
+        ),
+    )
+    protect_kiro_permission_rules: bool = field(
+        default=False,
+        metadata=_meta(
+            "Protect kiro-cli permission rules",
+            "Refuse the agent's file-edit tools when they write kiro-cli's tool "
+            "permission rules: ``permissions.yaml`` and ``permissions.json`` in "
+            "``~/.kiro/settings``, and the ``~/.kiro/workspace-roots`` folder. A rule "
+            "with ``effect: allow`` there runs its tool with no approval card, so "
+            "Kiro Crew's own tool gate never sees the call. Off by default, so the "
+            "agent can edit these files as before. Reads stay allowed either way, and "
+            "kiro-cli saving a rule you chose, or your own editor, is never stopped. "
+            "Applies to the next file edit, no restart needed.",
         ),
     )
 
@@ -1102,7 +1161,7 @@ class TunnelConfig:
         ),
     )
     relay_enabled: bool = field(
-        default=False,
+        default=REMOTE_CONTROL_ON_BY_DEFAULT,
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
@@ -1135,9 +1194,10 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Lease Credential",
             "Where the Crew reads its credential for the lease service: secret://NAME "
-            "for a secret stored under Settings > Secrets, or the absolute path of a "
-            "file holding it. Never the credential itself; it is read for each call "
-            "and never logged.",
+            "for a secret stored under Settings > Secrets, the absolute path of a file "
+            "holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity "
+            "Center or your organization's identity provider), refreshed automatically. "
+            "Never the credential itself; it is read for each call and never logged.",
             restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
             sensitive=True,
@@ -1148,10 +1208,22 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Lease Token Type",
             "The TokenType the Crew sends with its lease credential. Empty (the "
-            "default) sends none, for an IAM Identity Center, Builder ID or Kiro "
-            "sign-in. EXTERNAL_IDP for a token from an outside identity provider, "
-            "API_KEY for a team Crew's crew API key. Any other value keeps Remote "
-            "Control from starting.",
+            "default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for "
+            "a token from an outside identity provider, API_KEY for a team Crew's crew "
+            "API key. Must be empty with kiro-sign-in, which sends the type its sign-in "
+            "needs. Any other value keeps Remote Control from starting.",
+            restart=True,
+        ),
+    )
+    relay_handle_email_domains: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Relay Handle Email Domains",
+            "Email domains, for example example.com, whose addresses label a relayed "
+            "person by the part before the @ when the relay sent no name. The whole "
+            "domain must match, ignoring case, so a subdomain or a longer domain keeps "
+            "the full address. Empty (the default) labels everyone by their full "
+            "address. Display only: it never changes who a person is or what they may do.",
             restart=True,
         ),
     )
@@ -1160,10 +1232,8 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Viewer",
             "Let the desktop app list the remote Crews you can reach through the Kiro "
-            "relay and open them. Off by default, and nothing reads it yet. This is "
-            "the viewer side only: a Crew you open still needs Kiro Relay on where it "
-            "runs.",
-            restart=True,
+            "relay and open them. Off by default. This is the viewer side only: a Crew "
+            "you open still needs Kiro Relay on where it runs.",
         ),
     )
     relay_viewer_cps_url: str = field(
@@ -1174,7 +1244,6 @@ class TunnelConfig:
             "gets access tokens from. Empty (the default) means not set up. Must be "
             "https:// (http:// only for a loopback port-forward). A value that breaks "
             "that rule is ignored with a warning.",
-            restart=True,
         ),
     )
     relay_viewer_credential: str = field(
@@ -1186,22 +1255,32 @@ class TunnelConfig:
             "> Secrets or the absolute path of a file holding it. Never the credential "
             "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
             "reference is ignored with a warning that does not repeat it.",
-            restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
             sensitive=True,
+        ),
+    )
+    relay_viewer_oidc_scope_prefix: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer OIDC Scope Prefix",
+            "For testing against a non-prod control plane only, like kiro-cli's "
+            "api.oidc.scopePrefix: the prefix Builder ID and IAM Identity Center "
+            "sign-ins request their scopes under, in place of the public one. Empty "
+            "(the default) keeps the public scopes. Lower-case letters and "
+            "underscores only; any other value is ignored with a warning. Applies to "
+            "the next sign-in.",
         ),
     )
     relay_viewer_relay_domain: str = field(
         default="",
         metadata=_meta(
-            "Relay Viewer Crew Domain",
+            "Relay Viewer Relay Domain",
             "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
             "viewer lists a remote Crew, and sends its access token, only when the Crew's "
             "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
-            "default) keeps the check without a domain: the address's host must start with "
-            "the Crew's endpoint ID. Any other value matches no Crew address, so no Crew "
-            "is listed.",
-            restart=True,
+            "default) lists a Crew whose address's host starts with its endpoint ID, but the "
+            "desktop app opens no Crew until this is set. Any other value matches no Crew "
+            "address, so no Crew is listed.",
         ),
     )
 

@@ -55,6 +55,7 @@ from kiro_crew.config.integration_sections import (
     McpGatewayConfig,
     PublishConfig,
     TunnelConfig,
+    _resolve_cwd_use,
     _resolve_stub_overrides,
     _resolve_stub_roster,
     _resolve_stub_servers,
@@ -64,13 +65,24 @@ from kiro_crew.config.memory_sections import (
     STARTUP_RECALL_TIMEOUT_MAX_SECS,
     KnowledgeConfig,
     MemoryConfig,
+    MemoryProviderConfig,
     SessionSummaryConfig,
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
+    dream_mode_from,
+    extraction_instructions_from,
     kind_routing_mode_from,
+    lesson_fold_mode_from,
+    lesson_origin_gate_mode_from,
+    lesson_tier_policy_mode_from,
+    member_lesson_dedup_mode_from,
+    relevance_rule_mode_from,
+    rule_authority_order_mode_from,
 )
 from kiro_crew.config.sections import (
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
     CODE_CHANNEL_DEFAULT_MAX,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
@@ -137,7 +149,7 @@ from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
 from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
-from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
+from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN, coerce_dispatch_tags
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -150,6 +162,8 @@ def _build_taskrunner_config(taskrunner_data: dict) -> TaskRunnerConfig:
     section = SectionReader(TaskRunnerConfig, taskrunner_data)
     argv = section.get("test_command")
     return TaskRunnerConfig(
+        # Only a literal false turns it off: Task Runner shipped on.
+        enabled=section.get("enabled") is not False,
         max_parallel_steps=section.get("max_parallel_steps"),
         workspace_dir=str(section.get("workspace_dir")),
         # All or nothing: dropping one bad element would run a different command.
@@ -205,6 +219,10 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
         tool_stall_hard_cap_secs=section.read("tool_stall_hard_cap_secs", _safe_float),
         model_silent_probe_secs=section.read("model_silent_probe_secs", _safe_float),
         remote_flat_probe_secs=section.read("remote_flat_probe_secs", _safe_float),
+        builtin_tool_silence_secs=section.read("builtin_tool_silence_secs", _safe_float),
+        mcp_network_silence_secs=section.read("mcp_network_silence_secs", _safe_float),
+        mcp_stdio_silence_secs=section.read("mcp_stdio_silence_secs", _safe_float),
+        subagent_silence_secs=section.read("subagent_silence_secs", _safe_float),
         wellness_sample_secs=section.read("wellness_sample_secs", _safe_float),
     )
 
@@ -227,6 +245,9 @@ def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
         remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
         remote_dispatch_retire_minutes=_positive_gb(
             work_ledger_data, "remote_dispatch_retire_minutes"
+        ),
+        remote_dispatch_tags=list(
+            coerce_dispatch_tags(work_ledger_data.get("remote_dispatch_tags"))
         ),
     )
 
@@ -285,6 +306,19 @@ def _history_idle_hours(section: SectionReader) -> float:
     return hours
 
 
+def _embedding_idle_evict_secs(raw: object) -> int | str:
+    """``"auto"``, or a stored number of seconds the operator chose.
+
+    The same reading as ``embeddings_settings.embedding_idle_evict_secs``, which the
+    evictor uses: a non-negative number is kept (``0`` never unloads; capped at a
+    year), and anything else, ``"auto"`` included, is ``"auto"``, which picks by
+    machine size at run time.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < 0:
+        return "auto"
+    return min(int(raw), 365 * 24 * 3600)
+
+
 def _build_memory_config(memory_data: dict) -> MemoryConfig:
     section = SectionReader(MemoryConfig, memory_data)
     return MemoryConfig(
@@ -303,15 +337,15 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         # deliberate opt-in to the interactive pool.
         embedding_bulk_threads=section.read("embedding_bulk_threads", _safe_int, 0, 256),
         embedding_bulk_duty=section.read("embedding_bulk_duty", _safe_float, 0.05, 1.0),
-        # 0 is the documented "never unload" sentinel, so the floor is 0.
-        embedding_idle_evict_secs=section.read(
-            "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
+        embedding_idle_evict_secs=_embedding_idle_evict_secs(
+            section.get("embedding_idle_evict_secs")
         ),
         embedding_weight_repack=section.read("embedding_weight_repack", _safe_bool),
         embedding_child_process=section.read("embedding_child_process", _safe_bool),
         consolidation_write_child_process=section.read(
             "consolidation_write_child_process", _safe_bool
         ),
+        repeated_failures_notice=section.read("repeated_failures_notice", _safe_bool),
         recall_pool_processes=section.read("recall_pool_processes", _safe_int, 0, 8),
         recall_pool_worker_max_mb=section.read(
             "recall_pool_worker_max_mb", _safe_int, 256, 1024 * 1024
@@ -349,6 +383,16 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         kind_routing=kind_routing_mode_from(section.get("kind_routing")),
+        extraction_instructions=extraction_instructions_from(
+            section.get("extraction_instructions")
+        ),
+        lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
+        lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
+        lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
+        rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
+        member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
+        relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
+        dream=dream_mode_from(section.get("dream")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -357,6 +401,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             "startup_recall_timeout_secs", _safe_float, 0.0, STARTUP_RECALL_TIMEOUT_MAX_SECS
         ),
         migrated=section.get("migrated"),
+        provider=MemoryProviderConfig.from_raw(memory_data.get("provider")),
     )
 
 
@@ -400,12 +445,13 @@ def _build_knowledge_config(knowledge_data: dict) -> KnowledgeConfig:
             "embed_rate_limit", _safe_nonnegative_int, EMBED_RATE_LIMIT_MAX
         ),
         extraction_model=str(section.get("extraction_model")).strip(),
-        extraction_pool_size=max(
-            EXTRACTION_POOL_SIZE_MIN,
-            min(
-                EXTRACTION_POOL_SIZE_MAX,
-                section.read("extraction_pool_size", _safe_nonnegative_int),
+        extraction_pool_size=section.read(
+            "extraction_pool_size",
+            lambda raw, default: max(
+                EXTRACTION_POOL_SIZE_MIN,
+                _safe_nonnegative_int(raw, default, EXTRACTION_POOL_SIZE_MAX),
             ),
+            unclamped=_safe_nonnegative_int,
         ),
         extraction_effort=coerce_effort(section.get("extraction_effort")),
     )
@@ -470,6 +516,8 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
         # schema validator before this runs, so it reads as absent and the default
         # applies rather than a guess at what the text meant.
         honour_auto_approve=section.get("honour_auto_approve") is True,
+        # Opt-in, off by default: only a real ``true`` turns the write fence on.
+        protect_kiro_permission_rules=section.get("protect_kiro_permission_rules") is True,
     )
 
 
@@ -482,8 +530,8 @@ def _name_list(value: Any) -> list[str]:
 
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
-    _spawn_min = max(1, section.read("spawn_concurrency_min", _safe_int))
-    _spawn_max = max(_spawn_min, section.read("spawn_concurrency_max", _safe_int))
+    _spawn_min = section.read("spawn_concurrency_min", _safe_int, 1)
+    _spawn_max = section.read("spawn_concurrency_max", _safe_int, _spawn_min)
     return McpGatewayConfig(
         enabled=bool(section.get("enabled")),
         # Absent -> True so installs that never configured this keep
@@ -511,28 +559,24 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         forward_declared_env=section.read("forward_declared_env", _safe_bool),
         socket_path=str(section.get("socket_path")),
         overlay_dir=str(section.get("overlay_dir")),
-        idle_timeout_secs=max(10, section.read("idle_timeout_secs", _safe_int)),
+        idle_timeout_secs=section.read("idle_timeout_secs", _safe_int, 10),
         # 0 is meaningful (re-resolve every pass), so the floor is 0 and
         # not the usual "at least something" clamp.
-        resolve_once_refresh_hours=max(0, section.read("resolve_once_refresh_hours", _safe_int)),
-        max_backends=max(1, section.read("max_backends", _safe_int)),
+        resolve_once_refresh_hours=section.read("resolve_once_refresh_hours", _safe_int, 0),
+        max_backends=section.read("max_backends", _safe_int, 1),
         # Admission keys. Clamps mirror the dataclass defaults: floor
         # >= 1, ceiling >= floor, initial inside the band; 0 keeps the
         # "auto" meaning on the host-budget ceilings.
         spawn_concurrency_min=_spawn_min,
         spawn_concurrency_max=_spawn_max,
-        spawn_concurrency_initial=min(
-            _spawn_max,
-            max(
-                _spawn_min,
-                section.read("spawn_concurrency_initial", _safe_int),
-            ),
+        spawn_concurrency_initial=section.read(
+            "spawn_concurrency_initial", _safe_int, _spawn_min, _spawn_max
         ),
-        spawn_queue_wait_secs=max(1, section.read("spawn_queue_wait_secs", _safe_int)),
-        initialize_timeout_secs=max(1, section.read("initialize_timeout_secs", _safe_int)),
-        host_budget_max_procs=max(0, section.read("host_budget_max_procs", _safe_int)),
-        host_budget_max_rss_mb=max(0, section.read("host_budget_max_rss_mb", _safe_int)),
-        host_budget_max_fds=max(0, section.read("host_budget_max_fds", _safe_int)),
+        spawn_queue_wait_secs=section.read("spawn_queue_wait_secs", _safe_int, 1),
+        initialize_timeout_secs=section.read("initialize_timeout_secs", _safe_int, 1),
+        host_budget_max_procs=section.read("host_budget_max_procs", _safe_int, 0),
+        host_budget_max_rss_mb=section.read("host_budget_max_rss_mb", _safe_int, 0),
+        host_budget_max_fds=section.read("host_budget_max_fds", _safe_int, 0),
         poolable_servers=[s for s in section.get("poolable_servers") if isinstance(s, str)],
         stub_servers=_resolve_stub_servers(mcp_gateway_data),
         # The operator's deviations, kept ALONGSIDE the resolved set above
@@ -542,6 +586,7 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         # from the roster. Shares the resolver with the runtime so a
         # non-bool value is dropped in exactly one place.
         stub_overrides=_resolve_stub_overrides(mcp_gateway_data),
+        cwd_use=_resolve_cwd_use(mcp_gateway_data),
         # The file's own roster, carried so ``save()`` can put it back
         # instead of flattening it to the effective set above. See the
         # field's own comment for why that flattening is a data loss.
@@ -553,18 +598,12 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
         pool_identity_env=[
             s.strip() for s in section.get("pool_identity_env") if isinstance(s, str) and s.strip()
         ],
-        prewarm_count=max(0, section.read("prewarm_count", _safe_int)),
+        prewarm_count=section.read("prewarm_count", _safe_int, 0),
         # Server names: only a list of non-blank strings counts, so a stray
         # string or object keeps nothing alive.
         keep_alive_servers=_name_list(section.get("keep_alive_servers")),
-        read_buffer_limit_bytes=max(
-            1024,
-            section.read("read_buffer_limit_bytes", _safe_int),
-        ),
-        response_spill_threshold_bytes=max(
-            0,
-            section.read("response_spill_threshold_bytes", _safe_int),
-        ),
+        read_buffer_limit_bytes=section.read("read_buffer_limit_bytes", _safe_int, 1024),
+        response_spill_threshold_bytes=section.read("response_spill_threshold_bytes", _safe_int, 0),
     )
 
 
@@ -607,10 +646,27 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        relay_handle_email_domains=_handle_email_domains(section.get("relay_handle_email_domains")),
         # Only the JSON boolean ``true`` turns the viewer on, as for relay_enabled.
         relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
         **_relay_viewer_targets(section),
     )
+
+
+def _handle_email_domains(raw: object) -> list[str]:
+    """The non-empty domain strings in *raw*, trimmed and lower-cased, first spelling kept.
+
+    A non-list reads as empty, and an entry that is not a string or holds an ``@``
+    is dropped, so a hand edit can only label fewer people by their handle.
+    """
+    domains: list[str] = []
+    for item in _safe_list(raw):
+        if not isinstance(item, str):
+            continue
+        domain = item.strip().lower()
+        if domain and "@" not in domain and domain not in domains:
+            domains.append(domain)
+    return domains
 
 
 def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
@@ -647,9 +703,20 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
     domain = str(section.get("relay_viewer_relay_domain") or "").strip()
     if domain.isascii():
         domain = domain.lower()
+    prefix = str(section.get("relay_viewer_oidc_scope_prefix") or "").strip()
+    if prefix:
+        from kiro_crew.auth.login.endpoints import OIDC_SCOPE_PREFIX_RE
+
+        if OIDC_SCOPE_PREFIX_RE.fullmatch(prefix) is None:
+            logger.warning(
+                "tunnel.relay_viewer_oidc_scope_prefix ignored: it must be lower-case "
+                "letters and underscores"
+            )
+            prefix = ""
     return {
         "relay_viewer_cps_url": url,
         "relay_viewer_credential": ref,
+        "relay_viewer_oidc_scope_prefix": prefix,
         "relay_viewer_relay_domain": domain,
     }
 
@@ -667,42 +734,14 @@ def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig
 def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
     section = SectionReader(ComputerUseConfig, computer_use_data)
     return ComputerUseConfig(
-        max_tree_nodes=min(
-            _CU_MAX_TREE_NODES,
-            max(
-                1,
-                section.read("max_tree_nodes", _safe_int),
-            ),
-        ),
-        max_tree_depth=min(
-            _CU_MAX_TREE_DEPTH,
-            max(
-                1,
-                section.read("max_tree_depth", _safe_int),
-            ),
-        ),
-        text_limit=min(
-            _CU_MAX_TEXT_LIMIT,
-            max(
-                1,
-                section.read("text_limit", _safe_int),
-            ),
-        ),
+        max_tree_nodes=section.read("max_tree_nodes", _safe_int, 1, _CU_MAX_TREE_NODES),
+        max_tree_depth=section.read("max_tree_depth", _safe_int, 1, _CU_MAX_TREE_DEPTH),
+        text_limit=section.read("text_limit", _safe_int, 1, _CU_MAX_TEXT_LIMIT),
         attach_screenshot=section.read("attach_screenshot", _safe_bool),
-        screenshot_max_px=min(
-            _CU_MAX_SCREENSHOT_MAX_PX,
-            max(
-                _CU_MIN_SCREENSHOT_MAX_PX,
-                section.read("screenshot_max_px", _safe_int),
-            ),
+        screenshot_max_px=section.read(
+            "screenshot_max_px", _safe_int, _CU_MIN_SCREENSHOT_MAX_PX, _CU_MAX_SCREENSHOT_MAX_PX
         ),
-        screenshot_jpeg_quality=min(
-            100,
-            max(
-                1,
-                section.read("screenshot_jpeg_quality", _safe_int),
-            ),
-        ),
+        screenshot_jpeg_quality=section.read("screenshot_jpeg_quality", _safe_int, 1, 100),
         # Default False: a missing or unparseable value must mean "do not
         # draw on the operator's screen", never the reverse.
         cursor_motion=section.read("cursor_motion", _safe_bool),
@@ -752,9 +791,13 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
-        # Default False for both: an unparseable value must never declare the app
-        # an agent or open code channels.
+        # Default True: a missing or unparseable value keeps Slack conversations
+        # listed, as they were before the setting existed.
+        show_in_session_list=section.read("show_in_session_list", _safe_bool),
+        # Default False for all three: an unparseable value must never declare the
+        # app an agent, open code channels or let a code channel dispatch work.
         agent_sessions=section.read("agent_sessions", _safe_bool),
+        code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
     )
@@ -789,7 +832,21 @@ def _build_code_channel_defaults(raw: object) -> CodeChannelDefaultsConfig:
         agent=_code_channel_default_str(data.get("agent")),
         model=_code_channel_default_str(data.get("model")),
         reasoning_effort=effort if is_valid_effort(effort) else None,
+        approval_mode=_code_channel_approval_mode(data.get("approval_mode")),
     )
+
+
+def _code_channel_approval_mode(raw: object) -> str | None:
+    """A stored approval mode that changes anything (``trust_reads`` / ``trust``).
+
+    ``ask`` is the default, so it reads as unset like every other "no default"
+    spelling; an unknown value reads as unset too -- the fail-safe direction, a
+    channel that asks -- rather than as a posture nobody chose.
+    """
+    value = _code_channel_default_str(raw)
+    if value in CODE_CHANNEL_APPROVAL_MODES and value != CODE_CHANNEL_APPROVAL_ASK:
+        return value
+    return None
 
 
 def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
@@ -976,6 +1033,7 @@ def _build_wakatime_config(wakatime_data: dict) -> WakaTimeConfig:
         enabled=bool(section.get("enabled")),
         api_base_url=str(section.get("api_base_url") or section.default("api_base_url")),
         send_heartbeats=section.read("send_heartbeats", _safe_bool),
+        oauth_client_id=str(section.get("oauth_client_id") or section.default("oauth_client_id")),
     )
 
 
@@ -1024,6 +1082,7 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         submit_on_release=section.read("submit_on_release", _safe_bool),
         slide_to_send=section.read("slide_to_send", _safe_bool),
         dictation_panel=section.read("dictation_panel", _safe_bool),
+        dictation_note=section.read("dictation_note", _safe_bool),
         timeout_secs=section.read(
             "timeout_secs", _safe_int, lo=_STT_MIN_TIMEOUT_SECS, hi=_STT_MAX_TIMEOUT_SECS
         ),

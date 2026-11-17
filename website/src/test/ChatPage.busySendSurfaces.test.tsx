@@ -243,7 +243,7 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
 
   it('carries steer=auto from a Submit the panel was handed before consent arrived', async () => {
     // The panel can keep the callback of an earlier render: the one it holds
-    // must still send with the page's latest Auto (Jev) answer.
+    // must still send with the page's latest Auto (decision model) answer.
     setMode('auto')
     cfg.decisions = true
     let grant!: () => void

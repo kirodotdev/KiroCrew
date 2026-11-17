@@ -24,7 +24,8 @@ from typing import Any
 
 from kiro_crew.cron import CronJob, lookup_cron_folder_id
 from kiro_crew.cron_script import resolve_script_path
-from kiro_crew.mcp_core import _post, _resolve_session_key
+from kiro_crew.mcp_core_parts.gateway import _post
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key
 from kiro_crew.mcp_cron_shell_scan import (
     _BACKSLASH_ESCAPE_RE,
     _CRON_BRACE_EXPANSION_RE,

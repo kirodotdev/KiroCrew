@@ -388,8 +388,10 @@ async def test_a_retry_carries_the_failed_runs_depth() -> None:
     request.app = {"state": SimpleNamespace(subagents=mgr)}
     request.headers = {}
     request.match_info = {"agent_id": "a1"}
-    await api_spawn_retry(request)
+    response = await api_spawn_retry(request)
     assert mgr.spawn.call_args.kwargs["_depth"] == _MAX_SPAWN_DEPTH
+    assert response.status == 200
+    assert json.loads(response.body) == {"id": "a2", "retried_from": "a1", "status": "spawned"}
 
 
 def test_the_spawn_writes_the_depth_into_the_run_record(tmp_path, monkeypatch) -> None:

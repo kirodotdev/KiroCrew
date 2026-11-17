@@ -38,6 +38,7 @@ from relay_client_helpers import (
     valid_message,
 )
 
+from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.relay_client import lease as lease_module
 from kiro_crew.relay_client.client import RelayClient
@@ -670,7 +671,7 @@ async def test_a_definitive_refusal_stops_renewals(
 @pytest.mark.parametrize(
     "reason,why",
     [
-        ("RemoteAccessDisabled", "does not allow remote access"),
+        ("RemoteAccessDisabled", "remote access is turned off for this Crew's account"),
         ("CrewAccessNotGranted", "has no access to the Crew"),
         (None, "cannot host this Crew"),
     ],
@@ -907,7 +908,7 @@ def saved_version(home: Path) -> Optional[int]:
     path = home / LEASE_VERSION_PATH
     if not path.exists():
         return None
-    saved_for, _, version = path.read_text("ascii").partition(" ")
+    saved_for, _, version = read_bytes_with_retry(path).decode("ascii").partition(" ")
     assert saved_for == crew_instance_id(home)
     return int(version)
 
@@ -957,7 +958,9 @@ async def test_every_versioned_renewal_with_no_token_holds_until_the_next_one(
             clock.elapse()
             await calls(lease, 3)
             assert lease.requests[2]["body"]["leaseVersion"] == 8
-            await async_wait_until(lambda: saved_version(tmp_path) == 9)
+            # The client saves 9 on a thread: read off the loop, where a Windows read
+            # that meets its replace is retried.
+            await async_wait_until(lambda: saved_version(tmp_path) == 9, off_loop=True)
             await assert_retry_later(source.current())
             assert len(lease.requests) == 3
             assert not source.stopped_reason
@@ -1754,3 +1757,132 @@ async def test_a_refused_credential_stop_names_both_settings_and_no_credential(
         assert "tunnel.relay_lease_token_type" in message
         assert "needs API_KEY" in message
         assert CREDENTIAL not in message
+
+
+# ── refusal messages: each names its cause and keeps today's timing ──
+
+
+@pytest.mark.parametrize(
+    "status,body,why",
+    [
+        (
+            400,
+            {
+                "__type": "ServiceQuotaExceededException",
+                "message": "Remote Crew limit reached",
+            },
+            "the account has reached its limit of remote Crews",
+        ),
+        (
+            *refusal("ThrottlingException")[:2],
+            "the relay is limiting requests; the host will try again",
+        ),
+    ],
+    ids=["quota", "throttling"],
+)
+async def test_a_quota_or_throttling_refusal_names_its_cause_on_the_backoff_steps(
+    lease: FakeLeaseService,
+    tmp_path: Path,
+    clock: StepClock,
+    status: int,
+    body: Dict[str, Any],
+    why: str,
+) -> None:
+    lease.queue(status, body)
+    lease.queue(200, answer(0))
+    source = make_source(lease, tmp_path, clock)
+    try:
+        with pytest.raises(HostTokenRetryLater) as later:
+            await source.current()
+        assert str(later.value).startswith(
+            f"the lease service refused the renewal ({body['__type']}): {why}"
+        )
+        assert body["message"] not in str(later.value)
+        assert CREDENTIAL not in str(later.value)
+        assert len(lease.requests) == 1
+        # Today's backoff path: the first reconnect step, then a normal renewal.
+        assert await clock.next_sleep() == 2.0
+        clock.elapse()
+        await calls(lease, 2)
+        assert (await source.current()).token == answer(0)["hostToken"]
+    finally:
+        await source.aclose()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            "__type": "AccessDeniedException",
+            "message": "Access denied.",
+            "reason": "REMOTE_ACCESS_DISABLED",
+        },
+        {
+            "__type": "AccessDeniedException",
+            "message": "Remote Crews are not enabled for this account",
+        },
+    ],
+    ids=["remote-access-disabled", "no-reason"],
+)
+async def test_remote_access_turned_off_says_so_and_holds_15_minutes(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock, body: Dict[str, Any]
+) -> None:
+    lease.queue(403, body)
+    lease.queue(200, answer(0))
+    source = make_source(lease, tmp_path, clock)
+    try:
+        with pytest.raises(HostTokenRetryLater) as later:
+            await source.current()
+        assert "remote access is turned off for this Crew's account or organization" in str(
+            later.value
+        )
+        assert body["message"] not in str(later.value)
+        assert CREDENTIAL not in str(later.value)
+        # Today's access-refusal hold.
+        assert len(lease.requests) == 1
+        assert await clock.next_sleep() == RETRY_AFTER_MAX_SECONDS == 900.0
+        clock.elapse()
+        await calls(lease, 2)
+        assert (await source.current()).token == answer(0)["hostToken"]
+    finally:
+        await source.aclose()
+
+
+async def test_a_refused_credential_stop_names_the_token_type_for_each_kind_of_credential(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock
+) -> None:
+    lease.queue(401, {"__type": "UnauthorizedException"})
+    lease.queue(401, {"__type": "UnauthorizedException"})
+    source = make_source(lease, tmp_path, clock)
+    try:
+        with pytest.raises(HostTokenUnavailable) as stopped:
+            await source.current()
+        reason = source.stopped_reason
+    finally:
+        await source.aclose()
+    # Today's path: one re-read and retry, then a stop until restart.
+    assert len(lease.requests) == 2
+    for message in (str(stopped.value), reason):
+        assert "credential is current" in message
+        assert "a team Crew on a crew API key needs API_KEY" in message
+        assert "a token from an outside identity provider needs EXTERNAL_IDP" in message
+        assert "a Kiro sign-in leaves it empty" in message
+        assert CREDENTIAL not in message
+
+
+@pytest.mark.parametrize("reason", ["RemoteAccessDisabled", "REMOTE_ACCESS_DISABLED"])
+async def test_both_spellings_of_remote_access_disabled_resolve_to_one_entry(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock, reason: str
+) -> None:
+    lease.queue(403, {"__type": "AccessDeniedException", "message": "Denied.", "reason": reason})
+    source = make_source(lease, tmp_path, clock)
+    try:
+        with pytest.raises(HostTokenRetryLater) as later:
+            await source.current()
+    finally:
+        await source.aclose()
+    # The entry's own text, not the no-reason text that also names remote access.
+    assert str(later.value).startswith(
+        f"the lease service refused this Crew (AccessDeniedException {reason}): "
+        "remote access is turned off for this Crew's account or organization"
+    )

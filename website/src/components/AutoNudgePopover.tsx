@@ -6,7 +6,7 @@ import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { cronJobsQuery } from '../api/cronJobsQuery'
-import { runBelongsToSlot } from '../apps/workflows/runModel'
+import { runBelongsToSlot } from '../components/workflows/runModel'
 import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 

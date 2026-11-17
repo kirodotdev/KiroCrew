@@ -25,11 +25,12 @@ import {
 } from '../hooks/useSceneInteraction'
 import type { AgentSource } from '../hooks/useAgentSync'
 import { i18nT } from '../i18n/t'
+import { ApiError } from '../api/apiError'
 
 const apiMocks = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
   sendChat: vi.fn(),
-  resolveApproval: vi.fn(),
+  decideApproval: vi.fn(),
   createChatSlot: vi.fn(),
 }))
 
@@ -143,7 +144,7 @@ beforeEach(() => {
   HTMLCanvasElement.prototype.getContext = vi.fn(stubCtx) as unknown as HTMLCanvasElement['getContext']
   apiMocks.chatSlotDetail.mockResolvedValue({ messages: [] })
   apiMocks.sendChat.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: true }) })
-  apiMocks.resolveApproval.mockResolvedValue({})
+  apiMocks.decideApproval.mockResolvedValue({})
   apiMocks.createChatSlot.mockResolvedValue({})
 })
 
@@ -234,7 +235,7 @@ describe('useSceneInteraction — hit-testing and tooltip', () => {
   })
 
   it('adds a needs-approval line when the live source is blocked', () => {
-    renderScene({ sources: [source({ id: 'slot-a', pendingApproval: { tool: 'shell', requestId: 'r1' } })] })
+    renderScene({ sources: [source({ id: 'slot-a', pendingApproval: { tool: 'shell', requestId: 'r1', target: null } })] })
     hover(100, 100)
     expect(
       screen.getByText(new RegExp(i18nT('hooks.useSceneInteraction.needs_approval'))),
@@ -1107,8 +1108,9 @@ describe('useSceneInteraction — live refresh poll', () => {
 })
 
 describe('useSceneInteraction — pending approval bar', () => {
+  const TARGET = { origin: 'native' as const, id: 'req-9', slot: 'a', mid: 'mid-9' }
   const withApproval = () => ({
-    sources: [source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-9' } })],
+    sources: [source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-9', target: TARGET } })],
   })
 
   it('names the blocked tool and approves it', async () => {
@@ -1119,8 +1121,8 @@ describe('useSceneInteraction — pending approval bar', () => {
     fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
     await flush()
 
-    expect(apiMocks.resolveApproval).toHaveBeenCalledWith('req-9', 'approve')
-    expect(screen.queryByText(i18nT('hooks.useSceneInteraction.failed'))).not.toBeInTheDocument()
+    expect(apiMocks.decideApproval).toHaveBeenCalledWith(TARGET, 'approve')
+    expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
   })
 
   it('rejects from the deny button', async () => {
@@ -1128,16 +1130,134 @@ describe('useSceneInteraction — pending approval bar', () => {
     await clickAt(100, 100)
     fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.deny') }))
     await flush()
-    expect(apiMocks.resolveApproval).toHaveBeenCalledWith('req-9', 'reject')
+    expect(apiMocks.decideApproval).toHaveBeenCalledWith(TARGET, 'reject')
   })
 
-  it('surfaces a failed resolution inline', async () => {
-    apiMocks.resolveApproval.mockRejectedValue(new Error('gone'))
+  // A failed decide renders through ErrorNotice (role="alert"), keeps the
+  // caught error so the notice says which failure it was, and offers no agent
+  // hand-off: the composer below may hold an unsent draft.
+  const failureNotice = () => screen.getByTestId('scene-approval-failure')
+  // A refused decide for a request that is gone is status, not an error
+  // (#18203): a muted role="status" line in the refusal sentence.
+  const goneNotice = () => screen.getByTestId('scene-approval-gone')
+
+  it('renders a 404 refusal as status with the refusal sentence and no hand-off', async () => {
+    apiMocks.decideApproval.mockRejectedValue(new ApiError(404, 'not found or expired'))
     renderScene(withApproval())
     await clickAt(100, 100)
     fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
     await flush()
-    expect(screen.getByText(i18nT('hooks.useSceneInteraction.failed'))).toBeInTheDocument()
+    expect(goneNotice()).toHaveAttribute('role', 'status')
+    expect(goneNotice()).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending') as string)
+    expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
+    expect(screen.queryByText(i18nT('components.askAgent.ask_the_agent') as string)).not.toBeInTheDocument()
+  })
+
+  it('withdraws Approve/Deny once a terminal refusal says the approval is gone', async () => {
+    apiMocks.decideApproval.mockRejectedValue(new ApiError(404, 'no pending approval'))
+    renderScene(withApproval())
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    await flush()
+    expect(goneNotice()).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending') as string)
+    expect(screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.deny') })).not.toBeInTheDocument()
+  })
+
+  it('drops the failure notice once its request is gone, and never shows it over the next one', async () => {
+    apiMocks.decideApproval.mockRejectedValue(new ApiError(403, 'slot is read-only'))
+    const view = renderScene(withApproval())
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    await flush()
+    expect(failureNotice()).toBeInTheDocument()
+    // The request is answered elsewhere: the bar unmounts, and so does its notice.
+    view.rerender(<Harness sources={[source({ id: 'slot-a' })]} />)
+    await flush()
+    expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
+    // The same agent's next request opens with live buttons and no stale notice.
+    const next = { origin: 'native' as const, id: 'req-10', slot: 'a', mid: 'mid-10' }
+    view.rerender(<Harness sources={[source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-10', target: next } })]} />)
+    await flush()
+    expect(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') })).toBeInTheDocument()
+    expect(screen.queryByTestId('scene-approval-failure')).not.toBeInTheDocument()
+  })
+
+  it('keeps a lost race\'s notice after the winner clears the request, naming the winner, and not over the next one', async () => {
+    // Another collaborator settles the request while this click is in flight:
+    // the winner's frame clears the pending approval before the 409 lands.
+    let reject: (e: unknown) => void = () => {}
+    apiMocks.decideApproval.mockImplementationOnce(() => new Promise((_res, rej) => { reject = rej }))
+    const view = renderScene(withApproval())
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    view.rerender(<Harness sources={[source({ id: 'slot-a' })]} />)
+    await flush()
+    const winner = { decision_id: 'd1', outcome: 'rejected' }
+    await act(async () => { reject(new ApiError(409, 'already resolved', JSON.stringify({ code: 'already_resolved', decision: winner }))) })
+    await flush()
+    // Decided elsewhere is gone too: status, not an error.
+    expect(goneNotice()).toHaveAttribute('role', 'status')
+    expect(goneNotice()).toHaveTextContent(i18nT('sharedCrew.already_rejected') as string)
+    // The next request opens clean.
+    const next = { origin: 'native' as const, id: 'req-10', slot: 'a', mid: 'mid-10' }
+    view.rerender(<Harness sources={[source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-10', target: next } })]} />)
+    await flush()
+    expect(screen.queryByTestId('scene-approval-gone')).not.toBeInTheDocument()
+  })
+
+  it('keeps Approve/Deny after a retryable refusal', async () => {
+    apiMocks.decideApproval.mockRejectedValue(new ApiError(403, 'slot is read-only'))
+    renderScene(withApproval())
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    await flush()
+    expect(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') })).toBeInTheDocument()
+  })
+
+  it("quotes the server's reason for a retryable refusal", async () => {
+    apiMocks.decideApproval.mockRejectedValue(new ApiError(403, 'slot is read-only'))
+    renderScene(withApproval())
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    await flush()
+    expect(failureNotice()).toHaveTextContent(
+      i18nT('components.approvalCard.decision_not_recorded_error', { error: 'slot is read-only' }) as string)
+  })
+
+  it('hedges a press that got no response', async () => {
+    apiMocks.decideApproval.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderScene(withApproval())
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    await flush()
+    expect(failureNotice()).toHaveTextContent(i18nT('components.approvalCard.decision_failed') as string)
+  })
+
+  it('sends nothing for an approval the slot named no request for, and says it is gone', async () => {
+    renderScene({ sources: [source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-9', target: null } })] })
+    await clickAt(100, 100)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') }))
+    await flush()
+    expect(apiMocks.decideApproval).not.toHaveBeenCalled()
+    expect(goneNotice()).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending') as string)
+  })
+
+  it('drops the gone status for a redelivery under the same id, which gets its buttons back (#18203)', async () => {
+    apiMocks.decideApproval.mockRejectedValue(new ApiError(404, 'not found or expired'))
+    const view = renderScene(withApproval())
+    await clickAt(100, 100)
+    const approve = () => screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.approve') })
+    fireEvent.click(approve()!)
+    await flush()
+    expect(goneNotice()).toHaveAttribute('role', 'status')
+    expect(approve()).not.toBeInTheDocument()
+    // Request ids recur: a new delivery of req-9 is a new request.
+    const redelivered = { origin: 'native' as const, id: 'req-9', slot: 'a', mid: 'mid-2' }
+    view.rerender(<Harness sources={[source({ id: 'slot-a', pendingApproval: { tool: 'execute_bash', requestId: 'req-9', target: redelivered } })]} />)
+    await flush()
+    expect(approve()).toBeInTheDocument()
+    expect(screen.queryByTestId('scene-approval-gone')).not.toBeInTheDocument()
   })
 
   it('omits the bar when nothing is waiting on the user', async () => {

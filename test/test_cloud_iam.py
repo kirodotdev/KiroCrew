@@ -946,7 +946,7 @@ class TestAgentDenyListForCloudVerbs:
             assert self._denied(cmd), f"is_denied does not deny {cmd!r}"
 
     def test_global_args_do_not_bypass_deny(self):
-        # Regression: the deny patterns must tolerate AWS global options in BOTH
+        # The deny patterns must tolerate AWS global options in BOTH
         # positions — before the service (`aws --region r ec2 terminate-...`) AND
         # between the service and the operation (`aws ec2 --region r
         # terminate-...`), otherwise an agent trivially bypasses the denylist.

@@ -596,12 +596,13 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     // resolver) does not exist until the [srcdoc, attempt] effect runs.
     await act(async () => { await Promise.resolve() })
     await act(async () => { settle({ url: DOC_URL }); await Promise.resolve() })
-    // The re-enable proves the settle happened (the disabled→enabled
+    // The re-enable proves the settle happened (the aria-disabled→enabled
     // transition itself is pinned by the dedicated test below); if a
     // regression cleared docSilent on a same-url settle, the notice unmounts
-    // and this detached node keeps disabled=true, so this reds rather than
-    // passing on a null query.
-    await waitFor(() => expect(button.disabled).toBe(false))
+    // and this detached node keeps aria-disabled=true, so this reds rather than
+    // passing on a null query. aria-disabled, not native disabled: the busy
+    // button must stay focusable so a keyboard press does not drop focus.
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
 
     expect(mintSpy).toHaveBeenCalledTimes(2)
     expect(document.querySelector('iframe')?.getAttribute('src')).toBe(DOC_URL)
@@ -611,26 +612,38 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     expect(screen.getByRole('button', { name: /show artifact/i })).toBeTruthy()
   })
 
-  it('disables the action while the re-mint is in flight', async () => {
+  it('marks the action busy while the re-mint is in flight, keeping it focusable', async () => {
     // The acknowledgment for the click: the button visibly cannot be pressed
     // again until the attempt settles, instead of looking inert (or worse,
-    // hiding the notice before anything about the frame has changed).
+    // hiding the notice before anything about the frame has changed). It uses
+    // aria-disabled + aria-busy, NOT native disabled, so a keyboard press does
+    // not drop focus to the page while the re-mint runs.
     await loadedFrame('<p>silent</p>')
     await act(async () => { vi.advanceTimersByTime(4000) })
 
     let settle: (v: { url: string }) => void = () => {}
     mintSpy.mockImplementationOnce(() => new Promise((res) => { settle = res }))
     const button = screen.getByRole('button', { name: /show artifact/i }) as HTMLButtonElement
+    button.focus()
     act(() => { button.click() })
     await act(async () => { await Promise.resolve() })
-    expect(button.disabled).toBe(true)
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    // Not native-disabled, and still holding focus: the focus bug this guards.
+    expect(button.disabled).toBe(false)
+    expect(document.activeElement).toBe(button)
+
+    // A second press while busy is ignored: the guard drops it, so the mint is
+    // not called again by this click.
+    act(() => { button.click() })
+    expect(mintSpy).toHaveBeenCalledTimes(2)
 
     // Settle with the SAME url so the notice stays mounted, and assert the
     // re-enable on the node held from before the click — settling with a fresh
     // url would unmount the notice and let a stuck-pending regression pass on
     // a null query.
     await act(async () => { settle({ url: DOC_URL }); await Promise.resolve() })
-    expect(button.disabled).toBe(false)
+    expect(button).not.toHaveAttribute('aria-disabled')
     expect(screen.getByText(/no longer showing/i)).toBeTruthy()
   })
 })

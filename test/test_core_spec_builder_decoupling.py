@@ -61,9 +61,9 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
             )
         ),
         # The docs lint's runtime-data row for the decision record that
-        # `security.md` cites under the gated `trust/` directory. It goes with that
-        # paragraph when the app leaves.
-        ("scripts/docs_lint.py", "trust/spec-builder-decisions.json"),
+        # `security.md` cites in the app's declared read-only `trust/` directory. It
+        # goes with that paragraph when the app leaves.
+        ("scripts/docs_lint.py", "apps/spec-builder/data/trust/spec-builder-decisions.json"),
     }
 )
 

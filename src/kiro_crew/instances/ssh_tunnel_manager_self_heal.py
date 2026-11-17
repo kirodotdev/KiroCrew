@@ -261,9 +261,8 @@ async def _rebuild(
     one that raced in during the unlocked awaits (see _mark_recovered).
 
     Stops the existing tunnel first so its child dies and frees the port;
-    an orphaned child would keep the port, failing every replacement on
-    ``ExitOnForwardFailure`` while satisfying ``_port_reachable`` — a tight
-    respawn loop.
+    an orphaned child would keep the port, failing every replacement's bind
+    while satisfying ``_port_reachable`` — a tight respawn loop.
 
     The install is gated, under the manager lock, on the stamp still reading
     *expected_epoch*: during the unlocked ``old.stop()`` a ``connect()`` may

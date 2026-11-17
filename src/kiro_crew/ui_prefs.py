@@ -256,10 +256,10 @@ def _read_prefs(path: Path, *, strict: bool) -> dict[str, str]:
 
 
 def _is_clean(value: str) -> bool:
-    """True when neither redactor would change *value*."""
-    cleaned, _ = redact_exfiltration_urls(value)
-    cleaned, _ = redact_credentials(cleaned)
-    return cleaned == value
+    """True when neither redactor would change *value* and no URL in it is flagged."""
+    from kiro_crew.security.exfil import refuses
+
+    return not refuses(value, lambda v: redact_credentials(redact_exfiltration_urls(v)[0])[0])
 
 
 def load_ui_prefs() -> dict[str, str]:
@@ -359,6 +359,13 @@ def _merge_locked(cleaned: Mapping[str, str | None]) -> dict[str, str]:
     merged = _read_prefs(ui_prefs_path(), strict=True)
     for key, value in cleaned.items():
         if value is None:
+            merged.pop(key, None)
+        elif not _is_clean(value):
+            # The read path drops a value the shared redactors would alter, so
+            # storing it here only made the reply claim a value GET never serves
+            # and the next merge silently drops. Kept out (the PUT is still 200,
+            # as before) and said in the log.
+            logger.warning("ui-prefs: value for %r not kept: it holds secret-shaped text", key)
             merged.pop(key, None)
         else:
             merged[key] = value

@@ -24,6 +24,7 @@ import pytest
 
 from kiro_crew.dashboard import chat_auto_tag
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 
@@ -257,15 +258,17 @@ class TestAutoTagRedaction:
 
     async def test_credential_in_project_name_is_redacted(self, patch_save_slot):
         state = _make_state()
-        # This extreme case: project dir named with an AWS key
-        slot = _make_slot(project="/x/deploy-AKIAIOSFODNN7EXAMPLE")
+        # This extreme case: project dir named with a GitHub token (a bare
+        # 40-character run with no label or key ID beside it is no credential)
+        secret = github_classic(seed=57)
+        slot = _make_slot(project="/x/deploy-" + secret)
 
         await maybe_auto_tag(state, slot)
 
         # Credential must NOT survive into the tag definition name
         if state._tags:
             tag_name = state._tags[0]["name"]
-            assert "AKIAIOSFODNN7EXAMPLE" not in tag_name
+            assert secret not in tag_name
 
 
 # ── Production-shaped slot keys ─────────────────────────────────────────────
@@ -655,7 +658,7 @@ class TestTopicTags:
         assert by_tag["st"]["error"] == "status_tag_requires_set_state"
 
     async def test_credentials_are_redacted_before_the_prompt(self, patch_save_slot, topic_model):
-        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        secret = github_classic(seed=58)
         state = _make_state()
         slot = _topic_slot(message=f"my key is {secret} please help")
 
@@ -664,15 +667,15 @@ class TestTopicTags:
         assert secret not in topic_model["calls"][0]["prompt"]
 
     async def test_credential_in_the_reply_is_never_stored(self, patch_save_slot, topic_model):
-        # Upper-case key shape: the redactor must see it before any case folding.
-        topic_model["reply"] = "AKIA" + "ABCDEFGHIJKLMNOP\ndebugging"
+        # Mixed-case key shape: the redactor must see it before any case folding.
+        topic_model["reply"] = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR" + "\ndebugging"
         state = _make_state()
         slot = _topic_slot(project="")
 
         await maybe_auto_tag(state, slot)
 
         assert _names(state, slot) == ["debugging"]
-        assert all("akia" not in t["name"].lower() for t in state._tags)
+        assert all("wjalrxutnfemi" not in t["name"].lower() for t in state._tags)
 
     async def test_a_tag_the_owner_kept_is_never_applied(self, patch_save_slot, topic_model):
         topic_model["reply"] = "reviewed\ndebugging"
@@ -787,7 +790,7 @@ class TestTopicTags:
     ):
         from kiro_crew.dashboard.chat_auto_tag import _TOPIC_MESSAGE_CHARS
 
-        key = "AKIA" + "ABCDEFGHIJKLMNOP"
+        key = github_classic(seed=59)
         pad = "x " * ((_TOPIC_MESSAGE_CHARS - 8) // 2)
         state = _make_state()
         slot = _topic_slot(project="", message=pad + key + " tail")
@@ -863,6 +866,44 @@ class TestTopicTags:
 
         assert _names(state, slot) == ["MyRepo"]
         assert slot._auto_tagged is True
+
+    async def test_project_tags_off_creates_and_adds_no_project_tag(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag.KiroCrewConfig.load",
+            lambda: SimpleNamespace(
+                dashboard=SimpleNamespace(project_tags_enabled=False, topic_tags_enabled=True)
+            ),
+        )
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        assert "MyRepo" not in [t["name"] for t in state._tags]
+        assert _names(state, slot) == ["debugging", "code review"]
+
+    async def test_a_rebind_during_the_project_flag_read_writes_no_project_tag(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        keys = {"k": "dashboard:test-slot"}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag.slot_history_key", lambda _slot: keys["k"]
+        )
+
+        async def _rebinding_flag(_name, _default):
+            keys["k"] = "cron:job-1"  # rebound during the config read
+            return True
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag._dashboard_flag", _rebinding_flag)
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        assert slot.tags == []
+        patch_save_slot.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -45,6 +45,11 @@ function createUpdateReporter({
   // it is kept for the display layer.
   let laneVersion = null;
   let laneChannel = null;
+  // The marker's `updatePrompts: "edition"`: the edition's own update widget is
+  // the update surface, so the dashboard opens neither of the core's update
+  // dialogs on any push from this lane. Carried on every push and on getInfo();
+  // absent on every other install, whose payloads keep their shape.
+  const promptOwner = managed && managed.updatePrompts ? { updatePrompts: managed.updatePrompts } : {};
   /**
    * The lane pair, or UNKNOWN. Reported as unknown unless the recorded version
    * was read for the channel this install follows RIGHT NOW: a switch makes the
@@ -122,6 +127,7 @@ function createUpdateReporter({
       // stamp-based guess this pair replaces -- and so a renderer that mounted
       // before the latest check does not keep rendering that older answer.
       ...laneSnapshot(),
+      ...promptOwner,
       ...extra,
     };
     // Remembered even when the push below throws: a renderer that missed the
@@ -172,6 +178,7 @@ function createUpdateReporter({
       // Externally-managed metadata, both empty on a self-updating install.
       managedBy: managed ? managed.managedBy || "" : "",
       updateCommand: managed ? managed.updateCommand || "" : "",
+      ...promptOwner,
       platform,
       packaged: !!app.isPackaged,
       // Escape hatch for a failed install (see manualDownloadUrl).

@@ -3,12 +3,12 @@ import { Glass } from './Glass'
 import { Zap } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
-import { fireUltraEffect } from '../lib/ultraModeEffect'
+import { fireConductorModeEffect } from '../lib/conductorModeEffect'
 
 interface CrewModeChipProps {
-  /** Turns this chat into an Ultra Mode chat. */
+  /** Turns this chat into a conductor mode chat. */
   onTurnOn: () => void
-  /** the chip is a toggle. While Ultra Mode is on and no message is
+  /** the chip is a toggle. While conductor mode is on and no message is
    *  sent yet it shows pressed, and a click turns it off again. */
   pressed?: boolean
   onTurnOff?: () => void
@@ -23,7 +23,7 @@ interface CrewModeChipProps {
   testId?: string
 }
 
-/** The composer's Ultra Mode switch. On a NEW chat (before its first message)
+/** The composer's conductor mode switch. On a NEW chat (before its first message)
  *  it toggles in place -- pressed is on -- and the first message locks it. In a
  *  plain chat that already has messages the same chip, unpressed, sits right of
  *  the permission button and turns the chat on one way. */
@@ -38,7 +38,7 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
   const click = () => {
     if (busy) return
     if (pressed) { onTurnOff?.(); return }
-    fireUltraEffect(ref.current?.getBoundingClientRect() ?? null)
+    fireConductorModeEffect(ref.current?.getBoundingClientRect() ?? null)
     onTurnOn()
   }
   return (
@@ -59,7 +59,7 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
       className={`crew-chip inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-[12px] font-semibold transition-colors cursor-pointer text-muted hover:text-text ${state}`}
     >
       {/* Off is grey like the composer's other chips; only on wears the accent. */}
-      <Zap size={13} aria-hidden="true" fill={pressed ? 'currentColor' : 'none'} className={`inline-block shrink-0 ${pressed ? 'ultra-accent' : ''}`} />
+      <Zap size={13} aria-hidden="true" fill={pressed ? 'currentColor' : 'none'} className={`inline-block shrink-0 ${pressed ? 'conductor-mode-accent' : ''}`} />
       <span className="crew-chip-text">{i18nT('components.crewMode.chip_off')}</span>
     </Glass>
   )

@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         ToolApprovalCallback,
     )
+    from ..tracing.steps import Approval
 
 #: Delayed re-reads armed, one after another, while the store cannot answer the
 #: queue depth; the last one that still fails says so at WARNING.
@@ -131,7 +132,9 @@ class _ApprovalPrompt:
         self._run = run
         self._info = info
 
-    def opened(self, ask: Ask) -> tuple[str, tuple[str, int]]:
+    def opened(self, ask: Ask) -> tuple[str, tuple[str, int], Approval | None]:
+        from kiro_crew.tracing import steps as trace_steps
+
         info = self._info
         info._awaiting_approval = True
         approval_id = self._run._crew_log_approval_id(info, ask.request_id)
@@ -141,15 +144,30 @@ class _ApprovalPrompt:
             tool=ask.event.tool_name or "",
             reason=ask.event.title or "",
         )
-        return approval_id, origin
+        # Its span, under the child's own open turn (tracing/steps.py).
+        trace = trace_steps.approval_opened(
+            approval_id,
+            subagent_id=info.id,
+            tool_call_id=str(getattr(ask.event, "tool_call_id", "") or ""),
+        )
+        return approval_id, origin, trace
 
     def closed(self, token: object, decision: str, by: str) -> None:
-        approval_id, origin = cast("tuple[str, tuple[str, int]]", token)
+        from kiro_crew.tracing import steps as trace_steps
+
+        approval_id, origin, trace = cast("tuple[str, tuple[str, int], Approval | None]", token)
         self._info._awaiting_approval = False
         self._info.last_activity = _time.time()
         self._info._last_activity_mono = _time.monotonic()
         self._run._record_crew_log_approval_decided(
             origin, approval_id=approval_id, decision=decision, by=by
+        )
+        # "" is an answer this site cannot attribute (a person, or an approver's own
+        # host shortcut), so the span names nobody, as the crew-log entry does.
+        trace_steps.approval_closed(
+            trace,
+            approved=decision == "approved",
+            by=trace_steps.decided_by(host=True) if by == "host" else "",
         )
 
 
@@ -629,10 +647,13 @@ class RunEventCoordinator(ManagerComponent):
                     answering |= retry.batch_ids
                     must_publish = True
                 self._disarm_queue_depth_retry(parent_session_key)
+                if depth <= 0 and not overlapped:
+                    # Whether or not this read is published. An overlapping
+                    # request may be the verdict which wrote the label, for a
+                    # row the read predates, so an overlapped 0 keeps it.
+                    self._manager._queue_wait.pop(parent_session_key, None)
                 if must_publish or depth != self._published_depth(parent_session_key):
-                    await self._publish_queue_depth(
-                        parent_session_key, depth, _one_wave(answering), forget_label=not overlapped
-                    )
+                    await self._publish_queue_depth(parent_session_key, depth, _one_wave(answering))
             if not emit.again:
                 return
             # Asked during the read (past the withhold cap) or while the frame
@@ -644,7 +665,7 @@ class RunEventCoordinator(ManagerComponent):
         return self._manager._published_depths.get(parent_session_key)
 
     async def _publish_queue_depth(
-        self, parent_session_key: str, depth: int, batch_id: str, *, forget_label: bool
+        self, parent_session_key: str, depth: int, batch_id: str
     ) -> None:
         # Imported here: this helper is not an ``_impl``, so it keeps this
         # module's namespace, where the facade's names are only type hints.
@@ -652,10 +673,6 @@ class RunEventCoordinator(ManagerComponent):
 
         manager = self._manager
         if depth <= 0:
-            # Not on a read a request overlapped: that request may be the
-            # verdict which wrote the label, for a row the read predates.
-            if forget_label:
-                manager._queue_wait.pop(parent_session_key, None)
             extra: dict[str, Any] = {"queued": depth}
         else:
             extra = {"queued": depth, **manager._queue_wait.get(parent_session_key, {})}

@@ -14,14 +14,15 @@ import json
 import unicodedata
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import memory_edit
-from kiro_crew.dashboard.handlers import _shared
 from kiro_crew.dashboard.handlers._shared import _UNSCANNABLE_JSON, _redact_memory_field
 from kiro_crew.terminal_safe import normalize_for_scanning
 
-#: A documentation-only AWS key id, matched by the plaintext credential pass.
-CREDENTIAL = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic GitHub classic token with a valid checksum, matched by the credential
+#: detector.
+CREDENTIAL = github_classic(seed=7)
 
 #: Every character the scrubber removes: the C0 and C1 controls other than the three
 #: kept as content, plus the Unicode format characters. The output is checked against
@@ -107,7 +108,7 @@ REJOINING_SEPARATORS = CONTROL_ONLY_SEPARATORS + INVISIBLE_SEPARATORS
 
 
 def _split_credential(separator: bytes | str) -> str:
-    """Return ``CREDENTIAL`` with ``separator`` spliced in after its ``AKIA`` prefix."""
+    """Return ``CREDENTIAL`` with ``separator`` spliced in after its ``ghp_`` prefix."""
     text = separator.decode("latin-1") if isinstance(separator, bytes) else separator
     prefix, suffix = CREDENTIAL[:4], CREDENTIAL[4:]
     return f"{prefix}{text}{suffix}"
@@ -161,7 +162,7 @@ def test_control_split_credential_is_redacted(separator: bytes | str) -> None:
     redacted = _redact_memory_field(f"never commit {_split_credential(separator)}")
 
     assert "[REDACTED" in redacted
-    assert "IOSFODNN7EXAMPLE" not in redacted
+    assert CREDENTIAL[4:] not in redacted
 
 
 @pytest.mark.parametrize("separator", REJOINING_SEPARATORS)
@@ -210,6 +211,9 @@ def test_a_sequence_payload_survives_as_text(separator: bytes) -> None:
     redacted = _redact_memory_field(f"never commit {_split_credential(separator)}")
     printable = [ch for ch in separator.decode("latin-1") if ch not in INVISIBLE_CHARACTERS]
 
+    # A payload of letters and digits joins the token's own run once the control bytes
+    # go, which makes the run too long for the published format: it stays split too.
+    assert CREDENTIAL not in redacted
     for character in printable:
         assert character in redacted
 
@@ -276,7 +280,7 @@ def test_a_format_char_between_controls_does_not_survive() -> None:
     Removing the controls first is what makes the flank judgement read the credential's
     own characters rather than the controls that were about to be removed.
     """
-    redacted = _redact_memory_field("never commit AKIA\x9b\u200d\x9cIOSFODNN7EXAMPLE")
+    redacted = _redact_memory_field(f"never commit {CREDENTIAL[:4]}\x9b\u200d\x9c{CREDENTIAL[4:]}")
 
     assert "[REDACTED" in redacted
     assert CREDENTIAL not in redacted
@@ -772,29 +776,6 @@ def test_find_and_replace_stays_available_when_a_proposal_is_hidden() -> None:
     assert "keep this tidy" in after["value_json"]
 
 
-def test_a_document_the_scrub_itself_breaks_is_withheld() -> None:
-    """The parser must judge the STORED bytes, because the scrub can break the document.
-
-    A credential-assignment pattern spans a name, its colon and its value, so splicing one
-    out of a JSON document leaves text that does not parse. Judging JSON-ness on that text
-    calls a real document prose and hands it back unscanned, and the escaped control-split
-    credential beside it never reaches the descent.
-    """
-    escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    stored = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
-
-    assert json.loads(stored)["d"]
-    spliced = _shared._scrub_text(stored)
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(spliced)
-
-    out = _redact_memory_field({"value_json": stored})["value_json"]
-
-    assert json.loads(out) == _UNSCANNABLE_JSON
-    assert escaped not in out
-    assert CREDENTIAL not in normalize_for_scanning(out)
-
-
 def test_text_that_was_never_a_document_still_passes_through_after_scrubbing() -> None:
     """Withholding is for a document the scrub broke, not for prose it rewrote."""
     prose = f"aws_secret_access_key = {CREDENTIAL}"
@@ -849,27 +830,3 @@ def test_keeping_the_current_value_passes_the_proposal_bar_too() -> None:
 
     assert after is not None
     assert after["value_json"] == row["value_json"]
-
-
-def test_a_nested_document_the_leaf_scrub_breaks_is_withheld_too() -> None:
-    """The stored-bytes test belongs at every level, not only the outermost field.
-
-    A revision snapshot is a document carried inside a document. The outer text can survive
-    the scrub untouched while the inner one, once decoded and scanned, is spliced apart by a
-    credential-assignment match. Judging the inner level on its scrubbed form hands the leaf
-    back with its own payload unwalked.
-    """
-    escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    inner = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
-    stored = json.dumps({"snapshot": inner})
-
-    assert _shared._scrub_text(stored) == stored
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(_shared._scrub_text(inner))
-
-    out = _redact_memory_field({"value_json": stored})["value_json"]
-
-    leaf = json.loads(out)["snapshot"]
-    assert json.loads(leaf) == _UNSCANNABLE_JSON
-    assert escaped not in out
-    assert CREDENTIAL not in normalize_for_scanning(out)

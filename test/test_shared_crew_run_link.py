@@ -188,7 +188,7 @@ async def test_start_names_the_run_id_before_start_background(service, monkeypat
         return kw["task_id"]
 
     runner.start_background = AsyncMock(side_effect=start)
-    monkeypatch.setattr(taskrunner, "app_disabled", lambda _app: False)
+    monkeypatch.setattr(taskrunner, "task_runner_off", lambda: None)
     monkeypatch.setattr(taskrunner, "_sel", MagicMock())
     body = {"spec": "__inline__:# Work", "source": "dashboard"}
     response = await taskrunner.api_taskrunner_start(_admission_request(_state(runner), body))
@@ -210,7 +210,7 @@ async def test_start_refuses_and_removes_its_spec_when_the_link_fails(
 
     runner = _runner(tmp_path)
     runner.mint_task_id = lambda spec: "TASK_x_1"
-    monkeypatch.setattr(taskrunner, "app_disabled", lambda _app: False)
+    monkeypatch.setattr(taskrunner, "task_runner_off", lambda: None)
     monkeypatch.setattr(taskrunner, "_sel", MagicMock())
 
     async def locked(*_a, **_kw):

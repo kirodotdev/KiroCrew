@@ -359,14 +359,12 @@ def test_degraded_read_does_not_admit_caller_supplied_ids(tmp_path):
     }
     with _install_fake_slack_sdk(resp):
         # The caller hands back the base list its own degraded load() produced.
-        enterprise.validate_enterprise(
-            "xoxb-token", extra_ids={"T_KEPT", "T_REMOVED"}
-        )
+        enterprise.validate_enterprise("xoxb-token", extra_ids={"T_KEPT", "T_REMOVED"})
 
     assert enterprise._allowlist_configured is True
-    assert "T_REMOVED" not in enterprise._allowed_team_ids, (
-        "a degraded read was re-widened by caller-supplied extra_ids"
-    )
+    assert (
+        "T_REMOVED" not in enterprise._allowed_team_ids
+    ), "a degraded read was re-widened by caller-supplied extra_ids"
     assert enterprise.check_message_origin("T_REMOVED") is False
 
 
@@ -393,16 +391,13 @@ def test_clean_read_does_not_admit_caller_supplied_ids(tmp_path):
     with _install_fake_slack_sdk(resp):
         # The caller's snapshot predates the removal of T_REMOVED.
         assert (
-            enterprise.validate_enterprise(
-                "xoxb-token", extra_ids={"T_KEPT", "T_REMOVED"}
-            )
-            is True
+            enterprise.validate_enterprise("xoxb-token", extra_ids={"T_KEPT", "T_REMOVED"}) is True
         )
 
     assert enterprise._allowlist_configured is True
-    assert "T_REMOVED" not in enterprise._allowed_team_ids, (
-        "a stale caller snapshot re-admitted a removed workspace"
-    )
+    assert (
+        "T_REMOVED" not in enterprise._allowed_team_ids
+    ), "a stale caller snapshot re-admitted a removed workspace"
     assert enterprise.check_message_origin("T_REMOVED") is False
     # The boundary: the id the file still lists stays admitted.
     assert enterprise.check_message_origin("T_KEPT") is True
@@ -426,10 +421,7 @@ def test_emptied_allowlist_goes_default_open_despite_caller_snapshot(tmp_path):
         "url": "https://x",
     }
     with _install_fake_slack_sdk(resp):
-        assert (
-            enterprise.validate_enterprise("xoxb-token", extra_ids={"T_ONLY"})
-            is True
-        )
+        assert enterprise.validate_enterprise("xoxb-token", extra_ids={"T_ONLY"}) is True
 
     assert enterprise._allowlist_configured is False
     assert enterprise.check_message_origin("T_ANY") is True
@@ -444,8 +436,9 @@ def test_auth_test_failure_with_config_allowlist_fails_closed(tmp_path):
     """auth.test fails but slack.allowed_enterprise_ids is set -> deny."""
     sel_mock = MagicMock()
     _write_allowlist(tmp_path, ["T_ALLOWED"])
-    with _install_fake_slack_sdk(raise_exc=True), patch.object(
-        enterprise, "sel", return_value=sel_mock
+    with (
+        _install_fake_slack_sdk(raise_exc=True),
+        patch.object(enterprise, "sel", return_value=sel_mock),
     ):
         assert enterprise.validate_enterprise("xoxb-token") is False
     # A denial must be SEL-audited.
@@ -479,10 +472,7 @@ def test_auth_test_failure_with_only_a_stale_snapshot_stays_default_open():
     pins that.
     """
     with _install_fake_slack_sdk(raise_exc=True):
-        assert (
-            enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"})
-            is True
-        )
+        assert enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"}) is True
     assert enterprise._allowlist_configured is False
 
 
@@ -494,10 +484,7 @@ def test_auth_test_failure_with_configured_allowlist_still_fails_closed(tmp_path
     """
     _write_allowlist(tmp_path, ["T_ALLOWED"])
     with _install_fake_slack_sdk(raise_exc=True):
-        assert (
-            enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"})
-            is False
-        )
+        assert enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"}) is False
     assert enterprise._allowlist_configured is True
     assert enterprise.check_message_origin("T_EXTRA") is False
     assert enterprise.check_message_origin("T_REAL_WORKSPACE") is False
@@ -511,10 +498,7 @@ def test_auth_test_failure_with_allowlist_and_bad_config_load_fails_closed(tmp_p
     """
     (tmp_path / "config.json").write_text("{ torn", encoding="utf-8")
     with _install_fake_slack_sdk(raise_exc=True):
-        assert (
-            enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"})
-            is False
-        )
+        assert enterprise.validate_enterprise("xoxb-token", extra_ids={"T_EXTRA"}) is False
     assert enterprise._allowlist_configured is True
 
 
@@ -864,11 +848,11 @@ def test_reader_entry_filter_does_not_drift_from_the_loader(tmp_path):
     an operator whose allowlist quietly stops matching.
     """
     candidates = [
-        "T_TEAM",        # usable
+        "T_TEAM",  # usable
         "E_ENTERPRISE",  # usable
-        "t_lowercase",   # dropped: case-sensitive prefix
-        "X_OTHER",       # dropped: wrong prefix
-        "",              # dropped: empty
+        "t_lowercase",  # dropped: case-sensitive prefix
+        "X_OTHER",  # dropped: wrong prefix
+        "",  # dropped: empty
     ]
     (tmp_path / "config.json").write_text(
         json.dumps({"slack": {"allowed_enterprise_ids": candidates}}),
@@ -1020,9 +1004,7 @@ _GRID_AUTH_TEST = {
 
 
 def _warnings(caplog) -> str:
-    return "\n".join(
-        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
-    )
+    return "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
 
 
 def test_grid_org_id_only_warns_that_it_admits_no_message(tmp_path, caplog):
@@ -1139,3 +1121,128 @@ def test_degraded_config_does_not_warn_about_admitting_nothing(tmp_path, caplog)
             assert enterprise.validate_enterprise("xoxb-token") is False
 
     assert "admit no inbound message" not in _warnings(caplog)
+
+
+# --------------------------------------------------------------------------
+# Re-validation (a Slack reconnect) keeps an armed restriction in force
+# --------------------------------------------------------------------------
+
+
+def _probing_slack_sdk(seen: list[tuple[str, bool]], resp: dict):
+    """A fake ``slack_sdk.web`` whose auth.test records origin checks made while it runs."""
+    mod = types.ModuleType("slack_sdk")
+    web_mod = types.ModuleType("slack_sdk.web")
+
+    class _ProbingWebClient:
+        def __init__(self, *_, **__):
+            pass
+
+        def auth_test(self):
+            for team in ("T_ADMITTED", "T_EXCLUDED"):
+                seen.append((team, enterprise.check_message_origin(team)))
+            return resp
+
+    web_mod.WebClient = _ProbingWebClient
+    mod.web = web_mod
+    return patch.dict(sys.modules, {"slack_sdk": mod, "slack_sdk.web": web_mod})
+
+
+def test_revalidation_keeps_an_armed_allowlist_while_it_probes(tmp_path):
+    # Armed by the first validation; the second (a reconnect) clears the live
+    # state while its auth.test runs, and a message checked then must still be
+    # judged by the restriction, not the cleared default-open state.
+    resp = {"team_id": "T_ADMITTED", "team": "Admitted", "url": "https://x"}
+    _write_allowlist(tmp_path, ["T_ADMITTED"])
+    with _install_fake_slack_sdk(resp):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    seen: list[tuple[str, bool]] = []
+    with _probing_slack_sdk(seen, resp):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    assert seen == [("T_ADMITTED", True), ("T_EXCLUDED", False)]
+    assert enterprise._revalidation_hold is None
+    assert enterprise.check_message_origin("T_EXCLUDED") is False
+
+
+def test_revalidation_with_no_allowlist_stays_default_open(tmp_path):
+    resp = {"team_id": "T_ANY", "team": "Any", "url": "https://x"}
+    _write_allowlist(tmp_path, [])
+    seen: list[tuple[str, bool]] = []
+    with _probing_slack_sdk(seen, resp):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    assert seen == [("T_ADMITTED", True), ("T_EXCLUDED", True)]
+    assert enterprise._revalidation_hold is None
+
+
+def test_revalidation_keeps_the_bot_identity_while_it_probes(tmp_path):
+    # Code-channel recognition and the trusted-bot self-exclusion read the
+    # bot's own ids; a reconnect's re-validation must not blank them mid-probe.
+    resp = {"team_id": "T1", "team": "One", "url": "https://x", "bot_id": "B1", "user_id": "U1"}
+    _write_allowlist(tmp_path, [])
+    with _install_fake_slack_sdk(resp):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    seen: list[tuple[str, str]] = []
+    mod = types.ModuleType("slack_sdk")
+    web_mod = types.ModuleType("slack_sdk.web")
+
+    class _ProbingWebClient:
+        def __init__(self, *_, **__):
+            pass
+
+        def auth_test(self):
+            seen.append((enterprise.validated_self_bot_id(), enterprise.validated_self_user_id()))
+            return resp
+
+    web_mod.WebClient = _ProbingWebClient
+    mod.web = web_mod
+    with patch.dict(sys.modules, {"slack_sdk": mod, "slack_sdk.web": web_mod}):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    assert seen == [("B1", "U1")]
+    assert (enterprise.validated_self_bot_id(), enterprise.validated_self_user_id()) == ("B1", "U1")
+
+
+def test_a_validation_holds_the_state_lock_a_reload_takes(tmp_path):
+    # An allowlist reload and a reconnect's re-validation both run off the
+    # event loop. The reload must wait for the validation and then read the
+    # file, or an older validation could publish over a newer revocation.
+    import threading
+
+    resp = {"team_id": "T_A", "team": "A", "url": "https://x"}
+    _write_allowlist(tmp_path, ["T_A", "T_B"])
+    others_could_take_it: list[bool] = []
+    mod = types.ModuleType("slack_sdk")
+    web_mod = types.ModuleType("slack_sdk.web")
+
+    class _ProbingWebClient:
+        def __init__(self, *_, **__):
+            pass
+
+        def auth_test(self):
+            def _try() -> None:
+                got = enterprise._state_lock.acquire(blocking=False)
+                others_could_take_it.append(got)
+                if got:
+                    enterprise._state_lock.release()
+
+            other = threading.Thread(target=_try)
+            other.start()
+            other.join()
+            return resp
+
+    web_mod.WebClient = _ProbingWebClient
+    mod.web = web_mod
+    with patch.dict(sys.modules, {"slack_sdk": mod, "slack_sdk.web": web_mod}):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    assert others_could_take_it == [False]
+
+    held_while_loading: list[bool] = []
+    real_load = enterprise._load_allowed_team_ids
+
+    def _recording_load() -> bool:
+        held_while_loading.append(enterprise._state_lock._is_owned())  # type: ignore[attr-defined]
+        return real_load()
+
+    _write_allowlist(tmp_path, ["T_A"])
+    with patch.object(enterprise, "_load_allowed_team_ids", _recording_load):
+        enterprise.reload_allowed_team_ids()
+    assert held_while_loading == [True]
+    assert enterprise.check_message_origin("T_B") is False

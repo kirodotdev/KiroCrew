@@ -28,6 +28,7 @@ import { countByFilter, hasNoCrewmates, matchesSource, narrowRoster, queryNarrow
 import { useMemberRosterViews } from '../../state/useMemberProjection'
 import type { RosterView } from '../../state/memberProjectionTypes'
 import { type MembersPageRosterView } from './MembersPageRoster'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /** Stable empty roster for the not-yet-answered read, so the memos keyed on
  *  `members` do not recompute on every render while the first fetch is out. */
@@ -52,8 +53,11 @@ export function useMembersPageRoster() {
     () => rows.flatMap((r) => (r.display_name ? [r.name, r.display_name] : [r.name])),
     [rows],
   )
-  const loaded = rosterQuery.data !== undefined || rosterQuery.isError
-  const loadError = rosterQuery.data === undefined && rosterQuery.isError
+  // queryReadFailed, not `isError`: a retry with nothing cached clears `error`,
+  // which would unmount the failure notice and its Retry under the reader's focus.
+  const readFailed = queryReadFailed(rosterQuery)
+  const loaded = rosterQuery.data !== undefined || readFailed
+  const loadError = rosterQuery.data === undefined && readFailed
   // ONE source of truth for the roster fields the page derives from (starred
   // count, the Starred filter, search, sort, source chips): the react-query
   // rows merged with each member's pushed `roster` projection, projection

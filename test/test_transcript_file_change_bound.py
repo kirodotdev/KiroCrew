@@ -271,6 +271,7 @@ class TestTheSaveBoundsOlderTurns:
         assert _changes(_rows(path)) == _changes(rows)
 
         slot._frozen_prefix_cache = None
+        slot._append_basis = None  # so the next save re-reads the prefix
         slot._dirty = True
         _save_slot_to_history(state, slot)
         cards = [r for r in _rows(path) if r["role"] == "assistant"]

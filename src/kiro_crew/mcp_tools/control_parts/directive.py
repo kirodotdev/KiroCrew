@@ -2,7 +2,8 @@
 
 :func:`_emit_directive` encodes a validated directive into the tool result and publishes
 the call out of band. ``nothing_to_do``, ``set_project``, ``reset_conversation``,
-``chat_tag`` and ``suggest_followup`` validate their arguments and return its marker; the
+``chat_tag``, ``chat_rename`` and ``suggest_followup`` validate their arguments and return
+its marker; the
 session-aware consumer applies the directive to its own session, so none of them resolves
 a session identity. The monitoring tools emit theirs through the same function.
 
@@ -17,6 +18,7 @@ from typing import Any
 
 from kiro_crew import mcp_core, session_directive
 from kiro_crew.validation import (
+    CHAT_RENAME_SCHEMA,
     CHAT_TAG_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
@@ -26,7 +28,7 @@ from kiro_crew.validation import (
 )
 
 
-def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
+def _emit_directive(kind: str, args: dict[str, Any], human: str, *, after_text: str = "") -> str:
     """Encode a validated directive AND publish it out of band; return the text.
 
     Two delivery paths, one each way round:
@@ -58,6 +60,12 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
     process's own streams are the protocol channel — and because the failure that
     matters is reported at the CONSUMER, which is the side that knows whether a
     directive actually landed.
+
+    *after_text* is added to the confirmation when the gateway answers that the
+    caller's running turn has already streamed reply text (``turn_wrote_text``).
+    It goes before the marker line, so the marker the consumer decodes is the one
+    ``encode`` produced. No answer, or an older gateway that sends no such field,
+    leaves the result as it was.
     """
     out = session_directive.encode(kind, args, human)
     # STRUCTURAL test, not a content test: encode either produced a marker or it
@@ -84,7 +92,7 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
         # validation). The gateway re-derives the payload by re-running the tool
         # and computes the claim digest itself, so a caller who can reach the
         # route controls only what the victim's own call would produce.
-        mcp_core._post(
+        reply = mcp_core._post(
             "/api/session-directive",
             {
                 "tool": _tool,
@@ -92,12 +100,23 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
             },
         )
     except Exception:
-        pass
+        reply = None
+    if after_text and isinstance(reply, dict) and reply.get("turn_wrote_text") is True:
+        out = f"{human} {after_text}{out[len(human):]}"
     # POSITIVE PROVENANCE: this is the one place a real marker is produced, so it
     # is the one place that can say so. Without it the outermost gate has to infer
     # authenticity from the bytes, which a rejection echoing a model-chosen
     # argument name can imitate.
     return session_directive.vouch(out)
+
+
+#: Added to the ``nothing_to_do`` result when the turn already wrote reply text,
+#: so the model reads it in its history on the next turn.
+QUIET_END_AFTER_TEXT_REMINDER = (
+    "The text you wrote this turn was shown to the user. A quiet end writes "
+    "nothing before this call; to report something, reply in text instead of "
+    "calling nothing_to_do."
+)
 
 
 def nothing_to_do(name: str, args: dict[str, Any]) -> str:
@@ -123,6 +142,7 @@ def nothing_to_do(name: str, args: dict[str, Any]) -> str:
         "Quiet end requested for this turn. Write nothing and call nothing "
         "after this: the turn is over. The consumer records the quiet step; "
         "if it refuses, the normal empty-reply handling applies instead.",
+        after_text=QUIET_END_AFTER_TEXT_REMINDER,
     )
 
 
@@ -178,6 +198,28 @@ def chat_tag(name: str, args: dict[str, Any]) -> str:
         "agent-writable it takes effect when this turn's result is processed, "
         "and the result reports the session's resulting tags. A human-only tag, "
         "an unknown tag, or a headless caller (cron/subagent) is refused.",
+    )
+
+
+def chat_rename(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, CHAT_RENAME_SCHEMA)
+    # Stateless: the session-aware consumer (chat_runner) renames ITS OWN slot,
+    # and there is no target to pass. The title rules and the session refusals
+    # are the consumer's, the same ones ``session_rename`` applies.
+    # The model reads only this text: the outcome is applied after the tool
+    # returns, so the refusals it may meet are named here for it to relay.
+    return _emit_directive(
+        "chat_rename",
+        {"title": args["title"]},
+        "Rename requested for this session only (it is not available in a "
+        "conductor mode chat or a Bot's own chat); unless the person set its current "
+        "title by hand, it takes effect when this turn's result is processed, "
+        "and the result reports the title as stored. A title the person set by "
+        "hand is kept, and an invalid title, a session that cannot be renamed, "
+        "a turn no person sent (a cron job, sub-agent, task run, monitor wake or "
+        "a message an app sent), or a turn a channel opened or another session, "
+        "an app or a channel steered a message into is refused, so tell the "
+        "person the rename was requested rather than done.",
     )
 
 

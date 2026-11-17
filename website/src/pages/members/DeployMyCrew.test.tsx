@@ -373,6 +373,11 @@ describe('deployAge', () => {
   it('drops a zero part rather than printing "2d 0h"', () => {
     expect(deployAge(NOW / 1000 - 2 * 24 * 3600, NOW)).not.toMatch(/0/)
   })
+
+  it('keeps the narrow unit for a stat card and says unit words for a sentence (#36611)', () => {
+    expect(deployAge(NOW / 1000 - 13 * 60, NOW)).toBe('13m')
+    expect(deployAge(NOW / 1000 - 13 * 60, NOW, 'short')).toBe('13\u00A0min')
+  })
 })
 
 describe('the panel', () => {

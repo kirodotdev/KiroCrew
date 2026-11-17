@@ -1,0 +1,209 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "goose": {
+          "recipeParameterScopes": {}
+        }
+      },
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "list": {}
+      }
+    },
+    "agent_version": "1.57.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "currentValue": "openai",
+        "id": "provider",
+        "name": "Provider",
+        "options": [
+          {
+            "name": "OpenAI",
+            "value": "openai"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "approve",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Ask before every tool call",
+            "name": "approve",
+            "value": "approve"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "tool-1",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "tool-1",
+            "value": "tool-1"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "off",
+        "description": "Controls reasoning effort for models that support extended thinking.",
+        "id": "thinking_effort",
+        "name": "Thinking effort",
+        "options": [
+          {
+            "name": "off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "approve",
+      "ids": [
+        "approve"
+      ]
+    },
+    "session_id": "goose-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe",
+        "raw_tool_params": {
+          "issue_number": 7,
+          "owner": "o"
+        },
+        "title": "probe: lookup",
+        "tool_call_id": "call_live_1",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"owner\": \"o\",\n  \"issue_number\": 7\n}",
+        "tool_kind": "unknown",
+        "tool_name": "lookup",
+        "wire_title": "probe: lookup"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe",
+        "options": [
+          {
+            "id": "allow_always",
+            "label": "allow_always"
+          },
+          {
+            "id": "allow_once",
+            "label": "allow_once"
+          },
+          {
+            "id": "reject_once",
+            "label": "reject_once"
+          },
+          {
+            "id": "reject_always",
+            "label": "reject_always"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "issue_number": 7,
+          "owner": "o"
+        },
+        "request_id": "goose-permission-1",
+        "title": "probe: lookup",
+        "tool_call_id": "call_live_1",
+        "tool_input": "{\n  \"owner\": \"o\",\n  \"issue_number\": 7\n}",
+        "tool_kind": "other",
+        "tool_name": "lookup"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_live_1",
+        "tool_final": true,
+        "tool_output": "crew-bridge-args-proved",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "7af4040cd14212358a645b344c3d3bb3001f515d0d7267d267a0914f77dd6c32",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "c1",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      5,
+      1,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

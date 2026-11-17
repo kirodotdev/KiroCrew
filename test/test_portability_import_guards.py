@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import sys
 import threading
@@ -66,15 +67,109 @@ def test_import_member_inventory_is_rejected_before_zipfile(tmp_path, monkeypatc
 
 
 def test_import_zip_bomb_size_cap(tmp_path, monkeypatch):
-    # SEC-7F44A198: excessive declared uncompressed size is rejected (zip bomb).
+    # SEC-7F44A198: a declared size far above the archive's own size is a zip bomb.
     import kiro_crew.portability as port
 
-    z = _make_min_import_zip(tmp_path / "imp2.zip", extra_files=1)
-    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 1)
+    z = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(str(z), "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+        for i in range(4):
+            zf.writestr(f"snap/workspace/z{i}.bin", b"\0" * 400_000)
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 1_000_000)
     ok, msg, _ = port.validate_import_zip(z)
     assert ok is False and "zip bomb" in msg
     with pytest.raises(ValueError, match="zip bomb"):
         port.apply_import_zip(z)
+
+
+def _stored_import_zip(path, files):
+    """An archive whose members are stored, so it unpacks to about its own size."""
+    with zipfile.ZipFile(str(path), "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+        for name, size in files.items():
+            zf.writestr(f"snap/{name}", b"x" * size)
+    return path
+
+
+def test_import_one_member_over_the_old_cap_is_rejected_by_name(tmp_path, monkeypatch):
+    import kiro_crew.portability as port
+
+    z = _stored_import_zip(tmp_path / "one.zip", {"workspace/big.bin": 5000})
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 4000)
+    ok, msg, _ = port.validate_import_zip(z)
+    assert ok is False and "snap/workspace/big.bin" in msg and "zip bomb" not in msg
+    with pytest.raises(ValueError, match="big.bin"):
+        port.apply_import_zip(z)
+
+
+def test_import_above_the_old_cap_is_accepted_when_the_disk_has_room(tmp_path, monkeypatch):
+    # A real backup bigger than 2 GiB: compresses like an export, fits on the disk.
+    import kiro_crew.portability as port
+
+    z = _stored_import_zip(tmp_path / "big.zip", {"workspace/a.bin": 3000, "workspace/b.bin": 3000})
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 4000)
+    free = 10 * 1024**3
+    monkeypatch.setattr(shutil, "disk_usage", lambda _p: shutil._ntuple_diskusage(free, 0, free))
+    assert port.validate_import_zip(z)[:2] == (True, "")
+
+
+def test_import_above_the_old_cap_names_the_free_space_it_needs(tmp_path, monkeypatch):
+    import kiro_crew.portability as port
+
+    z = _stored_import_zip(
+        tmp_path / "big.zip", {"workspace/proj/a.bin": 3000, "workspace/b.bin": 3000}
+    )
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 4000)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _p: shutil._ntuple_diskusage(10, 10, 0))
+    ok, msg, _ = port.validate_import_zip(z)
+    assert ok is False and "free disk space" in msg and "workspace/proj" in msg
+    assert "Import / Export" in msg and "zip bomb" not in msg
+
+
+def test_import_above_the_ceiling_names_the_biggest_folders(tmp_path, monkeypatch):
+    import kiro_crew.portability as port
+
+    z = _stored_import_zip(
+        tmp_path / "big.zip", {"workspace/proj/a.bin": 3000, "sessions/s.jsonl": 2000}
+    )
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 4000)
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED_CEILING", 4500)
+    ok, msg, _ = port.validate_import_zip(z)
+    assert ok is False and "workspace/proj" in msg and "sessions" in msg
+    assert "zip bomb" not in msg
+
+
+def test_import_skips_folders_tools_rebuild_and_does_not_count_them(tmp_path, monkeypatch):
+    # An older export that carried node_modules imports, without the node_modules.
+    import kiro_crew.portability as port
+
+    z = _stored_import_zip(
+        tmp_path / "old.zip",
+        {"workspace/proj/node_modules/pkg/big.bin": 9000, "workspace/proj/notes.md": 100},
+    )
+    monkeypatch.setattr(port, "_MAX_IMPORT_UNCOMPRESSED", 4000)
+    assert port.validate_import_zip(z)[:2] == (True, "")
+    target = tmp_path / "target_mc"
+    target.mkdir()
+    with patch.object(port, "config_dir", return_value=target):
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+            port.apply_import_zip(z, mode="merge")
+    assert (target / "workspace" / "proj" / "notes.md").is_file()
+    assert not (target / "workspace" / "proj" / "node_modules").exists()
+
+
+def test_import_installs_a_memory_store_named_like_a_rebuildable_folder(tmp_path):
+    # Only the workspace's rebuildable folders are skipped: a store named ``venv``
+    # is user data and must arrive.
+    import kiro_crew.portability as port
+
+    z = _stored_import_zip(tmp_path / "store.zip", {"memory_stores/venv/notes.md": 100})
+    target = tmp_path / "target_mc"
+    target.mkdir()
+    with patch.object(port, "config_dir", return_value=target):
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+            port.apply_import_zip(z, mode="merge")
+    assert (target / "memory_stores" / "venv" / "notes.md").is_file()
 
 
 def _cron_job(jid, name, **extra):

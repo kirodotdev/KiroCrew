@@ -29,6 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew.acp import kas_memory
 from kiro_crew.acp.harness.base import (
     NotificationAliases,
     SessionExtras,
@@ -167,6 +168,7 @@ class KasCloudSandboxHarness(KasHarness):
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """No agent definitions: the sandbox runs Kiro's own default agent."""
         return SessionExtras()
@@ -235,6 +237,8 @@ class KasCloudSandboxHarness(KasHarness):
             cloud["isEmptyWorkspace"] = True
         out = dict(params)
         meta = dict(out.get("_meta") or {})
-        meta["kiro"] = {**(meta.get("kiro") or {}), **cloud}
+        # The sandbox does not run Kiro Crew's native memory preview.
+        local = kas_memory.without_memory_settings(meta.get("kiro") or {})
+        meta["kiro"] = {**local, **cloud}
         out["_meta"] = meta
         return out, None

@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 import pytest
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -17,6 +18,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -154,6 +156,7 @@ def test_baseline_ships_every_known_backend():
     assert baseline == sorted(
         [
             ACP_BACKEND_KIRO,
+            ACP_BACKEND_ANTIGRAVITY,
             ACP_BACKEND_CLAUDE,
             ACP_BACKEND_KAS,
             ACP_BACKEND_CODEX,
@@ -163,6 +166,7 @@ def test_baseline_ships_every_known_backend():
             ACP_BACKEND_DEEPSEEK,
             ACP_BACKEND_COPILOT,
             ACP_BACKEND_STRANDS,
+            ACP_BACKEND_MIMOCODE,
         ]
     )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

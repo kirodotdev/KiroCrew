@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from auto_research_helpers import isolate_fixture  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 from conftest import requires_symlinks
 from kiro_crew.apps.builtins.auto_research.handlers import (
@@ -51,6 +52,10 @@ from kiro_crew.apps.builtins.auto_research.handlers import (
     write_guidance,
     write_status,
 )
+
+# A GitHub token with a valid checksum: the plan redacts it, while an AWS key ID
+# stays visible as an identifier.
+_SECRET = github_classic(seed=71)
 
 
 class TestPathValidation:
@@ -299,7 +304,7 @@ class TestCycleFileMatching:
             assert [f["cycle"] for f in get_findings("a1b2c3d4")] == [0]
 
     def test_orders_by_cycle_number_not_lexically(self, tmp_path: Path):
-        # Regression: lexical sort puts cycle_10 before cycle_2; integer sort fixes it.
+        # Lexical sort puts cycle_10 before cycle_2; the sort must be by integer.
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             d = self._findings_dir(tmp_path)
             for n in (2, 10, 1):
@@ -323,30 +328,30 @@ class TestCycleFileMatching:
         # credential + exfil-URL redaction on it as on a canonical-named file.
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             d = self._findings_dir(tmp_path)
-            # 40+ char base64-ish blob in the query = exfil-shaped URL, which the
-            # URL leg redacts wholesale (domain included). A plain source URL is
-            # deliberately NOT redacted — findings legitimately cite sources.
+            # A credential parameter in the query: the URL leg masks its value and
+            # keeps the link. A plain source URL is deliberately NOT redacted —
+            # findings legitimately cite sources.
             exfil_url = (
-                "https://evil.example.com/exfil?blob="
+                "https://evil.example.com/exfil?access_token="
                 "QUtJQUlPU0ZPRE5ON0VYQU1QTEVBQkNERUZHSElKS0w"
             )
             (d / "cycle-1.json").write_text(json.dumps({
                 "cycle": 1,
                 "new_findings_count": 1,
-                "summary": "key AKIAIOSFODNN7EXAMPLE leaked",
+                "summary": f"key {_SECRET} leaked",
                 "sources_checked": [exfil_url],
             }))
             findings = get_findings("a1b2c3d4")
             assert len(findings) == 1
             blob = json.dumps(findings[0])
             # Leg 1: the raw credential must not survive into the surfaced payload.
-            assert "AKIAIOSFODNN7EXAMPLE" not in blob
-            # Leg 2: the exfil-shaped URL must be redacted wholesale — path and
-            # payload gone, replaced by the redaction marker. (The marker itself
-            # names the domain by design, so assert on the URL body, not the domain.)
-            assert "exfil?blob=" not in blob
+            assert _SECRET not in blob
+            # Leg 2: the credential value in the URL must be gone; the link stays.
             assert "QUtJQUlPU0ZPRE5ON0VYQU1QTEVBQkNERUZHSElKS0w" not in blob
-            assert "[REDACTED: suspicious URL" in blob
+            assert (
+                "https://evil.example.com/exfil?access_token=[REDACTED: credential]"
+                in blob
+            )
 
 
 class TestFileInterface:
@@ -1031,10 +1036,15 @@ class TestGrillHTTP:
             request["user"] = "test-user"
             return await handler(request)
 
-        with patch(
-            "kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"
-        ), patch(
-            "kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path / "r"
+        with (
+            patch(
+                "kiro_crew.apps.builtins.auto_research.handlers.DB_PATH",
+                tmp_path / "t.db",
+            ),
+            patch(
+                "kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR",
+                tmp_path / "r",
+            ),
         ):
             a = web.Application(middlewares=[_inject_user])
             register_routes(a)
@@ -1125,7 +1135,7 @@ class TestGrillHTTP:
 
         class _FakePool:
             async def send(self, prompt: str, timeout: float = 0) -> str:
-                return '[{"kind":"research","text":"key AKIAIOSFODNN7EXAMPLE leaked"}]'
+                return json.dumps([{"kind": "research", "text": f"key {_SECRET} leaked"}])
 
             async def shutdown(self) -> None:
                 pass
@@ -1141,7 +1151,7 @@ class TestGrillHTTP:
                     "mode": "generate",
                 },
             )
-            assert "AKIAIOSFODNN7EXAMPLE" not in (await r.text())
+            assert _SECRET not in (await r.text())
 
     @pytest.mark.asyncio
     async def test_expand_requires_auth(self):

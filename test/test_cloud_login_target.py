@@ -59,12 +59,18 @@ class TestLoginTargetValidation:
         TARGET: Identity Center flags for a pinned target, the bare command for
         the Builder ID default."""
         assert (
-            KiroLoginTarget().recovery_command() == "kirocrew cloud logout && kirocrew cloud login"
+            KiroLoginTarget().recovery_command()
+            == "`kirocrew cloud logout`, then `kirocrew cloud login`"
         )
         assert IDC.recovery_command() == (
-            "kirocrew cloud logout && kirocrew cloud login "
-            f"--identity-provider {IDC.start_url} --license pro --idp-region us-east-1"
+            "`kirocrew cloud logout`, then `kirocrew cloud login "
+            f"--identity-provider {IDC.start_url} --license pro --idp-region us-east-1`"
         )
+
+    def test_recovery_command_names_two_commands_not_an_and_chain(self):
+        """Windows PowerShell 5.1 rejects `&&`, so a pasted chain runs nothing."""
+        for target in (KiroLoginTarget(), IDC):
+            assert "&&" not in target.recovery_command()
 
     def test_pro_target_normalizes(self):
         t = KiroLoginTarget.from_fields(

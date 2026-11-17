@@ -11,7 +11,7 @@ const {
 } = require("../edition");
 const {
   DEFAULT_GATEWAY_WAIT_MS,
-  WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+  LOCAL_GATEWAY_WAIT_MS,
   LTS_PRE_BIND_CHECKS_MS,
   LTS_PRE_BIND_HEADROOM_MS,
   gatewayWaitTimeoutMs,
@@ -46,18 +46,14 @@ test("the source tree carries no baked edition", () => {
   assert.equal(readBakedEdition(), "oss");
 });
 
-test("oss wait budgets are unchanged", () => {
-  for (const platform of ["darwin", "linux", "win32"]) {
-    for (const watchSpawn of [false, true]) {
-      const expected = platform === "win32" && watchSpawn
-        ? WINDOWS_LOCAL_GATEWAY_WAIT_MS
-        : DEFAULT_GATEWAY_WAIT_MS;
-      assert.equal(gatewayWaitTimeoutMs({ platform, watchSpawn }), expected);
-      assert.equal(gatewayWaitTimeoutMs({ platform, watchSpawn, edition: "oss" }), expected);
-    }
+test("an oss local gateway gets the cold-start budget, a connection tab the ordinary one", () => {
+  for (const watchSpawn of [false, true]) {
+    const expected = watchSpawn ? LOCAL_GATEWAY_WAIT_MS : DEFAULT_GATEWAY_WAIT_MS;
+    assert.equal(gatewayWaitTimeoutMs({ watchSpawn }), expected);
+    assert.equal(gatewayWaitTimeoutMs({ watchSpawn, edition: "oss" }), expected);
   }
   assert.equal(DEFAULT_GATEWAY_WAIT_MS, 30_000);
-  assert.equal(WINDOWS_LOCAL_GATEWAY_WAIT_MS, 120_000);
+  assert.equal(LOCAL_GATEWAY_WAIT_MS, 120_000);
 });
 
 test("an LTS local gateway gets the pre-bind checks plus headroom", () => {
@@ -66,22 +62,16 @@ test("an LTS local gateway gets the pre-bind checks plus headroom", () => {
   assert.equal(LTS_PRE_BIND_CHECKS_MS, 50_000);
   assert.ok(LTS_PRE_BIND_HEADROOM_MS > 0);
   assert.equal(
-    gatewayWaitTimeoutMs({ platform: "darwin", watchSpawn: true, edition: "lts" }),
-    DEFAULT_GATEWAY_WAIT_MS + extra,
-  );
-  assert.equal(
-    gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: true, edition: "lts" }),
-    WINDOWS_LOCAL_GATEWAY_WAIT_MS + extra,
+    gatewayWaitTimeoutMs({ watchSpawn: true, edition: "lts" }),
+    LOCAL_GATEWAY_WAIT_MS + extra,
   );
 });
 
 test("an LTS connection tab keeps the ordinary deadline", () => {
-  for (const platform of ["darwin", "linux", "win32"]) {
-    assert.equal(
-      gatewayWaitTimeoutMs({ platform, watchSpawn: false, edition: "lts" }),
-      DEFAULT_GATEWAY_WAIT_MS,
-    );
-  }
+  assert.equal(
+    gatewayWaitTimeoutMs({ watchSpawn: false, edition: "lts" }),
+    DEFAULT_GATEWAY_WAIT_MS,
+  );
 });
 
 test("both wait callers pass the baked edition", () => {

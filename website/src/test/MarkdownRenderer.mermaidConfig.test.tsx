@@ -13,6 +13,7 @@ vi.mock('mermaid', () => ({
 
 import mermaid from 'mermaid'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import { MERMAID_DOMPURIFY_CONFIG } from '../components/markdown/mermaidSanitize'
 
 /**
  * The COMPLETE configuration every diagram draw hands `mermaid.initialize`.
@@ -58,6 +59,7 @@ describe('MarkdownRenderer mermaid initialize config', () => {
         tertiaryColor: '#f5f5f5',
       },
       securityLevel: 'strict',
+      dompurifyConfig: MERMAID_DOMPURIFY_CONFIG,
       fontFamily: 'inherit',
       suppressErrorRendering: true,
     })
@@ -77,6 +79,7 @@ describe('MarkdownRenderer mermaid initialize config', () => {
         tertiaryColor: '#1a1a1a',
       },
       securityLevel: 'strict',
+      dompurifyConfig: MERMAID_DOMPURIFY_CONFIG,
       fontFamily: 'inherit',
       suppressErrorRendering: true,
     })

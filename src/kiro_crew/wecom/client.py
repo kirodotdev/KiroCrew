@@ -105,7 +105,7 @@ _PUSH_ACK_TIMEOUT_SECS = 10.0
 _UPLOAD_REQ_PREFIX = "aibot_upload_media-"
 
 # Per-frame ACK wait for one init/chunk/finish round trip. The whole UPLOAD
-# HANDSHAKE is separately bounded by _UPLOAD_TOTAL_TIMEOUT_SECS below — the
+# HANDSHAKE is separately bounded by _upload_total_timeout_secs() below — the
 # per-frame wait times the chunk count is NOT a safe bound (a 20 MB / 40-chunk
 # body could otherwise run ~20 min instead of seconds).
 _UPLOAD_ACK_TIMEOUT_SECS = 30.0
@@ -385,8 +385,6 @@ class WeComClient:
             self._seen_msgids.popitem(last=False)
         return False
 
-    # -- stream liveness ---------------------------------------------------
-
     def forget_msgid(self, msgid: str) -> None:
         """Drop *msgid* from the dedupe window so a redelivery is handled.
 
@@ -396,6 +394,8 @@ class WeComClient:
         """
         if msgid:
             self._seen_msgids.pop(msgid, None)
+
+    # -- stream liveness ---------------------------------------------------
 
     def stream_is_dead(self, stream_id: str) -> bool:
         """True once the server has terminally refused writes to *stream_id*.
@@ -638,7 +638,7 @@ class WeComClient:
                     await self._upload_command(CMD_CHUNK, body)
                 finish = await self._upload_command(CMD_FINISH, upload.finish_body(upload_id))
         except TimeoutError as exc:
-            # The whole handshake outran _UPLOAD_TOTAL_TIMEOUT_SECS. Fail closed so
+            # The whole handshake outran _upload_total_timeout_secs(). Fail closed so
             # the caller does not send a frame referencing an id that never issued,
             # and so a late-landing frame cannot duplicate a delivery the caller
             # already treated as failed.
@@ -803,8 +803,8 @@ class WeComClient:
                 # the channel. Letting it escape kills this task while
                 # ``_closed`` stays False, so the badge keeps whatever state it
                 # last had — typically green — and WeCom is silently dead until
-                # the gateway restarts. Cancellation is re-raised above so a real
-                # shutdown is never mistaken for a fault.
+                # the gateway restarts. Cancellation ends the loop in its own arm
+                # above, so a real shutdown is never mistaken for a fault.
                 logger.exception("WeCom WS: unexpected error in connect/serve")
                 reason = f"{type(exc).__name__}"
 
@@ -914,7 +914,9 @@ class WeComClient:
 
         cmd = data.get("cmd", "")
 
-        # Cmd-less frame carrying errcode: either a pong ACK or a stream-reply ACK.
+        # Cmd-less frame carrying errcode. Told apart by req_id, in this order: a
+        # pong, an upload-command response, a proactive-push ACK, the subscribe
+        # ACK, and otherwise a stream-reply ACK.
         if "errcode" in data and not cmd:
             headers = data.get("headers", {})
             if not isinstance(headers, dict):
@@ -943,11 +945,8 @@ class WeComClient:
                 return
             waiter = self._pending_acks.get(rid) if isinstance(rid, str) else None
             if waiter is not None:
-                # Still mark the bubble: a caller recovering by rolling needs
-                # ``stream_is_dead`` to be true, and resolving the waiter alone
-                # would leave the sealed bubble looking writable.
-                if isinstance(ec, int) and ec in _STREAM_DEAD_ERRCODES:
-                    self._mark_stream_dead(self._stream_of_req.get(rid, ""))
+                # A push's req_id is minted for that push alone and never carries a
+                # stream bubble, so a refusal here marks no bubble.
                 if not waiter.done():
                     # A non-integer errcode is UNKNOWN, not zero. Mapping it to 0
                     # would report a refused mirror send as delivered -- the

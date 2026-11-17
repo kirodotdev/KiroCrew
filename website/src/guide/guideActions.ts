@@ -240,8 +240,9 @@ function resolveMcpOpenAdd(params: Record<string, unknown>): GuideActionResoluti
       titleVars: {},
       steps: [
         {
-          // Already on the MCP Servers view: the Add Custom button is visible
-          // and this step is reached at once.
+          // The MCP Servers page's Servers view. Already showing (the page's
+          // default): the Add Custom button is visible and this step is
+          // reached at once.
           target: { kind: 'anchor', anchor: GUIDE_ANCHORS.mcpServersTab },
           complete: { kind: 'reach', targets: [anchor(GUIDE_ANCHORS.mcpAddCustom), anchor(GUIDE_ANCHORS.mcpCustomForm)] },
           textKey: 'components.guideLayer.step_mcp_open_tab',
@@ -260,7 +261,7 @@ function resolveMcpOpenAdd(params: Record<string, unknown>): GuideActionResoluti
           textKey: 'components.guideLayer.step_mcp_custom_json',
         },
       ],
-      enter: { kind: 'navigate', to: () => '/capabilities?tab=mcp' },
+      enter: { kind: 'navigate', to: () => '/capabilities?tab=mcp-servers' },
     },
   }
 }
@@ -381,12 +382,17 @@ export function guideClaimPlacements(actions: readonly GuideAction[]): (string |
 
 const labelOf = (key: string) => (key.startsWith('literal:') ? key.slice('literal:'.length) : i18nT(key))
 
-/** Whether *here* is already the page *route* names: the same page (or a
- *  sub-route of it) with every query parameter the route sets. */
+/** Whether *here* is already the page *route* names: the same page with every
+ *  query parameter the route sets, or any sub-route of it. A sub-route is an
+ *  entity's own page under that list (`/artifacts/<slug>` under
+ *  `/artifacts?scope=all`), and the route's query only chooses the list's
+ *  view, so a sub-route counts whatever its query says: starting a guide never
+ *  closes the entity the person has open. */
 export function alreadyAt(route: string, here: { pathname: string; search: string }): boolean {
   const want = new URL(route, 'http://guide.invalid')
   const base = want.pathname.replace(/\/+$/, '')
-  if (here.pathname !== want.pathname && here.pathname !== base && !here.pathname.startsWith(`${base}/`)) return false
+  if (here.pathname.startsWith(`${base}/`) && here.pathname !== want.pathname) return true
+  if (here.pathname !== want.pathname && here.pathname !== base) return false
   const have = new URLSearchParams(here.search)
   for (const [k, v] of want.searchParams) if (have.get(k) !== v) return false
   return true

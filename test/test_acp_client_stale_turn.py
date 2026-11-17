@@ -778,7 +778,14 @@ class TestStaleTurnOpenToolCall:
                 async for _action, _msg in client._prompt_loop(req_id=87, timeout=5.0):
                     pass
 
+        # The agent is not the part that stalled, so it gets the stdin-close grace.
+        from kiro_crew.acp.client_timeouts import _EOF_EXIT_GRACE_SECS
+
         client._kill_process.assert_awaited_once()
+        assert client._kill_process.await_args.kwargs == {
+            "force": True,
+            "exit_grace": _EOF_EXIT_GRACE_SECS,
+        }
 
 
 class TestStaleTurnProbeAccounting:
@@ -865,15 +872,24 @@ class TestToolStallWatchdog:
         # Shrink the windows so the watchdog trips quickly under test.
         monkeypatch.setattr(acp_client, "_TOOL_STALL_TIMEOUT", 0.2)
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.02)
+        # The stall window, the turn deadline and the silent reads all run on one
+        # manual clock, so the turn's length is counted in reads, not host time.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
 
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
         # Simulate "a tool was dispatched this turn".
         client._tool_dispatched = True
         client._stale_eligible = False  # the stale check must NOT be what saves us
-        client._last_activity = time.monotonic() - 10.0  # stderr/keepalive also silent
-        # Process is alive but silent: _read_message always returns None.
-        client._read_message = AsyncMock(return_value=None)
+        client._last_activity = clock.monotonic() - 10.0  # stderr/keepalive also silent
+
+        # Process is alive but silent: each read lasts its timeout and returns None.
+        async def _silent_read(timeout: float = 0.0):
+            clock.advance(timeout)
+            return None
+
+        client._read_message = _silent_read
         client._is_process_alive = lambda: True
         # Recovery kills the wedged child; stub it so the test doesn't touch a
         # real process (there is none — AcpClient was not spawned).
@@ -881,21 +897,20 @@ class TestToolStallWatchdog:
 
         actions = []
         # Generous outer timeout; the watchdog must end the loop well before it.
-        t0 = time.monotonic()
+        t0 = clock.monotonic()
         with pytest.raises(AcpProcessDied, match="tool stalled"):
             async for action, _ in client._prompt_loop(req_id=1, timeout=30.0):
                 actions.append(action)
-        elapsed = time.monotonic() - t0
+        elapsed = clock.monotonic() - t0
 
         # No spurious actions, the wedged child was killed, and the turn-done
         # waiter was released via the finally so no cooperative-stop hangs.
         assert actions == []
         client._kill_process.assert_awaited_once()
         assert client._turn_done.is_set()
-        # Prove it was the watchdog (stall window 0.2s) that ended the loop,
-        # not the outer 30s deadline — guards against the watchdog branch being
-        # removed and the test still passing on the outer timeout.
-        assert elapsed < 5.0, f"loop ran too long ({elapsed:.2f}s) — watchdog may not have fired"
+        # The watchdog ended the loop within one read of its 0.2 s stall window,
+        # not at the outer 30 s deadline.
+        assert 0.2 < elapsed <= 0.2 + 0.02 + 1e-6, f"loop ended {elapsed:.3f}s in"
 
     @pytest.mark.asyncio
     async def test_no_dispatch_does_not_trip_watchdog(self, tmp_path, monkeypatch):
@@ -932,7 +947,7 @@ class TestToolStallWatchdog:
 
     @pytest.mark.asyncio
     async def test_progress_frame_then_stall_still_trips(self, tmp_path, monkeypatch):
-        # Regression: a dispatched tool that emits ONE inbound frame and then
+        # A dispatched tool that emits ONE inbound frame and then
         # goes silent must still trip the watchdog.  _prompt_loop must not clear
         # _tool_dispatched on inbound frames — only an actual tool result or
         # turn completion (handled in _dispatch_events) clears it.  The
@@ -1101,26 +1116,35 @@ class TestToolStallKeepalive:
 
         monkeypatch.setattr(acp_client, "_TOOL_STALL_TIMEOUT", 0.2)
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.02)
+        # One manual clock for the stall window, the turn deadline and the reads.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
 
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
         client._tool_dispatched = True
         client._stale_eligible = False
-        client._read_message = AsyncMock(return_value=None)
+
+        # Silent: each read lasts its timeout and returns None.
+        async def _silent_read(timeout: float = 0.0):
+            clock.advance(timeout)
+            return None
+
+        client._read_message = _silent_read
         client._is_process_alive = lambda: True
         client._kill_process = AsyncMock()
         # No keepalive pings — _last_activity stays at construction time.
 
         actions: list[object] = []
-        t0 = time.monotonic()
+        t0 = clock.monotonic()
         with pytest.raises(AcpProcessDied, match="tool stalled"):
             async for action, _ in client._prompt_loop(req_id=1, timeout=30.0):
                 actions.append(action)
-        elapsed = time.monotonic() - t0
+        elapsed = clock.monotonic() - t0
 
-        # Watchdog fired quickly (at ~0.2s stall window), NOT the outer 30s,
-        # killed the wedged child, and raised.
-        assert elapsed < 5.0, f"watchdog didn't fire ({elapsed:.2f}s)"
+        # Watchdog fired within one read of its 0.2 s stall window, NOT the outer
+        # 30 s, killed the wedged child, and raised.
+        assert 0.2 < elapsed <= 0.2 + 0.02 + 1e-6, f"watchdog fired {elapsed:.3f}s in"
         assert actions == []
         client._kill_process.assert_awaited_once()
         assert client._turn_done.is_set()

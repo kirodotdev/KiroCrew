@@ -138,7 +138,7 @@ describe('AboutPanel desktop auto-download toggle', () => {
     // Read side by side with the gateway switch, so the pair tells apart at a glance.
     mount({ ...BASE_INFO, autoDownload: true }, vi.fn().mockResolvedValue({ ok: true }))
     await waitForInfo()
-    const row = toggle().closest('[role="button"]') as HTMLElement
+    const row = toggle().closest('[data-setting-label]') as HTMLElement
     expect(row).toHaveTextContent(i18nT('pages.settings.aboutPanel.install_app_updates_automatically_hint'))
     expect(row.querySelector('[data-settings-hint]')).toBeNull()
   })

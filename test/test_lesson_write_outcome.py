@@ -949,3 +949,37 @@ class TestWriteLessonTruthValueIsTheOldBool:
         # matches on the rule alone so it never dedups one rule against another.
         assert LessonWriteOutcome.REFUSED.value == "refused"
         assert LessonWriteOutcome.DEDUPED.value == "deduped"
+
+
+class TestConsolidationSkipsANonStringRule:
+    """The model's ``lessons`` array is untyped. A ``rule`` that is not a string
+    is skipped, and it must not abort the pass and drop the lessons after it."""
+
+    BAD_THEN_GOOD = [
+        {"rule": ["prefer", "tabs"], "category": "tool"},
+        {"rule": 42, "category": "tool"},
+        {"rule": "run the linter before committing", "category": "tool"},
+    ]
+
+    def _consolidator(self, **stores):
+        from kiro_crew.history import HistoryConsolidator
+
+        return HistoryConsolidator(log=MagicMock(), memory=MagicMock(), **stores)
+
+    def test_jsonl_tier(self, tmp_path: Path) -> None:
+        from kiro_crew.learn import LessonStore
+
+        store = LessonStore(base_dir=tmp_path)
+        self._consolidator(lesson_store=store)._save_lessons(self.BAD_THEN_GOOD, vector_store=None)
+        assert [le.rule for le in store.load_all()] == ["run the linter before committing"]
+
+    def test_vector_tier(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        try:
+            self._consolidator()._save_lessons(
+                self.BAD_THEN_GOOD, vector_store=store, lesson_store=None
+            )
+            rules = [_rule_of(row) for row in store.get_lessons()]
+        finally:
+            store.close()
+        assert rules == ["run the linter before committing"]

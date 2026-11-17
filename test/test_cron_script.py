@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import json
-import random
 import threading
 from functools import partial
 from pathlib import Path
@@ -21,6 +20,7 @@ from cron_script_helpers import (  # noqa: F401 -- the autouse fixtures register
     _cron_caller_is_named,
     _crons_dir_tracks_patched_home,
 )
+from redaction_structured_cases import aws_secret, github_classic
 
 import kiro_crew.cron_script as cron_script
 from kiro_crew import platform_compat as pc
@@ -34,7 +34,6 @@ from kiro_crew.cron_script import (
     run_command_sandboxed,
     run_script_sandboxed,
 )
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
 
 class TestScriptContext:
@@ -265,19 +264,27 @@ class TestMcpToolClient:
 
         # The spec env carries the PATH the launcher needs, plus a denied key to
         # prove the deny-set is applied to the spec overlay too.
-        spec_env = {"PATH": "/custom/launcher/path", "SLACK_BOT_TOKEN": "spec-also-blocked"}
-        with patch(
-            "kiro_crew.cron_script._resolve_mcp_server",
-            return_value=(("some-mcp", "--mode", "stdio"), spec_env),
-        ), patch(
-            "kiro_crew.cron_script.wrap_argv",
-            return_value=(["some-mcp", "--mode", "stdio"], None),
-        ), patch(
-            "kiro_crew.cron_script.cgroup_scope_argv",
-            side_effect=lambda argv: argv,
-        ), patch(
-            "kiro_crew.cron_script.popen_limited", return_value=mock_proc
-        ) as mock_popen:
+        spec_env = {
+            "PATH": "/custom/launcher/path",
+            "SLACK_BOT_TOKEN": "spec-also-blocked",
+        }
+        with (
+            patch(
+                "kiro_crew.cron_script._resolve_mcp_server",
+                return_value=(("some-mcp", "--mode", "stdio"), spec_env),
+            ),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                return_value=(["some-mcp", "--mode", "stdio"], None),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: argv,
+            ),
+            patch(
+                "kiro_crew.cron_script.popen_limited", return_value=mock_proc
+            ) as mock_popen,
+        ):
             client = McpToolClient("path-server")
             client.close()
 
@@ -324,20 +331,26 @@ class TestMcpToolClient:
         monkeypatch.setenv("PATH", str(gateway_dir))
 
         spec_env = {"PATH": str(spec_dir)}
-        with patch(
-            "kiro_crew.cron_script._resolve_mcp_server",
-            return_value=(("some-mcp",), spec_env),
-        ), patch(
-            # Fail-open no-sandbox path: neither helper prepends a wrapper, so
-            # argv[0] stays the operator's own command.
-            "kiro_crew.cron_script.wrap_argv",
-            return_value=(["some-mcp"], None),
-        ), patch(
-            "kiro_crew.cron_script.cgroup_scope_argv",
-            side_effect=lambda argv: list(argv),
-        ), patch(
-            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
-        ) as mock_popen:
+        with (
+            patch(
+                "kiro_crew.cron_script._resolve_mcp_server",
+                return_value=(("some-mcp",), spec_env),
+            ),
+            patch(
+                # Fail-open no-sandbox path: neither helper prepends a wrapper, so
+                # argv[0] stays the operator's own command.
+                "kiro_crew.cron_script.wrap_argv",
+                return_value=(["some-mcp"], None),
+            ),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: list(argv),
+            ),
+            patch(
+                "kiro_crew.cron_script.popen_limited",
+                return_value=self._mock_handshake_proc(),
+            ) as mock_popen,
+        ):
             client = McpToolClient("path-server")
             client.close()
 
@@ -374,16 +387,21 @@ class TestMcpToolClient:
             "PATH": "/opt/helper/bin",
             "MCP_TOKEN": "keep-me",
         }
-        with patch(
-            "kiro_crew.cron_script._resolve_mcp_server",
-            return_value=(("some-mcp",), spec_env),
-        ), patch(
-            "kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)
-        ), patch(
-            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: list(argv)
-        ), patch(
-            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
-        ) as mock_popen:
+        with (
+            patch(
+                "kiro_crew.cron_script._resolve_mcp_server",
+                return_value=(("some-mcp",), spec_env),
+            ),
+            patch("kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: list(argv),
+            ),
+            patch(
+                "kiro_crew.cron_script.popen_limited",
+                return_value=self._mock_handshake_proc(),
+            ) as mock_popen,
+        ):
             client = McpToolClient("path-server")
             client.close()
 
@@ -430,16 +448,21 @@ class TestMcpToolClient:
             "PATH": "/opt/helper/bin",
             "MCP_TOKEN": "keep-me",
         }
-        with patch(
-            "kiro_crew.cron_script._resolve_mcp_server",
-            return_value=(("some-mcp",), spec_env),
-        ), patch(
-            "kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)
-        ), patch(
-            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: list(argv)
-        ), patch(
-            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
-        ) as mock_popen:
+        with (
+            patch(
+                "kiro_crew.cron_script._resolve_mcp_server",
+                return_value=(("some-mcp",), spec_env),
+            ),
+            patch("kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: list(argv),
+            ),
+            patch(
+                "kiro_crew.cron_script.popen_limited",
+                return_value=self._mock_handshake_proc(),
+            ) as mock_popen,
+        ):
             client = McpToolClient("kirocrew-cron")
             client.close()
 
@@ -478,16 +501,21 @@ class TestMcpToolClient:
         assert _resolve_session_key_strict() == forged
         monkeypatch.delenv("KIROCREW_SESSION_KEY")
 
-        with patch(
-            "kiro_crew.cron_script._resolve_mcp_server",
-            return_value=(("some-mcp",), {"KIROCREW_SESSION_KEY": forged}),
-        ), patch(
-            "kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)
-        ), patch(
-            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: list(argv)
-        ), patch(
-            "kiro_crew.cron_script.popen_limited", return_value=self._mock_handshake_proc()
-        ) as mock_popen:
+        with (
+            patch(
+                "kiro_crew.cron_script._resolve_mcp_server",
+                return_value=(("some-mcp",), {"KIROCREW_SESSION_KEY": forged}),
+            ),
+            patch("kiro_crew.cron_script.wrap_argv", return_value=(["some-mcp"], None)),
+            patch(
+                "kiro_crew.cron_script.cgroup_scope_argv",
+                side_effect=lambda argv: list(argv),
+            ),
+            patch(
+                "kiro_crew.cron_script.popen_limited",
+                return_value=self._mock_handshake_proc(),
+            ) as mock_popen,
+        ):
             client = McpToolClient("kirocrew-cron")
             client.close()
 
@@ -535,36 +563,38 @@ class TestMcpToolClient:
     def test_stderr_tail_redacts_credentials(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
-        stderr_path.write_text("boom AKIA1234567890123456 failure")
+        secret = aws_secret(seed=41)
+        # A bare 40-character run is no credential by itself; after its label it is.
+        stderr_path.write_text(f"boom aws_secret_access_key={secret} failure")
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
-        assert "AKIA1234567890123456" not in tail
+        assert secret not in tail
         assert "boom" in tail
 
     def test_stderr_tail_redacts_credential_straddling_the_slice_boundary(self, tmp_path):
         """A key straddling the tail cut must not leak a fragment.
 
-        Sized so slicing FIRST would open ten characters INTO the access
-        key, leaving a digit fragment the key regex cannot match. The whole
+        Sized so slicing FIRST would keep only the last ten characters of
+        the secret, a fragment the secret detector cannot match. The whole
         capture is redacted before the tail slice cuts, so redaction sees
-        the key whole.
+        the secret whole.
         """
         import re
 
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
-        filler = "x" * 1000
-        # Synthetic key id: deliberately well-formed so the redaction regex has
-        # a real target; it is not a credential.
-        secret = "AKIA" + "1234567890123456"
-        stderr_path.write_text(filler + secret + "x" * 1006 + " failure")
+        # A synthetic 40-char AWS secret after its label, built at runtime; it is not
+        # a credential. It starts at offset 1000 and the capture is 2054 long.
+        filler = "x" * 977 + " aws_secret_access_key="
+        secret = aws_secret(seed=42)
+        stderr_path.write_text(filler + secret + " " + "x" * 1005 + " failure")
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
         assert len(tail) <= 1024
         assert secret not in tail
-        assert "AKIA" not in tail
+        assert secret[-10:] not in tail
         assert re.search(r"\d{4,}", tail) is None
         assert "failure" in tail
 
@@ -600,15 +630,16 @@ class TestMcpToolClient:
         from kiro_crew.cron_script import McpToolClient
 
         stderr_path = tmp_path / "stderr.log"
-        noise = ("log line\n" * (4 * cron_script._STDERR_TAIL_READ_SPAN // 9))
-        # Synthetic key id, split so no scanner reads it as a credential.
-        payload = noise + "key " + "AKIA" + "1234567890123456" + "\nfailure"
+        noise = "log line\n" * (4 * cron_script._STDERR_TAIL_READ_SPAN // 9)
+        # A synthetic 40-char AWS secret after its label, built at runtime.
+        secret = aws_secret(seed=43)
+        payload = noise + "aws_secret_access_key=" + secret + "\nfailure"
         stderr_path.write_text(payload)
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
         assert len(tail) <= 1024
-        assert "AKIA" not in tail
+        assert secret not in tail
         assert tail.endswith("failure")
 
     def test_stderr_tail_drops_the_line_severed_by_the_read_start(self, tmp_path):
@@ -667,18 +698,17 @@ class TestMcpToolClient:
     def test_stderr_tail_redacts_exfiltration_urls(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
         stderr_path = tmp_path / "stderr.log"
-        # Long innocuous query (>= 200 chars) triggers redact_exfiltration_urls'
-        # length-based heuristic. We can't use a credential-shaped value (AKIA,
-        # base64 blob) because redact_credentials runs first and would replace
-        # it before the URL redactor sees it, leaving a short benign query.
-        long_query = "data=" + ("a" * 250)
+        # A credential URL parameter: only its value is replaced, the URL stays.
         stderr_path.write_text(
-            f"boom https://evil.example.com/leak?{long_query} failure"
+            "boom https://evil.example.com/leak?access_token=opaque-value-1234 failure"
         )
         client = object.__new__(McpToolClient)
         client._stderr_file = SimpleNamespace(name=str(stderr_path))
         tail = client._stderr_tail()
-        assert "evil.example.com/leak" not in tail
+        assert "opaque-value-1234" not in tail
+        assert (
+            "https://evil.example.com/leak?access_token=[REDACTED: credential]" in tail
+        )
         assert "boom" in tail
 
     def test_close_removes_stderr_tempfile(self, tmp_path):
@@ -723,8 +753,9 @@ class TestScriptContextNotify:
                 ctx.notify("hello")
 
     def test_notify_redacts_credentials(self):
-        # Built from parts so secret scanners do not flag a literal key in the source.
-        fake_key = "AK" + "IA1234567890123456"
+        # A synthetic 40-char AWS secret, built at runtime.
+        fake_key = aws_secret(seed=44)
+        labelled = f"aws_secret_access_key={fake_key}"
         job = SimpleNamespace(id="j1", message="test")
         ctx = ScriptContext(job=job)
         mock_response = MagicMock()
@@ -734,7 +765,7 @@ class TestScriptContextNotify:
         with patch(
             "kiro_crew.cron_script.loopback_urlopen", return_value=mock_response
         ) as mock_urlopen:
-            ctx.notify(f"secret {fake_key} text")
+            ctx.notify(f"secret {labelled} text")
             mock_urlopen.assert_called_once()
         sent = json.loads(mock_urlopen.call_args.args[0].data)
         assert fake_key not in sent["text"]
@@ -765,14 +796,14 @@ class TestScriptContextCallTool:
             with pytest.raises(RuntimeError, match="not found"):
                 ctx.call_tool("nonexistent", "tool", {})
 
-    def test_an_argument_redacted_whole_is_refused_by_path_and_a_span_is_still_sent(
+    def test_an_argument_the_scan_would_change_whole_or_in_part_is_refused_by_path(
         self, monkeypatch
     ):
-        """An opaque id the scan would replace whole never reaches the server as the tag."""
-        # A padded base64 id, the shape mail APIs hand out; the scan leaves its "=" after the tag.
-        rng = random.Random(26246)
-        opaque_id = base64.b64encode(rng.randbytes(61)).decode()
-        token = "gh" + "p_" + "".join(rng.choices("abcdefghijkmnpqrstuvwxyzABCDEFGH23456789", k=36))
+        """An argument the scan would rewrite never reaches the server, whole or in part."""
+        # A token with a valid checksum: the scan rewrites it under any key, an id key
+        # included. Random base64 alone is no credential and would prove nothing here.
+        opaque_id = github_classic(seed=52)
+        token = github_classic(seed=53)
         sent = []
 
         class FakeClient:
@@ -800,9 +831,10 @@ class TestScriptContextCallTool:
         # The base64-encoding pass writes its own tag.
         with pytest.raises(ValueError, match=r"args\.cursor reads as a credential"):
             ctx.call_tool("mail", "list", {"cursor": base64.b64encode(token.encode()).decode()})
+        with pytest.raises(ValueError, match=r"args\.text reads as a credential") as e:
+            ctx.call_tool("mail", "send", {"text": f"see {opaque_id} here"})
+        assert opaque_id not in str(e.value)
         assert sent == []
-        ctx.call_tool("mail", "send", {"text": f"see {opaque_id} here"})
-        assert sent == [{"text": f"see {REDACTED_CREDENTIAL_TAG}== here"}]
 
 
 class TestScriptContextKeepsServers:
@@ -1180,6 +1212,27 @@ class TestMcpToolClientProtocol:
         assert result == "=== UNTRUSTED CONTENT BOUNDARY ===\n" + payload
         assert json.loads(result.splitlines()[-1]) == {"AuthorEmail": "someone@example.com"}
 
+    def test_call_tool_returns_a_structured_only_payload_as_json(self):
+        """A server that answers ``content: []`` beside ``structuredContent``."""
+        from kiro_crew.cron_script import McpToolClient
+
+        client = object.__new__(McpToolClient)
+        client._proc = MagicMock()
+        client._proc.stdin = MagicMock()
+        client._proc.stdout = MagicMock()
+        client._req_id = 0
+        client._proc.stdout.readline.return_value = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"content": [], "structuredContent": {"bases": ["b1"]}},
+                }
+            )
+            + "\n"
+        )
+        assert json.loads(client.call_tool("list_bases", {})) == {"bases": ["b1"]}
+
     def test_call_tool_is_error_joins_every_text_block(self):
         from kiro_crew.cron_script import McpToolClient
 
@@ -1277,21 +1330,25 @@ class TestMcpToolClientProtocol:
         client.close()
         assert not cleanup_file.exists()
 
-    def test_close_timeout_kills(self):
+    def test_close_timeout_kills(self, tmp_path):
         import subprocess
 
         from kiro_crew.cron_script import McpToolClient
 
+        cleanup_file = tmp_path / "sandbox_cleanup"
+        cleanup_file.write_text("temp")
         client = object.__new__(McpToolClient)
         client._proc = MagicMock()
         client._proc.terminate = MagicMock()
         client._proc.wait = MagicMock(side_effect=[subprocess.TimeoutExpired("cmd", 5), None])
         client._proc.kill = MagicMock()
-        client._sandbox_cleanup = None
+        client._sandbox_cleanup = str(cleanup_file)
         client.close()
         client._proc.kill.assert_called_once()
         # The kill is reaped with an unbounded wait after the bounded one expired.
         assert client._proc.wait.call_args_list == [call(timeout=5), call()]
+        # A server that had to be killed still has its sandbox file removed.
+        assert not cleanup_file.exists()
 
     def test_init_popen_failure_cleans_sandbox(self, tmp_path):
         from kiro_crew.cron_script import McpToolClient
@@ -1350,9 +1407,10 @@ class TestScriptContextCallToolSuccess:
         ctx = ScriptContext(job=job)
         mock_client = MagicMock()
         mock_client.call_tool.return_value = "result text"
-        with patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client), patch(
-            "kiro_crew.cron_script.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client),
+            patch("kiro_crew.cron_script.sel") as mock_sel,
+        ):
             result = ctx.call_tool("server", "tool", {"key": "val"})
         assert result == "result text"
         mock_client.close.assert_not_called()
@@ -1365,8 +1423,9 @@ class TestScriptContextCallToolSuccess:
         ctx = ScriptContext(job=job)
         mock_client = MagicMock()
         mock_client.call_tool.side_effect = RuntimeError("connection failed")
-        with patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client), patch(
-            "kiro_crew.cron_script.sel"
+        with (
+            patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client),
+            patch("kiro_crew.cron_script.sel"),
         ):
             with pytest.raises(RuntimeError, match="connection failed"):
                 ctx.call_tool("server", "tool", {})
@@ -1377,9 +1436,10 @@ class TestScriptContextCallToolSuccess:
         ctx = ScriptContext(job=job)
         mock_client = MagicMock()
         mock_client.call_tool.return_value = ""
-        with patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client), patch(
-            "kiro_crew.cron_script.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client),
+            patch("kiro_crew.cron_script.sel") as mock_sel,
+        ):
             mock_sel().log_tool_invocation.side_effect = Exception("SEL down")
             result = ctx.call_tool("server", "tool", {})
         assert result == ""
@@ -1451,9 +1511,14 @@ class TestMcpToolClientInitFailures:
         (agents_dir / "kirocrew.json").write_text(json.dumps(config))
         cleanup = tmp_path / "cleanup_marker"
         cleanup.write_text("x")
-        with patch("pathlib.Path.home", return_value=tmp_path), patch(
-            "kiro_crew.cron_script.wrap_argv", return_value=(["false"], str(cleanup))
-        ), patch("subprocess.Popen", side_effect=OSError("spawn failed")):
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                return_value=(["false"], str(cleanup)),
+            ),
+            patch("subprocess.Popen", side_effect=OSError("spawn failed")),
+        ):
             with pytest.raises(OSError, match="spawn failed"):
                 McpToolClient("test")
         assert not cleanup.exists()

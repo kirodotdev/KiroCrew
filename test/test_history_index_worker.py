@@ -300,12 +300,20 @@ def test_the_wait_returns_false_when_the_parent_has_gone(monkeypatch):
     """
     monkeypatch.setattr(history_index_worker, "_PARENT_CHECK_SECS", 0.01)
     monkeypatch.setattr(history_index_worker, "_parent_is_gone", lambda: True)
-    stopping = threading.Event()
+    waits: list[float | None] = []
 
-    started = time.monotonic()
+    class _RecordedStopping:
+        """Never set; records each slice the pause asks it to wait, and returns at once."""
+
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            return False
+
+    stopping = cast(threading.Event, _RecordedStopping())
     assert history_index_worker._wait_or_retire(stopping, 30.0) is False
-    # Returned on the first slice, not after the 30-second pause.
-    assert time.monotonic() - started < 5.0
+    # One slice of _PARENT_CHECK_SECS, then the parent check ends it: the pause is
+    # never asked to wait out its 30 seconds.
+    assert waits == [0.01], f"the pause waited {waits}, not one parent-check slice"
 
 
 def test_the_parent_check_says_present_when_asked_from_the_parent():
@@ -631,22 +639,34 @@ def test_request_stop_does_not_wait_for_the_child(tmp_path):
     loop, so it may only do the non-blocking things: one ``waitpid`` and one
     SIGTERM. If it ever joined, a gateway shutdown would freeze the loop for
     seconds — the failure this whole change exists to remove.
+
+    So the child's process object is watched for what it is asked: only
+    ``is_alive`` (a ``WNOHANG`` poll) and ``terminate`` (one signal). ``join``,
+    ``kill`` and ``close`` are the reap half's, and none may be called here.
     """
     sessions = _seeded_sessions(tmp_path)
     supervisor = _supervisor(sessions)
     assert supervisor.start() is True
+    real = supervisor._process
     try:
         assert supervisor.pid is not None
+        asked: list[str] = []
 
-        started = time.monotonic()
+        class _Watched:
+            def __getattr__(self, name: str) -> Any:
+                asked.append(name)
+                return getattr(real, name)
+
+        watched = _Watched()
+        supervisor._process = watched
         supervisor.request_stop()
-        elapsed = time.monotonic() - started
 
-        assert elapsed < 0.5, f"request_stop blocked for {elapsed:.2f}s"
+        assert asked[:1] == ["is_alive"] and set(asked) <= {"is_alive", "terminate"}, asked
         # It asked, it did not reap: the process object is still held so that
         # ``reap`` can wait for it.
-        assert supervisor._process is not None
+        assert supervisor._process is watched
     finally:
+        supervisor._process = real
         _stop(supervisor)
 
 

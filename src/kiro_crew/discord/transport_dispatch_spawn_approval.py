@@ -39,6 +39,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from kiro_crew.discord.transport_dispatch import DiscordDispatcher
+    from kiro_crew.subagent import HostSpawnDecision
 
 #: The dispatcher's one logger, named for the facade module operators filter on.
 logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
@@ -46,14 +47,15 @@ logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 
 async def deliver_spawn_approval(
     self: DiscordDispatcher, request_id: str, description: str, parent_session_key: str
-) -> bool | None:
+) -> bool | HostSpawnDecision | None:
     """Post a spawn-approval prompt to the ORIGINATING Discord conversation.
 
     Registered into the channel-neutral
     :mod:`~kiro_crew.messaging.spawn_approval_delivery` seam so the single
     host spawn gate can reach the same Approve/Deny buttons the main-agent
     tool ladder already uses here. Returns the user's decision
-    (``True``/``False``), or ``None`` to tell the gate "not surfaced here,
+    (``True``/``False``), the host decline ``unpressed_wait_answer`` gives for a
+    wait that elapsed unpressed, or ``None`` to tell the gate "not surfaced here,
     fall through to Slack/dashboard": for a key this dispatcher cannot turn
     back into a conversation (a ``unified`` dm_scope drops the peer, a
     non-``discord`` key, an unparseable one), when the client is not up, when
@@ -75,10 +77,10 @@ async def deliver_spawn_approval(
     the recomputed key does not match the armed one, the press resolves
     nothing, and the prompt deny-by-defaults at its timeout (the user sees
     "already expired"). This mirrors how a mid-run tool prompt behaves across a
-    rotation, and it stays a DENY: the prompt WAS surfaced, so ``False`` is a
-    real decision and the gate refuses the spawn on it rather than re-offering
-    it on Slack/dashboard. An elapsed wait falls through in one case only, when
-    AUTHORIZATION ended during it and no press could have answered: the
+    rotation, and it stays a DENY: the prompt WAS surfaced, so the elapsed wait
+    is the host's decline and the gate refuses the spawn on it rather than
+    re-offering it on Slack/dashboard. An elapsed wait falls through in one case
+    only, when AUTHORIZATION ended during it and no press could have answered: the
     destination rosters are re-read here (``_spawn_prompt_destination_permitted``,
     the pair that gated the post), and the channels ceiling is read by the seam
     (``unpressed_wait_answer``), which owns that reading for every channel.

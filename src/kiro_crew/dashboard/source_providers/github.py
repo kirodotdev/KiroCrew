@@ -295,12 +295,13 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         return_exceptions=True,
     )
     partial_sections: list[str] = []
+    failed_sections: list[str] = []
     if isinstance(files_raw, BaseException):
-        projection._mark_partial(partial_sections, "files")
+        projection._mark_failed(partial_sections, failed_sections, "files")
     if isinstance(review_comments_raw, BaseException) or isinstance(
         review_threads_raw, BaseException
     ):
-        projection._mark_partial(partial_sections, "inline review comments")
+        projection._mark_failed(partial_sections, failed_sections, "inline review comments")
     checks: list[dict[str, Any]] = []
     if isinstance(rollup_raw, BaseException):
         # The rollup is read separately from the core fields precisely so a
@@ -310,7 +311,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         # frontend banner surfaces the degraded section, and
         # `record_full_payload_status` keeps a known CI glyph alive while
         # `checks` is partial instead of erasing it.
-        projection._mark_partial(partial_sections, "checks")
+        projection._mark_failed(partial_sections, failed_sections, "checks")
     else:
         rollup_checks, rollup_head = rollup_raw
         head_oid = str(details.get("headRefOid") or "")
@@ -419,6 +420,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         "comments": comments,
         "files": normalized_files,
         "partialSections": partial_sections,
+        "failedSections": failed_sections,
     }
 
 
@@ -671,10 +673,11 @@ async def _fetch_github_issue(ref: SourceRef) -> dict[str, Any]:
         return_exceptions=True,
     )
     partial_sections: list[str] = []
+    failed_sections: list[str] = []
     if isinstance(comments_raw, BaseException):
-        projection._mark_partial(partial_sections, "comments")
+        projection._mark_failed(partial_sections, failed_sections, "comments")
     if isinstance(timeline_raw, BaseException):
-        projection._mark_partial(partial_sections, "linked changes")
+        projection._mark_failed(partial_sections, failed_sections, "linked changes")
     comment_rows = projection._as_list(projection._or_empty(comments_raw))
     comment_count = projection._int_or_zero(details.get("comments"))
     if len(comment_rows) >= projection._SECONDARY_PAGE_SIZE or comment_count > len(comment_rows):
@@ -717,4 +720,5 @@ async def _fetch_github_issue(ref: SourceRef) -> dict[str, Any]:
         "comments": [_github_issue_comment(item) for item in comment_rows],
         "linkedChanges": _github_linked_changes(timeline),
         "partialSections": partial_sections,
+        "failedSections": failed_sections,
     }

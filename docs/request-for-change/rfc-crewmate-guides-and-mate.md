@@ -1,10 +1,10 @@
 ---
 title: Crewmate guides, change cards and Mate, a first crewmate
-status: accepted
+status: implemented
 author: buluoray
 created: 2026-10-08
-last-audited: 2026-10-08
-audited-at: 4f9c5697b9
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 18326
 implementation-prs: [18301, 18317]
 tracking-issues: [18300, 18315]
@@ -14,8 +14,11 @@ superseded-by: []
 
 # RFC: Crewmate guides, change cards and Mate, a first crewmate
 
-- Status: accepted — the product owner's decision of 2026-10-08 after the team
-  review; maintainer acceptance is being requested on the doc PR.
+- Status: implemented — the product owner's decision of 2026-10-08 after the team
+  review, doc PR [#18326](https://github.com/kirodotdev/KiroCrew/pull/18326) merged.
+  Built by #18301 and #18317: at `1d08e941b3` the `kirocrew-guide` server is
+  `src/kiro_crew/mcp_guide.py` and Mate is created by
+  `src/kiro_crew/agent_materialization/first_crewmate.py`.
 - Author: buluoray
 - Amends sections of [rfc-crewmates-launch.md](rfc-crewmates-launch.md),
   [rfc-crewmate-greeting.md](rfc-crewmate-greeting.md) and

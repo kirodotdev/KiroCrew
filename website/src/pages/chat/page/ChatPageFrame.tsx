@@ -8,6 +8,7 @@ import { SidePanelDockHost } from '../../../components/SidePanelGlyph'
 import { TagPopoverProvider } from '../../../hooks/useTagPopover'
 import { NewFolderMoveProvider } from '../../../hooks/useNewFolderMove'
 import NewFolderMoveDialog from '../../../components/NewFolderMoveDialog'
+import { usePinnedScrollOrigin } from '../../../hooks/usePinnedScrollOrigin'
 
 interface ChatPageFrameProps {
   embedded?: boolean
@@ -28,6 +29,7 @@ interface ChatPageFrameProps {
 export default function ChatPageFrame({
   embedded, activeSlot, chatConfig, jiraSourceHosts, runInTerminalScope, activitySlot, chatContainerRef, closedSessionActions, sidebarFolderActions, children,
 }: ChatPageFrameProps) {
+  usePinnedScrollOrigin(chatContainerRef)
   return (
     <RunInTerminalScope.Provider value={runInTerminalScope}>
     <RowDisclosureProvider resetKey={activeSlot}>

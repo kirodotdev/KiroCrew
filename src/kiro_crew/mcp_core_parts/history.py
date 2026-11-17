@@ -51,8 +51,15 @@ def _redact_history_output(text: str) -> str:
     credential patterns apply to verbatim chat-transcript egress; the Default
     ``CredentialPolicy`` delegates to ``security.redact`` (the same
     exfil-then-credential dual pass), so standalone is byte-for-byte unchanged.
+
+    The chat output seam (``redaction_seams.CHAT``): in a process that has the owner's
+    redaction setting published off, the output stays as written. The MCP server
+    this tool runs in never publishes it, so there the output keeps redacting.
     """
-    return redact(text)
+    from kiro_crew import redaction_seams
+
+    with redaction_seams.output_seam(redaction_seams.CHAT):
+        return redact(text)
 
 
 def _parse_iso_date_epoch(date_str: str) -> float | None:
@@ -151,18 +158,16 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
     and the matched substring is delimited with ``<<<...>>>``. Returns "" when no
     eligible message content contains the needle (e.g. it only matched the title).
     """
-    # Defense-in-depth: an empty/whitespace needle makes str.find return 0 on
-    # every message and would wrap meaningless text in <<<>>>. The query is
-    # already validated non-empty upstream, but guard here too since this helper
-    # is independently callable.
+    # A blank needle matches at 0 in every message and would wrap junk in
+    # <<<>>>. Upstream already rejects it; guard again since this is callable
+    # on its own.
     if not needle.strip():
         return ""
-    # Same parse as search_sessions: that call decides a session MATCHED on
-    # scattered needles, so searching only the whole phrase here would return ""
-    # and suppress the row's snippet for exactly the multi-word queries the
-    # needle-wise match enables. Tiered highest-signal first (phrase and
-    # verbatim runs, then whole terms, words and CJK bigrams, then lone
-    # characters) so the excerpt centers on the most meaningful hit available.
+    # Same parse as search_sessions, which can match a session on scattered
+    # needles; a whole-phrase search here would then find nothing and drop the
+    # snippet for multi-word queries. Tiers go best signal first (phrase and
+    # verbatim runs, then terms, words and CJK bigrams, then single
+    # characters) so the excerpt centers on the best hit.
     tiers = snippet_needle_tiers(needle)
     if not tiers:
         return ""
@@ -178,19 +183,19 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
     # redactors, so a query that is a substring of a secret in stored
     # content could leak it.
     seg = _redact_history_output(seg)
-    # Locate the match span in the (possibly redacted) original text using
-    # the SAME full casefolding as the selection above — a case-insensitive
-    # regex does only simple per-char mapping and would miss multi-char
-    # folds (ß→ss), leaving a selected-but-unwrapped snippet with no
-    # <<<...>>>.
+    # Find the span with the SAME full casefold that picked the hit. A
+    # case-insensitive regex maps one char at a time and misses multi-char
+    # folds (ß→ss), which would leave the snippet without <<<...>>>.
     span = _casefold_match_span(seg, needle_cf)
+    lead = "…" if start > 0 else ""
     if span:
         s, e = span
         seg = seg[:s] + "<<<" + seg[s:e] + ">>>" + seg[e:]
-    seg = ("…" if start > 0 else "") + seg + ("…" if end < len(content) else "")
+    seg = lead + seg + ("…" if end < len(content) else "")
     result = seg[:_SNIPPET_MAX_LEN]
-    # If the hard cap sliced through the match delimiters (possible with a
-    # long query), re-close so the consumer never sees a dangling "<<<".
-    if "<<<" in result and ">>>" not in result:
+    # A long query can make the length cap cut between the markers; re-close
+    # so no "<<<" dangles. Judge by where the markers went, not by searching
+    # the text, which may hold its own "<<<" or ">>>".
+    if span and len(lead) + s + 3 <= _SNIPPET_MAX_LEN < len(lead) + e + 6:
         result = result[: _SNIPPET_MAX_LEN - 3] + ">>>"
     return result

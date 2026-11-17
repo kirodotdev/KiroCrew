@@ -2575,13 +2575,20 @@ jobs:
             enc="$(jq -rn '"UX Review" | @uri')"
             # No `filter=all` needed: the default can drop only completed rows,
             # never a non-completed one (measured in #10116).
-            stranded="$(gh api --method GET \
+            if ! stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]
                     | select(.status != \"completed\")
                     | select(.external_id != null)
                     | select(.external_id | startswith(\"ux-pr-$PR-\"))
-                    | \"\(.id) \(.external_id)\"" 2>/dev/null || true)"
+                    | \"\(.id) \(.external_id)\"")"; then
+              # A failed read prints the API's error body on stdout, which is not
+              # a list of check-run ids: building URLs from it completes nothing.
+              # Leave every row as it is (PR Readiness reads it as pending) and
+              # fail the step so the miss is visible.
+              echo "::error::could not list the incomplete UX Review check-runs for $HEAD (PR #$PR); completed none of them"
+              exit 1
+            fi
             while IFS=' ' read -r id ext; do
               [ -n "$id" ] || continue
               rest="${ext#ux-pr-$PR-}"

@@ -143,52 +143,142 @@ _SHIPPED_PINS = [
     {
         "name": "personal-shopper",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-personal-shopper",
-        "commit": "e3d71dec00e904c742b9992dbe043b06084c7fac",
-        "version": "0.1.1",
-        "treeSha256": "518e8b06f8ba46738c6a6830d753aa7741a5ff6d81fb5676b0610dd7b9e67f70",
-        "archiveSha256": "9121c38fb76ddfbd89bc208516475b7fd2e56cefa5b558348d7d8175d57724db",
+        "commit": "2de66b467755be0104ec6b23884815c5213db409",
+        "version": "0.1.2",
+        "treeSha256": "b77353e2e427c43191de6d42f45308b6b88b0a97a877395deead6e2e1c38e63b",
+        "archiveSha256": "aaa144450e1cf6b4b3f882717aabfb1b7de6ce717d9de9636f5bc57a62884498",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/personal-shopper", "icon": "ShoppingBag"},
     },
     {
         "name": "papyrus",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-papyrus",
-        "commit": "6ca7bc697f39b78a5a4dba7bdf8d3e5eaa11348f",
-        "version": "0.2.1",
-        "treeSha256": "b1824326e63a22eb8577d24e7f511defaaf14f29bcd1d4acc87ddf35b3b50bbf",
-        "archiveSha256": "7627a4a3ad11134f8838365afff52e68e53f119c7804ad4c1552f320204965d2",
+        "commit": "36e0bc725796e37240fc854eaf905948ab1c4c7a",
+        "version": "0.2.2",
+        "treeSha256": "86a7e60af8e5b6947fe9d4cc062d35a61908feac17a0cebbbc9cea48d79917ba",
+        "archiveSha256": "022184b4062cf639f0380aa339322fdd7be90a4dfc7228bb6701c5958dd533a6",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/papyrus", "icon": "ScrollText"},
     },
     {
         "name": "file-explorer",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-file-explorer",
-        "commit": "e68646984d6825eade82dfbf067879d8b55441ab",
-        "version": "1.0.1",
-        "treeSha256": "3b252a4744f68365370b270125b01c3cf87ec02341c1c52594d6a91feecd1799",
-        "archiveSha256": "8e23a62ec7b608e771968970339f4ddf7cf832c8aad2b76a9cf8281df34f3c2b",
+        "commit": "9ccc81e91d2b86b5d5cde214c0bfdf3a71a570aa",
+        "version": "1.0.2",
+        "treeSha256": "93e6e4b74fecccc7a6eb57f769b186ca866f86dee5af85b55c75a7b8b4535396",
+        "archiveSha256": "f1cee8aacf8b35ca806182fb5b7d31b2824feb942d4eb397cb9b93dc4c454111",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/file-explorer", "icon": "FolderTree"},
     },
     {
         "name": "design-critique",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-design-critique",
-        "commit": "2f57dc551dd8c7c59452bdbde09071dcb3b8123b",
-        "version": "1.0.2",
-        "treeSha256": "b2e1616e3daff837f509a37b211325fc9cd172399afbadda0bae8ffce41ff18d",
-        "archiveSha256": "9bf18cdf9afaed07d1fcfb1e43f362e6a3c4f8dc84e222ef10b9d7d9496abd2a",
+        "commit": "092451a698caad5708379bca5437c58d5cf6f1d9",
+        "version": "1.0.3",
+        "treeSha256": "c1314f219392fe4c3d82a3ee48da44af82a7bf6665193621a06c564b17eb0bc7",
+        "archiveSha256": "a373e0137f23375fca5ad85cdbd8279b956696df9e66803c2f125220c9d20e98",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/design-critique", "icon": "PencilRuler"},
     },
     {
         "name": "pptx-maker",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-        "commit": "1c47c5099df4302f74de828407f87f193edea758",
-        "version": "0.3.1",
-        "treeSha256": "f0388d8923475bbd5a2b146dae4d39a18feabeda914d6bb7739709765c8fa723",
-        "archiveSha256": "fce718daf223b63a74a8cf43013efe8db7090fb05ad777cea38b6933fdb0f386",
+        "commit": "a622dc0eff74ffe2e927871f07400e7ab21ee5da",
+        "version": "0.3.3",
+        "treeSha256": "bcb5c102fb50df1541d5dab1fb59d186b291479e5b90a890edf681832d0fb976",
+        "archiveSha256": "c9c9525a76c7852613661f7e6016c137e0d7a548069f97abf841515ff56c4677",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/pptx-maker", "icon": "Presentation"},
+    },
+    {
+        "name": "issue-radar",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-issue-radar",
+        "commit": "8e57db85e15e2d53fcd58808aeeac8f54734c6f3",
+        "version": "0.1.2",
+        "treeSha256": "b76d6f60298b6ac194876586a1ec19234fd37cbb4b325dbe8ea72a41123d2a55",
+        "archiveSha256": "02ed708cd9333301a710cdd7d7de03eebe50213e1d1758c96e66a462727729ac",
+        "minAppSdkLevel": 2,
+        "legacyNav": {"route": "/issue-radar", "icon": "Radar"},
+    },
+    {
+        "name": "auto-improvement",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-auto-improvement",
+        "commit": "0e1a22d2e10b49cef904d5839e9bb6d3ad2a4ab2",
+        "version": "1.0.3",
+        "treeSha256": "5b8647bce56b26c5fe7e440c85c42d30013168d45f04d28bbc3908bd417ef457",
+        "archiveSha256": "624d2681fc0ba9ac8edbe9791e03da3b4247f04cdcd2b0ee9f0958e760d02355",
+        "minAppSdkLevel": 2,
+        "legacyNav": {"route": "/auto-improvement", "icon": "Brain"},
+    },
+    {
+        "name": "design-tweak",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-design-tweak",
+        "commit": "deff125f4abf4657575f7c03f289bb25d3e37a8d",
+        "version": "0.10.1",
+        "treeSha256": "23affb46e3dc4db56aedd00f8b6338822507cd98b01eec10e0627da7d446f90c",
+        "archiveSha256": "b6093427ecfff4bea6811f7245567732e92f319baa62307dcf243c0023b16a5b",
+        "minAppSdkLevel": 8,
+        "legacyNav": {"route": "/design-tweak", "icon": "Paintbrush"},
+    },
+    {
+        "name": "spec-builder",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-spec-builder",
+        "commit": "79de0b4e3581bcbde1a021d9a335c63f45a44f30",
+        "version": "0.1.1",
+        "treeSha256": "05024a394b6c8f43791248b5d6eef63f1d23a1e61b015dafe76bf585ea7fe75a",
+        "archiveSha256": "039f1143d69bf27bc126659c5625d0d2a123f6ea0b3a42a8143c0701b8b43711",
+        "minAppSdkLevel": 7,
+        "legacyNav": {"route": "/spec-builder", "icon": "ClipboardList"},
+    },
+    {
+        "name": "auto-research",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-auto-research",
+        "commit": "a4688e7331d3a280d56e90eedfbd437601f9de52",
+        "version": "0.1.2",
+        "treeSha256": "0743a9946ee27b4a06292ee56512233f6b9750553cf62ba32f006a2c6f6eaf4a",
+        "archiveSha256": "67ca258c341add3653fc854caf353fcd07131ddb8c94c01343c89c55db47e2c7",
+        "minAppSdkLevel": 2,
+        "legacyNav": {"route": "/auto-research", "icon": "FlaskConical"},
+    },
+    {
+        "name": "aws-control",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-aws-control",
+        "commit": "8382917ef0eac04d349fed4f4ad5d90329226ae7",
+        "version": "0.1.2",
+        "treeSha256": "4c51069de5b7b08b66d1ad86ff3556e05ca5ffae6a0b38fc65da453b72845c68",
+        "archiveSha256": "7218e3482b0af62ed170ed13e51a289e21a6ddbeaaec84aa696956bc4f3ebda6",
+        "minAppSdkLevel": 2,
+        "legacyNav": {"route": "/aws-control", "icon": "Cloud"},
+    },
+    {
+        "name": "dev-fleet",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-dev-fleet",
+        "commit": "9eb46b5fa9ce4409a9de87027b02620588cecef3",
+        "version": "1.0.1",
+        "treeSha256": "d23805a2bb02bd372e45f14cfeb0b8cc9cf6857ba82e8eea1a84d25699ff76ce",
+        "archiveSha256": "03a7a476e1d52a3fc58819d9489d77eb42147efb08c99187255c6e217ec5c7d6",
+        "minAppSdkLevel": 7,
+        "legacyNav": {"route": "/dev-fleet", "icon": "Server"},
+    },
+    {
+        "name": "meetings",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-meetings",
+        "commit": "a1e710690930abc025f051a97e20fe9db502d7f7",
+        "version": "0.1.3",
+        "treeSha256": "3bb25cb8eb58fbc0373c5c5a61df768cdf43c0ebfef0c6f6444b181003b202e4",
+        "archiveSha256": "7514bb05c9924e2610cba97ac8b12bf46a7d85ec9b5534a15bc9421482fce30c",
+        "minAppSdkLevel": 7,
+        "legacyNav": {"route": "/meetings", "icon": "CalendarClock"},
+    },
+    {
+        "name": "project-scaffolder",
+        "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-project-scaffolder",
+        "commit": "92b542c07940e9f6cc8d553b0b491b6cdeef4d50",
+        "version": "0.1.1",
+        "treeSha256": "319e00e4bfc6d1e185890a56fce0be4b20ea633a4b5985e25a22a98ecad6ac9d",
+        "archiveSha256": "57b4ca60d07e073389b50b55d698091c0a3ea53d906e3c3870e0b18bc99d0f43",
+        "minAppSdkLevel": 7,
+        "legacyNav": {"route": "/project-scaffolder", "icon": "FolderPlus"},
     },
 ]
 
@@ -229,7 +319,18 @@ _ADOPTION_MODULES = (
     "apps/builtin_adoption_state.py",
     "apps/manager_adopt.py",
     "apps/agent_config_writer.py",
+    "apps/legacy_state_moves.py",
 )
+
+#: The one stated exception to "no adoption module names a built-in": the row keys of
+#: ``legacy_state_moves.LEGACY_STATE_MOVES``. A row binds a move out of a layout core
+#: itself created (so the move's code is core's) to the app it moves state for, and goes
+#: with that move once no supported upgrade path can still hold the layout
+#: (app-kit-platform.md § 33, "A legacy state move holds the swap"). A new row fails here
+#: until it is listed with the same reason.
+_STATED_NAME_EXCEPTIONS: dict[str, frozenset[str]] = {
+    "apps/legacy_state_moves.py": frozenset({"md-notebook"}),
+}
 
 
 def _builtin_identifiers() -> set[str]:
@@ -255,7 +356,15 @@ def test_no_adoption_module_names_a_shipped_built_in(rel):
     builtins = _builtin_identifiers()
     assert builtins, "the census found no shipped built-in"
     literals = _string_literals((_SRC / rel).read_text(encoding="utf-8"))
-    assert sorted(literals & builtins) == []
+    assert sorted(literals & builtins) == sorted(_STATED_NAME_EXCEPTIONS.get(rel, ()))
+
+
+def test_the_legacy_state_move_rows_are_the_stated_exception():
+    """The live keys, not only the literals: a key spelled through a constant counts too."""
+    from kiro_crew.apps.legacy_state_moves import LEGACY_STATE_MOVES
+
+    assert set(LEGACY_STATE_MOVES) == _STATED_NAME_EXCEPTIONS["apps/legacy_state_moves.py"]
+    assert set(LEGACY_STATE_MOVES) <= _builtin_identifiers()
 
 
 def test_the_literal_scan_finds_a_planted_name():
@@ -366,8 +475,63 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ),
         ({"permissions": {"agentTurns": "true"}}, {}, {}),
         ({"credentialMasks": ["data/token.json"]}, {}, {"app.json credentialMasks": 3}),
+        ({"agentReadOnlyDirs": ["notes"]}, {}, {"app.json agentReadOnlyDirs": 7}),
+        (
+            {"permissions": {"api": ["/api/apps/demo", " =/api/apps"]}},
+            {},
+            {"app.json permissions.api exact entry": 7},
+        ),
+        ({"permissions": {"api": ["/api/apps/demo", "/api/a=b"]}}, {}, {}),
+        ({"permissions": {"chatSlots": True}}, {}, {"app.json permissions.chatSlots": 7}),
+        ({"permissions": {"chatSlots": "true"}}, {}, {}),
+        (
+            {},
+            {"backend/_host.py": "def f(ctx):\n    return getattr(ctx, 'chat_slots', None)\n"},
+            {"ctx.chat_slots": 7},
+        ),
+        (
+            {"permissions": {"desktopCapabilities": ["localFiles"]}},
+            {},
+            {"app.json permissions.desktopCapabilities": 7},
+        ),
+        (
+            {"credentialMasks": ["state/", "token.json"]},
+            {},
+            {"app.json credentialMasks": 3, "app.json credentialMasks directory": 8},
+        ),
+        (
+            {
+                "desktop": {
+                    "shortcuts": [{"id": "a", "platformAccelerators": {"macos": "Cmd+Alt+A"}}],
+                }
+            },
+            {},
+            {"app.json desktop.shortcuts platformAccelerators": 8},
+        ),
+        ({"desktop": {"shortcuts": [{"id": "a", "accelerator": "Cmd+Alt+A"}]}}, {}, {}),
+        (
+            {"permissions": {"webhookSource": True}},
+            {},
+            {"app.json permissions.webhookSource": 7},
+        ),
+        ({"permissions": {"webhookSource": "true"}}, {}, {}),
+        (
+            {},
+            {"backend/_host.py": "def f(ctx):\n    return ctx.webhook_source.refusal()\n"},
+            {"ctx.webhook_source": 7},
+        ),
         ({}, {"backend/routes.py": "def f(ctx):\n    return ctx.turns.run\n"}, {"ctx.turns": 2}),
         ({}, {"backend/_host.py": "x = _bound_ctx().lifecycle\n"}, {"ctx.lifecycle": 2}),
+        (
+            {},
+            {"backend/hooks.py": "async def f(ctx):\n    return await ctx.app_token()\n"},
+            {"ctx.app_token": 5},
+        ),
+        (
+            {},
+            {"backend/hooks.py": "def f(ctx):\n    return ctx.gateway_origin()\n"},
+            {"ctx.gateway_origin": 5},
+        ),
         (
             {},
             {"backend/_host.py": "def f(self):\n    return self._ctx.untrusted\n"},
@@ -388,6 +552,33 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"ctx.lifecycle": 2},
         ),
         ({}, {"backend/_host.py": "def f(ctx:\n    ctx.lifecycle\n"}, {"ctx.lifecycle": 2}),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps.backend_sdk import is_sensitive_path\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "sdk = _host_module('kiro_crew.apps.backend_sdk')\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps import backend_sdk as sdk\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps import (\n    backend_sdk,\n)\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew import apps\nsdk = apps.backend_sdk\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        ({}, {"backend/_host.py": "import kiro_crew\nfrom . import my_backend_sdk\n"}, {}),
+        ({}, {"tests/fakehost.py": "import kiro_crew.apps.backend_sdk\n"}, {}),
         ({}, {"backend/manifest.py": "def f(manifest):\n    return manifest.lifecycle\n"}, {}),
         ({}, {"tests/fakehost.py": "ctx.turns = None\n"}, {}),
         ({}, {"backend/test_seams.py": "ctx.turns = None\n"}, {}),

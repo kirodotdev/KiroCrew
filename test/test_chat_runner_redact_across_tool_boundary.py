@@ -16,8 +16,8 @@ as one placeholder.
 These drive the real ``_run_chat`` through ``turn_harness.run_turn`` and read what
 the turn sent on the WebSocket, what it persisted, and what it queued for the
 slot's stream readers (the /api/chat SSE stream and the OpenAI-compatible
-replies). The key is the documented AWS example key, split so no literal sits in
-the repo.
+replies). The key is a synthetic AWS secret access key, split so no literal sits
+in the repo.
 """
 
 from __future__ import annotations
@@ -27,11 +27,13 @@ import base64
 import copy
 import json
 import logging
+import re
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_credential_prefilter import AWS_SECRET, BRANCH_SAMPLES
 from turn_harness import APPROVED, Do, Raise, TurnContext, TurnRecord, TurnScript, run_turn
 
@@ -47,11 +49,15 @@ from kiro_crew.constants import reflow_and_label_glued_option_marker
 from kiro_crew.dashboard import chat_runner, openai_compat
 from kiro_crew.dashboard.chat_turn import turn_reply_seams
 from kiro_crew.dashboard.chat_utils import _build_stream_chunk
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact, reveal_store
 
-#: The AWS documentation's example access key id, split so no literal sits here.
-_HEAD, _TAIL = "AKIA", "IOSFODNN7EXAMPLE"
-_KEY = _HEAD + _TAIL
+#: A synthetic GitHub token with a valid checksum, built so no literal sits here.
+#: An AWS key ID would not do: it is an identifier the redactor keeps visible; nor
+#: would a bare 40-character AWS-shaped run, which is no credential by itself.
+_KEY = github_classic(seed=33)
+_HEAD, _TAIL = _KEY[:4], _KEY[4:]
+#: The start of an AWS key ID, a run that could still become a credential.
+_KEY_ID_HEAD = "AKIA"
 _TAG = REDACTED_CREDENTIAL_TAG
 #: A made-up URL credential parameter: the name, then a value no other pass reads
 #: as a secret, so only the name in front of it makes it one.
@@ -60,12 +66,20 @@ _PARAM, _VALUE = "?token=", "fakeParamValue123"
 #: credential pattern (its own coverage test keeps one per branch), a bare secret
 #: key, a base64-encoded credential, a URL parameter and an exfiltration URL. No
 #: leading space, so each is glued to the word written before it.
-_SHAPES = (
-    *(sample.lstrip() for sample in BRANCH_SAMPLES),
-    AWS_SECRET,
-    base64.b64encode(f"aws_secret_access_key={AWS_SECRET}".encode()).decode(),
-    _PARAM + _VALUE,
-    "https://collect.example.com/x?d=" + "A" * 250,
+#: Every sample ``redact`` removes. With the structured detectors on, a few pass-1
+#: samples stay visible by design (an AWS key ID, a session token shorter than the
+#: detectors' gate, a token with no valid checksum or JOSE header), so they are left
+#: out: nothing of them is withheld, so there is nothing to leak across a cut.
+_SHAPES = tuple(
+    value
+    for value in (
+        *(sample.lstrip() for sample in BRANCH_SAMPLES),
+        AWS_SECRET,
+        base64.b64encode(f"aws_secret_access_key={AWS_SECRET}".encode()).decode(),
+        _PARAM + _VALUE,
+        "https://collect.example.com/x?d=" + "A" * 250,
+    )
+    if redact(value) != value
 )
 
 _KINDS = ("permission_request", "tool_call")
@@ -159,6 +173,14 @@ async def _read_turn(
 
     record = await _turn(kind, *segments, setup=_attach)
     return record, queue.seen
+
+
+def _queued_text(queued: list[dict[str, Any]]) -> str:
+    """Every queued row as JSON, each reveal handle masked. A handle is 22 random
+    url-safe characters minted for the placeholder, not text the model wrote, so
+    it can spell any 4 characters (one did spell the key's head in CI); the
+    leak checks read only what came from the reply."""
+    return re.sub(r"rv_[A-Za-z0-9_-]{22}", "rv_<handle>", json.dumps(queued))
 
 
 def _sse_reply(queued: list[dict[str, Any]]) -> str:
@@ -289,14 +311,16 @@ class TestCredentialSplitAcrossABoundary:
         together keeps the name and replaces only the value, so the redacted output
         still starts with the held name. The name must still go with the value it
         names, everywhere the reply is saved or sent."""
-        record, queued = await _read_turn(kind, f"Call /api{_PARAM}", f"{_VALUE} then")
+        record, queued = await _read_turn(
+            kind, f"Call https://h.example/api{_PARAM}", f"{_VALUE} then"
+        )
 
-        whole = redact(f"Call /api{_PARAM}{_VALUE} then")
+        whole = redact(f"Call https://h.example/api{_PARAM}{_VALUE} then")
         assert _VALUE not in whole, "the pass this test drives no longer redacts the value"
         assert "".join(_saved(record)) == whole
         assert "".join(_shown(record)) == whole
         assert _sse_reply(queued) == whole
-        sent = _sent_text(record) + json.dumps(queued)
+        sent = _sent_text(record) + _queued_text(queued)
         assert _VALUE not in sent, sent
         [reply] = mirrored
         assert _VALUE not in redact(reply), reply
@@ -314,7 +338,7 @@ class TestCredentialSplitAcrossABoundary:
         assert "".join(_saved(record)) == f"Before {_TAG}{after}"
         assert "".join(_shown(record)) == f"Before {_TAG}{after}"
         assert _sse_reply(queued) == f"Before {_TAG}{after}"
-        sent = _sent_text(record) + json.dumps(queued)
+        sent = _sent_text(record) + _queued_text(queued)
         assert _TAIL not in sent and _HEAD not in sent, sent
 
     @pytest.mark.asyncio
@@ -348,7 +372,23 @@ class TestCredentialSplitAcrossABoundary:
 
         assert _sse_reply(queued) == f"Before {_TAG} after."
         assert await _openai_reply(queued) == f"Before {_TAG} after."
-        sent = json.dumps(queued)
+        sent = _queued_text(queued)
+        assert _TAIL not in sent and _HEAD not in sent, sent
+
+    @pytest.mark.asyncio
+    async def test_a_reveal_handle_that_spells_part_of_the_key_is_no_leak(
+        self, kind: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The placeholder's reveal handle is random, so it can contain the key's
+        head by chance. That is not the reply's text: the stream still carries the
+        placeholder alone, and the leak check still passes."""
+        handle = "rv_" + (_HEAD + "x" * 22)[:22]
+        monkeypatch.setattr(reveal_store, "new_handle", lambda: handle)
+        _record, queued = await _read_turn(kind, f"Before {_HEAD}", f"{_TAIL} after.")
+
+        assert handle in json.dumps(queued), "the turn no longer queues the handle"
+        assert _sse_reply(queued) == f"Before {_TAG} after."
+        sent = _queued_text(queued)
         assert _TAIL not in sent and _HEAD not in sent, sent
 
     @pytest.mark.asyncio
@@ -375,8 +415,8 @@ class TestCredentialSplitAcrossABoundary:
 
 _PLAIN_ENDS = ("settled.", "playing.", "they've.", "Done.", "is.", "x.", "Okay.")
 _NOT_PLAIN_ENDS = (
-    _HEAD,
-    _HEAD + ".",
+    _KEY_ID_HEAD,
+    _KEY_ID_HEAD + ".",
     "SG.",
     "eyJ.",
     "IOSF.",
@@ -509,6 +549,18 @@ class TestHarmlessTextAcrossABoundary:
         assert _layout(record) == ["Let me check the config", "|", "uration file now."]
         # The bubble after the boundary streams only its own text.
         assert _chunks_after_boundary(record) == "uration file now."
+        assert mirrored == ["\n\n".join(_saved(record))]
+
+    @pytest.mark.asyncio
+    async def test_a_word_split_by_a_boundary_stays_put_through_the_next_one(
+        self, kind: str, mirrored: list[str]
+    ) -> None:
+        """A second boundary whose release is empty leaves the first one's held run
+        where the first cut put it, rather than moving it to the next row."""
+        record = await _turn(kind, "Let me check the config", "uration", "Done now.")
+
+        assert _saved(record) == ["Let me check the config", "uration", "Done now."]
+        assert _shown(record) == _saved(record)
         assert mirrored == ["\n\n".join(_saved(record))]
 
     @pytest.mark.asyncio
@@ -658,3 +710,56 @@ class TestStreamReadersAcrossABoundary:
 
         assert _sse_reply(queued) == "Let me check the config."
         assert await _openai_reply(queued) == "Let me check the config."
+
+
+class TestARawCopyNeverOutlivesTheTextItMirrors:
+    """Through the real ``_run_chat``: a site that clears the visible text mid-turn
+    clears its raw copy too, so a credential streamed before the boundary is never
+    saved against the reply the reader sees after it.
+
+    The flush saves the raw copy redacted as one text only when it is the copy of
+    the streamed text, so a raw copy that outlived a clear would hold the earlier
+    credential and the reply would be withheld. The reply after the boundary
+    carries exactly its own credential and its one record.
+    """
+
+    def _events(self, boundary: object) -> list[object]:
+        from kiro_crew.acp.types import EVENT_TEXT_CHUNK, STOP_REASON_END_TURN, AcpEvent
+
+        return [
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="draft "),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"token {github_classic(seed=31)}"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=" . "),
+            boundary,
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"key {github_classic(seed=32)}"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text=" is the one."),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+
+    def _assert_only_the_reply_after(self, record: TurnRecord) -> None:
+        rows = [r for r in record.rows("assistant") if "is the one" in str(r.get("content"))]
+        assert len(rows) == 1
+        assert rows[0]["content"] == "key [REDACTED: credential] is the one."
+        assert len((rows[0].get("meta") or {}).get("redactions", [])) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_compaction_boundary_clears_the_raw_copy(self) -> None:
+        from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, AcpEvent
+
+        boundary = AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed", context_usage_pct=40.0)
+        record = await run_turn(TurnScript(events=self._events(boundary)))
+
+        self._assert_only_the_reply_after(record)
+
+    @pytest.mark.asyncio
+    async def test_a_mid_turn_clear_clears_the_raw_copy(self) -> None:
+        from turn_harness import SlotSpec
+
+        from kiro_crew.acp.types import EVENT_CLEAR_STATUS, AcpEvent
+
+        record = await run_turn(
+            TurnScript(events=self._events(AcpEvent(kind=EVENT_CLEAR_STATUS))),
+            slot=SlotSpec(rows=[("user", "earlier"), ("assistant", "earlier answer")]),
+        )
+
+        self._assert_only_the_reply_after(record)

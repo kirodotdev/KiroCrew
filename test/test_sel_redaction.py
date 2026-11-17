@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from sel_helpers import (  # noqa: F401 -- fixtures are requested by name
     _make_event,
     log_fixture,
@@ -48,6 +49,9 @@ class TestMetadataRedaction:
 
     AKIA_TOKEN = "AKIA" + "IOSFODNN7EXAMPLE"
     EXFIL_URL = "https://attacker.example/upload/" + "AKIA" + "IOSFODNN7EXAMPLE"
+    # A key ID glued to other text is an Identifier with the structured detectors
+    # on, so the clip tests use a GitHub token the plan still redacts there.
+    CLIP_TOKEN = github_classic(seed=31)
 
     def _disk_text(self, sel_dir: Path) -> str:
         return (sel_dir / "security_events.jsonl").read_text(encoding="utf-8")
@@ -284,9 +288,10 @@ class TestMetadataRedaction:
 
         # Key starts 10 chars before the clip point, so a clip-first order would
         # keep its first 10 characters and drop the rest.
-        prefix = "q=" + ("x" * (_MAX_ARG_LEN - 12))
-        resources = prefix + self.AKIA_TOKEN + " kinds=all"
-        assert len(prefix) < _MAX_ARG_LEN < len(prefix) + len(self.AKIA_TOKEN)
+        # A blank before it: a token glued to a letter is no token.
+        prefix = "q=" + ("x" * (_MAX_ARG_LEN - 13)) + " "
+        resources = prefix + self.CLIP_TOKEN + " kinds=all"
+        assert len(prefix) < _MAX_ARG_LEN < len(prefix) + len(self.CLIP_TOKEN)
         log.log_tool_invocation(
             session_key="dashboard:slot1",
             tool_name="file_search",
@@ -295,9 +300,9 @@ class TestMetadataRedaction:
             error=resources,
         )
         raw = self._disk_text(sel_dir)
-        assert self.AKIA_TOKEN not in raw
+        assert self.CLIP_TOKEN not in raw
         # No partial prefix of the key survives either.
-        assert self.AKIA_TOKEN[:10] not in raw
+        assert self.CLIP_TOKEN[:10] not in raw
         data = json.loads(raw.strip())
         # The replacement marker is longer than the token it replaces, so the
         # clip can cut the MARKER — harmless, and proof the order is right: a
@@ -312,16 +317,16 @@ class TestMetadataRedaction:
     def test_api_access_helper_also_redacts_before_clipping(self, log, sel_dir):
         from kiro_crew.sel import _MAX_ARG_LEN
 
-        prefix = "path=" + ("y" * (_MAX_ARG_LEN - 15))
+        prefix = "path=" + ("y" * (_MAX_ARG_LEN - 16)) + " "
         log.log_api_access(
             caller="token:abc",
             operation="GET /api/file-search",
             outcome="allowed",
-            resources=prefix + self.AKIA_TOKEN,
+            resources=prefix + self.CLIP_TOKEN,
         )
         raw = self._disk_text(sel_dir)
-        assert self.AKIA_TOKEN not in raw
-        assert self.AKIA_TOKEN[:10] not in raw
+        assert self.CLIP_TOKEN not in raw
+        assert self.CLIP_TOKEN[:10] not in raw
         assert len(json.loads(raw.strip())["resources"]) <= _MAX_ARG_LEN
 
 

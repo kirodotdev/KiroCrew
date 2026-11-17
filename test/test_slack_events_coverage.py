@@ -995,6 +995,26 @@ class TestOnEventDispatch:
         assert _acked_envelopes(client) == ["env-1"]
 
     @pytest.mark.asyncio
+    async def test_a_reply_also_sent_to_the_channel_is_answered(self):
+        # "Also send to channel" posts a person's thread reply with subtype
+        # thread_broadcast: it is their own message, not a system event.
+        orch = _socket_orch()
+        on_event = await _install_on_event(orch, ev.SeenCache())
+        event = {
+            "type": "message",
+            "subtype": "thread_broadcast",
+            "user": "U1",
+            "channel": "D1",
+            "text": "hi",
+            "thread_ts": "1.0",
+            "ts": "2.0",
+            "team": "T1",
+        }
+        with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            await on_event(_client(), _req("events_api", {"event": event}))
+        assert route.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_envelope_team_id_overrides_event_team(self):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())

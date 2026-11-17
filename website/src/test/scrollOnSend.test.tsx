@@ -70,7 +70,9 @@ describe('scrollOnSend', () => {
   it('the main chat gates only its send-time pin, not turn-start follow', () => {
     // The turn-start follow (autoFollowAllowed) keeps its own geometry gate and
     // must not read this setting; the send pin must.
-    expect(composerSendSrc).toMatch(/if \(loadChatConfig\(\)\.scrollOnSend\) setTimeout\(\(\) => scrollBottom\(\), SCROLL_AFTER_RENDER_MS\)/)
+    // The send pin scrolls only the transcript of the session that sent, so a
+    // follow-up Start sending to a new session leaves the one on screen alone.
+    expect(composerSendSrc).toMatch(/if \(loadChatConfig\(\)\.scrollOnSend\) setTimeout\(\(\) => \{ if \(!slot \|\| store\.getState\(\)\.chat\.activeSlot === slot\) scrollBottom\(\) \}, SCROLL_AFTER_RENDER_MS\)/)
     expect(composerSendSrc).toMatch(/autoFollowAllowed\(\)\) \{\n\s+setTimeout\(\(\) => scrollBottom\(\), SCROLL_AFTER_RENDER_MS\)/)
     expect(composerSendSrc.match(/scrollOnSend/g)).toHaveLength(1)
   })

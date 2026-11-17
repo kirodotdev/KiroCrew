@@ -246,6 +246,45 @@ def test_each_waking_status_pushes(monkeypatch):
         assert fired == [(CONDUCTOR, "it_a")], status
 
 
+def _tail_board(stamp: str, *events: "tuple[str, str | None]") -> "list[tuple[str, str, str]]":
+    """One item whose event tail is *events* (``(kind, status)``), read by ``_board_items``."""
+    rows = [{"id": f"ev{n}", "kind": kind, "status": st} for n, (kind, st) in enumerate(events)]
+    status = next((st for kind, st in reversed(events) if kind == "report"), "")
+    item = {"item_id": "it_a", "last_report_at": stamp, "status": status, "events": rows}
+    return conductor_wake._board_items({"items": [item]})
+
+
+@pytest.mark.parametrize(
+    "tail, pushes",
+    [
+        ((("bind", None), ("report", "blocked")), True),
+        ((("report", "blocked"), ("report", "blocked")), False),
+        ((("report", "blocked"), ("report", "done")), True),
+        ((("report", "blocked"), ("report", "question")), True),
+        ((("report", "blocked"), ("decision", None), ("report", "blocked")), True),
+        ((("report", "blocked"), ("report", "progress"), ("report", "blocked")), True),
+        ((("report", "blocked"),), True),
+        ((("report", "question"), ("report", "question")), True),
+    ],
+    ids=[
+        "first",
+        "repeat",
+        "done-after-blocked",
+        "question-after-blocked",
+        "after-decide",
+        "after-progress",
+        "tail-cut-short",
+        "question-again",
+    ],
+)
+def test_only_a_changed_status_pushes(monkeypatch, tail, pushes):
+    fired = _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _tail_board("t1", ("bind", None))))
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _tail_board("t2", *tail)))
+    assert fired == ([(CONDUCTOR, "it_a")] if pushes else [])
+
+
 def test_an_item_that_has_not_reported_yet_pushes_nothing(monkeypatch):
     """A board whose item carries no status is a ``create`` or a ``bind``, not news."""
     fired = _record_fires(monkeypatch)
@@ -303,7 +342,11 @@ def test_two_reports_in_one_second_each_push(monkeypatch):
                     "status": _WAKING,
                     "worker_session_key": WORKER,
                     "state": "open",
-                    "events": [{"id": e, "kind": "report"} for e in event_ids],
+                    # Each report a new status, so ``_repeats_status`` stays out of it.
+                    "events": [
+                        {"id": e, "kind": "report", "status": "progress" if n == 0 else _WAKING}
+                        for n, e in enumerate(event_ids)
+                    ],
                 }
             ]
         }
@@ -609,6 +652,40 @@ def test_a_workers_report_wakes_its_conductor_through_the_bus(real_crew_log, mon
         await asyncio.to_thread(_report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:01Z")
         assert await _until(lambda: svc.fired), "the report reached the conductor's loop"
         assert svc.fired == [LOOP_ID]
+
+    asyncio.run(body())
+
+
+def test_who_else_can_report_is_read_off_the_folds_own_board(real_crew_log, monkeypatch):
+    """END TO END for the wake window's one exemption.
+
+    Whether a reporter is alone is read off the board the ``work`` fold renders, never
+    off a second store. With another worker bound and open the report waits the window;
+    once that item is closed, the same worker's next report is armed at once.
+    """
+    monkeypatch.setenv(conductor_wake.WAKE_BATCH_ENV, "7")
+    _board("acp-c", CONDUCTOR, WORKER)
+    base = {"slot": CONDUCTOR, "actor": "conductor", "by": CONDUCTOR, "item_id": "it_q"}
+    _write("acp-c", **base, action="create", title="t", acceptance={"kind": "human_approval"})
+    _write("acp-c", **base, action="bind", worker_session_key="chat-worker-b")
+    _unit("acp-w", WORKER)
+
+    async def body() -> None:
+        svc = _Listing(_Loop())
+        _on_this_loop(monkeypatch, svc)
+        await _sync_and_join(svc)
+        assert conductor_wake._registry.live[CONDUCTOR] == {"it_p", "it_q"}
+        await asyncio.to_thread(_report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:01Z")
+        assert await _until(lambda: svc.delays), "the report reached the conductor's loop"
+        assert svc.delays == [7.0], "a second worker is still out"
+
+        await asyncio.to_thread(_write, "acp-c", **base, action="close", state="accepted")
+        assert await _until(lambda: conductor_wake._registry.live[CONDUCTOR] == {"it_p"})
+        await asyncio.to_thread(
+            _report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:02Z", status="question"
+        )
+        assert await _until(lambda: len(svc.delays) == 2)
+        assert svc.delays == [7.0, 0.0], "nobody is left to share the turn with"
 
     asyncio.run(body())
 

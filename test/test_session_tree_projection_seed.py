@@ -79,9 +79,11 @@ def test_an_unlistable_root_serves_the_checkpoint_and_reports_a_gap_no_unit_owns
     faults = _ScanFaults()
     held = {"s-1": _record("s-1", "slot-a")}
 
-    records, edges, scans, incomplete, over_cap = proj._replay_tail(held, {}, None, faults=faults)
+    records, edges, spawned, marks, incomplete, over_cap = proj._replay_tail(
+        held, {}, faults=faults
+    )
 
-    assert (records, edges, scans) == (held, {}, {})
+    assert (records, edges, spawned, marks) == (held, {}, {}, {})
     assert (incomplete, over_cap) == (True, False)
     assert faults.unattributed is True
 
@@ -94,7 +96,7 @@ def test_a_unit_whose_head_cannot_be_read_marks_the_replay_incomplete(
     monkeypatch.setattr(crew_store, "oldest_segment", lambda directory: directory / "log.jsonl")
     monkeypatch.setattr(crew_store, "read_head", _raise(OSError("unreadable head")))
 
-    records, _edges, _scans, incomplete, over_cap = proj._replay_tail({}, {}, None)
+    records, _edges, _spawned, _marks, incomplete, over_cap = proj._replay_tail({}, {})
 
     assert records == {}
     assert (incomplete, over_cap) == (True, False)
@@ -108,38 +110,45 @@ def test_a_unit_created_but_not_announced_is_not_a_gap(
     monkeypatch.setattr(crew_store, "oldest_segment", lambda directory: directory / "log.jsonl")
     monkeypatch.setattr(crew_store, "read_head", lambda segment: (None, None, False))
 
-    records, _edges, _scans, incomplete, _over_cap = proj._replay_tail({}, {}, None)
+    records, _edges, _spawned, _marks, incomplete, _over_cap = proj._replay_tail({}, {})
 
     assert records == {}
     assert incomplete is False
 
 
-def test_a_unit_that_cannot_be_stated_or_read_is_suspect_and_keeps_its_decision(
+def test_a_unit_whose_log_cannot_be_read_keeps_its_evidence_and_mark_and_is_suspect(
     proj: SessionTreeProjection, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    root = _unit_root(tmp_path, "s-stat", "s-read")
+    root = _unit_root(tmp_path, "s-list", "s-read")
     monkeypatch.setattr(crew_store, "_checked_crew_log_root", lambda kind: root)
 
-    def identity(directory: Path) -> tuple[int, int, int, int]:
-        if directory.name == _store_name("s-stat"):
-            raise OSError("cannot stat the unit")
-        return (1, 1, 1, 1)
+    def read(sid: str, *_a: Any) -> Any:
+        if sid == "s-list":
+            raise OSError("cannot list the unit")
+        raise ValueError("torn record")
 
-    monkeypatch.setattr(crew_store, "tree_edge_scan_identity", identity)
-    monkeypatch.setattr(crew_store, "find_last_tree_edge", _raise(ValueError("torn decision")))
-    held = {"s-stat": _record("s-stat", "slot-a"), "s-read": _record("s-read", "slot-b")}
+    monkeypatch.setattr("kiro_crew.crew_log.session_tree_projection_seed._read_unit", read)
+    held = {"s-list": _record("s-list", "slot-a"), "s-read": _record("s-read", "slot-b")}
     decision = EdgeRecord(slot="slot-b", parent_slot="slot-a", at=5, sid="s-read", seq=2)
+    spawn = EdgeRecord(slot="slot-c", parent_slot="slot-b", at=2, sid="s-read", seq=1)
     faults = _ScanFaults()
 
-    records, edges, scans, incomplete, _over_cap = proj._replay_tail(
-        held, {("slot-b", "s-read"): decision}, None, faults=faults
+    records, edges, spawned, marks, incomplete, _over_cap = proj._replay_tail(
+        held,
+        {("slot-b", "s-read"): decision},
+        {("slot-c", "s-read"): spawn},
+        {"s-read": (1, 1, 1, 9, 2, 3, 0, 1, 1, 0)},
+        faults=faults,
     )
 
     assert records == held
     assert edges == {("slot-b", "s-read"): decision}, "an unread decision is kept, not dropped"
-    assert scans == {}
+    assert spawned == {("slot-c", "s-read"): spawn}, "an unread spawn is kept, not dropped"
+    assert marks == {
+        "s-read": (1, 1, 1, 9, 2, 3, 0, 1, 1, 0)
+    }, "the next boot reads from the same mark"
     assert incomplete is True
-    assert sorted(faults.sids) == ["s-read", "s-stat"]
+    assert sorted(faults.sids) == ["s-list", "s-read"]
 
 
 def test_spawns_are_kept_and_reported_when_the_root_cannot_be_resolved(
@@ -150,41 +159,16 @@ def test_spawns_are_kept_and_reported_when_the_root_cannot_be_resolved(
     spawn = EdgeRecord(slot="slot-c", parent_slot="slot-a", at=2, sid="s-1", seq=1)
     gone = EdgeRecord(slot="slot-d", parent_slot="slot-x", at=2, sid="s-gone", seq=1)
     loaded = {("slot-c", "s-1"): spawn, ("slot-d", "s-gone"): gone}
+    mark = (1, 1, 1, 1, 2, 3, 0, 1, 1, 0)
 
-    spawned, scans, incomplete = proj._replay_spawned(
-        records, loaded, {"s-1": (1, 1, 1, 1), "s-gone": (2, 2, 2, 2)}
+    _records, _edges, spawned, marks, incomplete, _over_cap = proj._replay_tail(
+        records, {}, loaded, {"s-1": mark, "s-gone": mark}
     )
 
     assert spawned == {("slot-c", "s-1"): spawn}, "a spawn whose creator unit is gone is dropped"
-    assert scans == {"s-1": (1, 1, 1, 1)}
+    assert marks == {"s-1": mark}
+    assert "s-gone" not in marks, "a mark must not outlive the evidence it covers"
     assert incomplete is True
-
-
-def test_a_creator_whose_spawns_cannot_be_read_keeps_them_and_is_suspect(
-    proj: SessionTreeProjection, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    root = _unit_root(tmp_path, "s-stat", "s-read")
-    monkeypatch.setattr(crew_store, "_checked_crew_log_root", lambda kind: root)
-
-    def identity(directory: Path) -> tuple[int, int, int, int]:
-        if directory.name == _store_name("s-stat"):
-            raise OSError("cannot stat the unit")
-        return (3, 3, 3, 3)
-
-    monkeypatch.setattr(crew_store, "tree_edge_scan_identity", identity)
-    monkeypatch.setattr(crew_store, "find_spawned_entries", _raise(OSError("torn spawns")))
-    records = {"s-stat": _record("s-stat", "slot-a"), "s-read": _record("s-read", "slot-b")}
-    spawn = EdgeRecord(slot="slot-c", parent_slot="slot-b", at=2, sid="s-read", seq=1)
-    faults = _ScanFaults()
-
-    spawned, scans, incomplete = proj._replay_spawned(
-        records, {("slot-c", "s-read"): spawn}, {}, faults=faults
-    )
-
-    assert spawned == {("slot-c", "s-read"): spawn}
-    assert scans == {}
-    assert incomplete is True
-    assert sorted(faults.sids) == ["s-read", "s-stat"]
 
 
 # --------------------------------------------------------------------------- #

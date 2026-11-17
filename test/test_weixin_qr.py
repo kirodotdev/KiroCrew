@@ -340,9 +340,9 @@ def test_corrupt_config_does_not_clobber_an_existing_credential(tmp_path, monkey
 
 
 # ── QR image rendering ────────────────────────────────────────────────────────
-# Regression: iLink's `qrcode_img_content` is the scannable login URL, NOT image
-# bytes. The first release passed it straight to <img src>, so the panel showed
-# a broken image with alt text. The handler must render a real PNG data URI.
+# iLink's `qrcode_img_content` is the scannable login URL, NOT image bytes.
+# Passed straight to <img src>, the panel shows a broken image with alt text.
+# The handler must render a real PNG data URI.
 
 
 def test_render_qr_data_uri_is_a_loadable_png():
@@ -477,7 +477,7 @@ def test_prune_sessions_survives_a_client_whose_close_cannot_be_scheduled(monkey
 
 
 # ── Cross-process .env.lock exclusion ─────────────────────────────────────────
-# Regression: _commit_credential_and_config must acquire the shared .env.lock
+# _commit_credential_and_config must acquire the shared .env.lock
 # advisory lock (same sidecar file used by `secrets import --apply`) so that the
 # WeChat sign-in handler and the CLI importer cannot interleave their
 # read-modify-write cycles.  If the lock is already held, the handler must abort

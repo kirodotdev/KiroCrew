@@ -26,6 +26,7 @@ from kiro_crew.secrets_mediation.dispatch import (
 )
 from kiro_crew.secrets_mediation.policy import PolicyError, policy_path
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 CANARY = "sk-canary-3f9a2b7c1d8e-DO-NOT-LEAK"
 OPAQUE_CREDENTIAL = "opaque-7a9c2d4e6f8b1a3c5e7d9f0b2a4c6e8f"
@@ -272,7 +273,10 @@ async def test_authorized_but_unstored_secret_collapses(tmp_path, monkeypatch):
         ({"url": "https://[::1/x"}, MediationError),
         ({"method": "GET"}, MediationError),
         ({"timeout_s": float("nan")}, MediationError),
-        ({"json_body": {"note": "my key is AKIAIOSFODNN7EXAMPLE"}}, MediationError),
+        (
+            {"json_body": {"note": f"my key is {github_classic(seed=325)}"}},
+            MediationError,
+        ),
         ({"url": f"{ORIGIN}/x?token=AKIAIOSFODNN7EXAMPLE"}, MediationError),
         ({"json_body": {"blob": "x" * 300_000}}, MediationError),
     ],
@@ -288,6 +292,35 @@ async def test_pre_send_refusals_raise_before_the_secret_is_read(
         await perform_mediated_request(_req(**request_fields), tmp_path)
     assert CANARY not in str(excinfo.value)
     assert net.sends == []
+
+
+@pytest.mark.parametrize("scope", ["on", "off_seam", "owner_view"])
+def test_a_flagged_url_payload_is_refused_whatever_the_redaction_setting(
+    tmp_path, monkeypatch, scope
+):
+    """The exfiltration scan's decision refuses a long query payload to the authorized
+    origin, and the credential check still refuses, with redaction off inside a seam
+    or an owner view too: a refusal gate, not an output."""
+    import contextlib
+
+    from kiro_crew import redaction_seams
+    from kiro_crew.security import redaction_switch
+
+    _authorize(tmp_path)
+    monkeypatch.setattr(redaction_seams, "_redaction_off", scope != "on")
+    enter = {
+        "on": contextlib.nullcontext,
+        "off_seam": lambda: redaction_seams.output_seam(redaction_seams.CHAT),
+        "owner_view": redaction_switch.owner_view,
+    }[scope]
+    payload = "".join(f"{i:04d}row-of-notes;" for i in range(30))
+    with enter():
+        with pytest.raises(MediationError, match="disallowed URL"):
+            dispatch.prepare_mediated_request(_req(url=f"{ORIGIN}/x?q={payload}"), tmp_path)
+        with pytest.raises(MediationError, match="credential in an agent-supplied value"):
+            dispatch.prepare_mediated_request(
+                _req(json_body={"note": f"my key is {github_classic(seed=327)}"}), tmp_path
+            )
 
 
 @pytest.mark.parametrize(

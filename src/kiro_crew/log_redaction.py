@@ -6,9 +6,13 @@ redacted output. This module performs ZERO vault I/O — the caller resolves
 any literal secret values and passes them in via ``install_log_redaction``.
 
 Currently the only caller (``cli._setup_cli_logging``) passes an empty list,
-so the built-in patterns — Bearer tokens, AWS access key IDs, standalone JWTs
-and ``token`` URL parameter values — are what is redacted in practice. Wiring resolved
-vault secret values into the filter at gateway boot is a follow-up.
+so the shape pass is what redacts in practice: the credential plan (the rule table,
+:func:`kiro_crew.security.redaction.redact_credentials`) once this process has run
+it, and before that, while the filter installs at bootstrap, a floor of Bearer
+tokens (a token-shaped value: a digit, or mixed case), standalone signed JWTs and
+``token`` URL parameter values. An identifier such as an AWS access key ID is
+never masked: it names a key and cannot authenticate. Wiring resolved vault secret
+values into the filter at gateway boot is a follow-up.
 
 Records are mutated only when redaction changes the rendered message — for
 ``msg``/``args`` whose args are exact immutable scalars (str/int/float/bool/
@@ -35,31 +39,46 @@ from __future__ import annotations
 
 import logging
 import re
+import string
+import sys
+import threading
 from typing import Callable, Optional
 
-from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT, TOKEN_PARAMETER
+from kiro_crew import redaction_seams
+from kiro_crew.credential_patterns import JWT_MULTI_SEGMENT, TOKEN_PARAMETER
 from kiro_crew.jwt_header import is_jwt_header
 
 logger = logging.getLogger(__name__)
 
 # Bearer tokens: RFC 6750 token68 charset (case-insensitive to catch
-# serializations that lowercase the scheme, e.g. "bearer <token>").
+# serializations that lowercase the scheme, e.g. "bearer <token>"). A match is
+# masked only when its value is token-shaped (:func:`_mask_bearer`).
 _BEARER_RE = re.compile(r"Bearer [A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
 
-# AWS access key IDs: fixed 4-letter prefix + exactly 16 uppercase
-# alphanumerics. Precise enough for near-zero false positives, and the ID is
-# the searchable half of a leaked AWS credential pair.
-#
-# The spellings come from ``credential_patterns``, the single home this module
-# and ``security.py``'s scrubber both import. That module imports nothing at
-# all, so it does not compromise this module's import-leaf shape (it installs
-# at CLI bootstrap, before heavy modules load, and cannot import
-# ``security.py``). The redaction spelling is a DELIBERATE SUPERSET of the
-# scrubber's -- it adds the ``ABIA``/``ACCA`` prefixes, because wider matching
-# is fail-closed for redaction -- and it is BUILT from the scrubber spelling's
-# own fragments, so that relationship holds by construction rather than by a
-# test comparing two hand-written strings.
-_AWS_KEY_ID_RE = re.compile(AWS_KEY_ID_REDACTION)
+_DIGITS = frozenset(string.digits)
+_UPPER = frozenset(string.ascii_uppercase)
+_LOWER = frozenset(string.ascii_lowercase)
+_BEARER_SCHEME_LEN = len("Bearer ")
+
+
+def _token_shaped(value: str) -> bool:
+    """Whether *value* reads as a token: it holds a digit, or mixes case past its first letter.
+
+    Prose after the word ``bearer`` (``bearer authentication``, ``Bearer Credentials``)
+    has neither; a random token of eight or more characters almost always has one.
+    """
+    chars = set(value)
+    if chars & _DIGITS:
+        return True
+    return bool(set(value[1:]) & _UPPER) and bool(chars & _LOWER)
+
+
+def _mask_bearer(m: re.Match[str]) -> str:
+    """``Bearer [REDACTED]`` for a :data:`_BEARER_RE` match whose value is token-shaped."""
+    if _token_shaped(m.group()[_BEARER_SCHEME_LEN:]):
+        return "Bearer [REDACTED]"
+    return m.group()
+
 
 # Standalone JWTs: the shared ``eyJ`` header plus 2-4 further dot-separated
 # base64url segments, covering 3-segment JWS AND 4-5-segment JWE (dir/ECDH-ES).
@@ -120,17 +139,65 @@ class SecretRedactionFilter:
         )
 
     def redact(self, text: str) -> str:
-        """Replace secret values, Bearer tokens, AWS key IDs, JWTs and ``token`` values.
+        """Replace secret values, Bearer tokens, JWTs and ``token`` values.
 
-        Zero I/O — only applies pre-compiled patterns.
+        Zero I/O — only applies pre-compiled patterns. With the owner's
+        redaction setting off (``redaction_seams.published_off``) only the secret values are replaced.
         """
+        # The literal vault-secret pass runs whatever the owner chose: these are
+        # values the gateway resolved itself, never a shape guess.
         if self._secret_pattern is not None:
             text = self._secret_pattern.sub("[REDACTED]", text)
-        text = _BEARER_RE.sub("Bearer [REDACTED]", text)
-        text = _AWS_KEY_ID_RE.sub("[REDACTED]", text)
-        text = _redact_jwts(text)
-        text = _TOKEN_PARAM_RE.sub(_mask_token_value, text)
-        return text
+        # The shape passes below are the LOGS output seam.
+        if redaction_seams.published_off():
+            return text
+        return redact_log_shapes(text)
+
+
+#: Set while this thread runs the credential plan for a log line, so a record the plan
+#: itself logs takes the floor instead of re-entering it.
+_IN_PLAN = threading.local()
+
+
+def _loaded_plan() -> Optional[Callable[[str], tuple[str, list[str]]]]:
+    """The credential plan, once this process has loaded and run it; else None.
+
+    Read off ``sys.modules`` and never imported here: this module installs before the
+    ``security`` package loads, and a log record must not trigger that import.
+    """
+    seam = sys.modules.get("kiro_crew.security.redaction_structured.compat")
+    redaction = sys.modules.get("kiro_crew.security.redaction")
+    if seam is None or redaction is None or not hasattr(seam, "credential_plan"):
+        return None
+    return getattr(redaction, "redact_credentials", None)
+
+
+def redact_log_shapes(text: str) -> str:
+    """The shape pass over a log line: the credential plan, or the floor before it loads.
+
+    Zero I/O. :class:`SecretRedactionFilter` skips it with the owner's redaction setting
+    off; a sink that reaches anyone but the owner (the dashboard's live log stream)
+    applies it itself then. A plan that cannot run answers with the floor.
+    """
+    plan = _loaded_plan()
+    if plan is not None and not getattr(_IN_PLAN, "active", False):
+        _IN_PLAN.active = True
+        try:
+            # The floor's Bearer pass runs after the plan too: a bare ``Bearer <token>``
+            # with no header name before it is a credential in a log line.
+            return _BEARER_RE.sub(_mask_bearer, plan(text)[0])
+        except Exception:  # noqa: BLE001 -- the floor below still redacts the line
+            pass
+        finally:
+            _IN_PLAN.active = False
+    return _redact_floor(text)
+
+
+def _redact_floor(text: str) -> str:
+    """Bearer tokens, signed JWTs and ``token`` values: what a line gets before the plan loads."""
+    text = _BEARER_RE.sub(_mask_bearer, text)
+    text = _redact_jwts(text)
+    return _TOKEN_PARAM_RE.sub(_mask_token_value, text)
 
 
 #: Marks an installed factory as a redacting wrapper, and carries the two things it

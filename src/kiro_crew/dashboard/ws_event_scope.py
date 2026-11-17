@@ -247,7 +247,7 @@ _SLOT_SCOPED_EVENTS = frozenset({
     # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (the ``_subagent_event``
     # closure in slack/gateway_runtime/subagent_wiring.py), so a guard that scans
     # broadcast call sites for string literals cannot see them --
-    # ``TestFireEventNamesAreClassified`` reads the
+    # ``test_fire_event_names_are_classified`` reads the
     # emitter's own literals instead. Each payload carries id + slot.
     "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
     "subagent_snapshot", "subagent_status", "subagent_queued",
@@ -329,6 +329,10 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # ``broadcast_ws_owners``): slot keys and refusal codes across every slot on
     # the install, for the owner who pressed the button and no one else.
     "resume_all_done",
+    # A person's steer into a Crew Mode worker was delivered but its ledger record
+    # failed in the background (``chat_api.crew_steer.CREW_STEER_UNRECORDED_FRAME``,
+    # ``broadcast_ws_owners``). Only the owner's own sends are steers.
+    "crew_steer_unrecorded",
 })
 
 

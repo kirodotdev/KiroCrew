@@ -20,7 +20,8 @@ from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid
+from kiro_crew.embeddings_shared import warm_embedder_for_person_soon
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.messaging.approval import (
     TextReplyApprovalDecider,
     deliver_verdict,
@@ -182,6 +183,8 @@ class WhatsAppDispatcher:
             route=inbound_route,
         ):
             return
+        if group:  # a group message has no route, so admission did not start the model load
+            warm_embedder_for_person_soon()
 
         # Recheck governance only after this accepted callback is census-visible;
         # otherwise the off-loop policy read opens an uncounted restart window.
@@ -432,6 +435,15 @@ class WhatsAppDispatcher:
         # sender, which is what the context decision below has to key on.
         group = is_group_jid(scope)
         session_key = self._session_key(scope, is_operator=is_operator)
+        unprompted = bool(verdict is not None and verdict.unprompted)
+        busy = self.sessions.is_busy(session_key) or (
+            group and self.sessions.is_busy(self._session_key(scope, is_operator=not is_operator))
+        )
+        if busy and unprompted and not is_operator:
+            # Nobody addressed the bot, so a busy receipt answers a question nobody
+            # asked: an unprompted turn is invisible until it speaks. The operator
+            # keeps the steer, which folds a follow-up into the running reply.
+            return
         if self.sessions.is_busy(session_key):
             await self._handle_busy(inbound, session_key)
             return
@@ -451,7 +463,6 @@ class WhatsAppDispatcher:
         )
         session_key = self._session_key(scope, is_operator=is_operator)
         agent = self._resolve_agent(scope)
-        unprompted = bool(verdict is not None and verdict.unprompted)
         # Interactive approval by typed reply, only for a sender allowed to
         # approve and only for a turn someone is actually watching. An
         # unprompted group turn nobody asked for must not stop to request
@@ -675,12 +686,17 @@ class WhatsAppDispatcher:
         # waiting on. They still get the busy receipt below; they just cannot
         # change what is running.
         may_steer_session = self.transport is not None and self.transport.is_operator(inbound)
+        # A steer returns before the turn reads it, and the transport deletes this
+        # message's media as soon as this call returns: text naming one of those
+        # files gets the resend receipt instead. A voice transcript names none.
+        names_media = any(path in inbound.text for path in inbound.attachments)
         provider = self.sessions.get_provider(session_key)
         steer = getattr(provider, "steer", None)
         has_active = getattr(provider, "has_active_turn", None)
         live = has_active is None or bool(has_active())
         ok = bool(
             may_steer_session
+            and not names_media
             and live
             and getattr(provider, "supports_steer", False)
             and steer is not None
@@ -767,7 +783,10 @@ class WhatsAppDispatcher:
         if reply_text:
             self.conv_log.append(session_key, "assistant", reply_text, mid=mint_row_mid())
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "WhatsApp"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "WhatsApp"
             self.conv_log.set_title(session_key, title)
 
     async def _say(self, chat_jid: str, text: str) -> bool:

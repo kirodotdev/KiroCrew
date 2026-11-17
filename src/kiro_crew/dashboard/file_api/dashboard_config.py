@@ -98,6 +98,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "side_panel_always_open",
             "side_panel_pin_summary",
             "folder_suggestions_enabled",
+            "project_tags_enabled",
             "topic_tags_enabled",
             "session_card_source_links",
             "session_folder_root",
@@ -387,20 +388,22 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["folder_suggestions_enabled"] = val
-        if "topic_tags_enabled" in body:
-            val = body["topic_tags_enabled"]
+        for tags_key in ("project_tags_enabled", "topic_tags_enabled"):
+            if tags_key not in body:
+                continue
+            val = body[tags_key]
             if not isinstance(val, bool):
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return web.json_response(
                     {
-                        "error": "topic_tags_enabled must be a boolean",
-                        "code": "invalid_topic_tags_enabled",
+                        "error": f"{tags_key} must be a boolean",
+                        "code": f"invalid_{tags_key}",
                     },
                     status=400,
                 )
-            updates["topic_tags_enabled"] = val
+            updates[tags_key] = val
         if "link_previews" in body:
             val = body["link_previews"]
             if not isinstance(val, bool):
@@ -735,13 +738,13 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     share_sites = (
         [] if social_share_denied else await asyncio.to_thread(social_share.permitted_sites)
     )
-    # Same shape, same reason: the Decisions feature-preview card is drawn only when
-    # the ceiling permits the seam, and this endpoint is the only place the dashboard
-    # can learn that. Presentation, not the control -- the consent PUT and the gate's
+    # Same shape, same reason: the Decisions feature-preview card draws its controls
+    # only when the ceiling permits the seam, and the administrator's notice when it
+    # does not, and this endpoint is the only place the dashboard can learn that. Presentation, not the control -- the consent PUT and the gate's
     # own consent read are the two chokepoints (``decisions/capability.py``). The card
     # is drawn while EITHER side permits: a fleet that allows hosted Jev but withdraws
     # local models (``capabilities.decisions_local``) still needs the card. A pinned
-    # ``capabilities.decisions`` deny covers the local side too, so it hides the card.
+    # ``capabilities.decisions`` deny covers the local side too, so it draws the notice.
     # Both rows evaluated in one hop, each audited once, never short-circuited.
     hosted_denied, local_denied = await asyncio.to_thread(denied_sides)
     decisions_denied = hosted_denied and local_denied
@@ -776,6 +779,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,
+            "project_tags_enabled": cfg.dashboard.project_tags_enabled,
             "topic_tags_enabled": cfg.dashboard.topic_tags_enabled,
             "model_picker_hidden_models": list(cfg.dashboard.model_picker_hidden_models),
             "model_picker_configured": cfg.dashboard.model_picker_configured,
@@ -813,9 +817,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # The dialog draws only these buttons and re-reads this list before it
             # opens a site.
             "social_share_sites": share_sites,
-            # Read-only: the `capabilities.decisions` governance answer. False hides
-            # the Decisions (Jev) feature-preview card; the owner's own switch is
-            # the keystone behind `/api/decisions/consent`, never a field here.
+            # Read-only: the `capabilities.decisions` governance answer. False makes
+            # the Decisions feature-preview card draw the administrator's notice in
+            # place of its controls; the owner's own switch is the keystone behind
+            # `/api/decisions/consent`, never a field here.
             "decisions_enabled": not decisions_denied,
             # Read-only: the `capabilities.browse` governance answer. False makes
             # Settings -> Browser and the live browser card say browsing is off by

@@ -42,7 +42,7 @@ code should import the Agent SDK path so the registry keeps one owner:
 |---|---|
 | `ACP_BACKEND_<NAME>` | The id. Never a bare literal at a call site (H5). |
 | membership in `ACP_BACKENDS_KNOWN` | `AcpProvider.__init__` rejects anything outside it (H8), and every capability set is asserted a subset of it. |
-| `PROVIDER_LABEL_<NAME>` in `acp/types.py` | A closed mapping; an absent label means Kiro, so a harness without one persists as a Kiro session and has its transcript pruned for want of a Kiro session file (H11). |
+| `PROVIDER_LABEL_<NAME>` in `acp/provider_labels.py` (re-exported by `acp/types.py`) | A closed mapping; an absent label means Kiro, so a harness without one persists as a Kiro session and has its transcript pruned for want of a Kiro session file (H11). |
 | an entry in `POLICY_ID_BY_BACKEND` | A governance rule is written by a human as an identifier. The mapping is what makes the id nameable in a deny rule **before** anything registers it — so this is required even for a dormant harness. |
 | an entry in `_MODEL_REGISTRY_NAMESPACE_BY_BACKEND` (in `agent_sdk/backends_models.py`) | The model-id namespace, which is also the harness's bucket in the cross-session advertised-model cache. An id with no entry falls back to `acp` and joins the kiro family, so its advertised models can replace the list the picker offers for kiro-cli. |
 
@@ -102,6 +102,7 @@ vocabulary.
 | `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` | The harness owns persisted session records and can restore from a `sessionId` without a Crew-side transcript or `_kiro.dev/session_file`. |
 | `ACP_BACKENDS_LOAD_WITHOUT_MODES` | A successful restore response may omit `modes`; membership prevents that valid load from being mistaken for a failed restore and replaced by a fresh session. |
 | `ACP_BACKENDS_RESUME_WITHOUT_LOAD` | The harness restores with standard ACP `session/resume` and advertises `sessionCapabilities.resume`, rather than using `session/load`. Membership selects both the capability key and verb. |
+| `ACP_BACKENDS_CWD_BOUND_SESSIONS` | The harness serves a saved session only in the directory it was created in, so a restore naming another `cwd` splits the session (opencode 1.x drops approval replies and mounts the load's MCP servers on the wrong instance). For a member, a chat whose folder changed since its session was saved starts a fresh session in the new folder and replays the conversation as text instead of loading. |
 | `ACP_BACKENDS_RELOAD_DISPOSED_SESSION` | The harness can dispose one session's backend inside a live process and then answer every prompt on that id with one error. Membership needs a capture of that error and of a `session/load` in a second process; `acp/disposed_session.py` lists the exact texts. |
 | `ACP_BACKENDS_FORK_AT_MESSAGE` | The harness's `session/fork` copies a stored session only up to a given assistant message, so an edited message's rewind can keep the retained native history. Advertising `sessionCapabilities.fork` is not enough: a fork that ignores the point copies the edited-away suffix too. |
 | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
@@ -110,6 +111,14 @@ vocabulary.
 | `ACP_BACKENDS_KIRO_SLASH_COMMANDS` | Receives `_kiro.dev/commands/execute`: Crew may send the verb, and nothing wider. kiro-cli only. KAS refuses the verb with -32603 (`test/fixtures/acp_frames/kas/commands-refused-live.jsonl`), so it is out although it is kiro-family. |
 | `ACP_BACKENDS_KIRO_FAMILY` | kiro-cli and KAS, the two harnesses Crew spawns through `kiro-cli`. Not a capability: the set the readers that mean "kiro-cli or KAS" stand on (the card's crew-tools and model-switch lines, the effort live path, the gate in front of the `cli.json` overlay writers), so none of them borrows a capability set that holds the same members today. The overlay's effort and Tool Search keys use the narrower sets below. |
 | `ACP_BACKENDS_NATIVE_TODOS` | The harness interprets `/todos` as its own task-list prompt command (`SessionCapabilities.supports_native_todos`), so the dashboard forwards it and lists it in `GET /api/slash-commands`. Claude only today. A non-member refuses it, because a kiro-family or unknown harness would receive the text as an ordinary prompt. Separate from `ACP_BACKENDS_KIRO_SLASH_COMMANDS`, which names an RPC rather than this command. |
+| `ACP_BACKENDS_PLAN_CHECKLIST` | `AcpClient` reads the ACP `plan` update as the agent's checklist (`EVENT_TODO_UPDATE`, `acp/plan_checklist.py`) for the task progress bar, read-only (`SessionCapabilities.keeps_own_checklist`). The claude launch sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` by default. Claude only. |
+| `ACP_BACKENDS_HARNESS_NOTICES` | `AcpClient` declares `clientCapabilities.session.notices` and reads `notice` and mode-changing `current_mode_update` as notice rows (`acp/harness_notices.py`); a `notice` between prompts starts an agent-started turn. Declaration and reader are one set: a declared client gets no text copy. Claude only; goose and copilot stay out (their `current_mode_update` is a routing tripwire), as do kiro-cli and KAS (their modes are agents). |
+| `ACP_BACKENDS_RAW_SDK_TASKS` | The session asks for raw SDK task and retry messages (`_meta.claudeCode.emitRawSDKMessages`), read off `_claude/sdkMessage` (`acp/raw_sdk_tasks.py`): Workflow agents become Subagents cards, a background shell or Monitor task's end a notice row, a turn's first API retry a warning row. X set (`claude/raw-sdk-tasks-live.jsonl`). Claude only. |
+| `ACP_BACKENDS_READ_PATH_ARG` | The read tool names its file in `file_path`, so `AcpClient` marks a `read`-kind `tool_call` (`acp/read_path_arg.py`, `AcpEvent.read_path_arg`) and the tool row previews an image. Claude only. |
+| `ACP_BACKENDS_SUMMARIZED_THINKING` | The claude launch sets `CLAUDE_CODE_THINKING_DISPLAY=summarized` when the spawn environment does not name it and no Claude Code settings file decides thinking, so `agent_thought_chunk` carries text. Off the wire; claude-agent-acp 0.94.0 ignores it. Claude only. |
+| `ACP_BACKENDS_NATIVE_CHILD_CANCEL` | A Stop on a running native child's card sends `session/cancel` naming that child (`AcpClient.cancel_native_child`) when its announce granted `capabilities.cancel`, never the parent (H16); the card closes on the reported end. Claude only, for Agent-tool children; a Workflow agent's card closes alone. |
+| `ACP_BACKENDS_TOOL_TITLE_REFINEMENT` | A `tool_call_update` retitles a call first named generically ("Terminal"); a Crew-spawned subagent's card renames its row (`SessionCapabilities.refines_tool_call_titles`, `subagent_manager/card_tool_titles.py`). Claude only; kiro-cli titles a failed call with its bare tool name. |
+| `ACP_BACKENDS_COMPACTION_SUMMARY` | The compaction card shows the summary on the `completed` compaction event's title (`acp/compaction_summary.py`): the `compaction_update`'s `summary`, else the streamed `compaction_summary_chunk` text, redacted and bounded. Claude only; within `ACP_BACKENDS_INLINE_COMPACTION`. |
 | `ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS` | The adapter runs ANY leading-slash `session/prompt` as one of its own commands (`SessionCapabilities.runs_own_slash_commands`), so the dashboard forwards every leading-slash word raw, with no context prefix, except a quick-prompt macro and the commands the dashboard answers itself. Claude only today (`claude/compact-live.jsonl`). A non-member keeps the word as prompt text unless it is one of kiro-cli's command names, because a word forwarded raw loses the turn's context. |
 | `ACP_BACKENDS_EFFORT_OVERLAY` | Reads reasoning effort from the workspace `cli.json` overlay at spawn, so Crew writes, reads back and clears it there. The file is shared by every session in the work dir: a harness that takes effort elsewhere must not be started at a level another session left in it. |
 | `ACP_BACKENDS_TOOL_SEARCH_OVERLAY` | Reads Tool Search keys from the workspace `cli.json` overlay. A harness that takes those settings elsewhere must not collect a file it never reads. |
@@ -180,6 +189,12 @@ card and never switches the backend — the one **Use \<name\>** button does tha
 so a harness this machine cannot run still gets a row and a full card. Under the
 old control an unselectable harness had no chip at all, which meant the harnesses
 an operator most needed to read about were the ones the page had least room for.
+
+The row that is in use and a harness this build never offers carry no Use button.
+Neither does the Kiro CLI row while a saved Kiro CLI setting runs on KAS
+(`kiro_selection_runs_on_kas` on `GET /api/acp-backends`). A button there would
+save the value that is already saved, so the detail says in one line that Kiro CLI
+runs on Kiro Agent.
 
 That projection is why this stage costs a new harness nothing beyond the decisions
 it already owes. A harness that joins `ACP_BACKENDS_KNOWN` and decides every set
@@ -287,7 +302,12 @@ Where that hand-written code lives follows the transport. A harness driven throu
 `CodexHarness.resolve_spawn` is the worked shape — while a per-session harness
 declares it in its own `ProcessAdapter`, also in `acp/harness/<name>.py` and
 registered in `acp.harness.process_adapter_for` (`PiLaunch.resolve_spawn` is the
-worked shape). Both hand their plan to the one launch tail, `acp.launch.launch`,
+worked shape). `AcpClient` keeps that instance for the life of the process
+(`_process_adapter`, dropped by `_reset_state`): a routing read-back records what it
+found in the adapter's own `read_back` (`HarnessReadBack`), which the client reads
+through `_harness_read_back`, and the client asks the adapter for the host's own
+`session/new` / `session/load` entries through `session_mcp_servers`, whose default
+adds none. Both hand their plan to the one launch tail, `acp.launch.launch`,
 so neither writes the session process's sandbox wrap, scratch window or spawn;
 an enforced host's routing read-back child is wrapped inside its adapter, with
 the session's mask. The
@@ -573,7 +593,7 @@ The Codex onboarding ran every stage; it is selectable:
 | 3 spawn path | Done — adapter, npm package, dep marker, env override, project-local resolution, and the spawn itself at Seam 1 of `acp/harness/codex.py` over the resolver `client_spawn_env.py` shares. |
 | 4 handshake | Done — `PROTOCOL_VERSION_CODEX`, its own literal at the same number as Claude's. |
 | 5 auth declaration | Done — `own_credential_file`, `~/.codex/auth.json` on the floor with `CODEX_HOME` re-anchored, that same leaf spared for its own child, `.aws/config` re-exposed read-only, not retired by a host logout, and a two-branch remedy every consumer renders verbatim. |
-| 6 install probe | Done — `_probe_codex` names `codex-acp` and the command that installs it. One component, not two: the adapter ships its own Codex binary. Credentials are deliberately NOT probed: a `missing` verdict disables the switch, and the checkable paths are not the only ones that authenticate a Codex. The sign-in answer is the Stage 5 declaration instead, and every consumer renders its remedy rather than carrying a string of its own. |
+| 6 install probe | Done — `_probe_codex` names `codex-acp` and the command that installs it. One component, not two: the adapter ships its own Codex binary, and the host's `codex` is handed to it as `CODEX_PATH` at spawn only when it is at least that bundled version, so a host without one is not a half-install. Credentials are deliberately NOT probed: a `missing` verdict disables the switch, and the checkable paths are not the only ones that authenticate a Codex. The sign-in answer is the Stage 5 declaration instead, and every consumer renders its remedy rather than carrying a string of its own. |
 | 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` is empty again, which is the healthy state. |
 | routing | Done — `SESSION_CONFIG`, verified and applied as `mode=read-only` after session/new and before the first prompt, refusing otherwise. |
 | residual | ACP v1 cannot require a prompt for a passive READ, so the sensitive-path block does not see this harness's reads. Mitigated at the OS boundary instead: its child cannot read the credential homes the standard tier leaves open. |
@@ -595,7 +615,7 @@ the one to read for what the stages cost when nothing can be skipped:
 | 2 capability sets | Decided for every set, and each decision cites what the harness advertised rather than what it resembles: in the model channel and the advertised-model capture, out of the effort channel (its `session/new` advertises a `mode` select beside `model` and no `effort`), in `ACP_BACKENDS_COMPACT` and `ACP_BACKENDS_INLINE_COMPACTION`, out of steer and harness-managed compaction (its `sessionCapabilities` are close/fork/list/resume), and — the one decision this run got WRONG — out of the session MCP array, on the grounds that it advertises `http` and `sse` MCP transports and no stdio. That is the failure mode Stage 2's own instruction is meant to prevent, arriving through a door the instruction leaves open: the decision DID cite what the harness advertised rather than what it resembles, and it was still wrong, because ACP's `McpCapabilities` has exactly two boolean fields (`http`, `sse`) and no `stdio` field for any conforming agent to set. Citing an advertisement is not enough; the schema that would carry the claim has to be read too, or an absence that cannot exist is mistaken for a refusal. Corrected by measurement against `opencode acp` 1.18.30 — the element Crew already emits is accepted, the child is spawned, its tools are listed and the element's `env` reaches it — so the harness is IN the set, with a mirror at `providers/mirrors/opencode.py` and a ratchet at `test/test_opencode_session_mcp.py`. The cost of the error was one selectable harness serving every session with none of Crew's own tools, and nothing red. |
 | 3 spawn path | Done — one binary, `opencode acp`, resolved override → mise → PATH. No adapter package and no Node floor, so the ladder is the plain-binary one rather than the entry-script one. |
 | 4 handshake | Done — `PROTOCOL_VERSION_OPENCODE`, its own literal, integer `1`, captured off its own wire. |
-| 5 auth declaration | Done — `own_credential_file`, `~/.local/share/opencode/auth.json` on the floor with `XDG_DATA_HOME` re-anchored, that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state (a locally served model needs no sign-in at all). |
+| 5 auth declaration | Done — `own_credential_file`, `~/.local/share/opencode/auth.json` on the floor with `XDG_DATA_HOME` re-anchored, that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state (a locally served model needs no sign-in at all). `signed_out_signature` is `Incorrect API key provided`, the provider's own 401 text relayed in a `session/prompt` error. A host with no provider gives no error: opencode starts on its own hosted `opencode/` models, so a session whose current and advertised models are all `opencode/` and whose config names no model is refused before the first prompt (`AcpNoModelProvider`, `acp/no_model_provider.py`). |
 | 6 install probe | Done — no probe of its own. This harness is a member of `ACP_BACKEND_LAUNCH`, so `_PROBES` binds `_probe_self_served` to it and the component name and install command come from its record. One component, and here that is not a simplification: the thing that would be missing is the thing that serves ACP. `restart_required` is read from the spawn path's own cache (`self_served_cached_negative()`): the binary resolves now, but this process already cached its absence, so a session started right now still fails until the gateway restarts. |
 | 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` stays empty. |
 | routing | Done, by a NEW mechanism — `VERIFIED_SEEDED_SETTINGS`. The setting travels as inline config in the child's environment, which resolves above the project's own config file, and the harness's own resolved configuration is read back before the first prompt; the session is refused when the required value is not in force. |
@@ -609,6 +629,41 @@ member described this harness — `SEEDED_SETTINGS` is declared-but-unenforced f
 want of a read-back, and this harness has one. Adding a member to the vocabulary is
 a heavier edit than joining a set, and it is the right one when the alternative is
 a guarantee nobody performs.
+
+## Worked example: MiMo Code, a fork of a harness already onboarded
+
+The run to read when the new harness is a fork of one this repository already
+drives. MiMo Code forks OpenCode's ACP server, and the temptation is to point
+`OPENCODE_BIN` at `mimo`. That is Stage 1's "a shipped id is never re-pointed" in
+practice, and measured it also fails on its own terms: the fork reads
+`MIMOCODE_CONFIG_CONTENT`, not `OPENCODE_CONFIG_CONTENT`, so the seed never arrives
+and the read-back finds no `permission` at all.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_MIMOCODE`, its own label, policy name and `mimocode` model namespace. |
+| 2 capability sets | Decided per set on 0.1.15 captures, not inherited from the parent. In: model channel and advertised-model capture, session MCP array (a stdio round trip), harness-owned sessions (a second process loaded the first one's id; the result carries `modes`, so out of load-without-modes), local `/clear`, member dispatch and panel, and both compaction sets, inline. The compaction capture needs turns of real size: with one-word turns `scripts/capture_acp_compaction.py` answered NOT_COMPACTED, the summary outgrowing the history. Out: effort (variants are `model` rows), concurrent-prompt steer (a second `session/prompt` during a bash call ended at once with no usage, unread by the running turn), Crew-fired spec hooks and the zero-tool ban, both because `memory`, `history` and `task` never ask (`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`). New: `ACP_BACKENDS_MODEL_SELECT_UNCHECKED`, since its `model` option takes any string and then fails every prompt silently. |
+| 3 spawn path | Done — `ACP_BACKEND_LAUNCH` row (`mimo acp`, `MIMO_BIN`), and its own launch, `MimoCodeLaunch` in `acp/harness/mimocode.py`. It imports nothing from `acp/harness/opencode.py`. The read-back judges the resolved config with MiMo Code's own permission service, transcribed from 0.1.15 rather than from the parent: its ruleset, its `disabled()` (a tool by its own name or its `edit`/`read` group, last rule wins) and its agent merge. Measured: an agent setting only a model prints `permission: {}` and inherits the seed, and a `{"*": "deny"}` map under an action-only key (`doom_loop`) invalidates the whole document, so each switched-off tool is a bare `"deny"`. 0.1.15 prints the document unmasked, so stdout is never logged. The mirror is its own (`providers/mirrors/mimocode.py`), keyed by name as the fork's ACP layer is, withholding only fused ids that collide with its groups (`apply_patch`, `view_image`). |
+| 4 handshake | Done — `PROTOCOL_VERSION_MIMOCODE`, integer `1`. `agentInfo.name` still reads `OpenCode`, so identity comes from the backend id only. |
+| 5 auth declaration | Done — `own_credential_file`, `~/.local/share/mimocode/auth.json` re-anchored under `XDG_DATA_HOME`. Its second override, `MIMOCODE_HOME`, moves the file to a spelling one override suffix cannot also name, so the launch refuses a session whose environment sets it rather than leaving the token unfenced. The token leaf is also on the aws-control builder's standalone fence. |
+| 6 install probe | Done — none of its own, from the launch row; the install command pins `@mimo-ai/cli@0.1`. |
+| 7 selectability | Selectable, and in `ACP_BACKENDS_INDEPENDENT_SETUP`: nothing on its path runs kiro-cli, so first-run setup may finish on it alone. |
+| parent's other surfaces | Each place the OpenCode onboarding reached outside its own modules was checked for the fork: `agent.env` refuses the whole `MIMOCODE_*` namespace, the fork's argument spellings reach the edit gate through `HARNESS_PARAM_ALIASES` on its permission events only (without `notebook_path` as `file_path` every `notebook_edit` was refused, captured live), and the directive recogniser meets its `<server>_<tool>` titles (`acp-client.md`, MiMo Code section). |
+| routing | `VERIFIED_SEEDED_SETTINGS`, plus three things the read-back cannot see, each closed at the launch: two env switches that auto-approve deletes without changing the printed `permission` (stripped, with `MIMOCODE_PERMISSION`), and the loopback listener's unauthenticated `POST /permission/skip-all` (captured live), so the tripwire is armed and `always` is sent as `once`. Its `POST /permission/auto-approve-delete`, driven live, only drops the harness's second confirmation: an `rm` still asked once, as `bash`. |
+| fork-only tools | The fork's toolset is not the parent's, so it was read off its own registry and `mimo debug agent build`, not inherited. Its subagent tool is `actor`, so the `use_subagent` row names `actor`; its `task` is a work-item tracker that never asks (the parent's subagent `task` row would have named a tool no call reaches). Captured live (`actor-subagent-live.jsonl`): a foreground `actor` asks as `actor`, and its subagent, sharing the session, asks for its bash call on the same ACP session. A BACKGROUND subagent never asks: it inherits the parent's grants (`decideAskRouting`), Crew never answers `always`, so its bash and read calls failed closed (captured, not committed). Its unasked tools are closed where it has a switch: `cron` (on by default in 0.1.15) is pinned off, the switches adding `workflow`, `session` or `exec` are stripped, and `MIMOCODE_CODEX_MODE=false` keeps every model off the GPT toolset, where each tool runs inside `exec` and asks under an id no `tool_call` frame names; each switch's source line is beside it in `_MIMOCODE_STRIPPED_ENV` and `_MIMOCODE_PINNED_ENV`. The codex pin also keeps `apply_patch` and `view_image` out. Because `memory`, `history` and `task` stay, the backend is in `ACP_BACKENDS_UNASKED_NATIVE_TOOLS` and out of `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`, where it was first placed on the parent's ground. |
+| tripwire | Armed after the read-back. It trips on any call that completes with no ask, except what the fork runs unasked by design, read off its registry: the `HARNESS_UNASKED_TOOL_IDS` row (`plan_exit` and `question` ask through the question service; `skill_search` asks only to load a skill; `actor` passes only when `mimocode_actor_asks_nothing` finds no launch), and no file write: its edit tools skip the ask under its memory tree (`askEditUnlessMemory`), past every governance rule, so the seed sets `memory.disable_write` and the read-back refuses a session where it is not `true`. With `permission: "ask"` merged last into every built-in agent's ruleset, every other tool, MCP tools included, asks first. It also trips on a call that completes while Crew's answer is outstanding (the listener's `POST /permission/:id/reply`); Crew's own answer leaves that set before it is written. A `session/load` replay is read during the handshake and never reaches it. The same rules catch an approval the harness stored per project (its `permission` table, invisible to the read-back). |
+| residual | Accepted, bounded. Any process on the host that can reach the listener's port can call its two unauthenticated routes. `memory`, `history` and `task` never ask and have no switch, so the knowledge pool never routes a zero-tool call here. The tripwire acts AFTER the first unasked call has run. An unasked `actor` launch stops the harness, including one it dispatches itself (a `subtask` command such as `/review`); a foreground `run` completes after its subagent, whose calls ask; a background subagent's frames are read at the next turn. Tool names are cleared at each turn start, so a background call named in an earlier turn completes unnamed and trips, as does a user's own plugin tool that never asks. Closing the listener itself needs a change upstream. MCP calls follow the opencode precedent, named only by their fused `<server>_<tool>` title, so governance's `mcp` scope is not asked; on a host whose ceiling or a profile constrains `mcp`, a session that mounts a server is refused at launch or stopped mid-session instead (`acp-client.md`, MiMo Code section). |
+| 8 live spill | Reached — seven live captures, all seven classes. Five serve the model through a loopback LiteLLM proxy, because the harness's own Bedrock provider returns an empty turn for every model on 0.1.15; `notebook-edit-live.jsonl` and `actor-subagent-live.jsonl` were taken on its own xiaomi provider through Crew's `AcpClient`. |
+
+What the fork changed is the lesson. The permission model is not a value the
+parent reads from one place: the fork rewrote `disabled()` and its shell asks, and
+its schema refuses a `{"*": "deny"}` map under five action-only keys, so its launch,
+mirror and shell reorder model the fork's 0.1.15 source. The parent's onboarding
+history is the checklist for the rest: every place it reached outside its own
+modules needed the fork's spelling too (the `apply_patch` argument differed by name
+alone). The control surfaces the parent does not expose (the loopback routes, the
+memory tree) came from reading the fork's server code, not its ACP code, which a fork
+is least likely to touch.
 
 ## Worked example: the DeepSeek Harness
 
@@ -990,7 +1045,7 @@ and it IS selectable.
 | 6 install probe | Done — `_probe_strands`: the binary at the verified release, plus `strands-harness` in the project's `.venv`, each named with the command that installs it. |
 | 7 selectability | **Selectable**, on `Routing.VERIFIED_GATE_EXTENSION` with `Readback.LOAD_MARKER` — pi's and DeepSeek's member. |
 | 8 live spill | Reached for the turn classes (`test/fixtures/acp_frames/strands/`): a shell call denied then allowed, and an operator project's custom `@tool` and vended `file_editor` each asking. In a dashboard pod the session started and the read-back passed; the model call there needs a credential the sandbox lets the child read (see the provider table in agent-host-contract.md §3). |
-| verified range | Strands CLI **0.2.3** exactly (`STRANDS_VERIFIED_VERSION`). Fail closed on another release: the install row and the spawn refuse it with the pinned install command. |
+| verified range | Strands CLI **0.2.4** exactly (`STRANDS_VERIFIED_VERSION`); its published package differs from 0.2.3, the release the captures were taken on, only in its version. Fail closed on another release: the install row and the spawn refuse it with the pinned install command. |
 
 Three things this run produced that the checklist did not ask for.
 
@@ -1069,3 +1124,57 @@ needs no pin (`test/test_strands_project_pin.py`).
 `--mcp-config` file (Copilot's staging directory and lifetime), and the CLI's own
 discovery of other tools' MCP and skill files is switched off in the child's
 environment (`STRANDS_CLI_MCP_DISCOVERY=off`, `STRANDS_CLI_SKILL_DISCOVERY=off`).
+
+## Worked example: Google Antigravity
+
+The run to read for a two-file distribution, a permission mode that can be switched
+off from the harness, and a signed-in turn that shows which calls ask and which do
+not. It is
+in `ACP_BACKENDS_KNOWN` and it is selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_ANTIGRAVITY`, `PROVIDER_LABEL_ANTIGRAVITY`, policy name mapped, and its own `antigravity` model namespace. |
+| 2 capability sets | Every set has an explicit decision. Member of `ACP_BACKENDS_SESSION_MCP_ARRAY`, `ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP`, `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, `ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`, `ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`, `ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`, `ACP_BACKENDS_UNASKED_NATIVE_TOOLS` and `ACP_BACKENDS_INDEPENDENT_SETUP`. Out of `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`: its file reads run without a permission request, so a `preToolUse` hook could not gate them. In `ACP_BACKENDS_LOCAL_CLEAR`: its prompt-command allowlist admits only `plan` and `usage`, so a `/clear` handed to the client is refused rather than sent, and the dashboard answers it instead. Out of session sharing and the shared ACP runtime, steer, compaction, Side Chat read-only execution, member capability loading and `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`. It publishes `_meta.mcp`, but stays out of `ACP_BACKENDS_META_IDENTITY` until an authenticated corpus covers every tool class the fail-closed refusal would judge. Not a member of the four launch-and-reload sets: `ACP_BACKENDS_MODEL_AT_LAUNCH` and `ACP_BACKENDS_EFFORT_AT_LAUNCH` (1.4.4 advertises `model` and `thinking_level` as config options on `session/new` and `session/load`, and the launch argv carries neither), `ACP_BACKENDS_MCP_RELAUNCH_RELOAD` (its MCP servers arrive on the `session/new` array, none at launch) and `ACP_BACKENDS_RELOAD_DISPOSED_SESSION` (no capture of a disposal error or of a load in a second process). |
+| 3 spawn path | Done — the registry's standalone `agy_acp_server.par` plus its sibling `localharness_external`. `ANTIGRAVITY_ACP_BIN` and `ANTIGRAVITY_HARNESS_PATH` are the explicit overrides; resolution treats the pair as one install, and the child always receives the exact helper path in `ANTIGRAVITY_HARNESS_PATH`. |
+| 4 handshake | Done — integer `1`, captured from Antigravity ACP 1.4.4. The client refuses any other reported release because several later checks depend on that release's wire shape. |
+| 5 auth declaration | Done — `own_credential_file`, the consumer and business token leaves under `~/.gemini/antigravity-acp/`, `GEMINI_HOME` re-anchored, and both leaves listed as adapter-owned and masked from agent files. `settings.json` is not a credential leaf: the 1.4.4 runtime holds only `auth.type` and `gcp.project`/`gcp.location` there, and API-key auth reads `GEMINI_API_KEY` from the launch environment. |
+| 6 install probe | Done — `agent_sdk/backend_install.py` names whichever archive member is absent; the run installs the `1.4.4` archive rather than accepting the interactive `agy` TUI as a substitute. |
+| 7 selectability | **Selectable**, on `Routing.SESSION_CONFIG`. Crew writes `mode=default` before the first prompt, refuses a session that does not advertise it, and stops a live session moved to `auto_edit` or `yolo`. |
+| 8 live spill | Done. A live handshake, `session/new`, `session/load`, config-option writes and stdio MCP startup were captured. A stdio server was asked `server/discover` and `tools/list`. One signed-in session supplies every required turn class: shell, read, edit, refused calls and a stdio MCP call (`turn-live-tools`, `turn-live-refused`, `turn-live-mcp`). No total zero-tool ban is claimed, because that session's file reads ran without a permission request. |
+| verified range | Antigravity ACP **1.4.4** exactly. The handshake, mode and config-option read-back fail closed on another release, so each new release is refused until a change re-verifies its handshake and bumps `ANTIGRAVITY_VERIFIED_VERSION`; that is an ongoing maintenance cost, the same as Copilot's pin. The registry lists only `1.4.5`, which the pin refuses, so the install hint and the refusal message name the exact `1.4.4` archives on `dl.google.com` instead of the registry page, and say that Kiro Crew verifies `1.4.4` only and refuses other versions until they are verified. The backend card shows that hint as its install command (`install_command` in `dashboard/handlers/acp_backend_status.py`). Enterprise authentication policy remains unmeasured and is not claimed as verified enforcement. |
+
+Three things this run produced that the checklist did not ask for.
+
+**The first is an install that is one unit but two executables.** The ACP Registry
+entry launches `agy_acp_server`, which resolves `localharness_external` as a sibling.
+A resolver that reports the main file alone produces a healthy-looking install and a
+dead spawn. Crew resolves both before launch, reports the absent half by name, and
+passes the helper path explicitly rather than trusting a stale parent environment.
+
+**The second is that permission mode must be treated as a switch, not a preference.**
+Antigravity offers `default`, `auto_edit` and `yolo`; the latter two suppress the
+permission requests Crew depends on. The session starts in `default`, the value is
+read back after create and load, a forbidden mid-session mode stops the harness,
+any call reported `completed` with no permission request stops it too, after that
+call ran, unless it is a read-only built-in (the spawn arms
+`AcpClient._tripwire_pi_gate`, the tripwire MiMo Code uses, with Antigravity's
+`HARNESS_UNASKED_TOOL_IDS` row; an unasked read is named from its `Running <name>`
+title), and the prompt-command allowlist admits only `plan` and `usage`, so `/logout` cannot
+arrive through channel or subagent text. `default` advertises the prompt flow, but
+a signed-in turn ran every file read without asking, so Crew does not claim that
+this harness can serve a `"tools": []` worker.
+
+**The third is where the evidence ends.** Authentication methods, prompt modalities,
+MCP startup and model/thinking options came from the live 1.4.4 runtime, and one
+signed-in session supplies the turn corpus. In it `execute`, `edit`, the MCP call
+and the two non-MCP `other` calls (`invoke_subagent`, `run_workflow`) asked, and
+every `read` ran unasked, so the sensitive-path check never sees an Antigravity
+read. A read outside the workspace was refused by the runtime's own
+allowed-workspace check before any tool call was sent. `run_workflow` runs the
+Python in its `Script` argument, which no command or path rule reads, and
+`invoke_subagent` starts sub-agents whose own tool calls no capture has shown
+asking (that session refused it). Crew refuses both as shell calls whose command
+cannot be verified (`antigravity_call_is_unverifiable`). Enterprise policies that may auto-proceed some terminal tools were visible in the
+runtime's source strings but were not driven against an enterprise account, so the
+contribution must not describe them as accepted.

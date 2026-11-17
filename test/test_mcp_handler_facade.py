@@ -64,7 +64,7 @@ _SRC = Path(kiro_crew.__file__).resolve().parent
 _THIS_FILE = Path(__file__).resolve()
 
 #: The ``mcp_*.py`` handler modules that are route modules of their own, not owners.
-_NOT_OWNERS = frozenset({"mcp_apps", "mcp_custom", "mcp_discover"})
+_NOT_OWNERS = frozenset({"mcp_apps", "mcp_body_fields", "mcp_custom", "mcp_discover"})
 
 #: Every module-level name ``handlers/mcp.py`` bound before the split, except the names
 #: bound by ``import <module>`` of a standard-library module.

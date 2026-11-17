@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from redaction_structured_cases import github_classic
+
 # ``ws.py`` imports ``handlers.updates`` mid-module, and ``handlers/__init__``
 # imports ``handlers.side``, which imports back from ``ws`` — so importing
 # ``ws`` FIRST in a fresh interpreter dies on the partially-initialized module.
@@ -25,6 +27,10 @@ from types import SimpleNamespace
 # pytest-xdist worker imports it before any other dashboard module.
 import kiro_crew.dashboard.handlers  # noqa: F401
 from kiro_crew.dashboard.ws import _subagent_replay_has_owner, build_subagent_snapshot
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=36)
 
 
 def _agent(**over):
@@ -131,10 +137,10 @@ def test_snapshot_includes_requested_model_when_set():
 
 def test_snapshot_redacts_a_credential_shaped_requested_model():
     """The requested pin is caller-supplied (spawn_run.model), so an
-    AKIA-shaped value must be redacted before it reaches the socket."""
-    a = _agent(requested_model="AKIAIOSFODNN7EXAMPLE", resolved_model="model-1")
+    token-shaped value must be redacted before it reaches the socket."""
+    a = _agent(requested_model=_SECRET_TOKEN, resolved_model="model-1")
     data = build_subagent_snapshot(a, now=1000.0)
-    assert "AKIAIOSFODNN7EXAMPLE" not in data["requested_model"]
+    assert _SECRET_TOKEN not in data["requested_model"]
 
 
 def test_snapshot_requested_model_is_empty_string_when_unset():

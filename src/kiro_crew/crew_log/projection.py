@@ -74,12 +74,14 @@ citation to follow.
 #   ``projection_work`` -- the ``work`` slot fold and the units a board spans
 #   ``projection_workstreams`` -- the ``workstreams`` slot fold and its board closure
 #   ``projection_worktree`` -- the ``worktree`` tree fold
+#   ``projection_objects`` -- the ``objects`` slot fold (what code last read about an outside object)
 #   ``projection_registry`` -- ``_FOLDS`` and what each fold touches, copies and retains
 #   ``projection_kernel`` -- ``Checkpoint`` and the pure fold API over the registry
 #   ``projection_budget`` -- the warm memo's byte budget: measured row costs and the ceiling
 #   ``projection_session`` -- folding one session's log on the projection kernel, with its savepoint
 #   ``projection_slot_memo`` -- a slot's folds on the projection kernel, kept warm
 #   ``projection_readers`` -- reading a slot's and a tree's folds
+#   ``projection_slot_share`` -- one walk of a slot's units for its queued cold or stale cells
 #   ``projection_session_memo`` -- a session's folds, kept warm, and the session read
 
 from __future__ import annotations
@@ -110,12 +112,15 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_workers",
     "kiro_crew.crew_log.projection_workstreams",
     "kiro_crew.crew_log.projection_worktree",
+    "kiro_crew.crew_log.projection_objects",
     "kiro_crew.crew_log.projection_registry",
     "kiro_crew.crew_log.projection_kernel",
     "kiro_crew.crew_log.projection_budget",
     "kiro_crew.crew_log.projection_session",
+    "kiro_crew.crew_log.projection_unit_mark_cache",
     "kiro_crew.crew_log.projection_slot_memo",
     "kiro_crew.crew_log.projection_readers",
+    "kiro_crew.crew_log.projection_slot_share",
     "kiro_crew.crew_log.projection_session_memo",
 )
 for _owner in _OWNERS:
@@ -239,11 +244,25 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         state_is_serializable,
     )
     from kiro_crew.crew_log.projection_ledger import (  # noqa: F401
+        _ledger_copy,
         _ledger_field,
         _ledger_iso,
         _ledger_render,
         _ledger_start,
         _ledger_step,
+    )
+    from kiro_crew.crew_log.projection_objects import (  # noqa: F401
+        OBJECT_ENTRY_TYPE,
+        OBJECTS_FACTS_BYTES,
+        OBJECTS_KIND_LIMIT,
+        OBJECTS_TARGET_LIMIT,
+        OBJECTS_TEXT_LIMIT,
+        _facts_fit,
+        _objects_copy,
+        _objects_render,
+        _objects_rows,
+        _objects_start,
+        _objects_step,
     )
     from kiro_crew.crew_log.projection_otel_session_tree import (  # noqa: F401
         _TREE_AGENT_KIND_UNSET,
@@ -330,10 +349,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         TOOL_TYPES,
         USAGE_TYPES,
         WORKSTREAMS_TYPES,
+        _agentic_copy,
         _approvals_copy,
+        _custom_copy,
         _flat_copy,
         _ledger_rows,
+        _mistakes_copy,
+        _panel_copy,
         _panel_rows,
+        _radar_copy,
         _radar_rows,
         _subagents_copy,
         _timeline_copy,
@@ -359,6 +383,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _tail_reader,
         empty_session,
         fold_session,
+        seal_session_bundle,
     )
     from kiro_crew.crew_log.projection_session_log import (  # noqa: F401
         _log_identity,
@@ -379,6 +404,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         fold_session_warm,
         forget_session_folds,
         read_projection,
+        seal_session_folds,
         session_fold_cache_bytes,
         session_fold_memo_bytes,
         session_fold_state_bytes,
@@ -414,16 +440,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UNCUT,
         _UNPROVEN,
         OVERSIZE_SLOT_CELL_LIMIT,
+        SAVE_DURING_FOLD_ENTRIES,
         SlotFoldNotReady,
         _acquire_fold_lock,
         _acquire_unless_cold,
+        _admit_backfill,
+        _admit_slot_resume,
+        _Admitted,
         _cell_weight,
         _cold_keys,
         _continuable,
         _continue_into_new_units,
         _cut_verdict,
         _digest_to_carry,
+        _drive_tail,
         _extended,
+        _finish_slot_resume,
         _fold_slot_cold,
         _fold_slot_warm_locked,
         _folded_marks,
@@ -440,17 +472,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _persist_slot_fold,
         _prefix_holds,
         _PrefixSeen,
+        _prime_resumed,
         _release_fold_lock,
         _remember_slot_fold,
         _resume_from,
         _resume_older_slot_fold,
         _resume_slot_fold,
+        _save_during_fold,
+        _seal_stopped_unit,
         _slot_cell,
         _slot_checkpoint,
         _slot_fold_locks,
         _slot_memo_bytes,
         _slot_memo_guard,
         _slot_memos,
+        _slot_registry,
         _slot_revision,
         _slot_witness,
         _SlotFold,
@@ -461,6 +497,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unit_prefix,
         _UnitMark,
         _vouched,
+        _walk,
         any_cold_fold_running,
         cold_fold_running,
         fold_slot_warm,
@@ -468,6 +505,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         forget_slot_folds,
         seal_slot_fold,
         slot_fold_over_ceiling,
+    )
+    from kiro_crew.crew_log.projection_slot_share import (  # noqa: F401
+        _prime_group,
+        _prime_joined,
+        _release_held,
+        _shared_start,
+        prime_slot_projections,
     )
     from kiro_crew.crew_log.projection_subagents import (  # noqa: F401
         _SUBAGENT_OUTCOMES,
@@ -477,6 +521,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _subagents_render,
         _subagents_start,
         _subagents_step,
+    )
+    from kiro_crew.crew_log.projection_unit_mark_cache import (  # noqa: F401
+        _M,
+        _MARK_CACHE_LIMIT,
+        _MARK_RACY_NS,
+        _CachedMark,
+        _forget_unit_marks,
+        _Mark,
+        _mark_cache,
+        _mark_cache_guard,
+        _older_unit_mark,
+        _read_and_cache_mark,
+        _reparse_tag,
+        _segment_stamps,
+        _stamp,
     )
     from kiro_crew.crew_log.projection_usage import (  # noqa: F401
         _CREDIT_SOURCE_OF,
@@ -576,6 +635,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WORK_BASELINE_FIELDS,
         _WORK_CLOSED_STATES,
         _WORK_CONDUCTOR_FIELDS,
+        _WORK_PEER_KEYS,
         _WORK_TEXT_LIMITS,
         _WORK_WORKER_FIELDS,
         WORK_AWAITING_REPORT,
@@ -588,11 +648,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _work_apply_event,
         _work_apply_header,
         _work_bind_slot,
+        _work_copy,
         _work_field,
         _work_forget,
         _work_is_progress,
         _work_iso,
         _work_new_item,
+        _work_peer_report,
         _work_reason,
         _work_render,
         _work_reset_board,
@@ -672,6 +734,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _workstreams_bump,
         _workstreams_charged,
         _workstreams_copy,
+        _workstreams_decided_after,
         _workstreams_event,
         _workstreams_hour,
         _workstreams_item_state,
@@ -747,6 +810,8 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         MISTAKE_CORRECTION_LIMIT,
         MISTAKE_GROUP_LIMIT,
         MISTAKES_FOLD_NAME,
+        OBJECT_PRODUCERS,
+        OBJECTS_FOLD_NAME,
         PANEL_CREW_KEY_LIMIT,
         PANEL_ENTRY_TYPE,
         PANEL_FOLD_NAME,
@@ -799,6 +864,7 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         CrewLog,
         ReadCursor,
         ResumePoint,
+        crew_log_dir,
         log_exception_text,
         segment_paths,
         session_units_by_slot,
@@ -846,5 +912,8 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         WorkBoardForgotten,
         WorkBoardItem,
         WorkBoardView,
+        coerce_ask,
+        coerce_discussion,
         coerce_retired_bindings,
+        waits_on_person,
     )

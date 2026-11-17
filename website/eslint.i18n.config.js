@@ -122,6 +122,11 @@ export default [
       // stays fully covered. Stated as a false-negative class: copy added to this
       // module will not be reported. Keep it stylesheet-only.
       'src/components/library/artifactThumbSvgCss.ts',
+      // Keeps the rules of an SVG artifact's own stylesheet that select inside the
+      // drawing, for SvgShadow: CSSOM rule class names and CSS patterns handed to
+      // the browser's parser, no copy. Stated as a false-negative class: copy
+      // added to this module will not be reported. Keep it stylesheet-only.
+      'src/components/svgStylesheet.ts',
       // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
       // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
       // and `color-mix(…)` values, every one built as a string and handed to the
@@ -199,6 +204,17 @@ export default [
       // false positive it fixes. A path this narrow cannot exempt a future file
       // that does hold copy.
       'src/apps/meetings/lib/sketchSrcdoc.ts',
+      // The Meetings "export all outputs" bundle builder (#32982). Same
+      // parser-only category as `sketchSrcdoc.ts` directly above and listed the
+      // same way, by exact path: every literal in it is HTML/CSS handed to a
+      // parser — a DOCTYPE, `<section>`/`<pre>`/`<iframe>` markup, the bundle's
+      // own CSS. It imports no `i18nT`/`useTranslation` and renders no text node;
+      // its ONE user-facing string, the "no output" marker, is passed in already
+      // translated from the gated call site in `ExportMenuItems.tsx`, so the
+      // module itself holds no copy. Stated as this file's false-negative class:
+      // any user-visible copy ever added here will not be reported — keep it
+      // parser-facing and resolve copy at the call site.
+      'src/apps/meetings/lib/meetingBundle.ts',
       // The widget and MCP-app srcdoc builders — the same category as
       // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
       // rather than a shared `*Srcdoc.ts` glob. Every literal in both is handed to
@@ -227,6 +243,10 @@ export default [
       // measurement), no human-facing copy. Same parser-only boundary and same
       // false-negative class as widgetSrcdoc.ts above: keep it parser-only.
       'src/lib/widgetHeightReporter.ts',
+      // The fragment-scroll script injected beside the height reporter: ONE
+      // template literal of in-iframe JS (postMessage + scroll geometry), no
+      // human-facing copy. Same false-negative class: keep it parser-only.
+      'src/lib/widgetFragmentScroll.ts',
       'src/lib/mcpAppSrcdoc.ts',
       // Same parser-only boundary as the srcdoc builders above: this module
       // sanitizes model markup and injects CSP, a DOCTYPE and theme CSS. None
@@ -769,7 +789,7 @@ export default [
               // The install command the Decisions card's SageMaker option shows
               // when the gateway has no boto3: typed into a terminal, so the
               // same wire-string class, and enumerated for the same reason.
-              "^pip install 'boto3>=1\\.34,<2'$",
+              '^pip install "boto3>=1\\.34,<2"$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such
@@ -1019,6 +1039,11 @@ export default [
               // exempt, and the sentences AROUND it stayed in the catalog (that is
               // what `{{provider}}` is for).
               '^(GitHub|GitLab|Azure DevOps|Bitbucket|Bitbucket Server|Gerrit)$',
+              // The Connections page's one Google entry: the bare brand is its
+              // settings-search suffix (`settingsManual.ts`), the same in every
+              // language, like the provider names the other OAuth app entries
+              // take from the registry. Whole-value-anchored like the entries above.
+              '^Google$',
               // The local editor brands the "Open in {{editor}}" row names
               // (utils/remoteEditorUrl.ts `REMOTE_EDITORS`): a product name, the same in
               // every language. Whole-value-anchored like the entries above.
@@ -1119,7 +1144,7 @@ export default [
               // above give -- and the name is deliberately long and specific rather
               // than a generic `warnSkip`, so a future helper elsewhere cannot
               // inherit this by accident. TWO definitions exist today:
-              // `src/apps/command-bar/contributedCommands.ts`, which renders nothing,
+              // `src/components/commandBar/contributedCommands.ts`, which renders nothing,
               // and `src/apps/fileMenuContributions.tsx`, the same shim for a refused
               // `contributes.fileMenuItems` row. The second REUSES this name rather
               // than adding a second global exemption for a differently-named shim:
@@ -1561,7 +1586,7 @@ export default [
   // third suppression channel this config does not count, which is exactly what
   // centralizing suppression here exists to prevent.
   {
-    files: ['src/apps/command-bar/sessionFolder.ts'],
+    files: ['src/components/commandBar/sessionFolder.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },
@@ -1626,6 +1651,16 @@ export default [
   // submission rather than localize it. See the module's own header.
   {
     files: ['src/components/sessionPulseWireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // GRILL MARKER WIRE VALUE ONLY: the `[GRILL:]` opener the conductor writes,
+  // matched by value, so a translated one stops the card from drawing. See the
+  // module's own header.
+  {
+    files: ['src/app-sdk/protocol/grillWireValues.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

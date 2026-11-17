@@ -615,7 +615,9 @@ def test_the_threshold_is_recorded_in_the_config_description(tmp_path: Path) -> 
     }
 
 
-def test_near_duplicates_that_differ_early_both_survive(tmp_path: Path) -> None:
+def test_near_duplicates_that_differ_early_both_survive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The complement: distinct text is stored twice, so the drop above is dedup.
 
     Both fragments here are semantically near-identical but differ inside their
@@ -624,6 +626,8 @@ def test_near_duplicates_that_differ_early_both_survive(tmp_path: Path) -> None:
     is not importable, which is exactly why ``search_backend()`` is reported with
     every run.
     """
+    # One fake vector for every text trips FAISS's near-duplicate check.
+    monkeypatch.setattr(ingest_mod.vector_memory, "_HAS_FAISS", False)
     inst = BenchInstance(
         "near",
         (

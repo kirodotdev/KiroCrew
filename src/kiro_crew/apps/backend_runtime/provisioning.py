@@ -68,6 +68,26 @@ _DEPS_PIP_STDERR_TAIL = 16 * 1024
 _DEPS_PRIOR_NAME = ".kirocrew-deps-prior"
 
 
+def _bundled_pip_wheel() -> Path | None:
+    """The pip wheel CPython's ``ensurepip`` ships, when the interpreter has no pip.
+
+    A Toolbox runtime carries ``ensurepip`` and its bundled pip
+    wheel but no installed ``pip``, so ``-m pip`` dies with "No module named
+    pip". pip runs straight from its wheel on ``PYTHONPATH`` (what ``ensurepip``
+    itself does), so nothing is written into the interpreter tree and no
+    network is needed. None when pip is already importable or no wheel ships.
+    """
+    import importlib.util  # local: a module-level name would leak into the facade
+
+    if importlib.util.find_spec("pip") is not None:
+        return None
+    spec = importlib.util.find_spec("ensurepip")
+    if spec is None or not spec.origin:
+        return None
+    wheels = sorted((Path(spec.origin).parent / "_bundled").glob("pip-*.whl"))
+    return wheels[-1] if wheels else None
+
+
 def _requirements_volatile(requirements: bytes) -> bool:
     """True when the stamp digest cannot prove the resolved set unchanged.
 
@@ -139,6 +159,9 @@ def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
     safe direction: the backend runs without the deps and surfaces the
     provisioning error, instead of crashing on foreign wheels).
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     try:
         # Same reader shape as provisioning: the shared containment rule
         # (`requirements_in_tree`, the fast refusal), then a component-pinned
@@ -154,7 +177,7 @@ def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
         with os.fdopen(rfd, "rb") as rfh:
             if not stat.S_ISREG(os.fstat(rfh.fileno()).st_mode):
                 return False
-            req_bytes = rfh.read(_DEPS_REQ_MAX_BYTES + 1)
+            req_bytes = bounded_read(rfh, _DEPS_REQ_MAX_BYTES + 1)
         if len(req_bytes) > _DEPS_REQ_MAX_BYTES:
             return False
         digest = _deps_digest(req_bytes)
@@ -164,7 +187,7 @@ def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
             if platform_compat.is_link_or_junction(marker):
                 return None
             try:
-                mfd = os.open(str(marker), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                mfd = platform_compat.open_file_no_reparse(marker, links_only=True)
             except OSError:
                 return None
             with os.fdopen(mfd, "rb") as mfh:
@@ -254,10 +277,11 @@ def _open_contained_nofollow(base: Path, target: Path) -> int:
     openat per component and the final name is opened O_NOFOLLOW through
     it, so neither an ancestor swap nor a final-component link can escape
     the app root. Where the platform cannot pin
-    (``supports_pinned_walk()`` is False - Windows), the fallback is a
-    single O_NOFOLLOW-less open behind the caller's is_symlink pre-check,
-    backed by symlink creation being privileged there; junction swaps of
-    the DATA dir are separately caught by _PinnedDir.verify.
+    (``supports_pinned_walk()`` is False - Windows), only the final name is
+    settled: the fallback opens it with
+    :func:`platform_compat.open_file_no_reparse`, which refuses a link there
+    in the same operation; junction swaps of the DATA dir are separately
+    caught by _PinnedDir.verify.
     """
     # Windows' ``\\?\`` prefix folded off both sides first, so a resolve that
     # kept it on one operand is not read as an escape. Lexical only.
@@ -269,7 +293,7 @@ def _open_contained_nofollow(base: Path, target: Path) -> int:
     if not rel_parts:
         raise OSError("requirements path resolves to the app root itself")
     if not pinned_fs.supports_pinned_walk():
-        return os.open(str(target), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        return platform_compat.open_file_no_reparse(target, links_only=True)
     return pinned_fs.open_in_pinned_parent(
         str(target.parent),
         rel_parts[-1],
@@ -634,8 +658,13 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
     ahead of the trusted module - so this is only ever called for apps whose
     code runs from the writable app dir itself.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     # Install Python dependencies into a per-app deps dir (isolated from the
-    # Kiro Crew runtime). `pip install --target` rather than a venv: packaged
+    # Kiro Crew runtime). A runtime with ensurepip but no pip (Toolbox) runs
+    # pip from ensurepip's bundled wheel (_bundled_pip_wheel).
+    # `pip install --target` rather than a venv: packaged
     # installs bundle an interpreter that ships pip but no ensurepip, so
     # `-m venv` dies after creating the directory skeleton - and the venv-first
     # interpreter policy would then prefer that skeleton while it holds none of
@@ -672,8 +701,9 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
         # the RESOLVED path is opened, itself O_NOFOLLOW-bound. Every race
         # collapses to a refusal or to reading a different in-root file
         # (app-controlled either way: no out-of-root bytes can ever be read
-        # or digested). On Windows os.O_NOFOLLOW is absent; the is_symlink
-        # pre-check substitutes (symlink creation is privileged there).
+        # or digested). On Windows, where os.O_NOFOLLOW is absent and the
+        # parent chain is not pinned, the open refuses a link at the final
+        # name itself (_open_contained_nofollow).
         try:
             resolved = requirements_in_tree(root, req_file)
             if resolved is None:
@@ -692,7 +722,7 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
                 # Bounded read: this buffer lives in the GATEWAY's memory
                 # and the file is app-controlled - cap it instead of letting
                 # a giant file take the gateway down.
-                req_bytes = fh.read(_DEPS_REQ_MAX_BYTES + 1)
+                req_bytes = bounded_read(fh, _DEPS_REQ_MAX_BYTES + 1)
                 if len(req_bytes) > _DEPS_REQ_MAX_BYTES:
                     raise OSError("requirements.txt exceeds the size cap")
         except OSError:
@@ -732,13 +762,12 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
         provisioned = False
         if bool(digest) and not volatile:
             try:
-                # On Windows os.O_NOFOLLOW is absent; the is_link pre-check
-                # substitutes (same pattern as the requirements read) - a
-                # planted stamp link must read as "unprovisioned", not
-                # through to an arbitrary file.
+                # The pre-check is the fast refusal; the open itself refuses a
+                # link at the stamp name planted after it, on Windows too, so
+                # it reads as "unprovisioned", never through to another file.
                 if platform_compat.is_link_or_junction(stamp):
                     raise OSError("stamp is a symlink/junction")
-                sfd = os.open(str(stamp), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                sfd = platform_compat.open_file_no_reparse(stamp, links_only=True)
                 with os.fdopen(sfd, "rb") as sfh:
                     if stat.S_ISREG(os.fstat(sfh.fileno()).st_mode):
                         # Bounded read: a real stamp is one digest line; an
@@ -760,6 +789,11 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
             # transaction races the window.
             staging = deps_dir.parent / f"{_DEPS_STAGING_NAME}-{os.getpid()}-{os.urandom(4).hex()}"
             _env = minimal_env()  # don't leak secrets to pip subprocesses
+            _pip_wheel = _bundled_pip_wheel()
+            if _pip_wheel is not None:
+                _env["PYTHONPATH"] = os.pathsep.join(
+                    p for p in (str(_pip_wheel), _env.get("PYTHONPATH")) if p
+                )
             try:
                 # Stale staging trees from crashed transactions (the old
                 # fixed name or unique names another pid left) are swept

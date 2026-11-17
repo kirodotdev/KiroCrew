@@ -24,11 +24,9 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 _CREDENTIAL_PASSES = frozenset({"redact_credentials", "redact_credentials_with_records"})
 _URL_PASSES = frozenset({"redact_exfiltration_urls", "redact_exfiltration_urls_with_records"})
 
-# A URL to an unknown host whose query carries a credential-shaped value.
-_TEXT = (
-    "see https://collector.example/c?d=AKIAIOSFODNN7EXAMPLE"
-    "&s=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY&pad=" + "x" * 40 + " now"
-)
+# A URL to an unknown host whose query carries a credential parameter.
+_VALUE = "q8Z3kLm0Vx7Rt2Yp9Wn4Bc6Hd1Fg5Js"
+_TEXT = "see https://collector.example/c?access_token=" + _VALUE + "&pad=" + "x" * 40 + " now"
 _PAD = "a" * 40  # enough query to make the URL pass flag the address
 
 
@@ -51,11 +49,12 @@ def _helpers() -> list[tuple[str, object]]:
 
 
 @pytest.mark.parametrize("name", [n for n, _ in _helpers()])
-def test_egress_helper_removes_the_url_whole(name: str) -> None:
+def test_egress_helper_removes_the_credential_in_a_url(name: str) -> None:
     helper = dict(_helpers())[name]
     out = helper(_TEXT)
-    assert "collector.example/c?" not in out
-    assert "[REDACTED: suspicious URL to collector.example]" in out
+    assert _VALUE not in out
+    # The link stays; only the credential value in it goes.
+    assert "https://collector.example/c?access_token=[REDACTED: credential]&pad=" in out
 
 
 @pytest.mark.parametrize("name", [n for n, _ in _helpers()])

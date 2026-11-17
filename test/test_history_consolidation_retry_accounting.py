@@ -153,8 +153,7 @@ class TestFailureAfterTheBilledCall:
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
             first = log.consolidation_retry_state(KEY)[1] - time.time()
-            with history_mod.allow_on_loop_persist():
-                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
             await c._consolidate(KEY, include_history=True)
             second = log.consolidation_retry_state(KEY)[1] - time.time()
 
@@ -170,14 +169,14 @@ class TestAttemptCap:
         """At the cap the marker is written anyway, ending the spend."""
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
-                KEY,
-                {
-                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
-                    "consolidation_retry_at": 0.0,
-                },
-            )
+        await asyncio.to_thread(
+            log.update_metadata,
+            KEY,
+            {
+                "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                "consolidation_retry_at": 0.0,
+            },
+        )
 
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
@@ -198,6 +197,8 @@ class TestAttemptCap:
             while c._tasks:
                 # flake-ok: pre-existing unbounded gather of scheduled tasks, moved verbatim
                 await asyncio.gather(*list(c._tasks))
+                # A gather of done tasks does not yield; let their _tasks.discard run.
+                await asyncio.sleep(0)
         again.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -205,14 +206,14 @@ class TestAttemptCap:
         """If even the abandon write fails, the span must stop spending."""
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
-                KEY,
-                {
-                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
-                    "consolidation_retry_at": 0.0,
-                },
-            )
+        await asyncio.to_thread(
+            log.update_metadata,
+            KEY,
+            {
+                "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
+                "consolidation_retry_at": 0.0,
+            },
+        )
 
         assert c.retry_eligible(KEY) is False
 
@@ -225,14 +226,14 @@ class TestAttemptCap:
         c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
             (key, count, reason)
         )
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
-                KEY,
-                {
-                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
-                    "consolidation_retry_at": 0.0,
-                },
-            )
+        await asyncio.to_thread(
+            log.update_metadata,
+            KEY,
+            {
+                "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                "consolidation_retry_at": 0.0,
+            },
+        )
 
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
@@ -265,14 +266,14 @@ class TestAttemptCap:
             raise RuntimeError("bell unavailable")
 
         c.on_abandoned = _boom
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
-                KEY,
-                {
-                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
-                    "consolidation_retry_at": 0.0,
-                },
-            )
+        await asyncio.to_thread(
+            log.update_metadata,
+            KEY,
+            {
+                "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                "consolidation_retry_at": 0.0,
+            },
+        )
 
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
@@ -292,8 +293,7 @@ class TestSuccessClearsTheAccounting:
         assert log.consolidation_retry_state(KEY)[0] == 1
 
         with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "ok"})):
-            with history_mod.allow_on_loop_persist():
-                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
             await c._consolidate(KEY, include_history=True)
 
         assert log.unconsolidated_count(KEY) == 0
@@ -348,8 +348,9 @@ class TestTheAccountingIsReadUncached:
         assert log._meta_cache.get(KEY) is not None
         mtime_before = path.stat().st_mtime
 
-        with history_mod.allow_on_loop_persist():
-            other.record_consolidation_failure(KEY, 900.0, 86400.0, _span(other))
+        await asyncio.to_thread(
+            other.record_consolidation_failure, KEY, 900.0, 86400.0, _span(other)
+        )
 
         assert path.stat().st_mtime == mtime_before, (
             "premise broken: the write advanced the mtime, so the cache would "
@@ -369,11 +370,12 @@ class TestTheAccountingIsReadUncached:
         # not itself touch this process's caches.
         span = _span(log)
 
-        with history_mod.allow_on_loop_persist():
-            other.record_consolidation_failure(KEY, 900.0, 86400.0, span)
-            other.record_consolidation_failure(KEY, 900.0, 86400.0, span)
-            log.unconsolidated_count(KEY)  # warm this process's cache
-            attempts, _ = log.record_consolidation_failure(KEY, 900.0, 86400.0, span)
+        await asyncio.to_thread(other.record_consolidation_failure, KEY, 900.0, 86400.0, span)
+        await asyncio.to_thread(other.record_consolidation_failure, KEY, 900.0, 86400.0, span)
+        log.unconsolidated_count(KEY)  # warm this process's cache
+        attempts, _ = await asyncio.to_thread(
+            log.record_consolidation_failure, KEY, 900.0, 86400.0, span
+        )
 
         assert attempts == 3
         assert other.consolidation_retry_state(KEY)[0] == 3
@@ -387,8 +389,9 @@ class TestTheAccountingIsReadUncached:
         c._last_activity[KEY] = time.time() - 10
 
         log.unconsolidated_count(KEY)
-        with history_mod.allow_on_loop_persist():
-            other.record_consolidation_failure(KEY, 900.0, 86400.0, _span(other))
+        await asyncio.to_thread(
+            other.record_consolidation_failure, KEY, 900.0, 86400.0, _span(other)
+        )
 
         c.check_idle_sessions()
         assert not c._tasks, (
@@ -610,8 +613,7 @@ class TestOnlyASentTurnConsumesTheCap:
             AsyncMock(side_effect=history_mod._ConsolidationNotDispatched("no cli")),
         ):
             for _ in range(_CONSOLIDATION_MAX_ATTEMPTS + 3):
-                with history_mod.allow_on_loop_persist():
-                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
                 await c._consolidate(KEY, include_history=True)
 
         assert log.consolidation_retry_state(KEY)[0] == 0
@@ -619,8 +621,7 @@ class TestOnlyASentTurnConsumesTheCap:
             log.unconsolidated_count(KEY) == 3
         ), "a broken environment abandoned a span without one billed turn"
         # Still eligible once the deadline passes: the messages are not lost.
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+        await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
         assert c.retry_eligible(KEY) is True
 
     @pytest.mark.asyncio
@@ -635,8 +636,7 @@ class TestOnlyASentTurnConsumesTheCap:
         ):
             await c._consolidate(KEY, include_history=True)
             first = log.consolidation_retry_state(KEY)[1] - time.time()
-            with history_mod.allow_on_loop_persist():
-                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
             await c._consolidate(KEY, include_history=True)
             second = log.consolidation_retry_state(KEY)[1] - time.time()
 
@@ -664,14 +664,14 @@ class TestOnlyASentTurnConsumesTheCap:
         c = _make_consolidator(log, sessions=object())
         abandoned: list[tuple] = []
         c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
-                KEY,
-                {
-                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
-                    "consolidation_retry_at": 0.0,
-                },
-            )
+        await asyncio.to_thread(
+            log.update_metadata,
+            KEY,
+            {
+                "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                "consolidation_retry_at": 0.0,
+            },
+        )
 
         provider = _OneTurnProvider("", credits=0.0)
         with patch.object(history_consolidation, "background_turn", _background_turn_on(provider)):
@@ -697,14 +697,14 @@ class TestOnlyASentTurnConsumesTheCap:
         c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
             (key, count, reason)
         )
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(
-                KEY,
-                {
-                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
-                    "consolidation_retry_at": 0.0,
-                },
-            )
+        await asyncio.to_thread(
+            log.update_metadata,
+            KEY,
+            {
+                "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                "consolidation_retry_at": 0.0,
+            },
+        )
 
         provider = _UnmeteredProvider("", credits=0.0)
         with patch.object(history_consolidation, "background_turn", _background_turn_on(provider)):
@@ -865,8 +865,7 @@ class TestALapsedLoginIsNotAFailedAttempt:
 
         with turn:
             for _ in range(_CONSOLIDATION_MAX_ATTEMPTS + 3):
-                with history_mod.allow_on_loop_persist():
-                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
                 await c._consolidate(KEY, include_history=True)
 
         attempts, retry_at = log.consolidation_retry_state(KEY)
@@ -875,8 +874,7 @@ class TestALapsedLoginIsNotAFailedAttempt:
         assert abandoned == []
         assert log.unconsolidated_count(KEY) == 3, "a lapsed login dropped the span unread"
         # Re-login: the same span consolidates once the backoff expires.
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+        await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
         assert c.retry_eligible(KEY) is True
 
     @pytest.mark.asyncio
@@ -934,18 +932,125 @@ class TestALapsedLoginIsNotAFailedAttempt:
             AsyncMock(side_effect=RuntimeError("context window exceeded")),
         ):
             for _ in range(_CONSOLIDATION_MAX_ATTEMPTS - 1):
-                with history_mod.allow_on_loop_persist():
-                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
                 await c._consolidate(KEY, include_history=True)
                 assert abandoned == []
             assert log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS - 1
             assert log.unconsolidated_count(KEY) == 3
-            with history_mod.allow_on_loop_persist():
-                log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+            await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
             await c._consolidate(KEY, include_history=True)
 
         assert len(abandoned) == 1
         assert log.unconsolidated_count(KEY) == 0
+
+
+class _UnreachableProvider(_OneTurnProvider):
+    """Fails every prompt with a transient ACP error, as a host that has lost its network does.
+
+    A Mac in DarkWake runs the gateway's timers with the network path down, so
+    the turn dies on a dispatch failure or connection reset that
+    ``_raise_acp_error`` tags ``connection_failure``. *connection* False models a
+    provider that answered with a 5xx instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        connection: bool = True,
+        billed_first: float = 0.0,
+        streams_text: bool = False,
+        metered: bool = True,
+    ) -> None:
+        super().__init__("", credits=0.0)
+        self.reports_turn_usage = metered
+        self._connection = connection
+        self._billed_first = billed_first
+        self._streams_text = streams_text
+        self.calls = 0
+
+    async def stream(self, _message: str, *, allow_image: bool = True):
+        from kiro_crew.acp.client import AcpError
+
+        self.calls += 1
+        if self._billed_first and self.calls == 1:
+            self.last_prompt_stats = SimpleNamespace(credits=self._billed_first)
+        else:
+            self.last_prompt_stats = SimpleNamespace(credits=0.0)
+        if self._streams_text:
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text='{"history_entry": "par')
+        err = AcpError("The model backend hit a transient error (HTTP 5xx).", transient=True)
+        err.connection_failure = self._connection
+        raise err
+
+
+class TestAnUnreachableBackendIsNotAFailedAttempt:
+    """A turn that never reached the provider must not spend the abandon budget.
+
+    An overnight sleep on macOS wakes the host briefly (DarkWake) with no usable
+    network, so every retry inside the night fails on the network path before
+    the model runs. Charging those spends all five attempts and marks the span
+    consolidated unread. Same terms as the signed-out case: nothing streamed and
+    a metered backend shows no billing on any attempt of the turn.
+    """
+
+    @staticmethod
+    def _consolidator(log, provider):
+        c = _make_consolidator(log, sessions=object())
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+        turn = patch.object(history_consolidation, "background_turn", _background_turn_on(provider))
+        return c, abandoned, turn
+
+    @pytest.mark.asyncio
+    async def test_a_connection_failure_inside_the_turn_is_not_dispatched(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, _, turn = self._consolidator(log, _UnreachableProvider())
+
+        with (
+            turn,
+            patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0),
+            pytest.raises(history_mod._ConsolidationNotDispatched, match="unreachable"),
+        ):
+            await c._call_llm("prompt")
+
+    @pytest.mark.asyncio
+    async def test_repeated_connection_failures_never_abandon_the_history_span(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, abandoned, turn = self._consolidator(log, _UnreachableProvider())
+
+        with turn, patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0):
+            for _ in range(_CONSOLIDATION_MAX_ATTEMPTS + 3):
+                await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+
+        attempts, retry_at = log.consolidation_retry_state(KEY)
+        assert attempts == 0, "an unreachable backend consumed the abandon budget"
+        assert retry_at > time.time(), "the environment backoff was not armed"
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3, "an unreachable backend dropped the span unread"
+        await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
+        assert c.retry_eligible(KEY) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "provider_kwargs",
+        [
+            pytest.param({"connection": False}, id="provider-answered-5xx"),
+            pytest.param({"billed_first": 2.0}, id="billed-attempt-then-unreachable"),
+            pytest.param({"streams_text": True}, id="text-streamed-then-unreachable"),
+            pytest.param({"metered": False}, id="unmetered-backend"),
+        ],
+    )
+    async def test_a_failure_the_provider_may_have_billed_is_charged(
+        self, tmp_path, provider_kwargs
+    ):
+        log = _seed_log(tmp_path)
+        c, _, turn = self._consolidator(log, _UnreachableProvider(**provider_kwargs))
+
+        with turn, patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0):
+            await c._consolidate(KEY, include_history=True)
+
+        assert log.consolidation_retry_state(KEY)[0] == 1
 
 
 class TestAccountingNeverResurrectsADeletedSession:

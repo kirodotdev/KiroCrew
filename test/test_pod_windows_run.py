@@ -339,7 +339,7 @@ def test_public_up_prepares_home_only_after_start_reservation(
     monkeypatch.setattr(rt.prov, "venv_bin", lambda *_a: binary)
     monkeypatch.setattr(rt, "allocate_port", lambda *_a: (8611, None))
     monkeypatch.setattr(rt, "_seed_pod_os_home", lambda *_a: None)
-    monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda *_a: None)
+    monkeypatch.setattr(rt, "_probe_pod_child_bootstrap", lambda *_a, **_kw: None)
     monkeypatch.setattr(rt, "target_supports_flag", lambda *_a: False)
     monkeypatch.setattr(rt, "mint_token", lambda *_a: "test-token")
     monkeypatch.setattr(cli, "_wait_healthy", lambda *_a, **_kw: 200)

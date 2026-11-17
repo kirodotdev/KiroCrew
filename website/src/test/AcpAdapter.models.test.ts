@@ -9,7 +9,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { api } from '../api/client'
-import { AcpAdapter, clearCachedModels } from '../providers/adapters/acp'
+import { AcpAdapter, clearCachedModels, noteKiroAccount } from '../providers/adapters/acp'
 import {
   markModelsDegraded,
   modelsDegraded,
@@ -182,6 +182,99 @@ describe('AcpAdapter.fetchAvailableModels', () => {
     const models = await new AcpAdapter().fetchAvailableModels()
     expect(models).toHaveLength(1)
     expect(models[0].name).toBe('auto')
+  })
+})
+
+describe('last-good model list is scoped to the signed-in account', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+
+  const opusList = [
+    { model_name: 'auto', description: 'a' },
+    { model_name: 'claude-opus-5', description: 'b' },
+  ]
+
+  async function primeFor(account: string, adapter: AcpAdapter) {
+    noteKiroAccount(account)
+    ;(api.models as ModelsMock).mockResolvedValueOnce(opusList)
+    await adapter.fetchAvailableModels()
+  }
+
+  it('a switch to another account drops the list, so a server blip shows auto-only', async () => {
+    const adapter = new AcpAdapter()
+    await primeFor('acct-free', adapter)
+    expect(noteKiroAccount('acct-power')).toBe(true)
+    expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    expect((await adapter.fetchAvailableModels()).map(m => m.name)).toEqual(['auto'])
+  })
+
+  it('the same account, or no tag at all, keeps the list and asks for no refetch', async () => {
+    const adapter = new AcpAdapter()
+    await primeFor('acct-a', adapter)
+    expect(noteKiroAccount('acct-a')).toBe(false)
+    expect(noteKiroAccount(undefined)).toBe(false)
+    expect(noteKiroAccount('')).toBe(false)
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    expect((await adapter.fetchAvailableModels()).map(m => m.name)).toEqual(['auto', 'claude-opus-5'])
+  })
+
+  it('a list cached for another account is not served after a reload', async () => {
+    // Written by an earlier page for account A; storage now names B.
+    await primeFor('acct-a', new AcpAdapter())
+    localStorage.setItem('kc.acp.account.v1', 'acct-b')
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    expect((await new AcpAdapter().fetchAvailableModels()).map(m => m.name)).toEqual(['auto'])
+  })
+
+  it('the first tag a page sees re-reads a list fetched before any account was known', async () => {
+    vi.resetModules()
+    const fresh = await import('../providers/adapters/acp')
+    const { api: freshApi } = await import('../api/client')
+    ;(freshApi.models as ModelsMock).mockResolvedValueOnce(opusList)
+    await new fresh.AcpAdapter().fetchAvailableModels()
+    expect(fresh.noteKiroAccount('acct-b')).toBe(true)
+    // Once known, the same tag asks for nothing more.
+    expect(fresh.noteKiroAccount('acct-b')).toBe(false)
+  })
+
+  it('a new tab re-reads its first list when another tab handled a switch meanwhile', async () => {
+    localStorage.setItem('kc.acp.account.v1', 'acct-a')
+    vi.resetModules()
+    const fresh = await import('../providers/adapters/acp')
+    const { api: freshApi } = await import('../api/client')
+    ;(freshApi.models as ModelsMock).mockResolvedValueOnce(opusList)
+    await new fresh.AcpAdapter().fetchAvailableModels()
+    localStorage.setItem('kc.acp.account.v1', 'acct-b')
+    localStorage.removeItem('kc.acp.models.v1')
+    expect(fresh.noteKiroAccount('acct-b')).toBe(true)
+  })
+
+  it('a second tab still learns of the switch after the first tab handled it', async () => {
+    await primeFor('acct-a', new AcpAdapter())
+    // The other tab's poll saw B first: it wrote B and dropped the stored list.
+    localStorage.setItem('kc.acp.account.v1', 'acct-b')
+    localStorage.removeItem('kc.acp.models.v1')
+    expect(noteKiroAccount('acct-b')).toBe(true)
+  })
+
+  it('a list that was in flight across the switch is not cached', async () => {
+    const adapter = new AcpAdapter()
+    noteKiroAccount('acct-free')
+    let resolve: (rows: ModelRow[]) => void = () => {}
+    ;(api.models as ModelsMock).mockReturnValueOnce(new Promise(r => { resolve = r }))
+    const inFlight = adapter.fetchAvailableModels()
+    noteKiroAccount('acct-power')
+    // The request that replaced it failed and marked the list degraded.
+    markModelsDegraded('acp', true)
+    resolve([{ model_name: 'auto' }])
+    await inFlight
+    expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    // The obsolete success must not clear that and stop the recovery polling.
+    expect(modelsDegraded('acp')).toBe(true)
+    markModelsDegraded('acp', false)
   })
 })
 

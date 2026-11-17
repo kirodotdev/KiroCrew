@@ -17,10 +17,12 @@ function emit() {
 }
 
 /** Read one send receipt body for *slot*: a `ledger_error` sets the slot's note,
- *  a recorded (or still-owed) steer clears it, anything else leaves it alone. */
+ *  a recorded steer clears it, anything else leaves it alone. A still-owed steer
+ *  (`ledger_pending`) leaves it too: its failure frame can arrive before this
+ *  receipt, so the sender clears the old note on submit instead. */
 export function noteCrewSteerReceipt(slot: string, body: unknown): void {
   if (!slot || !body || typeof body !== 'object') return
-  const receipt = body as { ledger_error?: unknown; ledger_event?: unknown; ledger_pending?: unknown }
+  const receipt = body as { ledger_error?: unknown; ledger_event?: unknown }
   const reason = receipt.ledger_error
   if (typeof reason === 'string' && reason) {
     if (unrecorded.get(slot) === reason) return
@@ -28,12 +30,12 @@ export function noteCrewSteerReceipt(slot: string, body: unknown): void {
     emit()
     return
   }
-  if ((typeof receipt.ledger_event === 'string' && receipt.ledger_event) || receipt.ledger_pending === true) {
+  if (typeof receipt.ledger_event === 'string' && receipt.ledger_event) {
     if (unrecorded.delete(slot)) emit()
   }
 }
 
-/** Forget *slot*'s note (the person dismissed it). */
+/** Forget *slot*'s note (the person dismissed it, or sent a new message). */
 export function clearCrewSteerNotice(slot: string): void {
   if (unrecorded.delete(slot)) emit()
 }

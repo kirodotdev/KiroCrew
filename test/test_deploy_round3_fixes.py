@@ -52,8 +52,8 @@ class _RestrictedState:
     _slots: dict = {}
 
 
-class _FakeReq:
-    """Test request for handler calls."""
+class _FakeReq(dict):
+    """Test request for handler calls (a mapping, like ``web.Request``)."""
 
     def __init__(self, *, match_info: dict | None = None,
                  headers: dict | None = None, state: Any = None):

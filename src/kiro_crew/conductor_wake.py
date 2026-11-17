@@ -40,7 +40,8 @@ into one delivered wake. A conductor whose workers finish together is therefore 
 once and told about all of them, rather than once per report for a board each turn
 re-reads whole. The window only ever moves WHEN a report is read: whatever misses the
 tick is read by the next one, and the loop's own scheduled tick reads the ledger
-regardless.
+regardless. A report from the only item that can still report waits out no window
+(:meth:`_Registry.reports_alone`): nobody is left to share the turn with.
 
 WHAT IT KNOWS, AND WHERE FROM. Only what the ``work`` fold's rendered board says. A
 :class:`~kiro_crew.crew_log.bus.FoldAdvanced` for ``(slot, <board>, "work")`` carries the
@@ -87,7 +88,7 @@ import os
 import time
 from typing import Any, Callable
 
-from kiro_crew import work_preview
+from kiro_crew import ledger_wake, work_preview
 from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_REMOTE_DISPATCH_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
@@ -114,13 +115,48 @@ class _Registry:
     write to its own. So the table holds at most the boards of the loops active at the
     last sweep, which the service bounds, and the service's ``stop`` clears it outright.
     Items per board are bounded by the fold itself (``WORK_ITEM_LIMIT``).
+
+    ``live`` holds, per board, the ids of the items a report can still come from
+    (:func:`_board_live`). It sits beside the stamps under the same bound: a board
+    leaves both tables together.
     """
 
     def __init__(self) -> None:
         self.boards: "dict[str, dict[str, str]]" = {}
+        self.live: "dict[str, set[str]]" = {}
 
     def forget(self, board: str) -> None:
         self.boards.pop(board, None)
+        self.live.pop(board, None)
+
+    def note_live(self, board: str, flags: "dict[str, bool]", order: "list[str] | None") -> None:
+        """Record which of *board*'s items can still report.
+
+        *flags* maps each item the news carried to whether a report can still come from
+        it. With *order* ``None`` the news is the whole board and replaces what was held.
+        With an *order* it is a delta: the changed items are updated and the held set is
+        cut to the ids the board still names. A delta with nothing held records nothing,
+        because it does not say what the items it left out are; the next whole board does.
+        """
+        if order is None:
+            self.live[board] = {item_id for item_id, on in flags.items() if on}
+            return
+        held = self.live.get(board)
+        if held is None:
+            return
+        named = set(order)
+        kept = {item_id for item_id in held if item_id in named and item_id not in flags}
+        kept.update(item_id for item_id, on in flags.items() if on and item_id in named)
+        self.live[board] = kept
+
+    def reports_alone(self, board: str, item_id: str) -> bool:
+        """Whether *item_id* is the only item on *board* a report can still come from.
+
+        ``False`` for a board whose items were never recorded: with nothing known, a
+        second worker may be about to report, and the window is what batches it.
+        """
+        live = self.live.get(board)
+        return live is not None and not (live - {item_id})
 
     def observe(self, board: str, items: "list[_Item]") -> "tuple[bool, list[tuple[str, str]]]":
         """Record *items* for *board*.
@@ -184,7 +220,8 @@ class _Registry:
 _registry = _Registry()
 
 
-#: One rendered item as the registry reads it: ``(item_id, report stamp, status)``.
+#: One rendered item as the registry reads it: ``(item_id, report stamp, status)``,
+#: the status ``""`` when the newest report repeats the one before (:func:`_repeats_status`).
 _Item = tuple[str, str, str]
 
 
@@ -208,13 +245,49 @@ def _board_items(value: Any) -> "list[_Item]":
             continue
         item_id = item.get("item_id")
         status = item.get("status")
-        out.append(
-            (
-                item_id if isinstance(item_id, str) else "",
-                _report_stamp(item),
-                status if isinstance(status, str) else "",
+        stamp = _report_stamp(item)
+        if _repeats_status(item) or not isinstance(status, str):
+            status = ""
+        out.append((item_id if isinstance(item_id, str) else "", stamp, status))
+    return out
+
+
+def _repeats_status(item: "dict[str, Any]") -> bool:
+    """Whether *item*'s newest report says the same status as the event before it.
+
+    Such a report pushes nothing (:func:`~kiro_crew.ledger_wake.repeats_status`); its
+    status is read as ``""``, which no wake status matches.
+    """
+    events = item.get("events")
+    if not isinstance(events, list):
+        return False
+    rows = [event for event in events if isinstance(event, dict)]
+    for index in range(len(rows) - 1, 0, -1):
+        if rows[index].get("kind") == "report":
+            before = rows[index - 1]
+            return ledger_wake.repeats_status(
+                before.get("kind"), before.get("status"), rows[index].get("status")
             )
-        )
+    return False
+
+
+def _board_live(value: Any) -> "dict[str, bool]":
+    """Per item of a rendered board, whether a report can still come from it.
+
+    An item is live while it is open and bound to a worker: a closed item's worker has
+    no report channel left, and an item nobody was dispatched to has no worker.
+    Tolerant of shape for the reason :func:`_board_items` is.
+    """
+    items = value.get("items") if isinstance(value, dict) else None
+    out: "dict[str, bool]" = {}
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("item_id")
+        if isinstance(item_id, str) and item_id:
+            out[item_id] = item.get("state") == "open" and bool(item.get("worker_session_key"))
     return out
 
 
@@ -256,6 +329,23 @@ def _event_news(event: Any) -> "tuple[list[_Item] | None, list[str] | None]":
     and an event carrying none (``snapshot_needed`` once the whole value stops riding
     along) answers ``(None, None)``: read the board.
     """
+    carried, value, order = _event_board(event)
+    return (_board_items(value), order) if carried else (None, None)
+
+
+def _event_live(event: Any) -> "dict[str, bool] | None":
+    """:func:`_board_live` for the items one ``work`` event carries; ``None`` if none."""
+    carried, value, _order = _event_board(event)
+    return _board_live(value) if carried else None
+
+
+def _event_board(event: Any) -> "tuple[bool, Any, list[str] | None]":
+    """``(carried, board, order)``: the items one ``work`` event carries, as a board.
+
+    A delta carries its changed items and the ids the board now holds. A whole value
+    carries itself, with *order* ``None``. An event carrying neither answers
+    ``(False, None, None)``.
+    """
     if getattr(event, "kind", "value") == "delta":
         ops = getattr(event, "delta", None)
         header = ops.get("header") if isinstance(ops, dict) else None
@@ -263,15 +353,15 @@ def _event_news(event: Any) -> "tuple[list[_Item] | None, list[str] | None]":
         order = header.get("order") if isinstance(header, dict) else None
         if isinstance(changed, dict) and isinstance(order, list):
             ids = [item_id for item_id in order if isinstance(item_id, str)]
-            return _board_items({"items": list(changed.values())}), ids
+            return True, {"items": list(changed.values())}, ids
     value = getattr(event, "value", None)
     if getattr(event, "kind", "value") != "value" and not (isinstance(value, dict) and value):
-        return None, None
-    return _board_items(value), None
+        return False, None, None
+    return True, value, None
 
 
-def _read_board_items(board: str) -> "list[_Item] | None":
-    """*board*'s items read through the fold read path, or ``None`` if not ready. Blocking.
+def _read_board(board: str) -> "tuple[bool, Any]":
+    """``(ready, board)`` read through the fold read path. Blocking.
 
     Never cold: a board with no warm cell and no savepoint is folded by one background
     prime, whose publish reaches this module anyway.
@@ -282,8 +372,8 @@ def _read_board_items(board: str) -> "list[_Item] | None":
         folded = projection.read_slot_projection(board, WORK_FOLD_NAME, cold=False)
     except Exception:
         logger.debug("conductor wake: could not read board %s for a snapshot", board)
-        return None
-    return _board_items(getattr(folded, "value", None))
+        return False, None
+    return True, getattr(folded, "value", None)
 
 
 def _watched(svc: Any) -> "Callable[[str], bool]":
@@ -296,6 +386,7 @@ async def _observe_board(
     board: str,
     items: "list[_Item] | None",
     order: "list[str] | None" = None,
+    live: "dict[str, bool] | None" = None,
 ) -> None:
     """Fold *board*'s latest stamps into the registry and fire for what moved.
 
@@ -321,7 +412,9 @@ async def _observe_board(
     read on the loop's next scheduled tick, and pulling that tick forward
     would buy a cycle the gate then answers quiet. Those quiet cycles are not free: each
     runs the probe, counts against ``max_cycles``, and advances the quiet streak whose
-    floor delivers a turn anyway.
+    floor delivers a turn anyway. A report that repeats the status of the event
+    right before it pushes nothing either (:func:`_repeats_status`): the probe
+    raises no wake for it, so the tick would answer quiet.
 
     THREE SHAPES OF NEWS. *items* with *order* ``None`` is the whole board. *items*
     with an *order* is a ``work`` delta: only the changed items, and the ids the board
@@ -329,16 +422,21 @@ async def _observe_board(
     ``snapshot_needed`` that carried no whole value: the board is read here, off the
     loop, and observed whole; a board that is not ready yet is skipped and the next
     publish brings it.
+
+    *live* is :func:`_board_live` for the same news. It is recorded before anything
+    fires, so the push a report causes already knows who else can still report.
     """
     _registry.sweep(_watched(svc))
     if not work_ledger_loop_id(svc, board):
         _drop(board)
         return
     if items is None:
-        items = await asyncio.to_thread(_read_board_items, board)
-        if items is None:
+        ready, value = await asyncio.to_thread(_read_board, board)
+        if not ready:
             return
-        order = None
+        items, order, live = _board_items(value), None, _board_live(value)
+    if live is not None:
+        _registry.note_live(board, live, order)
     if order is not None:
         _first, reported = _registry.observe_delta(board, items, order)
     else:
@@ -539,6 +637,7 @@ def _observe_event(event: Any) -> "Any | None":
         if not board:
             return None
         items, order = _event_news(event)
+        live = _event_live(event)
         from kiro_crew import autonudge
 
         svc = autonudge.get_instance()
@@ -547,7 +646,9 @@ def _observe_event(event: Any) -> "Any | None":
         running = _service_loop(svc)
         if running is None:
             return None
-        future = asyncio.run_coroutine_threadsafe(_observe_board(svc, board, items, order), running)
+        future = asyncio.run_coroutine_threadsafe(
+            _observe_board(svc, board, items, order, live), running
+        )
     except Exception:  # pragma: no cover - the fold worker must not see this
         logger.debug("conductor wake: could not schedule a board observation")
         return None
@@ -573,6 +674,7 @@ def dispose_all() -> None:
         _drop(board)
     _subscriptions.joining.clear()
     _registry.boards.clear()
+    _registry.live.clear()
 
 
 def reset_for_tests() -> None:
@@ -611,8 +713,13 @@ _ITEM_WINDOW_SECS = 3600.0
 #: coalescing floor to zero for exactly that). Several workers finishing together
 #: therefore cost their conductor ONE turn naming all of them instead of one turn each.
 #:
-#: WHAT IT COSTS. The window IS the added latency of an isolated report, so it is kept
-#: inside the seconds-scale latency
+#: WHO DOES NOT WAIT IT OUT. A report from the only item that can still report
+#: (:meth:`_Registry.reports_alone`): no second report can arrive to share the turn, so
+#: its tick is armed at once. That is every hand-off of a conductor that runs its items
+#: one after another.
+#:
+#: WHAT IT COSTS. The window IS the added latency of a report that waits it out, so it
+#: is kept inside the seconds-scale latency
 #: ``docs/request-for-change/rfc-crew-log-wake.md`` promises for a ``question``: ten
 #: seconds batches workers that finish together while a lone report still reaches its
 #: conductor in seconds.
@@ -630,9 +737,9 @@ _ITEM_WINDOW_SECS = 3600.0
 #: regardless. The window moves WHEN a report is read, never WHETHER.
 DEFAULT_WAKE_BATCH_SECS = 10.0
 
-#: Environment override for :data:`DEFAULT_WAKE_BATCH_SECS`. ``0`` restores the
-#: fire-on-first-report behaviour that shipped before the window existed, which is what
-#: an operator who wants the old latency back should reach for.
+#: Environment override for :data:`DEFAULT_WAKE_BATCH_SECS`. ``0`` turns the window
+#: off: a waking report's push carries no delay instead of one window, which is what
+#: an operator who wants the lowest latency over the fewest turns should reach for.
 WAKE_BATCH_ENV = "KIROCREW_WORK_LEDGER_WAKE_BATCH_SECS"
 
 
@@ -737,18 +844,14 @@ def _admit(svc: Any, loop_id: str, item_id: str, now: float) -> bool:
             )
         return False
     recent.append(now)
-    # Write the live window back, but POP the item id once that window is empty so a
-    # finished item leaves both tables. ``recent`` is non-empty here (we just
-    # appended), so this admit always retains -- the empty-and-pop arm exists for the
-    # shared ``_evict_stale`` sweep below, which prunes items that stopped writing and
-    # would otherwise retain an aged-out key for the life of the loop (``max_cycles =
-    # 0`` outlives the gateway). The persisted half of this population is bounded at
-    # ``ledger_wake._MAX_TRACKED_ITEMS``; this bounds the in-memory half the same way.
-    if recent:
-        per_loop[item_id] = recent
-    else:  # pragma: no cover - defensive; the append above keeps it non-empty here
-        per_loop.pop(item_id, None)
+    per_loop[item_id] = recent
     capped.discard(pair)
+    # A finished item leaves both tables through this sweep, which every counted admit
+    # runs over the loop's items: it prunes each item with no pull-forward inside the
+    # last ``_ITEM_WINDOW_SECS``, which would otherwise stay for the life of the loop
+    # (``max_cycles = 0`` outlives the gateway). The persisted half of this population is
+    # capped at ``ledger_wake._MAX_TRACKED_ITEMS`` items; this half is bounded by that
+    # window instead, at most ``ITEM_PULLS_PER_HOUR`` stamps per item.
     _evict_stale(per_loop, capped, loop_id, now)
     return True
 
@@ -765,10 +868,10 @@ def _evict_stale(
     was pulled forward, then stopped writing (its ``it_<hex>`` id retired when its work
     closed) would keep an aged-out stamp list -- and its ``capped`` pair -- for the life
     of the loop, which ``model.max_cycles = 0`` lets outlive the gateway. The only other
-    release was ``mutations.remove_sync`` at loop teardown. Sweeping the sibling items on
-    each admit bounds the nested table at the count of items with a LIVE pull-forward,
-    matching the persisted half's ``ledger_wake._MAX_TRACKED_ITEMS`` bound and satisfying
-    ``a-bound-bounds-every-field-it-retains``.
+    release is ``mutations.remove_sync`` at loop teardown. Sweeping the sibling items on
+    each counted admit bounds the nested table at the count of items with a LIVE
+    pull-forward, satisfying ``a-bound-bounds-every-field-it-retains``; the bound is by
+    age, unlike the persisted half's ``ledger_wake._MAX_TRACKED_ITEMS`` count cap.
     """
     stale = [
         key
@@ -839,8 +942,9 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
     rather than at once; a report that arrives while that window is still open rides the
     tick already armed and arms nothing. So N workers reporting close together spend ONE
     of their conductor's turns, and that turn reads every one of their reports, because
-    the tick reads the ledger when it runs. With the window at zero this is the
-    fire-on-first-report behaviour that shipped.
+    the tick reads the ledger when it runs. With the window at zero no report joins a
+    batch: each admitted one calls ``fire_now`` with no delay. A report from the only
+    item that can still report (:meth:`_Registry.reports_alone`) is armed that way too.
 
     Refused without calling ``fire_now`` once *item_id* has spent its hourly budget of
     pull-forwards on this loop (:func:`_admit`). The write still landed in the ledger and
@@ -857,6 +961,11 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
     if not _admit(svc, loop_id, item_id, time.time()):
         return ""
     window = wake_batch_secs()
+    if _registry.reports_alone(conductor_slot_key, item_id):
+        # Nobody is left to share the turn with, so the window would only be latency.
+        # Zero also skips the join below: a window an earlier report opened is replaced
+        # by a tick armed now, which reads every report the later one would have.
+        window = 0.0
     if window > 0 and _window_open(svc, loop_id):
         # JOINED, not dropped. The armed tick has not read the ledger yet, so this
         # report is already part of the batch it will deliver, and there is nothing to

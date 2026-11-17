@@ -325,6 +325,19 @@ describe('CrewBoardPage', () => {
     expect(await screen.findByText('first report')).toBeTruthy()
   })
 
+  it('counts failed attempts with the number first and the right plural', async () => {
+    // The label and the number were two pieces glued in JS, so English read
+    // "failed attempts 1" and no language could move the number or pick a form.
+    await mount(board({
+      items: [
+        item({ item_id: 'it_one', title: 'failed once', fails: 1 }),
+        item({ item_id: 'it_many', title: 'failed a lot', fails: 1200 }),
+      ],
+    }))
+    expect(await screen.findByText('1 failed attempt')).toBeTruthy()
+    expect(screen.getByText('1,200 failed attempts')).toBeTruthy()
+  })
+
   it('shows the goal on a board that has no items yet', async () => {
     // The goal belongs to the ledger, not the item list. Without it an empty board
     // names nothing, so a reader who followed the menu entry cannot tell whether

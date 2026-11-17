@@ -4,10 +4,10 @@ When the cloud launcher provisions an EC2 box for you, it also registers that bo
 in the **Instances** registry so the dashboard's **Settings → Remote Crew** page can
 manage it — open a tunnel, mint a short-lived dashboard token, keep it warm, and
 self-heal a dropped connection. This page explains **how** that managed connection
-is made, and why the launcher now uses the **native SSM transport** instead of the
+is made, and why the launcher uses the **native SSM transport** instead of the
 older SSH-over-`ProxyCommand` workaround.
 
-> TL;DR — a launched box is now reachable through Instances with **no SSH key, no
+> TL;DR — a launched box is reachable through Instances with **no SSH key, no
 > inbound port, and no `~/.ssh/config` edits**. Reachability is an IAM decision
 > (grant/revoke `ssm:StartSession`, CloudTrail-audited), not a networking decision
 > gated by a key someone holds.
@@ -20,7 +20,7 @@ for ECS task targets and is outside this comparison. Both EC2 methods end at the
 same place — a loopback-bound gateway on the remote — but they get there very
 differently.
 
-### Native SSM (`connection_method="ssm"`) — the new default for launched boxes
+### Native SSM (`connection_method="ssm"`) — the default for launched boxes
 
 The gateway builds an `aws ssm start-session` port-forward directly
 (`AWS-StartPortForwardingSession`) and mints the dashboard token over
@@ -64,7 +64,7 @@ connect at all.
 
 ## Side-by-side
 
-| | **Native SSM** (new) | **Legacy SSH-over-ProxyCommand** |
+| | **Native SSM** (default) | **Legacy SSH-over-ProxyCommand** |
 |---|---|---|
 | `connection_method` | `ssm` | `ssh` |
 | Registry field for the target | `ssm_target` (`i-…`/`mi-…`) | `ssh_host` (instance id, resolved by ssh config) |
@@ -93,8 +93,10 @@ here, and opens the dashboard — all from your laptop.
 1. **One-time prep.** Install the AWS CLI and `session-manager-plugin` — on a bare
    machine the `cloud-install.sh` (macOS/Linux) or `install.ps1` (Windows)
    bootstrapper does this and hands off to the wizard. Verify prerequisites with
-   `kirocrew cloud doctor`. Attach the least-privilege policy printed by
-   `kirocrew cloud iam-policy` to the AWS profile you'll launch with.
+   `kirocrew cloud doctor`. An admin creates the least-privilege policy printed
+   by `kirocrew cloud iam-policy` as a customer-managed policy and attaches it to
+   the IAM user, group or role behind the AWS profile you'll launch with: see
+   [Applying the launcher policy](#applying-the-launcher-policy).
 2. **Launch.** Run `kirocrew cloud launch` — interactive (size picker + a confirm
    that names the AWS account and profile the stack will be created in),
    or non-interactive, e.g. `kirocrew cloud launch --size power --region us-west-2
@@ -106,12 +108,13 @@ here, and opens the dashboard — all from your laptop.
    letters, digits and `. _ + -`, at most 256 characters in total), and
    `--ami ami-xxxx` launches from your own image instead of the latest Amazon
    Linux 2023 one (it must match the size tier's architecture and be
-   AL2023-compatible, since the bootstrap still runs `dnf`). The launcher does
-   not inspect the image first: an image of the wrong architecture fails the
-   stack at instance creation (EC2 reports the architecture mismatch, and
-   `launch` prints it as the root cause), while an image without `dnf` or
-   `cfn-signal` fails or times out during the bootstrap. Both are fixed
-   when the instance is created: with an existing saved box, use `--new`.
+   AL2023-compatible, since the bootstrap still runs `dnf`). Before it asks to
+   create the stack, `launch` reads the image's architecture and refuses one
+   that does not match the size, naming the sizes that fit it (when that read
+   fails, the stack still fails at instance creation instead); an image without
+   `dnf` or `cfn-signal` still fails or times out during the bootstrap. Both
+   are fixed when the instance is created: with an existing saved box, use
+   `--new`.
 3. **Reach it — and the ports.** Launch ends by opening an SSM port-forward and
    your browser at `http://localhost:<local>/?token=…`. You never choose the
    **remote** port: the gateway always listens on loopback `:5476` on the box. The
@@ -126,6 +129,65 @@ here, and opens the dashboard — all from your laptop.
 
 For setting up a box you manage yourself (SSH or SSM, and the common EC2 gotchas),
 see [remote-crew-on-ec2.md](remote-crew-on-ec2.md).
+
+## Applying the launcher policy
+
+`kirocrew cloud iam-policy` prints one IAM policy document on stdout and nothing
+else, so it pipes straight into the AWS CLI. An IAM admin applies it once.
+
+**Create it as a customer-managed policy, not an inline one.** The policy is
+close to IAM's 6,144-character limit for a managed policy, so it is far over the
+2,048-character limit for a user's inline policies: pasted as an inline policy on
+an IAM user, it cannot be saved. Run these with an admin profile:
+
+```bash
+kirocrew cloud iam-policy > launcher-policy.json
+aws iam create-policy --policy-name kirocrew-launcher \
+  --policy-document file://launcher-policy.json --profile <admin>
+```
+
+**Attach it to the identity the launch profile signs in as.** IAM attaches a
+policy to a user, group or role, never to a CLI profile, so pick the one behind
+the profile you pass to `kirocrew cloud launch --profile`:
+
+| The launch profile uses | Attach with |
+|---|---|
+| an IAM user's access keys | `aws iam attach-user-policy --user-name <user> --policy-arn arn:aws:iam::<account>:policy/kirocrew-launcher` |
+| an IAM group that user belongs to | `aws iam attach-group-policy --group-name <group> --policy-arn …` |
+| a role it assumes (`role_arn` in `~/.aws/config`) | `aws iam attach-role-policy --role-name <role> --policy-arn …` |
+| IAM Identity Center (`sso_session` / `sso_start_url`) | add `kirocrew-launcher` to the permission set as a customer managed policy reference; the policy must exist under that name in each account the permission set is assigned to |
+
+When the plain form also prints a line on stderr naming
+`kirocrew cloud iam-policy --host-policies`, this build attaches extra host
+policies to each instance role: create and attach that second document the same
+way, beside the first.
+
+**What it refuses on purpose.** A launch that fails with an access-denied error
+is not always a missing grant. The policy carries three explicit `Deny`
+statements, which no other `Allow` on the same identity can undo:
+
+| Statement | What it refuses | Why |
+|---|---|---|
+| `DenyStartSessionOutsideTheLane` | `ssm:StartSession` on anything except the port-forward document `AWS-StartPortForwardingSession`, EC2 instances, the `kirocrew-crew-*` Fargate tasks and SSM sessions | the launcher only ever opens port-forwards, so an interactive shell session is refused, including through a document AWS adds later |
+| `DenyForeignUserData` | `ec2:DescribeInstanceAttribute` on any instance not tagged `kirocrew:managed=true` | user data often holds bootstrap secrets |
+| `DenySecretReads` | `ec2:DescribeLaunchTemplateVersions`, `ec2:DescribeSpot*Requests`, `ec2:DescribeTags`, `ec2:DescribeVpnConnections` | they return user data, VPN pre-shared keys or every tag value in the account, and the launcher uses none of them |
+
+It also leaves out, without a `Deny`, calls the launcher never makes:
+`ecs:ExecuteCommand`, `ssm:TerminateSession`, `ssm:ResumeSession` and
+`ssm:ListCommandInvocations`.
+
+**Optional: pre-create the boundaries once.** Each launch runs its instance and
+crew roles under an immutable permissions boundary, and the policy's
+`IamInstanceBoundaryCreateOnce` statement lets the first launch create the one it
+needs. To take that create right away from the launcher, an admin runs
+`kirocrew cloud iam-boundary --profile <admin>` once. It creates
+`kirocrew-ec2-boundary`, `kirocrew-crew-boundary` and
+`kirocrew-crew-exec-boundary` (leaving any that already match alone), after
+which you may remove the `iam:CreatePolicy` action from that statement and save
+the edited document as a new default version
+(`aws iam create-policy-version --set-as-default`). Keep the statement's
+`iam:GetPolicy` and `iam:GetPolicyVersion`: every launch reads its boundary to
+check it.
 
 ## What you see in Settings → Remote Crew
 

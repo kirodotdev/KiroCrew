@@ -251,9 +251,12 @@ def test_the_connect_baseline_call_site_exists_in_the_ws_handler():
     # connection and requires it to be `slots`, using its arrival as proof the
     # socket is registered for echoes. Moving the baseline ahead of register_ws
     # makes it the first frame and fails that contract on four shards plus E2E.
+    # The snapshot send starts as a task, so the frames held for the socket queue
+    # right behind it, and the connect awaits that task before the baseline.
     baseline_at = source.index("await state.send_members_subscribed(ws)")
-    snapshot_at = source.index("await ws.send_str(snapshot_payload)")
-    assert snapshot_at < baseline_at, (
+    snapshot_at = source.index("ws.send_str(snapshot_payload)")
+    snapshot_awaited_at = source.index("await snapshot_send", snapshot_at)
+    assert snapshot_awaited_at < baseline_at, (
         "the members_subscribed baseline precedes the slots connect snapshot, which "
         "test_chat_send_echo_scope requires to be the first frame on the socket"
     )

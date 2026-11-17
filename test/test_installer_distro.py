@@ -1462,7 +1462,8 @@ def test_cli_restores_the_venv_when_stopped_mid_rebuild(
             "exit 9",
         ]
     )
-    proc = subprocess.Popen(["sh", "-c", script], cwd=tmp_path, start_new_session=True)
+    with unblocked_signals():
+        proc = subprocess.Popen(["sh", "-c", script], cwd=tmp_path, start_new_session=True)
     try:
         wait_until(phase.exists, timeout=10, describe=lambda: "the stand-in never reached its gap")
         time.sleep(0.2)
@@ -1552,6 +1553,7 @@ def test_a_stop_during_a_failure_branch_restore_keeps_the_venv(
             _cli_sh_function("_venv_rollback_on_exit"),
             _cli_sh_function("_venv_restore_after_failure"),
             _cli_sh_function("_tolerate"),
+            _cli_sh_function("_report_disk_full"),
             _cli_sh_function("_report_pip_failure"),
             _cli_sh_function("_rs_interrupt"),
             _cli_sh_function("_run_step"),

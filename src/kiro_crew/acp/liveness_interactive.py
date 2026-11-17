@@ -13,7 +13,9 @@ import logging
 import re
 from dataclasses import dataclass
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.liveness_command import _command_text, bounded_command_text
+from kiro_crew.acp.program_name import windows_program_name
 
 #: The facade's logger: a record from this module keeps the name ``kiro_crew.acp.liveness``.
 logger = logging.getLogger("kiro_crew.acp.liveness")
@@ -188,6 +190,8 @@ NOT_INTERACTIVE = InteractiveClassification()
 def _segment_program(tokens: list[str]) -> tuple[str, list[str]]:
     """``(program, args)`` of one pipeline segment, skipping env and wrappers.
 
+    On Windows a program word is read the way Windows runs it
+    (:func:`windows_program_name`); POSIX keeps its exact, case-sensitive basename.
     ``sudo`` is NOT skipped: it is itself a prompt-shaped program (returned as
     the program so the prompt table sees it), unless it carries a flag that
     makes it non-interactive, in which case the wrapped program is classified.
@@ -195,10 +199,12 @@ def _segment_program(tokens: list[str]) -> tuple[str, list[str]]:
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        base = tok.rsplit("/", 1)[-1]
+        base = tok if platform_compat.IS_WINDOWS else tok.rsplit("/", 1)[-1]
         if "=" in base and not base.startswith("-"):
             i += 1
             continue
+        if platform_compat.IS_WINDOWS:
+            base = windows_program_name(base)
         if base in _WRAPPER_PROGRAMS or base == "timeout":
             # Skip the wrapper's own flags and any numeric argument
             # (``nice -n 10``, ``timeout 30``, ``stdbuf -oL``).

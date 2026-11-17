@@ -7,9 +7,11 @@
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
+import type { PublicPrincipal } from '../../types'
 import { activeLocale } from '../../i18n/format'
 import { agentPath, needsProxySafePath } from '../agentPath'
 import { toApiError } from '../apiError'
+import { isOwnerOnlyRefusal } from '../crewApiError'
 import type { ClientTransport } from './transport'
 
 /** The profile card's Export toggles (rfc-crewmate-share.md §5.3). */
@@ -33,6 +35,7 @@ export interface CrewmateExportPreview {
   filename: string
   description: string
   model: string
+  reasoning_effort: string
   /** A `builtin:` template id, or '' (left_out says when a custom page stays home). */
   dashboard: string
   avatar: '' | 'image' | 'ghost'
@@ -63,6 +66,12 @@ export interface MemberRosterRow {
   slot_key: string
   /** O(1) liveness: the bound slot is mid-turn right now. */
   running: boolean
+  /** Shared Crew: the people who have written in the DM thread, creator first,
+   *  read from the live slot (`shared_crew.participants`). Absent on a relay
+   *  teammate's roster, which masks the owner's thread. */
+  participants?: PublicPrincipal[]
+  /** How many people the gateway's capped `participants` list dropped. */
+  participants_dropped?: number
   /** Epoch seconds of the DM transcript's last write; 0 = never talked. */
   last_active_ts?: number
   last_message?: string
@@ -89,6 +98,12 @@ export interface MemberRosterRow {
   worker_model?: string
   /** Same for the reasoning effort; '' = the crewmate's own level. */
   worker_reasoning_effort?: string
+  /** How many worker sessions this Bot may have open at once: 1-32, or 0 (the
+   *  default) for no limit. Only the owner sets it; the session verbs refuse past it. */
+  max_workers?: number
+  /** The crewmate's "Auto-compact at", in percent; 0 inherits the global
+   *  `session.autocompact_pct`. A thread's own override still wins. */
+  autocompact_pct?: number
   /** The per-crewmate Dynamic capabilities preview (default off). */
   dynamic_capabilities?: boolean
   /** Optional presentation label shown in place of `name`. `name` stays the
@@ -105,6 +120,14 @@ export interface MemberRosterRow {
    *  placed yet (sorts last). Written by dragging a dock row. Absent on an
    *  older gateway. */
   star_order?: number
+  /** Preview, off by default: whether a Dashboard-tab button may send its reply
+   *  in one click. Absent on an older gateway, which has no such switch, or when
+   *  the crewmate never opted in: read it as off. */
+  dashboard_card_send?: boolean
+  /** Whether the chats this Bot's thread opens also show in the person's
+   *  Sessions list. Off by default (absent reads as off): they show only on the
+   *  Bot's Sessions tab. */
+  show_sessions_in_list?: boolean
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -249,6 +272,13 @@ export interface GoalReport {
   at: number
 }
 
+/** What the Bot's work used, summed once per worker session from the metered
+ *  charges. `partial` means the total is a lower bound. */
+export type GoalSpend =
+  | { status: 'reported'; credits: number; partial: boolean }
+  | { status: 'not_reported'; partial: boolean }
+  | { status: 'pending' }
+
 /** GET /api/members/{slug}/goals: the crewmate's goal record. */
 export interface MemberGoals {
   slug: string
@@ -264,6 +294,9 @@ export interface MemberGoals {
   removed_goal: { id: string; text: string; at: number } | null
   /** The goal a write added or changed (write answers only). */
   goal_id?: string
+  /** The credits the Bot's work used (GET only; a write answer omits it). `null`
+   *  when the gateway could not read it, `pending` while it is read the first time. */
+  spend?: GoalSpend | null
   limits: {
     goal_text_max_chars: number
     key_result_text_max_chars: number
@@ -316,8 +349,6 @@ export interface DashboardRead {
    *  to a different package. Absent where no package is bound, which is every root
    *  session today: only a crewmate carries a binding. */
   dashboard?: string
-  /** The person's layout lock: while true the crewmate cannot apply or roll back a page. */
-  structure_locked?: boolean
   /** Set on a `preview` read: this body is the staged page, not the record. */
   preview?: boolean
   /** Set on a `preview` read: which staged page this is. Keep sends it back. */
@@ -392,9 +423,11 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
      *  the sync route it enrols nothing and allocates no member memory, so
      *  every picker can call it without side effects. Same `X-Session-Key`
      *  scoping as `kirocrewAgents`: project templates come from THIS chat's
-     *  project, never from another open pane's. */
-    agentCatalog: (sessionKey?: string) =>
-      fetch('/api/agents/catalog', {
+     *  project, never from another open pane's. With no chat to name,
+     *  `projectPath` names the directory instead (the folder settings modal);
+     *  the server honours it for the owner only. */
+    agentCatalog: (sessionKey?: string, projectPath?: string) =>
+      fetch('/api/agents/catalog' + (projectPath ? '?project_path=' + encodeURIComponent(projectPath) : ''), {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
       }).then(j) as Promise<{
         agents: KiroCrewAgent[]
@@ -418,7 +451,14 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     // cheap live-status fields the backend can answer without IO (richer live
     // detail rides the already-subscribed WS `slots` frames). A non-owner's 403
     // `owner_only` still throws but is not journaled (see `jMembers` in client.ts).
-    members: () => fetch('/api/members').then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
+    // Read through the Crew API Owner route; `GET /api/members` serves the same body.
+    // A relay teammate is not the owner, so the Owner route refuses them `owner_only`;
+    // `/api/members` still serves them the narrowed roster, so that refusal falls back
+    // to it. A non-owner dashboard user gets `owner_only` from both, as before.
+    members: () =>
+      fetch('/v1/crew/owner/bots')
+        .then(async (r) => ((await isOwnerOnlyRefusal(r)) ? fetch('/api/members') : r))
+        .then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
     // Idempotent get-or-create of a member's pinned DM thread. Member slots are
     // born ONLY through this route (the generic slot-create endpoint refuses
     // mode="member"), so this is also the only place a member slot key comes from.
@@ -505,7 +545,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
       ).then(j) as Promise<DashboardRead | null>,
     // The person's Keep: install exactly the staged page the preview read named by
     // `staged_ms`. Owner-only, refused to an agent's internal-secret caller, 409
-    // `preview_changed` when another page was staged since, 423 `dashboard_locked`.
+    // `preview_changed` when another page was staged since.
     memberDashboardPreviewApply: (slug: string, member: string, stagedMs: number) =>
       post('/api/members/' + encodeURIComponent(slug) + '/dashboard/preview/apply?member=' + encodeURIComponent(member), { staged_ms: stagedMs })
         .then(j) as Promise<{ ok: boolean; instance_version: number; template_id: string }>,
@@ -515,11 +555,6 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     memberDashboardPreviewDiscard: (slug: string, member: string, stagedMs: number) =>
       post('/api/members/' + encodeURIComponent(slug) + '/dashboard/preview/discard?member=' + encodeURIComponent(member), { staged_ms: stagedMs })
         .then(j) as Promise<{ ok: boolean }>,
-    // Set or clear that lock. Owner-only on the gateway, and refused to an agent's
-    // internal-secret caller: only the person, from the crewmate's Profile card, can move it.
-    memberDashboardLock: (slug: string, member: string, locked: boolean) =>
-      post('/api/members/' + encodeURIComponent(slug) + '/dashboard/lock?member=' + encodeURIComponent(member), { locked })
-        .then(j) as Promise<{ ok: boolean; structure_locked: boolean }>,
     // A ROOT session's own dynamic dashboard, the same body as `memberDashboard`.
     // Keyed by the slot: the gateway reads every field from that session's own work
     // ledger and crew log, and answers 404 `not_root_session` for a dispatched or
@@ -559,9 +594,8 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
         text: string
         /** Last-modified timestamp, or null when no notes file exists yet. */
         updated_ts: number | null
-        /** The text above was redacted on the way out (a secret-like string or an
-         *  exfiltration URL replaced by its placeholder); the panel says so above
-         *  the notes. */
+        /** The text above was redacted on the way out (a secret-like string
+         *  replaced by its placeholder); the panel says so above the notes. */
         redacted: boolean
         /** The file ran past the briefing cap, so the text above ends in the
          *  truncation marker instead of the tail; the panel says so above the

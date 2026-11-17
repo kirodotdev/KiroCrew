@@ -114,6 +114,11 @@ class _Origin:
         )
         # Stripping GIT_* drops the suite's maintenance entries and global file.
         self.env.update(git_maintenance_off_entries(self.env))
+        # HOME is replaced, so a version-manager shim first on PATH would read its
+        # tools from the fake HOME and fail; the running interpreter's dir goes first.
+        self.env["PATH"] = os.pathsep.join(
+            (os.path.dirname(sys.executable), self.env.get("PATH", ""))
+        )
         self.git("init", "-q", "-b", "main", str(self.path), cwd=tmp)
         for key in ("uploadpack.allowFilter", "uploadpack.allowAnySHA1InWant"):
             self.git("config", key, "true")

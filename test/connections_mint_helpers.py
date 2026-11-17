@@ -154,6 +154,11 @@ def _isolated_mint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         },
     }
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _FakeClient)
+    # These suites drive the kiro-cli mint. KAS is the default chat backend, which
+    # would route every sign-in to the KAS engine (test_connections_mint_kas.py).
+    monkeypatch.setattr(
+        "kiro_crew.connections.mint_kas.kas_sign_in_entry", lambda slug, pinned=None: None
+    )
     return agents_dir
 
 

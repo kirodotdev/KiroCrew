@@ -11,12 +11,11 @@ Covers the new backend logic that carries real behaviour:
 """
 import json
 import os
-import shutil
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
 from kiro_crew.apps.builtins.issue_radar.backend import routes, store
@@ -34,6 +33,28 @@ class TestPrTimelineEvents(unittest.TestCase):
         self.assertEqual(ev["created_at"], "2024-02-01T00:00:00Z")
         self.assertEqual(ev["review_state"], "approved")
         self.assertEqual(ev["body"], "LGTM")
+
+    def test_reviewed_keeps_its_review_id(self):
+        ev = gh._normalize_timeline_event({
+            "event": "reviewed", "id": 123, "user": {"login": "alice"},
+            "submitted_at": "2024-02-01T00:00:00Z", "state": "changes_requested",
+        })
+        assert ev is not None
+        self.assertEqual(ev.get("review_id"), 123)
+
+    def test_review_dismissed_names_the_dismissed_review(self):
+        ev = gh._normalize_timeline_event({
+            "event": "review_dismissed", "actor": {"login": "maintainer"},
+            "created_at": "2024-02-03T00:00:00Z",
+            "dismissed_review": {"review_id": 123, "state": "changes_requested"},
+        })
+        self.assertEqual(
+            ev,
+            {
+                "kind": "review_dismissed", "actor": "maintainer",
+                "created_at": "2024-02-03T00:00:00Z", "review_id": 123,
+            },
+        )
 
     def test_committed_uses_author_date_and_first_message_line(self):
         ev = gh._normalize_timeline_event({
@@ -173,11 +194,17 @@ class TestPrDetailAndChecks(unittest.TestCase):
 
 
 class TestPullsCache(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
+    def setUp(self):
+        self.tmp = self._tmp_path
 
     def test_list_cache_roundtrip_per_state(self):
         openp = [{"number": 1}]
@@ -797,11 +824,20 @@ class TestPrListMergeReadiness(unittest.TestCase):
 
 
 class TestPrAiSummary(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     """The PR summary prompt (what the model is given) and the fingerprint-keyed
     cache (when a summary is allowed to be reused)."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self.detail = {
             "number": 7, "title": "Add retry", "body": "Adds a retry.",
             "state": "open", "draft": False, "merged_at": None,
@@ -830,9 +866,6 @@ class TestPrAiSummary(unittest.TestCase):
             {"name": "unit", "bucket": "success"},
             {"name": "lint", "bucket": "failure"},
         ]
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_prompt_carries_conversation_state_and_checks(self):
         p = routes._build_pr_ai_prompt("o", "r", self.detail, self.timeline, self.checks)
@@ -1035,14 +1068,20 @@ class TestPrMergeabilityRetry(unittest.TestCase):
 
 
 class TestChecksWriteThrough(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand the test pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     """A detail fetch re-reads the checks; the PR's LIST row must learn about it,
     or the card keeps showing the state from the last whole-list refresh."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.tmp = self._tmp_path
 
     def test_summarize_prioritises_failure_then_running(self):
         s = gh.summarize_checks([

@@ -331,11 +331,12 @@ def _damaged_session_age(directory: Path, now: datetime) -> float:
     The record has no stamp to read. The directory's mtime sees every atomic
     replace; the state file's mtime sees an in-place write that damaged it. The
     smaller age wins, so a store touched either way inside the window is kept.
+    A state file that is missing has no mtime and adds no reading, so the
+    directory alone ages a store that has none.
     """
-    return min(
-        _age_days(None, directory, now),
-        _age_days(None, directory / sl._STATE_FILE, now),
-    )
+    readings = [_mtime(directory / sl._STATE_FILE), _mtime(directory)]
+    ages = [_age_of(moment, now) for moment in readings if moment is not None]
+    return min(ages) if ages else 0.0
 
 
 def _session_age_days(state: dict[str, Any], directory: Path, now: datetime) -> float:

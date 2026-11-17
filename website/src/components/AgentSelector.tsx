@@ -54,6 +54,11 @@ export interface KiroCrewAgent {
   scope?: string
   /** Catalog rows only: defined in markdown, with no JSON spec for its name. */
   markdown_only?: boolean
+  /** Catalog member rows on the shared `default` store: the crewmate has setup
+   *  of its own this row does not carry (permanent rules, goals, a briefing, or
+   *  a harness, worker, approval or dynamic-capabilities choice). Computed by
+   *  the server; absent on other rows and older payloads. */
+  own_setup?: boolean
   /** Set by `useAgents` when this chat's harness cannot load the markdown spec. */
   markdown_block?: MarkdownBlock
 }

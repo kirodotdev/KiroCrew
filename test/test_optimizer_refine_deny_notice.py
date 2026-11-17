@@ -303,6 +303,30 @@ async def test_refine_a_failing_steer_still_rejects(refine_sel):
     assert state._refine_status == "done"
 
 
+@pytest.mark.asyncio
+async def test_refine_drops_the_notices_steer_acknowledgement_from_the_spec(refine_sel):
+    """The ack is protocol: the drafted spec is the answer."""
+    client = _Provider(
+        events=[
+            LLMEvent(kind=EVENT_PERMISSION_REQUEST, title="Read file", request_id="r7"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="[STEERING steer-83cc1f2a: The notice"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=" named the rule.]# Task: T"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+    )
+    state = _refine_state(client)
+    # The status read answers while the session resets: it must already be clean.
+    texts_at_reset: list[str] = []
+    state.sessions.reset = AsyncMock(
+        side_effect=lambda _key: texts_at_reset.append(state._refine_text)
+    )
+    await _run_refine(state, "x")
+    assert client.calls == ["steer", "reject"]
+    assert texts_at_reset == ["# Task: T"]
+    assert state._refine_status == "done"
+    assert state.broadcast_ws.call_args.args[1]["text"] == "# Task: T"
+
+
 # ── The new cause's wording ──────────────────────────────────────────────────
 
 

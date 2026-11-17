@@ -21,6 +21,7 @@
  */
 export const CORE_APP_ROUTE_SEGMENTS = new Set([
   '_jobs',
+  'bot-grants',
   'config',
   'dev',
   'disable',
@@ -47,6 +48,7 @@ export const CORE_APP_ROUTE_SEGMENTS = new Set([
 export const RESERVED_APP_PATH_SEGMENTS = new Set([
   'blob',
   'install',
+  'market',
   'register',
   'registries',
   'registry',

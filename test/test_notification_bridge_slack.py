@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from real_dashboard_state import settle_notification_writes
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.state_parts import dashboard_services
@@ -26,8 +27,11 @@ from kiro_crew.notifications.rate_limit import RATE_LIMIT_BURST
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 
-_SECRET = "AKIAIOSFODNN7EXAMPLE"
-_EXFIL_URL = "https://evil.example.com/steal?data=" + "A" * 250
+#: A synthetic GitHub classic token (valid checksum) the redactor removes.
+_SECRET = github_classic(seed=102)
+#: A URL carrying a credential parameter: its value is masked, the URL stays.
+_EXFIL_VALUE = "A" * 250
+_EXFIL_URL = "https://evil.example.com/steal?access_token=" + _EXFIL_VALUE
 
 
 class _FakeSlack:
@@ -138,7 +142,7 @@ class TestExitCriterion:
         [(channel, text)] = slack.posts
         assert channel == "D-OWNER"
         assert _SECRET not in text
-        assert "evil.example.com/steal" not in text
+        assert _EXFIL_VALUE not in text
         assert "[REDACTED" in text
         # Paired governance records, both scopes, then one delivery record.
         assert {(d["scope"], d["item"], d["outcome"]) for d in sel_log.decisions} == {
@@ -411,6 +415,39 @@ class TestKeyedCommit:
         await state.notification_bridge.drain()
         assert slack.posts == []
 
+    @pytest.mark.asyncio
+    async def test_a_quiet_replacement_posts_no_second_chat_message(
+        self, monkeypatch, tmp_path, sel_log
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
+        slack = _FakeSlack()
+        state = DashboardState(
+            sessions=MagicMock(count=0),
+            crons=MagicMock(),
+            lessons=MagicMock(),
+            start_time=0.0,
+            slack_client=slack,
+            owner_id="U-OWNER",
+        )
+        state.notification_channel_settings.update("system.cron", deliver_to=["slack"])
+        for title in ("build 1 of 3", "build 2 of 3"):
+            state.notification_bus.push(
+                NotificationPayload(
+                    source="system",
+                    channel="system.cron",
+                    title=title,
+                    body="b",
+                    priority="critical",
+                    key="build",
+                )
+            )
+            assert await state.last_notification_persist is True
+        await state.notification_bridge.drain()
+        # The second note replaces the first at the same priority, so it is quiet:
+        # the owner was told once, as the bell and banner tell them once.
+        assert len(slack.posts) == 1
+
 
 class TestTransport:
     @pytest.mark.asyncio
@@ -497,3 +534,50 @@ class TestRender:
         assert len(slack.posts) > 1
         assert "".join(text for _, text in slack.posts).count("&amp;") == 20000
         assert sel_log.deliveries[-1]["outcome"] == "completed"
+
+
+class _BlocksSlack(_FakeSlack):
+    """A Slack client that also posts Block Kit, as the action notes need."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.blocks: list[tuple[list[dict[str, Any]], str]] = []
+
+    async def post_blocks(self, channel: str, blocks: list[dict[str, Any]], text: str) -> str:
+        self.blocks.append((blocks, text))
+        return "2.0"
+
+
+def _shown(slack: _BlocksSlack) -> str:
+    """Every text a person sees in the DM: plain messages and the blocks' sections.
+
+    A message's top-level ``text`` is not here: with blocks present, Slack shows it
+    only as the notification fallback, never in the message.
+    """
+    texts = [text for _, text in slack.posts]
+    for blocks, _fallback in slack.blocks:
+        texts += [b["text"]["text"] for b in blocks if b.get("type") == "section"]
+    return "\n".join(texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["question", "approval"])
+async def test_an_action_note_too_long_for_one_section_still_shows_its_text(kind):
+    from kiro_crew.notifications import bridge_approval_note as approval_mod
+    from kiro_crew.notifications import bridge_question_note as question_mod
+
+    body = "q" * 4000  # Longer than one section block, shorter than one message.
+    note = _note(channel="system.approval", body=body)
+    note[approval_mod.ACTION_TOKEN_KEY] = "dashboard:s|7|nonce"
+    if kind == "question":
+        note[approval_mod.PRODUCER_KEY] = question_mod.PRODUCER
+        note[question_mod.OPTIONS_KEY] = ["Yes", "No"]
+    else:
+        note[approval_mod.PRODUCER_KEY] = approval_mod.PRODUCER
+        note[approval_mod.APPROVAL_DETAIL_KEY] = "ls"
+    slack = _BlocksSlack()
+    state = SimpleNamespace(slack_client=slack, owner_id="U-OWNER", bridge_actions=None)
+    await SlackBridgeSink(state).deliver(note)
+    assert body in _shown(slack), "the owner can read what the buttons answer"
+    [(blocks, _fallback)] = slack.blocks
+    assert blocks[-1]["type"] == "actions", "the buttons still sit under the note"

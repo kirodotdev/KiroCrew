@@ -12,6 +12,7 @@ corpus does and does not prove.
 | `session-load-live.jsonl` | `current_mode_update`, the `session/load` result for a live id, and the `session/resume` rejection |
 | `compact-live.jsonl` | three ordinary turns with their `usage_update`, a `/compact` turn (`user_message_chunk`, the `Compaction complete` chunk, its `usage_update`, `end_turn`), and one ordinary turn after it |
 | `effort-live.jsonl` | the `thinking_effort` select on a thinking model (off through max) in `session/new`, the `config_option_update` and `session/set_config_option` result reading a write of `high` back, then a model switch narrowing the select to `off` alone, with a second write that still reads `off` |
+| `crew-oauth-bridge-args-live.jsonl` | goose acp 1.57.0 in `approve` mode: a stdio MCP `tool_call` and its `session/request_permission`, both carrying `rawInput` equal to the arguments the stub server's `tools/call` received; the evidence goose joins `ACP_BACKENDS_CREW_OAUTH_BRIDGE` on |
 
 **Nothing here is synthesized.** This harness produced all seven required classes on
 its own wire, including the permission request, so there is no class written from a

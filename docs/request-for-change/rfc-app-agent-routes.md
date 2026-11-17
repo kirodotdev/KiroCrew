@@ -49,7 +49,8 @@ An agent reaches the gateway through an MCP server that holds the internal
 secret. `token_auth` accepts that secret only on the hardcoded path sets in
 `dashboard/server_internal_paths.py`, enforced through `dashboard/server_runtime/security_middleware.py`.
 Each app agents use today got its own core change: paths added to one of those
-sets and a hand-written tool in `mcp_tools/apps.py` or `mcp_core.py` (Issue Radar's
+sets and a hand-written tool in `mcp_tools/apps.py` (since removed by #33542,
+after #32660 let an app declare the `agentTools` it serves itself) or `mcp_core.py` (Issue Radar's
 investigation and crew routes, Ops Mission Control's API, Dev Fleet's four
 `/pod/*` paths, Design Tweak's thread route).
 

@@ -53,6 +53,16 @@ public static class KiroInstallerCapture {
 
   [DllImport("user32.dll")]
   public static extern IntPtr GetDlgItem(IntPtr dialog, int id);
+
+  [DllImport("user32.dll")]
+  public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
+
+  // The temp directory exactly as the Win32 call returns it. NSIS sets TEMP
+  // from this call, so it is the base of the uninstaller's move root. .NET's
+  // Path.GetTempPath can expand an 8.3 user folder (RUNNER~1) to its long name,
+  // which makes the same directory several characters longer.
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+  public static extern uint GetTempPathW(uint length, System.Text.StringBuilder buffer);
 }
 "@
 
@@ -603,6 +613,360 @@ try {
     }
   }
 }
+}
+
+# Every installed file must be one the next update can move out of the way:
+# the update runs this version's uninstaller, which renames each file into
+# %TEMP%, and a rename past MAX_PATH abandons the update.
+# packaging/check_windows_path_budget.py states the budget's arithmetic; it is
+# run with the bundled interpreter, -B so measuring writes nothing into the tree.
+$pathBudgetPython = Join-Path $installLocation "resources\backend-dist\kirocrew-backend\python.exe"
+if (Test-Path -LiteralPath $pathBudgetPython -PathType Leaf) {
+  & $pathBudgetPython -B -I (Join-Path $PSScriptRoot "..\..\packaging\check_windows_path_budget.py") --root $installLocationFull
+  if ($LASTEXITCODE -ne 0) {
+    throw "The installed tree has a path over the Windows update budget."
+  }
+} else {
+  Write-Host "No bundled interpreter in this payload; its path budget is not measured."
+}
+
+# Silent re-install over the existing install. electron-updater applies an
+# update by re-running the installer over the install, and a re-run first runs
+# the previous version's uninstaller with `--updated`, which moves every
+# installed file into its own temp directory before the new payload is
+# published. Three cases, as an update meets them:
+#
+#   1. nothing of the install running;
+#   2. the installed app running, held as two processes the way the real app
+#      runs (window, renderer, helpers), which the installer must close;
+#   3. a copy running from the sibling "<install dir> Nightly" directory.
+#
+# Each must finish with exit code 0 inside the ceiling, keep the registration
+# on this install root, leave the executable in place and leave the user's
+# pre-existing files alone. Case 3 asserts only that the re-run finishes: which
+# of the sibling's processes survive it is the running-app check's behaviour,
+# not this one's, and is reported rather than asserted.
+#
+# The held process is the installed KiroCrew.exe itself, run with
+# ELECTRON_RUN_AS_NODE=1 and a timer as its whole program. Its image path is the
+# real executable's, which is all the running-app check reads, while it opens no
+# window, boots no gateway and writes nothing into the install tree or a data
+# home. The timer ends it after ten minutes even if every cleanup step here were
+# skipped.
+#
+# A re-run with the per-user registration in place reuses the registered root
+# whatever /D says (customInit), so it lands over $installLocation; /D is still
+# passed so that, were that ever not so, a stray install stays under the temp
+# root this script removes.
+#
+# Ceiling: a re-run is the previous version's uninstall plus a full install,
+# and the uninstall renames the same files the install wrote, so it is bounded
+# by about the same work again. Twice the slowest measured fresh install (98 s,
+# see $MaxInstallSeconds) is 196 s, rounded up to 240 s. When it is exceeded
+# the failure names every live descendant of the installer, every process
+# still running from the install tree, and when the held process exited.
+$MaxReinstallSeconds = 240
+$heldProgram = "setTimeout(function(){},600000)"
+
+function Start-HeldAppProcess {
+  param([string]$Executable)
+
+  $savedRunAsNode = $env:ELECTRON_RUN_AS_NODE
+  try {
+    $env:ELECTRON_RUN_AS_NODE = "1"
+    $held = Start-Process -FilePath $Executable -ArgumentList @("-e", $heldProgram) `
+      -WorkingDirectory (Split-Path -Parent $Executable) -WindowStyle Hidden -PassThru
+  } finally {
+    if ($null -eq $savedRunAsNode) {
+      Remove-Item -Path "Env:ELECTRON_RUN_AS_NODE" -ErrorAction SilentlyContinue
+    } else {
+      $env:ELECTRON_RUN_AS_NODE = $savedRunAsNode
+    }
+  }
+  # Hold the handle now: a process object that first asks for its exit code
+  # after the process is gone can report none.
+  $null = $held.Handle
+
+  # Prove the precondition rather than assume it: the process is alive and the
+  # OS reports the very image path the running-app check matches on.
+  $observedPath = $null
+  $heldDeadline = [DateTime]::UtcNow.AddSeconds(15)
+  do {
+    Start-Sleep -Milliseconds 250
+    $held.Refresh()
+    $instance = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($held.Id)" -ErrorAction SilentlyContinue
+    if ($instance) {
+      $observedPath = $instance.ExecutablePath
+    }
+  } while (-not $held.HasExited -and -not $observedPath -and [DateTime]::UtcNow -lt $heldDeadline)
+  if ($held.HasExited) {
+    throw "The held process from $Executable exited with code $($held.ExitCode) before the re-install started."
+  }
+  if (-not $observedPath -or $observedPath -ine $Executable) {
+    Stop-Process -Id $held.Id -Force -ErrorAction SilentlyContinue
+    throw "The held process reports image path '$observedPath'; expected '$Executable'."
+  }
+  return $held
+}
+
+# End the held processes and anything else running that same image, so neither
+# the sibling copy's removal nor the final uninstall is blocked by a file in use.
+function Stop-HeldAppProcess {
+  param([object[]]$Held, [string]$Executable)
+
+  foreach ($leftover in @(
+    Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $Executable }
+  )) {
+    Stop-Process -Id $leftover.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+  foreach ($process in @($Held | Where-Object { $null -ne $_ })) {
+    $process.WaitForExit(10000) | Out-Null
+  }
+}
+
+function Get-InstallTreeProcesses {
+  @(
+    Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.ExecutablePath -and
+        $_.ExecutablePath.StartsWith("$installLocationFull\", [StringComparison]::OrdinalIgnoreCase)
+      }
+  )
+}
+
+function Invoke-SilentReinstall {
+  param([string]$Stage, [object[]]$Watched)
+
+  $reinstallTimer = [System.Diagnostics.Stopwatch]::StartNew()
+  $reinstall = Start-Process -FilePath $installer.FullName -ArgumentList @(
+    "/S",
+    "/currentuser",
+    "/D=$requestedInstallRoot"
+  ) -PassThru
+  $null = $reinstall.Handle
+  $watchedExitSeconds = @{}
+  while (-not $reinstall.HasExited -and $reinstallTimer.Elapsed.TotalSeconds -lt $MaxReinstallSeconds) {
+    foreach ($process in @($Watched | Where-Object { $null -ne $_ })) {
+      if (-not $watchedExitSeconds.ContainsKey($process.Id) -and $process.HasExited) {
+        $watchedExitSeconds[$process.Id] = [Math]::Round($reinstallTimer.Elapsed.TotalSeconds, 2)
+      }
+    }
+    Start-Sleep -Milliseconds 250
+    $reinstall.Refresh()
+  }
+  if (-not $reinstall.HasExited) {
+    Write-Host "$Stage was still running after $MaxReinstallSeconds seconds."
+    foreach ($process in @($Watched | Where-Object { $null -ne $_ })) {
+      if ($watchedExitSeconds.ContainsKey($process.Id)) {
+        Write-Host "  held process pid $($process.Id) exited $($watchedExitSeconds[$process.Id]) seconds into the re-run."
+      } elseif ($process.HasExited) {
+        Write-Host "  held process pid $($process.Id) exited only at the ceiling."
+      } else {
+        Write-Host "  held process pid $($process.Id) is STILL RUNNING."
+      }
+    }
+    foreach ($inTree in Get-InstallTreeProcesses) {
+      Write-Host "  still running from the install tree: pid $($inTree.ProcessId) $($inTree.ExecutablePath)"
+    }
+    # What the installer is waiting on: every live descendant, with its command
+    # line (an nsExec probe, the previous version's uninstaller, ...).
+    $allProcesses = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue)
+    $treeIds = @($reinstall.Id)
+    $frontier = @($reinstall.Id)
+    while ($frontier.Count -gt 0) {
+      $next = @()
+      foreach ($parentId in $frontier) {
+        foreach ($child in @($allProcesses | Where-Object { $_.ParentProcessId -eq $parentId })) {
+          $commandLine = "$($child.CommandLine)"
+          if ($commandLine.Length -gt 400) {
+            $commandLine = $commandLine.Substring(0, 400) + "..."
+          }
+          Write-Host "  installer descendant: pid $($child.ProcessId) (parent $parentId) $($child.Name): $commandLine"
+          $treeIds += $child.ProcessId
+          $next += $child.ProcessId
+        }
+      }
+      $frontier = $next
+    }
+    foreach ($id in ($treeIds | Sort-Object -Descending)) {
+      Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+    }
+    throw "$Stage did not finish within the $MaxReinstallSeconds-second ceiling."
+  }
+  $reinstall.WaitForExit()
+  $reinstallTimer.Stop()
+  if ($reinstall.ExitCode -ne 0) {
+    throw "$Stage exited with code $($reinstall.ExitCode)."
+  }
+  $after = @(Find-InstallerRegistrations $expectedDisplayName)
+  if ($after.Count -ne 1) {
+    throw "Expected one $productName registration after $Stage; found $($after.Count)."
+  }
+  $afterKey = Join-Path $after[0].InstallRoot $after[0].Entry.PSChildName
+  $afterLocation = (Get-ItemProperty -LiteralPath $afterKey -ErrorAction Stop).PSObject.Properties["InstallLocation"]
+  if (-not $afterLocation -or [IO.Path]::GetFullPath($afterLocation.Value).TrimEnd("\") -ne $installLocationFull) {
+    throw "$Stage moved the registered install root away from $installLocationFull."
+  }
+  if (-not (Test-Path -LiteralPath $installedExecutable -PathType Leaf)) {
+    throw "$Stage left no application executable at $installedExecutable."
+  }
+  Assert-PreExistingTreeIntact $Stage
+  $seconds = [Math]::Round($reinstallTimer.Elapsed.TotalSeconds, 2)
+  Write-Host "$Stage completed in $seconds seconds."
+  if ($env:GITHUB_STEP_SUMMARY) {
+    Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Windows silent ${Stage}: **$seconds seconds** (ceiling: $MaxReinstallSeconds seconds)."
+  }
+}
+
+# 1. Nothing running.
+Invoke-SilentReinstall "Re-install with nothing running" @()
+
+# An installed file too deep for the previous version's uninstaller to move. It
+# moves each file to $PLUGINSDIR\old-install\<path below the install root>,
+# $PLUGINSDIR being $TEMP\nsXXXX.tmp, and a move target past 259 characters
+# fails. Each probe's target is 262 characters while its installed path stays
+# short enough to create. The installer deletes an over-limit bytecode cache
+# before that uninstaller runs (customInit, KiroClearUnmovableFiles), so the
+# first re-install below must finish like any other; for any other over-limit
+# file it must stop with exit code 2 before moving anything.
+#
+# The move root is measured from the Win32 temp path, which is what NSIS's $TEMP
+# is: .NET's Path.GetTempPath can return a longer form of the same directory,
+# and a probe sized from it is not over the limit the installer measures.
+$win32TempBuffer = New-Object System.Text.StringBuilder 1024
+if ([KiroInstallerCapture]::GetTempPathW(1024, $win32TempBuffer) -eq 0) {
+  throw "GetTempPathW failed; the move probes cannot be sized."
+}
+$win32Temp = $win32TempBuffer.ToString().TrimEnd("\")
+Write-Host "Move root base: Win32 temp '$win32Temp' ($($win32Temp.Length) characters); .NET temp '$([IO.Path]::GetTempPath().TrimEnd("\"))'."
+$moveRootLength = $win32Temp.Length + "\nsa0000.tmp\old-install".Length
+$probeRoot = Join-Path $installLocationFull "resources\kc-move-probe"
+
+function New-UnmovableProbe {
+  param([string]$Leaf, [string]$FileName)
+
+  $template = "resources\kc-move-probe\{0}\$Leaf\$FileName"
+  $fillerLength = 262 - $moveRootLength - 1 - ($template.Length - 3)
+  if ($fillerLength -lt 1 -or $fillerLength -gt 255) {
+    throw "Cannot size a move probe: filler length $fillerLength (move root $moveRootLength characters)."
+  }
+  $relative = $template -f ("d" * $fillerLength)
+  $installed = Join-Path $installLocationFull $relative
+  if ($installed.Length -gt 259 -or (Split-Path -Parent $installed).Length -gt 247) {
+    throw "The move probe's installed path is $($installed.Length) characters; this runner cannot create it."
+  }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $installed) | Out-Null
+  Set-Content -LiteralPath $installed -Value "probe" -Encoding ascii
+  Write-Host "Move probe: $($moveRootLength + 1 + $relative.Length)-character move target for $relative"
+  return $installed
+}
+
+$cacheProbe = New-UnmovableProbe "__pycache__" "deep.cpython-312.pyc"
+Invoke-SilentReinstall "Re-install over a bytecode cache too deep to move" @()
+if (Test-Path -LiteralPath $cacheProbe) {
+  throw "Re-install over a bytecode cache too deep to move left that cache in place."
+}
+if (Test-Path -LiteralPath $probeRoot) {
+  Remove-Item -LiteralPath $probeRoot -Recurse -Force
+}
+
+$sourceProbe = New-UnmovableProbe "pkg" "deep_module.py"
+$filesBefore = @(Get-ChildItem -LiteralPath $installLocationFull -Recurse -File -Force).Count
+# Run visibly, so the refusal dialog can be captured as review evidence, then
+# close it the way OK does. A silent run answers the same dialog by itself.
+$refused = Start-Process -FilePath $installer.FullName -ArgumentList @(
+  "/currentuser",
+  "/D=$requestedInstallRoot"
+) -PassThru
+$null = $refused.Handle
+# A message box carries its text in a static control with ID 0xFFFF; the
+# "Verifying installer" window and the wizard do not.
+$refusalHandle = [IntPtr]::Zero
+$refusalDeadline = [DateTime]::UtcNow.AddSeconds(90)
+do {
+  Start-Sleep -Milliseconds 250
+  $refused.Refresh()
+  $candidate = $refused.MainWindowHandle
+  if ($candidate -ne [IntPtr]::Zero -and
+      [KiroInstallerCapture]::IsWindowVisible($candidate) -and
+      [KiroInstallerCapture]::GetDlgItem($candidate, 0xFFFF) -ne [IntPtr]::Zero) {
+    $refusalHandle = $candidate
+  }
+} while (-not $refused.HasExited -and $refusalHandle -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $refusalDeadline)
+if ($refusalHandle -eq [IntPtr]::Zero) {
+  Stop-Process -Id $refused.Id -Force -ErrorAction SilentlyContinue
+  throw "Re-install over a file too deep to move showed no refusal dialog (exited: $($refused.HasExited))."
+}
+Start-Sleep -Milliseconds 500
+Save-InstallerWindow $refusalHandle (Join-Path $evidence "update-refused-path-too-long.png")
+$WM_CLOSE = 0x0010
+[void][KiroInstallerCapture]::PostMessage($refusalHandle, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+if (-not $refused.WaitForExit(120000)) {
+  Stop-Process -Id $refused.Id -Force -ErrorAction SilentlyContinue
+  throw "Re-install over a file too deep to move did not stop within 120 seconds."
+}
+if ($refused.ExitCode -ne 2) {
+  throw "Re-install over a file too deep to move exited with code $($refused.ExitCode); expected 2."
+}
+if (-not (Test-Path -LiteralPath $sourceProbe -PathType Leaf)) {
+  throw "Re-install over a file too deep to move removed that file."
+}
+if (-not (Test-Path -LiteralPath $installedExecutable -PathType Leaf)) {
+  throw "Re-install over a file too deep to move left no application executable."
+}
+$filesAfter = @(Get-ChildItem -LiteralPath $installLocationFull -Recurse -File -Force).Count
+if ($filesAfter -ne $filesBefore) {
+  throw "Re-install over a file too deep to move changed the install: $filesBefore files before, $filesAfter after."
+}
+Write-Host "Re-install over a file too deep to move stopped with exit code 2 and left the install unchanged."
+Remove-Item -LiteralPath $probeRoot -Recurse -Force
+
+# 2. The installed app running: the re-run must close both processes.
+$heldOwn = @()
+try {
+  $heldOwn = @((Start-HeldAppProcess $installedExecutable), (Start-HeldAppProcess $installedExecutable))
+  Invoke-SilentReinstall "Re-install over the running app" $heldOwn
+  # The installer proceeds only once its check reads "not running", so the held
+  # processes must already be gone; a short wait absorbs process-table lag.
+  # Nothing else in this script ends them, so their exit is the installer's doing.
+  foreach ($process in $heldOwn) {
+    if (-not $process.WaitForExit(10000)) {
+      throw "Re-install over the running app finished but left the app running (pid $($process.Id))."
+    }
+  }
+  Write-Host "Re-install over the running app closed both of its processes."
+} finally {
+  Stop-HeldAppProcess $heldOwn $installedExecutable
+}
+
+# 3. A sibling copy running. Only the top-level runtime files are copied: the
+# held program needs the Electron runtime beside the executable, not the app's
+# resources or the uninstaller.
+$siblingDir = "$installLocationFull Nightly"
+$siblingExecutable = Join-Path $siblingDir "$productFilename.exe"
+$heldSibling = @()
+try {
+  New-Item -ItemType Directory -Path $siblingDir -Force | Out-Null
+  Get-ChildItem -LiteralPath $installLocation -File |
+    Where-Object { $_.Name -notlike "Uninstall*" } |
+    Copy-Item -Destination $siblingDir
+  $heldSibling = @((Start-HeldAppProcess $siblingExecutable), (Start-HeldAppProcess $siblingExecutable))
+  Invoke-SilentReinstall "Re-install beside a running sibling" $heldSibling
+  $survivors = @($heldSibling | Where-Object { -not $_.HasExited })
+  Write-Host "Re-install beside a running sibling left $($survivors.Count) of its $($heldSibling.Count) processes running."
+} finally {
+  Stop-HeldAppProcess $heldSibling $siblingExecutable
+  $siblingDeadline = [DateTime]::UtcNow.AddSeconds(15)
+  while ((Test-Path -LiteralPath $siblingDir) -and [DateTime]::UtcNow -lt $siblingDeadline) {
+    Remove-Item -LiteralPath $siblingDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $siblingDir) {
+      Start-Sleep -Milliseconds 500
+    }
+  }
+}
+if (Test-Path -LiteralPath $siblingDir) {
+  throw "Could not remove the sibling copy at $siblingDir."
 }
 
 $uninstaller = Get-ChildItem -LiteralPath $installLocation -File -Filter "Uninstall*.exe" |

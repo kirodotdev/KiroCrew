@@ -1,5 +1,5 @@
 /**
- * `GET /api/releases` bodies for the Settings > Releases harnesses, produced by
+ * `GET /api/releases` bodies for the Settings > About harness, produced by
  * running the REAL backend parser over the repo's REAL CHANGELOG.md.
  *
  * Not written by hand and not checked in: that is what makes the shots evidence
@@ -8,9 +8,7 @@
  * changelog's own prose to the diff, which the brand-name gate reads as new
  * misspellings of the product name.)
  *
- * Shared by capture-releases.mjs and capture-releases-scroll.mjs — one copy, so
- * the scroll evidence and the state evidence cannot disagree about what the
- * archive contains.
+ * Used by capture-releases.mjs.
  */
 import { execFileSync } from 'node:child_process'
 

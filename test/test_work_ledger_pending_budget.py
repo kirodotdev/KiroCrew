@@ -190,6 +190,10 @@ def test_a_baseline_entry_keeps_the_committed_pending_since():
 def test_the_crew_log_accepts_a_verdict_entry_carrying_the_stamp():
     """An undeclared field is refused at append, which would undo every pending verdict."""
     data = dict(_entry(1, "verdict", verdict="pending", pending_since=STAMP).data)
+    declared = entry_types.declaration_for(schema.KIND_SESSION, entry_types.WORK_ENTRY_TYPE)
+    # An undeclared type is accepted without a check, which would make this pass vacuously.
+    assert declared is not None
+    assert "pending_since" in {field.name for field in declared.fields}
     entry_types.validate_data(schema.KIND_SESSION, entry_types.WORK_ENTRY_TYPE, data)
 
 
@@ -201,7 +205,7 @@ def test_the_tool_the_skill_and_the_doc_quote_the_real_budget():
     hours = f"{int(wl.PENDING_BUDGET_SECS // 3600)} hours on end"
     read = next(t for t in mcp_work._list_tools() if t["name"] == "work_ledger_read")
     assert hours in read["description"] and "pending_overdue" in read["description"]
-    skill = _REPO_ROOT / "src/kiro_crew/builtin_skills/goal-conductor/SKILL.md"
+    skill = _REPO_ROOT / "src/kiro_crew/builtin_skills/goal-conductor/references/rare-cases.md"
     doc = _REPO_ROOT / "src/kiro_crew/docs/work-ledger.md"
     for page in (skill, doc):
         text = " ".join(page.read_text(encoding="utf-8").split())

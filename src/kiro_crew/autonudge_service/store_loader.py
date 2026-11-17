@@ -28,6 +28,7 @@ from kiro_crew.autonudge_service.gate import _MAX_QUIET_STREAK
 from kiro_crew.autonudge_service.model import (
     _MAX_IDLE_SECS,
     _MIN_IDLE_SECS,
+    INTERRUPTED_CYCLE_REASON,
     LOOP_BOUND_FIELDS,
     SENTINEL_DROPPED_REASON,
     STRUCTURAL_TERMINAL_REASON,
@@ -50,7 +51,7 @@ from kiro_crew.monitoring.models import (
     quarantine_monitor_state,
 )
 from kiro_crew.platform import PlatformCompositionError, redact_log_via_context, redact_via_context
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 
 if TYPE_CHECKING:
     from kiro_crew.autonudge import AutoNudgeService
@@ -277,7 +278,7 @@ def _addressing_value_unsafe_why(got: object) -> str:
         return "is not a string"
     if not got.isprintable():
         return "contains a non-printable character"
-    if redact_via_context(got) != got:
+    if refuses(got, redact_via_context):
         return "is credential-shaped"
     return ""
 
@@ -579,10 +580,13 @@ def _load(self: AutoNudgeService) -> None:
                     inflight,
                 )
                 self._store.unreconciled_claim[loop.id] = inflight
-                loop.active = False
                 # A reason the UI can render: without it a routine restart mid-fire
                 # surfaced as an unexplained pause with only a log line behind it.
-                loop.stopped_reason = "interrupted_cycle"
+                # Stamped only on a row this load stops itself, so a pause saved
+                # during the fire (``manual`` or any other reason) keeps its own.
+                if loop.active or not loop.stopped_reason:
+                    loop.stopped_reason = INTERRUPTED_CYCLE_REASON
+                loop.active = False
                 self._store_dirty = True
             # TRUST BOUNDARY: the REST scrub exempts these fields, so a credential
             # placed in one reaches every client verbatim. REFUSED, never scrubbed.

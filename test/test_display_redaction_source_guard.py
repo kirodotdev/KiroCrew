@@ -1,10 +1,9 @@
-"""The display redaction battery reads no mutable state beyond its two exempt sets.
+"""The display redaction battery reads no mutable state beyond its exempt prefix set.
 
 ``kiro_crew.dashboard.chat_utils._redact_for_display`` memoizes the output of
-``redact_exfiltration_urls`` followed by ``redact_credentials``, keyed on the
-input text, the exempt-host set and the pass-4 token-parameter prefix set. That
-key is only sound while the battery's OUTPUT is a pure function of exactly those
-inputs. Nothing on the
+``redact_credentials``, keyed on the input text and the pass-4 token-parameter
+prefix set. That key is only sound while the battery's OUTPUT is a pure function
+of exactly those inputs. Nothing on the
 ``security/`` side is told its output is memoized, so a battery change that
 starts reading a second mutable input -- an operator file, the clock, the
 environment, a memo that a later call can repopulate differently -- would make
@@ -12,18 +11,15 @@ every retained entry silently stale.
 
 This module pins that contract on the ``security/`` SOURCE: every function the
 battery reaches, statically, reads no mutable module global and performs no
-I/O or clock read, with two named carve-outs:
+I/O or clock read, with one named carve-out: ``_token_param_exempt_prefixes``,
+the mutable read the cache key covers. The walk starts at ``redact_credentials``
+and at the ``token`` parameter exemption of this module (``_exempt_token_values``),
+because the plan reaches it through the rule table's lazy import, which the walk does
+not follow.
 
-* ``_exempt_exact_hosts`` and ``_token_param_exempt_prefixes`` -- the two
-  mutable reads the cache key covers.
-* ``_slack_manifest_re_slot`` -- a write-once memo of a bundled package
-  resource that is constant for the life of the process; a fresh process
-  starts with an empty cache anyway.
-
-The OAuth operator-file carve-out lives on the same per-URL classifier, behind
-the ``allow_oauth_entropy`` flag. The battery never opens that flag, so the
-guard pins both halves: no battery-reachable caller passes the flag, and the
-one call that reads the operator file sits under that flag's guard.
+The OAuth operator-file carve-out lives on the exfiltration URL classifier,
+behind the ``allow_oauth_entropy`` flag. No battery-reachable caller opens that
+flag, and the one call that reads the operator file sits under that flag's guard.
 """
 
 from __future__ import annotations
@@ -39,26 +35,19 @@ import kiro_crew.dashboard.chat_utils as chat_utils
 from kiro_crew import _facade_mirror
 from kiro_crew.security import exfil, redaction
 
-# The two battery entry points, as the display cache composes them.
-BATTERY_ROOTS: tuple[tuple[object, str], ...] = (
-    (exfil, "redact_exfiltration_urls"),
-    (redaction, "redact_credentials"),
-)
+# The battery entry point, as the display cache composes it.
+BATTERY_ROOTS: tuple[tuple[object, str], ...] = ((redaction, "redact_credentials"),)
+# Where the walk starts: the entry point, and the exemption of this module the plan
+# runs on the rule table's hits, reached through a lazy import the walk cannot follow.
+WALK_ROOTS: tuple[tuple[object, str], ...] = BATTERY_ROOTS + ((redaction, "_exempt_token_values"),)
 
-# The mutable reads the cache key accounts for.
-ALLOWED_MUTABLE_READER = "_exempt_exact_hosts"
-ALLOWED_MUTABLE_READERS = frozenset(
-    {("exfil", ALLOWED_MUTABLE_READER), ("redaction", "_token_param_exempt_prefixes")}
-)
+# The mutable read the cache key accounts for.
+ALLOWED_MUTABLE_READER = "_token_param_exempt_prefixes"
+ALLOWED_MUTABLE_READERS = frozenset({("redaction", ALLOWED_MUTABLE_READER)})
 
 # Module globals a reachable function may read although they are mutable
 # containers, each with the reason the cache key need not cover it.
-ALLOWED_MUTABLE_GLOBALS: dict[str, str] = {
-    "_slack_manifest_re_slot": (
-        "write-once memo of the bundled Slack manifest template, a package "
-        "resource fixed for the life of the process"
-    ),
-}
+ALLOWED_MUTABLE_GLOBALS: dict[str, str] = {}
 
 # The classifier flag that opens the OAuth operator-file carve-out, and the
 # function behind it. The battery must leave the flag closed.
@@ -261,7 +250,7 @@ class _Graph:
         """Functions the battery reaches, minus the one edge closed by the OAuth flag."""
         seen: set[tuple[str, str]] = set()
         todo = deque(
-            (m.__name__.rsplit(".", 1)[-1], root) for m, root in BATTERY_ROOTS  # type: ignore[attr-defined]
+            (m.__name__.rsplit(".", 1)[-1], root) for m, root in WALK_ROOTS  # type: ignore[attr-defined]
         )
         while todo:
             key = todo.popleft()
@@ -288,11 +277,10 @@ def test_battery_reaches_the_one_allowed_mutable_reader(graph: _Graph) -> None:
     reached = graph.reachable()
     names = {name for _, name in reached}
     assert ALLOWED_MUTABLE_READERS <= reached, sorted(ALLOWED_MUTABLE_READERS - reached)
-    assert ("exfil", GATED_CLASSIFIER) in reached
     assert ("redaction", "redact_credentials") in reached
     assert OAUTH_FILE_READER not in names
     assert "_load_operator_oauth_endpoints" not in names
-    assert len(reached) >= 8, sorted(reached)
+    assert len(reached) >= 7, sorted(reached)
 
 
 def test_battery_reads_no_mutable_state_beyond_the_exempt_hosts(graph: _Graph) -> None:
@@ -322,18 +310,6 @@ def test_written_globals_are_detected(graph: _Graph) -> None:
         graph.mutable["exfil"]
     )
     assert "_STRUCTURAL_VALIDATORS" not in graph.mutable["exfil"]
-
-
-def test_allowed_mutable_globals_are_still_mutable_and_still_read(graph: _Graph) -> None:
-    """Each carve-out names a binding that exists and is read, so a stale entry is caught."""
-    for global_name in ALLOWED_MUTABLE_GLOBALS:
-        module = next(m for m, names in graph.mutable.items() if global_name in names)
-        readers = {
-            name
-            for mod, name in graph.reachable()
-            if mod == module and global_name in _tokens(graph.defs[mod][name])
-        }
-        assert readers, f"{global_name} is allowed yet no reachable function reads it"
 
 
 def test_battery_leaves_the_oauth_gate_closed(graph: _Graph) -> None:
@@ -423,13 +399,13 @@ def test_display_battery_never_touches_the_operator_file(monkeypatch: pytest.Mon
     monkeypatch.setattr(exfil, OAUTH_FILE_READER, forbidden)
     monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", forbidden)
     seen = {"n": 0}
-    real = exfil._exempt_exact_hosts
+    real = redaction._token_param_exempt_prefixes
 
-    def counted() -> frozenset[str]:
+    def counted() -> tuple[str, ...]:
         seen["n"] += 1
         return real()
 
-    monkeypatch.setattr(exfil, ALLOWED_MUTABLE_READER, counted)
+    monkeypatch.setattr(redaction, ALLOWED_MUTABLE_READER, counted)
     monkeypatch.setattr(chat_utils, ALLOWED_MUTABLE_READER, counted)
     chat_utils._clear_display_redaction_cache()
     consent = (

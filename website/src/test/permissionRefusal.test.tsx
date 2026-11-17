@@ -3,17 +3,15 @@
  * for a teammate, a 403 `owner_only`) is read as the answer, while a real failure
  * (5xx, network, a 403 with another code, a session-expiry 403) stays an error.
  *
- * Covers the predicate, the shared retry policy, the app list's stop-asking rule
- * and the composer's session-control error.
+ * Covers the predicate, the shared retry policy and the composer's session-control
+ * error. The transport's stop-asking rule is in refusedReads.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { ApiError, isPermissionRefusal, isRelayAppsRefusal } from '../api/apiError'
+import { ApiError, isPermissionRefusal } from '../api/apiError'
 import { retryPolicy } from '../api/queryClient'
-import { createAppsEndpoints } from '../api/client/apps'
-import type { ClientTransport } from '../api/client/transport'
 import { renderHookWithProviders } from './helpers'
 
 function renderControls() {
@@ -52,12 +50,6 @@ describe('isPermissionRefusal', () => {
     expect(isPermissionRefusal(null)).toBe(false)
     expect(isPermissionRefusal('owner_only')).toBe(false)
   })
-
-  it('isRelayAppsRefusal names only the relay teammate refusal', () => {
-    expect(isRelayAppsRefusal(relayApps())).toBe(true)
-    expect(isRelayAppsRefusal(ownerOnly())).toBe(false)
-    expect(isRelayAppsRefusal(serverError())).toBe(false)
-  })
 })
 
 describe('retryPolicy', () => {
@@ -71,48 +63,6 @@ describe('retryPolicy', () => {
     expect(retryPolicy(0, otherForbidden())).toBe(true)
     expect(retryPolicy(0, serverError())).toBe(true)
     expect(retryPolicy(1, serverError())).toBe(false)
-  })
-})
-
-describe('listApps after a relay teammate refusal', () => {
-  function endpoints(answers: Array<() => Promise<unknown>>) {
-    const fetch = vi.fn(async () => ({}) as Response)
-    let i = 0
-    const jApps = vi.fn(async () => answers[Math.min(i++, answers.length - 1)]())
-    const transport = { jfetch: fetch, jApps, j: vi.fn() } as unknown as ClientTransport
-    return { fetch, jApps, listApps: createAppsEndpoints(transport).platform.listApps }
-  }
-
-  it('asks once, then hands back the same refusal without a request', async () => {
-    const refused = relayApps()
-    const { fetch, listApps } = endpoints([() => Promise.reject(refused)])
-    await expect(listApps()).rejects.toBe(refused)
-    await expect(listApps()).rejects.toBe(refused)
-    await expect(listApps()).rejects.toBe(refused)
-    expect(fetch).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps asking after an owner_only refusal, a 5xx or a network failure', async () => {
-    const { fetch, listApps } = endpoints([
-      () => Promise.reject(ownerOnly()),
-      () => Promise.reject(serverError()),
-      () => Promise.reject(new TypeError('Failed to fetch')),
-      () => Promise.resolve([]),
-    ])
-    await expect(listApps()).rejects.toBeInstanceOf(ApiError)
-    await expect(listApps()).rejects.toBeInstanceOf(ApiError)
-    await expect(listApps()).rejects.toBeInstanceOf(TypeError)
-    await expect(listApps()).resolves.toEqual([])
-    expect(fetch).toHaveBeenCalledTimes(4)
-  })
-
-  it('reads the owner list through jApps on every call', async () => {
-    const { fetch, jApps, listApps } = endpoints([() => Promise.resolve([])])
-    await listApps()
-    await listApps()
-    expect(fetch).toHaveBeenCalledWith('/api/apps')
-    expect(fetch).toHaveBeenCalledTimes(2)
-    expect(jApps).toHaveBeenCalledTimes(2)
   })
 })
 

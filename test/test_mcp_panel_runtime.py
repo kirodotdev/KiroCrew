@@ -23,6 +23,7 @@ from kiro_crew.mcp_panel import (
     _validate_args,
     run_mcp_server,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: A verified caller. Every test that is not ABOUT the identity gate needs one,
 #: or it exercises the refusal instead of the behaviour under test.
@@ -139,8 +140,8 @@ class TestRefusalProseIsRedacted:
     # literals. One per detector, so one pattern regressing still fails the test.
     CREDENTIALS = [
         "-".join(["xoxb", "123456789012", "1234567890123", "abcdefghijklmnopqrstuvwx"]),
-        "_".join(["ghp", "1234567890abcdefghijklmnopqrstuvwxyz"]),
-        "".join(["AKIA", "IOSFODNN7", "EXAMPLE"]),
+        github_classic(seed=89),
+        "aws_secret_access_key=" + "".join(["Qh4Tm2Vx9KpRc/Z8Nw3Hd", "/Jf1Lb5Gs0Ye9Ua2WkE"]),
     ]
 
     @pytest.mark.parametrize("secret", CREDENTIALS)
@@ -317,7 +318,7 @@ class TestDashboardFields:
     def test_a_field_list_carrying_a_credential_comes_back_scrubbed(self) -> None:
         """The prose is built from gateway state this module does not author, so
         the whole rendered answer goes through the redactor, not just a refusal."""
-        secret = "_".join(["ghp", "1234567890abcdefghijklmnopqrstuvwxyz"])
+        secret = github_classic(seed=89)
         with patch(
             "kiro_crew.mcp_panel._get",
             return_value={
@@ -430,10 +431,12 @@ class TestDashboardWrite:
         assert "REDACTED" not in out
 
     def test_a_refusal_carrying_a_credential_is_scrubbed(self) -> None:
-        secret = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+        secret = "".join(["Qh4Tm2Vx9KpRc/Z8Nw3Hd", "/Jf1Lb5Gs0Ye9Ua2WkE"])
         with patch(
             "kiro_crew.mcp_panel._post",
-            return_value={"error": f"wrong_type: 'risk_note' wants string, got {secret}"},
+            return_value={
+                "error": f"wrong_type: 'risk_note' wants string, got aws_secret_access_key={secret}"
+            },
         ):
             out = _call_tool_inner("dashboard_write", {"field": "risk_note", "value": 1})
 

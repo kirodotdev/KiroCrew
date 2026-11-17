@@ -407,7 +407,7 @@ class TokenStore:
             try:
                 self._vault.delete_sync(name)
             except (OSError, ValueError, TypeError, AttributeError) as err:
-                raise TokenStoreError(f"could not delete KAS token {identity}") from err
+                raise TokenStoreError(f"could not delete KAS token {identity}: {err}") from err
             # Nothing stored means nothing to have been refused; a stale marker
             # would otherwise resurface against the NEXT sign-in into this slot
             # before its own first refresh.
@@ -606,9 +606,7 @@ class TokenStore:
         never fails on one. This reads only the entry map and RAISES when that cannot be
         read (an unreadable or corrupt ``secrets.enc``, a linked directory), so True means
         nothing is stored. An entry that would not decrypt or parse still counts as stored.
-        Only a missing ``secrets.enc`` is an empty vault: the vault's own read also takes
-        one it may not look at for missing on CPython 3.14, whose ``Path.exists`` answers
-        False there.
+        Only a missing ``secrets.enc`` is an empty vault.
         """
         self._assert_unlinked()
         try:

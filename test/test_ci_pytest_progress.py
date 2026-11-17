@@ -387,9 +387,12 @@ class TestCIProgress(unittest.TestCase):
         self.assertEqual(command.count("--timeout=120"), 4)
         # A hang SIGALRM cannot end still dumps every thread's stack, after
         # pytest-timeout had its chance; PROGRESS reaches all four invocations.
-        dump_after = re.search(r"PROGRESS=\([^)]*-o faulthandler_timeout=(\d+)", command)
-        self.assertIsNotNone(dump_after, "the Linux shards carry no faulthandler_timeout")
-        self.assertGreater(int(dump_after.group(1)), 120)
+        dump_after = re.search(
+            r"PROGRESS=\([^)]*-p scripts\.ci_faulthandler_budget --faulthandler-grace=(\d+)",
+            command,
+        )
+        self.assertIsNotNone(dump_after, "the Linux shards carry no faulthandler dump")
+        self.assertGreater(int(dump_after.group(1)), 0)
         self.assertEqual(command.count('-n "$WORKERS"'), 4)
         self.assertNotIn("-n auto", command)
         self.assertEqual(command.count("-p scripts.ci_file_shards"), 3)

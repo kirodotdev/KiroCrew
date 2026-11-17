@@ -427,17 +427,23 @@ def _callback(  # type: ignore[no-untyped-def]
     approval_mode: str = "interactive",
     yolo: bool = False,
     on_host_decision=None,
+    state=None,
 ):
-    """Build one real ``_interactive_approval`` closure over a fake gateway."""
+    """Build one real ``_interactive_approval`` closure over a fake gateway.
+
+    *state* replaces the mocked dashboard state, so a test can wait on the real
+    ``request_approval``.
+    """
     from kiro_crew.slack import gateway as gateway_mod
 
     monkeypatch.setattr(
         gateway_mod, "safety_override", lambda: SimpleNamespace(is_active=lambda: yolo)
     )
-    state = MagicMock()
-    state._slots = {}
+    if state is None:
+        state = MagicMock()
+        state._slots = {}
+        state.request_approval = AsyncMock(return_value=True)
     state.dashboard_user_ws_count = MagicMock(return_value=clients)
-    state.request_approval = AsyncMock(return_value=True)
     fake = SimpleNamespace(
         slack=slack,
         _owner_id="U123" if slack is not None else "",
@@ -588,3 +594,58 @@ class TestHostDecisionsAreReported:
         state.request_approval = _parked
         assert await cb(_event()) is False
         assert decided == [("spawn:abc123", DENY_CAUSE_APPROVAL_TIMEOUT)]
+
+
+class TestADashboardOnlyPromptEndsAsTheHosts:
+    """With no owner DM the dashboard's own wait is the prompt, and the host ends it.
+
+    Red before: the dashboard wait answered ``False`` for an expiry and for a
+    cancel alike, the same value as a person's Deny, so the spawn gate logged both
+    as a person declining.
+    """
+
+    @staticmethod
+    def _gate(monkeypatch, tmp_path, decided: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
+        from dashboard_approval_helpers import _make_state
+
+        state, _client = _make_state(tmp_path)
+        cb, _ = _callback(
+            monkeypatch,
+            clients=1,
+            raise_when_unreachable=True,
+            on_host_decision=lambda rid, cause: decided.append((rid, cause)),
+            state=state,
+        )
+        return cb, state
+
+    @pytest.mark.asyncio
+    async def test_an_expired_prompt_is_a_host_decline(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+
+        decided: list[tuple[str, str]] = []
+        cb, state = self._gate(monkeypatch, tmp_path, decided)
+        monkeypatch.setattr(state, "_APPROVAL_TIMEOUT", 0)
+
+        assert await cb(_event()) is False
+        assert decided == [("spawn:abc123", DENY_CAUSE_APPROVAL_TIMEOUT)]
+        assert not state._pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_a_stop_while_it_is_open_reaches_the_gate_as_a_cancel(  # type: ignore[no-untyped-def]
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from kiro_crew.testing.wait import async_wait_until
+
+        decided: list[tuple[str, str]] = []
+        cb, state = self._gate(monkeypatch, tmp_path, decided)
+        task = asyncio.get_running_loop().create_task(cb(_event()))
+        await async_wait_until(
+            lambda: bool(state._pending_approvals),
+            describe=lambda: "the spawn prompt was never raised on the dashboard",
+        )
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert decided == [], "a cancel is not an answer, so the host reported none"
+        assert not state._pending_approvals

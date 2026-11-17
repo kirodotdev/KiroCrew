@@ -33,11 +33,14 @@ from meetings_helpers import (  # noqa: F401
     reset_module_state_fixture,
     root_fixture,
 )
+from redaction_structured_cases import github_classic
 from yarl import URL
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend.providers import calendar as cal
 from kiro_crew.apps.builtins.meetings.backend.providers import tasks as taskprov
+
+_CREDENTIAL = github_classic(seed=13)
 
 
 class _AnyPort:
@@ -73,11 +76,11 @@ def _stamp(offset_hours: float) -> str:
 class TestTaskDraft:
     def test_sanitized_redacts_and_caps(self):
         draft = taskprov.TaskDraft(
-            description="ship AKIAIOSFODNN7EXAMPLE now",
+            description=f"ship {_CREDENTIAL} now",
             assignee="x" * 5000,
             priority="bogus",
         ).sanitized()
-        assert "AKIAIOSFODNN7EXAMPLE" not in draft.description
+        assert _CREDENTIAL not in draft.description
         assert len(draft.assignee) <= 2000
         assert draft.priority == k.DEFAULT_TASK_PRIORITY
 
@@ -630,9 +633,9 @@ class TestParseIcs:
 
     def test_redacts_credentials_in_fields(self):
         text = _ics(
-            _vevent(UID="c", SUMMARY="Review AKIAIOSFODNN7EXAMPLE", DTSTART=_stamp(1))
+            _vevent(UID="c", SUMMARY=f"Review {_CREDENTIAL}", DTSTART=_stamp(1))
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in cal.parse_ics(text)[0].title
+        assert _CREDENTIAL not in cal.parse_ics(text)[0].title
 
     def test_non_vevent_components_ignored(self):
         text = (
@@ -640,6 +643,19 @@ class TestParseIcs:
             f"{_vevent(UID='u', SUMMARY='S', DTSTART=_stamp(1))}\nEND:VCALENDAR\n"
         )
         assert len(cal.parse_ics(text)) == 1
+
+    @pytest.mark.parametrize("status", ["CANCELLED", "cancelled", " Cancelled "])
+    def test_a_cancelled_event_is_not_listed(self, status: str):
+        text = _ics(
+            _vevent(UID="off", SUMMARY="Called off", DTSTART=_stamp(1), STATUS=status),
+            _vevent(UID="on", SUMMARY="Still on", DTSTART=_stamp(2)),
+        )
+        assert [e.title for e in cal.parse_ics(text)] == ["Still on"]
+
+    @pytest.mark.parametrize("status", ["TENTATIVE", "CONFIRMED"])
+    def test_a_tentative_or_confirmed_event_is_still_listed(self, status: str):
+        text = _ics(_vevent(UID="u", SUMMARY="Kept", DTSTART=_stamp(1), STATUS=status))
+        assert [e.title for e in cal.parse_ics(text)] == ["Kept"]
 
     def test_events_sorted_by_start(self):
         text = _ics(
@@ -1062,6 +1078,58 @@ class TestPinnedResolver:
         resolver = cal._PinnedResolver()
         resolver.pin(self._target(host="example.test."))
         assert await resolver.resolve("example.test", 443, family=cal.socket.AF_UNSPEC)
+
+    @pytest.mark.asyncio
+    async def test_resolves_on_aiohttp_39_without_resolve_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """setup.cfg allows aiohttp 3.9, which has no `aiohttp.abc.ResolveResult`."""
+        import importlib.util
+        import sys
+
+        import aiohttp.abc
+
+        monkeypatch.delattr(aiohttp.abc, "ResolveResult", raising=False)
+        name = "_calendar_on_aiohttp_39"
+        spec = importlib.util.spec_from_file_location(name, cal.__file__)
+        module = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, name, module)
+        load_error = None
+        try:
+            spec.loader.exec_module(module)
+        except ImportError as exc:
+            load_error = exc
+        assert load_error is None, f"calendar provider does not load on aiohttp 3.9: {load_error}"
+
+        resolver = module._PinnedResolver()
+        resolver.pin(
+            module.VettedTarget(
+                url="https://example.test:443/cal.ics",
+                host="example.test",
+                port=443,
+                addresses=("93.184.216.34", "2606:4700::1111"),
+            )
+        )
+        results = await resolver.resolve("example.test", 443, family=cal.socket.AF_UNSPEC)
+        flags = cal.socket.AI_NUMERICHOST | cal.socket.AI_NUMERICSERV
+        assert results == [
+            {
+                "hostname": "example.test",
+                "host": "93.184.216.34",
+                "port": 443,
+                "family": cal.socket.AF_INET,
+                "proto": cal.socket.IPPROTO_TCP,
+                "flags": flags,
+            },
+            {
+                "hostname": "example.test",
+                "host": "2606:4700::1111",
+                "port": 443,
+                "family": cal.socket.AF_INET6,
+                "proto": cal.socket.IPPROTO_TCP,
+                "flags": flags,
+            },
+        ]
 
 
 class TestCertificateVerificationStaysOn:

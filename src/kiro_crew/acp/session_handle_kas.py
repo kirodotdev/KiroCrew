@@ -11,10 +11,10 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_compaction_failed_at``, ``_compaction_terminal_seen``,
 ``_hook_tasks``, ``_kas_prompt_row``, ``_last_kas_mode_id``, ``kas_auto_approved``,
-``kas_crew_answered``, ``kas_crew_answered_commands``, ``kas_spec_denies``,
+``kas_crew_answered``, ``kas_crew_answered_commands``, ``kas_hook_held``, ``kas_spec_denies``,
 ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``, ``kas_spec_shell_readonly``,
 ``kas_crew_answered_paths``, ``kas_crew_answered_read_paths``, ``kas_projected_agent``,
-``last_compaction_transient``.
+``kas_spec_unjudged_denies``, ``last_compaction_transient``.
 
 Instance fields read: ``_bound_cwd``, ``_crew_agent``, ``_engine_fallback``, ``_listed_hooks``,
 ``_prompt_starts``, ``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.metrics.chat_runtime_share import chat_leases_on, record_kas_queued
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -222,6 +223,11 @@ async def _answer_kas_hooks_request(self: AcpSessionHandle, msg: JsonRpcMessage)
         task = asyncio.create_task(self._answer_kas_hook_execute(msg.id, params))
         self._hook_tasks.add(task)
         task.add_done_callback(self._hook_tasks.discard)
+        # A hook can gate a call already dispatched, and nothing names which, so
+        # every call's silence timer is paused while one runs. The callback runs
+        # after the discard above, so the hold closes with the last hook.
+        self._sync_silence_hold()
+        task.add_done_callback(lambda _task: self._sync_silence_hold())
         return
     if msg.method == kas_wire.METHOD_HOOKS_LIST:
         result = kas_wire.hooks_list_response(
@@ -341,16 +347,23 @@ def _handle_kas_update(
             self.kas_projected_agent = crew_id
             self.kas_auto_approved = switched_auto_approved(registered, mode_id)
             self.kas_crew_answered = switched_crew_answered(registered, mode_id)
+            from kiro_crew.acp.kas_hook_coverage import switched_hook_held
+
+            self.kas_hook_held = switched_hook_held(registered, mode_id)
             self.kas_crew_answered_commands = switched_crew_answered_commands(registered, mode_id)
             self.kas_spec_shell_allowlist = switched_shell_allowlist(registered, mode_id)
             self.kas_spec_write_allowlist = switched_write_allowlist(
                 registered, mode_id, getattr(self, "_bound_cwd", "")
             )
-            from kiro_crew.acp.kas_spec_denies import switched_spec_denies
+            from kiro_crew.acp.kas_spec_denies import (
+                switched_spec_denies,
+                switched_unjudged_denies,
+            )
 
             self.kas_spec_denies = switched_spec_denies(
                 registered, mode_id, getattr(self, "_bound_cwd", "")
             )
+            self.kas_spec_unjudged_denies = switched_unjudged_denies(registered, mode_id)
             self.kas_spec_shell_readonly = switched_shell_readonly(registered, mode_id)
             self.kas_crew_answered_paths = switched_answered_paths(
                 registered, mode_id, getattr(self, "_bound_cwd", "")
@@ -408,6 +421,7 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             # them so the meter resets and fresh telemetry re-derives real
             # numbers (parity with the kiro-cli compaction handler).
             self.last_prompt_stats.reset_after_compaction()
+            self._forget_sent_images()
             self._compaction_failed_at = None
             status_type = "completed"
         elif kind == kas_wire.KIND_SUMMARIZATION_FAILED:
@@ -466,6 +480,10 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             EVENT_STEER_CONSUMED if kind == kas_wire.KIND_STEERING_INJECTED else EVENT_STEER_QUEUED
         )
         return [AcpEvent(kind=steer_kind, text=text)]
+    if kind == kas_wire.KIND_QUEUED:
+        # The engine parked this prompt behind another session's turn (its one
+        # active model slot). Counted only: nothing renders it.
+        record_kas_queued(tenants=chat_leases_on(self._runtime, getattr(self, "_session_key", "")))
     return []
 
 

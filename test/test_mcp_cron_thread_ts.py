@@ -344,7 +344,7 @@ class TestCronAddThreadInheritAcrossGateway:
         ), "defaulted-channel thread not forwarded"
 
     def test_cross_channel_thread_is_not_forwarded(self, monkeypatch) -> None:
-        # The GPT finding: caller in a thread in its own channel schedules a
+        # A caller in a thread in its own channel schedules a
         # cron into a DIFFERENT explicit channel. The caller's thread does not
         # exist in that other channel, so it must NOT be forwarded -- and this
         # decision is made on the runtime side where the caller channel is

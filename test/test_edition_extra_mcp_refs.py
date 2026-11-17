@@ -3,8 +3,9 @@
 ``McpToolingProvider.extra_mcp_servers()`` can start returning a server after the
 first install (its program is installed later, or a newer edition adds one). The
 rebuild seeds the entry into ``mcpServers``; these tests pin that its ``@name``
-ref follows once, and that a ref the user then removes stays removed. The last test
-pins that a same-named Kiro-global entry cannot replace the edition's args/env.
+ref follows once, and that a ref the user then removes stays removed. The last tests
+pin that a same-named Kiro-global or store entry cannot replace or drop the
+edition's args/env, and that a spec that already lost the env gets it back.
 """
 
 from __future__ import annotations
@@ -212,3 +213,67 @@ def test_a_kiro_global_entry_does_not_replace_an_edition_servers_invocation(
         assert entry.get("env", {}).get("TOOL_PERSONALIZATION_ENABLED") == "true"
         # Only the invocation is the edition's: the global's timeout still lands.
         assert entry["timeout"] == 5000
+
+
+def test_a_spec_that_lost_the_edition_env_gets_it_back(
+    rebuildable: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edition = {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS, "env": _EDITION_ENV}
+    _supply(monkeypatch, {EXTRA: edition})
+    agent.rebuild_agent_config()
+    # An older build let a same-named hand-added entry replace the env.
+    spec = _spec(rebuildable)
+    spec["mcpServers"][EXTRA]["env"] = {"USER_KEY": "mine"}
+    (rebuildable / AGENT_FILENAME).write_text(json.dumps(spec), encoding="utf-8")
+
+    agent.rebuild_agent_config()
+    env = _spec(rebuildable)["mcpServers"][EXTRA]["env"]
+    assert env == {"USER_KEY": "mine", **_EDITION_ENV}
+
+
+def test_a_store_entry_keeps_the_edition_env_keys(
+    rebuildable: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edition_env = {"TOOL_PERSONALIZATION_ENABLED": "true", "EDITION_MODE": "full"}
+    edition = {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS, "env": edition_env}
+    _supply(monkeypatch, {EXTRA: edition})
+    store = agent._user_dir() / "mcp.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store_env = {"USER_KEY": "mine", "TOOL_PERSONALIZATION_ENABLED": "false"}
+    store.write_text(
+        json.dumps({"mcpServers": {EXTRA: {"command": agent._KIROCREW_BIN, "env": store_env}}}),
+        encoding="utf-8",
+    )
+
+    # The first pass builds fresh; the second starts from the spec on disk.
+    for _ in range(2):
+        agent.rebuild_agent_config()
+        env = _spec(rebuildable)["mcpServers"][EXTRA]["env"]
+        # The store's own keys win; the edition's other keys are not dropped.
+        assert env == {"EDITION_MODE": "full", **store_env}
+
+
+def test_a_key_removed_from_the_store_entry_leaves_the_spec(
+    rebuildable: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    edition_env = {"TOOL_PERSONALIZATION_ENABLED": "true", "EDITION_MODE": "full"}
+    edition = {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS, "env": edition_env}
+    _supply(monkeypatch, {EXTRA: edition})
+    store = agent._user_dir() / "mcp.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+
+    def _write_store(env: dict[str, str]) -> None:
+        store.write_text(
+            json.dumps({"mcpServers": {EXTRA: {"command": agent._KIROCREW_BIN, "env": env}}}),
+            encoding="utf-8",
+        )
+
+    _write_store({"USER_KEY": "mine", "TOOL_PERSONALIZATION_ENABLED": "false"})
+    agent.rebuild_agent_config()
+    # The user drops their key and their override; the rebuild starts from the
+    # spec on disk, which still carries both.
+    _write_store({"OTHER": "x"})
+    agent.rebuild_agent_config()
+
+    env = _spec(rebuildable)["mcpServers"][EXTRA]["env"]
+    assert env == {**edition_env, "OTHER": "x"}

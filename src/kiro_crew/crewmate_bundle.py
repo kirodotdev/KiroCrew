@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import re
 import stat
 import zipfile
@@ -29,6 +28,8 @@ from typing import Any
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_carried
+from kiro_crew.bounded_read import bounded_read
+from kiro_crew.user_json import loads_user_json
 
 #: The format an export writes. Its manifest entry is :data:`MANIFEST_ENTRY`.
 CREWMATE_FORMAT = "kirocrew.kirobot"
@@ -149,7 +150,7 @@ def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, cap: int) -> bytes:
         raise _refuse("invalid_bundle", f"'{info.filename[:64]}' uses an unsupported compression")
     try:
         with zf.open(info) as fh:
-            blob = fh.read(cap + 1)
+            blob = bounded_read(fh, cap + 1)
     except (zipfile.BadZipFile, zlib.error, ValueError, OSError, NotImplementedError, EOFError):
         # A bad CRC, a header that disagrees with the directory, an unknown method.
         raise _refuse("invalid_bundle", f"'{info.filename[:64]}' cannot be read") from None
@@ -160,7 +161,8 @@ def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, cap: int) -> bytes:
 
 def _json_part(name: str, blob: bytes) -> Any:
     try:
-        return json.loads(blob.decode("utf-8"))
+        # A Windows editor saves UTF-8 with a byte-order mark; it is not content.
+        return loads_user_json(blob.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         # RecursionError: JSON nested deeper than the parser's stack.
         raise _refuse("invalid_bundle", f"'{name}' is not UTF-8 JSON") from None

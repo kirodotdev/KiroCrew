@@ -997,6 +997,29 @@ class TestRestFallbackOnRateLimit:
         assert result.observation.reason_code == "provider_rate_limited"
         assert runner.rest_paths == [_REST_PULL_REQUEST_PATH]
 
+    def test_a_refused_fallback_status_read_keeps_the_retryable_rate_limit(self) -> None:
+        """The same rule for the status read: a REST 404 there must not retire the watch."""
+
+        class _StatusRefused(_BucketRunner):
+            def __call__(
+                self, argv: Sequence[str], **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                if list(argv[1:3]) != ["api", "graphql"] and argv[2] == _REST_STATUS_PATH:
+                    self.calls.append(list(argv))
+                    return _completed(
+                        {"message": "Not Found"}, returncode=1, stderr="HTTP 404: Not Found"
+                    )
+                return super().__call__(argv, **kwargs)
+
+        runner = _StatusRefused(rest=_rest_board())
+        provider = GitHubPullRequestProvider(resolver=lambda: "/trusted/bin/gh", runner=runner)
+
+        result = _probe_one(provider)
+
+        assert result.observation.provider_error is None
+        assert result.observation.supplemental_provider_error is ProviderErrorKind.RATE_LIMITED
+        assert runner.rest_paths == [_REST_PULL_REQUEST_PATH, _REST_STATUS_PATH]
+
     def test_a_malformed_fallback_body_keeps_the_rate_limit(self) -> None:
         """A body this adapter cannot read leaves the charge exactly as it was."""
         provider, _ = _bucket_provider(rest={_REST_PULL_REQUEST_PATH: {"number": 123}})

@@ -345,6 +345,13 @@ def test_without_a_pinned_walk_the_output_is_discarded(website, monkeypatch):
     assert not _expected_log().exists()
 
 
+def test_a_failure_with_no_log_says_so_and_how_to_see_the_output():
+    message = frontend.FrontendBuildResult("failed").failure_message()
+
+    assert "No build log was written" in message
+    assert "`npm ci` and `npm run build` in website/" in message
+
+
 def test_the_async_build_touches_its_log_off_the_event_loop(website, monkeypatch):
     """A stalled data-home mount must not stall the gateway's loop."""
     import threading

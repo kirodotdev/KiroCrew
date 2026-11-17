@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 import threading
 import types
@@ -245,6 +246,20 @@ class TestTheHostZoneSnapshot:
         await await_until(refreshed, what="the background host-zone refresh")
         assert read_on and read_on[0] != loop_thread
         assert host_timezone.published_host_timezone() == "Europe/Paris"
+
+    @pytest.mark.parametrize(
+        ("named", "level"), [("", logging.INFO), ("Not/A_Zone", logging.WARNING)]
+    )
+    def test_an_undetected_zone_is_logged_once(self, named, level, monkeypatch, caplog) -> None:
+        """UTC is the normal default on a server or a container, so a host with no
+        configured zone gets an info line; a zone name that does not load still warns."""
+        monkeypatch.setattr(host_timezone, "detect_host_timezone", lambda: named)
+        host_timezone.freeze_host_timezone(None)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.host_timezone"):
+            host_timezone.refresh_host_timezone()
+            host_timezone.refresh_host_timezone()
+        hits = [r for r in caplog.records if "Could not detect" in r.getMessage()]
+        assert [r.levelno for r in hits] == [level]
 
     def test_windows_reloads_tzlocal_so_a_running_gateway_sees_a_new_zone(
         self, monkeypatch

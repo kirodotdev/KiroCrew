@@ -825,8 +825,6 @@ const _gatewayListeners = new Set<() => void>()
  * `markGatewayConnected`/`markGatewayDisconnected` helpers in
  * `hooks/websocket/gatewayConnectivity.ts`, each of which dispatches the
  * store's `sseConnected`/`sseDisconnected` and sets this flag in one call.
- * The store flag has another writer: `sseStatus` sets `connected = true` on
- * its own, without touching this flag, so the two can differ.
  */
 export function setGatewayConnected(connected: boolean): void {
   if (_gatewayConnected === connected) return

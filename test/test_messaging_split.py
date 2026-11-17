@@ -1507,3 +1507,28 @@ class TestChunkUtf8Bytes:
         """
         out = chunk_utf8_bytes("🦞x", 2)
         assert "".join(out) == "🦞x"
+
+
+_FLAG = "\U0001f1fa\U0001f1f8"
+_FAMILY = "\U0001f468\u200d\U0001f469\u200d\U0001f467"
+_ACCENTED = "e\u0301"
+_THAI = "\u0e01\u0e34"
+_KEYCAP = "1\ufe0f\u20e3"
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [_FLAG, _FAMILY, _ACCENTED, _THAI, _KEYCAP],
+    ids=["flag", "zwj", "combining", "thai", "keycap"],
+)
+@pytest.mark.parametrize("lead", range(1990, 2000))
+def test_a_hard_cut_keeps_every_visible_character_whole(unit: str, lead: int) -> None:
+    """A flag, a ZWJ emoji or an accented letter is never cut across two chunks."""
+    text = "x" * lead + unit * 40
+    chunks = split_markdown_safe(text, 2000)
+    assert all(len(chunk) <= 2000 for chunk in chunks)
+    assert "".join(chunks) == text
+    offset = 0
+    for chunk in chunks[:-1]:
+        offset += len(chunk)
+        assert offset <= lead or (offset - lead) % len(unit) == 0, f"cut at {offset}"

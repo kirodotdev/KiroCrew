@@ -157,6 +157,15 @@ def test_cron_add_refuses_auto_and_writes_nothing(home) -> None:
     assert _svc(home).list_jobs(include_disabled=True) == []
 
 
+def test_the_refusal_names_the_owner_s_controls(home) -> None:
+    # The user is sent to switch it on, so the reply names the field the
+    # Schedule page's job editor shows and the CLI command that does the same.
+    result = _tool("cron_add", {"name": "a", "message": "m", "every": 120, "approval_mode": "auto"})
+    assert "Approval field to Auto-approve" in result, result
+    assert "kirocrew cron update <job-id> --approval-mode auto" in result, result
+    assert "turns it off again" in result, result
+
+
 def test_cron_add_with_default_approval_still_works(home) -> None:
     result = _tool("cron_add", {"name": "a", "message": "m", "every": 120, "approval_mode": ""})
     assert "Added job" in result, result
@@ -215,6 +224,7 @@ def test_a_behaviour_edit_turns_auto_off(home, change) -> None:
     result = _tool("cron_update", {"job_id": job.id, **change})
     assert not result.startswith("Error"), result
     assert "Auto-approve was turned off" in result
+    assert f"kirocrew cron update {job.id} --approval-mode auto" in result, result
     assert _svc(home).get_job(job.id).approval_mode == ""
 
 

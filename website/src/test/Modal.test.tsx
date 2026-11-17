@@ -206,6 +206,17 @@ describe('Modal — focus management', () => {
     await waitFor(() => expect(trigger).toHaveFocus())
   })
 
+  it('restores focus to the trigger when a field in the dialog has autoFocus', async () => {
+    // React applies `autoFocus` in the commit, before any effect runs, so the
+    // field already holds focus by the time the dialog's effects see the page.
+    renderWithProviders(<Harness><input aria-label="Name" autoFocus /></Harness>)
+    const trigger = await openDialog()
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
   it('handles a dialog whose body has no focusable children', async () => {
     renderWithProviders(<Harness><p>Nothing to interact with.</p></Harness>)
     await openDialog()

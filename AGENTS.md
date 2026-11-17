@@ -31,6 +31,18 @@ the `internal-content-scan` check (blocking on pull requests, forks included) an
 the
 `no-new-builtin-apps` rule in `AUTOSDE.yaml`.
 
+## Own the codebase
+
+This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+
+Treat every change as something you'll own and maintain long-term. Don't just add code around existing problems. Fix the underlying causes, consolidate duplicated logic, and improve the architecture when it makes the implementation simpler and more reliable.
+
+You have the authority to make related improvements without asking for permission, as long as you preserve intended behavior, compatibility, and user expectations.
+
+Don't stop at reporting problems. Fix them, test your changes, and drive the implementation to green.
+
+This never overrides the security invariants or another rule in the root `AGENTS.md`, the skill or agent charter you follow, or an explicit stop from the user.
+
 ## Read before you touch
 
 Load the doc for the row you are working in **before** you change code. Update it
@@ -63,7 +75,7 @@ in the **same commit** when you change what it documents.
 | cron, learn, dashboard handlers | [learn-cron-dashboard](docs/system-specs/modules/learn-cron-dashboard.md) |
 | Slack, Discord, any channel, messaging, approvals | [messaging](docs/system-specs/modules/messaging.md) + [slack-gateway](docs/system-specs/modules/slack-gateway.md) |
 | subagents, spawn, orphan recovery | [subagent](docs/system-specs/modules/subagent.md) |
-| crews, `select_crew`, crew bindings, Ultra Mode slots | [crew-mode](docs/system-specs/modules/crew-mode.md) |
+| crews, `select_crew`, crew bindings, conductor mode slots | [crew-mode](docs/system-specs/modules/crew-mode.md) |
 | the pipeline conductor agent or its skill | [pipeline-conductor](docs/system-specs/modules/pipeline-conductor.md) |
 | task runner | [task](docs/system-specs/modules/task.md) + [taskrunner](docs/system-specs/modules/taskrunner.md) |
 | `workflows/` (the dynamic-workflow engine) | [workflows](docs/system-specs/modules/workflows.md) |
@@ -379,6 +391,11 @@ compares nothing (why: testing-conventions.md "Determinism contract"); run
 `python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing to see it first.
 Contract:
 [testing-conventions § Determinism contract](docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
+
+A test that asserts a credential is removed plants one from
+`kiro_crew.testing.synthetic_credentials`, never an `AKIA…` literal: the redactor
+keeps AWS key IDs visible. Rule:
+[testing-conventions § Rules](docs/system-specs/common/testing-conventions.md#rules).
 
 ## Cross-platform
 

@@ -29,6 +29,7 @@ const store = createSlotDraftStore<SessionRef[]>({
 
 export const loadSessionRefDrafts = store.load
 export const saveSessionRefDrafts = store.save
+export const sessionRefDraftsSaveFailed = store.lastSaveFailed
 export const setSessionRefDraft = store.set
 /** @internal test-only */
 export const __resetSessionRefDraftsForTests = store.__resetForTests

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_discord import (
     FakeClient,
     FakeCtx,
@@ -43,6 +44,7 @@ from kiro_crew.discord.renderer import DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 FOOTER_MARK = "\n\n-# "
 
@@ -206,6 +208,20 @@ class TestEmptyTurnIsNeverAFinishedReply:
         assert _rows(log, d)[-1]["content"] == body
 
     @pytest.mark.asyncio
+    async def test_a_notice_whose_edit_fails_is_sent_fresh(self, tmp_path: Path) -> None:
+        """The tool frame opened a live bubble, then the closing edit failed while
+        sends still work: the notice goes out as a new message, so the turn does
+        not end on the "🔧 tool…" frame and still counts as delivered."""
+        d, cli, sess, _log = _dispatcher(_ToolOnlyProvider(), tmp_path)
+        cli.edit_ok = False
+
+        await d.handle_message(_inbound("check the config"))
+
+        assert cli.edits, "the closing edit was never tried"
+        assert "without a closing reply" in _body(cli.sent[-1][0])
+        assert sess.successes and not sess.failures
+
+    @pytest.mark.asyncio
     async def test_a_steer_chip_does_not_mask_a_turn_that_died_without_text(self) -> None:
         cli = FakeClient()
         r = DiscordRenderer(cli, "chan1", DISCORD_CAPABILITIES, session_key="sk")  # type: ignore[arg-type]
@@ -266,7 +282,7 @@ class TestEmptyTurnIsNeverAFinishedReply:
         """The pipeline hands this adapter the RAW exception (``TurnRecord.error``);
         the error row it writes takes the same redaction as every channel-visible
         failure text, so the transcript never stores a host path or a token."""
-        secret = "ghp_" + "x" * 36
+        secret = github_classic(seed=21)
 
         class _SecretDying(FakeProvider):
             async def stream(self, message: str) -> Any:
@@ -357,8 +373,8 @@ class TestEmptyTurnIsNeverAFinishedReply:
         cli = FakeClient()
         r = DiscordRenderer(cli, "chan1", DISCORD_CAPABILITIES, session_key="sk")  # type: ignore[arg-type]
         await r.on_turn_start()
-        # Assembled at runtime so no source line spells a key id.
-        key = "AK" + "IA" + "IOSFODNN7EXAMPLE"
+        # A Slack bot token, built so no source line spells one.
+        key = SAMPLE_SLACK_BOT_TOKEN
         r.note_steer(f"use {key} for the bucket")
         await r.close()
 
@@ -431,7 +447,7 @@ class TestEmptyTurnIsNeverAFinishedReply:
         self, tmp_path: Path
     ) -> None:
         """Flushing the withheld tail must still be a redacted flush."""
-        key = "AK" + "IA" + "IOSFODNN7EXAMPLE"  # assembled so no source line spells a key id
+        key = github_classic(seed=23)  # built at runtime so no source line spells a credential
         d, cli, _sess, log = _dispatcher(_UnclosedAfterTextProvider(f"key {key}"), tmp_path)
 
         await d.handle_message(_inbound("what is the key?"))

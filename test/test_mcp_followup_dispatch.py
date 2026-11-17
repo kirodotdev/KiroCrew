@@ -148,6 +148,57 @@ class TestSuggestFollowupApplier:
         assert "no project directory" not in result.lower()
         assert "shown below the composer" in result.lower()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["plain", "broken_gitfile"])
+    async def test_a_project_that_is_no_repository_root_says_the_card_offers_a_new_chat(
+        self, tmp_path, shape
+    ):
+        """The card swaps 'Start in a separate copy' for 'Start in new chat' when the
+        project is not a git work-tree root (the same /api/project/git answer it
+        gates on), and this confirmation is the model's only window into that."""
+        project = tmp_path / "project"
+        project.mkdir()
+        if shape == "broken_gitfile":
+            (project / ".git").write_text(f"gitdir: {tmp_path / 'gone' / '.git'}\n")
+
+        async def deliver_ws_owners(event, payload):
+            return 1
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:chat-1", project=str(project))
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=True,
+        )
+        assert "shown below the composer" in result.lower()
+        assert "not a git repository root" in result.lower()
+        assert "start in new chat" in result.lower()
+        assert "error" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_a_repository_root_project_gets_the_plain_confirmation(self, tmp_path):
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+
+        async def deliver_ws_owners(event, payload):
+            return 1
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:chat-1", project=str(project))
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=True,
+        )
+        assert result == "Follow-up card shown below the composer."
+
 
 # ──────────────── provenance: a tab is not an entitlement ────────────────────
 

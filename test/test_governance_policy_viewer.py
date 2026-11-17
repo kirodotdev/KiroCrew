@@ -164,7 +164,7 @@ class TestGoverningPolicy:
         assert "deny" not in row["detail"]
 
     def test_detail_never_leaks_rule_contents(self, snapshot):
-        # Security invariant (GPT HIGH): no serialized detail — at any nesting
+        # Security invariant: no serialized detail — at any nesting
         # depth — may carry the raw allow/deny entry LISTS. Walk every scope's
         # detail recursively and assert the string patterns never appear.
         SECRET = {"git push*", "*rm -rf /*", "read", "grep", "researcher", "slack", "E0123"}

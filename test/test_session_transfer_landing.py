@@ -82,6 +82,8 @@ async def test_slot_is_unreachable_until_construction_finishes(monkeypatch):
     acquirer such as delete, regenerate or rewind can reach it) but still under
     construction for the cap. Retracting is safe because import mints its own key.
     """
+    from kiro_crew import members
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
     from kiro_crew.dashboard import session_transfer as st
 
     seen_registered: list[bool] = []
@@ -97,6 +99,8 @@ async def test_slot_is_unreachable_until_construction_finishes(monkeypatch):
 
     monkeypatch.setattr(st, "_write_layer_b_files", _probe)
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+    # A kiro-cli pair is written only for a slot that starts on kiro-cli.
+    monkeypatch.setattr(members, "select_provider_backend", lambda *_a, **_k: ACP_BACKEND_KIRO)
 
     resp = await st.api_chat_slot_import(
         _make_request(state, _valid(layer_b={"envelope": {}, "events": "e"}))

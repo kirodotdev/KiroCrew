@@ -43,6 +43,8 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
   actionsAlign?: 'start' | 'end'
   /** Extra content under the timestamp (the feed's muted label / stack count). */
   trailing?: ReactNode
+  /** A word on the time's own line, before the time (the feed's "edited" label). */
+  timeNote?: ReactNode
   /** Selected in a host that owns selection (the feed): the pane steps onto
    *  the accent tint (`glass-accent`) and its content stays undimmed. */
   active?: boolean
@@ -90,7 +92,7 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
  */
 export default function NotificationCard({
   n, onOpen, openLabel, onDismiss, dismissLabel, dismissTestId, dismissVisible = false,
-  actions = [], actionsAlign = 'start', trailing, active = false, muted = false, settled = false, footer, body: bodyOverride, className = '', ...rest
+  actions = [], actionsAlign = 'start', trailing, timeNote, active = false, muted = false, settled = false, footer, body: bodyOverride, className = '', ...rest
 }: NotificationCardProps) {
   const km = KIND_META[n.kind] || DEFAULT_META
   const prio = notePriority(n)
@@ -109,7 +111,14 @@ export default function NotificationCard({
           : <div className="text-[12px] text-muted mt-0.5 line-clamp-2 leading-snug">{stripMd(noteBody || '').slice(0, 140)}</div>}
       </div>
       <div className="flex flex-col items-end gap-0.5 shrink-0">
-        <span className="text-[11px] text-muted">{fmtRelativeMinute(n.ts)}</span>
+        {timeNote ? (
+          <div className="flex items-center gap-1">
+            {timeNote}
+            <span className="text-[11px] text-muted">{fmtRelativeMinute(n.ts)}</span>
+          </div>
+        ) : (
+          <span className="text-[11px] text-muted">{fmtRelativeMinute(n.ts)}</span>
+        )}
         {trailing}
         {!muted && !n.acked && !settled && (
           <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />

@@ -11,28 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import tempfile
 import time
-import uuid
 from collections import deque
-from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
-from kiro_crew import pinned_fs
 from kiro_crew.acp import batch_guard
-from kiro_crew.acp import client_claude_seed as _client_claude_seed
-from kiro_crew.acp import client_claude_session as _client_claude_session
+from kiro_crew.acp import client_antigravity as _client_antigravity
 from kiro_crew.acp import client_copilot as _client_copilot
 from kiro_crew.acp import client_elicitation as _client_elicitation
 from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
 from kiro_crew.acp import client_model_selection as _client_model_selection
 from kiro_crew.acp import client_native_children as _client_native_children
-from kiro_crew.acp import client_new_conversation as _client_new_conversation
 from kiro_crew.acp import client_permissions as _client_permissions
-from kiro_crew.acp import client_seed_ownership as _client_seed_ownership
 from kiro_crew.acp import client_spawn_env as _client_spawn_env
 from kiro_crew.acp import client_start as _client_start
 from kiro_crew.acp import client_tool_events as _client_tool_events
@@ -50,27 +42,31 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_start import CLIENT_NAME
 from kiro_crew.acp.client_timeouts import _CANCEL_GRACE_SECS
 from kiro_crew.acp.client_turn_control import _CLIENT_STEERING_REQUEST_METHODS, _ConcurrentSteerTurn
+from kiro_crew.acp.compaction_summary import CompactionSummaries
 from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import LivenessOracle
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.mcp_startable import PrunedServer
+from kiro_crew.acp.prompt_blocks import SentImageLedger, StagedImages
+from kiro_crew.acp.raw_sdk_tasks import RawSdkState
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
-    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_COPILOT,
-    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
@@ -81,17 +77,33 @@ from kiro_crew.acp.types import (
     model_registry_namespace,
 )
 from kiro_crew.agent import DerivedSpecSnapshot
+from kiro_crew.agent_sdk.backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk.capabilities import capabilities_for
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import KEYLESS_WORK_DIR_NAME, config_dir
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.harness.base import ProcessAdapter
     from kiro_crew.acp.harness.pi_steer import PiSteerChannel
     from kiro_crew.acp.session_mcp import ToolsAllowlist
     from kiro_crew.acp.skill_projection import NativeSkillProjection
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
+
+#: Backends whose ``session/new`` and ``session/load`` answers report the permission mode
+#: the harness resolved from Crew's seed, which the session's client class reads back
+#: (``_reads_back_session_mode``). ``AcpClient.__new__`` refuses one to a class that
+#: reads none. goose: ``GOOSE_MODE`` (``acp.harness.goose``), read back by
+#: ``client_goose``.
+_SESSION_MODE_READ_BACK_BACKENDS = frozenset({ACP_BACKEND_GOOSE})
+
+#: Backends that can ask permission for a shell call before the update carrying its
+#: command, which the session's client class holds the permission back for
+#: (``_defers_shell_permission``) so the command reaches the security cache first.
+#: ``AcpClient.__new__`` refuses one to a class that defers none. opencode, deferred by
+#: ``client_opencode``.
+_SHELL_PERMISSION_DEFERRAL_BACKENDS = frozenset({ACP_BACKEND_OPENCODE})
 
 
 class AcpClient:
@@ -100,11 +112,7 @@ class AcpClient:
     # The facade is the class's import path, so pickles and reprs keep naming it.
     __module__ = "kiro_crew.acp.client"
 
-    # Written by the claude adapter at launch, read back by the settings writer
-    # through ``getattr`` with an empty default: never set on any other host.
-    _claude_adapter_disk_version: str
     # Fields first set by a member an owner module defines, declared so the class names them.
-    _claude_shipped_restrictions: frozenset[tuple[str, str]]
     _entitlement_probe_inflight: asyncio.Future[tuple[list[dict[str, str]], float]] | None
     _member_dispatch_mounted: bool
     _session_mcp_excludes_local: bool
@@ -118,6 +126,8 @@ class AcpClient:
     # The scrub this session applies to what a harness reports back, handed to the
     # host adapters that quote such a value (``ProcessSession._scrub_observed``).
     _scrub_observed = staticmethod(_scrub_observed)
+    # The newest ``available_commands_update``: its session id and its rows.
+    _advertised_commands: tuple[str, tuple[dict[str, str], ...]] = ("", ())
 
     # Idle reader state (see _maybe_start_idle_reader). Class-level so a client
     # built without __init__ reads the idle defaults.
@@ -141,6 +151,52 @@ class AcpClient:
     # Prompts past that gate and not yet finished.
     _prompts_in_flight: int = 0
 
+    #: The subclass that serves a backend whose session contract lives in a client
+    #: class of its own, keyed by backend and filled by ``__init_subclass__`` when
+    #: that class's module is imported (the facade imports ``client_claude``). A
+    #: backend that is not a key here is served by this class.
+    _client_class_by_backend: ClassVar[dict[str, type[AcpClient]]] = {}
+
+    def __init_subclass__(cls, *, serves: str = "", **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if serves:
+            AcpClient._client_class_by_backend[serves] = cls
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> AcpClient:
+        """Build the client class that serves the requested backend.
+
+        Building ``AcpClient`` with an ``acp_backend`` stays the one construction call: a backend
+        with a client class of its own gets an instance of that class, and every
+        other backend gets this one. A backend whose settings file Crew seeds
+        (``ACP_BACKENDS_SEED_LOCAL_SETTINGS``) is refused by a class that seeds
+        none -- its own class not imported, or an edition's subclass of this one
+        -- rather than started without its session contract.
+        ``AcpClient.__new__(AcpClient)`` with no arguments builds this class, as before.
+        """
+        backend = kwargs.get("acp_backend", args[7] if len(args) > 7 else "")
+        if cls is AcpClient:
+            cls = AcpClient._client_class_by_backend.get(backend, AcpClient)
+        if backend in ACP_BACKENDS_SEED_LOCAL_SETTINGS and not cls._seeds_local_settings:
+            # A backend whose permission surface is a settings file Crew seeds,
+            # started by a class that seeds none, would run with that surface
+            # unmanaged: refused before any process exists.
+            raise AcpError(f"no client class that seeds settings serves the {backend!r} backend")
+        if backend in _SESSION_MODE_READ_BACK_BACKENDS and not cls._reads_back_session_mode:
+            # The same refusal for a backend whose permission mode Crew reads back
+            # off the session answers: a class that reads none would run the
+            # session with a mode nothing checked.
+            raise AcpError(
+                f"no client class that reads back the session mode serves the {backend!r} backend"
+            )
+        if backend in _SHELL_PERMISSION_DEFERRAL_BACKENDS and not cls._defers_shell_permission:
+            # And for a backend whose shell permission can arrive ahead of its
+            # command: a class that holds none back would judge the call with no
+            # command in the security cache.
+            raise AcpError(
+                f"no client class that defers shell permissions serves the {backend!r} backend"
+            )
+        return object.__new__(cls)
+
     def __init__(
         self,
         work_dir: str | Path | None = None,
@@ -162,7 +218,7 @@ class AcpClient:
         if work_dir:
             self._work_dir = Path(work_dir)
         else:
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = config_dir() / KEYLESS_WORK_DIR_NAME
         # Once-per-instance guard for the ensure_ready work-dir check: True
         # after the first (off-loop) mkdir, so the per-prompt warm path pays
         # no filesystem syscall at all.
@@ -180,28 +236,12 @@ class AcpClient:
         self._sandbox_mode = sandbox_mode
         self.memory_mode = "persistent"
         self._acp_backend = acp_backend
-        # Claude backend permission mode (Auto-mode / permission-UI parity).
-        # Inert on the kiro-cli path. None = nothing asked for a mode:
-        # _write_claude_local_settings seeds no defaultMode, so the session starts
-        # in the mode the user's own settings name. With
-        # KIROCREW_CC_PIN_INHERITED_MODE on, _pin_claude_starting_mode then moves a
-        # session carrying Crew's tools that starts in "auto" or
-        # "bypassPermissions" to "default".
+        # The permission mode the caller asked for, the Side Chat read-only flag and
+        # the memory flag: carried for the backend client classes that read them
+        # (``client_claude``). None = nothing asked for a mode.
         self._permission_mode = permission_mode
-        # A Side Chat session that may run read-only tools. On claude it starts
-        # with only the read built-ins and no MCP server, and its mode is pinned
-        # to ``default`` (_claude_session_meta, _pin_claude_starting_mode). Inert
-        # on the kiro-cli path, where the derived ``<agent>--readonly`` spec
-        # confines the session instead.
         self._side_read_only = side_read_only
-        # False for a sub-agent spawned with ``include_memory=false``. On claude
-        # its envelope turns Claude Code's auto-memory off, as a restricted
-        # session's does (_claude_session_meta). Inert on every other backend.
         self._include_memory = include_memory
-        # That session's sensitive-path deny rules, built off the loop before its
-        # launch (_prepare_claude_side_read_denies). Empty until then, and a side
-        # session whose envelope would carry none is not started.
-        self._claude_side_read_denies: tuple[str, ...] = ()
         # The session tree's work directory when this client is a DEDICATED
         # subagent process spawned on a parent's behalf: re-validated at spawn
         # (``agent_scratch.shared_scratch_window``) and mounted as a second
@@ -212,51 +252,6 @@ class AcpClient:
         # dies first leaves no dead-owner marker over its running children.
         self._shared_scratch: Path | None = Path(shared_scratch) if shared_scratch else None
         self._scratch_dir: Path | None = None
-        # True once this session has CREATED <work_dir>/.claude/settings.local.json
-        # itself. Only then does reset remove it, and only then does a re-seed
-        # overwrite it. The writer refuses a path that already holds a file it did
-        # not author, so Crew never owns the undo for someone else's project
-        # settings -- see _write_claude_local_settings.
-        self._claude_settings_authored = False
-        # True while the project owns settings.local.json and this session leaves
-        # that file out of its setting sources, carrying Crew's settings inline in
-        # ``_claude_inline_settings`` instead -- see _exclude_foreign_local_settings.
-        self._claude_local_settings_excluded = False
-        self._claude_inline_settings: dict[str, Any] | None = None
-        # The exact bytes this session last wrote to that path, held as the str
-        # whose utf-8 encoding IS those bytes -- the writer emits binary so no
-        # newline translation can come between the two on any platform. Creating
-        # the file is not sufficient ownership on its own: a user can replace it
-        # atomically (write-temp + rename) after the create, and the replacement is
-        # theirs. So the flag says "Crew created it" and this says "and it is still
-        # Crew's content" -- the re-seed and the reset unlink both require BOTH.
-        self._claude_settings_written: str | None = None
-        # True while a durable OWNER holder of this client's is still on disk for a
-        # file whose bytes are not Crew's: a user replaced the seed and the hand-back
-        # (``forget``, then ``release``) could not reach the sidecar. Authorship
-        # drops the moment the bytes are observed foreign -- governance is about the
-        # file, not the record -- so this carries the one thing teardown still owes:
-        # another attempt at the hand-back. It feeds NO governance decision.
-        self._claude_settings_claim_unrevoked = False
-        # True while this session holds a durable reader lease on a sibling
-        # Crew client's seed. The lease pins that file's lifecycle even after a
-        # later byte re-validation fails, so it is deliberately distinct from
-        # whether the current bytes still govern this session's permission
-        # surface. A sharer never removes the owner's file or live claim.
-        self._claude_settings_shared = False
-        # True only while the sibling seed's CURRENT on-disk bytes have passed
-        # byte-for-byte validation against this session's rendered permission
-        # surface. Unlike the retained reader lease above, every re-validation
-        # clears this flag on entry and only full success re-earns it; the MCP
-        # array is withheld after every non-success exit.
-        self._permission_surface_share_validated = False
-        # Identity this client claims its seed under, in the durable record. Two
-        # keyless clients share the default work_dir, so a token is what keeps
-        # "Crew wrote it" from collapsing into "any Crew client may take it": the
-        # durable record is for adopting an ORPHAN, and a sibling still running in
-        # this process does not have one. Per instance and never reset -- a client
-        # that re-spawns is the same owner across spawns.
-        self._seed_owner = uuid.uuid4().hex
         # This session's translated ``mcpServers`` array, resolved once per spawn.
         # Held here so the shared session-params call site is a pure in-memory
         # read: the translation touches disk, and doing that AT the call site
@@ -264,6 +259,9 @@ class AcpClient:
         # (harness-parity H13). None = not resolved yet; cleared on reset so the
         # next spawn re-reads the spec. See _session_mcp_servers.
         self._session_mcp_cache: list[dict[str, Any]] | None = None
+        # Launch snapshots of the Crew-owned Connection bridges this process's
+        # arrays projected, removed with the process (``_reset_state``).
+        self._crew_bridge_snapshots: list[str] = []
         # The ``DerivedSpecSnapshot`` that array was built from, or None when this
         # session's agent mirrors nothing. For an array-backed host the array IS the
         # spec the host consumes -- it reads no spec of its own -- so the bracket the
@@ -334,18 +332,11 @@ class AcpClient:
         # Tool ids the projection asks the harness itself to deny
         # (``SessionProjection.harness_deny_rules``), seeded by the opencode routing.
         self._session_harness_deny_rules: tuple[str, ...] = ()
-        # The subset of those rules the opencode read-back found IN FORCE, handed back
-        # to every later projection so it withholds a server whose rule is not. None
-        # until this spawn has seeded any.
-        self._opencode_denies_in_force: frozenset[str] | None = None
-        # The seeded rules the last read-back found outranked by another rule.
-        self._opencode_denies_unenforced: frozenset[str] = frozenset()
-        # Servers opencode mounts from its own config, from this spawn's read-back.
-        self._opencode_native_mounts: frozenset[str] = frozenset()
-        # The MCP server names opencode's routing read-back found in the harness's
-        # own resolved config, so a fused tool title from one of them splits back
-        # exactly. Recorded by its launch (``acp.harness.opencode``).
-        self._opencode_config_mcp_servers: tuple[str, ...] = ()
+        # This process's harness adapter (``acp.harness.process_adapter_for``), kept
+        # from the spawn until ``_reset_state``. It holds what its launch read back
+        # (``_harness_read_back``). None for the kiro-cli arm and before a spawn.
+        self._process_adapter: ProcessAdapter | None = None
+        self._mimocode_governed_stop: tuple[str, str] | None = None
         # The per-session nonce a gate extension echoes in every dialog it raises;
         # minted by the pi, DeepSeek Harness or Strands launch, placed in the child's
         # environment there, and the only key under which a permission frame is read
@@ -362,6 +353,12 @@ class AcpClient:
         self._pi_steer_turn: int | None = None
         self._pi_steers_pending: dict[int, str] = {}
         self._pi_steer_lock = asyncio.Lock()
+        # The mode names the session advertised and its last mode report, with the
+        # ``mode`` option's value then, for the mode-change notice (``acp.harness_notices``).
+        self._harness_mode_names: dict[str, str] = {}
+        self._harness_mode: tuple[str, str | None] | None = None
+        # The session's background tasks and Workflow runs (``acp.raw_sdk_tasks``).
+        self._raw_sdk = RawSdkState()
         # The launch MCP config file this spawn wrote, removed once the session
         # exists (``acp.harness.copilot``, ``acp.harness.strands``).
         self._copilot_mcp_config_path = ""
@@ -373,11 +370,11 @@ class AcpClient:
         # Every server name that handoff carried (the member mounts AND the pooled
         # stubs), which is what a pi MCP tool title is spelled after.
         self._pi_mcp_server_names: tuple[str, ...] = ()
-        self._deepseek_gate_nonce = ""
-        # Why this DeepSeek Harness session's READ_ONLY turns may not approve its
-        # read tools by name, or ``""`` once its launch proved stock dsh composes
-        # them (``tool_gate.deepseek_read_only_owner_issue``). Refused until then.
-        self._deepseek_read_only_issue = "the harness composition was not read back"
+        # Set by the MiMo Code launch once its routing is read back: a shell call
+        # that completes without Crew having been asked about it stops the harness,
+        # because that harness's own loopback listener can switch it to auto-allow
+        # mid-session (``acp.harness.mimocode``).
+        self._unasked_shell_tripwire = False
         # toolCallIds the gate extension asked about in this session, read off the
         # envelopes; a completed tool call not in it is a call the gate never saw.
         self._pi_gate_asked_ids: set[str] = set()
@@ -387,6 +384,13 @@ class AcpClient:
         self._pi_gate_request_tool: dict[str, str] = {}
         self._pi_gate_denied_ids: set[str] = set()
         self._session_key = session_key
+        # Set by ``runtime_ownership.acquire_session_lease`` once the gateway
+        # registers this client's session: the one tenant of its own process,
+        # where a runtime-backed session would take a lease instead.
+        self._registered_session = False
+        # The clock ``stream_events`` times a turn's start with. A test hands this
+        # one object a fake; the module's ``time`` stays the shared binding.
+        self._turn_clock: Callable[[], float] = time.monotonic
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
         # knowledge llm_pool) that have no external audit loop. Left None for
@@ -576,6 +580,10 @@ class AcpClient:
         self._native_child_rows: dict[str, dict[str, Any]] = {}
         self._native_child_by_tool_use: dict[str, str] = {}
         self._native_child_turn: dict[str, None] = {}
+        # The tracked children whose last report granted ``capabilities.cancel``,
+        # and this turn's permission and elicitation request ids each child asked.
+        self._native_child_cancellable: set[str] = set()
+        self._native_child_requests: dict[str, str] = {}
         # One ``StreamRedactor`` per native child whose text is streaming, keyed by
         # its tracked id (so bounded by the same cap), flushed and dropped when the
         # roster reports the child done or failed (``client_turn``).
@@ -759,14 +767,6 @@ class AcpClient:
         # contract for no reader.
         self.last_compaction_transient: bool = False
         self._compaction_failed_turn: bool = False
-        # Set when the claude backend's "Compacting..." notice is seen inside a
-        # turn and cleared by its terminal notice. Only a MANUAL /compact gets a
-        # terminal from the adapter (see parse_claude_compaction_notice), so an
-        # automatic mid-turn compaction leaves this armed and the dispatch loop
-        # settles it with a synthetic `completed` at turn end. Without that, a
-        # consumer showing a compacting state would never leave it.
-        self._claude_compaction_pending: bool = False
-        self._claude_native_compaction_id: str | None = None
         # The codex twin of the flag above. It guards TWO directions, and the
         # second is why it is read on the way in as well as at turn end. A loaded
         # session replays a past compaction as a ``tool_call`` that is already
@@ -779,6 +779,8 @@ class AcpClient:
         # Native ``compaction_update`` lifecycle per id: duplicate terminals and
         # late starts are dropped against it. Lives as long as the client.
         self._native_compaction_states = NativeCompactionStates()
+        # What each native compaction in flight streamed (``acp.compaction_summary``).
+        self._compaction_summaries = CompactionSummaries()
         # When this session's harness last launched work that outlives the
         # prompt (a backgrounded command, a Workflow). Never reset per turn: a
         # turn ending says nothing about whether that work has finished, and
@@ -805,6 +807,15 @@ class AcpClient:
         # See _maybe_audit_unasked_tool_call.
         self._sel_settled_tool_calls: set[str] = set()
         self._last_stop_reason: str = ""
+        # The pictures this client's current session already holds (see
+        # AcpSessionHandle), only on a harness whose compaction this client
+        # sees; and the request id of the prompt whose inlined pictures are
+        # staged, with that prompt's staging: only that prompt's answer commits them.
+        self._sent_images: SentImageLedger | None = (
+            SentImageLedger() if acp_backend in ACP_BACKENDS_SENT_IMAGE_RECORD else None
+        )
+        self._sent_images_req: int | None = None
+        self._sent_images_staged: StagedImages | None = None
         # Dynamic config from ACP session/new response and config_option_update notifications.
         # Only the effort configOptions are consumed (model lists come from
         # _capture_available_models, which parses the real dict-shaped `models`).
@@ -859,15 +870,13 @@ class AcpClient:
     _read_mcp_ref_spec = _client_mcp_array._read_mcp_ref_spec
     _guard_unresolved_mcp_refs = _client_mcp_array._guard_unresolved_mcp_refs
     _session_mcp_servers = _client_mcp_array._session_mcp_servers
-    _claude_session_mcp_servers = _client_mcp_array._claude_session_mcp_servers
-    _opencode_session_mcp_servers = _client_mcp_array._opencode_session_mcp_servers
-    _deepseek_session_mcp_servers = _client_mcp_array._deepseek_session_mcp_servers
+    _mimocode_session_mcp_servers = _client_mcp_array._mimocode_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
+    _antigravity_session_mcp_servers = _client_mcp_array._antigravity_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
     _discard_copilot_mcp_config = _client_mcp_array._discard_copilot_mcp_config
-    _goose_session_mcp_servers = _client_mcp_array._goose_session_mcp_servers
     _invalidate_session_mcp_projection = _client_mcp_array._invalidate_session_mcp_projection
     _prepare_session_mcp = _client_mcp_array._prepare_session_mcp
     _mcp_timeout_progress = _client_mcp_array._mcp_timeout_progress
@@ -926,24 +935,16 @@ class AcpClient:
         )
 
     @property
-    def _is_claude(self) -> bool:
-        return self.backend == ACP_BACKEND_CLAUDE
+    def _is_antigravity(self) -> bool:
+        return self.backend == ACP_BACKEND_ANTIGRAVITY
 
     @property
-    def _is_opencode(self) -> bool:
-        return self.backend == ACP_BACKEND_OPENCODE
+    def _is_mimocode(self) -> bool:
+        return self.backend == ACP_BACKEND_MIMOCODE
 
     @property
     def _is_pi(self) -> bool:
         return self.backend == ACP_BACKEND_PI
-
-    @property
-    def _is_goose(self) -> bool:
-        return self.backend == ACP_BACKEND_GOOSE
-
-    @property
-    def _is_deepseek(self) -> bool:
-        return self.backend == ACP_BACKEND_DEEPSEEK
 
     @property
     def _is_copilot(self) -> bool:
@@ -968,19 +969,17 @@ class AcpClient:
         provider's advertised list (see ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``)."""
         return self.backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
 
-    @property
-    def _seeds_local_settings(self) -> bool:
-        """True when this backend seeds (and must re-seed) a per-session settings
-        file (see ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``)."""
-        return self.backend in ACP_BACKENDS_SEED_LOCAL_SETTINGS
+    #: True on a backend that seeds (and must re-seed) a per-session settings file;
+    #: the client class of such a backend sets it (``client_claude``).
+    _seeds_local_settings: bool = False
 
     @property
     def _is_kiro(self) -> bool:
         """True when this client drives kiro-cli (the AcpClient default).
 
-        AcpClient serves kiro-cli, claude-agent-acp and the dormant codex seam, so
-        this is the positive spelling for sites that would otherwise read
-        ``not self._is_claude`` (harness-parity H5). KAS runs on AcpRuntime, not
+        AcpClient serves kiro-cli and the other per-session backends, so this is
+        the positive spelling for sites that would otherwise test that the backend
+        is not some other harness (harness-parity H5). KAS runs on AcpRuntime, not
         AcpClient, so it never reaches this property.
         """
         return self.backend == ACP_BACKEND_KIRO
@@ -996,195 +995,177 @@ class AcpClient:
         """
         return getattr(self, "_member_dispatch_mounted", None)
 
-    # Prove and hand back Crew's ownership of a claude settings seed on disk: ``kiro_crew.acp.client_seed_ownership``.
-    _claude_local_settings_path = _client_seed_ownership._claude_local_settings_path
-    _claude_settings_is_still_ours = _client_seed_ownership._claude_settings_is_still_ours
-    _settings_path_bytes = staticmethod(_client_seed_ownership._settings_path_bytes)
-    _expected_settings_fingerprint = _client_seed_ownership._expected_settings_fingerprint
-    _withdraw_shared_reader_lease = _client_seed_ownership._withdraw_shared_reader_lease
-    _rename_aside_noreplace = staticmethod(_client_seed_ownership._rename_aside_noreplace)
-    _copy_aside_back_without_clobber = staticmethod(
-        _client_seed_ownership._copy_aside_back_without_clobber
+    # What a backend whose session contract lives in a client class of its own
+    # (``client_claude``, ``client_goose``, ``client_opencode``) adds to a session. Each
+    # hook here is the behaviour every other backend keeps; that class overrides it. A
+    # hook the kiro-cli path calls adds no branch and no failure mode to it
+    # (harness-parity H13): it was already calling the step it replaces, and the step
+    # does nothing here.
+
+    #: True on a backend that pins the starting permission mode once the session
+    #: exists (``_pin_starting_mode``). Read before the await, so a session that pins
+    #: nothing makes no call at all.
+    _pins_starting_mode: bool = False
+
+    #: True on a backend whose ``session/new`` and ``session/load`` answers report the
+    #: permission mode the harness resolved, which Crew reads back
+    #: (``_verify_session_mode``) and holds the session to mid-session
+    #: (``_tripwire_session_mode``). Read before either call, so every other session
+    #: makes neither.
+    _reads_back_session_mode: bool = False
+
+    #: What the completed-unasked tripwire tells the person to check when a gate
+    #: extension's session ran a tool call Crew was never asked about
+    #: (``_tripwire_pi_gate``): pi's adapter and pi itself here.
+    _gate_tripwire_remedy: str = (
+        "Start a new chat, and if it recurs check the pi-acp and pi versions: "
+        "the adapter must run the command named by PI_ACP_PI_COMMAND and forward "
+        "extension dialogs, and pi must honour an extension's block."
     )
-    _discard_claude_settings_seed = _client_seed_ownership._discard_claude_settings_seed
-    _hand_back_unrevoked_claim = _client_seed_ownership._hand_back_unrevoked_claim
-    _settle_claude_settings_seed = _client_seed_ownership._settle_claude_settings_seed
-    release_settings_seed_claim = _client_seed_ownership.release_settings_seed_claim
-    _foreign_settings_owner = _client_seed_ownership._foreign_settings_owner
-    _foreign_settings_is_crew_seed = _client_seed_ownership._foreign_settings_is_crew_seed
-    settings_withheld_cause = _client_seed_ownership.settings_withheld_cause
-    _settle_claude_settings_seed_locked = _client_seed_ownership._settle_claude_settings_seed_locked
 
-    @staticmethod
-    def _settings_path_holds(path: Path, expectation: tuple[int, str] | None) -> bool:
-        """Whether *path* still holds exactly the ``(size, sha256)`` in *expectation*.
+    #: True on a backend that forwards the provider's tool-call id verbatim, so two
+    #: calls of one turn can share an id; the harness tool name that id names is then
+    #: read as unknown rather than as either call's.
+    _tool_call_ids_repeat_in_turn: bool = False
 
-        Split out from :meth:`_claude_settings_is_still_ours` so the teardown
-        transaction can be a pure function of arguments captured before it starts.
-        It runs in a thread while the client clears its instance flags, so a version
-        that re-read ``self`` could decide ownership against state that changed
-        underneath it. ``None`` means Crew has no claim to check, which reads as
-        "not ours".
-        """
-        return AcpClient._settings_path_bytes(path, expectation) is not None
+    def _verify_session_mode(self, resp: dict) -> None:
+        """Refuse a session whose answer *resp* reports a mode Crew does not allow.
+        Reached only where ``_reads_back_session_mode`` is True."""
 
-    @staticmethod
-    def _claim_pathname_if_ours(
-        path: Path, expectation: tuple[int, str] | None
-    ) -> tuple[Path, tuple[int, int]] | None:
-        """Atomically move *path* aside into a fresh name; return it IFF it is Crew's.
+    async def _tripwire_session_mode(self, msg: JsonRpcMessage) -> None:
+        """Stop a session that reports leaving the required mode mid-session. Reached
+        only where ``_reads_back_session_mode`` is True."""
 
-        Closes the window between an ownership check and the delete or overwrite that
-        acts on it. ``_settings_path_holds`` verifies bytes by PATHNAME, but the delete
-        or re-seed then mutates that same pathname a moment later -- and a user who
-        atomically replaced the file in between would have their settings deleted or
-        clobbered. ``os.replace`` captures whatever is at the pathname in ONE atomic
-        step, so verifying the MOVED inode cannot then race: its bytes are fixed. A
-        match is Crew's own seed (the caller deletes or replaces the moved file); a
-        mismatch is a replacement that raced in, and it is put back untouched.
+    #: True on a backend that can ask permission for a shell call before the update
+    #: carrying its command (``_defer_shell_permission``). Read before the await, so
+    #: every other session makes no call.
+    _defers_shell_permission: bool = False
 
-        The capture destination is a FRESH name created by ``mkstemp`` (``O_EXCL``) in
-        the same directory, so it is a pathname this process just created and provably
-        did NOT pre-exist. A fixed sibling name (e.g. ``<name>.crew-gc``) could name a
-        file the project already owns, and ``os.replace`` onto it would clobber that
-        file atomically -- relocating the very data loss this helper prevents one
-        pathname over. ``os.replace`` onto our own fresh temp destroys only the empty
-        temp we just made.
+    async def _defer_shell_permission(self, msg: JsonRpcMessage, remaining: float) -> bool:
+        """Re-queue the shell permission *msg* behind its command update, True when it
+        did. Reached only where ``_defers_shell_permission`` is True."""
+        return False
 
-        ``(aside, identity)`` -- the moved file and ``(st_dev, st_ino)`` captured at
-        the move, which every later restore and cleanup pins against. ``None``
-        (nothing for the caller to mutate) when the path is gone, cannot be moved, or
-        holds a file that is not Crew's. A crash between the move and the caller's
-        follow-up leaves at most one such ``.crew-gc`` temp beside the target, which
-        the next session's fresh seed ignores.
-        """
-        try:
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(path.parent), prefix=path.name + ".", suffix=".crew-gc"
-            )
-        except OSError:
-            return None
-        tmp_st = os.fstat(fd)
-        os.close(fd)
-        aside = Path(tmp_name)
-        try:
-            os.replace(path, aside)
-        except OSError:
-            # Nothing to capture (path gone, or it cannot be moved): drop the empty
-            # temp so a refusal never litters a stray file beside the target.
-            with suppress(OSError):
-                pinned_fs.unlink_verified_by_name(
-                    path.parent, aside.name, (tmp_st.st_dev, tmp_st.st_ino)
-                )
-            return None
-        try:
-            moved = os.lstat(aside)
-            moved_ident = (moved.st_dev, moved.st_ino)
-        except OSError:
-            # The moved entry vanished under us (a racing unlink): nothing left
-            # to validate or restore. The empty temp name is gone with it.
-            return None
-        if AcpClient._settings_path_holds(aside, expectation):
-            return aside, moved_ident
-        # Not Crew's after all: a replacement raced in, or the user's own file --
-        # a different regular file, a symlink the verifying open refuses to
-        # follow, a file of any size. Put the moved entry back AS IT IS, without
-        # clobbering whatever else may have taken the vacated name in the
-        # meantime. No-clobber preserves the NEWER occupant and keeps the moved
-        # entry recoverable beside it, where a replace-semantics restore would
-        # silently destroy the newer one.
-        AcpClient._restore_aside_without_clobber(aside, path, moved_ident)
-        return None
+    def _refuse_harness_default_model(self) -> None:
+        """Refuse a session left on a backend default Crew does not run: nothing here."""
 
     @property
     def _permission_surface_governed(self) -> bool:
-        """Whether Crew controls this session's native permission surface.
-
-        The precondition for delivering the ``mcpServers`` array, in either of
-        its two shapes: this client authored ``settings.local.json`` itself
-        (``_claude_settings_authored``), or the file's CURRENT on-disk bytes
-        passed the sibling-seed validation
-        (``_permission_surface_share_validated``). The durable reader lease is
-        tracked separately in ``_claude_settings_shared`` because it survives a
-        failed re-validation to keep the file pinned for a later re-earn, and the
-        owner's un-revoked durable claim (``_claude_settings_claim_unrevoked``) is
-        deliberately not read here either: it says a hand-back is still owed for
-        a file already observed to be someone else's, never that Crew governs it.
-        ``getattr`` on both governed flags because tests build clients without
-        ``__init__``.
-
-        A third shape governs without the file: the project owns it, and this
-        session leaves it out of its setting sources
-        (``_claude_local_settings_excluded``, see
-        :meth:`_exclude_foreign_local_settings`). Its ``permissions.allow`` then
-        never loads, so it cannot pre-approve a tool either.
-        """
-        return (
-            getattr(self, "_claude_settings_authored", False)
-            or getattr(self, "_permission_surface_share_validated", False)
-            or getattr(self, "_claude_local_settings_excluded", False)
-        )
-
-    # Author an ``AcpClient`` session's claude ``settings.local.json`` seed: ``kiro_crew.acp.client_claude_seed``.
-    _share_settings_seed_if_identical = _client_claude_seed._share_settings_seed_if_identical
-    _share_sibling_settings_seed = _client_claude_seed._share_sibling_settings_seed
-    _retract_reseed = _client_claude_seed._retract_reseed
-    _log_declined_share = _client_claude_seed._log_declined_share
-    _render_claude_settings_payload = _client_claude_seed._render_claude_settings_payload
-    _write_claude_local_settings = _client_claude_seed._write_claude_local_settings
-    _reseed_after_capture = _client_claude_seed._reseed_after_capture
-    _seed_session_settings = _client_claude_seed._seed_session_settings
-
-    @staticmethod
-    def _restore_aside_without_clobber(aside: Path, path: Path, expect: tuple[int, int]) -> bool:
-        """Put a moved-aside entry back under *path* without replacing a new occupant.
-
-        A same-directory no-clobber rename (:meth:`_rename_aside_noreplace`), so a
-        symlink, a directory or a file of any size the user placed at the settings
-        path is restored exactly as it was captured -- no copy, no size cap, no read
-        of its bytes -- and the aside name is consumed by the move. An occupant that
-        arrived at the pathname while the entry was out is newer, so the rename
-        refuses it and the moved entry stays recoverable beside it as ``.crew-gc``
-        litter. Where no no-clobber rename primitive exists the restore falls back
-        to the validated byte copy :func:`pinned_fs.put_back_no_clobber`, pinned to
-        the moved inode *expect*; that path restores only a regular file.
-        """
-        try:
-            if AcpClient._rename_aside_noreplace(aside, path):
-                return True
-        except FileExistsError:
-            back: str | None = pinned_fs.PUT_BACK_NAME_TAKEN
-        except OSError:
-            logger.warning("could not restore %s; it is at %s", path, aside.name)
-            return False
-        else:
-            back = AcpClient._copy_aside_back_without_clobber(aside, path, expect)
-            if back is None:
-                return True
-        if back == pinned_fs.PUT_BACK_NAME_TAKEN:
-            logger.info(
-                "%s was recreated while Crew's seed was moved aside; leaving the new "
-                "file in place (the moved seed remains at %s).",
-                path,
-                aside.name,
-            )
-            return False
-        logger.warning("could not restore %s; it is at %s", path, aside.name)
+        """Whether Crew controls this session's native permission surface through a
+        settings file it seeds. Never here: this class seeds none."""
         return False
 
-    # The claude-agent-acp session contract an ``AcpClient`` keeps: ``kiro_crew.acp.client_claude_session``.
-    _exclude_foreign_local_settings = _client_claude_session._exclude_foreign_local_settings
-    _claude_adapter_below_setting_sources_floor = (
-        _client_claude_session._claude_adapter_below_setting_sources_floor
-    )
-    _log_claude_adapter_below_floor = _client_claude_session._log_claude_adapter_below_floor
-    _prepare_claude_side_read_denies = _client_claude_session._prepare_claude_side_read_denies
-    _claude_session_meta = _client_claude_session._claude_session_meta
-    _claude_session_excludes_local = _client_claude_session._claude_session_excludes_local
-    _verify_claude_project_denies_unchanged = (
-        _client_claude_session._verify_claude_project_denies_unchanged
-    )
-    _pin_claude_starting_mode = _client_claude_session._pin_claude_starting_mode
+    def release_settings_seed_claim(self) -> None:
+        """Hand back this client's settings-seed registrations, synchronously: it holds none."""
+
+    def settings_withheld_cause(self) -> str:
+        """Why Crew's MCP tools are withheld for want of a governed settings file: never here."""
+        return ""
+
+    async def _discard_settings_seed(self) -> None:
+        """Remove the per-session settings file this session seeded: it seeded none."""
+
+    def _reset_settings_seed_state(self) -> None:
+        """Drop the in-memory settings-seed state at ``_reset_state``: there is none."""
+
+    def _write_settings_seed(self) -> None:
+        """Re-seed the per-session settings file. Reached only where
+        ``_seeds_local_settings`` is True."""
+
+    async def _reseed_after_capture(self) -> None:
+        """Re-seed the per-session settings file once the model list is known: nothing to seed."""
+
+    def _harness_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The servers this backend's own session MCP array carries ahead of the shared
+        entries (``_adapter_session_mcp_servers``): none here."""
+        return []
+
+    def _harness_session_meta(self, mcp_servers: list[Any]) -> dict[str, Any] | None:
+        """The ``_meta`` envelope a ``session/new`` or restore sends with *mcp_servers*,
+        or None for none of this backend's own (the caller's default stands)."""
+        return None
+
+    async def _retry_after_model_substitution(
+        self, new_params: dict[str, Any], session_resp: dict, substitute: str
+    ) -> dict:
+        """Answer a ``session/new`` that came back naming *substitute* and no session.
+        This class does not retry: the response stands."""
+        return session_resp
+
+    def _note_harness_adapter_version(self) -> None:
+        """Record what the ``initialize`` answer says about this backend's adapter: nothing here."""
+
+    async def _pin_starting_mode(self, resp: dict) -> None:
+        """Move a session off a starting mode Crew does not allow. Reached only where
+        ``_pins_starting_mode`` is True."""
+
+    def _local_settings_exclusion(self) -> tuple[bool, dict[str, Any] | None]:
+        """Whether this session leaves a project's settings file out of its setting
+        sources, and the settings it carries inline instead: never here."""
+        return False, None
+
+    def _note_worker_builtin_tools(self, builtin_tools: tuple[str, ...] | None) -> None:
+        """Keep the built-ins a crewmate worker's projection allows: this backend has
+        no option that carries them."""
+
+    def _worker_settings_lag(self, spec: dict[str, Any] | None) -> bool:
+        """Whether this worker's settings lack a rule *spec* asks for: they cannot here."""
+        return False
+
+    def _session_excludes_local_settings(self) -> bool:
+        """Whether this session runs with a project settings file left out: never here."""
+        return False
+
+    #: True on a backend whose prompt error can name only background agents' calls
+    #: (``_settle_background_only``). Read before the await, so an error on any other
+    #: backend makes no call.
+    _ends_background_only_turns: bool = False
+
+    async def _settle_background_only(self, msg: JsonRpcMessage) -> JsonRpcMessage | None:
+        """An ``end_turn`` answer for a prompt error that names only background agents'
+        calls. Reached only where ``_ends_background_only_turns`` is True."""
+        return None
+
+    def _harness_compaction_event(self, chunk: str) -> AcpEvent | None:
+        """The compaction event a text chunk carries, or None: on this class a text
+        chunk is only text."""
+        return None
+
+    def _settle_harness_compaction(self, reason: str) -> AcpEvent | None:
+        """Close out a text-notice compaction the turn left pending: none is, here."""
+        return None
+
+    def _reset_harness_compaction(self) -> None:
+        """Forget the last turn's pending text-notice compaction: there is none."""
+
+    def _claims_native_compaction(self, status_type: str, update: dict[str, Any]) -> bool:
+        """Whether this backend records a native ``compaction_update`` as its own pending
+        compaction. Not here: the shared codex-shaped record keeps it."""
+        return False
+
+    def _note_unhandled_session_update(self, kind: str) -> None:
+        """A ``session/update`` kind this client does not handle: dropped silently here."""
+
+    def _steering_adapter_floor_met(self) -> bool:
+        """Whether this adapter's release takes ``_session/steering`` as this client
+        sends it. None this class drives does."""
+        return False
+
+    async def _fork_session(
+        self, source_sid: str, message_id: str, capabilities: dict
+    ) -> str | None:
+        """Fork *source_sid* at *message_id*: the new sid, or None for none. This
+        class forks nothing, so the caller starts a fresh session."""
+        return None
+
+    async def new_conversation(self) -> None:
+        """Replace this session with a fresh one on the same process. This class has
+        no such reset: its sessions are reset by kill and respawn."""
+        backend = POLICY_ID_BY_BACKEND.get(self.backend, self.backend)
+        raise NotImplementedError(
+            f"the {backend!r} backend has no fresh-conversation reset on its live "
+            "process; it is reset by kill and respawn"
+        )
 
     async def confirm_member_projection(self) -> None:
         """Confirm the projection this session consumed. Blocking.
@@ -1358,7 +1339,6 @@ class AcpClient:
     _ensure_served_default = _client_model_selection._ensure_served_default
     _note_agent_switched = _client_model_selection._note_agent_switched
     _judge_activated_model = _client_model_selection._judge_activated_model
-    _reassert_adapter_resolved_model = _client_model_selection._reassert_adapter_resolved_model
     _apply_startup_model = _client_model_selection._apply_startup_model
     set_config_option = _client_model_selection.set_config_option
     _store_session_config = _client_model_selection._store_session_config
@@ -1369,7 +1349,6 @@ class AcpClient:
 
     # Answer an ``AcpClient`` session's permission requests and enforce its tool restrictions: ``kiro_crew.acp.client_permissions``.
     _apply_session_permission_routing = _client_permissions._apply_session_permission_routing
-    _verify_goose_routing = _client_permissions._verify_goose_routing
     approve_tool = _client_permissions.approve_tool
 
     def take_batch_refusal(self, request_id: str | int) -> str | None:
@@ -1384,9 +1363,10 @@ class AcpClient:
     _unclassified_tool_call = _client_permissions._unclassified_tool_call
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
-    _note_goose_version = _client_permissions._note_goose_version
     _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
-    _tripwire_goose_mode = _client_permissions._tripwire_goose_mode
+    _refuse_unverified_antigravity_version = (
+        _client_antigravity._refuse_unverified_antigravity_version
+    )
     _tripwire_session_config = _client_permissions._tripwire_session_config
     _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
     _restore_copilot_edit_seed = _client_copilot._restore_copilot_edit_seed
@@ -1395,6 +1375,7 @@ class AcpClient:
     _drop_superseded_config_frames = _client_permissions._drop_superseded_config_frames
     _refuse_session_config_drift = _client_permissions._refuse_session_config_drift
     _tripwire_pi_gate = _client_permissions._tripwire_pi_gate
+    _tripwire_mimocode_governed_mcp = _client_permissions._tripwire_mimocode_governed_mcp
     # Answer an MCP server's elicitation on this client: ``kiro_crew.acp.client_elicitation``.
     _handle_elicitation_request = _client_elicitation._handle_elicitation_request
     _audit_elicitation_decision = _client_elicitation._audit_elicitation_decision
@@ -1435,6 +1416,8 @@ class AcpClient:
     _agent_turn_pending = _client_transport._agent_turn_pending
     _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
     _idle_read_loop = _client_transport._idle_read_loop
+    _note_advertised_commands = _client_transport._note_advertised_commands
+    advertised_commands = _client_transport.advertised_commands
 
     # Prepare an ``AcpClient`` spawn before the process exists: ``kiro_crew.acp.client_spawn_env``.
     _prepare_spawn_workspace = _client_spawn_env._prepare_spawn_workspace
@@ -1446,14 +1429,13 @@ class AcpClient:
     _spawn = _client_start._spawn
     _new_session_following_substitution = _client_start._new_session_following_substitution
     _initialize_params = _client_start._initialize_params
-    _fork_session = _client_start._fork_session
     _initialize_session = _client_start._initialize_session
     ensure_ready = _client_start.ensure_ready
-    # A fresh conversation on the live process: ``kiro_crew.acp.client_new_conversation``.
-    new_conversation = _client_new_conversation.new_conversation
+    _harness_read_back = _client_start._harness_read_back
+    _adapter_session_mcp_servers = _client_start._adapter_session_mcp_servers
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
     _process_message = _client_turn._process_message
-    _defer_opencode_shell_permission = _client_turn._defer_opencode_shell_permission
+    _defer_mimocode_shell_permission = _client_turn._defer_mimocode_shell_permission
     _prompt_loop = _client_turn._prompt_loop
     _consult_liveness_model_wait = _client_turn._consult_liveness_model_wait
     send_message = _client_turn.send_message
@@ -1461,6 +1443,7 @@ class AcpClient:
     stream_events = _client_turn.stream_events
     stream_unsolicited = _client_turn.stream_unsolicited
     _dispatch_events = _client_turn._dispatch_events
+    _forget_sent_images = _client_turn._forget_sent_images
     _send_prompt = _client_turn._send_prompt
     _read_prompt_response = _client_turn._read_prompt_response
 
@@ -1473,6 +1456,9 @@ class AcpClient:
     _native_child_of = _client_native_children._native_child_of
     _native_child_events = _client_native_children._native_child_events
     native_child_resume_refusal = _client_native_children.native_child_resume_refusal
+    cancel_native_child = _client_native_children.cancel_native_child
+    _note_native_child_request = _client_native_children._note_native_child_request
+    native_child_requests = _client_native_children.native_child_requests
     report_native_children = _client_native_children.report_native_children
     # Their redaction before the turn yields them, and the flush of the text it
     # holds for a turn cut short: ``kiro_crew.acp.client_turn``.
@@ -1647,9 +1633,7 @@ class AcpClient:
     _backfill_context_window = _client_usage._backfill_context_window
     _track_metadata = _client_usage._track_metadata
     _handle_compaction_status = _client_usage._handle_compaction_status
-    _claude_compaction_event = _client_usage._claude_compaction_event
     _codex_compaction_event = _client_usage._codex_compaction_event
     _settle_codex_compaction = _client_usage._settle_codex_compaction
-    _settle_claude_compaction = _client_usage._settle_claude_compaction
     wait_for_compaction = _client_usage.wait_for_compaction
     _drain_post_compaction_metadata = _client_usage._drain_post_compaction_metadata

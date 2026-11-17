@@ -89,6 +89,7 @@ from kiro_crew.instances.registry import (  # noqa: F401
     InstanceNotFoundError,
     InstancesError,
     InstancesRegistry,
+    InstanceStoppedError,
     InvalidInstanceError,
     RegistryUnreadableError,
     ancestor_ids,
@@ -335,9 +336,11 @@ async def api_instances_update(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     # Only allow editing user-facing config fields (not internal hints). Derived
     # from the type map rather than listed twice, so a field can never be editable
     # without a declared type to check it against.
@@ -753,6 +756,17 @@ async def api_instances_connect(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    except InstanceStoppedError as e:
+        _audit("connect", "denied", request_id=instance_id, error="stopped")
+        return web.json_response(
+            {
+                "instance_id": instance_id,
+                "state": "disconnected",
+                "error": f"{e}; start it from Settings > Remote Crew to connect",
+                "code": "instance_stopped",
+            },
+            status=409,
+        )
     except InstanceDisabledError as e:
         _audit("connect", "denied", request_id=instance_id, error="disabled")
         return web.json_response(
@@ -902,7 +916,10 @@ async def api_instances_embed_token(request: web.Request) -> web.Response:
 
     Refuses a crew we ourselves reach through a further hop. That is the depth cap
     seen from this end and it is the only place it can be seen: the caller counts
-    hops in its own registry and cannot know that ours adds another one.
+    hops in its own registry and cannot know that ours adds another one. The one
+    exception is ``own_page``: the caller is a page of OURS served through a port
+    forward on another number (the desktop app's managed tunnel), whose pane rides
+    no hop past ours, so such a crew is minted by our parent for that port.
     """
     denied = _guard(request, "embed_token")
     if denied is not None:
@@ -933,7 +950,13 @@ async def api_instances_embed_token(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    ok, payload = await mgr.mint_embed_token(instance_id, port)
+    own_page = body.get("own_page", False)
+    if not isinstance(own_page, bool):
+        _audit("embed_token", "denied", request_id=instance_id, error="bad own_page")
+        return web.json_response(
+            {"error": "own_page must be true or false", "code": "invalid_field"}, status=400
+        )
+    ok, payload = await mgr.mint_embed_token(instance_id, port, own_page=own_page)
     if not ok:
         status = int(payload.pop("status", 502))
         _audit("embed_token", "failure", request_id=instance_id, error=str(payload.get("code")))
@@ -1624,5 +1647,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_instances_chat_slots,
         api_instances_proxy,
         api_instances_versions,
+        read_peer_capabilities,
         read_peer_slots,
     )

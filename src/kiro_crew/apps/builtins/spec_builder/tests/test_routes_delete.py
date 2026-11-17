@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import inspect
 import os
-import re
 import sys
 import threading
 import types
@@ -870,19 +869,6 @@ def test_both_stop_helpers_discard_before_they_stop():
                 f"{fn.__name__}: _discard_queued_work must precede {stop} -- clearing "
                 "afterwards races _run_chat's end-of-turn block"
             )
-
-
-def test_run_chat_still_relaunches_from_these_three_fields():
-    """Pins the UPSTREAM behaviour this fix exists for. If the gateway ever stops
-    relaunching from the end-of-turn block, this test should fail loudly so the
-    discard can be re-justified rather than cargo-culted."""
-    from kiro_crew.dashboard import chat_runner
-
-    src = inspect.getsource(chat_runner)
-    assert "_start_next_queued_turn" in src
-    assert "_requeue_unconsumed_steers" in src
-    # The swallow is the reason a cancel behaves like a clean finish here.
-    assert re.search(r"except asyncio\.CancelledError:", src)
 
 
 @pytest.mark.asyncio

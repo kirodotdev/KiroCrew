@@ -33,7 +33,7 @@ from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
 from kiro_crew.dashboard.slot_persistence import metadata_line, metadata_values
 from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
 from kiro_crew.dashboard.state import durable_queue_entries
-from kiro_crew.history import SLOT_OWNED_META_KEYS
+from kiro_crew.history import SLOT_OWNED_META_KEYS, transcript_stem
 
 K1 = source_ref_identity_key(("github", "github.com", "o", "r", 1, "", "change", ""))
 K2 = source_ref_identity_key(("github", "github.com", "o", "r", 2, "", "change", ""))
@@ -85,6 +85,9 @@ _POPULATED: dict = {
     "tags": ["t1", "t2"],
     "_auto_tagged": True,
     "_human_seen": True,
+    "_telemetry_notice_shown": "0123456789abcdef",
+    "_project_hook_files_notice_shown": "fedcba9876543210",
+    "_session_notice_marks": ["0123456789abcdef", "fedcba9876543210"],
     "forked_from": "parent-slot",
     "forked_from_created_at": "2026-01-01T00:00:00",
     "linked_session_key": "slack:C1:1.2",
@@ -146,6 +149,7 @@ _BASE_LINE_ORDER = (
     "origin",
     "created_by",
     "attribution",
+    "participants",
     "artifact",
     "pinned",
     "mutes_opened",
@@ -156,6 +160,9 @@ _BASE_LINE_ORDER = (
     "tags",
     "auto_tagged",
     "human_seen",
+    "telemetry_notice_shown",
+    "project_hook_files_notice_shown",
+    "session_notice_marks",
     "last_user_at",
     "deferred_notes",
     "queued_prompts",
@@ -199,6 +206,7 @@ _BASE_MERGE_ORDER = (
     "origin",
     "created_by",
     "attribution",
+    "participants",
     "linked_session_key",
     "channel_origin",
     "forked_from",
@@ -211,6 +219,9 @@ _BASE_MERGE_ORDER = (
     "tab_id",
     "auto_tagged",
     "human_seen",
+    "telemetry_notice_shown",
+    "project_hook_files_notice_shown",
+    "session_notice_marks",
     "channel_folder_filed",
     "closed",
     "closed_at",
@@ -241,6 +252,7 @@ def _populated(state, *, app: str = "app-1"):
 
 def _purpose(purpose: str, *, name: str, member=None, listed: object = "Listed", **inputs):
     """Build *purpose*; *inputs* are extra constructor keywords (the restore inputs)."""
+    history_key = inputs.pop("history_key", "")
     if purpose == codec.RESTORE:
         return codec.Restore(name=name, member=member, **inputs)
     if purpose == codec.RECENT:
@@ -248,10 +260,10 @@ def _purpose(purpose: str, *, name: str, member=None, listed: object = "Listed",
             name=name,
             member=member,
             listing={"title": listed},
-            history_key=f"dashboard_{name}",
+            history_key=history_key or f"dashboard_{name}",
             **inputs,
         )
-    return codec.Resume(member=member, history_key=f"dashboard:{name}", **inputs)
+    return codec.Resume(member=member, history_key=history_key or f"dashboard:{name}", **inputs)
 
 
 def _slot_folds(slot) -> codec.SaveFolds:
@@ -304,8 +316,12 @@ def test_every_field_a_purpose_reads_round_trips_and_every_other_is_left_alone(
     state = _state(tmp_path, monkeypatch)
     source = _populated(state)
     meta = json.loads(json.dumps(codec.encode(source, merge=merge, folds=_slot_folds(source))))
-    # A recent restore shows the session list's title, which is the line's.
-    fresh, applied, baseline = _read_back(state, meta, purpose, listed=meta.get("title"))
+    # A recent restore shows the session list's title, which is the line's. Read
+    # under the linked thread's own transcript, the file a linked slot saves to.
+    own = transcript_stem(_POPULATED["linked_session_key"])
+    fresh, applied, baseline = _read_back(
+        state, meta, purpose, name=own, history_key=own, listed=meta.get("title")
+    )
 
     write = "merge" if merge else "line"
     restored, kept, settled = [], [], []
@@ -326,9 +342,11 @@ def test_every_field_a_purpose_reads_round_trips_and_every_other_is_left_alone(
     applied.settle([])
     for row in settled:
         assert _value(fresh, applied, row) == _expected(source, row), row.key
-    # Non-vacuous: every purpose restores most fields, and each declares an asymmetry.
+    # Non-vacuous: every purpose restores most fields. RESTORE reads every
+    # persisted field (no asymmetry left), so only RECENT and RESUME still
+    # declare a skipped field.
     assert len(restored) >= 20
-    assert kept
+    assert kept or purpose == codec.RESTORE
 
 
 def test_the_round_trip_sees_a_dropped_read(tmp_path, monkeypatch):
@@ -355,18 +373,14 @@ def test_the_table_declares_every_asymmetry_the_readers_had():
     assert partial == {
         "model": ["recent", "restore"],
         "reasoning_effort": ["recent", "restore"],
-        "memory_store": ["recent", "restore"],
         "executor": ["recent", "restore"],
         "instance_id": ["recent", "restore"],
         "remote_slot": ["recent", "restore"],
         "created_by": ["recent", "restore"],
         "app": ["recent", "restore"],
-        "artifact": ["recent", "restore"],
-        "color_theme": ["recent", "resume"],
         "theme_consent": ["resume"],
         "theme_consent_sha": ["resume"],
         "human_seen": ["recent", "restore"],
-        "queued_prompts": ["recent", "restore"],
         "linked_session_key": ["recent", "restore"],
         "channel_origin": ["restore"],
         "tab_id": ["recent", "restore"],
@@ -381,6 +395,19 @@ def test_the_table_declares_every_asymmetry_the_readers_had():
         "closed_id",
         "rotation_generation",
     ]
+    # Every slot-owned field below is read by EVERY purpose, so a slot-owned value
+    # a save clears by absence survives every hydration. ``color_theme`` is read
+    # by the open-tab restore, and the store/artifact/notes/queue fields by a
+    # History resume. ``tab_id`` is NOT here: a resume keeps a fresh per-object
+    # id, so the fork chain is a deliberate startup-only restore.
+    for key in (
+        "color_theme",
+        "memory_store",
+        "artifact",
+        "deferred_notes",
+        "queued_prompts",
+    ):
+        assert codec._BY_KEY[key].purposes == codec.PURPOSES, key
 
 
 def test_the_table_has_one_row_per_key_and_both_orders_name_exactly_the_written_keys():
@@ -477,7 +504,7 @@ def test_the_full_save_clears_by_absence_and_the_merge_by_a_falsy_value(tmp_path
 
 def test_slot_args_take_each_purposes_construction_inputs():
     meta = {"app": "app-1", "origin": "cron", "linked_session_key": "slack:C1:1.2"}
-    assert codec.slot_args(meta, codec.Restore(name="x")) == {
+    assert codec.slot_args(meta, codec.Restore(name="slack_C1_1.2")) == {
         "agent": "",
         "mode": "",
         "app": "app-1",
@@ -500,6 +527,20 @@ def test_slot_args_take_each_purposes_construction_inputs():
         "origin": "cron",
     }
     assert codec.slot_args({}, codec.Resume(history_key="dashboard:x"))["channel_origin"] is False
+    assert codec.slot_args(meta, codec.Restore(name="x"))["channel_origin"] is False
+
+
+def test_resume_binds_a_review_transcripts_own_link_for_the_dashboard_user_only():
+    """An app's resume stays unbound: its stem-named tab's own session is ``dashboard:``.
+
+    Bound, the ownership rule would read the tab as running on a foreign session and
+    refuse the app every route on the tab it just reopened.
+    """
+    meta = {"linked_session_key": "taskrunner:t1:chat:abc"}
+    user = codec.slot_args(meta, codec.Resume(history_key="taskrunner_t1_chat_abc"))
+    app = codec.slot_args(meta, codec.Resume(app="a", history_key="taskrunner_t1_chat_abc"))
+    assert user["linked_session_key"] == "taskrunner:t1:chat:abc"
+    assert "linked_session_key" not in app
 
 
 @pytest.mark.parametrize("purpose", sorted(codec.PURPOSES))
@@ -516,6 +557,15 @@ def test_a_member_pin_keeps_the_bindings_agent_and_mode(purpose, tmp_path, monke
     slot = state.get_or_create_slot("member-crew-a", **codec.slot_args(meta, chosen))
     codec.apply(state, slot, meta, chosen)
     assert (slot.agent, slot.mode) == ("crew-a", "member")
+
+
+@pytest.mark.parametrize("purpose", sorted(codec.PURPOSES))
+def test_a_stored_colour_with_a_trailing_newline_reads_back_without_it(
+    purpose, tmp_path, monkeypatch
+):
+    state = _state(tmp_path, monkeypatch)
+    slot, _, _ = _read_back(state, {"color_hex": "#AABBCC\n"}, purpose)
+    assert slot.color_hex == "#aabbcc"
 
 
 def test_each_purpose_takes_the_title_from_its_own_source(tmp_path, monkeypatch):
@@ -630,6 +680,17 @@ def test_a_retired_or_malformed_mode_reads_as_plain_chat(raw, restored, tmp_path
     assert resume.mode == ("" if raw == "member" else restored)
 
 
+@pytest.mark.parametrize("keeps", [True, False])
+def test_a_resume_drops_a_mode_its_caller_ruled_out(keeps, tmp_path, monkeypatch):
+    """The caller decides off the loop (``apps.hidden_sessions.resume_keeps_mode``);
+    the read itself does no I/O. A restart restore keeps the saved mode."""
+    state = _state(tmp_path, monkeypatch)
+    resume, _, _ = _read_back(state, {"mode": "acme-app"}, codec.RESUME, keeps_mode=keeps)
+    assert resume.mode == ("acme-app" if keeps else "")
+    restore, _, _ = _read_back(state, {"mode": "acme-app"}, codec.RESTORE, name="kept")
+    assert restore.mode == "acme-app"
+
+
 def test_the_restricted_mark_follows_the_line_and_resume_clears_a_stale_one(tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     _read_back(state, {"memory_mode": "ephemeral"}, codec.RESTORE, name="r")
@@ -714,6 +775,51 @@ def test_a_line_with_no_tab_id_gets_one_minted_for_the_reader_to_persist(tmp_pat
     assert applied.minted_tab_id and slot._tab_id == applied.minted_tab_id
     kept, applied, _ = _read_back(state, {"tab_id": "tab-x"}, codec.RESTORE, name="k")
     assert kept._tab_id == "tab-x" and applied.minted_tab_id is None
+    # A RESUME does NOT read ``tab_id`` from the line: it keeps the constructor's
+    # fresh per-object id (the per-writer ownership mark must stay unique while the
+    # original slot may still be live), so the line's id is ignored and the codec
+    # mints nothing.
+    resumed, applied, _ = _read_back(state, {"tab_id": "tab-y"}, codec.RESUME, name="r")
+    assert resumed._tab_id and resumed._tab_id != "tab-y"
+    assert applied.minted_tab_id is None
+
+
+#: Slot-owned fields and a purpose that reads each one: a full save clears a
+#: slot-owned field by absence, so the named purpose must read it or the save
+#: wipes the persisted value. ``color_theme`` is checked under the open-tab
+#: restore; the rest under a History resume.
+_SLOT_OWNED_UNDER_PURPOSE = {
+    "color_theme": codec.RESTORE,
+    "memory_store": codec.RESUME,
+    "artifact": codec.RESUME,
+    "queued_prompts": codec.RESUME,
+    "deferred_notes": codec.RESUME,
+}
+
+
+@pytest.mark.parametrize(("key", "purpose"), sorted(_SLOT_OWNED_UNDER_PURPOSE.items()))
+def test_a_restore_then_save_keeps_every_persisted_field(key, purpose, tmp_path, monkeypatch):
+    """A slot hydrated for its purpose and then re-saved keeps the field.
+
+    A purpose that skips a slot-owned field leaves it at the fresh slot's default,
+    and the next full save writes that default back over the persisted value. This
+    pins the invariant end to end: encode a populated slot, hydrate a fresh slot
+    the way the purpose does, re-encode THAT slot, and the field is still the
+    populated value on the second line, not cleared. Each field is checked under a
+    purpose that reads it.
+    """
+    state = _state(tmp_path, monkeypatch)
+    source = _populated(state)
+    first = json.loads(json.dumps(codec.encode(source, folds=_slot_folds(source))))
+    assert key in first, key  # the value really was persisted
+
+    fresh, applied, _ = _read_back(
+        state, first, purpose, name=f"rt-{key}", listed=first.get("title")
+    )
+    applied.settle([])
+    # The next full save of the hydrated slot: re-encode it the way a save does.
+    second = codec.encode(fresh, folds=_slot_folds(fresh))
+    assert key in second and second[key] == first[key], (key, purpose)
 
 
 def test_settle_drops_the_held_notes_the_window_already_delivered(tmp_path, monkeypatch):
@@ -744,6 +850,7 @@ def _saved_merge_card(index: int) -> dict:
             "session": f"dashboard:fork-{index}",
             "slot": f"fork-{index}",
             "title": f"Fork {index}",
+            "createdAt": "2026-01-01T00:00:00+00:00",
             "after": "",
             "through": f"message-{index}",
             "digest": f"{index:064x}",

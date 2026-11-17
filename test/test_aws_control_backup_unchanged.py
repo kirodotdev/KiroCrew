@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import json
+import os
 import tarfile
-import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from unittest import mock
@@ -27,8 +29,14 @@ from kiro_crew.apps.builtins.aws_control.backend import backup
 ACCOUNT = "111122223333"
 
 
-def _pack(path: Path, entries: dict[str, bytes], *, dirs: tuple[str, ...] = ()) -> Path:
-    """Write a ``tar.gz`` holding exactly *entries* (and any empty *dirs*)."""
+def _pack(
+    path: Path, entries: dict[str, bytes], *, dirs: tuple[str, ...] = (), mtime: float = 0.0
+) -> Path:
+    """Write a ``tar.gz`` holding exactly *entries* (and any empty *dirs*).
+
+    A non-zero *mtime* stamps every member with it, so two packs of one tree can
+    carry different member mtimes without waiting out a real second.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     staging = path.parent / f"{path.name}.stage"
     staging.mkdir()
@@ -38,6 +46,9 @@ def _pack(path: Path, entries: dict[str, bytes], *, dirs: tuple[str, ...] = ()) 
         member = staging / name
         member.parent.mkdir(parents=True, exist_ok=True)
         member.write_bytes(body)
+    if mtime:
+        for member in [*staging.rglob("*"), staging]:
+            os.utime(member, (mtime, mtime))
     with tarfile.open(path, "w:gz") as tar:
         for child in sorted(staging.iterdir()):
             tar.add(str(child), arcname=child.name)
@@ -71,9 +82,9 @@ class TestTreeFingerprint:
         # could never fire. Both halves are asserted here -- the differing bytes are
         # what make the matching fingerprint mean something.
         body = {"a.txt": b"hello", "nested/b.txt": b"world"}
-        first = _pack(tmp_path / "one.tar.gz", body)
-        time.sleep(1.1)  # tar mtimes are second-granular; force them apart
-        second = _pack(tmp_path / "two.tar.gz", body)
+        # tar mtimes are second-granular, so the two packs carry stamps far apart.
+        first = _pack(tmp_path / "one.tar.gz", body, mtime=1_700_000_000)
+        second = _pack(tmp_path / "two.tar.gz", body, mtime=1_700_000_100)
 
         assert first.read_bytes() != second.read_bytes()
         assert backup._tree_fingerprint(first, volatile_root=False) == backup._tree_fingerprint(
@@ -312,6 +323,27 @@ def _build_real_bundle(out: Path) -> Path:
     return sorted(out.glob("kirocrew-snapshot-*.tar.gz"))[-1]
 
 
+@pytest.fixture
+def one_second_per_build(monkeypatch):
+    """Each ``datetime.now`` the snapshot engine reads lands one second later.
+
+    The bundle name and the manifest's ``created_at`` are second-granular, and the
+    real case is two builds in different seconds. Stepping the engine's own clock
+    gives that gap without waiting it out.
+    """
+    from kiro_crew import snapshot as snapshot_mod
+
+    ticks = itertools.count()
+
+    class _OneSecondPerCall(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=next(ticks))
+
+    monkeypatch.setattr(snapshot_mod, "datetime", _OneSecondPerCall)
+
+
+@pytest.mark.usefixtures("one_second_per_build")
 class TestRealBundleAssumption:
     def test_two_real_bundles_of_one_unchanged_tree_share_a_fingerprint(
         self, tmp_path, monkeypatch
@@ -332,8 +364,8 @@ class TestRealBundleAssumption:
 
         first = build(tmp_path / "one")
         # The bundle name and its root directory are second-granular, so the two
-        # builds have to land in different seconds for this to be the real case.
-        time.sleep(1.1)
+        # builds land in different seconds (one_second_per_build) for this to be
+        # the real case.
         second = build(tmp_path / "two")
 
         assert first.read_bytes() != second.read_bytes()
@@ -360,7 +392,6 @@ class TestRealBundleAssumption:
 
         first = build(tmp_path / "one")
         (home / "workspace" / "note.md").write_text("changed\n", encoding="utf-8")
-        time.sleep(1.1)
         second = build(tmp_path / "two")
 
         assert backup._tree_fingerprint(first, volatile_root=True) != backup._tree_fingerprint(
@@ -383,7 +414,6 @@ class TestRealBundleAssumption:
         monkeypatch.setenv("KIROCREW_HOME", str(home))
 
         first = _build_real_bundle(tmp_path / "one")
-        time.sleep(1.1)
         second = _build_real_bundle(tmp_path / "two")
 
         # The precondition, asserted rather than assumed: a simulation that failed to
@@ -400,7 +430,6 @@ class TestRealBundleAssumption:
         )
 
         (home / "workspace" / "note.md").write_text("changed\n", encoding="utf-8")
-        time.sleep(1.1)
         third = _build_real_bundle(tmp_path / "three")
         assert backup._tree_fingerprint(first, volatile_root=True) != backup._tree_fingerprint(
             third, volatile_root=True

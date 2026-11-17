@@ -46,7 +46,8 @@ class TestFixShellProfiles:
     def test_skips_missing_profiles(self, tmp_path):
         cli = _load_cli()
         with patch.object(Path, "home", return_value=tmp_path):
-            cli._fix_shell_profiles()  # no crash
+            cli._fix_shell_profiles()
+        assert list(tmp_path.iterdir()) == [], "a missing profile must not be created"
 
     def test_no_write_when_nothing_to_clean(self, tmp_path):
         cli = _load_cli()

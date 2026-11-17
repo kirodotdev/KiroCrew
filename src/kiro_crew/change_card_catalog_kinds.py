@@ -26,7 +26,13 @@ from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
-from kiro_crew.config.sections import FEATURE_PREVIEW_FLAGS, MEMBER_APPROVAL_MODES
+from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
+from kiro_crew.config.sections import (
+    FEATURE_PREVIEW_FLAGS,
+    MAX_PER_CREATOR_MAX,
+    MAX_PER_CREATOR_MIN,
+    MEMBER_APPROVAL_MODES,
+)
 from kiro_crew.terminal_safe import _is_invisible
 
 KIND_SETTING_CHANGE = "setting.change"
@@ -160,13 +166,15 @@ _TEMPLATE_LIST_FIELDS = ("tools", "allowedTools", "skills")
 #: Settings page: a template name (``validation.TEMPLATE_NAME_RE``) and an app
 #: grant name (``apps.execution.APP_NAME_RE``). Crewmate names follow
 #: ``members.validate_member_name`` (free text, any script); stored-credential
-#: names follow ``POST /api/secrets`` (any non-empty text).
+#: names follow ``POST /api/secrets`` (any non-empty text). A config path segment
+#: after the first also takes a capital and ``-``, so one may name a Bot
+#: (``validation._AGENT_NAME_RE``) or an app (``apps.<name>.model``).
 _TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])$")
 _APP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _MCP_NAME_RE = re.compile(r"^[@a-zA-Z0-9][@a-zA-Z0-9/_.:-]*$")
-_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[A-Za-z0-9_-]+)+$")
 _SETTING_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _CRON_EXPR_RE = re.compile(r"^[0-9*/,\- A-Za-z?#LW]{1,100}$")
 
@@ -188,6 +196,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, an agent may add documents to the knowledge library
     # (``knowledge_add_document``); off, that tool refuses.
     "knowledge.auto_add_documents": (False, True),
+    # On, a personal KAS chat may read the memories other Kiro clients saved.
+    "agent.orchestrator_memory": (False, True),
     # Fair admission on holds each person to their limit; off lets one person
     # take the whole host.
     "dashboard.shared_crew.admission_enabled": (True, False),
@@ -196,6 +206,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, the dashboard also listens on a loopback port for AWS SSM port forwards.
     "dashboard.shared_crew.ssm": (False, True),
     "skills.approval_required": (True, False),
+    # On, an agent may start a Task Runner run (``task_run``); off, every start refuses.
+    "taskrunner.enabled": (False, True),
     "telemetry.beacon_enabled": (False, True),
     # Kiro's own Chromium holds none of the person's logins; ``auto`` and
     # ``user_chrome`` hand the agent the person's Chrome, signed in.
@@ -207,6 +219,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, a conductor may run sessions on a connected remote crew (``crew=``) and
     # this crew answers its headroom and takes bound work items.
     "work_ledger.remote_dispatch": (False, True),
+    # How many live sessions one creator may hold: a higher number lets an agent
+    # that opens sessions hold more of them without asking.
+    "session.max_per_creator": tuple(range(MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX + 1)),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen
@@ -218,6 +233,12 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
 _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
     {
         "agent.chat_turn_timeout_secs",
+        # Whether one harness's chats may pool into one agent process while the
+        # sharing preview is on: process placement only, never what a chat can reach.
+        *(
+            f"agent.chat_runtime_sharing_harnesses.{_name}"
+            for _name in CHAT_RUNTIME_SHARING_HARNESSES
+        ),
         "agent.completion_keep",
         "agent.completion_keep_chars",
         "agent.fallback_model",
@@ -227,8 +248,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.refusal_fallback_model",
         "agent.role_efforts.background",
         "agent.role_efforts.subagent",
+        "agent.role_efforts.subagent_light",
         "agent.role_models.background",
         "agent.role_models.subagent",
+        "agent.role_models.subagent_light",
         "agent.soft_stop_budget_secs",
         "agent.tool_search",
         "auto_update",
@@ -245,6 +268,12 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # A list, so no card reaches it (see ``skills.extra_paths``). Loopback
         # ``host:port`` entries only, for the Preview tab, which no agent drives.
         "dashboard.browser_local_origins",
+        # Which surface the quick-search shortcut opens; both show only what the
+        # dashboard already shows this person.
+        "dashboard.command_bar_enabled",
+        # Only whether Channels has a sidebar row; its page and `/api/channels`
+        # are served either way.
+        "dashboard.channels_enabled",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
         # A feature preview only decides whether the dashboard OFFERS an
@@ -271,6 +300,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.terminal.external_app",
         "dashboard.terminal.reuse_current",
         "dashboard.title_refresh_every_turns",
+        "dashboard.unfiled_sessions_above_folders",
         "dashboard.update_nudge",
         "dashboard.user_role",
         "dashboard.user_role_other",
@@ -315,6 +345,11 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # Generated skills still wait for approval unless
         # ``skills.approval_required`` (ordered above) is turned off.
         "skills.auto_create_from_sessions",
+        # The weekly repeated-failures bell note: a reminder to the owner, which
+        # writes no memory and grants nothing.
+        "memory.repeated_failures_notice",
+        # How long the idle embedding model stays loaded: memory use only, grants nothing.
+        "memory.embedding_idle_evict_secs",
         # Local recording only: the write route refuses the enable on a host
         # where it would start sending data out.
         "telemetry.enabled",

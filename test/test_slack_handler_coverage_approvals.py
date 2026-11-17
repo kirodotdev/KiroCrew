@@ -242,30 +242,47 @@ class TestLinkedApprovals:
     @pytest.mark.asyncio
     async def test_click_resolves_dashboard_future(self, slack, owner, monkeypatch):
         state = MagicMock()
-        state.resolve_approval.return_value = True
+        state._slots = {"slot-1": MagicMock()}
+        state.resolve_slot_approval.return_value = True
         monkeypatch.setattr(h, "_dashboard_state", state)
-        ts = _reply(await h.post_linked_approval(slack, "C1", "t1", 7, "slot-1", "Run tests"))
+        ts = _reply(
+            await h.post_linked_approval(
+                slack, "C1", "t1", 7, "slot-1", "Run tests", slot_key="slot-1"
+            )
+        )
         out = await h.handle_interaction("C1", ts, h._ACTION_APPROVE, "U1")
         assert out == h._ACTION_APPROVE
-        state.resolve_approval.assert_called_once_with("7", True)
+        state.resolve_slot_approval.assert_called_once_with(
+            state._slots["slot-1"], "7", True, expected_future=None
+        )
         assert f"C1:{ts}" not in h._linked_approvals
 
     @pytest.mark.asyncio
     async def test_reject_click_passes_false(self, slack, owner, monkeypatch):
         state = MagicMock()
-        state.resolve_approval.return_value = False
+        state._slots = {"slot-1": MagicMock()}
+        state.resolve_slot_approval.return_value = False
         monkeypatch.setattr(h, "_dashboard_state", state)
-        ts = _reply(await h.post_linked_approval(slack, "C1", "t1", "r9", "slot-1", "Delete prod"))
+        ts = _reply(
+            await h.post_linked_approval(
+                slack, "C1", "t1", "r9", "slot-1", "Delete prod", slot_key="slot-1"
+            )
+        )
         out = await h.handle_interaction("C1", ts, h._ACTION_REJECT, "U1")
         assert out == h._ACTION_REJECT
-        state.resolve_approval.assert_called_once_with("r9", False)
+        state.resolve_slot_approval.assert_called_once_with(
+            state._slots["slot-1"], "r9", False, expected_future=None
+        )
 
     @pytest.mark.asyncio
     async def test_resolve_failure_is_swallowed(self, slack, owner, monkeypatch):
         state = MagicMock()
-        state.resolve_approval.side_effect = RuntimeError("gone")
+        state._slots = {"slot-1": MagicMock()}
+        state.resolve_slot_approval.side_effect = RuntimeError("gone")
         monkeypatch.setattr(h, "_dashboard_state", state)
-        ts = _reply(await h.post_linked_approval(slack, "C1", "t1", "r1", "slot-1", "T"))
+        ts = _reply(
+            await h.post_linked_approval(slack, "C1", "t1", "r1", "slot-1", "T", slot_key="slot-1")
+        )
         assert await h.handle_interaction("C1", ts, h._ACTION_APPROVE, "U1") == h._ACTION_APPROVE
 
 

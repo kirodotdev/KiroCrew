@@ -30,6 +30,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+#: The ``data`` of the error reply the runtime hands a session in place of a chat
+#: prompt reply it dropped as oversize. ``transport_errors`` shows that error's
+#: ``message`` as one plain sentence (the byte counts stay in the reader's log),
+#: still through its credential redaction, since a backend can send it too.
+OVERSIZE_REPLY_DATA = "kirocrew:oversize-reply-dropped"
+
 
 def structured_data_prose(error: object) -> str:
     """The provider sentence of a structured-``data`` frame, or "" for any other shape."""
@@ -59,3 +65,24 @@ def provider_data_text(error: object) -> str:
     data = str(error.get("data", "") or "") if isinstance(error, dict) else ""
     prose = structured_data_prose(error)
     return f"{prose} {data}" if prose else data
+
+
+def _error_kind_from_frame(error: object) -> str:
+    """Return the structured ``errorKind`` a raw ACP frame's ``data`` carries.
+
+    claude-agent-acp names some provider answers with a machine-readable kind
+    alongside the prose (``{"code": -32603, "message": "Internal error",
+    "data": {"errorKind": "cloud_credential_error"}}`` -- the same field the
+    ``{'errorKind': 'unknown'}`` wrapper note at ``transport_errors._RE_5XX_HINT``
+    describes). Only a ``data`` that IS a mapping is read: the formatter pastes a
+    non-mapping ``data`` verbatim into the user-visible message, so matching
+    the kind out of that string would be the prose path structured readers
+    exist to avoid. Returns "" when the frame names no kind.
+    """
+    if not isinstance(error, dict):
+        return ""
+    data_field = error.get("data")
+    if isinstance(data_field, dict):
+        kind = data_field.get("errorKind")
+        return kind if isinstance(kind, str) else ""
+    return ""

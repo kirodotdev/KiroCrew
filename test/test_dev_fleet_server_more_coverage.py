@@ -1079,7 +1079,7 @@ async def test_worktree_remove_handler_rejects_unparseable_body(monkeypatch):
     resp = await http_api.api_dev_fleet_worktree_remove(_body_request(b"[1, 2]"))
 
     assert resp.status == 400
-    assert json.loads(resp.text) == {"error": "body must be an object"}
+    assert json.loads(resp.text) == {"error": "body must be an object", "code": "body_not_object"}
 
 
 @pytest.mark.asyncio
@@ -1088,7 +1088,7 @@ async def test_pod_name_action_rejects_unparseable_body(monkeypatch):
     resp = await http_api._pod_name_action(_body_request(b"nope"), action)
 
     assert resp.status == 400
-    assert json.loads(resp.text) == {"error": "invalid JSON body"}
+    assert json.loads(resp.text) == {"error": "invalid JSON body", "code": "invalid_json"}
     action.assert_not_awaited()
 
 
@@ -1450,6 +1450,39 @@ async def test_fetch_pr_head_oid_reused_head_with_open_pr_refuses(monkeypatch):
     )
     _run_cmd_queue(monkeypatch, [(0, payload, "")])
     assert await fleet_state._fetch_pr_head_oid("reused/branch", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_closed_gate_returns_closed_head(monkeypatch):
+    """state="CLOSED" resolves the CLOSED PR's head, and the
+    default stays MERGED-only for the removal paths."""
+    payload = json.dumps([{"state": "CLOSED", "headRefOid": "c" * 40}])
+    _run_cmd_queue(monkeypatch, [(0, payload, ""), (0, payload, "")])
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r", state="CLOSED") == "c" * 40
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_closed_gate_keeps_refusals(monkeypatch):
+    """The CLOSED gate keeps every refusal the MERGED one has: an OPEN PR on a
+    reused head, a saturated batch, a MERGED-only head, and an OPEN *state*."""
+    closed = {"state": "CLOSED", "headRefOid": "c" * 40}
+    open_pr = {"state": "OPEN", "headRefOid": "n" * 40}
+    saturated = [closed] * (fleet_state._PR_HEAD_LOOKUP_LIMIT + 1)
+    merged_only = [{"state": "MERGED", "headRefOid": "m" * 40}]
+    seen = _run_cmd_queue(
+        monkeypatch,
+        [
+            (0, json.dumps([open_pr, closed]), ""),
+            (0, json.dumps(saturated), ""),
+            (0, json.dumps(merged_only), ""),
+        ],
+    )
+    for _ in range(3):
+        assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r", state="CLOSED") is None
+    # A non-terminal state is refused before gh is ever asked.
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r", state="OPEN") is None
+    assert len(seen) == 3
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,8 @@
 """A child's stderr tail is published only when neither spelling carries a secret.
 
 The ring buffer stores one entry per stderr line, so a secret a harness
-wrapped across two lines comes back with the join separator inside it, and the
-bare-secret patterns (one contiguous 40-character run) do not match it.
+wrapped across two lines comes back with the join separator inside it, and a
+token format (one contiguous run with its checksum) does not match either half.
 """
 
 from __future__ import annotations
@@ -14,10 +14,12 @@ import pytest
 
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.stderr_tail import STDERR_TAIL_MAX_CHARS, STDERR_WITHHELD, safe_stderr_tail
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-# The issue's fixture: a 40-character AWS secret access key, no prefix and no
-# label the redactor anchors on, wrapped across two lines.
-_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# A synthetic GitHub token with a valid checksum and no label the redactor
+# anchors on, wrapped across two lines: neither half is a token, only the
+# rejoined run is.
+_KEY = github_classic(seed=51)
 _WRAPPED = ["auth failed key=" + _KEY[:18], _KEY[18:] + " rejected"]
 
 

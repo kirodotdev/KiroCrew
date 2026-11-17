@@ -34,6 +34,15 @@ export interface LaneSlotFields {
   running?: boolean
   subagents_running?: boolean
   queue_depth?: number
+  /** Of those, the restored cards no drain starts: they wait for the person. */
+  queue_held_depth?: number
+}
+
+/** Queued entries the gateway starts on its own. A restored card waits for the
+ *  person's Send now, edit or delete, so it is not work coming. Absent on an
+ *  older gateway, which counts every card, as before. */
+export function readyQueueDepth(slot: Pick<LaneSlotFields, 'queue_depth' | 'queue_held_depth'>): number {
+  return (slot.queue_depth ?? 0) - (slot.queue_held_depth ?? 0)
 }
 
 /** Signals that live outside the slot payload but change which lane is right.
@@ -77,7 +86,7 @@ export function hasLiveSessionWork(slot: LaneSlotFields, extras: LaneExtras = {}
   return !!(
     slot.running ||
     slot.subagents_running ||
-    (slot.queue_depth ?? 0) > 0 ||
+    readyQueueDepth(slot) > 0 ||
     extras.workflowActive ||
     extras.detailedSubagentsRunning
   )

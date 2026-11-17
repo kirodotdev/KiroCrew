@@ -357,7 +357,7 @@ async def _bundle_from_request(request: web.Request) -> tuple[Any, web.Response 
     try:
         body = await request.json()
     except (LookupError, RecursionError, ValueError):
-        # The same three client-input failures ``_shared.read_json_body``
+        # The same three client-input failures ``_shared_request_body.read_bounded_json``
         # narrows to: ``LookupError`` is an unknown ``charset=`` codec on the
         # request, which ``request.json()`` raises before parsing a byte --
         # left uncaught it is a 500 for a header the caller typed.

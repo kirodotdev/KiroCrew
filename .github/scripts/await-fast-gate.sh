@@ -36,20 +36,37 @@
 #
 # ## Test seams (production defaults are exact)
 #
-# Four values are read through `${VAR:-default}` so the test can drive the loop
-# without real waits, and every default reproduces the inline body byte for byte:
+# Five values are read through `${VAR:-default}` so the test can drive the loop
+# without real waits; on the real runner none of them is set:
 #
 #   APPEAR_BUDGET   180   seconds a missing run is tolerated as the start-up race
-#   TOTAL_BUDGET    720   seconds the whole poll may run before failing closed
+#   STALL_BUDGET    720   seconds the barrier waits without news: failed reads in a
+#                         row, or a fork run awaiting maintainer approval
+#   TOTAL_BUDGET    2100  seconds the whole poll may run while something outside
+#                         it still moves: a listed gate run that has not finished,
+#                         or a spent rate limit whose reset is known
 #   AWAIT_FG_NOW    date +%s   the clock; overridden with a script that prints a
 #                              fake, advancing epoch so the budgets are reached in
 #                              zero wall-clock time
 #   AWAIT_FG_SLEEP  sleep      the wait between polls; overridden with `:` (a
 #                              no-op) so the test spins the loop instantly
 #
-# On the real runner none of the four is set, so the poll is identical to the
-# body it replaced. `gh` and `jq` are found on PATH exactly as before, which is
-# also how the test substitutes a stub `gh`.
+# `gh` and `jq` are found on PATH, which is also how the test substitutes a stub
+# `gh`.
+#
+# ## Why two budgets
+#
+# A push to main can wait a long time for its gate through no fault of the code:
+# fast-gate.yml keeps one running and one pending run per ref, so a gate run sits
+# `pending` behind the one before it, then `queued` for a runner. Such a run
+# usually goes on to pass, or is evicted by the next push (the supersession path
+# below, which ends `cancelled`), and a spent installation rate limit can take
+# most of an hour to reset. Failing at a short ceiling there reports a green
+# commit red. So the long budget covers waits whose end the barrier can see
+# coming, and the short one still ends a wait that has no news. The long budget
+# is held so the job's timeout-minutes stays at 40: changes (15) plus
+# backend-lint (25) already set that length at the head of ci.yml's longest
+# needs chain, which merge-queue-readiness.yml's poll budget is sized to.
 #
 # ## The probe switch
 #
@@ -66,9 +83,13 @@ set -euo pipefail
 # be visible for the first few seconds. APPEAR_BUDGET covers that race;
 # after it, a missing run is a real misconfiguration and fails.
 APPEAR_BUDGET="${APPEAR_BUDGET:-180}"
-TOTAL_BUDGET="${TOTAL_BUDGET:-720}"
+STALL_BUDGET="${STALL_BUDGET:-720}"
+TOTAL_BUDGET="${TOTAL_BUDGET:-2100}"
 # Seconds between listing reads once the run is listed and still pending.
 POLL_INTERVAL=30
+# A failed read is retried after 10s, doubling to this cap, so an API outage is
+# not hammered for the STALL budget it may last.
+READ_RETRY_CAP=60
 
 # The clock and the wait, read through a seam that defaults to the real tools.
 # `now` is a function so the test can point it at a fake-clock command; without
@@ -185,8 +206,9 @@ on_superseded() {
 
 # A run whose status lags its jobs. GitHub rolls finished jobs up into the run
 # asynchronously, and the run-level status has been seen reading `in_progress`
-# for over 30 minutes after every job of it concluded `success`. So at the TOTAL
-# budget, before failing closed, the barrier reads the run's jobs once: when the
+# for over 30 minutes after every job of it concluded `success`. So once at the
+# STALL budget (for a run reading `in_progress`) and again at the TOTAL budget,
+# before failing closed, the barrier reads the run's jobs: when the
 # run is on its first attempt, the attempt has jobs, every one is `completed`
 # with `success` or `skipped`, at
 # least one is `success`, and the newest finished at least ROLLUP_SETTLE seconds
@@ -267,17 +289,38 @@ jobs_all_passed() {
   return 1
 }
 
+# Release the matrix, with the warning that says why, when a run that still
+# reads unfinished has every job completed green (see jobs_all_passed); return
+# otherwise. Reads $url, $status and $elapsed from the poll below.
+release_if_jobs_green() {
+  if jobs_all_passed "$1"; then
+    echo "::warning::Fast Gate run $url still reads '$status' after ${elapsed}s, but all" \
+         "$JOBS_SEEN of its jobs completed green at least ${ROLLUP_SETTLE}s ago: GitHub has" \
+         "not rolled them up into the run yet. Releasing the heavy jobs."
+    exit 0
+  fi
+}
+
 started="$(now)"
 seen=false
+# When the barrier last learned something: a listing read that answered, or the
+# end of a wait for a known rate-limit reset. Failed reads are bounded by the
+# STALL budget counted from here, so one failure after a long, informed wait is
+# retried instead of ending the job at once.
+informed="$started"
+retry_nap=10
+stall_checked=false
 
 while :; do
-  elapsed=$(( $(now) - started ))
+  loop_at="$(now)"
+  elapsed=$(( loop_at - started ))
 
   # A read that ERRORS is not a run that is absent. The listing call's stderr
   # is kept, so a rate limit or 5xx is named in the log, and a failed read
   # never spends the APPEAR budget: it only proves the barrier could not look.
-  # The TOTAL budget still bounds the wait, so an API that stays down fails
-  # closed -- with a message that says the code was never judged.
+  # Failed reads in a row are retried with backoff and bounded by the STALL
+  # budget (and the TOTAL one), so an API that stays down fails closed -- with
+  # a message that says the code was never judged.
   read_err=""
   if ! runs="$(gh api --method GET \
     "repos/$REPO/actions/workflows/fast-gate.yml/runs" \
@@ -290,15 +333,48 @@ while :; do
 
   if [ -n "$read_err" ] || [ -z "$runs" ]; then
     echo "::warning::Fast Gate listing read failed after ${elapsed}s: ${read_err:-empty response}"
-    if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
-      echo "::error::Fast Gate listing unreadable after ${elapsed}s (${read_err:-empty response})." \
-           "The gates were never judged, so the matrix is not cleared to run;" \
-           "this is not a verdict on the code -- re-run this job."
+    blind=$(( loop_at - informed ))
+    if [ "$blind" -ge "$STALL_BUDGET" ] || [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
+      echo "::error::CI infrastructure, not a test failure: Fast Gate listing unreadable" \
+           "after ${elapsed}s (${read_err:-empty response}). The gates were never judged," \
+           "so the matrix is not cleared to run; this is not a verdict on the code --" \
+           "re-run this job."
       exit 1
     fi
-    nap 10
+    # A spent PRIMARY limit cannot clear in seconds, so retrying at that pace
+    # only repeats the failure. Read when the REST bucket resets (`/rate_limit`
+    # is not counted against the quota): wait for it when it falls inside what
+    # is left of the TOTAL budget, and fail at once naming it when it does not.
+    # A secondary limit, or a reset that cannot be read, keeps the backoff retry.
+    if printf '%s' "$read_err" | grep -qi 'rate limit'; then
+      reset="$(gh api --method GET rate_limit \
+        --jq '.resources.core | select(.remaining == 0) | .reset' 2>/dev/null || true)"
+      if [[ "$reset" =~ ^[0-9]+$ ]]; then
+        delay=$(( reset - $(now) + 5 ))
+        [ "$delay" -ge 10 ] || delay=10
+        left=$(( TOTAL_BUDGET - elapsed ))
+        if [ "$delay" -gt "$left" ]; then
+          echo "::error::CI infrastructure, not a test failure: the installation API rate" \
+               "limit is spent and resets in ${delay}s, past the ${left}s left of this job's" \
+               "${TOTAL_BUDGET}s budget. The gates were never judged, so the matrix is not" \
+               "cleared to run; this is not a verdict on the code -- re-run this job after" \
+               "the reset."
+          exit 1
+        fi
+        echo "::warning::The installation API rate limit is spent; waiting ${delay}s for the reset."
+        nap "$delay"
+        informed="$(now)"
+        retry_nap=10
+        continue
+      fi
+    fi
+    nap "$retry_nap"
+    retry_nap=$(( retry_nap * 2 ))
+    [ "$retry_nap" -le "$READ_RETRY_CAP" ] || retry_nap="$READ_RETRY_CAP"
     continue
   fi
+  informed="$loop_at"
+  retry_nap=10
 
   # `branch=` is passed to the API as a narrowing hint, but the match is
   # re-asserted here: a filter the server silently ignores would hand
@@ -371,7 +447,7 @@ while :; do
       action_required)
         # A fork run still awaiting maintainer approval is reported as
         # completed/action_required. That is pending, not decided, so keep
-        # polling under TOTAL_BUDGET -- otherwise which of the two pending
+        # polling under STALL_BUDGET -- otherwise which of the two pending
         # runs a maintainer approves first decides whether the matrix runs.
         status="awaiting maintainer approval"
         ;;
@@ -383,28 +459,42 @@ while :; do
     esac
   fi
 
-  if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
-    if [ "$status" != "completed" ] && [ "$status" != "awaiting maintainer approval" ] \
-        && jobs_all_passed "$latest"; then
-      echo "::warning::Fast Gate run $url still reads '$status' after ${elapsed}s, but all" \
-           "$JOBS_SEEN of its jobs completed green at least ${ROLLUP_SETTLE}s ago: GitHub has" \
-           "not rolled them up into the run yet. Releasing the heavy jobs."
-      exit 0
+  # A run awaiting approval moves only when a person acts, so it gets the STALL
+  # budget; a run that is pending, queued or in progress moves on its own (or is
+  # evicted, which the supersession path above turns into `cancelled`), so it
+  # gets the TOTAL budget.
+  deadline="$TOTAL_BUDGET"
+  if [ "$status" = "awaiting maintainer approval" ]; then
+    deadline="$STALL_BUDGET"
+    [ "$deadline" -le "$TOTAL_BUDGET" ] || deadline="$TOTAL_BUDGET"
+  fi
+
+  if [ "$elapsed" -ge "$deadline" ]; then
+    if [ "$status" != "completed" ] && [ "$status" != "awaiting maintainer approval" ]; then
+      release_if_jobs_green "$latest"
     fi
-    echo "::error::Fast Gate still '$status' after ${elapsed}s ($url)." \
-         "Failing closed rather than starting the matrix unverified." \
+    echo "::error::CI infrastructure, not a test failure: Fast Gate still '$status' after" \
+         "${elapsed}s ($url). Failing closed rather than starting the matrix unverified." \
          "This is not a verdict on the code: re-run this job once that run completes."
     exit 1
   fi
 
+  # A run whose status lags its jobs is read once at the STALL budget too, so a
+  # gate that finished green is not held for the whole TOTAL budget.
+  if [ "$stall_checked" = false ] && [ "$status" = "in_progress" ] \
+      && [ "$elapsed" -ge "$STALL_BUDGET" ]; then
+    stall_checked=true
+    release_if_jobs_green "$latest"
+  fi
+
   # The steady-state wait, while the run is listed but not decided: this is
   # the nap that sets how many listing reads every CI run spends against the
-  # repository's shared REST quota. It is clamped to the TOTAL budget left, so
-  # the budget is still checked at TOTAL_BUDGET rather than up to one interval
-  # past it, which keeps TOTAL_BUDGET plus CANCEL_WAIT inside the job's
-  # timeout-minutes. The other waits stay at 10s: the start-up race and a
-  # failed read are short and rare, and the cancel wait makes no API call.
-  left=$(( TOTAL_BUDGET - elapsed ))
+  # repository's shared REST quota. It is clamped to the time left before the
+  # deadline, so the budget is checked at the deadline rather than up to one
+  # interval past it, which keeps TOTAL_BUDGET plus CANCEL_WAIT inside the job's
+  # timeout-minutes. The start-up race keeps a 10s wait, a failed read backs off
+  # from 10s, and the cancel wait makes no API call.
+  left=$(( deadline - elapsed ))
   if [ "$left" -gt 0 ] && [ "$left" -lt "$POLL_INTERVAL" ]; then
     nap "$left"
   else

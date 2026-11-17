@@ -3,7 +3,8 @@
 A crewmate's worker runs on ``kirocrew-mate-worker``, whose base spec and the
 crewmate's own file both live in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-
 config``). The agents rewrite (:func:`kiro_crew.mcp_gateway.rewriter.rewrite_agents`)
-reads ``~/.kiro/agents/`` only, so a stubbed server the crewmate file declares had
+reads ``~/.kiro/agents/`` plus the conductor spec only
+(:func:`with_conductor_source`), so a stubbed server the crewmate file declares had
 no overlay: the worker session got no stub, and KAS declared the server directly,
 where its non-``${NAME}`` ``env`` is withheld and it starts without credentials.
 
@@ -25,8 +26,9 @@ the same launch approvals and the same sidecar ledger, under three separations:
   apply: the worker's own ``kirocrew-mate-worker``, the profile its session's
   tool calls get, AND the identity itself. Every one must permit the call.
 * A worker session finds its overlay through its own execution record
-  (:func:`worker_overlay_spec`), never through the shared agent name, and only the
-  servers the crewmate ADDS reach it, carrying the governed merged spec's
+  (:func:`worker_overlay_spec`), never through the shared agent name. It gets the
+  stock worker spec's base-server stubs (rewritten with the conductor's,
+  :func:`with_conductor_source`) and the servers its crewmate ADDS, each
   ``disabledTools`` rather than the file's and never an ``autoApprove`` (on KAS
   the tool restriction itself is the merged spec's ``excludedTools``).
 * A crewmate whose file id an ``~/.kiro/agents`` spec also has gets no overlay:
@@ -53,7 +55,11 @@ from pathlib import Path
 from typing import Any, Callable, Collection
 
 from kiro_crew import platform_compat
-from kiro_crew.agent_files import MATE_WORKER_AGENT_FILENAME, is_mate_service_agent
+from kiro_crew.agent_files import (
+    MATE_CONDUCTOR_AGENT_FILENAME,
+    MATE_WORKER_AGENT_FILENAME,
+    is_mate_service_agent,
+)
 from kiro_crew.mcp_gateway.rewriter_launch import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 from kiro_crew.mcp_gateway.rewriter_overlay import _source_sig
 
@@ -153,6 +159,41 @@ def _is_plain_file(path: Path) -> bool:
         return stat.S_ISREG(os.lstat(path).st_mode)
     except OSError:
         return False
+
+
+def with_conductor_source(sources: list[Path], mate_dir: Path | None) -> list[Path]:
+    """*sources*, the ``~/.kiro/agents`` specs, plus the crewmate service specs.
+
+    Every crewmate's chat runs the one stock conductor spec in *mate_dir* and its
+    session looks stubs up by that agent name, so the agents half rewrites the spec
+    like an ``~/.kiro/agents`` one, under its own name. The stock worker spec is
+    rewritten the same way, so its base servers get stubs; a worker session never
+    reads that overlay by name (``session_servers._load_overlay_for_agent``), only
+    through its own execution record (:func:`worker_overlay_spec`). Each takes the
+    place of a source with the same stem, which no crewmate session runs. *sources*
+    comes back unchanged when *mate_dir* is ``None``, a symlink or not a folder (as
+    :func:`list_mate_sources` refuses it); a service file that is not a plain file
+    is left out on its own.
+    Ordered by file name, the order the cached path serves overlays in.
+    """
+    if mate_dir is None:
+        return sources
+    try:
+        mode = os.lstat(mate_dir).st_mode
+    except OSError:
+        return sources
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        return sources
+    service = [
+        mate_dir / name
+        for name in (MATE_CONDUCTOR_AGENT_FILENAME, MATE_WORKER_AGENT_FILENAME)
+        if _is_plain_file(mate_dir / name)
+    ]
+    if not service:
+        return sources
+    stems = {p.stem.casefold() for p in service}
+    kept = [p for p in sources if p.stem.casefold() not in stems]
+    return sorted([*kept, *service], key=lambda p: p.name)
 
 
 def list_mate_sources(mate_dir: Path) -> MateSources:
@@ -459,30 +500,17 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
     from kiro_crew.execution_context import read_session_execution
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 
     try:
         execution = read_session_execution(session_key)
         if not mate_worker.is_own_worker_execution(execution):
             return None
         name = mate_worker.mate_file_for_member(str(execution.member_id))  # type: ignore[union-attr]
-        if not _is_file_id(name):
-            # No file, or a binding that names a path rather than a file id.
-            return None
-        mates = mate_overlay_dir(overlay_dir)
-        if mate_dir_refused(mates):
-            return None
-        overlay = _read_mate_overlay(mates / f"{name}.json")
-        if overlay is None:
-            return None
-        if overlay.get("name") != mate_identity(name):
-            logger.warning("crewmate overlay for %r carries another identity; no stubs", name)
-            return None
         base = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), MATE_WORKER_AGENT)
         merged = mate_worker.worker_session_spec({**base, "prompt": ""}, session_key)
     except Exception:  # noqa: BLE001 - anything unverifiable injects nothing
         logger.warning(
-            "worker session %s: crewmate overlay not verifiable; no stubs",
+            "worker session %s: worker overlay not verifiable; no stubs",
             session_key,
             exc_info=True,
         )
@@ -490,29 +518,58 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
     base_servers = _servers(base.get("mcpServers"))
     governed = _servers(merged.get("mcpServers"))
     stubs: dict[str, Any] = {}
-    for server, entry in _servers(overlay.get("mcpServers")).items():
-        if not isinstance(entry, dict) or not (
-            entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
-        ):
-            continue
-        mounted = governed.get(server)
-        if (
-            server in base_servers
-            or not isinstance(mounted, dict)
-            or mcp_entry_is_muted(mounted)
-            or mcp_entry_is_registry_governed(mounted)
-        ):
-            continue
-        shaped = dict(entry)
-        # ``autoApprove`` is never sent: a host-approved call skips the PreToolUse
-        # gate, and the KAS projection strips it for the same reason
-        # (``kas_agents._project_mcp_servers``). ``disabledTools`` is the governed
-        # spec's value, never the file's.
-        shaped.pop("autoApprove", None)
-        value = mounted.get("disabledTools")
-        if isinstance(value, list):
-            shaped["disabledTools"] = list(value)
-        else:
-            shaped.pop("disabledTools", None)
-        stubs[server] = shaped
-    return {"name": overlay["name"], "mcpServers": stubs}
+    # The base servers' stubs come from the stock worker spec's own overlay, written
+    # under the worker's agent name, so every crewmate's worker shares them whether
+    # or not its crewmate owns a file.
+    base_overlay = _read_mate_overlay(overlay_dir / f"{MATE_WORKER_AGENT}.json")
+    if base_overlay is not None and base_overlay.get("name") == MATE_WORKER_AGENT:
+        for server, entry in _servers(base_overlay.get("mcpServers")).items():
+            if server in base_servers:
+                shaped = _governed_stub(entry, governed.get(server))
+                if shaped is not None:
+                    stubs[server] = shaped
+    if _is_file_id(name):
+        mates = mate_overlay_dir(overlay_dir)
+        overlay = None if mate_dir_refused(mates) else _read_mate_overlay(mates / f"{name}.json")
+        if overlay is not None and overlay.get("name") != mate_identity(name):
+            logger.warning("crewmate overlay for %r carries another identity; no stubs", name)
+            overlay = None
+        for server, entry in _servers((overlay or {}).get("mcpServers")).items():
+            if server in base_servers:
+                continue  # a base server always wins the merge
+            shaped = _governed_stub(entry, governed.get(server))
+            if shaped is not None:
+                stubs[server] = shaped
+    return {"name": MATE_WORKER_AGENT, "mcpServers": stubs}
+
+
+def _governed_stub(entry: Any, mounted: Any) -> dict[str, Any] | None:
+    """*entry*, a wrapped overlay stub, shaped by the governed worker spec's *mounted*.
+
+    ``None`` when *entry* is not a stub, or the merged spec does not mount the
+    server, mutes it, or registry-governs it.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+
+    if not isinstance(entry, dict) or not (
+        entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
+    ):
+        return None
+    if (
+        not isinstance(mounted, dict)
+        or mcp_entry_is_muted(mounted)
+        or mcp_entry_is_registry_governed(mounted)
+    ):
+        return None
+    shaped = dict(entry)
+    # ``autoApprove`` is never sent: a host-approved call skips the PreToolUse
+    # gate, and the KAS projection strips it for the same reason
+    # (``kas_agents._project_mcp_servers``). ``disabledTools`` is the governed
+    # spec's value, never the file's.
+    shaped.pop("autoApprove", None)
+    value = mounted.get("disabledTools")
+    if isinstance(value, list):
+        shaped["disabledTools"] = list(value)
+    else:
+        shaped.pop("disabledTools", None)
+    return shaped

@@ -15,7 +15,7 @@
  * those modules own are re-exported below, so every import path is unchanged.
  */
 import { installSessionExpiryHandler } from './sessionExpirySignal'
-import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
+import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable, isPermissionRefusal } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
   STALE_OWNER_SESSION_CODE,
@@ -23,6 +23,7 @@ import {
   noteStaleOwnerResponse,
 } from './staleOwnerSignal'
 import { edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
+import { flattenCrewApiError } from './crewApiError'
 import { AUTH_BANNER_BUTTON_CSS, AUTH_BANNER_CSS } from './authBannerStyles'
 import { isCameraPermissionDenied, qrScanSupported, scanQrCode } from './qrScan'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
@@ -32,6 +33,7 @@ import { isDeadlineError, queryClient, invalidateAcrossQueryClients } from './qu
 import { recordError, recordTransportRejection, attachReport, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import type { ClientTransport } from './client/transport'
+import { gatedRead } from './readGate'
 import { createSystemEndpoints } from './client/system'
 import { createTelemetryEndpoints } from './client/telemetry'
 import { createChatEndpoints } from './client/chat'
@@ -88,10 +90,11 @@ import { createSharedCrewEndpoints } from './client/sharedCrew'
 import type { DecisionsConsentData } from './client/decisions'
 
 export type { TunnelStatus } from './client/system'
-export type { WakaTimeStatsEntry, WakaTimeStats } from './client/telemetry'
+export type { WakaTimeStatsEntry, WakaTimeStats, WakaTimeOauthStatus } from './client/telemetry'
 export type {
   UsageSeriesDimension,
   UsageSeriesLayer,
+  UsageSeriesMetric,
   UsageSeriesPayload,
 } from './client/telemetry'
 export type {
@@ -100,6 +103,8 @@ export type {
   KiroPrerequisiteStatus,
   KasBundleStatus,
   KasLoginStatus,
+  KasLoginSourceAccount,
+  KasLoginSources,
   KasLoginDeviceSession,
   KasLoginPollResult,
   KasLoginLoopbackSession,
@@ -121,6 +126,10 @@ export type {
   ConfigPendingData,
   ConfigPendingLeaf,
   CredentialRedactionState,
+  McpBodyFieldRow,
+  McpBodyFieldsData,
+  SafetySwitchKey,
+  SafetySwitchesState,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,
@@ -134,9 +143,17 @@ export type {
   TrustedRegistryRow,
   TrustedRegistriesData,
   ManagedSecret,
+  SecretItemBody,
+  SecretItemFields,
+  SecretItemType,
+  SecretListItem,
+  SecretLoginPublicFields,
   SecretsListResponse,
+  SecretUsagePlace,
+  SecretsUsageResponse,
 } from './client/security'
 export type {
+  RemoteControlState,
   TailnetStatusData,
   TailnetMobileStep,
   TailnetMobileData,
@@ -174,7 +191,7 @@ export type {
   LaunchTaskSighting,
   LaunchTaskReport,
 } from './client/cloud'
-export type { MemoryCarveQuery, MemoryCarveResult } from './client/memory'
+export type { MemoryCarveQuery, MemoryCarveResult, RecurringFailure } from './client/memory'
 export { SEARCH_MIN_CHARS } from './client/sessions'
 export type { ArchiveEntry } from './client/sessions'
 export type {
@@ -182,6 +199,7 @@ export type {
   McpShareRecommendation,
   McpMeasureProgress,
   McpGatewayFootprint,
+  McpCwdUse,
   McpManagedServer,
 } from './client/mcp'
 export type {
@@ -209,7 +227,7 @@ export type {
   WebhookTokenCreated,
   WebhookTestResult,
 } from './client/hooks'
-export type { SkillScriptValidation } from './client/skills'
+export type { AgentPluginRecord, AgentPluginsResponse, SkillScriptValidation } from './client/skills'
 export { SKILLS_TIMEOUT_MS } from './client/skills'
 export { FILE_SEARCH_TIMEOUT_MS, BROWSE_FILES_TIMEOUT_MS } from './client/files'
 export type { ProjectAwsProfile } from './client/files'
@@ -407,6 +425,7 @@ export function __resetAuthRecoveryStateForTests(): void {
   _embeddedHandoffPosted = false
   _sessionExpiredShown = false
   _staleOwnerBanner = false
+  callerMayHaveChanged()
   __resetRefreshOnceForTests()
   if (typeof document !== 'undefined') {
     document.getElementById('mc-session-expired')?.remove()
@@ -639,7 +658,11 @@ function showSessionExpiredBanner(lead?: string): void {
       //
       // `data === undefined` narrows it to queries that never carried a
       // successful value: exactly the ones the lapse broke, and the only ones
-      // with nothing to overwrite a draft with.
+      // with nothing to overwrite a draft with. The token may name another
+      // caller, so the refusals kept for the old one go first, here and in
+      // every other tab that shares the cookie.
+      callerMayHaveChanged()
+      callerChanged?.postMessage(null)
       invalidateAcrossQueryClients({
         predicate: (q) => q.state.status === 'error' && q.state.data === undefined,
       })
@@ -776,8 +799,16 @@ function showEdgeChallengeBanner(): void {
   document.body.prepend(el)
 }
 
+/**
+ * The gateway's own "sign in again" answer: 403 on `/api/*`, 401 on the Crew API
+ * (`/v1/crew/*`), both carrying `X-Auth-Required`.
+ */
+function isAuthRequiredResponse(r: Response): boolean {
+  return (r.status === 403 || r.status === 401) && r.headers.get('X-Auth-Required') === 'true'
+}
+
 export function checkSessionExpired(r: Response): Response {
-  if (r.status === 403 && r.headers.get('X-Auth-Required') === 'true' && !_sessionExpiredShown) {
+  if (isAuthRequiredResponse(r) && !_sessionExpiredShown) {
     // When this dashboard is running embedded in the Instances pane stack
     // (an <iframe> inside the hub), don't show the paste-token banner here —
     // the user can't easily fetch the remote token from inside the pane, and
@@ -908,7 +939,7 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
   // it hides the fact that one re-auth clears all of them at once. Substitute
   // the recovery instruction for display; the raw reason still travels in
   // `body` and in the error report's `detail` for diagnostics.
-  const authRequired = r.status === 403 && r.headers.get('X-Auth-Required') === 'true'
+  const authRequired = isAuthRequiredResponse(r)
   // The stale-owner signal is matched on status AND the backend's code — a
   // generic 401 (or any 403) keeps its current handling untouched. Detection
   // lives HERE rather than in checkSessionExpired because the code travels in
@@ -1142,7 +1173,7 @@ const parseJson = async (r: Response, benign?: BenignDenial, nullOn204 = false) 
     // rejection, which the acceptance-receipt wires have to treat as
     // indeterminate and would show as "delivery unconfirmed" instead of an
     // error. The app-sdk's `jsonFetch` keeps the same guard.
-    const errText = await r.text().catch(() => r.statusText)
+    const errText = flattenCrewApiError(await r.text().catch(() => r.statusText))
     throw apiFailure(r, errText, benign)
   }
   return r.json()
@@ -1364,6 +1395,64 @@ function isDeliberateAbort(error: unknown): boolean {
 }
 
 /**
+ * GET reads this document was refused with a permission code
+ * (`isPermissionRefusal`: `owner_only`, `relay_apps_teammate`), by exact URL.
+ *
+ * Such a refusal is about who the caller is, and asking again gives the same
+ * answer, so a later read of the same URL gets a copy of the kept answer and no
+ * request. Kept here, under every reader, because the asks come from everywhere:
+ * a query's interval, a tab-return or newly mounted observer of a query that holds
+ * no data, a websocket invalidation, a direct `fetchQuery`. A sign-in can change
+ * the caller, so a banner exchange or another tab loading clears this, and a
+ * reload starts empty.
+ * Only those two codes: `instances_disabled` flips live when `instances.enabled`
+ * is written, and any other failure keeps reaching the gateway.
+ *
+ * A kept refusal expires after `REFUSAL_KEEP_MS`. Not every `owner_only` is about
+ * identity alone: the shared-crew owner gate answers it to the real owner while
+ * the Tailscale daemon's self-read is still starting (`routes_invites.py`
+ * `_owner_refusal_decision`), so a refusal kept for good would outlive that blip.
+ * One request a minute per refused URL is still far below one per mount, tab
+ * return and invalidation.
+ */
+const REFUSAL_KEEP_MS = 60_000
+const refusedReads = new Map<string, { response: Response; at: number }>()
+
+/** Bumped whenever the caller may have changed. A refusal is kept only if no bump
+ *  happened while its request was out, so an answer meant for the old caller that
+ *  lands after a sign-in is not kept for the new one. */
+let callerGeneration = 0
+
+function callerMayHaveChanged(): void {
+  callerGeneration += 1
+  refusedReads.clear()
+}
+
+/**
+ * Every tab of this origin shares one session cookie, so a sign-in in another tab
+ * (a `?token=` link, the banner there) can change this tab's caller too. Each
+ * document listens from load, announces itself as it loads and after a banner
+ * exchange, and treats every announcement it hears as a possible caller change.
+ */
+const callerChanged: BroadcastChannel | null =
+  typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('kirocrew-caller-changed')
+if (callerChanged) callerChanged.onmessage = callerMayHaveChanged
+callerChanged?.postMessage(null)
+
+/** Hands back *r* once a permission refusal in it is kept, so the next ask sees it. */
+async function keepIfRefused(input: string, r: Response, generation: number): Promise<Response> {
+  // Duck-typed: some suites answer with plain objects carrying no `clone`.
+  if (r.status !== 403 || typeof r.clone !== 'function') return r
+  if (r.headers?.get?.('X-Auth-Required') === 'true') return r
+  const kept = r.clone()
+  const body = flattenCrewApiError(await kept.clone().text().catch(() => ''))
+  if (generation === callerGeneration && isPermissionRefusal({ status: 403, body })) {
+    refusedReads.set(input, { response: kept, at: Date.now() })
+  }
+  return r
+}
+
+/**
  * The transport's rejection chokepoint. Wraps every `fetch` the API layer issues
  * so a request that fails BEFORE producing an HTTP `Response` — a network drop
  * (`TypeError: Failed to fetch` / `Load failed`), or a `withDeadline` timeout —
@@ -1384,13 +1473,21 @@ function isDeliberateAbort(error: unknown): boolean {
  * (the composer upload's XMLHttpRequest), so it is journaled the same way.
  */
 function jfetch(input: string, init?: RequestInit, send: (input: string, init?: RequestInit) => Promise<Response> = fetch): Promise<Response> {
+  const isRead = (init?.method ?? 'GET').toUpperCase() === 'GET'
+  const refused = isRead ? refusedReads.get(input) : undefined
+  if (refused && Date.now() - refused.at < REFUSAL_KEEP_MS) return Promise.resolve(refused.response.clone())
+  if (refused) refusedReads.delete(input)
   // Forward with the SAME argument shape the caller used: a raw read written on
   // `fetch('/api/…')` with no init must stay a one-argument call, because adding
   // a second `undefined` is a wire change the transport-contract tests pin (and
   // keeping the shapes identical means this wrapper is observable only on the
   // rejection path it exists for).
-  const request = init === undefined ? send(input) : send(input, init)
-  return request.catch((error: unknown) => {
+  const generation = callerGeneration
+  const start = () => (init === undefined ? send(input) : send(input, init))
+  // A read takes its turn among the reads that are out, so they cannot hold every
+  // connection the browser has to the gateway; a write goes straight out.
+  const request = isRead ? gatedRead(input, init?.signal, start) : start()
+  return request.then((r) => (isRead ? keepIfRefused(input, r, generation) : r)).catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({
         message: error instanceof Error ? error.message : String(error),
@@ -1476,7 +1573,7 @@ const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSig
 // API module on the SAME session-key-authenticated helpers as core methods
 // (inheriting X-Session-Key + auth-recovery + ApiError), instead of forking this
 // file or writing methods on raw fetch. See api/apiTransport.ts.
-installApiTransport({ get, post, put, del, patch, j, jNullable })
+installApiTransport({ get, getWithSignal: (url, signal) => get(url, undefined, signal), post, put, del, patch, j, jNullable })
 
 // The Kiro credit-usage wire payload and the view model normalized from it stay
 // defined here, side by side: `KiroAccountModal` and `api/kiroUsage.ts` read
@@ -1496,6 +1593,8 @@ export interface KiroUsagePayload {
    * tied to it); absent when the gateway simply holds no reading.
    */
   reason?: string
+  /** With `reason: signin_required`: the API refused a credential it was shown. */
+  credential_rejected?: boolean
   credits_used?: number
   credits_covered?: number
   credits_overage?: number

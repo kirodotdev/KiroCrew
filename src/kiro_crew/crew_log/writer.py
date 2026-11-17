@@ -44,8 +44,8 @@ entry that can never land.
 Every loss is admitted before that unit appends again: the writer owes the unit a
 ``write/dropped`` marker and writes it at the head of the unit's next batch, through
 ``open_unit``. No entry is ever appended after a loss until a marker naming that loss
-has been appended -- with one exception, a refusal on the inline path, which is counted
-but owes no marker (:data:`_INLINE_REFUSAL_OWES_MARKER`).
+has been appended -- save an opening, tried ahead of a marker the log refused, as only it
+can create the file. Debt whose marker the log refuses too waits, owed, in ``_parked_loss``.
 
 With no event loop running the write happens inline on the calling thread -- which is
 what makes a synchronous caller, and the test suite, deterministic. :meth:`flush` waits
@@ -172,12 +172,6 @@ class WriterLimits:
 
 
 DEFAULT_LIMITS: Final[WriterLimits] = WriterLimits()
-
-#: Whether a REFUSAL on the inline path owes the unit a ``write/dropped`` marker. The
-#: batch path's refusal does; this one is counted but owes none (see the emitter spec,
-#: "Writer loss is admitted before appending resumes"). One named switch, so the two
-#: paths' treatment of the same loss is decided in one place.
-_INLINE_REFUSAL_OWES_MARKER: Final[bool] = False
 
 
 class JobKind(Enum):
@@ -468,9 +462,7 @@ class CrewLogWriter:
     * **A failure is retained** with doubling backoff up to ``max_write_attempts``
       consecutive failed passes, then counted as lost.
     * **Every loss is admitted.** A loss of any cause owes the unit a ``write/dropped``
-      marker, written at the head of its next batch before anything else for it --
-      except a refusal on the inline path, which is counted but owes none
-      (:data:`_INLINE_REFUSAL_OWES_MARKER`).
+      marker, written ahead of anything else for it but an opening that creates its log.
     * **The ceilings count overflow rather than block.** :meth:`submit` never raises and
       never blocks an event loop; only a caller with no loop running writes inline.
 
@@ -549,6 +541,9 @@ class CrewLogWriter:
         #: Losses not yet admitted into the unit's own file. This debt is separate from
         #: ordinary jobs so crossing a memory ceiling cannot reject its marker too.
         self._pending_loss: "dict[str, _PendingLoss]" = {}
+        #: Owed loss debt whose marker the log refused too (that marker is no lost append):
+        #: behind no barrier and not in :meth:`owes`; the unit's next append takes it back.
+        self._parked_loss: "dict[str, _PendingLoss]" = {}
         #: Units a synchronous caller is writing inline for right now. The writer does
         #: not claim a bucket in here: ``flock`` serializes two appends but does not
         #: order them, so claiming beside an inline write is the reordering the inline
@@ -637,8 +632,8 @@ class CrewLogWriter:
         never blocks an event loop; crossing the high-water mark is only reported.
 
         The inline path keeps synchronous callers and tests deterministic, and is taken only
-        for a unit that owes nothing (no retained batch, no buffered entry, no other inline
-        write). ``flock`` stops interleaving but does not order writers, so writing beside a
+        for a unit that owes nothing (no retained batch, buffered entry, parked loss or other
+        inline write). ``flock`` stops interleaving but does not order writers, so writing beside a
         claimed batch could give this entry a lower seq than an earlier one, which a fold
         cannot detect. A failed inline write is retained like any other. A ``FOLLOW_ON``
         job never writes inline (see :data:`_POLICY`).
@@ -684,7 +679,11 @@ class CrewLogWriter:
                         self._finish(pending)
                         self._note_progress(unit)
                     elif _is_refusal(failure):
-                        self._drop(unit, [pending], mark=_INLINE_REFUSAL_OWES_MARKER)
+                        self._drop(unit, [pending])  # owed like a batch-path refusal's
+                        with self._lock:  # so a pass writes the marker
+                            lane = self._add_lane_locked() if self._want_lane_locked() else None
+                        if lane is not None:
+                            self._start_drain(lane)
                     else:
                         self._retain(unit, [pending])
                 finally:
@@ -696,7 +695,7 @@ class CrewLogWriter:
         return self._buffer(unit, pending)
 
     def flush(self, timeout: "float | None" = 5.0) -> bool:
-        """Wait until nothing is owed. True when the writer is quiet within *timeout*.
+        """Wait until nothing but parked loss is owed. True when quiet within *timeout*.
 
         For a caller that must read the file it just wrote -- a test, a shutdown path --
         since :meth:`submit` returns as soon as the work is HANDED to the writer. Never
@@ -843,7 +842,7 @@ class CrewLogWriter:
             return self._owed_loss_markers_locked()
 
     def owes(self, unit: str) -> bool:
-        """Whether *unit* has entries queued, claimed or retained, or a marker owed.
+        """Whether *unit* has entries queued, claimed or retained, or an unparked marker owed.
 
         The claimed count is the one a reader would not think to ask for: the writer pops
         a unit's bucket before it writes it, so a batch in flight is in none of the other
@@ -878,7 +877,7 @@ class CrewLogWriter:
         caller that has stopped believing in its handles -- its drain thread, if it ever
         returns, finds nothing left and stops. Clearing the claim matters as much as
         clearing the buffer: a claim nothing will ever release makes every later barrier
-        report a batch in flight. A successful wait makes the discard a no-op.
+        report a batch in flight. A successful wait leaves only parked loss to discard.
 
         Bounded well below a shutdown's budget: this wait exists so a job holding a stale
         handle cannot write after the retirement, and it returns the instant the writer
@@ -889,6 +888,7 @@ class CrewLogWriter:
         with self._lock:
             self._pending.clear()
             self._pending_loss.clear()
+            self._parked_loss.clear()
             self._pending_count = 0
             self._pending_total_bytes = 0
             self._pending_bytes.clear()
@@ -928,6 +928,9 @@ class CrewLogWriter:
         overflow = False
         lane: "int | None" = None
         with self._lock:
+            parked = self._parked_loss.pop(unit, None)
+            if parked is not None:  # this append writes the unit's parked marker first
+                self._pending_loss[unit] = parked
             would_count = self._pending_count + 1
             would_bytes = self._pending_bytes.get(unit, 0) + pending.nbytes
             would_total_bytes = self._pending_total_bytes + pending.nbytes
@@ -938,7 +941,7 @@ class CrewLogWriter:
             ):
                 self._overflow_count += 1
                 self._overflow_by_unit[unit] = self._overflow_by_unit.get(unit, 0) + 1
-                self._record_loss_locked(unit, [pending], True)
+                self._record_loss_locked(unit, [pending])
                 first_overflow = unit not in self._overflow_reported
                 self._overflow_reported.add(unit)
                 overflow_total = self._overflow_count
@@ -1011,7 +1014,7 @@ class CrewLogWriter:
         if lane is not None:
             self._start_drain(lane)
         if spent:
-            self._drop(unit, jobs, mark=True)
+            self._drop(unit, jobs)
 
     def _retain_without_failure(self, unit: str, jobs: "list[_Pending]") -> None:
         """Put *jobs* back at the head without spending their retry budget."""
@@ -1028,7 +1031,7 @@ class CrewLogWriter:
             if self._pending_count > self._pending_high_water:
                 self._pending_high_water = self._pending_count
 
-    def _drop(self, unit: str, jobs: "list[_Pending]", *, mark: bool = False) -> None:
+    def _drop(self, unit: str, jobs: "list[_Pending]", *, park: bool = False) -> None:
         """Give up on *jobs* and count them. The one place a record is lost.
 
         Reported once per unit rather than once per batch, so a wedged disk names itself
@@ -1055,8 +1058,9 @@ class CrewLogWriter:
             self._pending_total_bytes -= sum(job.nbytes for job in jobs if job.counted)
             for job in jobs:
                 job.counted = False
-            self._dropped_count += sum(1 for job in jobs if not job.policy.requeue_on_drop)
-            self._record_loss_locked(unit, jobs, mark)
+            lost = [job for job in jobs if not (park and job.kind is JobKind.LOSS_MARKER)]
+            self._dropped_count += sum(1 for job in lost if not job.policy.requeue_on_drop)
+            self._record_loss_locked(unit, jobs)
             total = self._dropped_count
             first = unit not in self._dropped_reported
             self._dropped_reported.add(unit)
@@ -1090,29 +1094,27 @@ class CrewLogWriter:
                         f"flagging a permanent drop of {job.what}", exc, op="flag-permanent-drop"
                     )
             self._finish(job)
+        if park:  # the log refused the unit's marker itself (see `_parked_loss`)
+            with self._lock:
+                if unit in self._pending_loss and unit not in self._pending:
+                    self._parked_loss[unit] = self._pending_loss.pop(unit)
+                    self._retry.pop(unit, None)  # nothing is retained behind parked debt
         self._notify()
 
-    def _record_loss_locked(self, unit: str, jobs: "list[_Pending]", mark: bool) -> None:
+    def _record_loss_locked(self, unit: str, jobs: "list[_Pending]") -> None:
         """Merge lost *jobs* into one per-unit marker. ``_lock`` held.
 
         The marker carries a COUNT and a SIZE, no reason code. The only site that knows a
         cause cannot separate the ones that differ: :func:`_is_refusal` collapses a
         malformed entry and an entry refused because another process owns the log into a
-        single boolean. A reason a reader cannot trust is worse than none, so what the
-        marker states is that facts are missing and how many.
-
-        *mark* is False for a loss the log cannot admit anyway, and a dropped marker's own
-        debt still travels through ``job.loss`` regardless.
+        single boolean. A reason a reader cannot trust is worse than none, so the marker
+        states only that facts are missing and how many.
         """
-        if not mark and not any(job.loss is not None for job in jobs):
-            return
         self._freeze_locked(unit)
         loss = self._pending_loss.setdefault(unit, _PendingLoss())
         for job in jobs:
             if job.loss is not None:
                 loss.merge(job.loss)
-                continue
-            if not mark:
                 continue
             loss.dropped_count += 1
             loss.dropped_bytes += max(0, job.nbytes)
@@ -1141,12 +1143,10 @@ class CrewLogWriter:
     def _owed_loss_markers_locked(self) -> int:
         """How many units are owed a ``write/dropped`` marker. ``_lock`` held.
 
-        A unit's loss debt lives in one of two places and a count that names it has to
-        read both. It sits in ``_pending_loss`` while no marker job exists for it. Once one
-        is built it TRAVELS IN THE JOB: :meth:`_loss_marker_job` takes the debt out of the
-        map to serialize it, and an append that raises hands the job -- debt and all -- to
-        :meth:`_retain`, which puts it at the front of that unit's bucket in
-        ``_pending``.
+        A unit's loss debt lives in a map or in a job, and a count of it reads both. It sits
+        in ``_pending_loss`` or ``_parked_loss`` while no marker job exists. Once one is built
+        it TRAVELS IN THE JOB: :meth:`_loss_marker_job` takes the debt out of the map, and an
+        append that raises hands the job, debt and all, to :meth:`_retain`, back into ``_pending``.
 
         So a marker waiting to be retried is owed while the map is empty, and reading only
         the map reports nothing owed at exactly that moment. That moment is not an edge
@@ -1157,7 +1157,7 @@ class CrewLogWriter:
         Counted per UNIT, because one marker covers a unit's whole interval -- the same
         grain the map's own length carries.
         """
-        owed = set(self._pending_loss)
+        owed = {*self._pending_loss, *self._parked_loss}
         owed.update(
             unit
             for unit, jobs in self._pending.items()
@@ -1256,17 +1256,18 @@ class CrewLogWriter:
     # -- the inline path -------------------------------------------------------------
 
     def _inline_ready(self, unit: str) -> bool:
-        """Whether an inline write for *unit* may go ahead. Takes ``_lock``."""
+        """Whether *unit*'s inline wait is over: it may go, or must queue behind parked loss,
+        which nothing else would clear. Takes ``_lock``."""
         with self._lock:
-            return self._inline_claimable_locked(unit)
+            return self._inline_claimable_locked(unit) or unit in self._parked_loss
 
     def _inline_claimable_locked(self, unit: str) -> bool:
         """The inline path's whole precondition. ``_lock`` held.
 
         Every clause is an ordering rule. A busy writer covers a batch it may already
         hold, for any unit, because a claimed batch is absent from ``_pending`` and cannot
-        be seen there. ``_pending``, ``_retry`` and ``_pending_loss`` cover this unit's
-        own owed entries, which this one belongs after. ``_inline`` covers another
+        be seen there. ``_pending``, ``_retry`` and both loss maps cover this unit's own
+        owed entries and markers, which this one belongs after. ``_inline`` covers another
         synchronous caller already writing for it.
         """
         return (
@@ -1275,6 +1276,7 @@ class CrewLogWriter:
             and unit not in self._pending
             and unit not in self._retry
             and unit not in self._pending_loss
+            and unit not in self._parked_loss
         )
 
     def _claim_inline(self, unit: str) -> "str | None":
@@ -1397,7 +1399,7 @@ class CrewLogWriter:
         )
 
     def _quiet(self) -> bool:
-        """True when nothing is owed and no batch is in flight. Takes ``_lock``."""
+        """True when nothing but parked loss is owed and no batch is in flight. Takes ``_lock``."""
         with self._lock:
             return not self._pending and not self._pending_loss and not self._busy_locked()
 
@@ -1848,14 +1850,19 @@ class CrewLogWriter:
                     continue
                 if _is_refusal(failure):
                     if job.loss is not None:
-                        self._drop(unit, jobs[at:], mark=True)
+                        if at == 0 and len(jobs) > 1 and jobs[1].kind is JobKind.OPENING:
+                            jobs[0], jobs[1] = jobs[1], jobs[0]  # only an opening creates a log
+                            with self._lock:
+                                self._claimed[unit] = self._claimed.get(unit, 0) + 1
+                            unattempted += 1
+                            index = 0
+                            continue
+                        self._drop(unit, jobs[at:], park=True)
                         return False
-                    # A permanent refusal owes a marker like any other loss. The refusal
-                    # check cannot split a CrewLogError into its two causes -- a malformed
-                    # entry the format rejected, or a well-formed entry refused because
-                    # another process owns this log -- and the second is a genuine hole.
-                    # Marking unconditionally is what makes the distinction unnecessary.
-                    self._drop(unit, [job], mark=True)
+                    # A refusal owes a marker like any other loss: the check cannot tell a
+                    # malformed entry from one refused because another process owns this
+                    # log, a genuine hole, so marking unconditionally makes that moot.
+                    self._drop(unit, [job])
                     continue
                 if landed:
                     self._note_progress(unit)
@@ -1864,13 +1871,9 @@ class CrewLogWriter:
             self._note_progress(unit)
             return loss_marker_landed
         finally:
-            # The release goes first so this pass finishes its own bookkeeping before
-            # handing the thread to a listener, which runs inline. The order is not
-            # load-bearing today: whatever this pass did not reach is in `_pending` or
-            # `_pending_loss` by the time it returns, and `owes` reads those too, so a
-            # listener asking what the unit owes gets the same answer either way. It is
-            # the order that stays correct if a listener ever reads the claim count
-            # itself.
+            # Released first, so a listener (it runs inline) sees finished bookkeeping: a pass
+            # that lands an opening and then parks its marker still holds the parked jobs'
+            # claims until this release, and `owes` reads them.
             self._release_claim(unit, unattempted)
             if landed and self._on_grew is not None:
                 try:

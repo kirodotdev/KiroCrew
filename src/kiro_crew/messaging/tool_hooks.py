@@ -98,11 +98,18 @@ class ChannelTurnHooks:
 
     @classmethod
     async def prepare(
-        cls, provider: Any, agent: str, turn: ScriptHookTurn, *, admits_tools: bool = True
+        cls,
+        provider: Any,
+        agent: str,
+        turn: ScriptHookTurn,
+        *,
+        admits_tools: bool = True,
+        project_hooks: bool = True,
     ) -> ChannelTurnHooks:
         """The hooks for a turn on *provider* running *agent* (``""``: the session's).
 
         A turn that admits no tool reads no spec and fires none of its hooks.
+        *project_hooks* false (a cron turn) leaves out a KAS folder agent's own hooks.
         """
         # Deferred, as in script_hooks: the agent_sdk package reaches acp.client,
         # which is still initializing when a channel module loads this one.
@@ -115,7 +122,11 @@ class ChannelTurnHooks:
         # after a default-agent switch elsewhere, and its guards are the ones that
         # apply.
         agent = spec_hooks.running_agent(provider, agent)
-        return cls(provider, turn, await spec_hooks.turn_spec_hooks(provider, agent))
+        return cls(
+            provider,
+            turn,
+            await spec_hooks.turn_spec_hooks(provider, agent, project_hooks=project_hooks),
+        )
 
     def _acp_session_id(self) -> str:
         """The provider's ACP session id, read at fire time, or ``""``.

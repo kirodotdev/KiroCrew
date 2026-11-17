@@ -26,7 +26,20 @@ vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/CapabilitiesPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
-vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
+// The real hook marks the gateway connected when its socket opens; this stub's
+// socket opens on mount, since a status reply alone never reads as online.
+vi.mock('../hooks/useWebSocket', async () => {
+  const { useEffect } = await import('react')
+  const { useDispatch } = await import('react-redux')
+  const { sseConnected } = await import('../store/dashboardSlice')
+  return {
+    useWebSocket: () => {
+      const dispatch = useDispatch()
+      useEffect(() => { dispatch(sseConnected()) }, [dispatch])
+      return { subscribeLogs: () => {} }
+    },
+  }
+})
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -208,7 +221,7 @@ describe('App — version-change changelog gate', () => {
     const dialog = await changelogDialog()
     expect(within(dialog).getByText(/adds the resource capsule/)).toBeInTheDocument()
     expect(within(dialog).getByText("You're on the latest version")).toBeInTheDocument()
-    expect(within(dialog).queryByRole('button', { name: 'Update Now' })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Update when I restart' })).toBeNull()
   })
 })
 
@@ -229,24 +242,28 @@ describe('App — changelog modal controls', () => {
   })
 })
 
-/** Open the changelog and take the "Update Now" path into the progress overlay. */
+/** Open the changelog and click Update when I restart (it arms; nothing installs now). */
 async function startUpdate(route = '/chat') {
   const rendered = renderShell(route)
   const dialog = await changelogDialog()
   // applyUpdate's failure lands in App a few microtasks after the click: keep it inside the act.
-  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Update Now' })) })
+  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Update when I restart' })) })
   return rendered
 }
 
+/** Open the overlay the way a running apply does: the click's POST stays pending. */
+async function startProgress(route = '/chat') {
+  vi.mocked(api.applyUpdate).mockReturnValueOnce(new Promise(() => {}) as never)
+  return startUpdate(route)
+}
+
 describe('App — applying an update', () => {
-  it('replaces the changelog with the progress overlay', async () => {
+  it('arms the update, closes the changelog and shows no progress overlay', async () => {
     await startUpdate()
     await waitFor(() => expect(api.applyUpdate).toHaveBeenCalled())
-    expect(await screen.findByText('Updating Kiro Crew…')).toBeInTheDocument()
-    expect(screen.queryByRole('dialog', { name: 'Changelog' })).toBeNull()
-    // No step reported yet: the overlay shows its neutral waiting copy.
-    expect(screen.getByText('Starting update…')).toBeInTheDocument()
-    expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Changelog' })).toBeNull())
+    // Nothing installs or restarts now, so there is no overlay to wait behind.
+    expect(screen.queryByText('Updating Kiro Crew…')).toBeNull()
   })
 
   it('surfaces the server-supplied reason when applying fails', async () => {
@@ -303,7 +320,7 @@ describe('App — applying an update', () => {
 
 describe('App — update progress overlay', () => {
   it('marks earlier steps done and times the active one', async () => {
-    const { store } = await startUpdate()
+    const { store } = await startProgress()
     await screen.findByText('Updating Kiro Crew…')
 
     act(() => { store.dispatch(setUpdateProgress({ step: 'building', detail: 'compiling the wheel' })) })
@@ -322,7 +339,7 @@ describe('App — update progress overlay', () => {
     // froze on the last step with its idle waiting copy — indistinguishable
     // from a hang. Disconnected-while-updating must say the gateway is
     // restarting and that reconnection is in progress.
-    const { store } = await startUpdate()
+    const { store } = await startProgress()
     await screen.findByText('Updating Kiro Crew…')
 
     await act(async () => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
@@ -348,7 +365,7 @@ describe('App — update progress overlay', () => {
     // the merged revision). Both must end the overlay with the failure card:
     // an unrecognised step rendered as a stall until the five-minute stuck
     // timer, with the spinner still pulsing above the reason.
-    const { store } = await startUpdate()
+    const { store } = await startProgress()
     await screen.findByText('Updating Kiro Crew…')
 
     act(() => { store.dispatch(setUpdateProgress({ step, detail: 'Fast-forward to 9f8202496fcf failed (git merge --ff-only)' })) })

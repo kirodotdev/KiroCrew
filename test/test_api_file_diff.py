@@ -15,19 +15,27 @@ from dashboard_owner_helpers import as_owner
 from kiro_crew.dashboard.handlers import files as files_mod
 from kiro_crew.dashboard.handlers.files import api_file_diff
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.security import redaction_switch
 from kiro_crew.security.redaction import redact_credentials
+from kiro_crew.testing.synthetic_credentials import aws_secret, github_classic
 
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
-# A documented placeholder, not a real credential: the redactor matches it anyway.
-PLACEHOLDER = "lp_your_token_here"
+
+@pytest.fixture(autouse=True)
+def _redaction_on(_floor_monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """These cases pin what the diff view masks, so the owner's switch reads ON.
+
+    The switch defaults to OFF, and with it off the owner's own view stands the
+    credential pass down (``_owner_view_bypasses_credential_pass``).
+    """
+    _floor_monkeypatch.setattr(redaction_switch, "_path", lambda: tmp_path / "redaction.json")
+    _floor_monkeypatch.setattr(redaction_switch, "DEFAULT_REDACTION_ENABLED", True)
+
+
+# An opaque Bearer value (a placeholder such as `lp_your_token_here` stays visible).
+PLACEHOLDER = "lp_Q7mVx9pLw2Kd8Rt4Ny6s"
 BEARER_LINE = '"Authorization": "Bearer ' + PLACEHOLDER + '"'
-# `redact` composes credential redaction with exfiltration-URL redaction, so the
-# tests pin one fixture per pass; a fixture both passes match could not tell which
-# one is still wired up. A long opaque query is the discriminator: the exfil pass
-# masks it and the credential pass leaves it alone. A bare URL is not -- that pass
-# masks a URL only when it carries an exfil signal.
-EXFIL_URL = "https://collect.example.com/p?d=" + "A" * 900
 
 
 def _req(path: str = "") -> make_mocked_request:
@@ -470,34 +478,6 @@ async def test_untracked_diff_is_redacted(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
-async def test_exfiltration_url_is_redacted_in_both_fields(tmp_path):
-    """The exfiltration-URL pass is wired up on both fields, not just credentials.
-
-    Both fields go through one `redact` shim that composes two passes. A
-    bearer-only fixture cannot tell them apart, so either field could regress to
-    credential-only while a URL an agent could be steered into leaked through.
-    """
-    _git_repo(tmp_path)
-    f = tmp_path / "notes.md"
-    f.write_text(EXFIL_URL + "\nkeep\n")
-    subprocess.run(["git", "add", "notes.md"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
-    f.write_text(EXFIL_URL + "\nchanged\n")
-
-    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
-        resp = await api_file_diff(_req(str(f)))
-    body = json.loads(resp.body)
-
-    assert body["status"] == "modified"
-    assert EXFIL_URL not in body["original"]
-    assert EXFIL_URL not in body["diff"]
-    assert "[REDACTED: suspicious URL to collect.example.com]" in body["original"]
-    # This fixture is a discriminator only while the credential pass ignores it.
-    assert redact_credentials(EXFIL_URL)[0] == EXFIL_URL
-
-
-@pytest.mark.asyncio
-@requires_git
 async def test_a_credential_straddling_the_read_cap_is_still_masked(tmp_path):
     """Neither field may be truncated before the redaction pass.
 
@@ -509,8 +489,10 @@ async def test_a_credential_straddling_the_read_cap_is_still_masked(tmp_path):
     _git_repo(tmp_path)
     f = tmp_path / "padded.txt"
     # Places the token across the byte offset the sibling endpoint caps at.
-    secret = "AKIAIOSFODNN7EXAMPLE"
-    padding = "a" * (files_mod._FILE_READ_CAP - 10)
+    # A 40-char GitHub token with a valid checksum, which the redactor reads bare; an
+    # AWS key ID or a bare 40-character run stays visible, so neither can stand in.
+    secret = github_classic(seed=341)
+    padding = "a" * (files_mod._FILE_READ_CAP - 11) + " "
     f.write_text(padding + secret + "\nkeep\n")
     subprocess.run(["git", "add", "padded.txt"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -601,15 +583,14 @@ async def test_an_edit_inside_a_key_block_serves_no_key_text(tmp_path, kind, edi
 @pytest.mark.parametrize("shape", ["github", "aws"])
 async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, shape):
     """A long line above a hunk serves no part of a token it holds."""
-    import random
-    rng = random.Random(shape)
-    # Prefixes are joined at run time so no literal token shape sits here.
     if shape == "github":
-        token = "gh" + "p_" + _noise(rng, _ALNUM, 36)
+        # A GitHub token with a valid checksum: the redactor reads it bare.
+        token, sep = github_classic(seed=342), " = "
     else:
-        token = "AK" + "IA" + _noise(rng, _ALNUM[:36].upper(), 16)
-    assert redact_credentials(token)[0] != token, "fixture must be a shape the redactor masks"
-    line = "x" * (80 - len(" = ") - 8) + " = " + token
+        # A 40-char AWS secret is read under its key name; a bare run stays visible.
+        token, sep = aws_secret(seed=343), " aws_secret_access_key = "
+    line = "x" * (80 - len(sep) - 8) + sep + token
+    assert token not in redact_credentials(line)[0], "fixture must be a shape the redactor masks"
     rows = [line] + [f"  row {i}" for i in range(30)]
     old = "\n".join(rows) + "\n"
     f = _commit_then_write(tmp_path, "cfg.txt", old, old.replace("  row 20\n", "  row 20 edited\n"))

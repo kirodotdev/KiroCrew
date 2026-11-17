@@ -94,7 +94,8 @@ _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 #: turn the same reply into a different document. ``t1``: the reply's settings are read
 #: (RFC D7); an etag from before has no revision. ``t2``: the existing terms ``shell``,
 #: ``fs_*``, ``network_egress``, ``mcp``, ``subagent`` and three switches are read (D8).
-TRANSLATION_REVISION = "t2"
+#: ``t3``: the boot block does not carry ``allow_terminal``.
+TRANSLATION_REVISION = "t3"
 
 
 def _sign_in_remedy() -> str:

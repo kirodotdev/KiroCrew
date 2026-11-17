@@ -218,6 +218,9 @@ def _write_semantic(
                 source,
                 metadata=metadata,
                 operation="update" if existing else "create",
+                new_value=bool(
+                    existing and not _semantic._json_value_equal(existing["value_json"], value_json)
+                ),
             )
             if private_policy:
                 self.db.execute(
@@ -262,11 +265,18 @@ def _write_semantic(
             if isinstance(old_text, str) and len(old_text) >= 3:
                 with self._db_lock:
                     retired = 0
-                    for row in self.db.execute(
-                        "SELECT * FROM episodic_memories WHERE is_deleted=0 ORDER BY created_at DESC,id"
+                    # The scan reads only the text the predicate checks. The full row,
+                    # embedding included, is the before-image and is read per match,
+                    # before its UPDATE.
+                    for match in self.db.execute(
+                        "SELECT id, text FROM episodic_memories WHERE is_deleted=0 "
+                        "ORDER BY created_at DESC,id"
                     ).fetchall():
-                        if not memory_v2.superseded_value_is_asserted(row["text"], key, old_text):
+                        if not memory_v2.superseded_value_is_asserted(match["text"], key, old_text):
                             continue
+                        row = self.db.execute(
+                            "SELECT * FROM episodic_memories WHERE id=?", (match["id"],)
+                        ).fetchone()
                         self.db.execute(
                             "UPDATE memory_items SET is_deleted=1 WHERE id=?", (row["id"],)
                         )

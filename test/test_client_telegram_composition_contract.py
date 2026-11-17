@@ -164,7 +164,7 @@ BASE_MEMBERS = {
     "_notify_status": ("function", "(self, healthy: 'bool', reason: 'str') -> 'None'"),
     "_poll_backoff": ("function", "(self, attempt: 'int', reason: 'str') -> 'float'"),
     "_polling_loop": ("coroutine", "(self) -> 'None'"),
-    "_get_updates": ("coroutine", "(self) -> 'list[dict] | None'"),
+    "_get_updates": ("coroutine", "(self, err_out: 'dict | None' = None) -> 'list[dict] | None'"),
     "_buffer_album_member": (
         "function",
         "(self, group_id: 'str', inbound: 'TelegramInbound', *, update_id: 'int' = 0) -> 'None'",

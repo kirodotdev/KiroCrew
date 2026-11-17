@@ -23,7 +23,7 @@ import { Btn } from '../components/ui'
 import { activeElementIsEditable, isEditableTarget } from '../utils/editableTarget'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { i18nT } from '../i18n/t'
-import { resolveLinkPreviews, providerFor, type ResolvedLinkPreview } from './linkPreviewRegistry'
+import { resolveLinkPreviews, providerFor, setServedLinkPreviews, type ResolvedLinkPreview } from './linkPreviewRegistry'
 import { withoutQuery } from '../appFrame/hosts'
 import { currentTheme } from '../appFrame/sandboxFrame'
 import { FrameHost, mintFrame, type FailureCause, type FrameHostOptions } from './linkPreviewFrames'
@@ -99,6 +99,12 @@ export default function LinkPreviewLayer() {
   // In an effect, not render: a change notifies every rendered message, and
   // notifying other components during this one's render is a React error.
   useEffect(() => { setLinkPreviewTextPatterns(providers) }, [providers])
+  // What this layer will open a card for, so a link's own hover bubble can step
+  // aside; nothing once the layer is gone, since no card opens then.
+  useEffect(() => {
+    setServedLinkPreviews(providers)
+    return () => setServedLinkPreviews(NONE)
+  }, [providers])
   // key -> when its frame last failed, and why
   const failedAt = useRef(new Map<string, { at: number; cause: FailureCause }>())
   // The hover whose card could not be shown: the frame failed to load or the

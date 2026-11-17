@@ -398,6 +398,9 @@ async def test_no_agent_or_mcp_tool_names_these_routes() -> None:
         "dashboard/server_runtime/heartbeat.py",
         "config/loosening_provenance.py",
         "slack/gateway_runtime/service_boot.py",  # a comment naming the module
+        # The owner's terminal (``kirocrew config pending``), refused inside a sandbox.
+        "cli_config.py",
+        "cli_config_pending.py",
     }
     referencing = set()
     for file in src.rglob("*.py"):
@@ -444,6 +447,55 @@ async def test_a_deleted_note_is_not_sent_again_for_the_same_version() -> None:
     await config_pending.sync_pending_notes(state, 100.0)
     await config_pending.sync_pending_notes(state, 200.0)
     assert len(pushed) == 1
+
+
+async def test_the_same_version_going_pending_again_after_a_resolve_is_notified() -> None:
+    """A resolved note answers for a version that stopped being pending; the same bytes
+    going pending again later (a file removed twice, one edit re-applied) is new."""
+    path = _seal("config.json", _doc(a=1), _doc(a=2))
+    state = _State()
+    await config_pending.sync_pending_notes(state, 0.0)
+    [first] = _live_notes(state)
+
+    path.write_bytes(_doc(a=1))  # put back by hand: nothing is pending
+    await config_pending.sync_pending_notes(state, 100.0)
+    assert _live_notes(state) == []
+
+    path.write_bytes(_doc(a=2))  # the very same edit, made again
+    await config_pending.sync_pending_notes(state, 200.0)
+    [again] = _live_notes(state)
+    assert again is not first
+    assert again["config_pending_leaf"] == "config.json"
+
+
+async def test_a_failed_resolve_write_is_retried_on_the_next_sync() -> None:
+    path = _seal("config.json", _doc(a=1), _doc(a=2))
+    state = _State()
+    await config_pending.sync_pending_notes(state, 0.0)
+    writes: list[bool] = []
+
+    async def disk_full_once() -> bool:
+        writes.append(True)
+        return len(writes) > 1  # the first rewrite fails, later ones land
+
+    state._rewrite_notifications_async = disk_full_once  # type: ignore[method-assign]
+    path.write_bytes(_doc(a=1))  # resolved: its mark must reach the log
+    await config_pending.sync_pending_notes(state, 100.0)
+    assert writes == [True]
+    await config_pending.sync_pending_notes(state, 200.0)
+    assert writes == [True, True], "the failed write is tried again"
+    await config_pending.sync_pending_notes(state, 300.0)
+    assert writes == [True, True], "and not after it landed"
+
+
+async def test_a_read_note_still_pending_is_not_sent_again() -> None:
+    _seal("config.json", _doc(a=1), _doc(a=2))
+    state = _State()
+    await config_pending.sync_pending_notes(state, 0.0)
+    [note] = _live_notes(state)
+    note["acked"] = True  # the owner read it; the edit is still pending
+    await config_pending.sync_pending_notes(state, 100.0)
+    assert len(state._notification_log) == 1
 
 
 async def test_a_stalled_note_write_does_not_hold_the_heartbeat(monkeypatch) -> None:
@@ -798,3 +850,5 @@ async def test_the_listed_first_keys_are_the_keys_the_settings_card_words() -> N
     }
     assert server == rules
     assert lp._SECURITY_KEYS["config.local.json"] == lp._SECURITY_KEYS["config.json"]
+    # The per-tool "Always allow" grants widen what runs exactly as auto_approve_tools does.
+    assert "hooks.auto_approve_tool_identities" in lp._SECURITY_KEYS["config.json"]

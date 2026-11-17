@@ -1,6 +1,6 @@
 """Moving a release's bytes over the network, within bounds.
 
-The staging directory under the data home's ``trust/`` keystone directory, the bounded
+The masked ``update-staging`` directory under the data home, the bounded
 HTTPS read with its socket deadline, the download of a wheel into a file with its SHA-256
 compared to the signed digest as the bytes land, and the fetch of a small document such
 as the channel manifest. The offline trust root and the manifest's signature check stay
@@ -34,22 +34,33 @@ from kiro_crew.platform.wheel_engine_contract import (
 )
 from kiro_crew.platform_compat import make_owner_only_dir
 
+#: The masked staging leaf's name under the data home. Spelled here rather than imported
+#: from ``kiro_crew.sandbox_leaves`` (``_UPDATE_STAGING_LEAF``), which keeps the facade's
+#: import inventory unchanged; ``test_wheel_update_staging_masked`` pins the two equal.
+_UPDATE_STAGING_LEAF = "update-staging"
+
 
 def _staging_dir() -> Path:
-    """Per-run staging area under the data home's ``trust/`` keystone directory.
+    """Per-run staging area: the data home's masked ``update-staging`` directory.
 
     The verified wheel sits on disk between its SHA-256 check and the pip
-    install, and a TMPDIR staging file is writable by the agent (same uid, and
-    TMPDIR is deliberately agent-reachable scratch) — a swap in that window
-    would promote unverified code. ``trust/`` is the existing whole-directory
-    keystone leaf: the agent's file gate and every bash form refuse it, while
-    this engine (the gateway or the operator's CLI) writes directly. Same
-    accepted residual as every keystone leaf: arbitrary local code as the
-    user is out of scope, the AGENT's tool surface is what is fenced.
+    install, so a swap in that window would promote unverified code. The
+    directory is therefore one every agent sandbox masks as a whole directory
+    and the agent's file gate refuses (``sandbox_leaves._UPDATE_STAGING_LEAF``,
+    ``security.paths_lists``); this engine (the gateway or the operator's CLI)
+    writes it directly. NOT under ``trust/``: that leaf stays sandbox
+    read-write for the SEL log, so a jailed shell could rename over a staged
+    wheel there. Older builds staged under ``trust/update-staging``; see
+    :func:`_legacy_staging_dir`.
     """
-    root = data_home() / "trust" / "update-staging"
+    root = data_home() / _UPDATE_STAGING_LEAF
     make_owner_only_dir(root)
     return root
+
+
+def _legacy_staging_dir() -> Path:
+    """Where builds before the move staged: swept for leftovers, never written."""
+    return data_home() / "trust" / "update-staging"
 
 
 def _response_socket(resp: object) -> object | None:

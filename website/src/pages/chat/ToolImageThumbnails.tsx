@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ImageOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import { dispatchLightbox } from '../../components/MarkdownRenderer'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { pathBasename } from '../../utils/pathBasename'
 
@@ -51,7 +52,7 @@ export function ToolImageThumbnails({ paths, version }: { paths: readonly string
         data-testid="tool-image-thumbnails"
         data-image-scope=""
         disabled={allFailed}
-        aria-label={i18nT('components.chatInput.open_preview_of', { name: names.join(', ') })}
+        aria-label={i18nT('components.chatInput.open_preview_of', { name: fmtList(names, { style: 'narrow' }) })}
         className="flex flex-wrap gap-1.5 rounded cursor-pointer disabled:cursor-default focus-ring-accent"
         onClick={(e) => {
           // The row's pill toggles on click and TurnBlock binds a fold handler
@@ -101,7 +102,7 @@ export function ToolImageThumbnails({ paths, version }: { paths: readonly string
       {failedNames.length > 0 && (
         <ErrorNotice
           variant="inline"
-          message={`${i18nT('components.markdownRenderer.image_failed_to_load')}: ${failedNames.join(', ')}`}
+          message={`${i18nT('components.markdownRenderer.image_failed_to_load')}: ${fmtList(failedNames, { style: 'narrow' })}`}
           askAgent
           testId="tool-image-thumb-error"
         />

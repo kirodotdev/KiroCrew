@@ -278,8 +278,8 @@ export default function MilestonesSheet() {
                 {today.map(item => <FeatureRow key={item.id} item={item} focused={focusId === item.id} onError={setError} completesOnArrival />)}
               </ul>
             </>) : more.length > 0 ? (
-              // No quick row is left, but a longer one is (PR watch, Ultra
-              // Mode): never a Try today pick (RFC 8.3), still listed here.
+              // No quick row is left, but a longer one is (PR watch, conductor
+              // mode): never a Try today pick (RFC 8.3), still listed here.
               <div data-testid="milestones-more">
                 <div className="text-[12px] text-muted mt-1">{i18nT('milestones.more_to_try')}</div>
                 <ul className="list-none m-0 p-0">

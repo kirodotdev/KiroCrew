@@ -12,6 +12,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_slack_agent_session_status import _caps, make_client  # noqa: F401 - autouse fixture
 
 from kiro_crew.config.loader import KiroCrewConfig, MessagingConfig, SlackConfig
@@ -1092,7 +1093,7 @@ class TestTitleChanged:
     async def test_a_credential_in_the_title_is_redacted(self) -> None:
         orch = Orch(FakeSessions(live={"slack:1700.1"}))
         orch.conv_log = TitleLog()
-        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        secret = github_classic(seed=7)
         await session_events.handle_title_changed(orch, self._event(title=f"keys {secret}"))
         assert secret not in orch.conv_log.titles[0][1]
 
@@ -1173,7 +1174,7 @@ def _record_dispatch(
 
     started: list[str] = []
 
-    async def dispatch(_orch: Any, _key: str, _ts: str, text: str, kwargs: Any) -> None:
+    async def dispatch(_orch: Any, _key: str, _ts: str, text: str, kwargs: Any, **_kw: Any) -> None:
         started.append(text)
         if on_start is not None:
             await on_start()
@@ -1783,7 +1784,7 @@ async def test_the_queue_drain_records_the_entrys_thread(monkeypatch: pytest.Mon
     orch = Orch(sessions, flat=True)
     gate = asyncio.Event()
 
-    async def dispatch(*_a: Any) -> None:
+    async def dispatch(*_a: Any, **_kw: Any) -> None:
         await gate.wait()
 
     monkeypatch.setattr(events, "_dispatch_queued", dispatch)

@@ -20,8 +20,6 @@ from kiro_crew.subagent_persistence_layout import (
     logger,
 )
 
-# ── panel dismissals ─────────────────────────────────────────────────
-
 # One file per dismissed run, named for the run, so the whole set is one
 # directory listing and two dismissals never contend over a shared file.
 #
@@ -32,11 +30,9 @@ from kiro_crew.subagent_persistence_layout import (
 # asserting this constant is present in each.
 _PANEL_DISMISSAL_LEAF = "panel-dismissals"
 
-#: What a dismissal write did. Three outcomes rather than a bool, because the two
-#: falsy ones need OPPOSITE answers from a caller that is about to publish the
-#: dismissal: a run with no folder has nothing durable to bring its card back, so
-#: the dismissal stands, while a write that FAILED means the card returns on the
-#: next rebuild and the caller must not report success.
+#: What a dismissal write did. Not a bool: a run with no folder has nothing to bring
+#: its card back, so the dismissal stands, while a FAILED write means the card
+#: returns on the next rebuild and the caller must not report success.
 DISMISSAL_RECORDED = "recorded"
 DISMISSAL_NO_FOLDER = "no_folder"
 DISMISSAL_FAILED = "failed"
@@ -92,36 +88,26 @@ def _panel_dismissal_path(agent_id: str) -> Path:
 def record_panel_dismissal(agent_id: str) -> bool:
     """Record that a finished run's panel card was dismissed. True when stored.
 
-    A dismissal has to be durable because the panel's durable half reads run
-    FOLDERS: dropping the run from the manager hid the card only until the next
-    rebuild, which found the folder the delete left behind and sent the card
-    again. This record is what that reader consults.
+    Durable because the panel rebuild reads run FOLDERS: dropping the run from
+    the manager alone hides the card only until the next rebuild.
 
-    The folder itself is deliberately left alone. ``spawn_continue`` reseeds its
-    session map from ``state.json`` in there, so deleting a folder to hide a card
-    would also destroy a conversation the user can still continue, and would take
-    the run's result text and its prune bookkeeping with it.
+    The folder is left alone: ``spawn_continue`` reseeds its session map from
+    ``state.json`` there, so deleting it would destroy a conversation the user can
+    still continue.
 
-    False when the run has no folder: nothing durable can resurrect that card, so
-    there is nothing to suppress, and a record for it would outlive every path
-    that reclaims one.
-
-    A caller that must not publish a dismissal it failed to store wants
-    :func:`record_panel_dismissal_outcome` instead: this bool cannot tell "no
-    folder, so nothing to suppress" from "the write failed", and those two need
-    opposite answers.
+    False when the run has no folder: nothing can resurrect that card, and a record
+    for it would outlive every path that reclaims one. A caller that must not
+    publish a failed dismissal wants :func:`record_panel_dismissal_outcome`, which
+    tells "no folder" apart from "the write failed".
     """
     return record_panel_dismissal_outcome(agent_id) == DISMISSAL_RECORDED
 
 
 def record_panel_dismissal_outcome(agent_id: str) -> str:
-    """:func:`record_panel_dismissal`, with its two falsy cases kept apart.
+    """:func:`record_panel_dismissal`, returning one of the ``DISMISSAL_*`` outcomes.
 
-    One of them is success in every sense that matters -- a run with no folder has
-    nothing durable to resurrect its card -- and the other means the card WILL come
-    back. A caller that pops the run out of the manager on either one reports a
-    dismissal that did not happen, so the distinction lives here rather than in
-    each caller's reading of a bool.
+    ``DISMISSAL_NO_FOLDER`` is success; ``DISMISSAL_FAILED`` means the card will
+    come back, so a caller must not drop the run from the manager on it.
     """
     try:
         if not _agent_dir(agent_id).is_dir():
@@ -166,15 +152,11 @@ def record_panel_dismissal_outcome(agent_id: str) -> str:
 def panel_dismissal_recorded(agent_id: str) -> bool:
     """Is THIS run's card dismissed? One stat, nothing retained.
 
-    The membership question the panel reader actually asks, per candidate it is
-    already scanning. Enumerating every dismissal into a set to answer it would
-    retain one entry per record inside a function whose whole contract is a
-    bounded working set -- the registry's size would set the memory, which is the
-    bound's own reason for existing.
+    The panel reader asks per candidate; building a set of every dismissal would
+    let the registry's size set the reader's memory, which must stay bounded.
 
-    Fails OPEN, the same direction as :func:`dismissed_panel_ids`: an unreadable
-    record answers "not dismissed", so a filesystem fault resurrects a card the
-    user can dismiss again rather than hiding a run nobody dismissed.
+    Fails OPEN like :func:`dismissed_panel_ids`: an unreadable record answers
+    "not dismissed", so a fault resurrects a card rather than hiding a run.
     """
     try:
         return _panel_dismissal_path(agent_id).is_file()
@@ -256,12 +238,11 @@ def prune_orphan_panel_dismissals() -> int:
 #: run folder, the app is matched against a slot's current owner, and the parent
 #: session is matched against a caller and resolved into a slot key.
 #:
-#: Every string a record retains is accounted for here or clamped by the text caps
-#: in :mod:`kiro_crew.subagent_persistence`, and the two lists are the whole record:
-#: ``id``, ``app`` and ``parent_session`` are
+#: Every string a record retains is capped here or by the text caps in
+#: :mod:`kiro_crew.subagent_persistence`: ``id``, ``app`` and ``parent_session`` are
 #: keys; ``task``, ``agent``, ``error`` and ``result`` are text; ``started``,
-#: ``elapsed`` and ``stopped`` are numbers and a flag; ``outcome`` is one of
-#: three fixed words. A field added to the record belongs in one of the two.
+#: ``elapsed`` and ``stopped`` are numbers and a flag; ``outcome`` is one of three
+#: fixed words. A new record field belongs in one of the two lists.
 _PANEL_ID_CAP = 255
 _PANEL_APP_CAP = 200
 _PANEL_PARENT_SESSION_CAP = 400

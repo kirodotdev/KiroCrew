@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { createElement } from 'react'
 import { notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 
 const traceMock = vi.fn()
 const capsMock = vi.fn()
@@ -23,6 +24,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { ContextBreakdownTab, type ContextTrace } from '../pages/ContextBreakdownPanel'
+import { createTestStore } from './helpers'
 import {
   CONTEXT_TRACE_COALESCE_MS as COALESCE_MS,
   contextTraceKey,
@@ -84,7 +86,7 @@ function deferred<T>() {
 let qc: QueryClient
 
 function mount() {
-  return render(createElement(QueryClientProvider, { client: qc }, createElement(ContextBreakdownTab, { slot: SLOT })))
+  return render(createElement(Provider, { store: createTestStore() }, createElement(QueryClientProvider, { client: qc }, createElement(ContextBreakdownTab, { slot: SLOT }))))
 }
 
 /** Let resolved promises and react-query's notify batch run. */
@@ -363,7 +365,7 @@ describe('Context tab: pushed frames replace the poll', () => {
     await act(async () => { screen.getByRole('button', { name: /^Turn 5:/ }).click() })
     await settle()
     expect(screen.getByTestId('show-latest')).toBeInTheDocument()
-    view.rerender(createElement(QueryClientProvider, { client: qc }, createElement(ContextBreakdownTab, { slot: 'chat-8' })))
+    view.rerender(createElement(Provider, { store: createTestStore() }, createElement(QueryClientProvider, { client: qc }, createElement(ContextBreakdownTab, { slot: 'chat-8' }))))
     await settle()
     expect(traceMock).toHaveBeenCalledWith('chat-8')
     expect(screen.queryByTestId('show-latest')).toBeNull()

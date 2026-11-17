@@ -383,6 +383,12 @@ def _no_model_download(_floor_monkeypatch, _isolation_dirs):
     # lock file into the repo root, plus a background reader thread that outlives the
     # test. Tests that exercise telemetry delete this var themselves (test/metrics/).
     monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
+    # A developer's ambient DO_NOT_TRACK would outrank every per-test opt-in
+    # (off wins), so tests that turn recording on would fail only on their machine.
+    # An ambient KIROCREW_TELEMETRY_DISABLED holds the unwritten default off the
+    # same way. Tests that exercise either variable set it themselves.
+    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+    monkeypatch.delenv("KIROCREW_TELEMETRY_DISABLED", raising=False)
 
 
 @pytest.fixture(autouse=True)

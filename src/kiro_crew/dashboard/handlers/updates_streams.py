@@ -13,9 +13,9 @@ import asyncio
 import collections
 import json
 import logging
+import threading
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import shutdown_event
 from kiro_crew.config.live import ConfigChange
@@ -86,7 +86,7 @@ async def api_log_level(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     from kiro_crew.dashboard.handlers._shared import body_not_object_error
 
     if (not_object := body_not_object_error(body)) is not None:
@@ -135,11 +135,43 @@ class _QueueLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
+            msg = _stream_safe(self.format(record))
             data = json.dumps({"level": record.levelname, "msg": msg})
             self._queue.put_nowait(data)
         except Exception:
+            # A log handler must never raise into the code that logged.
             pass
+
+
+#: Set while this thread runs :func:`_stream_safe`: a line the redactor itself logs
+#: meanwhile (its fail-closed warning) would otherwise redact again, without end.
+_REDACTING = threading.local()
+
+
+def _stream_safe(msg: str) -> str:
+    """*msg* as the live log stream may carry it: redacted, whatever the owner's redaction setting says.
+
+    The stream reaches every dashboard-user socket and ``log``-scoped apps, not only
+    the owner, so it is not an output seam. The switch read here would not say how
+    the record was built: one made while the seams were off (the record factory then
+    skips its shape passes) can reach this handler after they are back on. So every
+    line is redacted, in a fresh context so a record logged inside another bypassed
+    seam is redacted too; a line the factory already redacted comes out the same. A
+    line logged while this thread is already redacting one is replaced whole.
+    """
+    import contextvars
+
+    from kiro_crew.log_redaction import redact_log_shapes
+    from kiro_crew.security import redact
+    from kiro_crew.security.redaction import REDACTION_UNAVAILABLE_TAG
+
+    if getattr(_REDACTING, "active", False):
+        return REDACTION_UNAVAILABLE_TAG
+    _REDACTING.active = True
+    try:
+        return contextvars.Context().run(lambda: redact(redact_log_shapes(msg)))
+    finally:
+        _REDACTING.active = False
 
 
 # ── Persistent log ring buffer ──
@@ -208,7 +240,7 @@ class _RingLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
+            msg = _stream_safe(self.format(record))
             data = json.dumps({"level": record.levelname, "msg": msg})
             self._ring.append(data)
             # Push to WS log subscribers. emit() runs on ARBITRARY threads (any
@@ -228,6 +260,7 @@ class _RingLogHandler(logging.Handler):
                     except RuntimeError:
                         pass
         except Exception:
+            # A log handler must never raise into the code that logged.
             pass
 
 
@@ -263,7 +296,7 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
     resp.headers["X-Accel-Buffering"] = "no"
     try:
         await resp.prepare(request)
-    except (ConnectionResetError, ClientConnectionResetError):
+    except ConnectionResetError:
         return resp
 
     # Replay buffered history first (capped by ?lines=N)
@@ -271,7 +304,7 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
     for data in ring_snapshot[-lines_cap:]:
         try:
             await resp.write(f"data: {data}\n\n".encode())
-        except (ConnectionResetError, ClientConnectionResetError):
+        except ConnectionResetError:
             return resp
 
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
@@ -295,7 +328,7 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
                 await resp.write(f"data: {data}\n\n".encode())
             except asyncio.TimeoutError:
                 await resp.write(b": keepalive\n\n")
-    except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
+    except (ConnectionResetError, asyncio.CancelledError):
         pass
     finally:
         root.removeHandler(handler)
@@ -357,8 +390,20 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     resp.headers["X-Accel-Buffering"] = "no"
     try:
         await resp.prepare(request)
-    except (ConnectionResetError, ClientConnectionResetError):
+    except ConnectionResetError:
         return resp
+
+    # Whether this reader is the owner alone, decided once: a note was built inside
+    # the owner's seam, so any other reader gets each event redacted in full.
+    from kiro_crew import redaction_seams
+    from kiro_crew.dashboard.redaction_audience import for_reader, request_audience
+
+    owner_reader = redaction_seams.owner_alone(request_audience(request))
+
+    async def send(event: str, payload: str) -> None:
+        shown = for_reader(payload, owner=owner_reader)
+        if shown is not None:
+            await resp.write(f"event: {event}\ndata: {shown}\n\n".encode())
 
     # Register a per-client notification queue
     client_q = state.register_sse()
@@ -373,10 +418,10 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         payload = note["slots"]
                         if not is_dashboard_user:
                             payload = _without_pin_ranks(payload)
-                        await resp.write(f"event: slots\ndata: {payload}\n\n".encode())
+                        await send("slots", payload)
                     elif msg_type == "slot_title":
                         payload = json.dumps({"key": note["key"], "title": note["title"]})
-                        await resp.write(f"event: slot_title\ndata: {payload}\n\n".encode())
+                        await send("slot_title", payload)
                     elif msg_type == "refresh":
                         await resp.write(f"event: refresh\ndata: {note['kinds']}\n\n".encode())
                     elif msg_type == "chat_message":
@@ -398,13 +443,13 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         payload = json.dumps(
                             chat_message_frame(note, include_metadata=is_dashboard_user)
                         )
-                        await resp.write(f"event: chat_message\ndata: {payload}\n\n".encode())
+                        await send("chat_message", payload)
                     else:
                         if relay_teammate and app_origin_frame(msg_type or "notification", note):
                             audit_teammate_withheld(msg_type or "notification")
                             continue
                         payload = json.dumps(note)
-                        await resp.write(f"event: notification\ndata: {payload}\n\n".encode())
+                        await send("notification", payload)
                 except asyncio.QueueEmpty:
                     break
 
@@ -428,7 +473,7 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                 if shutdown_event.is_set() or not client_q.empty():
                     break
                 await asyncio.sleep(0.25)
-    except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
+    except (ConnectionResetError, asyncio.CancelledError):
         pass
     finally:
         state.unregister_sse(client_q)

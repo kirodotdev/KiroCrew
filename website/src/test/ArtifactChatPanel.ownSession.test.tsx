@@ -161,9 +161,11 @@ describe('ArtifactChatPanel on its bound session', () => {
     )
     expect(await screen.findByTestId('zzq-chatpage')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'zzq go' }))
-    // The read is still loading: the panel does not take the active slot back.
+    // The read is still loading: the panel does not take the active slot back,
+    // and draws no chat, which would be the other session's.
     expect(store.getState().chat.slotSwitchTarget).toBe('zzq-other')
     expect(switchesTo('zzq-bound')).toBe(1)
+    expect(screen.queryByTestId('zzq-chatpage')).not.toBeInTheDocument()
     await act(async () => { answer({ messages: [], has_more: false, total: 0 }) })
     expect(await screen.findByText('zzq chat route')).toBeInTheDocument()
     expect(store.getState().chat.activeSlot).toBe('zzq-other')

@@ -6,7 +6,9 @@ inherits (``resolve_parent_policy``), the session it runs on, shared or dedicate
 the child's memory, crew activity and folder steering (``prepare_child_context``), the
 records and the spawn event a restart and the panel read (``persist_spawn_records``), and
 the ``AgentSpawn`` and ``UserPromptSubmit`` hooks with their clock bookkeeping
-(``fire_prompt_hooks``). Each takes the run's ``RunEventCoordinator`` as ``self``.
+(``fire_prompt_hooks``). Each takes the run's ``RunEventCoordinator`` as ``self``, except
+``spec_builtin_tools_notice``, the line naming what of a named agent's ``tools`` and
+``model`` a claude session does not apply, which needs only the session.
 
 The turn body runs on ``kiro_crew.subagent``'s globals (``bind_component_globals``), and
 tests patch names there (``sel``, ``time``, ``_redact``, the session re-projection
@@ -247,6 +249,9 @@ async def acquire_session(
     _sa = _facade()
     if use_session_sharing:
         from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRequestTimeout as _StartTimeout
+        from kiro_crew.agent_sdk.drivers.acp_vocab import (
+            AcpScopeAdmissionTimeout as _ScopeAdmissionTimeout,
+        )
 
         try:
             client = await self._manager._create_shared_session(info, session_key, agent)
@@ -261,6 +266,14 @@ async def acquire_session(
             is_new = True
             _resumed = False
             is_cc = False
+        except _ScopeAdmissionTimeout as exc:
+            # The companion runtime's spawn waited past its bound for the user
+            # systemd manager to admit its scope. That is congestion too: a
+            # dedicated process would ask the same manager for one more scope. The
+            # attempt ends the way ``_await_late_start`` ends an ``initialize``
+            # timeout that has no collector. No L3 failure is counted: the runtime
+            # never started, and an L4 escalation cannot make the manager faster.
+            raise RuntimeError(f"start_timeout: {exc}") from exc
         except Exception as exc:
             # The shared runtime itself is unavailable (dead, spawn failed):
             # not congestion. The failure is counted on the ladder's L3
@@ -372,8 +385,17 @@ def capture_cleanup_identity(
     # acquisition. Every later step can fail and tombstone the run, so
     # delaying this until the state write leaves provider files unidentified.
     try:
+        from kiro_crew.agent_sdk.codex_transcripts import (
+            is_codex_provider_label,
+            recorded_codex_home,
+        )
+
         cleanup_session_id = str(client.session_id or "") if hasattr(client, "session_id") else ""
         cleanup_provider = self._manager._provider_label_of(client)
+        # The prune and spawn_release have no session, so a Codex run records its store now.
+        cleanup_codex_home = (
+            recorded_codex_home(client) if is_codex_provider_label(cleanup_provider) else ""
+        )
         # Continuations use this record to recover their project on every
         # backend, even when continuing a follow-up after gateway restart.
         provider_cwd = getattr(client, "cwd", "")
@@ -386,6 +408,7 @@ def capture_cleanup_identity(
         setattr(info, "_session_id", cleanup_session_id)
         setattr(info, "_session_provider", cleanup_provider)
         setattr(info, "_session_cwd", cleanup_cwd)
+        setattr(info, "_session_codex_home", cleanup_codex_home)
         self._publish_identity(
             info.id,
             session_id=cleanup_session_id,
@@ -393,6 +416,7 @@ def capture_cleanup_identity(
             cwd=cleanup_cwd,
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=cleanup_codex_home,
         )
     except Exception:
         _sa.logger.debug("Failed to capture live cleanup identity for %s", info.id, exc_info=True)
@@ -548,6 +572,7 @@ async def persist_spawn_records(
             cwd=str(getattr(info, "_session_cwd", "")),
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=str(getattr(info, "_session_codex_home", "")),
         )
     except Exception:
         _sa.logger.debug("Failed to persist cleanup identity for %s", info.id, exc_info=True)
@@ -685,3 +710,47 @@ async def fire_prompt_hooks(
         info._last_activity_mono = _sa.time.monotonic()
         info._prompt_hooks_running = False
     return _hook_prefix
+
+
+#: How long a sub-agent's first prompt waits for the spec read behind its notice.
+_SPEC_NOTICE_TIMEOUT_SECS = 10.0
+
+
+async def spec_builtin_tools_notice(
+    client: Any, info: SubagentInfo, session_key: str, *, fresh: bool
+) -> str:
+    """The block a spawn's new session's first prompt carries when its claude session
+    leaves the named agent's ``tools`` limit or ``model`` pin unapplied
+    (``agent_sdk.spec_builtin_tools``).
+
+    Only on a *fresh* session, so a continuation or a respawn does not repeat it.
+    Logged for the operator too. ``""`` for any other run, so the caller prepends it
+    as it is; a spec that cannot be read in time adds nothing.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+    from kiro_crew.agent_sdk.spec_builtin_tools import spec_builtin_tools_notice as _notice
+    from kiro_crew.agent_sdk.spec_hooks import spec_project_dir
+
+    if not fresh or not info.agent:
+        return ""
+    try:
+        text = await asyncio.wait_for(
+            asyncio.to_thread(
+                _notice,
+                info.agent,
+                spec_project_dir(client),
+                backend=capabilities_of(client).backend,
+                namespace=capabilities_of(client).model_id_namespace,
+                session_key=session_key,
+            ),
+            _SPEC_NOTICE_TIMEOUT_SECS,
+        )
+    except Exception:  # noqa: BLE001 - an informational line must never fail a run
+        _facade().logger.debug(
+            "agent spec tools for %r could not be read", info.agent, exc_info=True
+        )
+        return ""
+    if not text:
+        return ""
+    _facade().logger.warning("Subagent %s (agent %s): %s", info.id, info.agent, text)
+    return f"[Session notice] {text}\n\n"

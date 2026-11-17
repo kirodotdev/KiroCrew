@@ -972,6 +972,23 @@ describe('PullRequestPanel', () => {
     expect(warning).toHaveTextContent('Open the pull request for the complete set')
   })
 
+  it('shows a failed section read through ErrorNotice and keeps truncation a status note', async () => {
+    mockApi.pullRequestSource.mockResolvedValue({
+      ...github,
+      partialSections: ['files', 'checks'],
+      failedSections: ['checks'],
+    })
+    renderPanel()
+    const failure = await screen.findByTestId('pull-request-panel-failed-sections')
+    expect(failure).toHaveAttribute('role', 'alert')
+    expect(failure).toHaveTextContent("Couldn't load checks for this pull request")
+    expect(failure).toHaveTextContent('Ask the agent')
+    // The page-limit cut failed nothing, so only it stays in the status banner.
+    const warning = screen.getByRole('status')
+    expect(warning).toHaveTextContent('Provider results may be partial for files.')
+    expect(warning).not.toHaveTextContent('checks')
+  })
+
   it('shows commits, checks, and review comments in their tabs', async () => {
     const onAddToChat = vi.fn()
     renderPanel(onAddToChat)
@@ -1346,6 +1363,35 @@ describe('PullRequestPanel actions', () => {
     await screen.findByText('GitLab source')
     expect(screen.queryByRole('button', { name: /auto-merge/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
+  })
+
+  it('clears a failed ready notice once a later auto-merge succeeds', async () => {
+    // The ready click fails, then the pull request leaves draft elsewhere and
+    // auto-merge is armed from here: the old refusal must not stay beside it.
+    let current: PullRequestSource = { ...github, draft: true }
+    mockApi.pullRequestSource.mockImplementation(() => Promise.resolve(current))
+    mockApi.markPullRequestReady.mockRejectedValue(new Error(JSON.stringify({ error: 'zz-ready-refused' })))
+    mockApi.enablePullRequestAutoMerge.mockResolvedValue({ ok: true, mergeMethod: 'squash' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url: github.url, provider: github.provider, number: github.number, repo: 'widgets' }]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+          onAddToChat={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Ready for review/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('zz-ready-refused')
+
+    current = { ...github, draft: false }
+    await act(async () => { await client.invalidateQueries() })
+    fireEvent.click(await screen.findByRole('button', { name: /Enable auto-merge/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /Confirm auto-merge/i }))
+    await waitFor(() => expect(mockApi.enablePullRequestAutoMerge).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText(/zz-ready-refused/)).toBeNull())
   })
 
   it('surfaces the provider reason inline when an action fails', async () => {

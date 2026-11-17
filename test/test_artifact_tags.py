@@ -402,7 +402,24 @@ class TestMcpGateReadsTheSameRule:
             == "M\u00fcnchen"
         )
 
-    @pytest.mark.parametrize("tag", ["-bad", "a/b", "\U0001f642", "\u58f2" * 65])
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            *named_cases(
+                "test_save_refuses_with_the_rules_reason",
+                "tag",
+                ["-bad", "a/b", "\U0001f642", "\u58f2" * 65],
+            ),
+            # The gate hands the raw tag to the one rule, so an edge-whitespace tag
+            # (a newline-ending tag among them) is refused on the MCP save path
+            # exactly as the store refuses it, rather than being trimmed and accepted.
+            *named_cases(
+                "test_save_refuses_an_edge_whitespace_tag_like_the_store",
+                "tag",
+                ["nl\n", "a" * 64 + "\n", "trail ", "\tlead"],
+            ),
+        ],
+    )
     def test_save_refuses_with_the_rules_reason(self, tag: str) -> None:
         with pytest.raises(ValidationError, match="tags"):
             validate_tool_args(self._save_args(tag), ARTIFACT_SAVE_SCHEMA)
@@ -425,14 +442,6 @@ class TestMcpGateReadsTheSameRule:
             ValidationError, match=r"item\[1\]: a tag must start with a letter or digit"
         ):
             validate_tool_args(self._save_args("ok", "-bad"), ARTIFACT_SAVE_SCHEMA)
-
-    @pytest.mark.parametrize("tag", ["nl\n", "a" * 64 + "\n", "trail ", "\tlead"])
-    def test_save_refuses_an_edge_whitespace_tag_like_the_store(self, tag: str) -> None:
-        # The gate hands the raw tag to the one rule, so an edge-whitespace tag
-        # (a newline-ending tag among them) is refused on the MCP save path
-        # exactly as the store refuses it, rather than being trimmed and accepted.
-        with pytest.raises(ValidationError, match="tags"):
-            validate_tool_args(self._save_args(tag), ARTIFACT_SAVE_SCHEMA)
 
     def test_update_refuses_a_newline_ending_tag_like_the_store(self) -> None:
         with pytest.raises(ValidationError, match=r"U\+000A"):

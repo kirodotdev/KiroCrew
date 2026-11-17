@@ -10,6 +10,7 @@ import MarkdownRenderer from './MarkdownRenderer'
 
 import { i18nT } from '../i18n/t'
 import { Glass } from './Glass'
+import { COMPOSER_RADIUS } from './composerRadius'
 import { Btn, IconButton } from './ui'
 
 // The resolver lives in `utils/docsLink`: a pure function must not live behind a
@@ -99,16 +100,29 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
   const docHref = tipDocHref(tip.doc_link || tip.doc)
   const actionRoute = tipActionRoute(tip.action)
 
+  // Count a click on the tip (its action button or its doc link) as engagement,
+  // distinct from dismiss, so cadence / analytics can tell "acted" from
+  // "closed". Once per tip: a doc-link click followed by the button is one
+  // click. Fire-and-forget: navigation must not depend on the request. A
+  // failed request clears the marker so the next click tries again; it shows
+  // no notice, because the user's click itself already worked.
+  const ackedTipId = useRef<string | null>(null)
+  const ackClick = useCallback(() => {
+    if (ackedTipId.current === tip.id) return
+    const id = tip.id
+    ackedTipId.current = id
+    api.tipsFeedback(id, 'ack').catch(() => {
+      if (ackedTipId.current === id) ackedTipId.current = null
+    })
+  }, [tip.id])
+
   const handleAction = useCallback(() => {
     if (!actionRoute) return
-    // Count the click as engagement (distinct from dismiss) so cadence /
-    // analytics can tell "acted" from "closed". Fire-and-forget — navigation
-    // must not depend on the request.
-    api.tipsFeedback(tip.id, 'ack').catch(() => {})
+    ackClick()
     queryClient.setQueryData(['tips-next'], null)
     navigate(actionRoute)
     onDismiss()
-  }, [actionRoute, tip.id, navigate, onDismiss, queryClient])
+  }, [actionRoute, ackClick, navigate, onDismiss, queryClient])
 
   // A tip opens as a one-line pill (lightbulb, title, chevron, close) so it
   // never crowds the composer; the full card is one click away. The open state
@@ -222,7 +236,7 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
     ) : (
       <Glass
         variant="chip"
-        radius={12}
+        radius={COMPOSER_RADIUS}
         data-testid="tip-card"
         className="glass-shadow w-full flex"
         role="complementary"
@@ -266,6 +280,7 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
             {docHref && (
               <a
                 href={docHref}
+                onClick={ackClick}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline"

@@ -1066,7 +1066,8 @@ class TestFfmpegCandidateDirsWindows:
         dirs = tr._ffmpeg_candidate_dirs()
         assert os.path.join(pf, "ffmpeg", "bin") in dirs
         assert os.path.join(la, "Programs", "ffmpeg", "bin") in dirs
-        assert "/usr/local/bin" in dirs
+        assert "/usr/local/bin" not in dirs
+        assert "/opt/homebrew/bin" not in dirs
 
     def test_non_windows_omits_windows_dirs(self, monkeypatch):
         from kiro_crew import platform_compat as pc

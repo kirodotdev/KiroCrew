@@ -4,7 +4,7 @@ The path from ``@Kiro Crew fix the flaky login test`` in a thread to a running
 code channel:
 
 1. :func:`is_directed_human_prompt` -- only a person's own message qualifies:
-   no ``bot_id`` / ``bot_profile``, subtype ``None`` or ``file_share``.
+   no ``bot_id`` / ``bot_profile``, subtype in :data:`PERSON_SUBTYPES`.
 2. :func:`session_id_for` -- a deterministic id for the origin message. It is
    both the route record's key and Slack's ``session_id`` idempotency key, so
    a re-delivered event, or a restart between steps, never opens a second
@@ -32,7 +32,10 @@ from kiro_crew.slack.code_channels.store import Binding
 #: Slack's block id for the origin copy it posts into a new code channel.
 ORIGIN_CONTEXT_BLOCK_ID = "agent_channel_origin_context"
 
-_PERSON_SUBTYPES = (None, "file_share")
+#: The ``message`` subtypes a person's own message carries: none, a file upload, or
+#: a thread reply also sent to the channel ("Also send to channel"). Every other
+#: subtype is a system event (a join, an edit, a delete) or a bot's post.
+PERSON_SUBTYPES = (None, "file_share", "thread_broadcast")
 
 #: Raw Slack id shapes for sender attribution: a workspace (``T``), an
 #: Enterprise Grid org (``E``) and a user (``U``, or ``W`` for an org-wide
@@ -103,7 +106,7 @@ def is_directed_human_prompt(event: dict[str, Any]) -> bool:
         return False
     if event.get("bot_id") or event.get("bot_profile"):
         return False
-    if event.get("subtype") not in _PERSON_SUBTYPES:
+    if event.get("subtype") not in PERSON_SUBTYPES:
         return False
     return bool(event.get("user")) and bool(event.get("ts")) and bool(event.get("channel"))
 

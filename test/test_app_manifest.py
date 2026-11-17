@@ -1218,10 +1218,10 @@ def _overlay_manifest(*overlays) -> AppManifest:
 
 
 def test_overlay_parses_and_round_trips():
-    decl = {"id": "command-bar", "replaces": "quick-search"}
+    decl = {"id": "launcher", "replaces": "quick-search"}
     m = _overlay_manifest(decl)
     assert len(m.ui.overlays) == 1
-    assert m.ui.overlays[0].id == "command-bar"
+    assert m.ui.overlays[0].id == "launcher"
     assert m.ui.overlays[0].replaces == "quick-search"
     assert m.validate() == []
     # Round-trip must preserve the declaration, or the frontend stops seeing the slot.
@@ -1368,8 +1368,8 @@ def test_a_null_platform_os_reads_as_unset():
     [
         ({"replaces": "quick-search"}, "ui overlay missing required field: id"),
         (
-            {"id": "Command-Bar", "replaces": "quick-search"},
-            "ui overlay id must be kebab-case: 'Command-Bar'",
+            {"id": "Launcher", "replaces": "quick-search"},
+            "ui overlay id must be kebab-case: 'Launcher'",
         ),
         ({"id": "-lead", "replaces": "quick-search"}, "ui overlay id must be kebab-case: '-lead'"),
         ({"id": "a/b", "replaces": "quick-search"}, "ui overlay id must be kebab-case: 'a/b'"),
@@ -1412,25 +1412,6 @@ def test_overlay_builtins_must_not_ship_a_ui_bundle():
         "builtins declaring both ui.overlays and ui.entry (origin is downgraded to "
         f"'local' on restart, so the slot is refused): {offenders}"
     )
-
-
-def test_command_bar_builtin_is_overlay_only_and_default_on():
-    """The shipped Command Bar app is the first overlay-only builtin.
-
-    No page, no backend entry point (enabling spawns no process), and default-ON, as
-    declared in ``manager._DEFAULT_ON_BUILTINS``.
-    """
-    raw = json.loads(
-        (_REPO_ROOT / "src/kiro_crew/apps/builtins/command_bar/app.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    m = AppManifest.from_dict(raw)
-    assert m.validate() == []
-    assert raw["defaultEnabled"] is True
-    assert m.ui.pages == []
-    assert not m.backend.entryPoint
-    assert [(o.id, o.replaces) for o in m.ui.overlays] == [("command-bar", "quick-search")]
 
 
 class TestShippedManifestsAreWellFormedJson:

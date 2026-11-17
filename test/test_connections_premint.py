@@ -60,6 +60,11 @@ def warm_engine(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(warm, "mintable_providers", lambda: list(candidates))
     monkeypatch.setattr(warm, "warm_mint_all", _warm_mint_all)
+    # Warming serves the kiro-cli mint; on the default KAS chat backend a Connect
+    # signs in on the KAS engine and the handler warms nothing for it.
+    monkeypatch.setattr(
+        "kiro_crew.connections.mint_kas.kiro_cli_sign_in_providers", lambda providers: providers
+    )
     calls["candidates"] = candidates
     return calls
 

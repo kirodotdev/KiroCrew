@@ -27,6 +27,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import wait_until
 
 #: One valid call per kirocrew-dashboard tool, for the refusal-audit sweep below.
@@ -56,6 +57,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_set_model": {"target": "chat-2", "model": "sonnet"},
     "session_reload": {"target": "chat-2"},
     "session_set_color": {"target": "chat-2", "color": "1"},
+    "session_set_note": {"target": "chat-2", "note": "The build is green."},
     "session_rename": {"target": "chat-2", "title": "Worker"},
     "session_generate_title": {"target": "chat-2"},
     "session_close": {"target": "chat-2"},
@@ -70,6 +72,8 @@ _DASHBOARD_TOOL_CALLS = {
     "session_read_message": {"target": "chat-2"},
     "session_summary": {"target": "chat-2"},
     "work_dispatch": {"title": "t", "acceptance": {}, "agent": "a", "seed": "s"},
+    "session_queue": {"target": "chat-2"},
+    "crew_list": {},
 }
 
 
@@ -203,10 +207,10 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
     `target`, so both are asserted.
     """
 
-    # Assembled rather than written literally: a real-looking token in source
-    # trips secret scanners for no benefit. `redact_credentials` matches the
-    # `ghp_` + 36 shape.
-    noisy_target = "ghp_" + ("a" * 36)
+    # Built rather than written literally: a real-looking token in source trips
+    # secret scanners for no benefit. `redact_credentials` matches a `ghp_` token
+    # with a valid checksum.
+    noisy_target = github_classic(seed=106)
 
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")

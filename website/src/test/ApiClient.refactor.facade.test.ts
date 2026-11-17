@@ -73,11 +73,11 @@ describe('api singleton shape', () => {
 })
 
 describe('the blessed transport', () => {
-  it('is installed once, at load, with exactly the seven helpers', () => {
+  it('is installed once, at load, with exactly the eight helpers', () => {
     const install = vi.mocked(installApiTransport)
     expect(install).toHaveBeenCalledTimes(1)
     const [installed] = install.mock.calls[0]
-    expect(Object.keys(installed)).toEqual(['get', 'post', 'put', 'del', 'patch', 'j', 'jNullable'])
+    expect(Object.keys(installed)).toEqual(['get', 'getWithSignal', 'post', 'put', 'del', 'patch', 'j', 'jNullable'])
     for (const helper of Object.values(installed)) expect(typeof helper).toBe('function')
   })
 })

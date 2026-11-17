@@ -155,6 +155,10 @@ _URL = (
     "&X-Amz-Security-Token=" + "T" * 600 + "&X-Amz-Signature=" + "b" * 64
 )
 _CUT = _URL.index("&X-Amz-Signature")
+# The link as the stream shows it: every part kept but the two credential values.
+_URL_SHOWN = _URL.replace("T" * 600, "[REDACTED: credential]").replace(
+    "b" * 64, "[REDACTED: credential]"
+)
 _TOKEN = "3f9a" + "c0ffee" * 4 + "e1d2"
 _LONG = "x" * (1 << 16)  # a line as long as the stream holds
 # An SD-JWT: a JWS, then a disclosure only the Bearer label redacts.
@@ -167,14 +171,14 @@ _SD_CUT = security_helpers._JWT.rindex(".") + 10  # inside the signature
     [
         pytest.param(
             ["Link: " + _URL[:_CUT], _URL[_CUT:] + " . done"],
-            [f"Link: [REDACTED: suspicious URL to {_HOST}] . done"],
-            ("X-Amz-", "TTTT", "bbbb"),
+            [f"Link: {_URL_SHOWN} . done"],
+            ("TTTT", "bbbb"),
             id="presigned-link-cut-inside-its-query",
         ),
         pytest.param(
             ["ready\nLink: " + _URL[:_CUT], _URL[_CUT:] + "\n"],
-            ["ready\n", f"Link: [REDACTED: suspicious URL to {_HOST}]\n"],
-            ("X-Amz-", "TTTT", "bbbb"),
+            ["ready\n", f"Link: {_URL_SHOWN}\n"],
+            ("TTTT", "bbbb"),
             id="a-finished-line-goes-out-while-the-cut-link-waits",
         ),
         pytest.param(
@@ -196,7 +200,9 @@ _SD_CUT = security_helpers._JWT.rindex(".") + 10  # inside the signature
             id="bearer-token-read-after-its-label-line-ends",
         ),
         pytest.param(
-            [_LONG + " Authorization: Bearer " + _TOKEN[:6], _TOKEN[6:] + " now\n"],
+            # Cut 12 characters in, so the part sent is still a value the header
+            # reads (8 or more characters).
+            [_LONG + " Authorization: Bearer " + _TOKEN[:12], _TOKEN[12:] + " now\n"],
             [_LONG + " Authorization: Bearer [REDACTED: credential]"],
             ("3f9a", "ffee", "e1d2"),
             id="bearer-token-cut-in-a-line-too-long-to-hold",
@@ -220,8 +226,8 @@ async def test_a_value_cut_between_two_reads_is_redacted_whole(
     shown: list[str],
     hidden: tuple[str, ...],
 ) -> None:
-    """A blocked link or a credential cut by a poll: the stream shows its
-    placeholder and none of the value, and a finished line still goes out."""
+    """A credential cut by a poll, in a link or after its label: the stream masks
+    the value whole and shows none of it, and a finished line still goes out."""
     reads = list(reads)
     monkeypatch.setattr(ResultTail, "read_new", lambda _self: reads.pop(0) if reads else "")
     app = _stream_app(Path("unused"), monkeypatch)

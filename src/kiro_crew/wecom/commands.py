@@ -34,6 +34,9 @@ from kiro_crew.messaging.conversation import ConversationState  # noqa: F401
 
 # ── Command constants ──
 
+# Every alias is written lowercase: ``_match_alias``, ``parse_mid_turn_override``
+# and ``is_bare_mid_turn_override`` compare only the lowered text, so a
+# mixed-case alias here would never match.
 _NEW_ALIASES = frozenset(("/new", "新对话", "清空"))
 _COMPACT_ALIASES = frozenset(("/compact", "压缩"))
 _HELP_ALIASES = frozenset(("/help", "帮助", "/?"))
@@ -76,15 +79,19 @@ def build_help_text() -> str:
 
 
 def _match_alias(text: str) -> str | None:
-    """Exact-match one command alias."""
+    """Exact-match one command alias, ignoring case.
+
+    Every alias is written lowercase (the Chinese ones have no case), so the
+    lowered text is the only spelling that needs checking.
+    """
     lower = text.lower()
-    if lower in _NEW_ALIASES or text in _NEW_ALIASES:
+    if lower in _NEW_ALIASES:
         return "new"
-    if lower in _COMPACT_ALIASES or text in _COMPACT_ALIASES:
+    if lower in _COMPACT_ALIASES:
         return "compact"
-    if lower in _STOP_ALIASES or text in _STOP_ALIASES:
+    if lower in _STOP_ALIASES:
         return "stop"
-    if lower in _HELP_ALIASES or text in _HELP_ALIASES:
+    if lower in _HELP_ALIASES:
         return "help"
     if lower in _LINK_ALIASES:
         return "link"

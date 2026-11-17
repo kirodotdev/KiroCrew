@@ -122,10 +122,13 @@ class TestKiroPrerequisiteHelpers:
         file's SIZE at lockdown time — zero means no payload byte existed yet.
         """
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
 
         def _measuring(target):
-            sizes.append(os.stat(target).st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(os.stat(target).st_size)
             return real_restrict(target)
 
         monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
@@ -301,7 +304,7 @@ class TestKiroPrerequisiteHelpers:
         tmp_path: Path,
         platform_name: str,
     ) -> None:
-        # Regression: Kiro CLI 2.15+ is a multi-call binary that dispatches by
+        # Kiro CLI 2.15+ is a multi-call binary that dispatches by
         # exec'ing a SIBLING executable (``kiro-cli-chat``) resolved relative to
         # its own path. Copying into a flat dir stranded the sibling and every
         # spawn died with "No such file or directory (os error 2)" →

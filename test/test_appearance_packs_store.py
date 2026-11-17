@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 
 import pytest
@@ -138,6 +139,118 @@ class TestPathSafety:
         ids = [p["id"] for p in store.list_packs()]
         assert "keep" in ids
         assert "drop" not in ids
+
+    def test_deleting_a_pack_waits_out_a_file_held_open_briefly(
+        self, tmp_path, store, monkeypatch
+    ):
+        """Windows refuses to unlink a file another program holds open (winerror 32)."""
+        import kiro_crew.platform_compat_files as files_mod
+
+        pack_dir = _write_pack(tmp_path, "held")
+        monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
+        real_unlink = os.unlink
+        attempts = []
+
+        def held_once(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "idle.svg" and not attempts:
+                attempts.append(path)
+                exc = PermissionError(13, "in use", os.fspath(path))
+                exc.winerror = 32
+                raise exc
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", held_once)
+        assert store.delete_pack("held") is True
+        assert len(attempts) == 1
+        assert not pack_dir.exists()
+
+    def test_a_hold_past_the_retry_keeps_the_pack_listed_to_delete_again(
+        self, tmp_path, store, monkeypatch
+    ):
+        """``working.svg`` sorts after ``manifest.json``, the order Windows lists a folder in."""
+        import kiro_crew.platform_compat_files as files_mod
+
+        pack_dir = _write_pack(tmp_path, "held")
+        (pack_dir / "working.svg").write_text("<svg/>", "utf-8")
+        monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
+        real_unlink = os.unlink
+
+        def held(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "working.svg":
+                exc = PermissionError(13, "in use", os.fspath(path))
+                exc.winerror = 32
+                raise exc
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", held)
+        assert store.delete_pack("held") is False
+        assert "held" in [p["id"] for p in store.list_packs()]
+
+        monkeypatch.setattr(os, "unlink", real_unlink)
+        assert store.delete_pack("held") is True
+        assert not pack_dir.exists()
+
+    def test_a_hold_past_the_retry_keeps_a_case_variant_manifest(
+        self, tmp_path, store, monkeypatch
+    ):
+        """Windows and macOS fold case, so ``MANIFEST.JSON`` is the manifest and goes last too."""
+        import pathlib
+
+        import kiro_crew.platform_compat_files as files_mod
+
+        pack_dir = _write_pack(tmp_path, "held")
+        (pack_dir / "manifest.json").rename(pack_dir / "MANIFEST.JSON")
+        (pack_dir / "working.svg").write_text("<svg/>", "utf-8")
+        monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
+        real_iterdir = pathlib.Path.iterdir
+        monkeypatch.setattr(
+            pathlib.Path,
+            "iterdir",
+            lambda self: iter(sorted(real_iterdir(self), key=lambda p: p.name.upper())),
+        )
+        real_unlink = os.unlink
+
+        def held(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "working.svg":
+                exc = PermissionError(13, "in use", os.fspath(path))
+                exc.winerror = 32
+                raise exc
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", held)
+        assert store.delete_pack("held") is False
+        assert (pack_dir / "MANIFEST.JSON").exists()
+
+    @pytest.mark.skipif(
+        not shutil.rmtree.avoids_symlink_attacks, reason="rmtree here walks by path"
+    )
+    def test_a_pack_swapped_for_a_symlink_mid_delete_deletes_nothing_outside(
+        self, tmp_path, store, monkeypatch
+    ):
+        """rmtree here removes through the folder it opened, never a link put in its place."""
+        pack_dir = _write_pack(tmp_path, "swapped")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        for child in pack_dir.iterdir():
+            (outside / child.name).write_text("not the pack's", "utf-8")
+        real_unlink = os.unlink
+        swapped = []
+
+        def swap_then_unlink(path, *args, **kwargs):
+            if not swapped:
+                swapped.append(path)
+                pack_dir.rename(tmp_path / "aside")
+                os.symlink(outside, pack_dir, target_is_directory=True)
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", swap_then_unlink)
+        deleted = store.delete_pack("swapped")
+        assert swapped
+        assert sorted(p.name for p in outside.iterdir()) == ["idle.svg", "manifest.json"]
+        assert deleted is False
 
     def test_a_spoofed_manifest_id_cannot_impersonate_another_pack(self, tmp_path, store):
         """The DIRECTORY is the identity. Listing must NOT trust the manifest's

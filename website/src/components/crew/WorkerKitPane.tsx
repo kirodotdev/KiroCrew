@@ -9,9 +9,9 @@
  * replace the file's single prompt slot; an agent without directions leaves
  * it alone. The add is previewed first and written only on confirm.
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Loader2, MinusCircle, Plus, RefreshCw, type LucideIcon } from 'lucide-react'
+import { Check, ChevronRight, Loader2, MinusCircle, Plus, RefreshCw, type LucideIcon } from 'lucide-react'
 import { Btn, PanelSectionHeader } from '../ui'
 import SimpleSelect from '../SimpleSelect'
 import ErrorNotice from '../ErrorNotice'
@@ -56,11 +56,69 @@ function ChangeBadge({ change }: { change: WorkerKitChange['change'] }) {
 /** The directions row whose incoming text overwrites the slot's current directions. */
 const isReplacement = (c: WorkerKitChange) => c.section === 'prompt' && c.change === 'replaced'
 
+/** What the gate refuses (shell commands only), then, behind a closed "Which commands?" fold, the
+ *  blocked commands it is about, each as written. *detail* explains the list before it. *also* lists
+ *  the entries the gate checks only in simple form inside the same fold, with their explanation, so
+ *  the "every" and "some" sentences never show together. */
+function UnenforcedDenies({
+  lead,
+  text,
+  label,
+  entries,
+  testId,
+  detail,
+  also = [],
+}: {
+  lead: string
+  text: string
+  label: string
+  entries: string[]
+  testId: string
+  detail?: string
+  also?: string[]
+}) {
+  const group = (heading: string, items: string[], explain?: string) => (
+    <>
+      {explain && <p className="m-0 mt-1 text-muted">{explain}</p>}
+      <span className="font-medium">{heading}</span>
+      <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
+        {items.map(entry => (
+          <li key={entry}>
+            <code className="break-all font-mono text-[11px]">{entry}</code>
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+  return (
+    <div role="note" className="flex flex-col gap-1 rounded-md bg-warn-subtle px-3 py-2 text-[12px] text-text" data-testid={testId}>
+      <span>
+        <strong className="font-semibold">{lead}</strong> {text}
+      </span>
+      <details className="group flex flex-col gap-1" data-testid={`${testId}-which`}>
+        <summary className="inline-flex cursor-pointer list-none items-center gap-0.5 font-medium hover:underline">
+          <ChevronRight size={12} aria-hidden="true" className="transition-transform group-open:rotate-90" />
+          {i18nT('crewWorkerKit.conditional_which')}
+        </summary>
+        {group(label, entries, detail)}
+        {also.length > 0 && (
+          <div className="flex flex-col gap-1" data-testid={`${testId}-also`}>
+            {group(i18nT('crewWorkerKit.conditional_label'), also, i18nT('crewWorkerKit.conditional_shapes'))}
+          </div>
+        )}
+      </details>
+    </div>
+  )
+}
+
 export default function WorkerKitPane({
   member,
   name,
   templates,
   onOpenApprovals,
+  initialTemplate,
+  onApplied,
+  onBusyChange,
 }: {
   /** The crewmate's key, for the API only — never rendered. */
   member: string
@@ -70,6 +128,14 @@ export default function WorkerKitPane({
   templates: string[]
   /** Opens the editor's Approvals section, offered after an add that granted approvals. */
   onOpenApprovals?: () => void
+  /** An agent to preview as soon as the pane is ready, for a door that already
+   *  knows which agent the user means. The add is still written only on confirm. */
+  initialTemplate?: string
+  /** Called once an add has been written. */
+  onApplied?: () => void
+  /** Told when a preview or an add is in flight, so a host that can close the
+   *  pane keeps it open until the write has reported how it ended. */
+  onBusyChange?: (busy: boolean) => void
 }) {
   const queryClient = useQueryClient()
   // The view only confirms the binding owns a file (and surfaces a load error);
@@ -132,6 +198,7 @@ export default function WorkerKitPane({
       })
       setPreview(null)
       setTemplate('')
+      onApplied?.()
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: crewWorkerKitKey(member) }),
         queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(member) }),
@@ -150,6 +217,22 @@ export default function WorkerKitPane({
       setBusy(false)
     }
   }
+
+  useEffect(() => {
+    onBusyChange?.(busy)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reports `busy`; the callback's identity is the host's
+  }, [busy])
+
+  // The door's own pick, previewed once when the pane can take one. A preview
+  // writes nothing, so this is the same step a click on the picker makes.
+  const initialPicked = useRef(false)
+  const ready = !!kit
+  useEffect(() => {
+    if (!ready || !initialTemplate || initialPicked.current) return
+    initialPicked.current = true
+    onPick(initialTemplate)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount, when the pane is ready
+  }, [ready, initialTemplate])
 
   if (kitQuery.isLoading) {
     return (
@@ -237,6 +320,32 @@ export default function WorkerKitPane({
             </div>
           )}
 
+          {!preview && ((kit.unenforced_denies?.length ?? 0) > 0 || (kit.conditional_denies?.length ?? 0) > 0) && (
+            <div className="flex flex-col gap-2" data-testid="worker-kit-current-state">
+              <span className="text-[12px] font-medium text-text">{i18nT('crewWorkerKit.current_state_label')}</span>
+              {kit.unenforced_denies && kit.unenforced_denies.length > 0 && (
+                <UnenforcedDenies
+                  lead={i18nT('crewWorkerKit.unenforced_lead')}
+                  text={i18nT('crewWorkerKit.unenforced_current')}
+                  label={i18nT('crewWorkerKit.unenforced_label')}
+                  entries={kit.unenforced_denies}
+                  testId="worker-kit-unenforced-current"
+                  also={kit.conditional_denies}
+                />
+              )}
+              {!kit.unenforced_denies?.length && kit.conditional_denies && kit.conditional_denies.length > 0 && (
+                <UnenforcedDenies
+                  lead={i18nT('crewWorkerKit.conditional_lead')}
+                  text={i18nT('crewWorkerKit.conditional_current')}
+                  label={i18nT('crewWorkerKit.conditional_label')}
+                  entries={kit.conditional_denies}
+                  testId="worker-kit-conditional-current"
+                  detail={i18nT('crewWorkerKit.conditional_shapes')}
+                />
+              )}
+            </div>
+          )}
+
           {busy && !preview && (
             <div className="flex items-center gap-2 text-[12px] text-muted">
               <Loader2 size={14} className="lucide-inline animate-spin" />
@@ -304,6 +413,26 @@ export default function WorkerKitPane({
                     </ul>
                   </section>
                 ))
+              )}
+              {preview.unenforced_denies && preview.unenforced_denies.length > 0 && (
+                <UnenforcedDenies
+                  lead={i18nT('crewWorkerKit.unenforced_lead')}
+                  text={i18nT('crewWorkerKit.unenforced_preview')}
+                  label={i18nT('crewWorkerKit.unenforced_label')}
+                  entries={preview.unenforced_denies}
+                  testId="worker-kit-unenforced-preview"
+                  also={preview.conditional_denies}
+                />
+              )}
+              {!preview.unenforced_denies?.length && preview.conditional_denies && preview.conditional_denies.length > 0 && (
+                <UnenforcedDenies
+                  lead={i18nT('crewWorkerKit.conditional_lead')}
+                  text={i18nT('crewWorkerKit.conditional_preview')}
+                  label={i18nT('crewWorkerKit.conditional_label')}
+                  entries={preview.conditional_denies}
+                  testId="worker-kit-conditional-preview"
+                  detail={i18nT('crewWorkerKit.conditional_shapes')}
+                />
               )}
               <div className="flex items-center gap-2">
                 <Btn onClick={clear} disabled={busy} data-testid="worker-kit-cancel">

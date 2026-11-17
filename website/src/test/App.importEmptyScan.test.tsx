@@ -28,6 +28,7 @@ const themeState = {
   crewmatesOnboarded: true,
   crewmatesFlowSeen: true,
   themeBootReady: true,
+  themeBootRead: true,
   themes: [],
   // Read by the Customize chapter `/onboarding` opens once the import step closes.
   allThemes: [],
@@ -74,6 +75,8 @@ beforeEach(() => {
   themeState.markImportOnboarded.mockClear()
   vi.spyOn(api, 'onboardingImportScan').mockResolvedValue(NOTHING_TO_IMPORT)
   vi.spyOn(api, 'onboardingImportState').mockResolvedValue({ ok: true })
+  // First run opens only for the owner (`useViewerIsNotOwner`).
+  vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
 })
 
 afterEach(() => {

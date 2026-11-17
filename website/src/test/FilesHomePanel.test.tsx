@@ -88,7 +88,14 @@ describe('FilesHomePanel header', () => {
   it('titles the tab and names the project by its last path segment', () => {
     mount()
     expect(screen.getByText('Files')).toBeInTheDocument()
-    expect(screen.getByText('my-project')).toHaveAttribute('title', DIR)
+    // The full path shows in the shared bubble on keyboard focus, and is the name's
+    // description, never only a native `title` the desktop app may not paint.
+    const name = screen.getByText('my-project')
+    expect(name).not.toHaveAttribute('title')
+    expect(name).toHaveAttribute('tabindex', '0')
+    expect(document.getElementById(name.getAttribute('aria-describedby') ?? '')).toHaveTextContent(DIR)
+    fireEvent.focus(name)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(DIR)
   })
 
   it('ignores trailing slashes when naming the project', () => {
@@ -98,7 +105,7 @@ describe('FilesHomePanel header', () => {
 
   it('falls back to the whole path when it has no name segment', () => {
     mount('/')
-    expect(screen.getByTitle('/')).toHaveTextContent('/')
+    expect(screen.getByText('/')).not.toHaveAttribute('aria-describedby')
   })
 
   it('drops the project name and its actions when no directory is set', () => {

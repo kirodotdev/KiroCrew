@@ -9,6 +9,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from redaction_structured_cases import github_classic
+
+# A GitHub token with a valid checksum, which the plan redacts (AWS key IDs
+# are kept visible as identifiers).
+_SECRET = github_classic(seed=13)
+
+GATEWAY_PROMPT = "[Workflow `nightly` finished: finished] Its result was just posted above."
 
 # ── Regenerate + variant switching ──
 
@@ -57,6 +64,58 @@ class TestRegenerateAndVariants:
                 assert resp.status == 409
         finally:
             release.set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inject_kind", ["workflow", "heartbeat"])
+    async def test_regenerate_reruns_a_gateway_prompt_and_keeps_the_rows_above_it(
+        self, tmp_path, monkeypatch, inject_kind
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "/workflow nightly")
+        slot.append(
+            "assistant", "[Workflow completion event] nightly", meta={"kind": "workflow_result"}
+        )
+        slot.append("inject", GATEWAY_PROMPT, "msg msg-inject", meta={"injectKind": inject_kind})
+        slot.append("assistant", "The nightly build is green.")
+        slot.drain()
+        armed: list[str] = []
+        run_chat = AsyncMock(
+            side_effect=lambda *_a, **_kw: armed.extend(
+                m["content"] for m in slot._regenerate_target.rows
+            )
+        )
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=run_chat):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                body = await resp.json()
+                await asyncio.sleep(0)
+
+        assert resp.status == 200, body
+        # The gateway's prompt re-runs as the gateway's text, so the request above it
+        # is not run again and only the answer is up for replacement.
+        assert run_chat.call_args.args[2] == GATEWAY_PROMPT
+        assert run_chat.call_args.kwargs["_synthetic_payload"] is True
+        assert run_chat.call_args.kwargs["_directive_user_origin"] is False
+        assert armed == ["The nightly build is green."]
+
+    @pytest.mark.asyncio
+    async def test_regenerate_refuses_a_gateway_prompt_with_no_answer(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "/workflow nightly")
+        slot.append(
+            "assistant", "[Workflow completion event] nightly", meta={"kind": "workflow_result"}
+        )
+        slot.append("inject", GATEWAY_PROMPT, "msg msg-inject", meta={"injectKind": "workflow"})
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "no_assistant_message"
 
     @pytest.mark.asyncio
     async def test_regenerate_requires_prior_assistant(self, tmp_path, monkeypatch):
@@ -403,7 +462,7 @@ class TestRegenerateAndVariants:
         slot.append("assistant", "safe content")
         # Plant a fake credential inside a variant
         slot.messages[-1]["variants"] = [
-            {"content": "AKIAIOSFODNN7EXAMPLE secret stuff", "ts": "t1"},
+            {"content": f"{_SECRET} secret stuff", "ts": "t1"},
             {"content": "safe content", "ts": "t2"},
         ]
         slot.messages[-1]["variant_idx"] = 1
@@ -415,9 +474,9 @@ class TestRegenerateAndVariants:
         persisted = state.conversation_log.read_messages(key)
         ai = [m for m in persisted if m.get("role") == "assistant"][0]
         assert "variants" in ai
-        # The AKIA key must not appear in either variant after redaction
+        # The token must not appear in either variant after redaction
         for v in ai["variants"]:
-            assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")
+            assert _SECRET not in v.get("content", "")
 
     @pytest.mark.asyncio
     async def test_switch_variant_rejects_when_running(self, tmp_path, monkeypatch):
@@ -665,7 +724,7 @@ class TestRegenerateAndVariants:
         slot.append("user", "hi")
         slot.append("assistant", "safe")
         slot.messages[-1]["variants"] = [
-            {"content": "AKIAIOSFODNN7EXAMPLE leaked key", "ts": "t1"},
+            {"content": f"{_SECRET} leaked key", "ts": "t1"},
             {"content": "safe", "ts": "t2"},
         ]
         from kiro_crew.dashboard.chat import _prepare_messages
@@ -673,7 +732,7 @@ class TestRegenerateAndVariants:
         prepared = _prepare_messages(slot.messages, False, live_child="")
         ai = [m for m in prepared if m.get("role") == "assistant"][0]
         for v in ai["variants"]:
-            assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")
+            assert _SECRET not in v.get("content", "")
 
     @pytest.mark.asyncio
     async def test_switch_variant_corrupt_entry(self, tmp_path, monkeypatch):

@@ -34,12 +34,13 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_REPLY_ZH,
     COMPACT_TIMED_OUT_REPLY_ZH,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     context_recycle_warning_zh,
@@ -534,7 +535,10 @@ class WeComDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "WeCom"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "WeCom"
             self.conv_log.set_title(session_key, title)
 
     async def _notice_bubble(self, inbound: "WeComInbound", text: str) -> None:
@@ -806,11 +810,12 @@ class WeComDispatcher:
             await self.client.say(inbound, "⚠️ 当前会话不支持停止，请稍后重试。")
             return
         try:
-            await cancel(wait_ack_timeout=0)
+            outcome = await cancel(wait_ack_timeout=0)
         except Exception:
             logger.warning("WeCom /stop: cancel failed for %s", session_key, exc_info=True)
             await self.client.say(inbound, _STOP_FAILED_TEXT)
             return
+        arm_cancelled_turn(self.sessions, session_key, outcome)
         await self.client.say(inbound, _STOPPED_TEXT)
 
     async def _handle_compact(self, inbound: "WeComInbound") -> None:

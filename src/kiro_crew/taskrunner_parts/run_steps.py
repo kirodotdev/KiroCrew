@@ -197,7 +197,12 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
                         pass
             failed_task = None
             for task, result in zip(resolved, results):
-                if isinstance(result, Exception) or not result:
+                # A step passed only when it returned True. gather(..., return_exceptions=True)
+                # captures BaseException too, so a cancelled step arrives as a CancelledError,
+                # which is not an Exception and is truthy -- an `isinstance(result, Exception) or
+                # not result` test would read it as success and let the run continue past a step
+                # that never finished. Anything that is not True is a failed step.
+                if result is not True:
                     failed_task = task
                     break
         if failed_task is not None:
@@ -380,6 +385,10 @@ async def _execute_single_task(
 
 
 async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool:
+    if run.status == "failed":
+        # The step failed the run itself (a force_approval gate with no handler,
+        # a declared status file that says failed): nothing is planned around it.
+        return False
     if run.replan_count >= _MAX_REPLAN:
         run.status = "failed"
         clean_err, _ = redact_exfiltration_urls(failed_task.error or "")
@@ -404,6 +413,7 @@ async def _try_replan(self: TaskRunner, run: Project, failed_task: Task) -> bool
         try:
             memory_ctx = await git_coord.get_state_summary(run)
         except Exception:
+            # No readable summary: the fallback below fills it.
             pass
     if not memory_ctx:
         memory_ctx = run.memory.summary()

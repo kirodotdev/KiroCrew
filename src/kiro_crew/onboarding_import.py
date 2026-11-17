@@ -318,7 +318,8 @@ def _write_memory(
         # 2000-char chunk on CPU), and import writes hundreds of chunks, so an
         # inline embed makes the user watch a spinner for minutes. The row is
         # keyword-searchable immediately and the caller schedules the backfill
-        # sweep that fills the vector in (see ``schedule_embedding_backfill``).
+        # sweep that fills the vector in (see the import handler's
+        # ``_backfill_embeddings``).
         # Batching is NOT the alternative: measured on real import text,
         # ``embed_batch`` is ~25% SLOWER than looping ``embed``. That workload
         # result is independent of the bounded physical micro-batch used by
@@ -339,6 +340,67 @@ def _write_memory(
     return _WriteOutcome("rejected")
 
 
+def _write_to_provider(item: _Item, category: str, route: Any) -> _WriteOutcome:
+    """An imported directive or memory, handed to the provider that replaces Crew's memory.
+
+    Crew's own stores are not written. Each item goes through ``put`` with a key
+    built from its fingerprint, so a re-import writes nothing twice; Crew's lesson
+    screen still runs on a directive.
+    """
+    from kiro_crew.memory_provider.contract import NewItem, ProviderError, truncate_text
+    from kiro_crew.memory_provider.render import scope_for
+
+    payload = item.payload if isinstance(item.payload, dict) else {}
+    if category == "instructions":
+        rule = str(payload.get("rule", "")).strip()
+        if not rule or contains_volatile_lesson_fact(rule):
+            return _WriteOutcome("rejected")
+        new = NewItem(kind="rule", text=truncate_text(rule), source=item.source_id)
+    elif payload.get("kind") == "semantic":
+        key = str(payload.get("key", ""))
+        value = payload.get("value")
+        # As Crew's own converter writes it: a string as itself, anything else as
+        # its JSON with ``crew.value_json``, so a move back keeps the type.
+        typed = not isinstance(value, str)
+        new = NewItem(
+            kind="preference" if key.startswith("pref.") else "fact",
+            text=truncate_text(json.dumps(value, ensure_ascii=False) if typed else str(value)),
+            title=key[:300] or None,
+            source=item.source_id,
+            meta={"crew.value_json": "1"} if typed else {},
+        )
+    elif payload.get("kind") == "episodic":
+        importance = payload.get("importance")
+        new = NewItem(
+            kind="episode",
+            text=truncate_text(str(payload.get("text", ""))),
+            source=item.source_id,
+            meta=(
+                {"crew.importance": str(float(importance))}
+                if isinstance(importance, (int, float)) and not isinstance(importance, bool)
+                else {}
+            ),
+        )
+    else:
+        return _WriteOutcome("rejected")
+    from kiro_crew.memory_provider.migration import screen_refuses
+
+    # The screens Crew's own stores run before a write, so a provider never keeps
+    # an imported directive they would refuse.
+    if screen_refuses(new):
+        return _WriteOutcome("rejected")
+    scope = scope_for("default", session_key="onboarding-import")
+    if route.provider is None or scope is None:
+        return _WriteOutcome("rejected")
+    try:
+        result = route.provider.blocking_put(scope, new, f"onboarding:{item.fingerprint}")
+    except ProviderError:
+        return _WriteOutcome("rejected")
+    if result.outcome in ("inserted", "enriched"):
+        return _WriteOutcome("imported")
+    return _WriteOutcome("existing" if result.outcome in ("unchanged", "deduped") else "rejected")
+
+
 def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
     if getattr(job, "name", "") != payload["name"]:
         return False
@@ -350,7 +412,12 @@ def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
     if schedule is None:
         return False
     if "cron_expr" in payload:
-        return getattr(schedule, "cron_expr", None) == payload["cron_expr"]
+        from kiro_crew.cron_service.schedule import pin_random_cron_fields
+
+        # The store keeps a random (``R``) field as this job's pick of it.
+        return getattr(schedule, "cron_expr", None) == pin_random_cron_fields(
+            payload["cron_expr"], str(getattr(job, "id", ""))
+        )
     if "every_secs" in payload:
         return getattr(schedule, "every_secs", None) == payload["every_secs"]
     return getattr(schedule, "at_ts", None) == payload.get("at_ts")
@@ -495,6 +562,9 @@ def apply_import(
             _owner("_write_json")._write_json(ledger_path, ledger)
             ledger_dirty = False
 
+    from kiro_crew.memory_provider.resolver import route_for
+
+    memory_route = route_for("default")
     try:
         for source_id, category in sorted(selected):
             scan = scans.get(source_id)
@@ -515,13 +585,23 @@ def apply_import(
                 # check has to decide. It reports ``existing`` when the item
                 # really is already there, which lands as ``deduplicated`` all
                 # the same.
-                if item.fingerprint in records and category not in _REPLACEABLE_CATEGORIES:
+                # Crew's ledger says what Crew's own stores hold: an item sent to a
+                # provider neither reads nor joins it, so each destination decides
+                # for itself. The provider dedups a repeat by its import key.
+                to_provider = memory_route.replaces and category in ("instructions", "memories")
+                if (
+                    not to_provider
+                    and item.fingerprint in records
+                    and category not in _REPLACEABLE_CATEGORIES
+                ):
                     already_imported += 1
                     item_outcomes.append({**outcome, "outcome": "deduplicated"})
                     continue
                 written = _WriteOutcome("skipped")
                 try:
-                    if category == "instructions":
+                    if to_provider:
+                        written = _write_to_provider(item, category, memory_route)
+                    elif category == "instructions":
                         written = _write_instruction(item, lesson_store, vector_store)
                     elif category == "memories":
                         written = _write_memory(item, destination, vector_store)
@@ -578,12 +658,13 @@ def apply_import(
                     if value
                 }
                 if status in ("imported", "existing"):
-                    _record_ledger(
-                        ledger,
-                        item,
-                        destination_key=written.destination_key,
-                    )
-                    ledger_dirty = True
+                    if not to_provider:
+                        _record_ledger(
+                            ledger,
+                            item,
+                            destination_key=written.destination_key,
+                        )
+                        ledger_dirty = True
                     if status == "imported":
                         imported[category] += 1
                         item_outcomes.append({**outcome, **details, "outcome": "accepted"})

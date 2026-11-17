@@ -465,7 +465,7 @@ def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
         assert "chat_message_frame(" in branch, (
             f"{rel}'s chat_message arm no longer calls chat_message_frame — a "
             f"door that builds the frame itself is how the two transports "
-            f"drifted apart in #8045"
+            f"drift apart"
         )
         assert '"slot":' not in branch, (
             f"{rel}'s chat_message arm names the frame's keys inline instead of "

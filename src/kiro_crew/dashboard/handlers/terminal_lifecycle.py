@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers.terminal_session import (
     _enabled_cache,
+    _policy_refuses_terminal,
     _read_terminal_config,
     _sel,
     _terminal_enabled,
@@ -624,4 +625,24 @@ async def apply_terminal_enabled(
         if ws is not None:
             await _close_terminal_ws_bounded(ws, close_code=_TERMINAL_WS_CLOSE_SHELL_EXITED)
         await _kill_session(sess)
-        logger.info("Ended terminal session %s: dashboard.terminal.enabled is false", sid)
+        logger.info(
+            "Ended terminal session %s: dashboard.terminal.enabled or boot.allow_terminal is false",
+            sid,
+        )
+
+
+def end_shells_if_policy_refuses(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
+    """Post-install hook: a ceiling that now refuses the terminal ends every open shell.
+
+    An open shell is admitted once, when it opens, so a live policy refresh that
+    turns ``boot.allow_terminal`` off would otherwise leave it running. Runs on the
+    refresher thread; the teardown runs on *loop*, where the registry lives.
+    """
+    if not _policy_refuses_terminal():
+        return
+    registry = app["state"]._terminal_sessions
+    # An empty config reads as "enabled", so the policy alone decides the teardown.
+    future = asyncio.run_coroutine_threadsafe(apply_terminal_enabled(registry, {}), loop)
+    # Waited for so a failure reaches the hook runner's incident; bounded so a stuck
+    # shell exit cannot hold the refresher thread.
+    future.result(timeout=60)

@@ -16,8 +16,8 @@ vi.mock('../../pages/chat/command-center/CrewWorkerList', async importOriginal =
 
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate, steerUnrecordedLine } from './CrewWorkerComposerGate'
 import { crewRootOf } from '../../lib/crewMode'
-import { PREVIEW_CREW_MODE } from '../../utils/previewFlags'
 import { clearCrewSteerNotice, noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
+import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 
 async function renderGate(slots: unknown[], waitingForApproval = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -145,13 +145,13 @@ describe('CrewWorkerComposerGate (edge review R2)', () => {
   })
 })
 
-describe('CrewSteerUnrecordedNotice with the Crew Mode preview off', () => {
-  afterEach(() => { act(() => { clearCrewSteerNotice('w1') }); localStorage.removeItem(PREVIEW_CREW_MODE) })
+describe('CrewSteerUnrecordedNotice in a build without conductor mode (LTS)', () => {
+  afterEach(() => { act(() => { clearCrewSteerNotice('w1') }) })
 
   it('a crew member\'s unrecorded steer still shows as an ErrorNotice when the gate is not mounted', async () => {
-    localStorage.removeItem(PREVIEW_CREW_MODE)
+    turnOffCrewModeAsLts()
     const worker = { key: 'w1', title: 'Worker B', crew_root: 'root' }
-    // Preview off: the hosts read no crew root, so they mount no gate (no Crew Mode chrome).
+    // Conductor mode off: the hosts read no crew root, so they mount no gate (no Crew Mode chrome).
     expect(crewRootOf(worker)).toBe('')
     const store = createTestStore({ dashboard: { slots: [worker] } } as never)
     await act(async () => {

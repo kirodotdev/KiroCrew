@@ -37,12 +37,13 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_REPLY_ZH,
     COMPACT_TIMED_OUT_REPLY_ZH,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     context_recycle_warning_zh,
@@ -554,6 +555,7 @@ class WeixinDispatcher:
                         # timeout means the cancel WAS written and the ack has not
                         # landed yet, which is what "正在停止" already describes.
                         ack = _STOPPING
+                        arm_cancelled_turn(self.sessions, session_key, outcome)
                     elif outcome == "no_turn":
                         # The provider disagrees with is_busy: the turn finished in
                         # between. Nothing is running, and saying so is accurate.
@@ -635,7 +637,10 @@ class WeixinDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "WeChat"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "WeChat"
             self.conv_log.set_title(session_key, title)
 
     async def _surface_own_session(self) -> None:

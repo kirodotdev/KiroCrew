@@ -316,7 +316,7 @@ custom-rules:
 
       A caveat, which goes in the tip:
       - "Requires an Atlassian account with a Jira or Confluence site …"
-      - "<provider> needs a one-time setup. Configure OAuth app opens …"
+      - "<provider> needs a one-time setup. Set up <provider> opens …"
       - Anything phrased as what will happen, or what must be true, when the
         user acts.
 
@@ -736,6 +736,17 @@ custom-rules:
         the tree beneath the dialog still unmounts, so over an unsaved draft
         the no-hand-off form applies, `onHandoff` or not.
 
+      `impact` says what the failure costs on this surface
+      (`docs/request-for-change/rfc-error-notice-impact.md`). `blocking` (the
+      default) when what the user came to do failed: the main read, a pressed
+      action, a gate. `partial` when the surface works and one part of it is
+      missing or stale. `minor` when only a detail is missing and nothing the
+      user does depends on it. A notice inside a host that already frames it
+      (a warning box) passes `nested`. The reviewer blocks a `partial` or
+      `minor` on a pressed action's failure or on the surface's main read, and
+      blocks a block-variant notice inside a warn-toned box without `nested`.
+      A missing `impact` is never a finding: the default is the safe one.
+
       On the hand-off choice, the REVIEWER blocks on a missing decision, never
       on the direction of it: an added or touched `ErrorNotice` must carry
       `askAgent`, a `No hand-off` comment naming a concrete draft, a sibling
@@ -770,6 +781,11 @@ custom-rules:
         happen, a save that did not persist), that state is ALSO rendered
         in-page through `ErrorNotice`; a toast as the ONLY report of it is a
         violation.
+      - A decide refused by `isTerminalApprovalRefusal` (`src/api/apiError.ts`:
+        expired, decided elsewhere, or replaced). Nothing failed, so it renders
+        as status (`role="status"`, normally `StatusNotice`) and the
+        `role="status"` shape below does not apply. Any other failed decide
+        stays an `ErrorNotice`.
 
       The ban is on the SURFACE, not on a class name. Because the test is
       "where does the value come from", these shapes are the same violation
@@ -787,10 +803,11 @@ custom-rules:
         bypasses the app-sdk `useNotify` seam: that carve-out exists because
         the seam cannot host the hand-off, so a local toast the page fully
         controls gets no carve-out at all.
-      - The error sits in a `role="status"` / `aria-live` region, or in a
-        warn- or muted-toned box (`text-warn`, `text-muted`, a `<td>`). Toning
-        a failure down to a polite status does not make it status; a load
-        that did not happen is still a failure.
+      - The error sits in a hand-written `role="status"` / `aria-live`
+        region, or in a warn- or muted-toned box (`text-warn`, `text-muted`, a
+        `<td>`). Toning a failure down by hand does not make it status; a load
+        that did not happen is still a failure. A calmer look for a failure
+        goes through `ErrorNotice`'s `impact`, never around the component.
       - The error text lives only in a `title=` / `aria-label=` / tooltip
         (`InfoTip`) attribute or behind an icon-only glyph. Hover text is not
         a surface: it is invisible on touch, unreadable to a screen reader in
@@ -882,6 +899,21 @@ custom-rules:
       - `if (await locator.isVisible())` (or `isVisible({ timeout })`, whose
         timeout is ignored) as a branch in a Playwright spec: it samples once
         and lets the spec pass either way.
+      - A Playwright spec that writes server state over `request` (post, put,
+        patch, delete) right after `page.goto` and then asserts the page shows
+        the write, with no wait for the page's own read of that resource to
+        finish. The read can be serialized before the write and applied after
+        its push, which puts the old state back. Ask for a `waitForResponse`
+        armed BEFORE the `goto`, then `await (await read).finished()` before
+        the write (`session-tags-e2e.spec.ts` test 8).
+      - A change to a spec the E2E gate named as passing only on a retry that
+        widens a tolerance, a settle window, a timeout or a regex the
+        assertion accepts, with no root cause in the PR body. The received
+        value is often one the page wrote after the action (a stale replace
+        navigation, a stale read, a real layout miss), so loosening the spec
+        ships the defect. See
+        `docs/system-specs/common/testing-conventions.md` § A Playwright spec
+        that passed only on a retry.
       - A one-shot mock (`mockResolvedValueOnce`, `mockRejectedValueOnce`)
         armed AFTER the action that starts the timer or request it is meant
         to answer.
@@ -907,6 +939,35 @@ custom-rules:
       - a delay inside a stub that simulates slow work while the test waits
         on a signal, and the interval of a bounded poll that throws at its
         deadline.
+
+  - id: url-self-corrections-check-the-current-entry
+    blocking: false
+    file-patterns:
+      - "src/**/*.tsx"
+      - "src/**/*.ts"
+    rule: |
+      An effect that corrects the URL with a replace write must not overwrite a
+      navigation that is still pending. `BrowserRouter` applies each history
+      change inside `startTransition`, so a render caused by an urgent update
+      (a ResizeObserver width, a store hydrating) can commit with the previous
+      `useLocation()`. A replace built from that location then overwrites the
+      entry the user's click just made, and the page bounces back. This was
+      the flaky `settings.spec.ts` tab click and the `embed-popout.spec.ts`
+      deep link (fixed in #37885).
+
+      FLAG, on added or changed lines: a `useEffect` or `useLayoutEffect` that
+      calls `navigate(..., { replace: true })` or `setSearchParams(..., {
+      replace: true })` with a target built from `useLocation()` or
+      `useSearchParams()`, when its dependencies include anything that is not
+      the location (a width, a fetched value, a store field), and the write is
+      not gated on `useRenderedLocationIsCurrent()` with that check in the
+      dependency list. Ask for the gate; the effect then re-runs once the
+      router renders the newer entry.
+
+      Allowed (do NOT flag): an effect whose dependencies are only values read
+      from the location; a push (not replace) the user's own action starts in
+      an event handler; a redirect component that renders nothing but the
+      redirect.
 
   - id: keep-modules-small
     blocking: false

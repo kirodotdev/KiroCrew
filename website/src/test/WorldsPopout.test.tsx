@@ -76,6 +76,16 @@ describe('WorldsPopout', () => {
     expect(wizardWrapper.style.display).not.toBe('none')
   })
 
+  it('falls back to office when the saved scene is not one this build has', () => {
+    // A key saved by another build (a scene added later, then a downgrade)
+    // matched no scene, so every scene stayed hidden and no chip was checked.
+    localStorage.setItem('mc-agent-scene', 'retired-scene')
+    renderWithProviders(<WorldsPopout />)
+    const officeWrapper = screen.getByTestId('scene-office').parentElement!
+    expect(officeWrapper.style.display).not.toBe('none')
+    expect(screen.getByRole('radio', { name: /Office/ })).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('has collapse/expand toggle', () => {
     renderWithProviders(<WorldsPopout />)
     const toggle = screen.getByTitle('Hide controls')

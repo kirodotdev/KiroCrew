@@ -125,6 +125,7 @@ const BUNDLED_DESKTOP = [
   "StartupWMClass=kirocrew-desktop",
   "Comment=Kiro Crew — AI agent desktop app",
   "Categories=Development;",
+  "MimeType=x-scheme-handler/kirocrew;",
   "",
 ].join("\n");
 

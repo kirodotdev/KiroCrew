@@ -9,7 +9,7 @@
  * "nothing recorded" apart from "nothing fetched yet".
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import { CrewLogTab, CREW_LOG_FOLDS } from '../pages/chat/CrewLogPanel'
 import { api } from '../api/client'
@@ -821,8 +821,17 @@ describe('CrewLogTab', () => {
     fireEvent.click(screen.getByText('Subagents'))
     const all = [...screen.getByText('subagent').closest('table')!.querySelectorAll('tbody tr')]
     const cells = all.filter(tr => tr.querySelectorAll('td').length === 5)[2].querySelectorAll('td')
-    expect(cells[0].getAttribute('title')).toBe('kirocrew-knowledge')
-    expect(cells[1].getAttribute('title')).toBe('a-model')
+    // In the shared bubble, on hover and keyboard focus, never only a native `title`
+    // (the macOS desktop app often does not paint one, and focus never opens it).
+    for (const [cell, full] of [[cells[0], 'kirocrew-knowledge'], [cells[1], 'a-model']] as const) {
+      const line = within(cell).getByText(full)
+      expect(cell.querySelector('[title]')).toBeNull()
+      expect(cell).not.toHaveAttribute('title')
+      expect(line).toHaveAttribute('tabindex', '0')
+      fireEvent.focus(line)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(full)
+      fireEvent.blur(line)
+    }
   })
 
   it('does not claim nothing was dispatched when only closers reached the log', async () => {

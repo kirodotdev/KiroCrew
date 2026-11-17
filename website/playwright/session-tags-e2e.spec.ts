@@ -206,13 +206,19 @@ test.describe('E2E: sidebar tag columns', () => {
     const col = await (await request.post('/api/chat/tag-columns', { data: { tag_ids: [done], mode: 'any' } })).json()
     // Simulate the drop via API (HTML5 DnD in playwright is notoriously flaky;
     // we trust the UI-path via the explicit button tests + API contract here).
+    // The column renders before the page's own slot-list read returns. A reply
+    // serialized before the drop but applied after the drop's slots push puts
+    // the pre-drop row back, and nothing pushes again. So the drop waits until
+    // that read has finished, and only the push can then change the row.
+    const slotListRead = page.waitForResponse(r =>
+      r.request().method() === 'GET' && new URL(r.url()).pathname === '/api/chat/slots')
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="column-${col.id}"]`)
+    await (await slotListRead).finished()
     const res = await (await request.post(`/api/chat/slots/${slotKey}/drop`, { data: { column_id: col.id } })).json()
     expect(res.ok).toBe(true)
     expect(res.tags).toContain(done)
-    // UI refreshes → slot now appears in Done column
-    await page.waitForTimeout(500)
+    // The drop's slots push moves the slot into the Done column.
     await expect(page.locator(`[data-testid="column-${col.id}"] [data-slot-key="${slotKey}"]`)).toBeVisible()
   })
 
@@ -740,7 +746,7 @@ test.describe('E2E: sidebar tag columns', () => {
     await page.getByRole('menuitem', { name: /Tags/ }).click()
     const picker = page.locator('[data-testid="slot-tag-picker"]')
     await expect(picker).toBeVisible()
-    await picker.getByRole('menuitemcheckbox', { name: /Review/ }).click()
+    await picker.getByRole('option', { name: /Review/ }).click()
     await expect.poll(async () => {
       const updated = await (await request.get('/api/chat/slots')).json()
       return updated.find((x: { key: string }) => x.key === s.key)?.tags ?? []
@@ -818,7 +824,7 @@ test.describe('E2E: sidebar tag columns', () => {
     await expect(menu).toBeVisible()
     await menu.getByRole('menuitem', { name: /Tags/ }).click()
     await expect(picker).toBeVisible()
-    await picker.getByRole('menuitemcheckbox', { name: /Review/ }).click()
+    await picker.getByRole('option', { name: /Review/ }).click()
     await expect.poll(async () => {
       const slots = await (await request.get('/api/chat/slots')).json()
       return slots.find((x: { key: string }) => x.key === b.key)?.tags ?? []

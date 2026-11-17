@@ -218,10 +218,30 @@ class TestTheBodyKeepsThePathTier:
         assert "sensitive path" in _error(rows)
 
     @pytest.mark.asyncio
-    async def test_an_oversized_body_is_still_refused(self) -> None:
+    async def test_a_body_over_the_command_cap_passes_without_a_command_matcher(self) -> None:
+        # A body skips the command matchers, so the 20 KiB command cap does not
+        # bound it: it gets the 256 KiB source-body ceiling, as a third-party
+        # message body field does.
+        import kiro_crew.llm_helpers as llm_helpers
         from kiro_crew.llm_helpers import _MAX_SCANNABLE_TOOL_INPUT_CHARS
 
-        body = "a" * (_MAX_SCANNABLE_TOOL_INPUT_CHARS + 1)
+        body = "a" * (_MAX_SCANNABLE_TOOL_INPUT_CHARS * 5)
+        shell = MagicMock(return_value=None)
+        deny = MagicMock(return_value=None)
+        with (
+            patch.object(llm_helpers, "is_sensitive_bash_command", shell),
+            patch.object(llm_helpers, "is_denied", deny),
+        ):
+            approved, rows = await _resolve(_event(_params(content=body)))
+        assert approved is True, rows
+        subjects = [c.args[0] for c in shell.call_args_list + deny.call_args_list]
+        assert body not in subjects
+
+    @pytest.mark.asyncio
+    async def test_a_body_over_the_source_body_ceiling_is_refused(self) -> None:
+        from kiro_crew.security import MAX_SCANNABLE_SOURCE_BODY_CHARS
+
+        body = "a" * (MAX_SCANNABLE_SOURCE_BODY_CHARS + 1)
         approved, rows = await _resolve(_event(_params(content=body)))
         assert approved is False
-        assert "too large" in _error(rows)
+        assert f"> {MAX_SCANNABLE_SOURCE_BODY_CHARS} limit" in _error(rows)

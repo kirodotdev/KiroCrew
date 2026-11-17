@@ -88,6 +88,7 @@ import json
 import logging
 import posixpath
 import re
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -785,6 +786,11 @@ class GitHubRepoProvider:
                 size = int(entry.get("size", 0) or 0)
             except (TypeError, ValueError):
                 size = 0
+            except OverflowError:
+                # ``1e999`` parses as an infinite float: as large as a size can be,
+                # so the bundle's size ceiling refuses it by name rather than the
+                # whole listing failing (and never read as zero, under the cap).
+                size = sys.maxsize
             blobs.append((path, size))
         return blobs
 

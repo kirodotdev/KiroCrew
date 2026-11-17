@@ -1902,7 +1902,8 @@ class TestLauncherStagingSitesArePrefixed:
         it never reaches (a degraded mount, a refusal path) would escape it. So the
         program's source is read too: each ``mkdtemp``/``mkstemp`` names
         ``prefix=launch.src_prefix`` -- the pid-bearing staging prefix the sweep keys on
-        -- or is the stand-in root's probe with its own literal prefix.
+        -- or that prefix with the stage mark, or is the stand-in root's probe with its
+        own literal prefix.
         """
         tree = ast.parse(sandbox_launcher.launcher_program_source())
         calls = [
@@ -1919,7 +1920,10 @@ class TestLauncherStagingSitesArePrefixed:
             assert call.func.attr in ("mkdtemp", "mkstemp"), ast.dump(call)
             prefix = next((k.value for k in call.keywords if k.arg == "prefix"), None)
             assert prefix is not None, ast.dump(call)
-            staged = ast.unparse(prefix) == "launch.src_prefix"
+            staged = ast.unparse(prefix) in (
+                "launch.src_prefix",
+                "launch.src_prefix + _STAGE_MARK",
+            )
             probe = isinstance(prefix, ast.Constant) and prefix.value == "kirocrew_sbprobe_"
             assert staged or probe, ast.dump(call)
 

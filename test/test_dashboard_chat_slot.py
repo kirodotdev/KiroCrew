@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -405,19 +404,24 @@ class TestChatSlot:
         message.
 
         An unbounded scan is quadratic here and runs synchronously in `push_slots_update`.
-        Measured 0.14s bounded vs 128s unbounded, so an absolute budget avoids flaky ratios.
+        The interpreter work of one scan is counted at three equally spaced prefix
+        counts and must grow linearly, so the claim reads the code, not the host.
         """
-        payload = "https://" * 16000 + "github.com/acme/widgets/pull/1"
-        assert len(payload) > 128_000
-        slot = _ChatSlot("s1")
-        slot.append("assistant", payload)
+        from denied_commands_security_helpers import _interpreter_work, _linear_work
 
-        started = time.perf_counter()
-        links = slot._pr_source_links()
-        elapsed = time.perf_counter() - started
+        def scan_work(prefixes: int) -> int:
+            slot = _ChatSlot("s1")
+            slot.append("assistant", "https://" * prefixes + "github.com/acme/widgets/pull/1")
+            scanned: list[list[dict]] = []
+            work = _interpreter_work(lambda: scanned.append(slot._pr_source_links()))
+            assert [link["url"] for link in scanned[0]] == [
+                "https://github.com/acme/widgets/pull/1"
+            ]
+            return work
 
-        assert [link["url"] for link in links] == ["https://github.com/acme/widgets/pull/1"]
-        assert elapsed < 10, f"scan took {elapsed:.1f}s — the per-candidate bound is gone"
+        scan_work(10)  # first-call imports and caches are spent before anything is counted
+        work = [scan_work(prefixes) for prefixes in (200, 400, 600)]
+        assert _linear_work(work), f"scan work {work} grows faster than the message"
 
     def test_pr_source_links_bound_total_parse_attempts(self, monkeypatch):
         """Every parse attempt is charged, so no flood shape can run unbounded.

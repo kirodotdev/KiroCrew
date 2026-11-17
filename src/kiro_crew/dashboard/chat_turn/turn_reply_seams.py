@@ -120,23 +120,14 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
         # Records come out of the same pass for the reason _redact_segment
         # gives: after this line only the placeholder exists, so an
         # interrupted reply would otherwise lose what it explains for good.
-        _ordered: list[bool] = []
-        _redacted, _blocked, _redactions = _redact_segment(
-            slot, turn.assistant_text, _ordered_out=_ordered
-        )
+        _redacted, _redactions = _redact_segment(slot, turn.assistant_text)
         _note_reply_row(
             slot,
             slot.append(
                 "assistant",
                 _redacted,
                 "msg msg-a",
-                meta=_segment_row_meta(
-                    slot,
-                    _blocked,
-                    _redactions,
-                    links_ordered=_ordered == [True],
-                    text=_redacted,
-                ),
+                meta=_segment_row_meta(slot, _redactions, text=_redacted),
             ),
         )
         # Saved once per turn: a recovery arm saves it here, and a cancel
@@ -241,6 +232,7 @@ async def _record_abnormal_turn_usage(
         stop_reason=reason or turn._stop_reason or STOP_REASON_CANCELLED,
         since=turn._turn_stats0,
         usage=_usage,
+        delivered=turn._saw_text_chunk,
     ):
         turn._turn_usage_persisted = True
 
@@ -279,6 +271,7 @@ def _stamp_abnormal_turn_footer(turn) -> tuple[bool, tuple[TurnUsage, int] | Non
             turn._turn_elapsed_ms,
             model=turn._turn_model,
             ttft_ms=_ttft_visible.ms,
+            cache_rewrite=turn._turn_cache_rewrite,
         )
         return stamped, None
     if slot._acp_client is None:
@@ -303,7 +296,13 @@ def _stamp_abnormal_turn_footer(turn) -> tuple[bool, tuple[TurnUsage, int] | Non
 
 
 def _attach_abnormal_turn_stats(
-    turn, usage: TurnUsage, elapsed_ms: int, *, model: str | None = None, ttft_ms: int = 0
+    turn,
+    usage: TurnUsage,
+    elapsed_ms: int,
+    *,
+    model: str | None = None,
+    ttft_ms: int = 0,
+    cache_rewrite: bool = False,
 ) -> bool:
     """Put ``meta.turn_stats`` on the last reply row of a turn that ended abnormally.
 
@@ -316,12 +315,14 @@ def _attach_abnormal_turn_stats(
     can inject an envelope mid-turn. Scoped to this turn's rows by
     ``_turn_start_mid`` and ``_turn_msg_boundary``, which the caller only
     trusts once dispatch has set it; a turn that ended before it wrote any
-    reply row gets no footer, because there is no row to carry one. ``model``
-    and ``ttft_ms`` are the served model and first-output latency
-    EVENT_COMPLETE already read, when it did: a cut after the completion keeps
-    the footer the completion would have written, both included. A turn the
-    seam bills itself reads the model here and, as before, records no
-    ``ttft_ms``. Returns whether a row received the footer.
+    reply row gets no footer, because there is no row to carry one. ``model``,
+    ``ttft_ms`` and ``cache_rewrite`` are the served model, the first-output
+    latency and the prompt-cache rewrite flag EVENT_COMPLETE already read, when
+    it did: a cut after the completion keeps the footer the completion would
+    have written, all three included. A turn the seam bills itself reads the
+    model here and, as before, records no ``ttft_ms``; it was never judged
+    against the previous turn's cache, so it carries no rewrite flag either.
+    Returns whether a row received the footer.
 
     The row is mutated in place, so this marks the slot dirty itself, as every
     in-place row edit must: the periodic flush writes only a dirty slot, and
@@ -345,6 +346,7 @@ def _attach_abnormal_turn_stats(
                 else model
             )
             or "",
+            cache_rewrite=cache_rewrite,
         )
         row = _last_reply_row(slot, turn._turn_msg_boundary, turn._turn_start_mid)
         if stats is None or row is None:
@@ -366,12 +368,16 @@ def _flush_text_stream(turn) -> None:
     """Emit the redactor's withheld tail as a final chat_chunk before a
     segment is finalized, so WS/SSE viewers see the complete (redacted) text
     and never a truncated stream. No-op when the buffer is empty."""
-    _ttft_visible = turn._ttft_visible
     _wsred = turn._wsred
+    continued = _held_continued(turn)
+    _emit_wire(turn, _settle_held(turn, _wsred.flush(), continued=continued))
+
+
+def _emit_wire(turn, wire: str) -> None:
+    """Broadcast *wire*, redacted stream output, as one chat_chunk; no-op when empty."""
+    _ttft_visible = turn._ttft_visible
     slot = turn.slot
     state = turn.state
-    continued = _held_continued(turn)
-    wire = _settle_held(turn, _wsred.flush(), continued=continued)
     if not wire:
         return
     _ttft_visible.mark(wire)
@@ -471,6 +477,13 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
     _wsred = turn._wsred
     slot = turn.slot
     state = turn.state
+    # The detectors' fixed tail hold ends here: what only it held goes out now,
+    # redacted, so the row's last words show at the cut as they do with the
+    # detectors off. A run the passes or an undecided unit hold stays held, and
+    # an empty release leaves the runs earlier cuts hold where they are.
+    released = _wsred.release_at_boundary()
+    if released:
+        _emit_wire(turn, _settle_held(turn, released, continued=True))
     run = "" if _wsred.discarding else _wsred.held
     before = "".join(piece for _, piece, _, _ in turn._held_runs)
     own = run[len(before) :] if run.startswith(before) else ""

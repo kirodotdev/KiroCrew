@@ -462,7 +462,13 @@ class SkillsLoader:
         self._extra_paths: list[Path] = []
         self._configured_extra_paths: list[Path] = []
         for p in cfg.skills.extra_paths:
-            resolved = Path(p).expanduser().resolve()
+            try:
+                resolved = Path(p).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                # ``~nosuchuser`` (no such home) or an embedded NUL: one bad
+                # entry is skipped, never the whole loader.
+                logger.warning("Skipping unresolvable extra skill path: %r", p)
+                continue
             if is_sensitive_path(str(resolved)):
                 logger.warning("Skipping sensitive extra skill path: %s", p)
             elif resolved.is_dir():
@@ -848,9 +854,19 @@ class SkillsLoader:
                 st = pinned_fs.stat_at(parent_fd, skill_dir.name)
                 if st is None or not stat.S_ISDIR(st.st_mode):
                     return False
+                # A directory with no SKILL.md of its own is not a skill: a folder
+                # of nested skills (``auto``, ``auto/.archive``, a family dir) would
+                # otherwise be wiped whole by a delete that GET answers 404 for.
+                skill_md = pinned_fs.stat_at(parent_fd, f"{skill_dir.name}/SKILL.md")
+                if skill_md is None or stat.S_ISDIR(skill_md.st_mode):
+                    return False
             finally:
                 os.close(parent_fd)
         elif is_link_or_junction(skill_dir):
+            return False
+        elif not os.path.lexists(skill_dir / "SKILL.md") or (
+            (skill_dir / "SKILL.md").is_dir() and not is_link_or_junction(skill_dir / "SKILL.md")
+        ):
             return False
         shutil.rmtree(skill_dir)
         self._invalidate_iter_cache()  # so the removal is reflected in list_skills() now

@@ -53,10 +53,24 @@ from kiro_crew.dashboard.handlers.usage import (
     resolve_window,
     slot_turn_usage,
 )
+from kiro_crew.dashboard.handlers.usage_outcome import (
+    attach_session_outcomes,
+    respond_with_session_outcomes,
+)
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.jsonl_util import bounded_records
-from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin, otlp_egress_listing
+from kiro_crew.metrics import kiro_export
+from kiro_crew.metrics.provider import (
+    TELEMETRY_ENV_VAR,
+    _held_consent,
+    env_pin,
+    env_pin_is_soft,
+    live_recorder_state,
+    otlp_egress_listing,
+    outbound_consented,
+    pin_env_var,
+)
 from kiro_crew.metrics.schema import RESOURCE_ATTR_PROCESS_START_TIME
 from kiro_crew.metrics.turns import TURN_COST_METRIC, TURN_CREDITS_METRIC, TURN_METRIC
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -228,6 +242,18 @@ class _TelemetryState(NamedTuple):
     # and also when posture could not be resolved (``otlp_configured`` is then
     # True: a disclosure that cannot name its destinations still says they exist).
     otlp_destinations: "tuple[dict, ...]" = ()
+    # ``outbound_consented``: a destination alone does not export, recording must
+    # also have been turned on explicitly. True when unresolvable, the disclosure
+    # direction.
+    export_permitted: bool = True
+    # Turning recording on would also export somewhere the privacy notice does
+    # not name, so the config route refuses that write (409). The built-in Kiro
+    # destination does not count (``kiro_export.egress_needs_written_opt_in``).
+    # True when unresolvable, the refusal direction.
+    enable_refused: bool = True
+    # Off only by a written false older builds put in every new config
+    # (``kiro_export.off_offer_due``). False when unreadable: no offer.
+    off_offer: bool = False
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -249,10 +275,19 @@ def _telemetry_cfg() -> _TelemetryState:
     otlp_configured = False
     destinations: "tuple[dict, ...]" = ()
     retention_days = 0
+    export_permitted = True
+    enable_refused = True
+    off_offer = False
     directory = config_dir() / "metrics"
     try:
-        cfg = KiroCrewConfig.load().telemetry
-        enabled = bool(cfg.enabled)
+        full_cfg = KiroCrewConfig.load()
+        cfg = full_cfg.telemetry
+        # An unparseable config file holds consent as unknown: no recorder is
+        # built, but a live one keeps running. Report what this process records.
+        held = _held_consent(full_cfg, bool(cfg.enabled))
+        off_offer = kiro_export.off_offer_due(full_cfg)
+        live_recording, live_exporting = live_recorder_state()
+        enabled = live_recording if held is None else bool(held)
         retention_days = max(0, int(getattr(cfg, "retention_days", 0) or 0))
         if getattr(cfg, "local_dir", None):
             directory = Path(cfg.local_dir).expanduser()
@@ -263,15 +298,27 @@ def _telemetry_cfg() -> _TelemetryState:
         # leave the machine. The endpoint value never leaves that resolution; the
         # panel only needs to know whether egress would happen.
         try:
+            rows = otlp_egress_listing(cfg)
             destinations = tuple(
                 {
                     "name": row.destination.name,
                     "source": row.source,
                     "locked": row.locked,
                 }
-                for row in otlp_egress_listing(cfg)
+                for row in rows
             )
             otlp_configured = bool(destinations)
+            enable_refused = any(not kiro_export.is_builtin(row.destination) for row in rows)
+            if otlp_configured:
+                # Unknown consent keeps the live recorder, so disclose what IT exports.
+                # Otherwise this is the operator opt-in; the built-in Kiro
+                # destination, which needs none, is named by its row.
+                export_permitted = live_exporting if held is None else outbound_consented(full_cfg)
+            if held is None and live_exporting:
+                # The fallback load may list no destination (an unparseable file
+                # reads as defaults) while the kept reader still sends.
+                otlp_configured = True
+                export_permitted = True
         except Exception:
             # Posture unresolvable (a provider that raised, an uncomposable
             # context). Report egress rather than promising local-only: this
@@ -283,16 +330,31 @@ def _telemetry_cfg() -> _TelemetryState:
     except Exception:
         logger.debug("telemetry config load failed; assuming disabled", exc_info=True)
     env_var = TELEMETRY_ENV_VAR
+    soft = False
     try:
+        env_var = pin_env_var()
         pin = env_pin()
+        soft = pin is not None and env_pin_is_soft()
     except Exception:
         logger.debug("telemetry env pin resolution failed", exc_info=True)
         pin = None
     if pin is not None:
         enabled = pin
-        env_pinned = True
+        # A soft pin (``KIROCREW_TELEMETRY_DISABLED`` holding the default off)
+        # gives way to a written ``telemetry.enabled``, so the switch stays
+        # usable: writing it is exactly how the user lifts that pin.
+        env_pinned = not soft
     return _TelemetryState(
-        enabled, directory, env_pinned, env_var, otlp_configured, retention_days, destinations
+        enabled,
+        directory,
+        env_pinned,
+        env_var,
+        otlp_configured,
+        retention_days,
+        destinations,
+        export_permitted,
+        enable_refused,
+        off_offer,
     )
 
 
@@ -318,9 +380,9 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
     last = end.date()
     out: list[Path] = []
     for p in directory.glob("metrics-*.jsonl"):
-        # Defensive: skip any shard that resolves to a sensitive path (symlink).
-        if validate_file_path(str(p)) is None:
-            continue
+        # Parse the filename date first (cheap string work) and skip shards
+        # outside the window before the path gate, so an unpruned directory does
+        # not pay the full validate_file_path resolve for shards it never reads.
         # filename: metrics-YYYY-MM-DD-<pid>.jsonl
         stem = p.stem  # metrics-YYYY-MM-DD-<pid>
         parts = stem.split("-")
@@ -330,8 +392,13 @@ def _shards_in_window(directory: Path, days: float, until: float | None = None) 
             d = datetime.strptime("-".join(parts[1:4]), "%Y-%m-%d").date()
         except ValueError:
             continue
-        if cutoff <= d and (until is None or d <= last):
-            out.append(p)
+        if not (cutoff <= d and (until is None or d <= last)):
+            continue
+        # Defensive: an in-window shard that resolves to a sensitive path
+        # (symlink) is still skipped before it is read.
+        if validate_file_path(str(p)) is None:
+            continue
+        out.append(p)
     return out
 
 
@@ -1477,7 +1544,7 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     separate page. Both are independent of the telemetry main switch — those rows
     are always written — so they are fetched even when OTEL export is off.
     """
-    state = _telemetry_cfg()
+    state = await asyncio.to_thread(_telemetry_cfg)
     window = _request_window(request, _WINDOW_DAYS)
     # No window named: each block keeps main's default (spend 7d, the rest 14d).
     defaulted = not any((request.query.get(k) or "").strip() for k in ("days", "since", "until"))
@@ -1485,9 +1552,19 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     data = await asyncio.to_thread(_parse_startup_metrics, window, whole_shards=defaulted)
     context = await asyncio.to_thread(_context_block, window)
     cost = await asyncio.to_thread(_cost_block, cost_window)
+    contributors: dict[tuple[str, str], tuple[str, ...]] = {}
     if cost:
+        # Before the titles: they take the transcript map off the payload.
+        cost = await attach_session_outcomes(request, cost, cost_window, contributors)
+        if isinstance(cost.get("usd"), dict):
+            usd = await attach_session_outcomes(request, cost["usd"], cost_window, contributors)
+            cost = {**cost, "usd": usd}
         cost = await _with_conversation_titles(request, cost)
-    return web.json_response(
+        if isinstance(cost.get("usd"), dict):
+            cost = {**cost, "usd": await _with_conversation_titles(request, cost["usd"])}
+    # Built while every chain that gave an outcome is held: a tightened one is dropped.
+    return await respond_with_session_outcomes(
+        request,
         {
             "enabled": state.enabled,
             "env_pinned": state.env_pinned,
@@ -1508,7 +1585,8 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "context": context,
             "cost": cost,
             "other": data.get("other", []),
-        }
+        },
+        contributors,
     )
 
 
@@ -1847,7 +1925,9 @@ async def api_beacon_status(request: web.Request) -> web.Response:
             "reason_code": str(info.get("reason_code", "")),
             "endpoint_configured": bool(info.get("endpoint_configured", False)),
             "env_override": beacon.is_env_opted_out(),
-            "env_var": beacon.DISABLE_ENV,
+            # DO_NOT_TRACK when that is what pins it, so the note names the
+            # variable that actually has to be unset.
+            "env_var": beacon.opt_out_env_var(),
             "overlay_override": overlay_override,
             # Resolved inside beacon.status (already on a worker thread) rather
             # than re-evaluated here, so this reports the same verdict that
@@ -1904,6 +1984,13 @@ async def api_collection_status(request: web.Request) -> web.Response:
             "env_var": state.env_var,
             "overlay_override": overlay_override,
             "otlp_configured": state.otlp_configured,
+            # Whether a configured destination is actually sent to now.
+            "export_permitted": state.export_permitted,
+            # Whether the switch's ENABLE direction is refused (409) here.
+            "enable_refused": state.enable_refused,
+            # Off only by a written false older builds put in every new config:
+            # the Privacy chapter's off form offers Turn on once.
+            "off_offer": state.off_offer,
             "otlp_destinations": [dict(row) for row in state.otlp_destinations],
             "metrics_dir": str(state.directory),
         }

@@ -159,16 +159,20 @@ async def test_a_page_staged_in_the_same_millisecond_is_not_the_one_shown(
 
 
 @pytest.mark.asyncio
-async def test_keep_refuses_when_the_layout_is_locked() -> None:
+async def test_keep_lands_with_a_leftover_lock_file() -> None:
+    """The structure lock was removed; a lock file it left behind refuses nothing."""
+    from kiro_crew import agent_panel
+
     instance.adopt(SLUG, "fixture-board")
     staged_ms = _stage()
-    instance.set_structure_lock(SLUG, True)
+    legacy = agent_panel.panel_dir() / f"{SLUG}.dashboard-lock"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("{}", encoding="utf-8")
     async with _client() as (client, _):
         resp = await client.post(KEEP_URL, json={"staged_ms": staged_ms})
-        assert resp.status == 423
-        assert (await resp.json())["code"] == "dashboard_locked"
-    assert instance.read(SLUG).html == PAGE
-    assert instance.staged_preview(SLUG) is not None
+        assert resp.status == 200, await resp.text()
+    assert instance.read(SLUG).html != PAGE
+    assert instance.staged_preview(SLUG) is None
 
 
 @pytest.mark.asyncio

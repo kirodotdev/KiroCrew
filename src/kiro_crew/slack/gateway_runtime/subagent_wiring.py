@@ -375,7 +375,8 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # a live channel conversation (Telegram, …) is best answered where the
         # human already is, with that channel's own Approve/Deny/Trust
         # keyboard. The seam returns True/False when the channel surfaced the
-        # prompt and got a press; None means no channel hook owns this session,
+        # prompt and got a press, a HostSpawnDecision when the prompt's wait
+        # elapsed unpressed; None means no channel hook owns this session,
         # or the hook could not surface it here — either way, fall through to
         # the unchanged Slack-DM/dashboard gate below (which still raises
         # SpawnApprovalUnreachable when no surface is attached).

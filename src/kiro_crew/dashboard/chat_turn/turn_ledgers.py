@@ -172,6 +172,12 @@ def _queue_recovery(
         # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
         # waits on its retry either, so the retry starts BACKGROUND too.
         _recovery_meta[START_BACKGROUND_META_KEY] = True
+    if turn._card_origin:
+        # A recovery is a second turn of the SAME card reply: it stays untrusted,
+        # or a retry would run the page's words with the thread's auto-approval.
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+        _recovery_meta[CARD_ORIGIN_META_KEY] = True
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but
@@ -182,6 +188,10 @@ def _queue_recovery(
         # The person's own words, replayed because the turn died before its
         # mirror echo point: the replay owes that echo (``_prompt_typed_in_dashboard``).
         _recovery_meta[MIRROR_ECHO_OWED_META_KEY] = True
+    # A retry of a workflow run's completion turn reports the same run: its entry
+    # names it the way the first queueing did (tracing/workflows.py).
+    from kiro_crew.tracing import workflows as trace_workflows
+
     _recovery_qid = slot.queue_insert(
         index,
         content,
@@ -196,6 +206,7 @@ def _queue_recovery(
         # attachment lists merged above ride along in _recovery_meta.
         meta={
             **_recovery_meta,
+            **trace_workflows.recovery_meta(_recovery_turn_id),
             TURN_ACTOR_META_KEY: _crew_log_actor,
             _RECOVERY_TURN_META_KEY: _recovery_turn_id,
         },
@@ -211,6 +222,11 @@ def _queue_recovery(
     # its message or a continuation) is the same Regenerate's next attempt: it
     # settles the previous reply, not this turn.
     carry_regenerate_target(slot, _recovery_qid)
+    # A retry of a completion turn still reports on the same sub-agent runs, so
+    # its trace joins theirs (tracing/subagents.py).
+    from kiro_crew.tracing import subagents as trace_subagents
+
+    trace_subagents.requeue(_recovery_turn_id, _recovery_qid)
     # A recovery of a channel message is still that channel's words: it keeps
     # the channels admission judges it by. A restriction only, so it is kept
     # even on a turn whose channel-origin flag a restart removed.

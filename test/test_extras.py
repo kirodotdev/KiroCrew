@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 import pytest
+import source_corpus
 
 from kiro_crew import extras
 
@@ -25,6 +26,10 @@ LOCALES = _REPO_ROOT / "website" / "src" / "i18n" / "locales"
 #: Extras a running gateway advises installing. ``dev`` is test tooling, which
 #: no user-facing surface ever offers.
 USER_FACING = ("otlp", "perf", "teams", "whatsapp", "feishu", "voice-aws", "voice")
+
+#: Where a user copies a ``pip install`` line from: the guides and skills the
+#: package ships, and the repository docs.
+DOC_TREES = ("src/kiro_crew/docs/", "src/kiro_crew/builtin_skills/", "docs/")
 
 
 def _declared_extras() -> dict[str, list[str]]:
@@ -281,6 +286,25 @@ def test_specifiers_hold_no_powershell_metacharacters(extra: str) -> None:
         assert "$" not in req
         assert "`" not in req
         assert '"' not in req
+
+
+def test_docs_never_single_quote_a_pip_specifier() -> None:
+    """A copied ``pip install`` line has to work in the reader's shell, unknown here.
+
+    cmd does not treat ``'`` as a quote, so a single-quoted pin reaches pip with
+    its quotes, or redirects on the ``<`` of a bound and pip never runs. The docs
+    use the double-quoted form :func:`extras.quote_spec` gives Windows, which
+    bash, zsh, cmd and PowerShell all accept.
+    """
+    root = source_corpus.repo_root()
+    offenders = [
+        f"{rel}:{number}"
+        for path in source_corpus.repo_files()
+        if path.suffix == ".md" and (rel := path.relative_to(root).as_posix()).startswith(DOC_TREES)
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "pip install '" in line
+    ]
+    assert offenders == []
 
 
 def test_windows_uses_powershell_literal_quoting(monkeypatch: pytest.MonkeyPatch) -> None:

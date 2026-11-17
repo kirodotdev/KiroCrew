@@ -121,14 +121,23 @@ document.documentElement.setAttribute('data-theme', theme)
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 qc.setQueryData(['update-state'], SCENES[scene] ?? SCENES.found)
+// AboutPanel's release notes section reads ['releases']; seeded so each scene
+// shows a settled section under the card instead of a loading or error one.
+qc.setQueryData(['releases'], {
+  current_version: '0.1.2',
+  stale: false,
+  releases: [
+    { version: '0.1.2', date: '2026-07-29', body: NOTES, is_current: true, in_progress: false },
+  ],
+})
 
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={qc}>
-      {/* AboutPanel renders a react-router <Link> (the Releases panel link), so
-          the mount needs a router in the tree: outside one, the Link throws
-          during render and every scene captures blank. Same wrapper the
-          webhooks-settings capture entry uses. */}
+      {/* AboutPanel's release notes section reads the URL's ?release= link
+          through useSearchParams, so the mount needs a router in the tree:
+          outside one it throws during render and every scene captures blank.
+          Same wrapper the webhooks-settings capture entry uses. */}
       <MemoryRouter>
         <div
           style={{ background: 'var(--bg)', color: 'var(--text)', padding: 24, minHeight: '100vh' }}

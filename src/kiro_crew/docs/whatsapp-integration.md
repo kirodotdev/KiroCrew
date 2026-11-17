@@ -11,7 +11,7 @@ Requires one optional dependency, installed into the environment that runs the
 gateway:
 
 ```bash
-pip install 'neonize==0.4.3.post0'
+pip install "neonize==0.4.3.post0"
 ```
 
 ## Risks — read before enabling

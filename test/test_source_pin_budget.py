@@ -66,7 +66,6 @@ BUDGET: dict[str, int] = {
     "test/test_chat_runner_compose_binding.py": 2,
     "test/test_chat_runner_turn_plumbing.py": 2,
     # Other scopes' reads, frozen as measured; each may only fall.
-    "src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_delete.py": 1,
     "test/metrics/test_context_trace.py": 2,
     "test/metrics/test_usage_turns.py": 1,
     "test/test_autonudge_banner.py": 1,
@@ -99,7 +98,6 @@ BUDGET: dict[str, int] = {
     "test/test_prompts.py": 2,
     "test/test_recovery_l1_chat_runner.py": 1,
     "test/test_redaction_allow.py": 1,
-    "test/test_redaction_blocked_links.py": 5,
     "test/test_refusal_inband_notice.py": 2,
     "test/test_runloop_integration.py": 1,
     "test/test_runtime_death_is_a_process_event.py": 3,
@@ -109,7 +107,6 @@ BUDGET: dict[str, int] = {
     "test/test_start_priority.py": 1,
     "test/test_stderr_redact_then_tail.py": 1,
     "test/test_steer_requeue.py": 4,
-    "test/test_subagent_stop_reason_consistency.py": 1,
     "test/test_turn_duration_recorded.py": 1,
     "test/test_turn_metric_all_surfaces.py": 2,
     "test/test_wake_judge_feedback_service.py": 1,

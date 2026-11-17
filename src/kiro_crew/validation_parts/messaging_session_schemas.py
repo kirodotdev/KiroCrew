@@ -226,6 +226,11 @@ WAIT_SCHEMA = ToolSchema(
     ],
 )
 
+MCP_SERVER_WAIT_SCHEMA = ToolSchema(
+    tool_name="mcp_server_wait",
+    fields=[FieldSpec("server", str, required=True, max_len=MAX_SHORT_STRING)],
+)
+
 REGISTER_HOOK_SCHEMA = ToolSchema(
     tool_name="register_hook",
     fields=[
@@ -417,6 +422,10 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # ``work_item`` (wave 4): with ``crew`` only, the caller's own item the crew
         # session is born bound to. The gateway refuses it without ``crew``.
         FieldSpec("work_item", str, required=False, max_len=16),
+        # ``requires`` (rfc-conductor-remote-dispatch.md §2b): with ``crew`` or a
+        # placed ``work_item`` only, the tags and logins a crew must advertise. The
+        # gateway checks its shape (``remote_placement.parse_requires``).
+        FieldSpec("requires", dict, required=False),
         # The new session's first turn, delivered in the same call so the caller
         # never has to send to a key it has not read back yet. Bounded exactly as
         # ``session_send.message`` is; the route repeats that bar before creating.
@@ -537,6 +546,14 @@ SESSION_SET_COLOR_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("color", str, required=True, allowed=SESSION_COLOR_CHOICES),
+    ],
+)
+
+SESSION_SET_NOTE_SCHEMA = ToolSchema(
+    tool_name="session_set_note",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("note", str, required=True, max_len=MAX_LONG_STRING),
     ],
 )
 
@@ -661,6 +678,11 @@ SESSION_STATUS_SCHEMA = ToolSchema(
     fields=[],
 )
 
+CREW_LIST_SCHEMA = ToolSchema(
+    tool_name="crew_list",
+    fields=[],
+)
+
 SESSION_ADOPT_SCHEMA = ToolSchema(
     tool_name="session_adopt",
     fields=[
@@ -702,5 +724,31 @@ SESSION_SUMMARY_SCHEMA = ToolSchema(
     tool_name="session_summary",
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+# A queue id is ``uuid4().hex[:12]`` (``slot_queue_repository``). The field has no
+# shape check: ``queue_target`` only compares it for equality with the ids already
+# in the queue, so any other string ends in ``entry_not_found``.
+QUEUE_ENTRY_ID_MAX_CHARS = 64
+
+SESSION_QUEUE_SCHEMA = ToolSchema(
+    tool_name="session_queue",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec(
+            "action",
+            str,
+            required=False,
+            allowed=frozenset({"list", "move"}),
+            default="list",
+        ),
+        FieldSpec(
+            "entry",
+            str,
+            required=False,
+            max_len=QUEUE_ENTRY_ID_MAX_CHARS,
+        ),
+        FieldSpec("position", int, required=False, min_val=0, max_val=10_000),
     ],
 )

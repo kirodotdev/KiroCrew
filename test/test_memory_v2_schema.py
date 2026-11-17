@@ -78,9 +78,21 @@ _V1_TABLES = frozenset(
         "episodic_memories",
         "memory_events",
         "memory_meta",
+        "memory_reconcile_dirty",
+        "memory_reconcile_state",
         "memory_record_meta",
         "memory_revisions",
         "sqlite_sequence",
+    }
+)
+
+#: The change-noting triggers the startup reconcile installs on a marked store.
+_RECONCILE_TRIGGERS = frozenset(
+    {
+        "memory_reconcile_semantic_memory_ins",
+        "memory_reconcile_semantic_memory_upd",
+        "memory_reconcile_episodic_memories_ins",
+        "memory_reconcile_episodic_memories_upd",
     }
 )
 
@@ -96,6 +108,8 @@ _CREW_TABLES = frozenset(
         "memory_items",
         "memory_events",
         "memory_meta",
+        "memory_reconcile_dirty",
+        "memory_reconcile_state",
         "memory_record_meta",
         "memory_revisions",
         "schema_version",
@@ -397,7 +411,8 @@ class TestTheDefaultStoreNeverGetsTheCrewLineage:
         assert tables == set(_V1_TABLES)
         assert "memory_items" not in tables
         assert _objects(default.db, "view") == set()
-        assert _objects(default.db, "trigger") == set()
+        # Only the startup reconcile's change-noting triggers; the schema adds none.
+        assert _objects(default.db, "trigger") == _RECONCILE_TRIGGERS
         assert _versions(default.db) == set(_V1_SCHEMA_VERSIONS)
         # v1's two relations are real TABLES here, which is also what makes
         # ``detect_lineage`` answer v1 for every file that exists on any install.
@@ -437,8 +452,9 @@ class TestASiloIsBornOnTheCrewLineage:
         assert silo._lineage == memory_schema.LINEAGE_CREW
         assert _objects(silo.db, "table") == set(_CREW_TABLES)
         assert _objects(silo.db, "view") == {*_V1_RELATIONS}
-        # ZERO triggers, permanently — see ``test_the_schema_carries_no_trigger``.
-        assert _objects(silo.db, "trigger") == set()
+        # The schema's own DDL carries ZERO triggers, permanently — see
+        # ``test_the_schema_carries_no_trigger``; only the startup reconcile adds these.
+        assert _objects(silo.db, "trigger") == _RECONCILE_TRIGGERS
         assert _versions(silo.db) == {memory_schema.CREW_SCHEMA_VERSION}
         # Neither v1 relation exists as a TABLE, which is what stops ``detect_lineage``
         # from running the v1 migrations against a view.

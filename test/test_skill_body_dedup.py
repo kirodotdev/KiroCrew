@@ -209,7 +209,7 @@ class TestRollbackReinjectsAfterAnUnlandedTurn:
         assert BODY_SENTINEL not in _send(builder)
 
     def test_commit_after_a_landed_turn_blocks_a_later_rollback(self, tmp_path: Path) -> None:
-        # GPT #2: a landed build's undo must not stay armed. After the turn
+        # A landed build's undo must not stay armed. After the turn
         # lands and commits, a later (spurious or non-building-turn) rollback
         # must NOT erase the recorded body — the body is in the window.
         skills = tmp_path / "skills"
@@ -670,7 +670,7 @@ class TestRecordIsBounded:
         # surrogate; str.encode("utf-8") on it raises without surrogatepass.
         surrogate_name = "foundation-\udcff"
         with pytest.raises(UnicodeEncodeError):
-            surrogate_name.encode("utf-8")  # the pre-fix crash this guards against
+            surrogate_name.encode("utf-8")  # the crash this guards against
 
         loader = MagicMock()
         loader.get_triggered_skills.return_value = [surrogate_name]

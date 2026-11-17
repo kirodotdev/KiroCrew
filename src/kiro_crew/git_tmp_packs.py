@@ -10,7 +10,9 @@ with hundreds of GB of ``tmp_pack_*``) — the file is simply left behind. Git
 itself never goes back for it, so this module is the one reclamation path,
 called from the fetches that run PERIODICALLY into long-lived clones, where
 orphans would pile up without bound — the auto-improvement
-clone-setup/commit/driver sites and the dev-fleet status refresher. The PR
+clone-setup/commit/driver sites, the dev-fleet status refresher, and
+``platform/update_fetch.fetch_and_pin_upstream`` (the update check's 12-hourly
+fetch and the unattended apply's, both into the operator's checkout). The PR
 watcher's base-ref fetch does not call it: its clone is rebuilt right before
 the fetch, so nothing there can be older than the threshold. The tree's remaining fetch sites do NOT call it
 (``cli_server``, ``ops_mission_control``'s ledger sync, ``md_notebook``,
@@ -26,7 +28,8 @@ A live fetch touches its temp pack continuously while receiving, so an
 in-flight pack's mtime is always recent; a killed one's is frozen at the
 kill. Almost every calling fetch runs under a total-duration bound —
 ``clone_setup._run`` defaults to 120s with a 300s ceiling, ``commit._git``
-runs at 60s, the dev-fleet fetches at 90s — so any
+runs at 60s, the dev-fleet fetches at 90s, the update fetch at 300s (check)
+and 60s (apply) — so any
 ``tmp_pack_*`` untouched for longer than :data:`TMP_PACK_MAX_AGE_S`, twice
 that largest bound, belongs to a fetch of ours that cannot be making
 progress. The exception is ``spine/driver_git._git``, whose ``subprocess.run``
@@ -65,8 +68,8 @@ from pathlib import Path
 TMP_PACK_PREFIX = "tmp_pack_"
 
 #: A ``tmp_pack_*`` older than this is orphaned. Twice the largest total-time
-#: bound any CALLING fetch runs under (``clone_setup._run``'s 300s; the other
-#: bounded callers run 90-120s) — see the module docstring for why the number
+#: bound any CALLING fetch runs under (``clone_setup._run``'s 300s and the update
+#: check's 300s; the other bounded callers run 60-120s) — see the module docstring for why the number
 #: is the safety argument, not bookkeeping.
 TMP_PACK_MAX_AGE_S = 600.0
 

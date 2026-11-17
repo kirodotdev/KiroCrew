@@ -9,7 +9,7 @@ import { appRouteOf, routerParamForm } from '../utils/appPopoutRoute'
 import { withBase } from '../lib/basePath'
 import { chatDeepLinkSlot, claimChatLaunch } from '../utils/navIntent'
 import { consumeChatHandoff, installHardExit } from '../utils/errorReport'
-import { hasBuiltinComponent } from '../apps/builtinRegistry'
+import { CorePopoutPage, corePopoutPage, hasPopoutPage } from './corePopoutPages'
 import { appNavTarget } from '../appNav'
 import { useInstalledApps } from '../hooks/panelTabRegistry'
 import { useAppStore, type AppStore } from '../store'
@@ -123,7 +123,7 @@ function usePinnedNavigation(route: string, store: AppStore): ContextType<typeof
       const { pathname, search, hash } = typeof to === 'string' ? parsePath(to) : to
       if (pathname === undefined) return null
       const appPath = appSpacePath(pathname, navigation.basename)
-      return { appPath, search: search ?? '', hash: hash ?? '', exit: appRouteOf(appPath, hasBuiltinComponent) !== route }
+      return { appPath, search: search ?? '', hash: hash ?? '', exit: appRouteOf(appPath, hasPopoutPage) !== route }
     }
     const exits = (to: To): boolean => {
       const target = judge(to)
@@ -204,7 +204,7 @@ export default function AppPopoutFrame({ route }: {
   // as an app is one. Checked against the registry here rather than left to
   // `BuiltinAppRoute`, whose answer for an unknown path is a redirect to /chat —
   // an exit this window would forward to main, leaving an empty window here.
-  const valid = appRouteOf(route, hasBuiltinComponent) === route && !misrouted
+  const valid = appRouteOf(route, hasPopoutPage) === route && !misrouted
   const label = useMemo(() => {
     for (const app of apps) {
       const target = appNavTarget(app)
@@ -236,8 +236,9 @@ export default function AppPopoutFrame({ route }: {
   }, [store])
 
   // Reflect the app in the window/taskbar title so multiple pop-outs are
-  // distinguishable at the OS level.
-  const shownLabel = label || i18nT('pages.appPopoutFrame.app')
+  // distinguishable at the OS level. A core page has no app record to name it.
+  const corePage = corePopoutPage(route)
+  const shownLabel = (corePage ? i18nT(corePage.labelKey) : label) || i18nT('pages.appPopoutFrame.app')
   useEffect(() => {
     document.title = i18nT('pages.appPopoutFrame.window_title', { label: shownLabel })
   }, [shownLabel])
@@ -297,6 +298,8 @@ export default function AppPopoutFrame({ route }: {
             </div>
           ) : route.startsWith('/apps/') ? (
             <AppPage />
+          ) : corePage ? (
+            <CorePopoutPage entry={corePage} />
           ) : (
             <BuiltinAppRoute />
           )}

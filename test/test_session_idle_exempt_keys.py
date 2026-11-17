@@ -107,6 +107,7 @@ async def test_a_listed_key_that_never_had_a_tab_outlives_the_sweep() -> None:
     await manager.close_all()
 
 
+@pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
 @pytest.mark.asyncio
 async def test_the_rss_recycle_still_resets_a_listed_session() -> None:
     cfg = MagicMock()

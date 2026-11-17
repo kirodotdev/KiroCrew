@@ -282,6 +282,10 @@ def gatewayd_env(monkeypatch, tmp_path):
         return reader
 
     monkeypatch.setattr(provider_mod, "_build_otlp_reader", _reader_for)
+    # These in-memory configs stand for an explicit opt-in to recording, which is
+    # what lets a destination attach (``outbound_consented``); the tests are about
+    # the readers, not that gate.
+    monkeypatch.setattr(provider_mod, "outbound_consented", lambda cfg: True)
 
     def _config(enabled, **extra):
         fake = KiroCrewConfig(

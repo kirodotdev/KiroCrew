@@ -82,7 +82,8 @@ class TestF3OACNameVerification:
 class TestF4MCPResponseRedaction:
     def test_all_textual_paths_redacted(self):
         assert '_deploy_redact(str(d["error"]))' in MCP_DEPLOY
-        assert '_deploy_redact(str(d.get("findings", "")))' in MCP_DEPLOY
+        # A staging refusal carries its reason in `message`, redacted the same way.
+        assert '_deploy_redact(str(d.get("findings") or d.get("message") or ""))' in MCP_DEPLOY
         assert "_deploy_redact(str(d.get('scan', 'clean')))" in MCP_DEPLOY
         # The error payload was split into a plain banner sentence plus a
         # technical `details` string and a runnable `remediation` command. Both

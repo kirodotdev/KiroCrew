@@ -349,9 +349,9 @@ this leg, so it leaves with it.
 | Phase | Ships | Default |
 |---|---|---|
 | 0 | #23603 (scan window key, `SearchRows`) | merged first |
-| 1 | Query role on the embed call; unused by existing callers; recall harness under `src/kiro_crew/eval/bench/` with a synthetic fixture | no behaviour change |
+| 1 | Recall harness under `src/kiro_crew/eval/bench/` with a synthetic fixture | no behaviour change |
 | 2 | Chunk store, indexer, pending and coverage metrics | off |
-| 3 | Vector leg, routing (including `SEMANTIC_MIN_COVERAGE`), `match`, snippets, labels, tool text, coverage note. Entry condition: open questions 2 and 5 are decided on the harness first, so the routing rule ships once | off |
+| 3 | Query role on the embed call, vector leg, routing (including `SEMANTIC_MIN_COVERAGE`), `match`, snippets, labels, tool text, coverage note. Entry condition: open questions 2 and 5 are decided on the harness first, so the routing rule ships once | off |
 | 4 | Default on, after the harness and an operator-run private set measured on the full index show routed R@1 at or above vector R@1 and literal R@1 at or above keyword, and the operator set's index has reached `SEMANTIC_MIN_COVERAGE`, and the resource ceilings below hold | on |
 
 Phase 4 changes a default, which is the decision this document asks to record.
@@ -359,12 +359,12 @@ Phase 4 changes a default, which is the decision this document asks to record.
 Exit criteria, each a test or a harness run:
 
 - Phase 1: the harness reports R@1, R@10 and MRR per query type for today's search
-  on the synthetic fixture, and a test asserts that an embed call without the query
-  role sends the same text as on main.
+  on the synthetic fixture.
 - Phase 2: with `session.semantic_search` off, the harness rows equal main's row for
   row; the fixture indexes to coverage 1.0, and a restart mid-build resumes with the
   pending count never rising; the deletion test in section 12 passes.
-- Phase 3: tests 1 to 4 in 7.3 and the ownership test in section 9 pass; on the
+- Phase 3: a test asserts that an embed call without the query role sends the same
+  text as on main; tests 1 to 4 in 7.3 and the ownership test in section 9 pass; on the
   fixture, routed R@1 is at or above vector R@1 and literal R@1 at or above keyword
   R@1; the harness reports resident memory and CPU at the measured chunk count.
 

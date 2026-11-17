@@ -14,6 +14,7 @@ import logging
 import os
 import stat
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -26,10 +27,13 @@ from kiro_crew.workflows.store import WorkflowRunStore
 def lockdowns(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, int]]:
     """Act as Windows and record each lockdown with the file's size at that moment."""
     calls: list[tuple[Path, int]] = []
+    test_thread = threading.get_ident()
 
     def _record(path) -> None:
-        p = Path(path)
-        calls.append((p, p.stat().st_size))
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            p = Path(path)
+            calls.append((p, p.stat().st_size))
 
     monkeypatch.setattr(store_mod.platform_compat, "IS_POSIX", False)
     monkeypatch.setattr(store_mod.platform_compat, "restrict_to_owner", _record)

@@ -8,7 +8,7 @@
  * ChatPage.sid so that file stays under the line cap.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
@@ -16,6 +16,7 @@ import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+import { __setFeaturePreviewLockKnownForTests } from '../utils/editionLocks'
 
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
 vi.mock('../components/ChatInput', () => ({ default: () => null }))
@@ -61,7 +62,6 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 import ChatPage from '../pages/ChatPage'
-import { crewModePreviewOn } from './crewModePreview'
 
 const slot = (key: string): ChatSlot => ({ key, title: key, messages: 0, running: false, mode: '', created: '', last_ts: '' })
 
@@ -113,7 +113,17 @@ describe('ChatPage opens no Crew Mode crew member on its own', () => {
     renderChatPage(store)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-8-800'))
   })
-})
 
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()
+  it('waits for the edition lock before its first pick, then picks the conductor', async () => {
+    __setFeaturePreviewLockKnownForTests(false)
+    const member = { ...slot('chat-9-900'), crew_root: 'chat-8-800' } as ChatSlot
+    const root = { ...slot('chat-8-800'), crew_mode_root: true } as ChatSlot
+    const store = makeStore(null, [member, root])
+    renderChatPage(store)
+    // Settle the page's first render, then confirm it picked nothing yet.
+    await waitFor(() => expect(store.getState().dashboard.slotsLoaded).toBe(true))
+    expect(store.getState().chat.activeSlot).toBeNull()
+    act(() => { __setFeaturePreviewLockKnownForTests(true) })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-8-800'))
+  })
+})

@@ -8,8 +8,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.skills import AutoSkillProvenance, ClaimRefusal, PendingApprovalRefused, SkillsLoader
+
+# A synthetic GitHub token the redactor removes; an AWS key ID and a bare 40-character
+# run stay visible.
+_SECRET = github_classic(seed=206)
 
 
 @pytest.fixture()
@@ -156,7 +161,7 @@ def test_noncanonical_pending_dir_name_is_hidden(loader):
     credential-shaped text; a non-canonical slug must not surface in the list."""
     root = loader._pending_root()
     root.mkdir(parents=True, exist_ok=True)
-    bad = root / "AKIAIOSFODNN7EXAMPLE"
+    bad = root / _SECRET
     bad.mkdir()
     (bad / "SKILL.md").write_text("# x", encoding="utf-8")
     assert loader.list_pending_skills() == []
@@ -195,7 +200,7 @@ def test_approve_rejects_regular_file_named_scripts(loader):
     could ride live unredacted."""
     _stage(loader, "scriptfile")
     (loader._pending_root() / "scriptfile" / "scripts").write_text(
-        "AKIAIOSFODNN7EXAMPLE", encoding="utf-8"
+        _SECRET, encoding="utf-8"
     )
     with pytest.raises(PendingApprovalRefused) as refused:
         loader.approve_pending_skill_checked("scriptfile")
@@ -295,7 +300,7 @@ def test_meta_credential_key_is_redacted(loader):
     _stage(loader, "keytest")
     meta = loader._pending_root() / "keytest" / ".meta.json"
     d = _json.loads(meta.read_text(encoding="utf-8"))
-    d["AKIAIOSFODNN7EXAMPLE"] = "v"
+    d[_SECRET] = "v"
     meta.write_text(_json.dumps(d), encoding="utf-8")
     red = loader._read_pending_meta("keytest")
     assert not any("AKIA" in k for k in red)
@@ -373,7 +378,7 @@ def test_direct_write_candidate_is_redacted_at_detail_and_approve(loader):
     """A candidate written straight into the pending queue (crystallize path,
     bypassing consolidation redaction) must not surface a credential to the
     dashboard detail API or promote it into a live skill (GPT HIGH)."""
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=207)
     slug = "leaky-cand"
     pdir = loader._pending_root() / slug
     (pdir / "scripts").mkdir(parents=True, exist_ok=True)
@@ -810,7 +815,7 @@ def test_meta_credentials_are_redacted_in_list_and_detail(loader):
     through the pending list/detail API (GPT HIGH: redact metadata strings)."""
     import json as _json
 
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=208)
     slug = "meta-leak"
     pdir = loader._pending_root() / slug
     pdir.mkdir(parents=True, exist_ok=True)
@@ -874,7 +879,7 @@ def test_nested_meta_credentials_redacted(loader):
     top-level-only redaction leaked nested values)."""
     import json as _json
 
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwx"
+    secret = github_classic(seed=208)
     slug = "nested-meta"
     pdir = loader._pending_root() / slug
     pdir.mkdir(parents=True, exist_ok=True)

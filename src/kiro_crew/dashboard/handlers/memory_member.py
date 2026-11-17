@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 from typing import Any, Callable
@@ -10,8 +11,10 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.embeddings import enter_work_phase
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.memory_recall import bound_recall_payload, recall_json, recall_terms
+from kiro_crew.memory_recall_filters import parse_filters as parse_recall_filters
 from kiro_crew.metrics.feature_usage import recall_payload_hit, record_memory_recalled
 from kiro_crew.session_surface import dashboard_surfaced_keys
 
@@ -27,6 +30,7 @@ from ._shared import (
     require_owner_dashboard_request,
     resolve_lesson_memory_store,
     resolve_requested_memory_store,
+    resolve_session_memory_mode,
     vector_memory_for_store,
 )
 from .cron import _is_temporary_transcript, _recognize_session
@@ -168,10 +172,56 @@ def _memory_recall_keep(
     )
 
 
+async def _record_recall_outcome(
+    state: Any, session: str, store: str, payload: dict, lessons: list[str]
+) -> None:
+    """Write the recall outcome line the shadow report joins on; never raises.
+
+    Only the delivered facts' memory keys and the session's tag, never the query or
+    any row text, and only while a memory stage is on. An incognito or temporary
+    session writes nothing.
+    """
+    from kiro_crew import injection_receipts
+    from kiro_crew import memory_shadow_trace as trace
+
+    try:
+        ids = trace.recall_ids(payload, lessons)
+        if not ids or not trace.observing():
+            return
+        mode = await resolve_session_memory_mode(state, session)
+        if not injection_receipts.records_session(mode):
+            return
+        injection_receipts.schedule_write(
+            injection_receipts.build_outcome_line(
+                injection_receipts.RECALL, session_key=session, store=store, ids=ids
+            )
+        )
+    except Exception:  # noqa: BLE001 -- an observation must never fail the recall
+        logger.debug("recall outcome not recorded", exc_info=True)
+
+
 #: Context budget for the recall response. Named because the bounding runs TWICE on this
 #: path -- once before the receipt is committed and once inside the serializer -- and two
 #: literals could drift into a receipt bounded to a different budget than the response.
 _RECALL_CONTEXT_CAP = 3000
+
+
+async def _commit_and_record_recall(session: str, pending: list, payload: dict) -> None:
+    """Commit the recall decision receipt for the finished *payload*, then count the recall.
+
+    Both recall paths (Crew's own memory and a provider that replaces it) end here.
+    """
+    if pending:
+        from kiro_crew.decisions.points.memory_recall import commit_receipt
+
+        # ONE writer, handed the finished response. Every condition a receipt depends on
+        # -- something held, something delivered, a request still live -- is checked
+        # inside it rather than here, because three separate call sites have leaked a
+        # receipt for a recall nobody received and each time the guard sat beside the
+        # call instead of in it. There is nothing left to get right at this line.
+        await asyncio.to_thread(commit_receipt, session, pending, payload=payload)
+    # After the answer is final; never changes it (record_* swallows its own errors).
+    record_memory_recalled("tool", hit=recall_payload_hit(payload))
 
 
 @memory_recall_deadline
@@ -206,6 +256,40 @@ async def api_memory_recall(request: web.Request) -> web.Response:
     query = request.query.get("q", "").strip()
     if not query or len(query) > MAX_RECALL_QUERY:
         return _error("A query of 1–2000 characters is required.", "invalid_memory_query")
+    filters, filter_warning = parse_recall_filters(request.query)
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+    from kiro_crew.memory_provider import recall as _provider_recall
+
+    session = request.headers.get("X-Session-Key", "")
+    memory_route = await asyncio.to_thread(_memory_provider.session_route, name, session or None)
+    if memory_route.replaces:
+        # Every candidate comes from the provider; Crew's stores are not opened.
+        project = requesting_slot_project(state, session)
+        provider_pending: list = []
+        result = await _provider_recall.replace_result(
+            memory_route,
+            name,
+            query,
+            session,
+            str(project) if project else None,
+            _memory_recall_keep(state, session, query, provider_pending, name),
+            filters,
+        )
+        if filter_warning:
+            result["warning"] = filter_warning
+        payload = bound_recall_payload(
+            _redact_memory_field({"store": name, **result}),
+            context_cap=_RECALL_CONTEXT_CAP,
+            ensure_ascii=False,
+        )
+        await _commit_and_record_recall(session, provider_pending, payload)
+        return web.json_response(
+            payload,
+            dumps=lambda body: recall_json(
+                body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP
+            ),
+        )
+    enter_work_phase("store_open")
     try:
         vector_unavailable = False
         try:
@@ -244,21 +328,54 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         # discarded -- and a retried recall would leave two rows for one tool call.
         decision_pending: list = []
         session = request.headers.get("X-Session-Key", "")
-        result = (
-            await run_in_embed_pool(
-                tier.recall,
-                query,
-                cap=3000,
-                project_dir=str(project) if project else None,
-                keep=_memory_recall_keep(state, session, query, decision_pending, name),
-                conversation_id=session,
+        enter_work_phase("admission")
+        # A private collection names the lessons the recall rendered for the shadow
+        # trace's outcome line; it is read only by that line, and opened only while
+        # a stage is on, so a recall with every flag off pays nothing for it.
+        from kiro_crew import injection_receipts
+        from kiro_crew import memory_shadow_trace as trace
+
+        tracing = bool(session) and tier is not None and trace.observing()
+        filter_kwargs: dict[str, Any] = {} if filters is None else {"filters": filters}
+        with injection_receipts.collect() if tracing else contextlib.nullcontext({}) as sink:
+            result = (
+                await run_in_embed_pool(
+                    tier.recall,
+                    query,
+                    cap=3000,
+                    project_dir=str(project) if project else None,
+                    keep=_memory_recall_keep(state, session, query, decision_pending, name),
+                    conversation_id=session,
+                    **filter_kwargs,
+                )
+                if tier is not None
+                else {}
             )
-            if tier is not None
-            else {}
+        recalled_lessons = list(
+            (sink.get(injection_receipts.RECALLED_LESSONS) or {}).get("ids") or ()
         )
         if vector_unavailable:
             result["vector_status"] = "unavailable"
-        if markdown is not None and markdown._memory_version == 1:
+        if filter_warning:
+            result["warning"] = filter_warning
+        if memory_route.augments:
+            # A read-only provider's hits follow Crew's own, under the same cap.
+            result = await _provider_recall.augment_result(
+                result,
+                memory_route,
+                name,
+                query,
+                session,
+                str(project) if project else None,
+                filters,
+            )
+        if (
+            markdown is not None
+            and markdown._memory_version == 1
+            # Notebook pages carry no dates, so a timed or non-fact query skips them.
+            and (filters is None or filters.wants_notebook)
+        ):
+            enter_work_phase("notebook")
             rows = []
             index_count = await asyncio.to_thread(markdown.index_row_count)
             if not index_count:
@@ -328,6 +445,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
             result["retrieval"] = retrieval
     except (ValueError, OSError, sqlite3.Error):
         return _store_unavailable(name)
+    enter_work_phase("respond")
     # Bounded BEFORE the commit, not inside the serializer, because bounding is the last
     # thing that changes what the caller receives. `bound_recall_payload` clips the
     # largest text and then drops whole rows off the tail to hold the transport budget,
@@ -341,17 +459,9 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         context_cap=_RECALL_CONTEXT_CAP,
         ensure_ascii=False,
     )
-    if decision_pending:
-        from kiro_crew.decisions.points.memory_recall import commit_receipt
-
-        # ONE writer, handed the finished response. Every condition a receipt depends on
-        # -- something held, something delivered, a request still live -- is checked
-        # inside it rather than here, because three separate call sites have leaked a
-        # receipt for a recall nobody received and each time the guard sat beside the
-        # call instead of in it. There is nothing left to get right at this line.
-        await asyncio.to_thread(commit_receipt, session, decision_pending, payload=payload)
-    # After the answer is final; never changes it (record_* swallows its own errors).
-    record_memory_recalled("tool", hit=recall_payload_hit(payload))
+    await _commit_and_record_recall(session, decision_pending, payload)
+    if session and request.get("internal_auth") is True and "store" not in request.query:
+        await _record_recall_outcome(state, session, name or "", payload, recalled_lessons)
     return web.json_response(
         payload,
         dumps=lambda body: recall_json(body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP),
@@ -388,6 +498,11 @@ async def api_memory_seed(request: web.Request) -> web.Response:
             )
         selections.append((kind, identity))
     target, refusal = await _admin_store(request, "memory.seed", body)
+    if refusal is not None:
+        return refusal
+    from kiro_crew.dashboard.handlers.memory_provider import provider_active_refusal
+
+    refusal = await provider_active_refusal(target or "")
     if refusal is not None:
         return refusal
     if not isinstance(body.get("source_store"), str) or not body["source_store"].strip():

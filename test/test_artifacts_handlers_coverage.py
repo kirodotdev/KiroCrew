@@ -33,6 +33,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from body_stream_helpers import attach_json_body
+from redaction_structured_cases import github_classic
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import (
@@ -45,6 +46,9 @@ from kiro_crew.dashboard.handlers import artifacts as h
 from kiro_crew.publish_provider import Capability, RemoteComment
 
 # ── Harness ──────────────────────────────────────────────────────────────────
+
+#: A credential every redaction pass removes (an AWS key ID is kept visible).
+_SECRET = github_classic(seed=23)
 
 
 def _write(path: Path, text: str) -> None:
@@ -146,6 +150,8 @@ class _FakeLog:
         if self._sessions_raise:
             raise RuntimeError("history dir corrupt")
         return self._sessions
+
+    list_sessions_indexed = list_sessions
 
     def read_messages(self, key: str) -> list[Any]:
         if key in self._unreadable:
@@ -319,13 +325,13 @@ class TestSessionDocs:
         self, store: ArtifactStore, monkeypatch: pytest.MonkeyPatch, audit: list
     ) -> None:
         def _boom(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
-            raise RuntimeError("token=AKIAIOSFODNN7EXAMPLE blew up")
+            raise RuntimeError(f"token={_SECRET} blew up")
 
         monkeypatch.setattr(h, "_scan_session_docs", _boom)
         resp = await h.api_artifact_session_docs(_req(conversation_log=_FakeLog()))
         assert resp.status == 500
         assert audit[-1]["outcome"] == "error"
-        assert "AKIAIOSFODNN7EXAMPLE" not in audit[-1]["error"]
+        assert _SECRET not in audit[-1]["error"]
 
 
 # ── POST /api/artifacts/materialize ──────────────────────────────────────────
@@ -541,11 +547,11 @@ class TestMaterialize:
         monkeypatch.setattr(h, "_materialize_and_pin", _boom)
         await h.api_artifact_materialize(
             _req(
-                body={"path": "/tmp/AKIAIOSFODNN7EXAMPLE/a.md"},
+                body={"path": f"/tmp/{_SECRET}/a.md"},
                 conversation_log=_FakeLog(),
             )
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(audit[-1]["extra"])
+        assert _SECRET not in json.dumps(audit[-1]["extra"])
 
 
 # ── PATCH /api/artifacts/{slug}/relocate ─────────────────────────────────────
@@ -583,6 +589,16 @@ class TestRelocate:
         resp = await h.api_artifact_relocate(_req(body={"source_path": 7}, match={"slug": "doc"}))
         assert resp.status == 400
         assert _j(resp)["error"] == "source_path must be a string"
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name == "nt", reason="Windows path calls do not raise on these strings")
+    @pytest.mark.parametrize("bad", ["/tmp/a\x00b", "~\x00x", "~\ud800"], ids=ascii)
+    async def test_a_path_with_a_nul_or_surrogate_does_not_exist_400(
+        self, store: ArtifactStore, bad: str
+    ) -> None:
+        resp = await h.api_artifact_relocate(_req(body={"source_path": bad}, match={"slug": "doc"}))
+        assert resp.status == 400
+        assert _j(resp)["error"].startswith("path does not exist")
 
     @pytest.mark.asyncio
     async def test_traversal_denied_403(self, store: ArtifactStore, tmp_path: Path) -> None:
@@ -876,9 +892,9 @@ class TestPostCommentProviderPush:
                 body={
                     "text": "note",
                     "is_agent": True,
-                    "author": "AKIAIOSFODNN7EXAMPLE",
+                    "author": _SECRET,
                     "anchor": {
-                        "quote": "AKIAIOSFODNN7EXAMPLE",
+                        "quote": _SECRET,
                         "prefix": "p",
                         "suffix": "s",
                         "version_number": 1,
@@ -891,8 +907,8 @@ class TestPostCommentProviderPush:
         assert resp.status == 201
         stored = published.list_comments("doc")[0]
         assert stored.is_agent is True
-        assert "AKIAIOSFODNN7EXAMPLE" not in stored.author
-        assert "AKIAIOSFODNN7EXAMPLE" not in (stored.anchor_quote or "")
+        assert _SECRET not in stored.author
+        assert _SECRET not in (stored.anchor_quote or "")
 
 
 class TestReplyCommentProviderPush:
@@ -1184,11 +1200,11 @@ class TestEditComment:
         )
         await h.api_artifact_edit_comment(
             _req(
-                body={"text": "creds AKIAIOSFODNN7EXAMPLE"},
+                body={"text": f"creds {_SECRET}"},
                 match={"slug": "doc", "comment_id": "local-1"},
             )
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in published.list_comments("doc")[0].body
+        assert _SECRET not in published.list_comments("doc")[0].body
 
 
 class TestResolveAndReopen:
@@ -1375,12 +1391,12 @@ class TestCommentsFetchOnViewErrors:
         _use_provider(
             monkeypatch,
             _StubProvider(
-                {Capability.COMMENTS_READ}, fail=RuntimeError("bad AKIAIOSFODNN7EXAMPLE creds")
+                {Capability.COMMENTS_READ}, fail=RuntimeError(f"bad {_SECRET} creds")
             ),
         )
         resp = await h.api_artifact_comments(_req(match={"slug": "doc"}))
         assert resp.status == 200
-        assert "AKIAIOSFODNN7EXAMPLE" not in _j(resp)["remote_sync_error"]
+        assert _SECRET not in _j(resp)["remote_sync_error"]
 
 
 # ── _annotate_local_slugs ────────────────────────────────────────────────────

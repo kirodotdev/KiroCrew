@@ -50,6 +50,11 @@ memoized listing; only a missing directory empties the index.
 The listing is the scan's dedup and sort over the rows, in the directory order of the
 last pass, so ties resolve as the scan resolves them. It is memoized until a row or
 the order changes, and each call returns copies of the rows.
+
+The first build reads every transcript's head, seconds at tens of thousands of files.
+The gateway runs :meth:`SessionListingIndex.warm` on a worker thread once it is
+serving, so the first listing finds the index built. A listing that arrives during
+that build waits on the index lock, as it waits on any other pass.
 """
 
 from __future__ import annotations
@@ -118,6 +123,9 @@ _DirStamp = tuple[int, int, int]
 #: drop of journal records. Guarded by ``ConversationLog._cache_gens_guard``.
 _READERS: dict[str, weakref.WeakSet[SessionListingIndex]] = {}
 
+#: Transcripts a warm build reads between two calls of its ``should_stop``.
+_STOP_CHECK_EVERY = 256
+
 
 class _OverCeiling(Exception):
     """The directory is over :data:`MAX_ROWS` transcripts or :data:`MAX_RETAINED_BYTES`."""
@@ -125,6 +133,10 @@ class _OverCeiling(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class _Stopped(Exception):
+    """A warm build's ``should_stop`` answered True."""
 
 
 #: CPython 3.12 allocation bounds per JSON token; non-ASCII strings add their full size separately.
@@ -172,6 +184,16 @@ def _retained_bytes(row: dict | None) -> int:
 
 def _over_budget(held: int) -> str:
     return f"its rows hold {held} bytes, over the {MAX_RETAINED_BYTES}-byte budget"
+
+
+def _log_warm(outcome: str, transcripts: int, started: float) -> None:
+    """The one line :meth:`SessionListingIndex.warm` logs; *started* is a monotonic time."""
+    logger.info(
+        "Session listing index warm %s: %d transcripts in %.2f s",
+        outcome,
+        transcripts,
+        time.monotonic() - started,
+    )
 
 
 def _submit_to_maintenance_pool(job: Callable[[], None]) -> None:
@@ -330,6 +352,33 @@ class SessionListingIndex:
                 return None
             return entry.has_messages
 
+    def warm(self, should_stop: Callable[[], bool] | None = None) -> bool:
+        """Build the index ahead of the first listing; True when it is built.
+
+        Returns False at once when a listing holds the index lock: that listing builds
+        the index or finds it built. *should_stop* is called before each
+        :data:`_STOP_CHECK_EVERY` transcripts; when it answers True the build stops and
+        the index stays unbuilt. A build that stops or raises commits nothing: the
+        rows, the build state and the journal replay position stay as they were, so
+        the next listing builds the index. Logs one line when it returns.
+        """
+        started = time.monotonic()
+        if not self._lock.acquire(blocking=False):
+            _log_warm("superseded by a listing", 0, started)
+            return False
+        try:
+            if self._built:
+                _log_warm("superseded by a listing", 0, started)
+                return True
+            self._build(self._dir_stamp(), should_stop)
+            if self._built:
+                _log_warm("built", len(self._entries), started)
+            else:
+                _log_warm("not built", 0, started)
+            return self._built
+        finally:
+            self._lock.release()
+
     # ------------------------------------------------------------- reconcile
 
     def reconcile(self) -> bool:
@@ -420,17 +469,23 @@ class SessionListingIndex:
             raise _OverCeiling(f"{len(found)} transcripts, over the {MAX_ROWS}-row ceiling")
         return found
 
-    def _stat_pass(self, known: dict[str, _Entry]) -> tuple[list[str], dict[str, _Entry]]:
+    def _stat_pass(
+        self, known: dict[str, _Entry], should_stop: Callable[[], bool] | None = None
+    ) -> tuple[list[str], dict[str, _Entry]]:
         """The directory order, and a fresh entry for each file *known* does not match.
 
         A row whose stamp still matches costs one stat and no read; a link that is
         still a link costs nothing. Fresh entries that alone hold more than
         :data:`MAX_RETAINED_BYTES` raise :class:`_OverCeiling` before the next read.
+        *should_stop* is called before each :data:`_STOP_CHECK_EVERY` entries, and
+        :class:`_Stopped` is raised when it answers True.
         """
         order: list[str] = []
         fresh: dict[str, _Entry] = {}
         fresh_bytes = 0
-        for de in self._scan():
+        for i, de in enumerate(self._scan()):
+            if should_stop is not None and not i % _STOP_CHECK_EVERY and should_stop():
+                raise _Stopped
             stem = _jsonl_stem(de.name)
             order.append(stem)
             old = known.get(stem)
@@ -466,23 +521,30 @@ class SessionListingIndex:
             return None
         return (st.st_dev, st.st_ino, st.st_mtime_ns)
 
-    def _build(self, stamp: _DirStamp | None) -> None:
+    def _build(
+        self, stamp: _DirStamp | None, should_stop: Callable[[], bool] | None = None
+    ) -> None:
         """Read every transcript; *stamp* is the directory stamp read before the scan.
 
-        A failed directory read leaves the rows, and whether the index is built, as
-        they were, so the next listing tries again.
+        A failed directory read, a stop and a raise leave the rows, whether the index
+        is built and the journal replay position as they were, so the next listing
+        tries again.
         """
         now = self._clock()
-        # Every bump so far is covered by the reads below.
-        self._take_bumped()
+        # Every bump up to this epoch is covered by the reads below. The replay
+        # position moves to it only once the pass is committed.
+        epoch = self._journal_epoch()
         try:
-            order, fresh = self._stat_pass({})
+            order, fresh = self._stat_pass({}, should_stop)
         except _OverCeiling as over:
             self._stop(over.reason)
+            return
+        except _Stopped:
             return
         except OSError:
             logger.debug("Session listing index could not read %s", self._base, exc_info=True)
             return
+        self._replayed(epoch)
         self._built = True
         self._over = False
         self._rebuild_due = False
@@ -570,8 +632,7 @@ class SessionListingIndex:
         """
         owner = type(self._log)
         with owner._cache_gens_guard:
-            readers = _READERS.setdefault(self._base, weakref.WeakSet())
-            readers.add(self)
+            _READERS.setdefault(self._base, weakref.WeakSet()).add(self)
             epoch = owner._dir_write_epochs.get(self._base, 0)
             if epoch == self._epoch:
                 return []
@@ -584,11 +645,37 @@ class SessionListingIndex:
                     moved.append(stem)
             stems = None if owner._dir_bump_floors.get(self._base, 0) > self._epoch else moved
             self._epoch = epoch
-            if bumped:
-                low = min(reader._epoch for reader in readers)
-                while bumped and next(iter(bumped.values())) <= low:
-                    bumped.popitem(last=False)
+            self._drop_replayed()
         return stems
+
+    def _journal_epoch(self) -> int:
+        """The directory's write epoch now; registers this index as a journal reader.
+
+        The replay position stays where it is, so the records after it are kept until
+        :meth:`_replayed` moves it.
+        """
+        owner = type(self._log)
+        with owner._cache_gens_guard:
+            _READERS.setdefault(self._base, weakref.WeakSet()).add(self)
+            return owner._dir_write_epochs.get(self._base, 0)
+
+    def _replayed(self, epoch: int) -> None:
+        """Move the replay position to *epoch*, then drop what every reader replayed."""
+        with type(self._log)._cache_gens_guard:
+            self._epoch = epoch
+            self._drop_replayed()
+
+    def _drop_replayed(self) -> None:
+        """Drop the journal records every reader of the directory replayed.
+
+        Under ``ConversationLog._cache_gens_guard``.
+        """
+        bumped = type(self._log)._dir_bumped_stems.get(self._base)
+        readers = _READERS.get(self._base)
+        if bumped and readers:
+            low = min(reader._epoch for reader in readers)
+            while bumped and next(iter(bumped.values())) <= low:
+                bumped.popitem(last=False)
 
     def _catch_up(self) -> None:
         """Re-read every row this process wrote since the last call.

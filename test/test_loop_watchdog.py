@@ -607,7 +607,7 @@ def test_macos_pressure_and_rising_pageins_defers_and_says_so_once() -> None:
         line = fx.paging_lines()[0]
         assert "40 page-ins" in line
         # The macOS signal is process-wide, so the message must not claim the
-        # loop thread is paging or that the loop is not wedged (Opus review).
+        # loop thread is paging or that the loop is not wedged.
         assert "major faults" not in line
         assert "its thread" not in line
         assert "not the loop" not in line

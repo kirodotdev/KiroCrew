@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.llm_helpers import (
@@ -429,14 +430,15 @@ class TestFallbackStorySafety:
         heartbeat logs the story with no redaction of its own."""
         from kiro_crew.llm_helpers import FALLBACK_STORY_ATTR, fallback_story_of
 
+        key = github_classic(seed=1)
         exc = AcpError("boom")
         setattr(
             exc,
             FALLBACK_STORY_ATTR,
-            "AKIAIOSFODNN7EXAMPLE throttled; fallbacks fb-1 also unavailable",
+            f"{key} throttled; fallbacks fb-1 also unavailable",
         )
         story = fallback_story_of(exc)
-        assert "AKIAIOSFODNN7EXAMPLE" not in story
+        assert key not in story
         assert "also unavailable" in story
 
     def test_story_read_survives_hostile_exception_attr(self) -> None:

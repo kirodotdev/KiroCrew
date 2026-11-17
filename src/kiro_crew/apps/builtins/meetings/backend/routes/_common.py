@@ -421,7 +421,8 @@ def field_str_list(
     """A list-of-strings field, or None when absent.
 
     None is meaningfully different from ``[]`` here: ``agents_enabled=[]`` means
-    "no agents", while absent means "use the defaults".
+    "no agents", while absent means "no choice made": the roster the meeting
+    already holds, or the defaults when it holds none.
     """
     value = body.get(key)
     if value is None:

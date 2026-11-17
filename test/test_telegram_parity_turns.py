@@ -305,13 +305,18 @@ class TestVoiceOut:
         """Audio is an egress a reader cannot un-see, so it gets the display floor.
 
         This leg bypasses the renderer, which is where a turn normally gets that
-        floor, and the driver's pass is BYTE-level: `AKIA**IOSFODNN7EXAMPLE**` does
+        floor, and the driver's pass is BYTE-level: `<head>**<rest of key>**` does
         not match, because the `**` sits inside the key. A synthesizer reads the
         characters and not the markup, so the credential the byte pass missed would
         be spoken aloud.
         """
         d, _, _ = _dispatcher({1})
-        head, tail = "AKIA", "IOSFODNN7EXAMPLE"
+        from redaction_structured_cases import github_classic
+
+        # A token by its published format: a bare 40-character AWS-shaped run with no
+        # label or key ID beside it is no credential, joined or not.
+        key = github_classic(seed=60)
+        head, tail = key[:4], key[4:]
         spoken: list[str] = []
 
         # Real signature: (deliver, text, **settings). A mismatch here is swallowed
@@ -771,6 +776,7 @@ class TestStatsCounters:
     def test_a_governance_denied_message_counts_nothing(self) -> None:
         # It never happened as far as the operator's own traffic figures go, and
         # counting it would make the failure ratio read as the bot's fault.
+        from kiro_crew.messaging import dispatch
         from kiro_crew.telegram import transport_dispatch as td
 
         d, _, _ = _dispatcher({7})
@@ -782,7 +788,7 @@ class TestStatsCounters:
         )
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(td, "Stats", lambda: recorder)
-            mp.setattr(td, "channel_inbound_permitted", _false)
+            mp.setattr(dispatch, "channel_inbound_permitted", _false)
             asyncio.run(d.handle_message(_dm("a question")))
         assert seen == []
 
@@ -1036,9 +1042,7 @@ class TestStatsAndReplyTargetCharacterization:
             asked.append(channel)
             raise RuntimeError("profile store down")
 
-        monkeypatch.setattr(
-            "kiro_crew.telegram.transport_dispatch.channel_inbound_permitted", _raise
-        )
+        monkeypatch.setattr("kiro_crew.messaging.dispatch.channel_inbound_permitted", _raise)
         d, _client, _sess = _dispatcher({7})
         with pytest.raises(RuntimeError):
             asyncio.run(d.handle_message(_dm("hi")))

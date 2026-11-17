@@ -118,10 +118,16 @@ def _already_installed(version: str, force: bool) -> kas_bundle.InstalledKasBund
     not where this command writes, so it does not make an install here redundant.
     A directory at the version's name that does not read back as an engine is not
     an answer either; ``install_bundle`` then refuses it and names ``--force``.
+    An answer skips ``install_bundle``, so the stale staging sweep it would have
+    run runs here.
     """
     if force:
         return None
-    return kas_bundle.installed_bundle(root=kas_bundle.kas_engines_root(), version=version)
+    root = kas_bundle.kas_engines_root()
+    present = kas_bundle.installed_bundle(root=root, version=version)
+    if present is not None:
+        kas_bundle.sweep_stale_staging(root)
+    return present
 
 
 #: ``install --if-in-use`` needs the engine: the bundle route runs it.
@@ -411,6 +417,12 @@ def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool
             "\nThe bundle route is off. Turn it on, then restart:\n"
             "  kirocrew config set agent.kas_bundle true\n"
             "  kirocrew restart"
+        )
+    elif kas_bundle.route_chosen_by_sharing_preview(route):
+        print(
+            "\nKiro Crew will use this engine: the ACP runtime sharing preview "
+            "picks it while agent.kas_bundle is off. `kirocrew restart` picks "
+            "the new engine up."
         )
     elif route.automatic:
         print(

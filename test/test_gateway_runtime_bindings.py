@@ -47,7 +47,6 @@ _GLOBAL_OPS = frozenset({"LOAD_GLOBAL", "LOAD_NAME"})
 _BOUND_CLASS_CONSTANTS = {
     "_DEP_INSTALL_TIMEOUT_SECS": "install_repair",
     "_KIRO_CLI_VERSION_TIMEOUT_SECS": "install_repair",
-    "_MANDATORY_UPDATE_MAX_DEFER_SECS": "update_schedule",
     "_SLACK_APPLIER_PREFIXES": "channel_boot",
     "_STARTUP_CHILD_REAP_SECS": "install_repair",
     "_UPDATE_BUSY_RETRY_SECS": "update_schedule",

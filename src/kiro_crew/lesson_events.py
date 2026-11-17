@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 #: WebSocket frame type, classified under the ``lessons`` declaration.
 LESSONS_CHANGED_EVENT = "lessons.changed"
 
-#: What happened to the store. ``updated`` is an existing row that gained a clause
-#: or changed tier.
+#: What happened to the store. ``updated`` is an existing row that gained a clause,
+#: changed tier or had its rule rewritten.
 LESSON_ADDED = "added"
 LESSON_UPDATED = "updated"
 LESSON_REMOVED = "removed"
@@ -86,13 +86,14 @@ def emit_lessons_changed(action: str, source: str, count: int = 1) -> None:
 def lesson_write_action(outcome: str, superseded: bool) -> str | None:
     """The change a lesson write made, from its outcome word, or ``None`` for none.
 
-    ``inserted`` adds a row and ``enriched`` attaches a clause to one. A declining
-    outcome (``unchanged``, ``deduped``, ``refused``) can still have deleted rows it
+    ``inserted`` adds a row, ``enriched`` attaches a clause to one and ``replaced``
+    (the Memory tab's edit) rewrites one's rule. A declining outcome
+    (``unchanged``, ``deduped``, ``refused``) can still have deleted rows it
     superseded, which is a removal; otherwise it changed nothing.
     """
     if outcome == "inserted":
         return LESSON_ADDED
-    if outcome == "enriched":
+    if outcome in ("enriched", "replaced"):
         return LESSON_UPDATED
     if superseded:
         return LESSON_REMOVED

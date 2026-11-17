@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch, type RootState } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
@@ -11,6 +11,7 @@ import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown, AppWindow } from 'lucide-react'
 import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ErrorNotice from '../../components/ErrorNotice'
+import { lazyRetry } from '../../components/lazyRetry'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
@@ -50,8 +51,14 @@ import { toolRailColor } from '../../utils/toolRailColor'
 import { useSecondClock } from '../../hooks/useSecondClock'
 import { toolReturned } from '../../utils/toolReturned'
 
-// Lazy so the rarely-shown answers card stays out of the App chunk.
-const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
+// Lazy so the rarely-shown answers card stays out of the App chunk. A chunk
+// that fails to load shows one block in the card's place, with Try Again and
+// the hand-off this row's other notices offer.
+const AskAnswersResult = lazyRetry(async () => ({ default: (await import('./AskAnswersCard')).AskAnswersResult }), {
+  layout: 'block',
+  title: () => i18nT('pages.chat.toolCallLine.answers_load_failed'),
+  scope: 'ask-answers-card',
+})
 
 // Stable empties for slots with no per-slot state yet. A fresh `[]` per
 // selector run would change identity every dispatch and defeat the
@@ -770,7 +777,8 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // still exists on disk).
   const filePath = useMemo(() => extractToolFilePath(input), [input])
   // Inline diff presentation: an edit tool's input IS a unified diff
-  // (backend-derived from the ACP diff content block, see acp/_dispatch.py).
+  // (backend-derived from the ACP diff content block, see
+  // acp/_dispatch_parts/session_update_parser.py).
   // Small diffs promote to a DiffBlock card below the pill, folded to its chip
   // until the reader opens it; over-cap diffs degrade to a summary chip
   // (filename, −N +M) that expands the details panel — never to nothing,
@@ -790,10 +798,15 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // folded either. Density relief is per-card (the fold chip below) plus the
   // size caps in presentToolDiff.
   const denied = isRejected || isAutoDenied
-  // Images an image-mode read looked at, previewed under the row. Not for a
-  // rejected or auto-denied call: the agent never read them, and a preview
-  // would say it had.
-  const imagePaths = useMemo(() => (denied ? [] : extractToolImagePaths(input)), [denied, input])
+  // Images a read looked at, previewed under the row. Not for a rejected or
+  // auto-denied call: the agent never read them, and a preview would say it had.
+  // `read_path_arg` is the backend's mark naming the argument a read call's one
+  // file is in (Claude Code's Read), written with the row and never by the agent.
+  const readPathArg = typeof message.meta?.read_path_arg === 'string' ? message.meta.read_path_arg : ''
+  const imagePaths = useMemo(
+    () => (denied ? [] : extractToolImagePaths(input, readPathArg)),
+    [denied, input, readPathArg],
+  )
   // An edit run's diffs, one per call in order, read from each member's
   // persisted input: editRuns admitted every member on exactly that input as a
   // card-sized, untruncated diff. A run the lead's own log entry calls denied
@@ -1394,7 +1407,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
           ))}
         </div>
       )}
-      {askAnswered && <Suspense fallback={null}><AskAnswersResult output={output} toolCallId={toolCallId} /></Suspense>}
+      {askAnswered && <AskAnswersResult output={output} toolCallId={toolCallId} />}
 
       <StatusRow show={showShellActivity} snap={transcriptHot}>
         {/* ml-5 = the pill's icon (12px) + the pill BUTTON's gap-2 (8px), so

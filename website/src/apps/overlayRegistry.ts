@@ -12,7 +12,7 @@
  * Components are lazy-loaded, so a contributed overlay costs nothing until the
  * host actually opens it.
  */
-import { lazy, type ComponentType } from 'react'
+import type { ComponentType } from 'react'
 
 /** Props every contributed overlay receives from its host slot. */
 export interface OverlayProps {
@@ -56,14 +56,11 @@ export function isHostOverlaySlot(slot: string): slot is HostOverlaySlot {
  * Registry mapping overlay ids (from app manifest `ui.overlays[].id`) to their
  * lazy-loaded components.
  *
- * To add a builtin overlay:
- * 1. Create the component; it takes {@link OverlayProps}.
- * 2. Add an entry here: 'my-overlay': lazy(() => import('./my-app/MyOverlay'))
- * 3. Declare `ui.overlays` in your app.json manifest.
+ * Empty: the one overlay it held, the Command Bar, is the shell's own quick-search
+ * launcher now (`components/commandBar/`, switched by `dashboard.command_bar_enabled`
+ * in `QuickSearchSurface`), and no new built-in app may add one.
  */
-export const BUILTIN_OVERLAY_REGISTRY: Record<string, LazyOverlay> = {
-  'command-bar': lazy(() => import('./command-bar/CommandBarOverlay')),
-}
+export const BUILTIN_OVERLAY_REGISTRY: Record<string, LazyOverlay> = {}
 
 /**
  * Registry membership is an OWN-property test, never `in`.

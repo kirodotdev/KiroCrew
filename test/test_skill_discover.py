@@ -25,6 +25,7 @@ from dashboard_owner_helpers import as_owner
 
 from conftest import make_dir_link
 from kiro_crew import platform_compat
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -232,7 +233,7 @@ class TestDiscoverInstall:
     async def test_install_overwrite_replaces_symlinked_skill_dir(
         self, fake_home, reset_registry, tmp_path
     ):
-        # Security regression: a pre-planted symlink at the skill dir must be
+        # A pre-planted symlink at the skill dir must be
         # REMOVED, never followed — otherwise the bundle (incl. nested paths
         # whose not-yet-existing parents dodge the parent-symlink guard) would
         # be written outside the skills root at the symlink target.
@@ -402,6 +403,64 @@ class TestDiscoverInstallStagedSwap:
             assert resp.status == 500
             assert "SKILL.md" in (await resp.json())["error"]
             self._assert_old_intact(skill_dir)
+        finally:
+            await client.close()
+
+    async def test_a_failed_bundle_keeps_a_linked_install(
+        self, fake_home, reset_registry, tmp_path
+    ):
+        """A bundle that fails leaves a linked install linked, like a real directory."""
+        provider = FakeProvider()
+        client, skills_dir = await TestDiscoverInstall()._client(fake_home, provider)
+        try:
+            outside = tmp_path / "my-own-skill"
+            outside.mkdir()
+            (outside / "SKILL.md").write_text("# mine", encoding="utf-8")
+            provider_dir = skills_dir / "fakeprov"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            link = provider_dir / "fake-skill"
+            link.symlink_to(outside, target_is_directory=True)
+
+            provider._bundle = [("README.md", "# no skill here")]
+            resp = await client.post("/api/skills/-/discover/install", json=_OVERWRITE)
+
+            assert resp.status == 500
+            assert link.is_symlink()
+            assert (link / "SKILL.md").read_text(encoding="utf-8") == "# mine"
+            assert [p.name for p in provider_dir.iterdir()] == ["fake-skill"]
+        finally:
+            await client.close()
+
+    async def test_a_failed_publish_keeps_a_linked_install(
+        self, fake_home, reset_registry, tmp_path, monkeypatch
+    ):
+        """A publish that fails after the bundle verified still puts the old link back."""
+        from kiro_crew.dashboard.handlers import discover as discover_mod
+
+        provider = FakeProvider()
+        client, skills_dir = await TestDiscoverInstall()._client(fake_home, provider)
+
+        def _publish(src, dst):
+            raise PermissionError(13, "Access is denied", str(dst))
+
+        fake = SimpleNamespace(**{**vars(platform_compat), "publish_dir_noreplace": _publish})
+        monkeypatch.setattr(discover_mod, "platform_compat", fake)
+        try:
+            outside = tmp_path / "my-own-skill"
+            outside.mkdir()
+            (outside / "SKILL.md").write_text("# mine", encoding="utf-8")
+            provider_dir = skills_dir / "fakeprov"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            link = provider_dir / "fake-skill"
+            link.symlink_to(outside, target_is_directory=True)
+
+            provider._bundle = [("SKILL.md", "# v2")]
+            resp = await client.post("/api/skills/-/discover/install", json=_OVERWRITE)
+
+            assert resp.status == 500
+            assert link.is_symlink()
+            assert (link / "SKILL.md").read_text(encoding="utf-8") == "# mine"
+            assert [p.name for p in provider_dir.iterdir()] == ["fake-skill"]
         finally:
             await client.close()
 
@@ -788,7 +847,7 @@ class TestDiscoverInstallLogSanitization:
     ):
         import logging
 
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=30)
 
         class BoomProvider(FakeProvider):
             async def fetch_skill_bundle(self, skill_id):

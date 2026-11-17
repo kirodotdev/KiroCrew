@@ -130,8 +130,14 @@ async def test_the_gateway_deadline_reason_qualifies_as_the_stub_reports_it():
     async def _shutdown() -> None:
         return None
 
+    # A live process: the deadline takes the timed-out branch, not the died-in-handshake one.
     backend = SimpleNamespace(
-        _init_state="in_flight", _dead_reason=None, _fail_init=_fail_init, shutdown=_shutdown
+        _init_state="in_flight",
+        _dead_reason=None,
+        _gateway_ending=False,
+        process=SimpleNamespace(returncode=None),
+        _fail_init=_fail_init,
+        shutdown=_shutdown,
     )
     await backend_handshake._init_deadline(backend, 0)
 

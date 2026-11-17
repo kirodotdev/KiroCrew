@@ -63,6 +63,16 @@ EXEC_MARKER = "KIROCREW_LIVE_EXECED"
 _FILENAME = "live_target.json"
 
 
+def _no_cwd_entries(search_path: str) -> str:
+    """*search_path* without any empty or ``.`` entry: both name the current directory."""
+    return os.pathsep.join(p for p in search_path.split(os.pathsep) if p not in ("", "."))
+
+
+#: The search path a process with no ``PATH`` uses (``os.defpath``), minus any
+#: current-directory entry: on Windows it starts with ``.``.
+_DEFAULT_PATH = _no_cwd_entries(os.defpath)
+
+
 class InvalidTarget(ValueError):
     """A pointer value cannot be used as a live target.
 
@@ -109,24 +119,29 @@ def validate(raw: str) -> Path:
         checkout = Path(raw).expanduser().resolve()
     except (OSError, ValueError, RuntimeError) as exc:
         return _reject(f"the live target is not a resolvable path: {exc}")
-    if not checkout.is_dir():
-        return _reject(f"the live target is not a directory: {checkout}")
     kcbin = target_bin(checkout)
-    if not kcbin.is_file():
-        return _reject(
-            f"the live target has no {kcbin.name} in its .venv — provision it first "
-            f"(expected {kcbin})"
-        )
-    # A present-but-non-executable entry point is worse than a missing one: it
-    # would pass a naive existence check and then fail the exec, so the caller
-    # must be able to distinguish it.
-    if not os.access(kcbin, os.X_OK):
-        return _reject(f"the live target's {kcbin} is not executable")
-    if not (checkout / "src" / "kiro_crew").is_dir():
-        return _reject(
-            f"the live target does not look like a Kiro Crew checkout "
-            f"(no src/kiro_crew): {checkout}"
-        )
+    # On Python 3.12 ``is_dir``/``is_file`` re-raise an access error instead of
+    # returning False, and escaping as OSError would crash every gateway start.
+    try:
+        if not checkout.is_dir():
+            return _reject(f"the live target is not a directory: {checkout}")
+        if not kcbin.is_file():
+            return _reject(
+                f"the live target has no {kcbin.name} in its .venv — provision it first "
+                f"(expected {kcbin})"
+            )
+        # A present-but-non-executable entry point is worse than a missing one: it
+        # would pass a naive existence check and then fail the exec, so the caller
+        # must be able to distinguish it.
+        if not os.access(kcbin, os.X_OK):
+            return _reject(f"the live target's {kcbin} is not executable")
+        if not (checkout / "src" / "kiro_crew").is_dir():
+            return _reject(
+                f"the live target does not look like a Kiro Crew checkout "
+                f"(no src/kiro_crew): {checkout}"
+            )
+    except OSError as exc:
+        return _reject(f"the live target cannot be read: {checkout}: {exc}")
     return checkout
 
 
@@ -459,10 +474,17 @@ def maybe_reexec(argv: list[str], *, log: object = None) -> None:
         # The target's venv leads PATH. Without this, a bare ``kirocrew`` in a
         # subprocess (or an agent shell turn) resolves to the machine-wide
         # install, so the gateway would run the target while everything it
-        # spawns re-invoked the old build.
-        "PATH": os.pathsep.join([str(kcbin.parent), os.environ.get("PATH", "")]),
+        # spawns re-invoked the old build. With no inherited PATH the platform's
+        # default search path follows it, as a process with no PATH searches;
+        # an empty or "." entry is left out: either names the current directory,
+        # the target checkout after the chdir below.
+        "PATH": os.pathsep.join([str(kcbin.parent), os.environ.get("PATH") or _DEFAULT_PATH]),
     }
     _warn(log, f"live target set: executing {kcbin}")
+    try:
+        start_dir = os.getcwd()
+    except OSError:
+        start_dir = None
     try:
         os.chdir(target)
     except OSError as exc:
@@ -486,8 +508,14 @@ def maybe_reexec(argv: list[str], *, log: object = None) -> None:
     except OSError as exc:
         # Fail SAFE: an exec that could not even start leaves this process
         # intact, so continue booting the installed build rather than dying with
-        # no gateway at all.
+        # no gateway at all -- in the directory it was started in, not the
+        # target's, so it boots exactly as it would with no pointer.
         _warn(log, f"could not execute the live target {kcbin}: {exc}")
+        if start_dir is not None:
+            try:
+                os.chdir(start_dir)
+            except OSError as back:
+                _warn(log, f"could not return to the start directory {start_dir}: {back}")
 
 
 def _warn(log: object, message: str) -> None:

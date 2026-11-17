@@ -223,7 +223,7 @@ const keyMap = (relPath, name) => {
 
 const { BUILTIN_SURFACE_NAV, CAPABILITY_SUB_ITEM_NAV, capabilitySubItemNav } = await loadTs('src/surfaces/surfaceData.ts')
 const { EXTRA_PAGES, EXTRA_PAGE_TITLE_KEY } = await loadTs('src/components/commandPalette/providers/pagesData.ts')
-const { UI_LOCATION_AREAS, PREVIEW_FLAG_ENABLERS, SETTINGS_TAB_PREVIEW, SETTING_PREVIEW, SEARCH_TERMS, LEGACY_PAGE_CANONICAL } = await loadTs('src/uiLocations/descriptors.ts')
+const { UI_LOCATION_AREAS, PREVIEW_FLAG_ENABLERS, SETTINGS_TAB_PREVIEW, SETTING_PREVIEW, SETTING_CONDITION, SEARCH_TERMS, LEGACY_PAGE_CANONICAL } = await loadTs('src/uiLocations/descriptors.ts')
 // The registered locations live one file per area; every file there is an
 // input whether or not git tracks it, and the merge refuses an id
 // two areas declare or an area file the aggregator does not list.
@@ -352,6 +352,7 @@ const indexInputs = {
   settingsSubs,
   settingsTabPreview: SETTINGS_TAB_PREVIEW,
   settingPreview: SETTING_PREVIEW,
+  settingCondition: SETTING_CONDITION,
   settingsEntries,
   agentSettings,
   descriptors: UI_LOCATIONS,
@@ -375,28 +376,18 @@ const indexInputs = {
 }
 
 // The committed index: generated + curated tiers. Built WITHOUT auto
-// candidates, and its digest carries nothing the auto tier derived, so an
-// unregistered control added to a page never stales it.
-const built = buildUiIndex({ ...indexInputs, inputDigest: '' })
+// candidates, so an unregistered control added to a page never stales it.
+const built = buildUiIndex(indexInputs)
 errors.push(...built.errors)
 errors.push(...attachStateLabels(built.index, UI_LOCATIONS, UI_CONDITIONS, UI_REVEAL_STATES))
-// `input_digest` is a digest of what the index SAYS, not of the bytes it was
-// read from: an edit to an input that changes nothing in the index (a label
-// no location uses, a comment in a page) leaves the committed file untouched,
-// so unrelated changes neither stale it nor collide on this line.
-const committedDigest = `sha256:${createHash('sha256').update(JSON.stringify({ ...built.index, input_digest: '' })).digest('hex')}`
-built.index.input_digest = committedDigest
 const collisions = termCollisions(built.index, UI_LOCATION_AREAS)
 
 // The auto tier: which one page each core candidate is drawn on, hung off the
 // committed index's pages and tabs, then split into its own artifact.
 const autoPlan = planAutoCandidates(built.index)
-const autoBuilt = buildUiIndex({ ...indexInputs, autoCandidates: autoPlan.candidates, inputDigest: committedDigest })
+const autoBuilt = buildUiIndex({ ...indexInputs, autoCandidates: autoPlan.candidates })
 const committedErrors = new Set(built.errors)
 errors.push(...autoBuilt.errors.filter((e) => !committedErrors.has(e)))
-const autoDigest = createHash('sha256')
-  .update(`${committedDigest}\0auto\0${JSON.stringify(autoPlan.candidates.map(({ page, pages, tab, key, kind, siteId, primitive, spread, danger, inContainer, trustRoot }) => [page, pages ?? null, tab, key, kind, siteId, primitive, spread, danger, inContainer, trustRoot]))}\0`)
-  .digest('hex')
 {
   const autoIds = new Set([...autoBuilt.index.locations.filter((l) => l.tier === 'auto').map((l) => l.id), ...autoPlan.candidates.map((c) => c.siteId)])
   for (const [list, ids] of [['GUIDE_DENY_IDS', GUIDE_DENY_IDS], ['GUIDE_CAUTION_IDS', GUIDE_CAUTION_IDS]]) {
@@ -412,10 +403,19 @@ if (errors.length > 0) {
 }
 
 const bytes = serializeIndex(built.index)
+// The committed index's `input_digest`, which the file itself no longer
+// carries: sha256 of the exact text written. kiro_crew/ui_index_load.py
+// computes the same from the file it reads, so the auto tier below names this
+// index, and an edit to an input that changes nothing in the index still
+// leaves the file (and so the digest) untouched.
+const committedDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+const autoDigest = createHash('sha256')
+  .update(`${committedDigest}\0auto\0${JSON.stringify(autoPlan.candidates.map(({ page, pages, tab, key, kind, siteId, primitive, spread, danger, inContainer, trustRoot }) => [page, pages ?? null, tab, key, kind, siteId, primitive, spread, danger, inContainer, trustRoot]))}\0`)
+  .digest('hex')
 const planBytes = serializeGuidePlans(built.index)
 const guidable = built.index.locations.filter((l) => l.guide_plan).length
-const counts = built.index.coverage.counts
-const tiers = built.index.coverage.tiers
+const counts = built.stats.counts
+const tiers = built.stats.tiers
 const cov = coverageStats()
 const autoArtifact = buildAutoArtifact(autoBuilt.index, {
   baseInputDigest: committedDigest,
@@ -498,8 +498,8 @@ if (SITES_OUT) {
 function writeReport(file) {
   const en = catalogs.en
   const full = autoBuilt.index
-  const fullTiers = full.coverage.tiers
-  const lines = ['# find_ui coverage report', '', `Generated from input ${built.index.input_digest}.`, '']
+  const fullTiers = autoBuilt.stats.tiers
+  const lines = ['# find_ui coverage report', '', `Generated from input ${committedDigest}.`, '']
   lines.push('Files: the generated and curated tiers are the committed `src/kiro_crew/docs/ui-index.generated.json` '
     + `(${Buffer.byteLength(bytes)} bytes); the auto tier is the build-time \`${AUTO_ARTIFACT_NAME}\` `
     + `(${Buffer.byteLength(autoBytes)} bytes), written into website/dist by \`npm run build\` and shipped in `

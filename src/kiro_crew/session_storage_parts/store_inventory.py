@@ -69,15 +69,12 @@ from kiro_crew.session_storage_parts.store_layout import (
 
 # ------------------------------------------------------------------ scan cache
 #
-# Enumerating both stores is the whole cost of every read on this surface. The
-# measured motivating machine holds ~470,000 replay files, which is ~2s of
-# stat() per pass — and one open of the inventory screen needs the same
-# enumeration for the row list, again for the totals printed beside it, and again
-# for every row the user expands. That is seconds of disk per interaction for an
-# answer that cannot meaningfully change between them.
+# Enumerating both stores is the whole cost of every read here. One measured
+# machine holds ~470,000 replay files, ~2s of stat() per pass, and one open of
+# the inventory screen needs the enumeration for the rows, again for the totals,
+# and again per expanded row: seconds of disk for an answer that does not change.
 #
-# So a pass is kept for a few seconds and shared. Two properties make that safe
-# rather than merely faster:
+# So a pass is kept for a few seconds and shared. Two properties make that safe:
 #
 # * Only the filesystem halves are cached — the store scan and, on read paths,
 #   the co-tenant pass beside it (its own cache, further down). The flags derived
@@ -90,12 +87,18 @@ from kiro_crew.session_storage_parts.store_layout import (
 #   the index inside the mutation lock, so the selection it acts on is current.
 #
 # A mutation invalidates the entry outright, so a screen refetching after a move
-# does not show what it just deleted.
+# does not show what it just deleted. A pass that was already running when the
+# mutation invalidated is not stored either (see ``_scan_epoch``).
 _SCAN_CACHE_TTL = 30.0
 
 _scan_cache_lock = threading.Lock()
 # (expires_at, cache key, units)
 _scan_cache: tuple[float, tuple[object, ...], list[_RawUnit]] | None = None
+#: Bumped by every :func:`invalidate_scan_cache`, in place (one item, never rebound). A
+#: read pass enumerates with no mutation lock held, so a move can finish and invalidate
+#: while that pass is still running; the pass then describes the stores from before the
+#: move, and :func:`_store_scan` keeps it only if no invalidation landed since it began.
+_scan_epoch = [0]
 
 
 def _scan_key(sid_for_stem: Mapping[str, str]) -> tuple[object, ...]:
@@ -137,9 +140,19 @@ def _cached_scan(sid_for_stem: Mapping[str, str]) -> list[_RawUnit] | None:
         return units
 
 
-def _store_scan(sid_for_stem: Mapping[str, str], units: list[_RawUnit]) -> None:
+def _scan_started() -> int:
+    """The invalidation count a pass about to enumerate the stores starts under."""
+    with _scan_cache_lock:
+        return _scan_epoch[0]
+
+
+def _store_scan(sid_for_stem: Mapping[str, str], units: list[_RawUnit], started: int) -> None:
     global _scan_cache
     with _scan_cache_lock:
+        if _scan_epoch[0] != started:
+            # A mutation invalidated the cache while this pass ran, so the pass may
+            # predate it. Return it to this caller, but do not serve it to the next.
+            return
         _scan_cache = (time.monotonic() + _SCAN_CACHE_TTL, _scan_key(sid_for_stem), units)
 
 
@@ -162,6 +175,7 @@ def invalidate_scan_cache() -> None:
     global _scan_cache, _cotenant_cache
     with _scan_cache_lock:
         _scan_cache = None
+        _scan_epoch[0] += 1
     with _cotenant_cache_lock:
         _cotenant_cache = None
 
@@ -245,9 +259,10 @@ def _scan_raw(
         hit = _cached_scan(sid_for_stem)
         if hit is not None:
             return hit
+    started = _scan_started()
     result = _scan_raw_uncached(sid_for_stem, strict=strict)
     if cached:
-        _store_scan(sid_for_stem, result)
+        _store_scan(sid_for_stem, result, started)
     return result
 
 

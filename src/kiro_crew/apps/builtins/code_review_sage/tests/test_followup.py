@@ -18,12 +18,12 @@ import asyncio
 import json
 import os
 import shutil
-import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sage_lib import followup as FU  # noqa: N812
 from sage_lib import review_pool as RP  # noqa: N812
 from sage_lib import store
@@ -69,10 +69,13 @@ class FakeHandle:
 class _SessionsDirCase(unittest.TestCase):
     """Points kiro-cli's sessions dir at a temp dir and lays out one run."""
 
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self._tmp = tmp_path
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name) / "data"
-        self.sessions = Path(self._tmp.name) / "sessions"
+        self.root = self._tmp / "data"
+        self.sessions = self._tmp / "sessions"
         self.sessions.mkdir(parents=True)
         store.ensure_layout(self.root)
         store.ensure_run_layout("run1", self.root)
@@ -81,7 +84,6 @@ class _SessionsDirCase(unittest.TestCase):
 
     def tearDown(self):
         FU.kiro_sessions_dir = self._real_sessions_dir
-        self._tmp.cleanup()
 
     def _transcript(self, sid="sid-1") -> Path:
         path = self.sessions / f"{sid}.json"
@@ -195,7 +197,7 @@ class DescriptorTests(_SessionsDirCase):
 
     @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
     def test_a_planted_symlink_is_not_followed_on_read(self):
-        victim = Path(self._tmp.name) / "victim.json"
+        victim = self._tmp / "victim.json"
         victim.write_text('{"sid": "sid-1"}', encoding="utf-8")
         self._transcript()
         path = FU.descriptor_path("run1", "c1", self.root)
@@ -207,7 +209,7 @@ class DescriptorTests(_SessionsDirCase):
     def test_a_planted_temp_symlink_is_not_written_through(self):
         """A predictable temp name could be pre-linked at the app's own config;
         the write uses an O_EXCL random name instead."""
-        victim = Path(self._tmp.name) / "victim.json"
+        victim = self._tmp / "victim.json"
         victim.write_text("untouched", encoding="utf-8")
         self._transcript()
         path = FU.descriptor_path("run1", "c1", self.root)
@@ -223,7 +225,7 @@ class LinkedDirectoryTests(_SessionsDirCase):
 
     @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
     def test_a_linked_chat_directory_is_refused(self):
-        outside = Path(self._tmp.name) / "elsewhere"
+        outside = self._tmp / "elsewhere"
         outside.mkdir()
         (store.run_dir("run1", self.root) / "chat").symlink_to(outside)
         self._transcript()
@@ -237,7 +239,7 @@ class LinkedDirectoryTests(_SessionsDirCase):
         """Comparing ``chat`` to its own parent is vacuous when the RUN dir is the
         link: both resolve into the attacker's directory and containment passes
         while every write lands outside the data tree."""
-        outside = Path(self._tmp.name) / "elsewhere2"
+        outside = self._tmp / "elsewhere2"
         outside.mkdir()
         (store.runs_root(self.root) / "run2").symlink_to(outside)
         self._transcript()
@@ -250,7 +252,7 @@ class LinkedDirectoryTests(_SessionsDirCase):
         """Resolving the anchor before checking it would make containment
         attacker-relative: the anchor moves into the planted directory and every
         child then compares as legitimately inside it."""
-        outside = Path(self._tmp.name) / "elsewhere3"
+        outside = self._tmp / "elsewhere3"
         outside.mkdir()
         runs = store.runs_root(self.root)
         for child in list(runs.iterdir()):
@@ -278,7 +280,7 @@ class LinkedDirectoryTests(_SessionsDirCase):
 
     def _plant(self, where: str) -> Path:
         """Plant a directory link at *where* and return the attacker's directory."""
-        outside = Path(self._tmp.name) / f"elsewhere-{where}"
+        outside = self._tmp / f"elsewhere-{where}"
         outside.mkdir()
         runs = store.runs_root(self.root)
         if where == "runs":
@@ -323,9 +325,9 @@ class LinkedDirectoryTests(_SessionsDirCase):
         """Guards the guard. If the plant were something
         Path.is_symlink() already catches on this host, the tests above would
         stop exercising the junction arm and silently cease to be evidence."""
-        outside = Path(self._tmp.name) / "elsewhere-probe"
+        outside = self._tmp / "elsewhere-probe"
         outside.mkdir()
-        link = Path(self._tmp.name) / "probe-link"
+        link = self._tmp / "probe-link"
         _make_dir_link(link, outside)
         self.assertTrue(platform_compat.is_link_or_junction(link))
         if os.name == "nt":
@@ -478,7 +480,7 @@ class LegacyHistoryTests(_SessionsDirCase):
 
     @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
     def test_a_planted_symlink_is_not_followed_on_read(self):
-        victim = Path(self._tmp.name) / "victim.json"
+        victim = self._tmp / "victim.json"
         victim.write_text('[{"role": "user", "text": "LEAKED"}]',
                           encoding="utf-8")
         path = FU.transcript_path("run1", "c1", self.root)
@@ -492,8 +494,11 @@ class LegacyHistoryTests(_SessionsDirCase):
 class PoolHandoffTests(unittest.IsolatedAsyncioTestCase):
     """``ReviewPool.send`` is what makes a review resumable."""
 
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self._tmp = tmp_path
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
         self.recorded: list[tuple] = []
         self._real_write = FU.write_descriptor
 
@@ -506,14 +511,13 @@ class PoolHandoffTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         FU.write_descriptor = self._real_write
-        self._tmp.cleanup()
 
     async def _send(self, handle, *, keep, stop="end_turn", backend=None):
         # The pool's work_dir is this test's own temp dir, never `os.getcwd()`:
         # a sibling test in the same xdist worker can chdir into a directory it
         # then deletes, and reading the process cwd here would raise
         # FileNotFoundError depending on how the run happened to shard.
-        pool = RP.ReviewPool(max_workers=1, agent="rev", work_dir=self._tmp.name)
+        pool = RP.ReviewPool(max_workers=1, agent="rev", work_dir=str(self._tmp))
         self.pool = pool
 
         class FakeRuntime:

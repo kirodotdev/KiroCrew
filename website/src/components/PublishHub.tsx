@@ -24,6 +24,7 @@ import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import { errMessage } from '../utils/thunkError'
 import { toApiError } from '../api/apiError'
+import { deploySiteIdFor, findLiveSite, isPublicWebDeploy, publishNoticeKey, readPublishOutcome } from '../lib/publishHelpers'
 
 import { i18nT } from '../i18n/t'
 interface UnifiedProvider {
@@ -55,157 +56,64 @@ function iconFor(name: string): typeof Globe {
   return ICONS[name] ?? Upload
 }
 
-/**
- * Whether a provider row is the Artifact Deploy destination (publish to a public
- * HTTPS URL in the operator's own AWS account).
- *
- * Identified by its endpoint or id rather than by its display label, which is
- * translated and would stop matching in every language but English. An app row
- * declares the deploy endpoint; the core registry row carries the `deploy-web`
- * id. A row that is neither is some other destination and is never filtered.
- */
-export function isPublicWebDeploy(p: { id: string; app?: { endpoint?: string } }): boolean {
-  if (p.id === 'deploy-web') return true
-  return (p.app?.endpoint ?? '').startsWith('/api/deploy/')
-}
-
-/** The longest site id the public-web deploy stores. */
-const SITE_ID_MAX = 64
-
-/**
- * The site id the public-web deploy stores for an artifact slug.
- *
- * The panel sends `site_id: artifact.slug`, and the deploy route normalizes it
- * (`_safe_site_id` in the deploy handlers): lowercased, every character other
- * than a letter, digit, `-` or `_` replaced by `-`, leading and trailing `-`/`_`
- * stripped, then cut to 64 characters. A slug longer than that is stored
- * truncated, so comparing the raw slug would miss its site.
- */
-export function deploySiteIdFor(slug: string): string {
-  const normalized = Array.from(slug.trim().toLowerCase(), c => (/[\p{L}\p{N}_-]/u.test(c) ? c : '-')).join('')
-  return Array.from(normalized.replace(/^[-_]+|[-_]+$/g, '')).slice(0, SITE_ID_MAX).join('')
-}
-
-/**
- * The live public-web site this artifact already has, or `null`.
- *
- * Reads the deploy's own listing, which comes from the AWS account's resource
- * tags. A site removed by teardown, by the expiry reaper, or outside the
- * dashboard is not listed, so the answer cannot go stale the way a stored copy
- * of the link would. No listing, an unconfigured deploy, and no site under this
- * artifact's id all answer `null`, which leaves the panel on its destination list.
- */
-export function findLiveSite(
-  resp: DeploySitesResponse | null | undefined,
-  slug: string,
-): Site | null {
-  if (!resp || resp.configured === false || !Array.isArray(resp.sites)) return null
-  const id = deploySiteIdFor(slug)
-  if (!id) return null
-  return resp.sites.find(s => !!s && s.site_id === id) ?? null
-}
-
-/**
- * Read the OUTCOME of a publish response, across the two shapes an endpoint returns.
- *
- * * The deploy-style shape — `{url}` / `{public_url}` — used by `/api/deploy/deploy`.
- * * The artifact shape — the serialized artifact carrying a `publication` block —
- *   returned by `POST /api/artifacts/{slug}/publish`, which is where an app
- *   provider lands when it hands the confirmed publish to the core route (the
- *   supported way to reuse the core's single publish authorization + audit).
- *
- * Returns `null` for anything unrecognized so the caller reports an explicit
- * error instead of rendering a blank one.
- *
- * **HTTP 200 is not success on the artifact shape.** `publish_sync.publish()`
- * treats the version push as best-effort: on a RE-publish it captures the push
- * error, persists it as `publication.last_error` and returns normally, so the
- * route answers 200 with a publication whose remote content is stale. Reading
- * that as "Published!" would be the same class of lie as the blank error this
- * function replaces, in the opposite direction — so a non-empty `last_error` is
- * an error outcome, carrying the provider's own (already redacted) message.
- *
- * A success whose destination exposes no browsable URL yields `{url: ''}` —
- * success WITHOUT a link, which is why a caller must not infer success from a
- * non-empty url.
- *
- * A non-empty `publication.notice` rides ALONGSIDE a success outcome, never as
- * an error: it means the publish succeeded but the link is not usable yet (e.g.
- * CloudFront still rolling out). It is deliberately NOT folded into `error` —
- * `last_error` is checked first and wins, so a real failure is still an error;
- * a notice-only publication is a success carrying a warn line beside the link.
- */
-export function readPublishOutcome(
-  data: Record<string, unknown> | null | undefined,
-): { url: string; notice?: string; notice_code?: string } | { error: string } | null {
-  if (!data || typeof data !== 'object') return null
-  const direct = data.url ?? data.public_url
-  if (typeof direct === 'string' && direct) return { url: direct }
-  const pub = data.publication
-  // `publication: null` (an UNpublished artifact) is deliberately not success.
-  if (pub && typeof pub === 'object') {
-    const lastError = (pub as { last_error?: unknown }).last_error
-    if (typeof lastError === 'string' && lastError.trim()) return { error: lastError }
-    const viewUrl = (pub as { view_url?: unknown }).view_url
-    const noticeRaw = (pub as { notice?: unknown }).notice
-    const notice = typeof noticeRaw === 'string' && noticeRaw.trim() ? noticeRaw : undefined
-    // The discriminator travels WITH the notice: it is meaningless without one,
-    // so it is only surfaced when a notice is actually present.
-    const codeRaw = (pub as { notice_code?: unknown }).notice_code
-    const notice_code = notice && typeof codeRaw === 'string' && codeRaw.trim() ? codeRaw : undefined
-    return {
-      url: typeof viewUrl === 'string' ? viewUrl : '',
-      ...(notice ? { notice } : {}),
-      ...(notice_code ? { notice_code } : {}),
-    }
-  }
-  return null
-}
-
-/** The three catalog keys a render site offers for a publish notice: the
- *  existing rolling-out line, the disabled-distribution remedy, and the neutral
- *  fallback that promises no time. */
-export interface PublishNoticeKeys {
-  rolling_out: string
-  distribution_disabled: string
-  notice_generic: string
-}
-
-/**
- * Selects the catalog key for a publish notice from its machine `notice_code`.
- *
- * The backend used to hand back only free text, and the UI printed one fixed
- * "still rolling out — reachable in a few minutes" line for every notice. That
- * is a lie for a DISABLED distribution, whose links never resolve until a human
- * re-enables it — so a time promise there sends the user off to wait for
- * something that will not happen. The `notice_code` discriminator lets each case
- * get its own copy, and anything unrecognised (or an empty-but-present notice)
- * falls back to a neutral line that promises no time at all — never a time
- * promise the code does not justify.
- */
-export function publishNoticeKey(keys: PublishNoticeKeys, noticeCode: string | undefined): string {
-  switch (noticeCode) {
-    case 'rolling_out':
-      return keys.rolling_out
-    case 'distribution_disabled':
-      return keys.distribution_disabled
-    default:
-      // 'unknown', empty, or any value a newer backend introduces.
-      return keys.notice_generic
-  }
-}
-
 export const TTL_72 = '72 hours (requires reaper)'
 
 /**
- * Whether a TTL may be chosen for this row at all.
+ * Whether the deploy TTL ("Persistent" / "72 hours") may be chosen for this row.
  *
- * A core destination declaring no expiration support gets no TTL control: the core
- * publish route carries no TTL, so offering "72 hours" would hand back a persistent
- * public link while the user believed the exposure was time-boxed.
+ * Never for a core row: the core publish route carries no `ttl_hours`, so offering
+ * "72 hours" would hand back a link whose lifetime the destination decides while the
+ * user believed the exposure was time-boxed. A core row offers its own periods
+ * instead (`expiryOptionsFor`).
  */
 export function ttlSelectableFor(selected: UnifiedProvider | undefined): boolean {
-  return !(selected?.core && !selected.core.sharing_model.supports_expiration)
+  return !selected?.core
+}
+
+/** A destination-declared expiry: whole days, or `null` for "no expiry". */
+export type ExpiryChoice = number | null
+
+/**
+ * The expiry periods the panel offers for this row, or `[]` when there is nothing to
+ * choose. Only a core row declares them, and only a FIRST publish gets the choice: the
+ * destination sets the lifetime when the page is created.
+ */
+export function expiryOptionsFor(
+  selected: UnifiedProvider | undefined,
+  alreadyPublished: boolean,
+): ExpiryChoice[] {
+  if (alreadyPublished) return []
+  const sm = selected?.core?.sharing_model
+  const days = sm?.expiration_choices_days ?? []
+  if (days.length === 0) return []
+  return sm?.allows_no_expiration ? [...days, null] : [...days]
+}
+
+/**
+ * The expiry the publish request carries, or `undefined` to leave it out.
+ *
+ * Derived like the visibility: the choice is one piece of state shared by every row, so
+ * a period picked on one row must not ride along onto a row that does not offer it.
+ * Anything the row cannot honour reads as the row's own default.
+ */
+export function effectiveExpiry(
+  choice: ExpiryChoice | undefined,
+  selected: UnifiedProvider | undefined,
+  alreadyPublished: boolean,
+): ExpiryChoice | undefined {
+  const options = expiryOptionsFor(selected, alreadyPublished)
+  if (options.length === 0) return undefined
+  if (choice !== undefined && options.includes(choice)) return choice
+  const fallback = selected?.core?.sharing_model.default_expiration_days
+  return fallback !== undefined && options.includes(fallback) ? fallback : options[0]
+}
+
+const NO_EXPIRY = 'never'
+
+function expiryLabel(v: ExpiryChoice): string {
+  return v === null
+    ? i18nT('components.publishHub.expiry_never')
+    : i18nT('components.publishHub.expiry_after_days', { count: v })
 }
 
 /**
@@ -475,6 +383,9 @@ export function PublishHub({
   const alreadyPublished = existingVisibility != null
   const visibilityOptions = visibilityOptionsFor(selected, alreadyPublished)
   const selectedVisibility = effectiveVisibility(visibilityChoice, selected, existingVisibility)
+  const [expiryChoice, setExpiryChoice] = useState<ExpiryChoice | undefined>(undefined)
+  const expiryOptions = expiryOptionsFor(selected, alreadyPublished)
+  const selectedExpiry = effectiveExpiry(expiryChoice, selected, alreadyPublished)
   // The exposure warning and the acknowledgment describe a public link, so both need a
   // destination that serves without login AND a request that asks for public.
   const exposesPublicly = selected?.publicReachable !== false
@@ -567,6 +478,7 @@ export function PublishHub({
           selected.id,
           selectedVisibility,
           selectedVisibility === 'SHARED' ? (artifact.publication?.shared_with ?? []) : [],
+          selectedExpiry,
         )
         const outcome = readPublishOutcome(resp)
         if (!outcome) {
@@ -806,12 +718,18 @@ export function PublishHub({
             {updatingLiveSite
               ? <p className="text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
               : typeof preview.message === 'string' && <p>{preview.message}</p>}
-            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
+            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size_kb', { size: (preview.bytes / 1024).toFixed(1) })}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
             {selected.core && (visibilityOptions.length > 0 || alreadyPublished) && selectedVisibility !== 'SHARED' && (
               <p>
                 {i18nT('components.publishHub.visibility')}:{' '}
                 <span className="font-semibold text-text">{visibilityLabel(selectedVisibility)}</span>
+              </p>
+            )}
+            {selectedExpiry !== undefined && (
+              <p>
+                {i18nT('components.publishHub.expiry')}:{' '}
+                <span className="font-semibold text-text">{expiryLabel(selectedExpiry)}</span>
               </p>
             )}
           </div>
@@ -905,11 +823,11 @@ export function PublishHub({
             </>
           ) : (
             <>
-          {/* A core destination declaring no expiration support gets no TTL control at all.
-              Offering it would be a lie: the core publish route carries no TTL, so choosing
-              "72 hours" would hand back a persistent public link while the user believed the
-              exposure was time-boxed. Same `ttlSelectable` the value derives from, so a
-              hidden control can never leave a live choice behind it. */}
+          {/* A core row offers only the expiry periods its destination declares, on a
+              first publish; the deploy TTL control is for the other rows, because the core
+              publish route carries no `ttl_hours`. Both controls render from the same
+              predicates their values derive from, so a hidden control can never leave a
+              live choice behind it. */}
           {visibilityOptions.length > 0 && (
           <fieldset>
             <legend className="text-[11px] text-muted mb-1">{i18nT('components.publishHub.visibility')}</legend>
@@ -932,6 +850,18 @@ export function PublishHub({
               })}
             </div>
           </fieldset>
+          )}
+          {expiryOptions.length > 0 && (
+          <div>
+            <label className="text-[11px] text-muted block mb-1">{i18nT('components.publishHub.expiry')}</label>
+            <SimpleSelect
+              options={expiryOptions.map(v => (v === null ? NO_EXPIRY : String(v)))}
+              optionLabels={expiryOptions.map(expiryLabel)}
+              value={selectedExpiry === null ? NO_EXPIRY : String(selectedExpiry ?? '')}
+              onChange={v => setExpiryChoice(v === NO_EXPIRY ? null : Number(v))}
+              aria-label={i18nT('components.publishHub.expiry')}
+            />
+          </div>
           )}
           {ttlSelectable && (
           <div>
@@ -994,6 +924,7 @@ export function PublishHub({
                   <span>{i18nT(publishNoticeKey({
                     rolling_out: 'components.publishHub.published_still_rolling_out',
                     distribution_disabled: 'components.publishHub.published_distribution_disabled',
+                    origin_mismatch: 'components.publishHub.published_origin_mismatch',
                     notice_generic: 'components.publishHub.published_notice_generic',
                   }, result.notice_code))}</span>
                 </div>
@@ -1017,9 +948,11 @@ export function PublishHub({
         // actions. A core destination has neither, so it would be telling the user their
         // way out is something that does not exist. Say what actually ends the exposure.
         persistentExposureNote={
-          selected?.core
-            ? i18nT('components.publicPublishAckModal.exposure_window_persistent_withdrawable')
-            : undefined
+          !selected?.core
+            ? undefined
+            : typeof selectedExpiry === 'number'
+              ? i18nT('components.publicPublishAckModal.exposure_window_provider_expiry', { count: selectedExpiry })
+              : i18nT('components.publicPublishAckModal.exposure_window_persistent_withdrawable')
         }
         busy={busy}
         onCancel={() => setAck(null)}

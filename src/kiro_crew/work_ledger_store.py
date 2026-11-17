@@ -10,8 +10,11 @@ defined here, so each one reads, imports and patches as ``kiro_crew.work_ledger.
 
 from __future__ import annotations
 
+import dataclasses
+import fnmatch
 import itertools
 import json
+import os
 import re
 import secrets
 import threading
@@ -565,6 +568,11 @@ def read_work_item(slot_key: str, item_id: str, *, strict: bool = False) -> Work
     taken under THIS item's lock land on THAT item's path.
     """
     raw = _read_json_record(item_path(slot_key, item_id), strict=strict, memo=True)
+    return _item_from_record(raw, item_id)
+
+
+def _item_from_record(raw: Any, item_id: str) -> WorkItem | None:
+    """*raw* as the item stored under *item_id*'s file, or ``None`` (see :func:`read_work_item`)."""
     if raw is None:
         return None
     item = WorkItem.from_dict(raw)
@@ -578,30 +586,164 @@ def read_work_item(slot_key: str, item_id: str, *, strict: bool = False) -> Work
     return item
 
 
+#: Each board's parsed item records from the listing that last read them, by board
+#: directory: ``path -> (stat stamp, item)``. A board is kept WHOLE and replaced by
+#: each listing of it, so another board's listing never evicts one of its files, and a
+#: file that left the board leaves with the next listing. The stamp means equal bytes,
+#: as for :data:`_READ_MEMO`, and a file with no file id is never kept. Callers get a
+#: copy (:func:`_copy_item`), never the kept object. Two bounds hold together: at
+#: most :data:`_LISTING_MEMO_BOARDS` boards and :data:`_LISTING_MEMO_ITEMS` items in
+#: all, least recently listed board out first. The item budget is about twice the
+#: items one busy home was seen to hold (4,975), at about 2 KB per kept item.
+_LISTING_MEMO: OrderedDict[str, dict[str, tuple[tuple[int, int, int], WorkItem]]] = OrderedDict()
+_LISTING_MEMO_BOARDS = 256
+_LISTING_MEMO_ITEMS = 10_000
+_LISTING_MEMO_LOCK = threading.Lock()
+
+
+class _Listing:
+    """One walk of a board in flight; overlapping listings of it wait for its result."""
+
+    def __init__(self, mark: int) -> None:
+        self.mark = mark
+        self.joined = 0
+        self.done = threading.Event()
+        self.items: list[WorkItem] = []
+        self.error: BaseException | None = None
+
+
+#: The walk in flight per board directory. A listing joins one only while the
+#: board's change mark is the one the walk started under, so a listing that starts
+#: after a write here never gets a result read before it.
+#:
+#: shortcut: a write by another process (a CLI sweep) moves no mark, so a listing that
+#: starts during a walk begun before such a write gets that walk's result; the next
+#: listing reads it.
+_LISTINGS: dict[str, _Listing] = {}
+_LISTINGS_LOCK = threading.Lock()
+
+
 def list_work_items(slot_key: str) -> list[WorkItem]:
     """Every readable item, oldest first.
 
     DERIVED by listing the items directory rather than read from an index, so there
     is no third writer over a file both parties care about, and therefore no index
     to fall out of step with the files it names. An unreadable item is skipped: one
-    torn file must not hide the rest.
+    torn file must not hide the rest. Only a file whose stat moved is parsed again
+    (:data:`_LISTING_MEMO`), and overlapping listings of one board share one walk
+    (:data:`_LISTINGS`).
     """
     try:
-        entries = sorted(items_dir(slot_key).glob("it_*.json"))
+        directory = items_dir(slot_key)
     except OSError:
         return []
+    key = str(directory)
+    mark = change_mark(slot_key)
+    with _LISTINGS_LOCK:
+        flight = _LISTINGS.get(key)
+        lead = flight is None or flight.mark != mark
+        if flight is None or flight.mark != mark:
+            flight = _LISTINGS[key] = _Listing(mark)
+        else:
+            flight.joined += 1
+    if lead:
+        try:
+            flight.items = _walk_items(directory)
+        except BaseException as exc:
+            flight.error = exc
+            raise
+        finally:
+            with _LISTINGS_LOCK:
+                if _LISTINGS.get(key) is flight:
+                    del _LISTINGS[key]
+            flight.done.set()
+    else:
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+    return [_copy_item(item, directory) for item in flight.items]
+
+
+def _walk_items(directory: Path) -> list[WorkItem]:
+    """The items in *directory*, parsing only files whose stat moved. Shared objects."""
+    try:
+        # No pre-sort: the result is sorted below by a key unique per file. Matched
+        # like the glob it replaces (``fnmatch`` folds case where the OS does).
+        with os.scandir(directory) as listing:
+            names = [e.name for e in listing if fnmatch.fnmatch(e.name, "it_*.json")]
+    except OSError:
+        return []
+    key = str(directory)
+    with _LISTING_MEMO_LOCK:
+        kept = _LISTING_MEMO.get(key, {})
+    fresh: dict[str, tuple[tuple[int, int, int], WorkItem]] = {}
     items: list[WorkItem] = []
-    for entry in entries:
+    for name in names:
+        stem = name[: -len(".json")]
         # The glob is a prefix match; only a full ``it_<8 hex>`` stem is an item.
         # A stray ``it_bad.json`` is corruption in the directory, and corruption
         # reads as absent here too rather than crashing every listing.
-        if not _ITEM_ID_RE.match(entry.stem):
+        if not _ITEM_ID_RE.match(stem):
             continue
-        item = read_work_item(slot_key, entry.stem)
-        if item is not None:
-            items.append(item)
+        path = os.path.join(key, name)
+        try:
+            # ``os.stat``, not the scandir entry's: on Windows only it fills st_ino.
+            st = os.stat(path)
+            stamp = (st.st_ino, st.st_mtime_ns, st.st_size) if st.st_ino else None
+        except OSError:
+            stamp = None
+        hit = kept.get(path) if stamp is not None else None
+        if hit is not None and hit[0] == stamp:
+            item: WorkItem | None = hit[1]
+        else:
+            # Stat before read: a file replaced in between is kept under the old
+            # stamp, which its new inode never matches again.
+            item = _item_from_record(_read_json_record(directory / name, memo=True), stem)
+        if item is None:
+            continue
+        if stamp is not None:
+            fresh[path] = (stamp, item)
+        items.append(item)
+    with _LISTING_MEMO_LOCK:
+        _LISTING_MEMO.pop(key, None)
+        if len(fresh) <= _LISTING_MEMO_ITEMS:
+            _LISTING_MEMO[key] = fresh
+        # Oldest boards out until both bounds hold; a board over the item budget on
+        # its own was never kept, so it lists in full every time.
+        while len(_LISTING_MEMO) > _LISTING_MEMO_BOARDS or (
+            sum(len(kept) for kept in _LISTING_MEMO.values()) > _LISTING_MEMO_ITEMS
+        ):
+            _LISTING_MEMO.popitem(last=False)
     items.sort(key=lambda it: (it.created_at, it.item_id))
     return items
+
+
+def _copy_item(item: WorkItem, directory: Path) -> WorkItem:
+    """A caller's own copy of a kept *item*: no list or dict is shared with the memo."""
+    try:
+        acceptance = _json_copy(item.acceptance)
+    except RecursionError:
+        # A hand-made record nested deeper than a copy follows: read it from disk.
+        fresh = _item_from_record(
+            _read_json_record(directory / f"{item.item_id}.json"), item.item_id
+        )
+        return fresh if fresh is not None else dataclasses.replace(item, acceptance={})
+    copied = WorkItem.__new__(WorkItem)
+    copied.__dict__.update(item.__dict__)
+    copied.acceptance = acceptance
+    copied.artifacts = dict(item.artifacts)
+    copied.retired_bindings = [dict(b) for b in item.retired_bindings]
+    copied.discussion = _json_copy(item.discussion)
+    return copied
+
+
+def _json_copy(value: Any) -> Any:
+    """A copy of parsed JSON *value*: new dicts and lists, the same str/number leaves."""
+    if isinstance(value, dict):
+        return {key: _json_copy(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_json_copy(inner) for inner in value]
+    return value
 
 
 def _stored_item_ids(slot_key: str) -> list[str]:
@@ -654,11 +796,15 @@ def _read_events_unlocked(path: Path, *, strict: bool = False) -> list[WorkEvent
         if st.st_size > MAX_RECORD_BYTES:
             logger.warning("work ledger event log over the size ceiling: %s", path.name)
             return []
+        # Split on "\n" only: an event is one JSON line written with
+        # ``ensure_ascii=False``, so U+2028, U+2029 and U+0085 sit raw inside its
+        # text, and ``str.splitlines`` would cut the line there, drop both halves
+        # as unparseable and let the next append rewrite the log without it.
         if strict:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
         else:
             data = _memo_read_bytes(path, st, Path.read_bytes)
-            lines = data.decode("utf-8", errors="replace").splitlines()
+            lines = data.decode("utf-8", errors="replace").split("\n")
     except FileNotFoundError:
         return []
     except OSError:
@@ -726,8 +872,13 @@ def _append_event_locked(
     *,
     status: str | None = None,
     id_salt: str = "",
+    fixed_id: str | None = None,
 ) -> WorkEvent:
     """Append one event to *item_id*'s log. THE CALLER MUST HOLD THE ITEM LOCK.
+
+    *fixed_id*, when given, is the event's id instead of the content address: an
+    ingested peer report keeps the peer's own event id. A log that already holds
+    that id is left as it is, so filing the same peer event twice is a no-op.
 
     Stamps ``ts`` here, under the lock and immediately before the write, so file
     order and timestamp order agree. A caller that built its entry first and then
@@ -748,7 +899,7 @@ def _append_event_locked(
     incoming = WorkEvent(
         # *id_salt* tells apart two events the same second with the same text: an
         # ingested remote report passes the peer's own event identity.
-        id=event_id(ts, item_id, kind, trimmed + id_salt, status=status),
+        id=fixed_id or event_id(ts, item_id, kind, trimmed + id_salt, status=status),
         ts=ts,
         item_id=item_id,
         kind=kind,
@@ -756,7 +907,12 @@ def _append_event_locked(
         text=trimmed,
     )
     path = item_events_path(slot_key, item_id)
-    events = _coalesce_progress(_read_events_unlocked(path, strict=True), incoming)
+    held = _read_events_unlocked(path, strict=True)
+    if fixed_id:
+        already = next((event for event in held if event.id == fixed_id), None)
+        if already is not None:
+            return already
+    events = _coalesce_progress(held, incoming)
     events.append(incoming)
     if len(events) > MAX_EVENTS_PER_ITEM:
         events = events[-MAX_EVENTS_PER_ITEM:]
@@ -814,6 +970,7 @@ def _commit_item_locked(
     *,
     status: str | None = None,
     id_salt: str = "",
+    fixed_id: str | None = None,
 ) -> WorkEvent:
     """Persist one item change AND the event that explains it. HOLD THE ITEM LOCK.
 
@@ -830,7 +987,9 @@ def _commit_item_locked(
     _require_record_fits(payload)
     events_path = item_events_path(slot_key, item.item_id)
     log_before = _read_text_or_none(events_path)
-    event = _append_event_locked(slot_key, item.item_id, kind, text, status=status, id_salt=id_salt)
+    event = _append_event_locked(
+        slot_key, item.item_id, kind, text, status=status, id_salt=id_salt, fixed_id=fixed_id
+    )
     try:
         _write_record(item_path(slot_key, item.item_id), payload)
     except BaseException:

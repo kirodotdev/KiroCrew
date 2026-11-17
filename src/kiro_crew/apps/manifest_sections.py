@@ -19,7 +19,10 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from kiro_crew.apps.app_hosts import frame_origin_refusal
+from kiro_crew.apps.desktop_capabilities import declared_capabilities
 from kiro_crew.apps.manifest_names import KEBAB_RE
+from kiro_crew.apps.user_session_reach import declared_verbs
 
 logger = logging.getLogger(__name__)
 
@@ -371,10 +374,34 @@ class UIConfig:
     # supplies markup or styles. Empty means undeclared, which the dashboard
     # renders as "page", the skeleton every app had before the field existed.
     loading_layout: str = ""
+    # Exact ``https://host`` origins the app's pages may frame, from
+    # ``"frameSources"``. The gateway adds them to the dashboard ``frame-src`` while
+    # the app is enabled and trusted (``apps/frame_sources.py``).
+    frameSources: list[str] = field(default_factory=list)  # noqa: N815
+    #: ``frameSources`` present but not a list of strings. Not serialized.
+    bad_frame_sources: bool = False
 
     # Names `ui.loading.layout` may take. Mirrors ``APP_LOADING_LAYOUTS`` in
     # ``website/src/components/AppLoadingFallback.tsx``.
     LOADING_LAYOUTS: ClassVar[frozenset[str]] = frozenset({"page", "rail", "centered", "split"})
+    MAX_FRAME_SOURCES: ClassVar[int] = 8
+
+    def frame_source_errors(self) -> list[str]:
+        """Validation errors of ``ui.frameSources``; empty when it is valid or absent."""
+        if self.bad_frame_sources:
+            return ["ui.frameSources must be an array of https origins"]
+        errors: list[str] = []
+        if len(self.frameSources) > self.MAX_FRAME_SOURCES:
+            errors.append(
+                f"ui.frameSources: {len(self.frameSources)} entries exceeds the limit of "
+                f"{self.MAX_FRAME_SOURCES}"
+            )
+        for origin in self.frameSources:
+            if refusal := frame_origin_refusal(origin):
+                errors.append(f"ui.frameSources entry is {refusal}: {origin!r}")
+        if len(set(self.frameSources)) != len(self.frameSources):
+            errors.append("ui.frameSources repeats an entry")
+        return errors
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -388,6 +415,8 @@ class UIConfig:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
             d["overlays"] = [o.to_dict() for o in self.overlays]
+        if self.frameSources:
+            d["frameSources"] = list(self.frameSources)
         sidebar_d = self.sidebar.to_dict()
         if sidebar_d:
             d["sidebar"] = sidebar_d
@@ -414,12 +443,16 @@ class UIConfig:
         )
         sidebar_raw = data.get("sidebar", {})
         sidebar = UISidebar.from_dict(sidebar_raw) if isinstance(sidebar_raw, dict) else UISidebar()
+        raw_frames = data.get("frameSources", [])
+        frames_ok = isinstance(raw_frames, list) and all(isinstance(o, str) for o in raw_frames)
         return cls(
             entry=str(data.get("entry", "")),
             pages=pages,
             overlays=overlays,
             sidebar=sidebar,
             loading_layout=cls._parse_loading_layout(data.get("loading")),
+            frameSources=list(raw_frames) if frames_ok else [],
+            bad_frame_sources=not frames_ok,
         )
 
     @classmethod
@@ -503,6 +536,10 @@ class BackendConfig:
     # Only the literal JSON boolean true enables it: a string or a number keeps
     # the default off, so a malformed manifest never widens what a backend trusts.
     signedPrincipal: bool = False  # noqa: N815
+    # Opt in to an app web origin: the gateway serves this backend at
+    # ``http://<name>.apps.localhost:<dashboard port>`` (apps/app_web_origin.py).
+    # Same strict parse as signedPrincipal: only the JSON boolean true turns it on.
+    webOrigin: bool = False  # noqa: N815
     hooks: HooksConfig = field(default_factory=HooksConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -519,6 +556,8 @@ class BackendConfig:
             d["type"] = self.type
         if self.signedPrincipal:
             d["signedPrincipal"] = True
+        if self.webOrigin:
+            d["webOrigin"] = True
         hooks_d = self.hooks.to_dict()
         if hooks_d:
             d["hooks"] = hooks_d
@@ -535,6 +574,7 @@ class BackendConfig:
             routes=str(data.get("routes", "")),
             type=str(data.get("type", "")),
             signedPrincipal=data.get("signedPrincipal") is True,  # noqa: N815
+            webOrigin=data.get("webOrigin") is True,  # noqa: N815
             hooks=hooks,
         )
 
@@ -552,6 +592,34 @@ def _granted_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(v) for v in value if v]
+
+
+#: The entries ``permissions.bots`` may hold; ``apps.bot_grants`` grants only these.
+BOT_SCOPE_NAMES = ("read", "wake")
+
+
+def _bot_scopes(value: Any) -> list[str]:
+    """The known ``permissions.bots`` entries, each once, in manifest order."""
+    out: list[str] = []
+    for entry in _granted_list(value):
+        if entry in BOT_SCOPE_NAMES and entry not in out:
+            out.append(entry)
+    return out
+
+
+#: The staged grant family the Bot scopes are stored under (``point_grants``).
+BOT_GRANT_FAMILY = "bots"
+BOT_GRANT_FAMILIES = (BOT_GRANT_FAMILY,)
+
+
+def bot_grant_entries(permissions: Any) -> dict[str, list[str]]:
+    """The ``bots`` family a manifest's ``permissions`` (parsed or a raw dict) declares."""
+    raw = (
+        permissions.get("bots")
+        if isinstance(permissions, dict)
+        else getattr(permissions, "bots", None)
+    )
+    return {BOT_GRANT_FAMILY: _bot_scopes(raw)}
 
 
 @dataclass
@@ -591,11 +659,40 @@ class Permissions:
     #: ``ctx.turns``: tool-gated under this app's identity, admitted as Crew
     #: automation. Declared for the same reason as ``spawn``.
     agentTurns: bool = False  # noqa: N815
+    #: May open and drive dashboard chat slots under its own key prefix through
+    #: ``ctx.chat_slots`` (``apps/chat_slot_sdk.py``): turns through the host's
+    #: chat runner, its queue, stop, archive and AutoNudge loops on those slots.
+    #: Shown at the trust prompt.
+    chatSlots: bool = False  # noqa: N815
+    #: Keeps the chats this app creates under its own id as their mode out of the
+    #: session lists (``apps/hidden_sessions.py``). Shown on the app's detail page.
+    #: Hides a list row only: approvals and questions still reach the owner.
+    hiddenSessions: bool = False  # noqa: N815
     #: May hold a bounded, audited auto-approve grant on the app's OWN worker
     #: slots through ``ctx.auto_approve`` (``apps/worker_auto_approve.py``).
     #: Shown at the trust prompt and held back on a widening update like a new
     #: API path; never above the approval ceiling.
     workerAutoApprove: bool = False  # noqa: N815
+    #: The session-tool verbs (``"read"``, ``"send"``) the owner's own chats may use
+    #: on the sessions this app owns (``apps/user_session_reach.py``). Empty = none,
+    #: which is the default. Shown at the trust prompt and held back on a widening
+    #: update like a new API path.
+    reachableByUserSessions: list[str] = field(default_factory=list)  # noqa: N815
+    #: What the app's hosted desktop windows may ask the shell for
+    #: (``"screenCapture"``, ``"localFiles"``, ``"gatewayChoice"``;
+    #: ``apps/desktop_capabilities.py``). Empty = none, which is the default. Shown at
+    #: the trust prompt and held back on a widening update like a new API path.
+    desktopCapabilities: list[str] = field(default_factory=list)  # noqa: N815
+    #: Takes inbound webhook deliveries on its own routes, governed as the
+    #: ``webhooks`` source named by the app's name (``webhook_sources``) and asked
+    #: through ``ctx.webhook_source``. Reaches nothing new: it lets the policy
+    #: answer for the app, and it is shown at the trust prompt.
+    webhookSource: bool = False  # noqa: N815
+    #: Bot scopes (``apps.bot_grants``): ``"read"`` lists the Bots the owner ticked
+    #: for this app with their status and goals, ``"wake"`` sends one of them the
+    #: gateway's fixed wake line. Any other entry is dropped. A staged grant family,
+    #: so an update that adds a scope waits for the owner.
+    bots: list[str] = field(default_factory=list)
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -629,8 +726,20 @@ class Permissions:
             d["proposeCrewmate"] = True
         if self.agentTurns:
             d["agentTurns"] = True
+        if self.chatSlots:
+            d["chatSlots"] = True
+        if self.hiddenSessions:
+            d["hiddenSessions"] = True
         if self.workerAutoApprove:
             d["workerAutoApprove"] = True
+        if self.reachableByUserSessions:
+            d["reachableByUserSessions"] = self.reachableByUserSessions
+        if self.desktopCapabilities:
+            d["desktopCapabilities"] = self.desktopCapabilities
+        if self.webhookSource:
+            d["webhookSource"] = True
+        if self.bots:
+            d["bots"] = self.bots
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -662,7 +771,13 @@ class Permissions:
             jobs=data.get("jobs") is True,
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
             agentTurns=data.get("agentTurns") is True,  # noqa: N815
+            chatSlots=data.get("chatSlots") is True,  # noqa: N815
+            hiddenSessions=data.get("hiddenSessions") is True,  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
+            reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
+            desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
+            webhookSource=data.get("webhookSource") is True,  # noqa: N815
+            bots=_bot_scopes(data.get("bots")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 
@@ -758,10 +873,11 @@ class SetupConfig:
     onInstall: str = ""  # shell command, registry install + every registry update  # noqa: N815
     # `onUpdate` is declared and round-trips but NOTHING dispatches it (see the
     # declared-not-wired paragraph in docs/system-specs/modules/app-kit-platform.md
-    # and test/test_setup_hooks_contract.py). Put update-time work in `onInstall`.
+    # and test/test_setup_hooks_contract.py). Put update-time work in `onEnable`,
+    # which an update of an enabled app re-runs, or in `onInstall`.
     onUpdate: str = ""  # declared, not executed: no code path dispatches it  # noqa: N815
     onUninstall: str = ""  # shell command run before removing app files  # noqa: N815
-    onEnable: str = ""  # shell command run when app is enabled  # noqa: N815
+    onEnable: str = ""  # run on enable, and after an enabled app's update  # noqa: N815
     onDisable: str = ""  # shell command run when app is disabled  # noqa: N815
     # onEnable / onDisable / onUninstall run through `/bin/bash` and are NOT run
     # on native Windows (no `/bin/bash`): the runner refuses them with an
@@ -1263,8 +1379,9 @@ class NotificationsConfig:
 
 
 #: A locale key: a 2-3 letter language, optionally one region or script subtag
-#: (``de``, ``pt-BR``, ``zh-CN``). The dashboard looks a locale up by exactly this key
-#: and then by its base language, so a key outside the grammar could never be read.
+#: (``de``, ``pt-BR``, ``zh-CN``). The dashboard looks a locale up by this key and then
+#: by its base language, both without case, so a key outside the grammar could never
+#: be read.
 L10N_LOCALE_RE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 MAX_L10N_LOCALES = 32
 MAX_L10N_HIGHLIGHTS = 12

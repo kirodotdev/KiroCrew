@@ -332,7 +332,8 @@ def _malloc_trim() -> bool:
         trim.argtypes = [ctypes.c_size_t]
         trim.restype = ctypes.c_int
         return bool(trim(0))
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, TypeError):
+        # TypeError: on Windows ``ctypes.CDLL(None)`` fails on ``'/' in None``.
         return False
 
 
@@ -573,20 +574,34 @@ def count_open_fds() -> int | None:
             continue
     if not IS_WINDOWS:
         return None
+    return _windows_handle_count()
+
+
+def _windows_handle_count(process_handle: int | None = None) -> int | None:
+    """``GetProcessHandleCount`` of *process_handle*, or of this process when None.
+
+    The one ctypes setup behind :func:`count_open_fds` and
+    :func:`proc_handle_count_for_pid`. Windows only; None on any failure. The
+    caller owns *process_handle* and closes it.
+    """
     try:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-        # argtypes/restype are load-bearing on 64-bit: without them ctypes
-        # defaults GetCurrentProcess's return to a 32-bit int and TRUNCATES the
-        # pseudo-handle (see _windows_memory_counters).
-        kernel32.GetCurrentProcess.argtypes = []
-        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        if process_handle is None:
+            # argtypes/restype are load-bearing on 64-bit: without them ctypes
+            # defaults GetCurrentProcess's return to a 32-bit int and TRUNCATES
+            # the pseudo-handle (see _windows_memory_counters).
+            kernel32.GetCurrentProcess.argtypes = []
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            target = kernel32.GetCurrentProcess()
+        else:
+            target = wintypes.HANDLE(process_handle)
         kernel32.GetProcessHandleCount.argtypes = [
             wintypes.HANDLE,
             ctypes.POINTER(wintypes.DWORD),
         ]
         kernel32.GetProcessHandleCount.restype = wintypes.BOOL
         handle_count = wintypes.DWORD()
-        if kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(handle_count)):
+        if kernel32.GetProcessHandleCount(target, ctypes.byref(handle_count)):
             return int(handle_count.value)
         return None
     except Exception:
@@ -639,6 +654,23 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
             kernel32.CloseHandle(handle)
     except Exception:
         return None
+
+
+def proc_handle_count_for_pid(pid: int) -> int | None:
+    """Kernel HANDLE count of an ARBITRARY *pid* on Windows, or None.
+
+    The per-pid twin of the Windows branch of :func:`count_open_fds`. None on
+    every other platform, for an unopenable pid, and on any failure.
+    """
+    if not IS_WINDOWS or type(pid) is not int or pid <= 0:
+        return None
+    handle = _open_process_query_handle(pid)
+    if handle is None:
+        return None
+    try:
+        return _windows_handle_count(handle)
+    finally:
+        _close_process_handle(handle)
 
 
 # --- /proc process-subtree sampling ----------------------------------------
@@ -1273,8 +1305,28 @@ def host_total_mib() -> int:
             return pages * page_size // _MIB_BYTES
     except (AttributeError, OSError, ValueError):
         pass
+    if IS_MACOS:
+        # macOS builds without ``SC_PHYS_PAGES`` in ``os.sysconf_names``: the kernel's
+        # own byte count, through the same in-process sysctl handle as below.
+        return _darwin_memsize_bytes() // _MIB_BYTES
     mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
     return (mem[0] // _MIB_BYTES) if mem else 0
+
+
+def _darwin_memsize_bytes() -> int:
+    """``hw.memsize`` (physical memory in bytes) on macOS, or 0 on any failure."""
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return 0
+    value = ctypes.c_uint64(0)
+    size = ctypes.c_size_t(ctypes.sizeof(value))
+    try:
+        result = libc.sysctlbyname(b"hw.memsize", ctypes.byref(value), ctypes.byref(size), None, 0)
+    except (OSError, ValueError, ctypes.ArgumentError):
+        return 0
+    if result != 0 or size.value != ctypes.sizeof(value):
+        return 0
+    return int(value.value)
 
 
 def host_available_mib() -> int:
@@ -1294,8 +1346,20 @@ def host_available_mib() -> int:
     if IS_MACOS:
         return _macos_available_mib()
     if IS_WINDOWS:
-        mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
-        return (mem[1] // _MIB_BYTES) if mem else 0
+        # A new process must commit what it maps, so free physical RAM is capped
+        # by commit headroom (ullAvailPageFile: commit limit minus commit charge).
+        # After a successful call the answer is at least 1 MiB: 0 means "unknown"
+        # here, and an exhausted host must read as full, not as unmeasured.
+        try:
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            stat = _MemoryStatusEx()
+            stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            if not kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return 0
+            avail, commit = int(stat.ullAvailPhys), int(stat.ullAvailPageFile)
+        except Exception:
+            return 0
+        return max(1, min(avail, commit) // _MIB_BYTES)
     return 0
 
 

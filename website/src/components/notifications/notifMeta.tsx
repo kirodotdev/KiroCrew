@@ -108,6 +108,7 @@ export function notePriority(n: { priority?: string }): Priority {
  *  its English `title`/`body` for every reader with no catalog, and an id these
  *  maps do not hold falls back to them. */
 const SYSTEM_NOTE_TITLE_KEY = {
+  bot_limits_held: 'components.notifications.systemNote.bot_limits_held_title',
   turn_limit: 'components.notifications.systemNote.turn_limit_title',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_title',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_title',
@@ -119,9 +120,15 @@ const SYSTEM_NOTE_TITLE_KEY = {
   chat_stopped_busy: 'components.notifications.systemNote.chat_stopped_title',
   chat_stopped_refused: 'components.notifications.systemNote.chat_stopped_title',
   chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_title',
+  folder_agent_label: 'components.notifications.systemNote.folder_agent_label_title',
+  repeated_failures: 'components.notifications.systemNote.repeated_failures_title',
+  mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_title',
+  moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_title',
+  moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
+  bot_limits_held: 'components.notifications.systemNote.bot_limits_held_body',
   turn_limit: 'components.notifications.systemNote.turn_limit_body',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_body',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_body',
@@ -133,6 +140,11 @@ const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   chat_stopped_busy: 'components.notifications.systemNote.chat_stopped_busy_body',
   chat_stopped_refused: 'components.notifications.systemNote.chat_stopped_refused_body',
   chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_stalled_body',
+  folder_agent_label: 'components.notifications.systemNote.folder_agent_label_body',
+  repeated_failures: 'components.notifications.systemNote.repeated_failures_body',
+  mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_body',
+  moved_to_history_startup: 'components.notifications.systemNote.moved_to_history_startup_body',
+  moved_to_history_idle: 'components.notifications.systemNote.moved_to_history_idle_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway
@@ -147,6 +159,18 @@ export function noteText(n: Notification): { title: string; body: string } {
     ? Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === 'string' || typeof v === 'number'))
     : undefined
   return { title: i18nT(SYSTEM_NOTE_TITLE_KEY[copy], params), body: i18nT(SYSTEM_NOTE_BODY_KEY[copy], params) }
+}
+
+/** The label of the button that follows a note's `url`, for a gateway note
+ *  whose link opens one named place. Any other note's button reads "Open". */
+const SYSTEM_NOTE_LINK_KEY: Partial<Record<SystemNoteId, string>> = {
+  mcp_share_paused: 'components.notifications.systemNote.mcp_share_paused_link',
+}
+
+export function noteLinkLabel(n: Notification): string {
+  const id = n.i18n?.id
+  const key = typeof id === 'string' && Object.hasOwn(SYSTEM_NOTE_LINK_KEY, id) ? SYSTEM_NOTE_LINK_KEY[id as SystemNoteId] : undefined
+  return i18nT(key ?? 'components.notifications.notificationDetailPanel.open')
 }
 
 /** RFC Phase 4 security: deep-links must be dashboard-internal routes only.
@@ -321,17 +345,15 @@ export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,t
 
 /** The sentence a failed Approve/Reject press shows, on a feed row and in the
  *  detail panel alike. A quoted reason is the decide route's own sentence.
- *  Anything else (a 5xx, or no response) may have landed. A row that names
- *  its request (`targeted`: slot and instance) is refused once that request
- *  is settled, so it says pressing again is safe. A row decided by id alone
- *  could reach a later request under a recurring id, so it keeps the chat
- *  card's plain hedge. After a frame ended the request (`ended`, shown
+ *  Anything else (a 5xx, or no response) may have landed. Every decide names
+ *  its request (slot and instance; a row that names none is refused with
+ *  nothing sent), and is refused once that request is settled, so it says
+ *  pressing again is safe. After a frame ended the request (`ended`, shown
  *  beside "no longer pending") there is nothing to retry, so an unquoted
  *  failure adds nothing beside that line. */
-export function decisionFailedCopy(reason: string, opts: { ended?: boolean; targeted?: boolean } = {}): string | null {
+export function decisionFailedCopy(reason: string, opts: { ended?: boolean } = {}): string | null {
   if (reason) return i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
   if (opts.ended) return null
-  if (!opts.targeted) return i18nT('components.approvalCard.decision_failed')
   return i18nT('components.notifications.notificationFeed.decision_failed_retry')
 }
 

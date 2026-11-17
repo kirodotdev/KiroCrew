@@ -176,6 +176,7 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
     # handlers use.
     from kiro_crew.dashboard.source_providers.contract import (
         bounded_valid_identities,
+        canonical_source_identity_key,
         is_valid_source_identity_key,
     )
 
@@ -331,6 +332,19 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
             error="invalid_source_identity",
             phase="validate",
         )
+    # A tab that has not re-read the slots can still send a key under a
+    # mixed-case GitHub spelling. Fold it to the identity the derivation and
+    # ``mentions_source_identity`` compare against, so the tombstone written
+    # below hides every spelling of the object.
+    identity_key = canonical_source_identity_key(identity_key)
+
+    def _holds_identity(keys: object) -> bool:
+        # Does a stored dismissal set or on-disk line name this identity? Each
+        # key is folded (it may carry a mixed-case GitHub spelling) and the scan
+        # stops at the first match, collecting nothing from an unbounded line.
+        return isinstance(keys, (list, set)) and any(
+            canonical_source_identity_key(k) == identity_key for k in keys if isinstance(k, str)
+        )
 
     # Only an identity that is ACTUALLY one of this slot's currently-derived
     # chips (or one already dismissed) may be dismissed. Without this bound a
@@ -356,8 +370,7 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
     # its RAW mentions (see ``non_derived_identity`` below).
     derived_identities = {link.get("identity") for link in slot._pr_source_links()}
     non_derived_identity = identity_key not in derived_identities
-    known = derived_identities | slot._dismissed_source_links
-    if identity_key not in known:
+    if non_derived_identity and not _holds_identity(slot._dismissed_source_links):
         return _reject(
             web.json_response({"error": "not found", "code": "source_link_not_found"}, status=404),
             error="source_link_not_found",
@@ -522,7 +535,7 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
         _disk_dismissed = (
             _pin_meta.get("dismissed_source_links") if isinstance(_pin_meta, dict) else None
         )
-        durably_dismissed = isinstance(_disk_dismissed, list) and identity_key in _disk_dismissed
+        durably_dismissed = isinstance(_disk_dismissed, list) and _holds_identity(_disk_dismissed)
 
         # Authorize a NON-DERIVED identity to enter the persist path ONLY when the
         # PINNED transcript legitimately carries it: either it is DURABLY
@@ -564,7 +577,7 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
         # slot is at the ceiling.
         cap_refused = (
             not newly_dismissed
-            and identity_key not in slot._dismissed_source_links
+            and not _holds_identity(slot._dismissed_source_links)
             and len(slot._dismissed_source_links) >= _MAX_DISMISSED_SOURCE_LINKS
         )
         if cap_refused:
@@ -819,7 +832,7 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
                         continue
                     meta, readable = readings.get(current_key, ({}, False))
                     disk = meta.get("dismissed_source_links")
-                    keep = readable and isinstance(disk, list) and identity_key in disk
+                    keep = readable and isinstance(disk, list) and _holds_identity(disk)
                     if not keep:
                         changed |= identity_key in s._dismissed_source_links
                         s._dismissed_source_links.discard(identity_key)
@@ -872,7 +885,7 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
                     s
                     for s in list(state._slots.values())
                     if slot_history_key(s) == authorized_history_key
-                    and identity_key not in s._dismissed_source_links
+                    and not _holds_identity(s._dismissed_source_links)
                 ]
                 if joined:
                     for s in joined:

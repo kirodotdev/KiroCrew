@@ -360,6 +360,8 @@ that view; no local round log is needed.
   *unreviewed* large change is what turns into a twenty-round loop.
 - **File overlap.** Check each file you touch against every open PR, paged, never capped (`references/ci.md`). If another open PR deletes or rewrites (>50% line delta) one of your files, STOP and ask which PR hosts the work.
 
+**Fork clone:** the scripts read the base from `origin`, which is your fork, so sync its `<base>` with upstream before preflight and each Phase 1 fetch (`CONTRIBUTING.md`).
+
 Then `python3 $SKILL_DIR/scripts/preflight.py` → **0** proceed; **30** fix the
 printed blocker (on a protected branch → `git switch -c <type>/<slug>`; gh not
 authed → `gh auth login`); **2** fix env.

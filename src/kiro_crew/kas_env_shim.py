@@ -34,8 +34,14 @@ import subprocess
 import sys
 from typing import Any, NoReturn
 
+from kiro_crew.bounded_read import bounded_read
+
 #: The crew data-home leaf the snapshots live in.
 SNAPSHOT_LEAF = "kas-mcp-launch"
+#: The leaf Crew-owned Connection bridge snapshots live in: a connection slug, the
+#: gateway port and a per-bridge token, no vendor credential. Unlike
+#: :data:`SNAPSHOT_LEAF` an enforced harness's child may read it.
+BRIDGE_LEAF = "crew-oauth-bridge"
 #: The module KAS runs (``python -m``).
 SHIM_MODULE = "kiro_crew.kas_env_shim"
 #: The key and value that mark a file as a launch snapshot of this format.
@@ -55,8 +61,10 @@ def _digest(*parts: str) -> str:
 def snapshot_name(session_key: str, agent: str, server: str, version: str) -> str:
     """The snapshot file name for one write of one session's server.
 
-    *version* is random per write, so two projections never share a file, even
-    for the same session: each one owns, and removes, only what it wrote. Every
+    A Connection bridge's *version* is random per write, so two of its
+    projections never share a file. A stdio launch or a header bridge is shared
+    by every session of its agent (``kas_env_launch.SHARED_SESSION``), and its
+    version is keyed to the file's content, so they all read one file. Every
     part is hashed, so no reference can name a path outside the leaf.
     """
     return (
@@ -106,7 +114,7 @@ def _read_snapshot(path: str, server: str) -> dict[str, Any]:
             _refuse(server, "its launch snapshot is too large")
         with os.fdopen(fd, "rb") as fh:
             fd = -1
-            raw = fh.read(_MAX_SNAPSHOT_BYTES + 1)
+            raw = bounded_read(fh, _MAX_SNAPSHOT_BYTES + 1)
     finally:
         if fd != -1:
             os.close(fd)
@@ -152,10 +160,15 @@ def _resolve_snapshot(
     home = environ.pop(_HOME_ENV, "")
     if not home or not os.path.isabs(home):
         _refuse(server, "the launcher was not told where Kiro Crew's data home is")
-    path = os.path.join(
-        home, SNAPSHOT_LEAF, snapshot_name(ns.session, ns.agent, server, ns.version)
+    name = snapshot_name(ns.session, ns.agent, server, ns.version)
+    # A Connection bridge's snapshot lives in its own leaf, the one an enforced
+    # harness's child may read; it may only ever name a Connection.
+    bridge = os.path.join(home, BRIDGE_LEAF, name)
+    doc = _read_snapshot(
+        bridge if os.path.lexists(bridge) else os.path.join(home, SNAPSHOT_LEAF, name), server
     )
-    doc = _read_snapshot(path, server)
+    if os.path.lexists(bridge) and "connection" not in doc:
+        _refuse(server, "a Connection bridge snapshot names no Connection")
     if doc.get(SNAPSHOT_MARKER) != SNAPSHOT_FORMAT:
         _refuse(server, "its launch snapshot has an unknown format")
     for key in ("session", "agent", "server", "version"):

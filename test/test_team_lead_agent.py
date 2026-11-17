@@ -24,7 +24,22 @@ import pytest
 
 from kiro_crew import agent
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES, TEAM_LEAD_AGENT_FILENAME
-from kiro_crew.agent_materialization import managed_mcp, service_agents
+from kiro_crew.agent_materialization import (
+    auto_approve,
+    conductor_agents,
+    managed_mcp,
+    service_agents,
+)
+
+#: The lead auto-approves ``session_create`` and not ``session_send``, so the
+#: governed tail closes its charter with the one line that says so.
+_SEED_RULE_TAIL = f"\n{auto_approve.SEED_AFTER_CREATE_RULE}\n"
+_INSTALLED_PROMPT = (
+    conductor_agents.with_conductor_ask(
+        f"{agent._TEAM_LEAD_SYSTEM_PROMPT.rstrip()}\n\n{agent._SHARED_CONDUCTOR_RULES_BLOCK}"
+    )
+    + _SEED_RULE_TAIL
+)
 
 _SKILL = (
     pathlib.Path(__file__).resolve().parents[1]
@@ -73,7 +88,7 @@ class TestTheInstallerWritesADefaultAgent:
 
     def test_the_file_carries_this_agent_name_and_charter(self, installed):
         assert installed["name"] == "kirocrew-team-lead"
-        assert installed["prompt"] == agent._TEAM_LEAD_SYSTEM_PROMPT
+        assert installed["prompt"] == _INSTALLED_PROMPT
         assert installed["prompt"].startswith("# Kiro Crew Team Lead")
         assert installed["description"]
 
@@ -91,9 +106,8 @@ class TestTheInstallerWritesADefaultAgent:
         baseline = service_agents._without_guide_server(agent.build_agent_config())
         mounted = {"name", "description", "prompt", "tools", "allowedTools", "mcpServers"}
         mounted |= {"permissions"}
-        # ``resources`` is mounted too: the installer maps the skills this prompt names
-        # (``TestItMapsTheSkillsItsPromptNames``), and the baseline's own steering globs
-        # are kept beside them, which that class pins.
+        # ``resources`` is mounted too: the installer maps the skills this prompt names,
+        # and the baseline's own steering globs are kept beside them.
         mounted |= {"resources"}
         assert set(baseline) - {"permissions"} <= set(installed)
         for key in set(installed) - mounted:
@@ -118,7 +132,7 @@ class TestTheInstallerWritesADefaultAgent:
 
         installed = json.loads(target.read_text(encoding="utf-8"))
         assert installed["name"] == "kirocrew-team-lead"
-        assert installed["prompt"] == agent._TEAM_LEAD_SYSTEM_PROMPT
+        assert installed["prompt"] == _INSTALLED_PROMPT
         assert sorted(p.name for p in tmp_path.iterdir()) == [TEAM_LEAD_AGENT_FILENAME]
 
 
@@ -133,11 +147,13 @@ class TestTheLeadReportsToItsParent:
         assert "unless a conductor" in prompt
 
     def test_the_spec_can_reach_both_worker_verbs(self, installed):
-        """The server is mounted whole, so ``work_report`` is served; ``work_brief`` is
-        also auto-approved, ``work_report`` prompts like a nested conductor's."""
+        """The server is mounted whole, so ``work_report`` is served; ``work_brief`` and
+        ``work_report`` are both auto-approved, as for a nested conductor
+        (rfc-conductor-own-child-verbs.md, section 5.5)."""
         assert _reachable(installed, "kirocrew-work", "work_report")
         assert _reachable(installed, "kirocrew-work", "work_brief")
         assert "@kirocrew-work/work_brief" in installed["allowedTools"]
+        assert "@kirocrew-work/work_report" in installed["allowedTools"]
 
 
 class TestTheLeadCanDispatch:
@@ -266,11 +282,18 @@ class TestTheLeadCanDispatch:
         assert "`team-lead` skill" in prompt
         assert "`goal-conductor`" in prompt
         assert "session_create" in prompt
-        from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
+        from kiro_crew.context_assembly.output_contract import ASK_CORE, CONDUCTOR_ASK_TAIL
 
-        shared = _ASK_ONLY_WHEN_NEEDED_RULE.splitlines()
-        assert len(prompt.splitlines()) - len(shared) < 40
-        # Nothing copied from the conductor charter; the one shared rule is named, not copied.
+        rule = ASK_CORE + CONDUCTOR_ASK_TAIL
+        block = agent._SHARED_CONDUCTOR_RULES_BLOCK
+        shared = rule.splitlines() + block.splitlines()
+        charter = prompt.removesuffix(_SEED_RULE_TAIL)
+        # The charter body, the shared ask rule's and shared conductor rules' own
+        # lines left out, stays at 40 lines.
+        rule_lines = len(rule.rstrip("\n").splitlines()) + len(block.rstrip("\n").splitlines()) + 1
+        assert len(charter.splitlines()) - rule_lines <= 40
+        # Nothing copied from the conductor charter; the shared rules are the one
+        # source both read, not a copy.
         for line in agent._CONDUCTOR_SYSTEM_PROMPT.splitlines():
             if len(line) > 60 and line not in shared:
                 assert line not in prompt, line
@@ -330,7 +353,7 @@ class TestTheSkillCarriesTheTeamProcedure:
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 F1: a failed team-lead rewrite must leave the ceiling HELD, not synced.
+# A failed team-lead rewrite must leave the ceiling HELD, not synced.
 # --------------------------------------------------------------------------- #
 
 
@@ -424,12 +447,10 @@ def test_a_failed_research_install_holds_the_ceiling_instead_of_syncing(
 
 
 def test_both_conductor_charters_carry_the_ask_only_when_needed_rule() -> None:
-    """Ultra Mode runs on the team lead, a goal on the conductor: both agent prompts
-    (not session context, which ranks below the skill) say when to stop and ask."""
-    from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
-
-    rule = _ASK_ONLY_WHEN_NEEDED_RULE.strip()
-    assert rule.startswith("**Ask only when you must.**")
-    assert "A milestone report is a statement" in rule
-    for prompt in (agent._CONDUCTOR_SYSTEM_PROMPT, agent._TEAM_LEAD_SYSTEM_PROMPT):
-        assert rule in prompt
+    """Conductor mode runs on the team lead, a goal on the conductor: both agent prompts
+    (not session context, which ranks below the skill) say when to stop and ask. The
+    rule is appended at install, so it is checked on what the installers write."""
+    for charter in (agent._CONDUCTOR_SYSTEM_PROMPT, agent._TEAM_LEAD_SYSTEM_PROMPT):
+        prompt = conductor_agents.with_conductor_ask(charter)
+        assert "**Reroute first; ask only when you must.**" in prompt
+        assert "A report of done work is a statement" in prompt

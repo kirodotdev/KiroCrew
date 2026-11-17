@@ -957,7 +957,7 @@ def test_pat_stays_under_crew_home_ignoring_md_notebook_home(monkeypatch, tmp_pa
     pat = server_mod._pat_file()
     # The PAT is under the crew data home, NOT the stray MD_NOTEBOOK_HOME.
     assert str(stray) not in str(pat), pat
-    assert pat == crew / "md-notebook-staging" / "pat", pat
+    assert pat == crew / "apps" / "md-notebook" / "data" / "state" / "pat", pat
     assert str(crew) in str(pat), pat
     # settings.json carries `autoSync` (authorizes unattended push), so like the
     # PAT it MUST stay under the crew data home behind the sensitive-path floor —
@@ -1345,6 +1345,21 @@ async def test_reads_normalize_crlf_to_lf(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("eol", [b"\n", b"\r\n"])
+async def test_reads_keep_frontmatter_of_a_utf8_bom_note(fixtures, eol: bytes) -> None:
+    """A note saved "UTF-8 with BOM" (Windows editors) keeps its frontmatter."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        text = b"---\ntitle: Plan\ntags: [alpha, beta]\n---\nbody\n".replace(b"\n", eol)
+        (Path(vault["localPath"]) / "bom.md").write_bytes(b"\xef\xbb\xbf" + text)
+        status, read = await client.get("/api/note?path=bom.md")
+        assert status == 200, read
+        assert read["content"].startswith("---\ntitle: Plan\n")
+        assert read["meta"]["frontmatter"] == {"title": "Plan", "tags": ["alpha", "beta"]}
+
+
+@pytest.mark.asyncio
 async def test_reads_a_note_with_an_unquoted_frontmatter_date(fixtures) -> None:
     """An unquoted YAML date in frontmatter must not 500 the read.
 
@@ -1392,37 +1407,40 @@ async def test_reads_a_note_with_aliased_frontmatter_fast(fixtures) -> None:
         fm += "---\n\nbody\n"
         (Path(vault["localPath"]) / "amp.md").write_text(fm, encoding="utf-8")
         # The listing path (note_title/tags) parses frontmatter but does not
-        # serialize it; with memoization this stays fast, without it 2**21 nodes
-        # would be materialized and wedge the loop.
-        #
-        # The budget is measured RELATIVE to the same request against the vault
-        # without the amplifying note, not as a fixed wall-clock span: a bare
-        # "< 5s" is the same order as one scheduler stall on a loaded parallel
-        # runner (git.exe process spawns on Windows make this request tens of
-        # times more expensive than on Linux), so it failed on a correct
-        # implementation. Containment is a RATIO property — un-memoized, 2**21
-        # nodes is thousands of times the baseline, so a generous multiplier
-        # still catches the regression this test exists for.
+        # serialize it; with memoization the coercion visits each YAML node once,
+        # without it the 2**21 leaves of the shared tree are materialized and
+        # wedge the loop. Containment is a count of ``_json_safe`` visits: the
+        # same listing with and without the amplifying note differs by the
+        # note's own few dozen nodes, never by an exponential tree.
         amp = Path(vault["localPath"]) / "amp.md"
         amp_text = amp.read_text(encoding="utf-8")
         amp.unlink()
-        baseline_start = time.monotonic()
-        status, body = await client.get("/api/notes")
-        baseline = time.monotonic() - baseline_start
-        assert status == 200, body
+        notes_mod = _mod.notes_mod
+        real_json_safe = notes_mod._json_safe
+        visits = [0]
+        cap = 10_000
 
-        amp.write_text(amp_text, encoding="utf-8")
-        start = time.monotonic()
-        status, body = await client.get("/api/notes")
-        elapsed = time.monotonic() - start
-        assert status == 200, body
-        # Floor the baseline so a sub-millisecond measurement can't make the
-        # budget unsatisfiable, and allow generous headroom over it.
-        budget = max(baseline, 0.05) * 20 + 1.0
-        assert elapsed < budget, (
-            f"alias amplification was not contained: {elapsed:.2f}s vs a "
-            f"{budget:.2f}s budget (baseline {baseline:.2f}s)"
+        def _counting_json_safe(value, _seen=None):
+            visits[0] += 1
+            if visits[0] > cap:
+                raise RecursionError("alias amplification: coercion visit cap exceeded")
+            return real_json_safe(value, _seen)
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(notes_mod, "_json_safe", _counting_json_safe)
+            status, body = await client.get("/api/notes")
+            assert status == 200, body
+            baseline = visits[0]
+
+            amp.write_text(amp_text, encoding="utf-8")
+            visits[0] = 0
+            status, body = await client.get("/api/notes")
+            amplified = visits[0]
+        assert amplified - baseline <= 200, (
+            f"alias amplification was not contained: {amplified} coercion visits "
+            f"with the aliased note vs {baseline} without it"
         )
+        assert status == 200, body
 
 
 def test_json_safe_collapses_repeated_aliases(fixtures) -> None:

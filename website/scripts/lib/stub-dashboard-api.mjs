@@ -233,6 +233,13 @@ export async function stubDashboardApi(page, opts = {}) {
         default_agent: 'kirocrew',
       })
     }
+    // The crewmates roster, as an owner with no crewmates gets it. The
+    // catch-all's `[]` carries no `members` list, so the roster read would fail
+    // in every stubbed page, and a failed roster read re-reads every 30s
+    // (`refetchWhileFailed`): the render bench would measure a gateway that is
+    // down in every idle window. A capture that needs crewmates, or a failing
+    // read, answers this path in its own `extra`.
+    if (path === '/api/members') return json(route, { members: [] })
     // Named BEFORE the catch-all: both paths match its `config` test, and the
     // `{}` it would return blanks the whole Developer > Config surface (see
     // KIROCREW_CONFIG_FIXTURE for why).
@@ -254,6 +261,26 @@ export async function stubDashboardApi(page, opts = {}) {
       console.log(`STUB: no fixture for ${path} — guessing ${objectish(path) ? '{}' : '[]'}`)
     }
     return json(route, objectish(path) ? {} : [])
+  })
+
+  // The Crew API (`/v1/...`). The roster reads the Owner route
+  // `/v1/crew/owner/bots` first, so it gets the `/api/members` body. Left
+  // unrouted, a path here reaches the static server's index.html fallback: the
+  // read fails to parse and retries, the failed read the note above describes.
+  // A `/v1/` path with no fixture is therefore answered 404, which the browser
+  // logs as a console error, so a harness that fails on those names the gap.
+  await page.route('**/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (!path.startsWith('/v1/')) return route.fallback()
+    if (extra && (await extra(path, route))) return
+    if (path === '/v1/crew/owner/bots') {
+      // A harness with its own roster answers `/api/members` in `extra`; the
+      // Owner route serves the same body, so that answer is this route's too.
+      if (extra && (await extra('/api/members', route))) return
+      return json(route, { members: [] })
+    }
+    console.log(`STUB: no fixture for ${path} — answering 404`)
+    return json(route, { error: { type: 'not_found_error', code: 'not_found', message: `no stub fixture for ${path}` } }, 404)
   })
 
   await page.addInitScript(([themeMode, keepStorage, entries]) => {

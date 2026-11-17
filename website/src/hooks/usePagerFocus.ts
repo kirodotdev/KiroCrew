@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
 
 /**
  * Keeps keyboard focus on a Prev / Next pager.
@@ -16,7 +16,9 @@ export function usePagerFocus() {
   // No dependency list: a pager can leave the DOM while the new page loads,
   // so the check waits for a render where the pager is back. It only reads
   // refs, so running it on every render costs nothing and loops on nothing.
-  useEffect(() => {
+  // A layout effect: a passive one still queued from an earlier render can run
+  // after the press and before the page turn renders, and spend the press there.
+  useLayoutEffect(() => {
     if (pending.current === null) return
     const [pressed, other] = pending.current === 'prev' ? [prevRef, nextRef] : [nextRef, prevRef]
     if (!pressed.current && !other.current) return
@@ -29,7 +31,9 @@ export function usePagerFocus() {
   const record = useCallback((dir: 'prev' | 'next') => {
     const active = document.activeElement
     const onPager = active !== null && (active === prevRef.current || active === nextRef.current)
-    pending.current = onPager ? dir : null
+    // A paging key pressed toward an already disabled button turns no page.
+    const pressed = dir === 'prev' ? prevRef.current : nextRef.current
+    pending.current = onPager && !pressed?.disabled ? dir : null
   }, [])
   const pressedPrev = useCallback(() => record('prev'), [record])
   const pressedNext = useCallback(() => record('next'), [record])

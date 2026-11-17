@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from conftest import make_dir_link
 from kiro_crew.dashboard.handlers import discover as h
@@ -40,6 +41,10 @@ from kiro_crew.skill_providers.base import ProviderRegistry, SkillSearchResult
 from kiro_crew.skills import SkillsLoader
 
 _SKILL_MD = "---\nname: cov-skill\ndescription: zzq nonsense payload\n---\n# body\n"
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=42)
 
 
 class _BundleProvider:
@@ -447,8 +452,12 @@ async def test_install_refuses_to_write_through_a_symlinked_provider_dir(
     make_dir_link(skills_root / "covprov", outside)
     registry.register(_BundleProvider())
     request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
-    payload = _body(await h.api_skills_discover_install(request))
-    assert payload["file_count"] == 0
+    resp = await h.api_skills_discover_install(request)
+    payload = _body(resp)
+    # The refusal is a failed install, never a 200 that reports a skill with no files.
+    assert resp.status == 500, payload
+    assert payload["code"] == "bundle_write_failed"
+    assert payload.get("ok") is not True
     assert list(outside.iterdir()) == []
 
 
@@ -544,7 +553,7 @@ async def test_install_502_scrubs_the_provider_error(
     """
     provider = _BundleProvider()
     provider.fetch_skill_bundle = AsyncMock(  # type: ignore[method-assign]
-        side_effect=RuntimeError("fetch failed for key AKIAIOSFODNN7EXAMPLE")
+        side_effect=RuntimeError(f"fetch failed for key {_TOKEN}")
     )
     registry.register(provider)
     request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
@@ -555,7 +564,7 @@ async def test_install_502_scrubs_the_provider_error(
         "code": "fetch_failed",
     }
     logged = sel_mock.log_tool_invocation.call_args.kwargs["error"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in logged
+    assert _TOKEN not in logged
     assert "REDACTED" in logged
 
 

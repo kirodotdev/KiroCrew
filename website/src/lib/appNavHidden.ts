@@ -17,7 +17,8 @@
  */
 import { useEffect, useState } from 'react'
 
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem } from '../utils/safeStorage'
+import { savePrefExplicitly } from './uiPrefs'
 
 /** localStorage key holding the JSON string array of HIDDEN app nav ids. */
 export const APP_NAV_HIDDEN_KEY = 'mc-app-nav-hidden'
@@ -170,7 +171,7 @@ export function mergeVisibleReorder(
 }
 
 function writeAppNavHidden(ids: Set<string>): void {
-  safeSetItem(APP_NAV_HIDDEN_KEY, JSON.stringify([...ids].sort()))
+  savePrefExplicitly(APP_NAV_HIDDEN_KEY, JSON.stringify([...ids].sort()))
   // Same-tab sync: localStorage writes only fire `storage` in OTHER tabs,
   // and mc-app-nav-order has no live propagation to piggyback on (Step 1
   // finding), so dispatch our own event after every write.

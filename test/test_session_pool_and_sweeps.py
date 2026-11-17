@@ -216,7 +216,6 @@ class TestPoolHealthLoop:
 
         mgr._warm_pool.put_nowait((dead_p, time.monotonic()))
 
-        # Run one iteration then cancel
         _end_after_one_sweep(mgr)
         with pytest.raises(asyncio.CancelledError):
             await finished(mgr._pool_health_loop(), "the health loop ending after one sweep")

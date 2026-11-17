@@ -511,8 +511,11 @@ export function InstancesPanel() {
                 ))}
               </div>
               <p className="mt-2 text-[12px] text-muted">
-                {i18nT('pages.settings.instancesPanel.warm_cap_count', { count: warmCap })}{' '}
-                <SettingRef configKey="instances.warm_set_cap" />.
+                <Trans
+                  i18nKey="pages.settings.instancesPanel.warm_cap_tune_with"
+                  count={warmCap}
+                  components={{ setting: <SettingRef configKey="instances.warm_set_cap" /> }}
+                />
               </p>
             </Card>
           ) : (

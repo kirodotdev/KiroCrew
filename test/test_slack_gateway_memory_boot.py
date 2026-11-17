@@ -8,6 +8,7 @@ model.
 from __future__ import annotations
 
 import asyncio
+from threading import get_ident
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -176,6 +177,26 @@ class TestAutoMigrateMemory:
         assert orch._cfg.memory.migrated is True
         store._log_event.assert_called_once()
         assert "semantic=0 episodic=0 skipped=0" in store._log_event.call_args[0][4]
+
+    @pytest.mark.asyncio
+    async def test_the_migration_audit_event_is_written_off_the_event_loop(self):
+        """The audit write takes the store's writer lock, so on the loop thread it
+        logs a lock warning on every fresh install's first start."""
+        orch, store = self._orch_with_store(migrated=False)
+        written_on: list[int] = []
+        store._log_event = MagicMock(side_effect=lambda *a: written_on.append(get_ident()))
+        not_ready = MagicMock(
+            wait_ready=MagicMock(return_value=False), is_ready=MagicMock(return_value=False)
+        )
+        with (
+            patch("kiro_crew.slack.gateway.model_file_present", return_value=True),
+            patch("kiro_crew.slack.gateway.make_sync_embed_fn", return_value=(lambda t: [0.1])),
+            patch("kiro_crew.slack.gateway.get_shared_embedder", return_value=not_ready),
+            patch("kiro_crew.memory.legacy_memory_present", return_value=False),
+            patch.object(orch, "_set_memory_migrated", AsyncMock()),
+        ):
+            await orch._auto_migrate_memory()
+        assert written_on and written_on[0] != get_ident()
 
     @pytest.mark.asyncio
     async def test_model_absent_awaits_download_then_sweeps(self):
@@ -384,7 +405,7 @@ class TestReembedSweepDefersTheModelLoad:
         src = inspect.getsource(emb.make_sync_embed_fn)
         assert "_kick_background_load" not in src
         assert "wait_ready" not in src
-        # The kick lives on the embed path instead.
-        assert "_kick_background_load()" in inspect.getsource(emb.LlamaCppEmbedder.embed_batch)
+        # The kick lives on the embed path instead (embed_batch's body, past its in-flight count).
+        assert "_kick_background_load()" in inspect.getsource(emb.LlamaCppEmbedder._embed_batch)
         # And wait_ready() is what makes the sweep's question expensive.
         assert "_kick_background_load()" in inspect.getsource(emb.LlamaCppEmbedder.wait_ready)

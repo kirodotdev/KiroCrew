@@ -26,7 +26,7 @@ from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew.browser_harness import HARNESS_VERSION, chromium, credentials, discover, supervisor
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, finished
 
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="pipe fds and AF_UNIX are POSIX")
 
@@ -542,6 +542,104 @@ async def test_teardown_survives_a_failed_tab_close_and_stops_every_child(
     sup._handle = _handle(relay=closed_relay)
     await sup._teardown()
     assert closed_relay.targets_closed is False, "a closed relay is not asked to close tabs"
+
+
+@pytest.mark.asyncio
+async def test_a_stop_cut_mid_teardown_leaves_the_rest_to_the_next_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+
+    async def _no_ipc() -> None:
+        return None
+
+    sup._ipc_shutdown = _no_ipc  # type: ignore[method-assign]
+    worker, daemon, browser = _Proc(), _Proc(), _Proc()
+    relay = _Relay()
+    sup._handle = _handle(relay=relay, daemon=daemon, worker=worker, browser=browser)
+    in_worker_stop = asyncio.Event()
+    cut_once = [True]
+
+    async def _stop(proc: Any) -> None:
+        if proc is None or proc.returncode is not None:
+            return
+        if proc is worker and cut_once[0]:
+            cut_once[0] = False
+            in_worker_stop.set()
+            await asyncio.Event().wait()  # held until the cancel below
+        proc.returncode = 0
+
+    monkeypatch.setattr(supervisor, "_stop_process", _stop)
+    first = asyncio.ensure_future(sup.stop())
+    await await_until(in_worker_stop, what="the worker stop starting")
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert daemon.returncode is None and browser.returncode is None
+    # Kept for the next stop, never reused as the live handle.
+    assert sup._cut_handle is not None and sup._handle is None
+    assert not sup.connected and sup.holds_browser
+
+    await finished(sup.stop(), "the repeat stop")
+    assert (worker.returncode, daemon.returncode, browser.returncode) == (0, 0, 0)
+    assert relay.closed and sup._handle is None and sup._cut_handle is None
+
+
+class _StalledTabsRelay(_Relay):
+    """A relay whose CDP connection stays open but never answers a tab close."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tab_closes = 0
+        self.in_tab_close = asyncio.Event()
+
+    async def close_agent_targets(self) -> None:
+        self.tab_closes += 1
+        self.in_tab_close.set()
+        await asyncio.Event().wait()  # held until a bound or a cancel ends it
+
+
+@pytest.mark.asyncio
+async def test_a_stop_cut_in_a_stalled_tab_close_skips_it_on_the_next_stop(
+    tmp_path: Path, stopped: list[Any]
+) -> None:
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+
+    async def _no_ipc() -> None:
+        return None
+
+    sup._ipc_shutdown = _no_ipc  # type: ignore[method-assign]
+    worker, daemon, browser = _Proc(), _Proc(), _Proc()
+    relay = _StalledTabsRelay()
+    sup._handle = _handle(relay=relay, daemon=daemon, worker=worker, browser=browser)
+    first = asyncio.ensure_future(sup.stop())
+    await await_until(relay.in_tab_close, what="the tab close starting")
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert stopped == []
+
+    await finished(sup.stop(), "the repeat stop")
+    assert relay.tab_closes == 1, "the repeat stop waited on the stalled tab close again"
+    assert stopped == [worker, daemon, browser] and relay.closed
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_tab_close_is_bounded_and_the_children_are_still_stopped(
+    tmp_path: Path, stopped: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(supervisor, "_TAB_CLOSE_SECS", 0)
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+
+    async def _no_ipc() -> None:
+        return None
+
+    sup._ipc_shutdown = _no_ipc  # type: ignore[method-assign]
+    worker, daemon, browser = _Proc(), _Proc(), _Proc()
+    relay = _StalledTabsRelay()
+    sup._handle = _handle(relay=relay, daemon=daemon, worker=worker, browser=browser)
+    await finished(sup.stop(), "a stop whose tab close stalls")
+    assert stopped == [worker, daemon, browser] and relay.closed
 
 
 @pytest.mark.asyncio

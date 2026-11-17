@@ -9,6 +9,8 @@ live in ``test_llm_pool.py``, reasoning effort in ``test_llm_pool_effort.py``, a
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +31,7 @@ from kiro_crew.knowledge.llm_pool import (
     Worker,
     _get_idle_ttl,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ---------------------------------------------------------------------------
 # Tests: idle-TTL config reader
@@ -224,6 +227,43 @@ class TestIdleReaper:
         assert all(not w.is_alive() for w in live)  # live set drained too
         assert pool._reaping_workers is None
         assert pool._started is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop", ["shutdown", "idle reap"])
+    async def test_workers_are_stopped_together_not_one_by_one(self, stop):
+        """Stopping a worker can wait on its child, so N workers must cost one wait.
+
+        Every worker's stop is held open until all of them have started. Stopping
+        them one by one never gets past the first.
+        """
+        pool = _make_pool_with_fake_workers(pool_size=3)
+        pool._idle_ttl = 0.01
+        pool._idle_since = time.monotonic() - 1.0
+        workers = list(pool._workers)
+        stopping: list[Worker] = []
+        release = asyncio.Event()
+
+        async def _held_stop(worker: FakeWorker) -> None:
+            stopping.append(worker)
+            await release.wait()
+            worker._alive = False
+
+        for worker in workers:
+            worker.shutdown = functools.partial(_held_stop, worker)  # type: ignore[method-assign]
+
+        stopped = asyncio.ensure_future(
+            pool.shutdown() if stop == "shutdown" else pool._maybe_scale_to_zero()
+        )
+        try:
+            await async_wait_until(
+                lambda: len(stopping) == len(workers),
+                describe=lambda: f"{len(stopping)} of {len(workers)} workers are being stopped",
+            )
+        finally:
+            release.set()
+            await await_until(stopped, what=f"the pool's {stop}")
+
+        assert all(not w.is_alive() for w in workers)
 
 
 # ---------------------------------------------------------------------------

@@ -200,6 +200,30 @@ async def test_a_pre_spawn_capability_refusal_is_not_a_failed_start():
 
 
 @pytest.mark.asyncio
+async def test_a_start_windows_policy_blocked_stops_background_starts_at_once():
+    """A blocked agent binary fails every retry the same way: one start, then none.
+
+    The next send makes its own start and shows the policy card, so the eager
+    path posts no row of its own.
+    """
+    from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked
+
+    slot = _ChatSlot("t1")
+    state = _state(slot, fail=False)
+    state.sessions.get_or_create = AsyncMock(side_effect=AcpSpawnBlocked(r"C:\kiro\kiro-cli.exe"))
+    task = schedule_eager_spawn(state, slot)
+    assert task is not None
+    await task
+    assert slot._eager_spawn_failures == chat_runner._EAGER_SPAWN_FAILURE_CAP
+    # Past the 10s and 20s windows: still no background start.
+    slot._eager_spawn_retry_at = 0.0
+    for _ in range(5):
+        assert schedule_eager_spawn(state, slot) is None
+    assert state.sessions.get_or_create.await_count == 1
+    assert _error_rows(slot) == []
+
+
+@pytest.mark.asyncio
 async def test_a_capability_failure_after_the_process_ran_still_counts():
     """A code a process-ran site can raise counts: it may have spawned a tree.
 

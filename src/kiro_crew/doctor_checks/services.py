@@ -24,17 +24,28 @@ if TYPE_CHECKING:
 
 
 def _doctor_managed_service_policy(issues: list[str]) -> None:
-    """Surface installed service definitions that predate launch-class policy."""
+    """Surface installed service definitions that predate launch-class policy, and
+    a loaded systemd unit that lags this build's (the lines `service status`
+    prints, :func:`kiro_crew.service.controller.stale_unit_notes`). A unit whose
+    ``Restart=`` is not ``always`` is warned about but is not an issue
+    (:func:`kiro_crew.service.controller.restart_policy_notes`)."""
     state = cli_doctor.service_controller.installed_service_has_managed_marker()
     if state is None:
         return
     print("\nManaged Service")
     if state:
         print("  watchdog:    ✅ managed-service policy marker installed")
-        return
-    print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
-    print("               Fix: run `kirocrew service install` once, then restart the service")
-    issues.append("managed service definition is outdated")
+    else:
+        print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
+        print("               Fix: run `kirocrew service install` once, then restart the service")
+        issues.append("managed service definition is outdated")
+    notes = cli_doctor.service_controller.stale_unit_notes()
+    for note in notes:
+        print(f"  unit:        ⚠️  {note}")
+    if notes:
+        issues.append("managed service unit lags this build")
+    for note in cli_doctor.service_controller.restart_policy_notes():
+        print(f"  restart:     ⚠️  {note}")
 
 
 def _doctor_pod_session_bus(issues: list[str]) -> None:
@@ -105,11 +116,7 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         return
 
     print(f"  session bus: ✅ {result.socket}")
-    user = (
-        os.environ.get("USER")
-        or os.environ.get("LOGNAME")
-        or str(getattr(os, "getuid", lambda: -1)())
-    )
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
     if cli_doctor._linger_enabled(user) is False:
         print("  linger:      ⚠️  disabled — the per-user systemd instance exits on logout,")
         print(f"               taking running pods with it. Fix: loginctl enable-linger {user}")
@@ -242,9 +249,11 @@ def _chat_delegate_target(kiro: str) -> str | None:
     launcher_dir = os.path.dirname(kiro)
     if sys.platform == "darwin" and launcher_dir.endswith(".app/Contents/MacOS"):
         return os.path.join(launcher_dir, "kiro-cli-chat")
-    from kiro_crew.kiro_cli import kiro_cli_version_at, standalone_kiro_cli
+    from kiro_crew.kiro_cli import resolved_kiro_cli_version, standalone_kiro_cli
 
-    if standalone_kiro_cli(kiro_cli_version_at(kiro)):
+    # wait: this process never warms the PATH probe's cache, so a cold read
+    # would call a PATH-only 3.x install a launcher with no chat binary.
+    if standalone_kiro_cli(resolved_kiro_cli_version(kiro, wait=True)):
         return kiro
     local_chat = os.path.join(os.path.expanduser("~"), ".local", "bin", "kiro-cli-chat")
     if os.path.lexists(local_chat):
@@ -268,8 +277,10 @@ def kas_relay_entry(kiro: str | None) -> str | None:
     resolved launcher (:func:`kiro_cli.chat_sibling`) rather than through the
     launcher, so the launcher's ``~/.local/bin`` delegate is not on that path.
     ``None`` whenever the spawn keeps the launcher: no usable vault identity,
-    the operator's own ``KIROCREW_KIRO_BIN`` (never swapped), or no executable
-    sibling. A plain read of the vault and a ``stat``; never raises.
+    the operator's own ``KIROCREW_KIRO_BIN`` (never swapped), no executable
+    sibling, or a standalone ``kiro-cli`` 3.0.0 or later, which is the chat
+    binary itself (:func:`kiro_cli.resolved_kiro_cli_version`, the spawn's own
+    read). A plain read of the vault, a ``stat`` and that version; never raises.
     """
     if not kiro:
         return None
@@ -279,12 +290,18 @@ def kas_relay_entry(kiro: str | None) -> str | None:
         # harness's own, so the two cannot drift.
         from kiro_crew.agent_sdk.kas_bundle import kas_operator_override
         from kiro_crew.auth.bridge import vault_holds_identity
-        from kiro_crew.kiro_cli import chat_sibling
+        from kiro_crew.kiro_cli import (
+            chat_sibling,
+            resolved_kiro_cli_version,
+            standalone_kiro_cli,
+        )
 
         if kas_operator_override(kiro, os.environ):
             return None
         sibling = chat_sibling(kiro)
         if not sibling or not vault_holds_identity(warn=False):
+            return None
+        if standalone_kiro_cli(resolved_kiro_cli_version(kiro, wait=True)):
             return None
     except Exception:  # noqa: BLE001 - a diagnostic probe must not fail doctor
         return None
@@ -394,7 +411,9 @@ class DashboardBinding(NamedTuple):
 
     The later sections read these rather than resolving them again: the Slack and
     Discord sections the credentials, and the reachability probe the host, the
-    port and the bind.
+    port and the bind. ``creds_unreadable`` says the credentials file could not be
+    read, so *creds* holds only the environment's values and a token missing
+    from it is unknown rather than absent.
     """
 
     host: str
@@ -402,6 +421,7 @@ class DashboardBinding(NamedTuple):
     creds: dict[str, str]
     has_slack: bool
     local: bool
+    creds_unreadable: bool = False
 
 
 def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBinding:
@@ -430,7 +450,22 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     # Dashboard auth mode. Both this section and the Slack section key off the
     # SAME credential read and the same token pair, so the two can never
     # disagree about whether Slack is configured.
-    creds = cfg.load_credentials()
+    # A denied credentials read keeps the credentials the process environment
+    # holds instead of ending the whole report on a traceback; the shared
+    # data-home helper decides whether the denial is a skip or an issue.
+    from kiro_crew.config import loader_credentials
+    from kiro_crew.doctor_checks import confinement
+
+    creds = loader_credentials.resolve_env_credentials(
+        {k: v for k in loader_credentials.CREDENTIAL_KEYS if (v := os.environ.get(k, ""))}
+    )
+    creds_read = False
+    with render._unreadable_skips_section(
+        issues, "credentials", confined=confinement._doctor_vantage_confined
+    ):
+        creds = cfg.load_credentials()
+        creds_read = True
+    creds_unreadable = not creds_read
     _has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
     _local = cli_doctor.is_local_only(_host, _has_slack)
     if _local:
@@ -442,10 +477,14 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     else:
         print("  bind:        0.0.0.0 (all interfaces)")
         print("  auth:        ✅ token auth required (via !dashboard)")
-        if not _has_slack:
+        if not _has_slack and creds_unreadable:
+            # The Slack tokens may be in the file this shell could not read, so
+            # whether Slack is configured is unknown, not a fault to count.
+            print("  auth:        ⏭  Slack unknown — credentials not readable from this shell")
+        elif not _has_slack:
             print("  auth:        ⚠️  Slack not configured — token generation unavailable")
             issues.append("dashboard auth: remote bind without Slack")
-    return DashboardBinding(_host, _port, creds, _has_slack, _local)
+    return DashboardBinding(_host, _port, creds, _has_slack, _local, creds_unreadable)
 
 
 def _running_gateway_version(port: int) -> str | None:

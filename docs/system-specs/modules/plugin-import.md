@@ -37,7 +37,10 @@ A directory whose manifest is found in this order:
    fourth vendor directory needs no code change; sorting makes a package that
    carries several resolve identically on every machine.
 
-Neither candidate is accepted through a symlink.
+Neither candidate is accepted through a symlink. The schema probe and every JSON
+file the converter reads (the manifest, an `mcpServers` file, a hooks file) parse
+through `user_json.loads_user_json`, so a file saved with one leading UTF-8
+byte-order mark reads as if it had none.
 
 Manifest fields read, all camelCase, every path written `./`-relative:
 

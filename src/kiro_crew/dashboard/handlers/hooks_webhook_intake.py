@@ -22,6 +22,7 @@ from aiohttp import web
 from kiro_crew import webhooks
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.context_assembly.markers import neutralize_restored_context_frame
 from kiro_crew.execution_context import ExecutionContext
 
 # ── Webhook Hooks (OpenClaw-style /hooks/agent) ──
@@ -201,7 +202,16 @@ _RESTORED_CONTEXT_GUIDANCE = (
 
 
 def _with_restored_context(saved_context: str, message: str) -> str:
-    """Prepend a hook's saved context and its handling guidance to *message*."""
+    """Prepend a hook's saved context and its handling guidance to *message*.
+
+    Both inputs are scrubbed of the restored-context frame first, so neither the
+    webhook payload nor the saved context can open or close the genuine frame.
+    With no saved context, the scrubbed *message* alone is returned.
+    """
+    message = neutralize_restored_context_frame(message)
+    if not saved_context:
+        return message
+    saved_context = neutralize_restored_context_frame(saved_context)
     return (
         f"=== Restored Context (from prior session) ===\n"
         f"{saved_context}\n"

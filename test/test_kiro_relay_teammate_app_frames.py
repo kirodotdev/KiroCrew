@@ -378,6 +378,35 @@ async def test_a_teammates_clear_keeps_the_app_notifications_it_cannot_see(
         assert not [kind for kind, _ in broadcasts if kind == "notifications_clear"]
         assert unread_count(state._notification_log) == 1
         assert withheld == ["notifications_clear"]
+        # Every open view drops exactly the notes cleared, and keeps the app's.
+        assert [data["ts"] for kind, data in broadcasts if kind == "notification_dismiss"] == [
+            "1",
+            "3",
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", ["owner", "teammate"])
+async def test_a_delete_withdraws_the_note_from_every_open_view(tmp_path, monkeypatch, who):
+    state, broadcasts = _feed_state(tmp_path, monkeypatch)
+    ingress = _personal() if who == "owner" else _team()
+    user = OWNER if who == "owner" else TEAMMATE
+    async with TestClient(TestServer(_feed_app(state, ingress))) as client:
+        resp = await client.delete(
+            "/api/notifications",
+            json={"ts": "1"},
+            headers=ingress.stamp_headers([], relay_user=user),
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["ok"] is True
+        missing = await client.delete(
+            "/api/notifications",
+            json={"ts": "nope"},
+            headers=ingress.stamp_headers([], relay_user=user),
+        )
+        assert (await missing.json())["ok"] is False
+    assert [note["ts"] for note in state._notification_log] == ["2", "3"]
+    assert broadcasts == [("notification_dismiss", {"ts": "1"})], "nothing for a miss"
 
 
 @pytest.mark.asyncio
@@ -469,3 +498,41 @@ async def test_the_sse_stream_withholds_app_pushes_from_a_teammate(tmp_path, mon
         stopped.set()
     assert not [block for block in blocks if b"private" in block]
     assert withheld == ["notification"]
+
+
+@pytest.mark.asyncio
+async def test_the_sse_stream_redacts_what_a_teammate_reads_with_redaction_off(
+    tmp_path, monkeypatch, withheld
+):
+    """A note built inside the owner's seam reaches a teammate redacted in full."""
+    from kiro_crew import redaction_seams
+    from kiro_crew.dashboard.handlers import updates
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+    stopped = asyncio.Event()
+    monkeypatch.setattr(updates, "shutdown_event", stopped)
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
+    ingress = _team()
+    app = _relay_app(state, ingress)
+    app.router.add_get("/api/stream", updates.api_stream)
+    token = github_classic(seed=171)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/stream", headers=ingress.stamp_headers([], relay_user=TEAMMATE)
+            )
+            assert resp.status == 200
+            first = await finished(resp.content.readuntil(b"\n\n"), "the first SSE frame")
+            assert first.startswith(b"event: dashboard")
+            state._broadcast({"source": "system", "body": f"key {token} end"})
+            state._broadcast({"source": "system", "body": "fence"})
+            blocks: list[bytes] = []
+            while b"fence" not in (blocks[-1] if blocks else b""):
+                blocks.append(await finished(resp.content.readuntil(b"\n\n"), "an SSE frame"))
+            resp.close()
+    finally:
+        stopped.set()
+    assert any(b"key " in block for block in blocks)
+    assert not [block for block in blocks if token.encode() in block]

@@ -24,6 +24,37 @@ export function sessionSearchScan(d: unknown): SessionSearchScan | null {
   return s >= 0 && s < t ? { searched: s, total: t, local: scan.scope === 'local' } : null
 }
 
+/** What the sidebar keeps from one session-search reply. `ranks` is the backend
+ *  relevance rank per local slot key (0 = best); `snippets` is the match-centred
+ *  text the server returned for a hit, already redacted there. Both are keyed by
+ *  the LOCAL key, so a peer row never reads them. */
+export interface SidebarSearchHits {
+  ranks: Map<string, number>
+  snippets: Map<string, string>
+  scan: SessionSearchScan | null
+}
+
+/** One reply's rows as {@link SidebarSearchHits}. First wins on a canonical-key
+ *  collision, so a duplicate file cannot demote the better-ranked entry or swap in
+ *  its snippet. A remote row (`instance_id`) names a session on another gateway and
+ *  is skipped: its key is not a local key. */
+export function sidebarSearchHits(
+  sessions: { key: string; snippet?: unknown; instance_id?: string }[],
+  scan: SessionSearchScan | null,
+): SidebarSearchHits {
+  const ranks = new Map<string, number>()
+  const snippets = new Map<string, string>()
+  sessions.forEach((s, i) => {
+    if (s.instance_id) return
+    const key = s.key.replace(/^dashboard_/, '')
+    if (ranks.has(key)) return
+    ranks.set(key, i)
+    const snippet = typeof s.snippet === 'string' ? s.snippet.trim() : ''
+    if (snippet) snippets.set(key, snippet)
+  })
+  return { ranks, snippets, scan }
+}
+
 /**
  * Debounced backend session-content search.  Returns `null` until the first
  * response arrives (or whenever the query drops below `SEARCH_MIN_CHARS`),
@@ -48,7 +79,7 @@ export function useDebouncedSessionSearch<T>(
   return useDebouncedSessionSearchState(query, transform, revalidateSignal, federated).result
 }
 
-type SessionSearchTransform<T> = (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; instance_id?: string; instance_name?: string }[], scan: SessionSearchScan | null) => T
+type SessionSearchTransform<T> = (sessions: { key: string; title?: string; snippet?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; instance_id?: string; instance_name?: string }[], scan: SessionSearchScan | null) => T
 
 /**
  * `useDebouncedSessionSearch` plus whether the latest search failed.

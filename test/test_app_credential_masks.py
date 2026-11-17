@@ -11,6 +11,7 @@ declaration reaches nothing it does not name.
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import sys
@@ -33,9 +34,16 @@ _MODES = ("standard", "cc", "strict")
 _PREFIXES = (".kiro/crew", ".kirocrew")
 
 
+#: The real shipped-manifest reader, for the one test that pins what the built-ins declare.
+_SHIPPED_MANIFESTS = credential_masks._builtin_manifests
+
+
 @pytest.fixture(autouse=True)
-def _fresh_cache():
+def _fresh_cache(_floor_monkeypatch):
     credential_masks.clear_cache()
+    # Every other case reads only the manifests it writes, not what the built-ins ship.
+    # The floor's own patcher, so a test's ``monkeypatch.undo()`` cannot lift it.
+    _floor_monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
     yield
     credential_masks.clear_cache()
 
@@ -74,7 +82,7 @@ def _targets(leaf: str) -> set[str]:
 
 class TestEntryGrammar:
     @pytest.mark.parametrize(
-        "entry", ["secrets.json", "tokens/oauth.json", "a/b/c", ".secret", "x" * 240]
+        "entry", ["secrets.json", "tokens/oauth.json", "a/b/c", ".secret", "x" * 240, "state/"]
     )
     def test_a_relative_path_under_the_data_dir_is_accepted(self, entry):
         assert credential_masks.entry_error(entry) is None
@@ -88,7 +96,8 @@ class TestEntryGrammar:
             "a/../../b",
             "./secrets.json",
             "a//b",
-            "dir/",
+            "a/b/",
+            "dir//",
             "a\\b",
             "C:secrets",
             "a\x00b",
@@ -155,15 +164,23 @@ class TestManifest:
 
 
 class TestWhereDeclarationsAreRead:
-    def test_no_shipped_built_in_declares_a_mask(self):
-        """Every current user's sandbox is unchanged: the seam starts empty."""
-        assert credential_masks.declared_masks(installed=False) == {}
+    def test_the_shipped_built_ins_declare_exactly_the_notes_state_directory(self, monkeypatch):
+        """Notes keeps its token, registry and settings in a masked directory of its own."""
+        monkeypatch.setattr(credential_masks, "_builtin_manifests", _SHIPPED_MANIFESTS)
+        assert credential_masks.declared_masks(installed=False) == {"md-notebook": ("state/",)}
 
     def test_an_installed_app_declares_leaves_under_its_own_data_dir(self, home):
         _install(home, "demo", ["secrets.json", "keys/a.pem"])
         assert credential_masks.declared_crew_leaves() == _leaves(
             "demo", "keys/a.pem", "secrets.json"
         )
+
+    def test_a_manifest_saved_with_a_byte_order_mark_declares_its_leaves(self, home):
+        # The installer accepts such a manifest, so the mask reader must too.
+        _install(home, "demo", ["secrets.json"])
+        manifest = home / "apps" / "demo" / "app.json"
+        manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+        assert credential_masks.declared_crew_leaves() == _leaves("demo", "secrets.json")
 
     def test_a_manifest_naming_another_app_declares_nothing(self, home):
         _install(home, "evil", ["secrets.json"], name="victim")
@@ -299,18 +316,93 @@ class TestThePlanHidesTheDeclaredLeaves:
             staged = os.path.join(str(Path.home()), f"{prefix}/apps/.demo-data-tmp/tokens")
             assert f'(deny file-write* (literal "{staged}"))' in backend
 
-    def test_namespace_plans_no_parent_guard_for_a_declared_leaf(self, home):
-        """A mount moves with a renamed parent, so the namespace plan needs none."""
-        before = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
-        _install(home, "demo", ["tokens/oauth.json"])
-        after = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
-        assert after.runtime_ancestor_guards == before.runtime_ancestor_guards
+    def test_namespace_pins_every_parent_of_a_declared_leaf(self, home):
+        """A mount moves with a renamed parent, so the next spawn would read the leaf there."""
+        data = _install(home, "demo", ["tokens/oauth.json"])
+        (data / "tokens").mkdir()
+        (home / "apps" / ".demo-data-tmp" / "tokens").mkdir(parents=True)
+        agent = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        lifted = sandbox.app_declared_mask_targets("demo", builtin=False)
+        assert lifted, "the declaration lifted nothing, so this pins nothing"
+        backend = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE, "standard", extra_visible_dirs=lifted
+        )
+
+        pins = set(agent.runtime_ancestor_guards)
+        for parent in ("apps", "apps/demo", "apps/demo/data", "apps/demo/data/tokens"):
+            assert str(home / parent) in pins, f"an agent can rename {parent}"
+        tokens = str(home / "apps" / "demo" / "data" / "tokens")
+        assert tokens not in set(backend.runtime_ancestor_guards), "the backend cannot rotate it"
+        # The move-aside spelling is not handed back, so it stays pinned there too.
+        staged = str(home / "apps" / ".demo-data-tmp" / "tokens")
+        assert staged in pins and staged in set(backend.runtime_ancestor_guards)
 
     def test_the_lifecycle_staging_spelling_is_masked_too(self, home):
         _install(home, "demo", ["secrets.json"])
         plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
         for target in _targets("apps/.demo-data-tmp/secrets.json"):
             assert target in set(plan.sensitive_dirs)
+
+
+class TestTheToolGateReadsTheShippedDeclarations:
+    """A built-in's declared file is on the agent tool gate's floor, with no core row."""
+
+    def test_only_the_shipped_manifests_feed_the_gate(self, home, tmp_path, monkeypatch):
+        shipped = tmp_path / "builtins" / "shipped_demo" / "app.json"
+        shipped.parent.mkdir(parents=True)
+        shipped.write_text(
+            json.dumps({"name": "shipped-demo", "credentialMasks": ["secrets.json"]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            credential_masks, "_builtin_manifests", lambda: [("shipped-demo", shipped)]
+        )
+        _install(home, "demo", ["token.json"])
+
+        assert credential_masks.declared_crew_leaves(installed=False) == _leaves(
+            "shipped-demo", "secrets.json"
+        )
+        assert "apps/demo/data/token.json" in credential_masks.declared_crew_leaves()
+
+    def test_the_gate_takes_a_shipped_declaration_when_it_loads(self, tmp_path):
+        """The gate's list is built once, at import, so a fresh interpreter proves the wiring."""
+        import subprocess
+
+        shipped = tmp_path / "app.json"
+        shipped.write_text(
+            json.dumps({"name": "shipped-demo", "credentialMasks": ["secrets.json"]}),
+            encoding="utf-8",
+        )
+        program = (
+            "import os, sys\n"
+            "from kiro_crew.apps import credential_masks as c\n"
+            "c._builtin_manifests = lambda: [('shipped-demo', __import__('pathlib').Path(sys.argv[1]))]\n"
+            "from kiro_crew import security\n"
+            "home = os.path.expanduser('~')\n"
+            "for leaf in ('apps/shipped-demo/data/secrets.json', 'apps/shipped-demo/data/other.json'):\n"
+            "    print(security.is_sensitive_path(os.path.join(home, '.kiro/crew', leaf)))\n"
+        )
+        src = str(Path(credential_masks.__file__).resolve().parents[2])
+        env = {**os.environ, "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(shipped)],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == ["True", "False"]
+
+    def test_every_shipped_declaration_is_on_the_tool_gate_floor(self):
+        from kiro_crew import security
+
+        for leaf in credential_masks.declared_crew_leaves(installed=False):
+            assert leaf in security._CREW_SECRET_LEAVES
+            for prefix in _PREFIXES:
+                path = os.path.join(str(Path.home()), f"{prefix}/{leaf}")
+                assert security.is_sensitive_path(path), f"{path} is readable by the file tools"
 
 
 @_POSIX_ONLY

@@ -4,8 +4,7 @@
  *   - the Profile tab ends in ONE Settings row under Notes, reading the current
  *     picks; tapping it pushes the Settings page over the card: an iOS-style
  *     group where Permissions, Model, Worker model (and the effort rows when the
- *     model reasons) each read their value before a chevron, and the dashboard
- *     lock is a switch with its help as the group's caption;
+ *     model reasons) each read their value before a chevron;
  *   - tapping a row there pushes a single-choice page one level deeper (one back
  *     control naming the page under it, the row's label as the title), one
  *     option per row with its description, a check on the stored value;
@@ -88,7 +87,7 @@ const extra = async (path, route) => {
   if (/^\/api\/members\/[^/]+\/activity$/.test(path)) { await json(route, { slug: '', member: '', capped: false, entries: [] }); return true }
   if (/^\/api\/members\/[^/]+\/briefing$/.test(path)) { await json(route, { slug: '', member: '', supported: true, text: '# Briefing\n', updated_ts: now - 3600, redacted: false, truncated: false }); return true }
   if (/^\/api\/members\/[^/]+\/panel$/.test(path)) { await json(route, { panel: null, html: null }); return true }
-  if (/^\/api\/members\/[^/]+\/dashboard/.test(path)) { await json(route, { structure_locked: false }); return true }
+  if (/^\/api\/members\/[^/]+\/dashboard/.test(path)) { await json(route, {}); return true }
   if (/^\/api\/members\/[^/]+\/goals$/.test(path)) { await json(route, { goals: [] }); return true }
   if (/^\/api\/chat\/slots\/member-kiro\/(model|reasoning-effort)$/.test(path)) { await json(route, { ok: true }); return true }
   if (/^\/api\/chat\/slots\/member-kiro$/.test(path)) { await json(route, { key: 'member-kiro', title: 'Kiro', running: true, messages: [] }); return true }
@@ -163,7 +162,7 @@ for (const theme of ['light', 'dark']) {
   check(`[${theme}] Model reads the pin`, (await rowValue(page, 'model')) === 'claude-opus-5')
   check(`[${theme}] Reasoning effort shows for a model that reasons`, (await rowValue(page, 'reasoning_effort')) === 'High')
   check(`[${theme}] Worker model reads Same as Kiro`, (await rowValue(page, 'worker_model')) === 'Same as Kiro')
-  check(`[${theme}] the lock is a switch in the group`, (await group.getByRole('switch', { name: 'Lock dashboard layout' }).count()) === 1)
+  check(`[${theme}] the group has no dashboard lock switch`, (await group.getByRole('switch', { name: 'Lock dashboard layout' }).count()) === 0)
   await shot(card, join(OUT, `01-settings-page-${theme}.png`))
 
   // 02: Permissions → a page one level deeper: one back control naming the

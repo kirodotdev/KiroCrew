@@ -12,6 +12,7 @@ import { warnDeliveryUnconfirmed } from '../utils/deliveryWarning'
 import type { SendReceipt, SendTurnOptions } from '../chat-core/transport/sendTurn'
 import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
+import { clearSlotUploadFailures } from '../utils/slotUploadFailures'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { i18nT } from '../i18n/t'
@@ -149,6 +150,7 @@ beforeEach(() => {
   // mirror that storage.clear() cannot reach; without this the previous
   // test's text rides into the next test's rebind of the same slot.
   __resetPaneDraftsForTests()
+  clearSlotUploadFailures()
   forcedReceipt = null
   lastSendTurnOpts = null
   vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) } as unknown as Response)
@@ -367,7 +369,7 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     expect(await screen.findByText('report.pdf')).toBeInTheDocument()
   })
 
-  it('an upload that FAILS after the user switched members is reported in that member\'s transcript, not over the other thread', async () => {
+  it('an upload that FAILS after the user switched members is held for that member\'s banner, not shown over the other thread', async () => {
     let fail!: () => void
     vi.mocked(api.uploadFiles).mockReturnValue(new Promise((resolve) => {
       fail = () => resolve({ paths: [], error: 'Unsupported file type' })
@@ -380,11 +382,14 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(1))
     rebind('member-b')
     await act(async () => { fail() })
-    // Not a banner over B…
+    // Not a banner over B, and no row in either transcript: a history rebuild
+    // would drop it and the chat would read it as its last turn error.
     expect(screen.queryByTestId('chat-pane-upload-error')).not.toBeInTheDocument()
-    // …but an error row in A's conversation, which survives rebinds and page exits alike.
-    expect(selectSlotMessages(store.getState() as RootState, 'member-a').find(m => m.role === 'error')?.content).toContain('Unsupported file type')
+    expect(selectSlotMessages(store.getState() as RootState, 'member-a').some(m => m.role === 'error')).toBe(false)
     expect(selectSlotMessages(store.getState() as RootState, 'member-b').some(m => m.role === 'error')).toBe(false)
+    // Back on A, the failure is in A's upload banner.
+    rebind('member-a')
+    expect(await screen.findByTestId('chat-pane-upload-error')).toHaveTextContent('Unsupported file type')
   })
 
   it('an upload failure shown on screen renders through the shared error surface and is dismissible', async () => {
@@ -400,7 +405,7 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     await waitFor(() => expect(screen.queryByTestId('chat-pane-upload-error')).not.toBeInTheDocument())
   })
 
-  it('an upload that fails after the pane unmounted lands in that slot\'s transcript as an error row', async () => {
+  it('an upload that fails after the pane unmounted shows in the banner of the next pane on that slot', async () => {
     let fail!: () => void
     vi.mocked(api.uploadFiles).mockReturnValue(new Promise((resolve) => {
       fail = () => resolve({ paths: [], error: 'Unsupported file type' })
@@ -413,8 +418,9 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(1))
     first.unmount()
     await act(async () => { fail() })
-    const rows = selectSlotMessages(first.store.getState() as RootState, 'member-a')
-    expect(rows.find(m => m.role === 'error')?.content).toContain('Unsupported file type')
+    expect(selectSlotMessages(first.store.getState() as RootState, 'member-a').some(m => m.role === 'error')).toBe(false)
+    renderPane('member-a', { running: false, busyMode: 'steer-only' })
+    expect(await screen.findByTestId('chat-pane-upload-error')).toHaveTextContent('Unsupported file type')
   })
 
   it('a refusal that lands after the member was closed and REOPENED goes into the new pane\'s composer and survives its next park', async () => {

@@ -17,6 +17,9 @@
  *   - Wizard branches: execution-mode choice, manual sub-question add / edit /
  *     remove, the max-cycles suggestion and its "user touched it" latch,
  *     parallel-worker clamping, the Back step, and both async failure paths.
+ *   - A ready campaign's Start: the request, the re-reads around it, the
+ *     one-campaign-at-a-time block (including one the list had not seen yet),
+ *     and a refused start.
  *   - Detail branches: paused controls, the stagnation banner's own actions,
  *     nudge dismissal, closing the delete dialog with Escape, the SSE message
  *     and error handlers, and the forked-from breadcrumb.
@@ -55,6 +58,7 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
+import { newQueryClient } from '../../api/queryClient'
 import ResearchLabPage from './ResearchLabPage'
 
 // Controllable stand-in for the browser's EventSource. The page opens one per
@@ -73,11 +77,10 @@ class FakeEventSource {
   close() { this.closed = true }
 }
 
-function renderPage() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 } },
-  })
-  return render(
+function renderPage(queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, gcTime: 0 } },
+})) {
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <MemoryRouter initialEntries={['/auto-research']}>
@@ -86,6 +89,7 @@ function renderPage() {
       </Provider>
     </QueryClientProvider>,
   )
+  return { ...view, queryClient }
 }
 
 type User = ReturnType<typeof userEvent.setup>
@@ -139,6 +143,8 @@ beforeEach(() => {
   vi.mocked(api.researchAddQuestion).mockResolvedValue({ ok: true })
   vi.mocked(api.researchKnowledgeStatus).mockResolvedValue({ in_library: false })
   vi.mocked(api.researchReportStatus).mockResolvedValue({ slug: null })
+  vi.mocked(api.researchToKnowledge).mockReset()
+  vi.mocked(api.researchToArtifact).mockReset()
 })
 
 afterEach(() => {
@@ -404,6 +410,121 @@ describe('ResearchLabPage — root list and wizard branches', () => {
   })
 })
 
+describe('ResearchLabPage — a ready campaign', () => {
+  // Created but never started: through the API, or a create or fork whose start
+  // failed. The backend accepts only `start` from ready, so Start is the one
+  // control that moves it on.
+  const READY = {
+    id: 'dddd4444', name: 'Unstarted campaign', question: 'Which queueing designs survive a regional outage?',
+    sub_questions: '[]', sources: '["web"]', max_cycles: 30, idle_secs: 60,
+    status: 'ready', total_cycles: 0, findings: [],
+  }
+
+  it('offers Start, not Resume, and says it has not started', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    expect(await screen.findByRole('button', { name: 'Start Campaign' })).toBeEnabled()
+    expect(screen.getByText('Not started yet.')).toBeInTheDocument()
+    expect(screen.queryByText(/First cycle in progress/)).not.toBeInTheDocument()
+    for (const name of ['Resume', 'Pause', 'Stop', 'Nudge']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+  })
+
+  it('starts it once, stays disabled until the campaign and the list are re-read, and Back lists it as active', async () => {
+    const running = { ...READY, status: 'running' }
+    let finishStart: (value: unknown) => void = () => {}
+    let finishReread: (value: unknown) => void = () => {}
+    vi.mocked(api.researchAction).mockImplementation(() => new Promise(resolve => { finishStart = resolve }))
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    await user.click(start)
+    await waitFor(() => expect(vi.mocked(api.researchAction)).toHaveBeenCalledWith('dddd4444', 'start'))
+    // A second click while the start is in flight sends nothing.
+    expect(start).toBeDisabled()
+    expect(start).toHaveTextContent('Starting...')
+    await user.click(start)
+    expect(vi.mocked(api.researchAction)).toHaveBeenCalledTimes(1)
+
+    // Accepted, but the campaign's re-read has not landed: Start stays disabled.
+    const listReads = vi.mocked(api.researchCampaigns).mock.calls.length
+    const campaignReads = vi.mocked(api.researchCampaign).mock.calls.length
+    vi.mocked(api.researchCampaigns).mockResolvedValue([running])
+    vi.mocked(api.researchCampaign).mockImplementation(() => new Promise(resolve => { finishReread = resolve }))
+    await act(async () => { finishStart({ id: READY.id, status: 'running' }) })
+    await waitFor(() => expect(vi.mocked(api.researchCampaign).mock.calls.length).toBeGreaterThan(campaignReads))
+    await waitFor(() => expect(vi.mocked(api.researchCampaigns).mock.calls.length).toBeGreaterThan(listReads))
+    expect(start).toBeDisabled()
+    await act(async () => { finishReread(running) })
+    expect(await screen.findByRole('button', { name: 'Pause' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start Campaign' })).not.toBeInTheDocument()
+    expect(screen.getByText(/First cycle in progress/)).toBeInTheDocument()
+
+    // The list polls only while a campaign is active, so without the re-read it
+    // would still show this campaign under History with New Campaign enabled.
+    await user.click(screen.getByRole('button', { name: /Back/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /New Campaign/ })).toBeDisabled())
+    expect(screen.getByText('ACTIVE')).toBeInTheDocument()
+    expect(screen.queryByText('HISTORY')).not.toBeInTheDocument()
+  })
+
+  it('waits while another campaign is active, and says why', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([ACTIVE, READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    expect(start).toBeDisabled()
+    expect(start).toHaveAccessibleDescription('One campaign at a time — research benefits from focused depth.')
+    await user.click(start)
+    expect(vi.mocked(api.researchAction)).not.toHaveBeenCalled()
+  })
+
+  it('re-reads the list before starting, and sends nothing when a campaign started elsewhere', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    // The app's own client: it never treats a cached read as stale, so the
+    // re-read has to force its request.
+    renderPage(newQueryClient())
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    expect(start).toBeEnabled()
+    // The list on screen polls only while a campaign is active, so it has not
+    // seen this one, started through the API after the page loaded.
+    vi.mocked(api.researchCampaigns).mockResolvedValue([ACTIVE, READY])
+    await user.click(start)
+    await waitFor(() => expect(start).toHaveAccessibleDescription('One campaign at a time — research benefits from focused depth.'))
+    await waitFor(() => expect(start).toHaveTextContent('Start Campaign'))
+    expect(start).toBeDisabled()
+    expect(vi.mocked(api.researchAction)).not.toHaveBeenCalled()
+  })
+
+  it('shows the gateway\'s reason when it refuses the start, and re-reads the campaign', async () => {
+    vi.mocked(api.researchAction).mockRejectedValue(new Error("Cannot start a campaign in 'running' state"))
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    const campaignReads = vi.mocked(api.researchCampaign).mock.calls.length
+    await user.click(start)
+    expect(await screen.findByText(/Cannot start a campaign in 'running' state/)).toBeInTheDocument()
+    await waitFor(() => expect(vi.mocked(api.researchCampaign).mock.calls.length).toBeGreaterThan(campaignReads))
+    await waitFor(() => expect(start).toBeEnabled())
+    expect(start).toHaveTextContent('Start Campaign')
+  })
+})
+
 describe('ResearchLabPage — campaign detail branches', () => {
   it('a paused campaign offers Resume and Stop', async () => {
     const paused = { ...ACTIVE, status: 'paused' }
@@ -647,13 +768,16 @@ describe('ResearchLabPage — knowledge and artifact hand-off', () => {
     expect(alertSpy).not.toHaveBeenCalled()
   })
 
-  it('any other library failure alerts and stays retryable', async () => {
+  it('shows a knowledge-library failure beside its action and stays retryable', async () => {
     vi.mocked(api.researchToKnowledge).mockRejectedValue({ status: 500, message: 'library offline' })
     const user = userEvent.setup()
     renderPage()
     await openDetail(user, DONE)
     await user.click(await screen.findByRole('button', { name: /Add to Knowledge/i }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('library offline'))
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('library offline')
+    expect(notice.parentElement).toContainElement(screen.getByRole('button', { name: /Add to Knowledge/i }))
+    expect(alertSpy).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Add to Knowledge/i })).toBeEnabled()
   })
 
@@ -689,14 +813,112 @@ describe('ResearchLabPage — knowledge and artifact hand-off', () => {
     expect(screen.queryByRole('button', { name: /Export as Artifact/i })).not.toBeInTheDocument()
   })
 
-  it('a failed export alerts and leaves the button usable', async () => {
+  it('shows a failed export beside its action and leaves the button usable', async () => {
     vi.mocked(api.researchToArtifact).mockRejectedValue(new Error('no artifact store'))
     const user = userEvent.setup()
     renderPage()
     await openDetail(user, DONE)
     await user.click(await screen.findByRole('button', { name: /Export as Artifact/i }))
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Failed to export as artifact'))
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent('Failed to export as artifact')
+    expect(notice.parentElement).toContainElement(screen.getByRole('button', { name: /Export as Artifact/i }))
+    expect(alertSpy).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Export as Artifact/i })).toBeEnabled()
+  })
+
+  it.each(['knowledge', 'artifact'] as const)('dismisses and clears a %s error on retry', async action => {
+    const request = action === 'knowledge' ? api.researchToKnowledge : api.researchToArtifact
+    const label = action === 'knowledge' ? /Add to Knowledge/i : /Export as Artifact/i
+    vi.mocked(request).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline again'))
+    let finish!: (value: { ok: boolean; slug: string }) => void
+    const pending = new Promise<{ ok: boolean; slug: string }>(resolve => { finish = resolve })
+    vi.mocked(request).mockReturnValueOnce(pending)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, DONE)
+    await user.click(await screen.findByRole('button', { name: label }))
+    const notice = await screen.findByRole('alert')
+    expect(within(notice).queryByRole('button', { name: /Ask/i })).toBeNull()
+    await user.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: label }))
+    await screen.findByRole('alert')
+    await user.click(screen.getByRole('button', { name: label }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: action === 'knowledge' ? /Adding/i : /Exporting/i })).toBeDisabled()
+    await act(async () => { finish({ ok: true, slug: 'recovered-report' }); await pending })
+    if (action === 'knowledge') {
+      expect(await screen.findByText(/Added to Knowledge/i)).toBeInTheDocument()
+    } else {
+      expect(await screen.findByRole('link', { name: /View report/i })).toHaveAttribute('href', '/artifacts/recovered-report')
+    }
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps artifact and knowledge failures attached to their own controls', async () => {
+    vi.mocked(api.researchToKnowledge).mockRejectedValue(new Error('library offline'))
+    vi.mocked(api.researchToArtifact).mockRejectedValue(new Error('artifact offline'))
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, DONE)
+    await user.click(await screen.findByRole('button', { name: /Add to Knowledge/i }))
+    await screen.findByText('library offline')
+    await user.click(screen.getByRole('button', { name: /Export as Artifact/i }))
+    await screen.findByText('Failed to export as artifact')
+    const knowledge = screen.getByText('library offline').closest('[role="alert"]')!
+    const artifact = screen.getByText('Failed to export as artifact').closest('[role="alert"]')!
+    expect(screen.getByRole('button', { name: /Fork & Challenge/i }).parentElement).toHaveClass('items-start')
+    await user.click(within(knowledge as HTMLElement).getByRole('button', { name: 'Dismiss' }))
+    expect(knowledge).not.toBeInTheDocument()
+    expect(artifact).toBeInTheDocument()
+  })
+
+  it('keeps the existing report link while a failed regeneration is dismissed and retried', async () => {
+    let finish!: (value: { slug: string }) => void
+    const pending = new Promise<{ slug: string }>(resolve => { finish = resolve })
+    vi.mocked(api.researchReportStatus).mockResolvedValue({ slug: 'earlier-export' })
+    vi.mocked(api.researchToArtifact).mockRejectedValueOnce(new Error('offline')).mockReturnValueOnce(pending)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, DONE)
+    const link = await screen.findByRole('link', { name: /View report/i })
+    await user.click(screen.getByRole('button', { name: /Regenerate/i }))
+    const notice = await screen.findByRole('alert')
+    expect(link).toHaveAttribute('href', '/artifacts/earlier-export')
+    await user.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    await user.click(screen.getByRole('button', { name: /Regenerate/i }))
+    await waitFor(() => expect(api.researchToArtifact).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: /Regenerating/i })).toBeDisabled()
+    expect(screen.queryByRole('alert')).toBeNull()
+    await act(async () => { finish({ slug: 'earlier-export' }); await pending })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Regenerate/i })).toBeEnabled())
+    expect(screen.getByRole('link', { name: /View report/i })).toHaveAttribute('href', '/artifacts/earlier-export')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it.each(['knowledge', 'artifact'] as const)('does not show a late %s failure on another campaign', async action => {
+    const parent = { ...DONE, id: 'parent3333', question: 'Parent research question' }
+    const child = { ...DONE, parent_id: parent.id }
+    vi.mocked(api.researchCampaign).mockImplementation(async id => id === parent.id ? parent : child)
+    const request = action === 'knowledge' ? api.researchToKnowledge : api.researchToArtifact
+    const label = action === 'knowledge' ? /Add to Knowledge/i : /Export as Artifact/i
+    let fail!: (error: Error) => void
+    const pending = new Promise<never>((_resolve, reject) => { fail = reject })
+    vi.mocked(request).mockReturnValueOnce(pending)
+    const user = userEvent.setup()
+    const { queryClient } = renderPage()
+    queryClient.setQueryDefaults(['research-campaign', parent.id], { gcTime: Infinity, staleTime: Infinity })
+    queryClient.setQueryData(['research-campaign', parent.id], parent)
+    await openDetail(user, child)
+    await user.click(await screen.findByRole('button', { name: label }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith(child.id))
+    await user.click(screen.getByRole('button', { name: parent.id }))
+    await screen.findByRole('button', { name: label })
+    await act(async () => { fail(new Error('old campaign offline')); await pending.catch(() => {}) })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: label })).toBeEnabled()
   })
 })
 

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
-from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
+from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE, UNVERIFIED_MODEL_NOTE
 from kiro_crew.mcp_tools.spawn_parts.schemas import _parent_allowlist_filter
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -228,6 +228,7 @@ def spawn_status(name: str, args: dict[str, Any]) -> "str | DeferredTool":
             for flag, note in (
                 ("made_no_tool_calls", NO_TOOL_CALLS_NOTE),
                 ("leaked_tool_call", LEAKED_TOOL_CALL_NOTE),
+                ("served_model_unverified", UNVERIFIED_MODEL_NOTE),
             )
             if d.get(flag) is True
         ]

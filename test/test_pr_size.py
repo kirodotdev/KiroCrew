@@ -549,7 +549,12 @@ def test_the_handler_is_comment_triggered_and_gated_on_the_command() -> None:
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
     )
-    assert wf["permissions"] == {"actions": "write", "contents": "read", "pull-requests": "write"}
+    assert wf["permissions"] == {
+        "actions": "write",
+        "checks": "read",
+        "contents": "read",
+        "pull-requests": "write",
+    }
 
 
 def test_the_handler_reads_the_permission_and_fails_closed_like_the_ai_review_override() -> None:

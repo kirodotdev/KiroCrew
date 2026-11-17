@@ -64,6 +64,10 @@ _MS_REMOUNT = 32
 _MS_BIND = 4096
 _MS_REC = 16384
 _MS_PRIVATE = 1 << 18
+#: Where the launcher reads the mounts of its own namespace.
+_MOUNTINFO = "/proc/self/mountinfo"
+#: Where the launcher reads which mount one of its descriptors sits on (``mnt_id:``).
+_FDINFO = "/proc/self/fdinfo/%d"
 #: ``umount2`` flag: take the mount out of this namespace's tree now and let the kernel
 #: release it when the last reference goes. Retires a private window's staging mount,
 #: which is a second path to that window's real tree.
@@ -82,6 +86,15 @@ _S_IFMT = 0o170000
 _S_IFLNK = 0o120000
 _S_IFDIR = 0o040000
 _S_IFREG = 0o100000
+
+#: What follows the pid-tagged prefix in the name of a stage directory, one a tmpfs of
+#: this mount namespace is mounted on (:func:`stage_stand_ins_privately`, the unreadable
+#: mask's stage). From the host such a directory is empty, and it is a mount point,
+#: never a bind source, so the janitor
+#: (``kiro_crew.sandbox_mount_sweep._cleanup_stale_sandbox_mount_sources``) can remove
+#: one a dead launcher left without proving that no namespace binds it. ``-`` is outside
+#: ``tempfile``'s name alphabet, so no stand-in's random suffix starts with this text.
+_STAGE_MARK = "stage-"
 
 
 def _load_libc():
@@ -146,6 +159,11 @@ class Launch:
         self.readonly_dirs = plan["readonly_dirs"]
         self.parent_pins = plan["parent_pins"]
         self.writable_dirs = plan["writable_dirs"]
+        #: The operator's read-only directories and the write exceptions inside them
+        #: (``agent.sandbox_readonly_paths`` / ``agent.sandbox_readonly_exceptions``).
+        #: Absent from the payload when unset, which applies nothing.
+        self.operator_readonly_dirs = plan.get("operator_readonly_dirs", [])
+        self.operator_writable_dirs = plan.get("operator_writable_dirs", [])
         self.sensitive_files = plan["sensitive_files"]
         self.fail_closed_file_masks = plan["fail_closed_file_masks"]
         self.alias_credential_ids = plan["alias_credential_ids"]
@@ -352,12 +370,13 @@ def stage_stand_ins_privately(launch):
     re-aims. The host sees one empty directory, which :func:`retire_stand_in_stage`
     removes once the masks are placed. A tmpfs is a filesystem of its own, so every bind
     source stays off HOME's filesystem, also when no candidate root qualified. The
-    stage takes the stand-ins' pid-tagged prefix, so the janitor reclaims one a killed
-    launcher leaves. Any failure keeps the host root, which is where the stand-ins lived
-    before this stage existed.
+    stage takes the stand-ins' pid-tagged prefix followed by ``_STAGE_MARK``
+    (:func:`_stage_mkdtemp`), so the janitor reclaims one a killed launcher leaves on
+    any host, also one whose ``/proc`` hides other users' tasks. Any failure keeps the
+    host root, which is where the stand-ins lived before this stage existed.
     """
     try:
-        stage = _stand_in_mkdtemp(launch)
+        stage = _stage_mkdtemp(launch)
     except OSError as exc:
         _stage_warning(launch.tmpfs_src or tempfile.gettempdir(), exc.strerror)
         return
@@ -474,6 +493,19 @@ def _stand_in_mkdtemp(launch):
     )
 
 
+def _stage_mkdtemp(launch):
+    """A fresh, empty stage directory under the stand-in root, by its path.
+
+    Named like a stand-in with ``_STAGE_MARK`` after the pid-tagged prefix. Only a
+    directory that is a mount point for a tmpfs of this namespace and never a bind
+    source may be made here: the janitor removes a dead launcher's empty stage without
+    the coverage proof that keeps a live mount's source in place.
+    """
+    return _on_stand_in_root(
+        launch, lambda root: tempfile.mkdtemp(dir=root, prefix=launch.src_prefix + _STAGE_MARK)
+    )
+
+
 def _stand_in_mkstemp(launch):
     """``(fd, path)`` of a fresh, empty stand-in file under the stand-in root."""
     return _on_stand_in_root(
@@ -490,12 +522,14 @@ def _stand_in_mkstemp(launch):
 def place_masks(launch):
     """Place every mount, in the order the kernel's mount semantics require.
 
-    Windows are staged before anything is masked, the seals' parents are pinned before
+    Windows are staged before anything is masked, the operator's read-only layer lands
+    next so every crew rule is placed on top of it, the seals' parents are pinned before
     the seals, read-only seals land before the hides placed on top of them, carve-outs
     after the seals they punch through, the exposed files are restored into their empty
     masks, and the single files and ``~/.ssh`` are masked last.
     """
     stage_private_windows(launch)
+    seal_operator_readonly(launch)
     pin_seal_parents(launch)
     seal_readonly(launch)
     mask_sensitive(launch)
@@ -601,12 +635,17 @@ from kiro_crew.sandbox_launcher_parts.exec_lockdown import (  # noqa: E402
 )
 from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     _hold_seal_parent,
+    _mount_id_of,
+    _mount_ids_at,
+    _mount_points_below,
     _mount_private_tmpfs,
     _open_unreadable_stand_in,
     _pin_below_mask,
     _retire_unreadable_stage,
     _seal_masked_dir_if_windowless,
+    _seal_path,
     _stage_is_fresh_mount,
+    _unescape_mount_point,
     apply_carveouts,
     check_crew_home_aliases,
     confirm_crew_home_aliases,
@@ -616,6 +655,7 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     pin_seal_parents,
     preread_exposed_files,
     restore_exposed_files,
+    seal_operator_readonly,
     seal_readonly,
     stage_private_windows,
     verify_fail_closed_aliases,

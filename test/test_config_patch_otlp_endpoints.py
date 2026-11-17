@@ -111,7 +111,6 @@ def test_the_config_view_masks_every_value_in_the_list() -> None:
     ]
 
 
-@pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
 def test_a_wrong_type_entry_is_masked_in_the_validation_warning(caplog) -> None:
     """An entry written as a bare string (the legacy field's shape) fails the
     item schema. Its warning must not echo the URL: the list is sensitive, so

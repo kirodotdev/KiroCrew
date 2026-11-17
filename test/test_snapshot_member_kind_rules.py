@@ -10,12 +10,13 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_snapshot import unpinnable_argv
 
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+KEY = github_classic(seed=25)
 
 
 def _stage(tmp_path: Path) -> Path:

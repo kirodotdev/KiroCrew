@@ -307,7 +307,7 @@ class TestMacOSInterpolationFloor:
         ("steps", "path"),
         [
             (1, DRAG_PATH_STRAIGHT),  # the historical default — the baseline
-            (1, DRAG_PATH_CURVED),  # delivered 0 events before the fix
+            (1, DRAG_PATH_CURVED),  # must deliver events, not 0
             (2, DRAG_PATH_CURVED),
             (3, DRAG_PATH_CURVED),  # delivered 2
             (5, DRAG_PATH_STRAIGHT),

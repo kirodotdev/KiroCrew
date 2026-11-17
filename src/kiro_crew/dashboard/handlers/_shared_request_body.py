@@ -296,6 +296,13 @@ def string_field_error(field: str, value: object) -> web.Response | None:
     )
 
 
+def message_required_error() -> web.Response:
+    """The 400 for a send whose message is empty once stripped."""
+    return web.json_response(
+        {"error": "message is required", "code": "message_required"}, status=400
+    )
+
+
 def bounded_json_error_code(error: web.Response) -> str | None:
     """The ``code`` of a :func:`read_bounded_json` refusal *error*.
 

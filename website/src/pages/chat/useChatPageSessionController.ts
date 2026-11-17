@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { autoOpenRows } from '../../lib/crewMode'
+import { yieldToMain } from '../../lib/yieldToMain'
 import { unwrapResult } from '@reduxjs/toolkit'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { matchPath, type NavigateFunction, type NavigationType } from 'react-router-dom'
@@ -26,13 +27,16 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { isSafeReload } from '../../lib/safeReload'
+import { useFeaturePreviewLockSettled } from '../../utils/editionLocks'
 import { safeSetItem } from '../../utils/safeStorage'
 import { PANE_SLOT_HINT_PARAM, relayActiveSlotToParent } from '../../lib/paneLastSlot'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
 import { sessionShortNameFrom, shortNameMatches, type ShortNameMatch } from '../../utils/sessionKeys'
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
+import { useLaunchedDraftDiscard } from './useLaunchedDraftDiscard'
 import { PENDING_OPEN_LEASE_MS, resumeStillOpening } from '../../store/chatSlice'
+import { isUntitledSession } from '../../utils/sessionDisplayTitle'
 
 /** Read a URL-derived key from the close-hold record without traversing its prototype. */
 export function closeHoldForUrl<T>(closing: Record<string, T>, key: string | null): T | undefined {
@@ -89,6 +93,8 @@ interface UseChatPageSessionControllerArgs {
   saveDrafts: () => void
   searchParams: URLSearchParams
   slots: ChatSlot[]
+  /** Whether split view is showing (an app's draft launch shown there is kept). */
+  splitMode: boolean
   tokenConsumingRef: MutableRefObject<boolean>
 }
 
@@ -128,6 +134,7 @@ export function useChatPageSessionController({
   saveDrafts,
   searchParams,
   slots,
+  splitMode,
   tokenConsumingRef,
 }: UseChatPageSessionControllerArgs) {
   // Older-sessions history is fetched lazily, not on mount: the
@@ -292,6 +299,9 @@ export function useChatPageSessionController({
   // The claimed launch's new-session shape (`openChat`'s `memoryMode` /
   // `sessionFolder`), spent with the create exactly like the agent above.
   const appDraftSlotOptionsRef = useRef<{ memory_mode?: string; sessionFolder?: false }>({})
+  // Whether the pending create is an app's draft launch, whose session is
+  // discarded if the user leaves it untouched (useLaunchedDraftDiscard).
+  const appDraftLaunchRef = useRef(false)
   /**
    * A prompt to seed the new session's composer with, carried by the SAME cold
    * URL that asks for the session: `/chat?new=1&prefill=<text>`. This is the deep
@@ -462,6 +472,7 @@ export function useChatPageSessionController({
     })
   }, [connected, dispatch, embedded, filteredSlots, locationKey, searchParams, activeSlot, appLaunchListWaitTick])
 
+  const { track: trackLaunchedDraft, interacted: launchedDraftInteracted } = useLaunchedDraftDiscard(activeSlot, splitMode)
   // ?new=1: create a blank slot for an embed or a fresh desktop window.
   const newSlotMutation = useMutation({
     // The launcher's prompt rides the create itself: the thunk stages it before
@@ -470,9 +481,11 @@ export function useChatPageSessionController({
     // onSuccess would land after that read, so nothing would consume it.
     mutationFn: async () => {
       const prompt = initialPrefillRef.current
+      const appDraftLaunch = appDraftLaunchRef.current
       const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined }))
       // A rejected create throws here and keeps the prompt for the retry.
       const slot = unwrapResult(action)
+      if (appDraftLaunch && slot?.key) trackLaunchedDraft(slot, prompt)
       // Spent once: a retry of a failed create still carries the same intent, but
       // must not re-seed a session the user has since typed into.
       if (prompt && slot?.key) {
@@ -528,6 +541,7 @@ export function useChatPageSessionController({
     const launch = launchWindow.__mc_chat_launch
     appDraftAgentRef.current = undefined
     appDraftSlotOptionsRef.current = {}
+    appDraftLaunchRef.current = false
     // A launch that shapes the NEW session (memory mode, no session folder) is a
     // draft too: its message is staged, never sent, so the session's mode is
     // settled before a first turn could read or write memory.
@@ -539,6 +553,7 @@ export function useChatPageSessionController({
       // mutation is the single owner of the prefill handoff.
       initialPrefillRef.current = launch.message ?? ''
       appDraftAgentRef.current = launch.agent
+      appDraftLaunchRef.current = true
       appDraftSlotOptionsRef.current = {
         ...(launchMemoryMode ? { memory_mode: launchMemoryMode } : {}),
         ...(launchNoSessionFolder ? { sessionFolder: false as const } : {}),
@@ -560,6 +575,11 @@ export function useChatPageSessionController({
     setSidError('')
   }, [activeSlot, newSlotFailed])
 
+  /** The URL open below asks once for a turn of the main thread; `taken` once it got it. */
+  const urlOpenTurnRef = useRef<'none' | 'asked' | 'taken'>('none')
+  /** What that turn runs: the open, as the latest run of the effect that passed
+   *  every guard left it. Empty whenever no such run stands, unmount included. */
+  const openUrlSessionRef = useRef<() => void>(() => {})
   // On mount, URL ?sid= drives which session is active (URL wins over localStorage)
   useEffect(() => {
     if (embedded && !embedMode) return
@@ -609,14 +629,41 @@ export function useChatPageSessionController({
     // `some` on an empty list is false, so an unpopulated slot list waits here
     // too; this effect re-runs when `filteredSlots` arrives.
     if (filteredSlots.some(s => s.key === urlSlot)) {
-      initialSidRef.current = null
-      popInFlightRef.current = true
-      dispatch(switchSlot(urlSlot))
+      const openNow = () => {
+        initialSidRef.current = null
+        popInFlightRef.current = true
+        dispatch(switchSlot(urlSlot))
+      }
+      if (urlOpenTurnRef.current === 'taken') {
+        openNow()
+        return
+      }
+      // The run that finds the session is the task the session list arrived
+      // in, which has just rendered the sidebar. Opening the session there
+      // mounts the transcript in the same task: the longest one of a cold
+      // open. So the first open waits one turn of the main thread. Nothing
+      // changes while it waits: the link stays armed exactly as it was while
+      // the list had not arrived. The turn opens only what a run of this
+      // effect that passed every guard above left for it; a re-run or an
+      // unmount takes that away first.
+      openUrlSessionRef.current = () => {
+        // The store has moved on and the render that shows it has not run.
+        // That render re-runs this effect, which finds the turn taken.
+        if (store.getState().chat.activeSlot === activeSlot) openNow()
+      }
+      if (urlOpenTurnRef.current === 'none') {
+        urlOpenTurnRef.current = 'asked'
+        void yieldToMain().then(() => {
+          urlOpenTurnRef.current = 'taken'
+          openUrlSessionRef.current()
+        })
+      }
+      return () => { openUrlSessionRef.current = () => {} }
     }
     // Don't error immediately — slot may arrive via SSE shortly
     // embedded/embedMode are read in the guard above; they are stable for the
     // session, so listing them satisfies the linter without changing behavior.
-  }, [filteredSlots, activeSlot, dispatch, connected, embedded, embedMode])
+  }, [filteredSlots, activeSlot, dispatch, connected, embedded, embedMode, store])
 
   // React to ?sid= changes AFTER mount — required for plugin tab switching
   // where the URL is updated via react-router navigate() (soft nav). The
@@ -864,6 +911,13 @@ export function useChatPageSessionController({
   // slow first frame. A landed list starts the deadline, but is not assumed to
   // be the final restored list.
   const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
+  // A full key the roster lacks can still have its transcript on disk, when the
+  // session was closed or its open-tab entry was lost (#29460). The notice then
+  // says it was closed and offers Resume. A click, not an automatic resume: this
+  // page writes the full key into `?sid=` itself on every switch, so a reload
+  // naming it is not a request to reopen.
+  const [sidClosed, setSidClosed] = useState<{ key: string; title: string; error: string } | null>(null)
+  const queryClient = useQueryClient()
   useEffect(() => {
     if (!connected || !slotsLoaded) return
     const urlSlot = initialSidRef.current
@@ -872,18 +926,34 @@ export function useChatPageSessionController({
     if (!urlSlot || sessionShortNameFrom(urlSlot)) return
     const timer = setTimeout(() => {
       if (initialSidRef.current) {
-        const error = i18nT('pages.chatPage.session_not_found', { name: urlSlot })
-        deniedSidRef.current = {
+        const denied = {
           key: urlSlot,
           activeSlot: activeSlotRef.current,
           activeSlotChanged: false,
-          error,
+          error: i18nT('pages.chatPage.session_not_found', { name: urlSlot }),
           deniedAt: Date.now(),
         }
+        deniedSidRef.current = denied
         initialSidRef.current = null
         pendingSidRef.current = false
         popInFlightRef.current = false
-        setSidError(error)
+        // Asked before the notice shows, so it never flips from one verdict to
+        // the other. A failed probe keeps "not found", as before.
+        void queryClient.fetchQuery({
+          queryKey: ['session-meta', urlSlot],
+          queryFn: () => api.sessionMeta(urlSlot),
+          retry: false,
+          staleTime: 0,
+          gcTime: 0,
+        }).then(row => row, () => null).then(row => {
+          // A slots frame carrying the key retired this verdict while it ran.
+          if (deniedSidRef.current !== denied) return
+          if (row) {
+            denied.error = i18nT('store.chatSlice.session_closed_find_in_older_sessions')
+            setSidClosed({ key: row.key, title: row.title || row.key, error: denied.error })
+          }
+          setSidError(denied.error)
+        })
         // Deliberately does NOT refresh the session on screen. The deep link did
         // own this mount's fetch, so that session's messages can be as stale as
         // Redux left them — but a refresh here races the user: five seconds is
@@ -894,7 +964,16 @@ export function useChatPageSessionController({
       }
     }, 5000)
     return () => clearTimeout(timer)
-  }, [connected, slotsLoaded, activeSlotRef])
+  }, [connected, slotsLoaded, activeSlotRef, queryClient])
+  // Offered only while the notice still shows that session's sentence, and
+  // hidden offline, as a closed-session chip is.
+  const resumeSidClosed = connected && sidClosed && sidClosed.error === sidError
+    ? () => {
+      if (!connectedRef.current) return
+      setSidError('')
+      void dispatch(resumeFromHistory({ key: sidClosed.key, title: sidClosed.title }))
+    }
+    : null
 
   // A slots frame can arrive after the deadline while the gateway restores its
   // full session list. Once it carries the denied key, the old banner is false.
@@ -949,7 +1028,6 @@ export function useChatPageSessionController({
     unmountedRef.current = false
     return () => { unmountedRef.current = true }
   }, [])
-  const queryClient = useQueryClient()
   const openShortNameMatch = useCallback((match: ShortNameMatch) => {
     if (!connectedRef.current) return
     // The roster is read at click time: a listed closed session may have been
@@ -1098,7 +1176,7 @@ export function useChatPageSessionController({
     }
     pendingSidRef.current = false
     const slot = filteredSlots.find(s => s.key === activeSlot)
-    const slug = slot?.title && slot.title !== slot.key ? toSlug(slot.title) : ''
+    const slug = slot?.title && !isUntitledSession(slot) ? toSlug(slot.title) : ''
     const expectedPath = `${basePath}${slug ? '/' + slug : ''}`
     const next = new URLSearchParams(sp)
     next.set('sid', activeSlot)
@@ -1278,6 +1356,7 @@ export function useChatPageSessionController({
   // automatic move, which `forkMayOpen` lets it undo).
   const waitingForOpen = !activeSlot && openPending
   const [openWaitLapsed, setOpenWaitLapsed] = useState(false)
+  const lockSettled = useFeaturePreviewLockSettled()
   useEffect(() => {
     if (!waitingForOpen) return
     const lease = setTimeout(() => setOpenWaitLapsed(true), PENDING_OPEN_LEASE_MS)
@@ -1326,6 +1405,9 @@ export function useChatPageSessionController({
     // closing it moves to a sibling as usual.
     // The page's own pick never lands on a crew member (`autoOpenRows`): with only
     // crew members left, it creates an ordinary chat instead.
+    // One-shot: before the edition lock is known a crew member reads as an ordinary
+    // chat, so the first pick waits for it (bounded), as a new chat's default does.
+    if (!lockSettled) return
     const eligible = autoOpenRows(filteredSlots)
     const eligibleKeys = new Set(eligible.map(s => s.key))
     if (eligible.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
@@ -1337,8 +1419,11 @@ export function useChatPageSessionController({
       const saved = hadActiveSlotRef.current ? null : localStorage.getItem(slotStorageKey)
       const hint = slotHintRef.current
       slotHintRef.current = null
+      // The hub's hint is the page's own pick too, so it never lands on a
+      // conversation the Slack list setting leaves out (`autoOpenRows`).
+      const hintable = !!hint && listed.has(hint) && !filteredSlots.some(s => s.key === hint && s.slack_list_hidden)
       const target = bound ? bound
-        : hint && listed.has(hint) ? hint
+        : hintable ? hint
         : recent ?? (saved && eligibleKeys.has(saved) ? saved : eligible[0].key)
       dispatch(switchSlot({ key: target, automatic: true }))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
@@ -1349,7 +1434,7 @@ export function useChatPageSessionController({
       // which leaves a create or fork the user started free to open.
       dispatch(createSlot({ mode, automatic: true, crewModeDefault: true }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved, lockSettled])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a
@@ -1396,6 +1481,7 @@ export function useChatPageSessionController({
     appSlotLaunch,
     setAppSlotLaunch,
     highlightTs,
+    launchedDraftInteracted,
     initialMidRef,
     initialMsgRef,
     initialSidRef,
@@ -1412,6 +1498,7 @@ export function useChatPageSessionController({
     sidMatches,
     setSidMatches,
     openShortNameMatch,
+    resumeSidClosed,
     ownChatClosedElsewhere,
   }
 }

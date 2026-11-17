@@ -113,13 +113,16 @@ def sanitize_merged_from(raw: object) -> dict[str, Any] | None:
     """A merged-fork block with every field re-checked, or None when it is malformed.
 
     ``session`` is the fork's session key, ``slot`` its slot key, ``title`` its
-    title when merged, ``after`` the key of the fork message the covered range
-    starts after (empty when it starts at the fork's first row), ``through`` the
-    key of the last fork message the merge covered (a key is the message's id, or
-    one derived from a row written before rows carried ids), ``digest`` the
-    fingerprint of the covered messages, and ``messages`` how many fork messages
-    it covered. Every one of those keys must be present; keys this build does not
-    read are left out of the result and do not make the block malformed.
+    title when merged, ``createdAt`` the fork transcript's persisted creation
+    identity (empty when the fork's metadata line records none, and when the
+    card was written before cards recorded it), ``after`` the
+    key of the fork message the covered range starts after (empty when it starts
+    at the fork's first row), ``through`` the key of the last fork message the
+    merge covered (a key is the message's id, or one derived from a row written
+    before rows carried ids), ``digest`` the fingerprint of the covered messages,
+    and ``messages`` how many fork messages it covered. Every one of those keys
+    except ``createdAt`` must be present; keys this build does not read are left
+    out of the result and do not make the block malformed.
 
     A held merge note carries this block in the metadata line, which is a trust
     boundary like every other field of the hold, so the restore re-checks it
@@ -141,6 +144,11 @@ def sanitize_merged_from(raw: object) -> dict[str, Any] | None:
     title = raw.get("title")
     if not isinstance(title, str) or len(title) > MERGED_FROM_MAX_TITLE_CHARS:
         return None
+    # A card written before cards recorded the identity still counts: refusing it
+    # would hide that merge from the planner, so the next merge would repeat it.
+    created_at = raw.get("createdAt", "")
+    if not isinstance(created_at, str) or len(created_at) > MERGED_FROM_MAX_CREATED_AT_CHARS:
+        return None
     after = raw.get("after")
     if not isinstance(after, str) or len(after) > MERGED_FROM_MAX_KEY_CHARS:
         return None
@@ -154,6 +162,7 @@ def sanitize_merged_from(raw: object) -> dict[str, Any] | None:
         "session": session,
         "slot": slot,
         "title": title,
+        "createdAt": created_at,
         "after": after,
         "through": through,
         "digest": digest,
@@ -533,6 +542,14 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     poison pill that re-raises at every flush seam. Rebuilt with exactly the
     known keys, so a stale ``noteSession`` stamp is discarded (the flush stamps
     the live session at delivery).
+
+    A ``session_set_note`` ``admission`` keeps only its admitted ``workspace``.
+    The gate admits such a note with every boolean constraint false, which is
+    the floor the drain assumes for a key the admission lacks, so a forged
+    ``True`` or mirror identity is never carried back to widen delivery. The key
+    itself is always kept, empty if nothing in it is valid: it is what marks the
+    entry as a session note the drain judges (``drop_session_notes_out_of_reach``),
+    so losing it would let the note through as plain context.
     """
     if not isinstance(raw, dict):
         return None
@@ -568,6 +585,19 @@ def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
     }
     if max_age is not None:
         entry["maxAge"] = max_age
+    if "admission" in raw:
+        # circular: session_control reaches this module through state.
+        from kiro_crew.dashboard.session_control import QUEUED_CONTAINMENT_META_KEY
+
+        admission = raw["admission"]
+        recorded = (
+            admission.get(QUEUED_CONTAINMENT_META_KEY) if isinstance(admission, dict) else None
+        )
+        workspace = recorded.get("workspace") if isinstance(recorded, dict) else None
+        admitted: dict[str, str] = {}
+        if isinstance(workspace, str) and 0 < len(workspace) <= MAX_DEFERRED_NOTE_SESSION_CHARS:
+            admitted["workspace"] = workspace
+        entry["admission"] = {QUEUED_CONTAINMENT_META_KEY: admitted}
     return entry
 
 

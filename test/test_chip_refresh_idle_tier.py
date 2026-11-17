@@ -385,7 +385,9 @@ async def test_two_owner_sockets_over_many_restored_tabs_stay_on_one_small_budge
     release = asyncio.Event()
     sockets = iter([_OwnerSocket(release), _OwnerSocket(release)])
     monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-    monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: next(sockets))
+    monkeypatch.setattr(
+        dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: next(sockets)
+    )
     monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", AsyncMock())
     monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
     monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)

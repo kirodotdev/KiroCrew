@@ -9,6 +9,19 @@ this page has never seen. To check a field missing here, grep the spelling under
 `src/kiro_crew/`; a field kiro-cli accepts but Kiro Crew ignores has no entry
 below because there is nothing Crew-side to describe.
 
+To check a spec before a session reads it, run `kirocrew agent validate [path]`.
+It needs no gateway or kiro-cli and prints one line per problem
+(`<file>: <field>: <message>`), exiting 1 when there is any: an unlisted top-level
+field, a field of the wrong shape, and a malformed `tools` or `allowedTools` entry.
+Whether an `@server` ref names a server a session can reach depends on the backend,
+so `kirocrew doctor` checks that per backend instead. `path` is a spec file or a
+directory of specs; with no
+path it checks the user-level agents directory. `--allow-unknown-fields` skips the
+unlisted-field check for a kiro-cli newer than this release's table, and
+`--print-schema` prints the JSON Schema built from that same table
+(`src/kiro_crew/agent_spec_schema.py`, `FIELDS`), which a spec can name in its
+`$schema` field.
+
 **How to read every statement here.** Each one is what the cited symbol does on
 `main` today, not a guarantee across versions, backends or spec types. Where a
 sentence says "never" or "only", a single named reader backs it and that reader is
@@ -59,11 +72,12 @@ seam spawned (`src/kiro_crew/agent_sdk/provider_identity.py`,
 | Claude Code seam | `provider=claude_code` | not at all — nothing reads the spec | Crew injects the spec's effect into context itself (the `is_cc` branches) |
 | claude-agent-acp harness | `acp_backend="claude"` | not as a spec file — Crew projects field by field | `providers/mirrors/claude_code.py` is the per-field ruling; [How the other backends consume a spec](#how-the-other-backends-consume-a-spec) is the table |
 
-Three surfaces, not three backends. `src/kiro_crew/agent_sdk/backends.py` names
-eight (`""`, `kas`, `claude`, `codex`, `opencode`, `pi`, `goose`, `deepseek`),
+These rows are different surfaces, not different backends.
+`src/kiro_crew/agent_sdk/backends.py` names eleven (`""`, `kas`, `claude`, `codex`,
+`opencode`, `pi`, `goose`, `deepseek`, `copilot`, `strands`, `antigravity`),
 and only `kas` reads the markdown form (`ACP_BACKENDS_MARKDOWN_AGENT_SPECS`).
 [How the other backends consume a spec](#how-the-other-backends-consume-a-spec)
-below is what happens to the other five.
+below is what happens to the other eight.
 
 These two are separate rows because they are separate axes, and only one is
 dormant. `provider=claude_code` is dormant in the public build, whose config
@@ -83,14 +97,14 @@ you cannot add your own keys to a spec.
 
 ## How the other backends consume a spec
 
-The five backends missing from the table above — `codex`, `opencode`, `goose`,
-`pi` and `deepseek` — receive **no agent definition in any shape**: no
+The eight backends missing from the table above — `codex`, `opencode`, `goose`,
+`pi`, `deepseek`, `copilot`, `strands` and `antigravity` — receive **no agent definition in any shape**: no
 `--agent`, and no spec written anywhere, so nothing reads a spec AS a spec
-there. That is not the same as receiving nothing. On three of them individual
+there. That is not the same as receiving nothing. On most of them individual
 fields still arrive, one at a time, through whichever channel that harness reads
 — a `session/new` parameter, a `session/set_config_option` call after it, or one
-environment variable. The `acp_backend="claude"` row above is a fourth harness
-answered the same way, and `src/kiro_crew/providers/mirrors/` is where all four
+environment variable. The `acp_backend="claude"` row above is another harness
+answered the same way, and `src/kiro_crew/providers/mirrors/` is where these
 answers are recorded.
 
 Four cases, and the difference between them is the whole answer:
@@ -101,22 +115,47 @@ Four cases, and the difference between them is the whole answer:
 - **KAS gets a wire projection.** Crew parses the spec and sends it as
   `_meta.kiro.customAgents` (`acp/kas_agents.py`, `to_client_custom_agent`).
   Kind `external`: a real projection down a real channel whose code has not yet
-  moved into the mirrors folder.
-- **The four MIRRORED harnesses get individual fields, decided one by one.**
-  `claude`, `codex`, `opencode` and `goose`. Crew reads the spec and a mirror
+  moved into the mirrors folder. When the agent mounts `use_subagent` (or
+  `@builtin`, `@subagent` or `*`), the batch also carries each agent its
+  `toolsSettings.subagent.availableAgents` names, projected the same way (a `*`
+  pattern matched against your agents, at most 8), because KAS's sub-agent tool
+  finds a name only among the agents its session registers and does not load a
+  spec written for kiro-cli from disk. One it cannot carry is named in the
+  session-start notice: a name no spec declares; Kiro Crew's own agents
+  (`kirocrew-worker` included); an agent with a `denyByDefault` or
+  `fallbackAction: "deny"` allowlist, a granted tool beside `deniedCommands` or
+  write `deniedPaths`, or its own `preToolUse` hooks, which Crew's gate applies
+  only to the agent a chat runs; an agent that declares a Kiro Crew server (such
+  as `kirocrew-core`) the chat's own agent does not load; an agent that sets up a
+  pooled MCP server (one the MCP gateway shares) differently from the chat's own
+  agent, or that the chat's own agent does not declare, since every agent in the
+  chat gets the chat's own agent's copy; and, in a remote
+  workspace, an agent whose own shell or file rules the workspace cannot enforce
+  (`acp/kas_subagent_targets.py`). A Kiro Crew server both agents load, and a
+  pooled server both set up alike, reach the sub-agent as the chat's own copy.
+  A server the sub-agent's own agent file turns off (`"disabled": true`) stays
+  off for the sub-agent, even when the chat's own agent loads it.
+  A sub-agent runs inside the chat's turn, so the chat's own agent's
+  `preToolUse` hooks run on its calls too, and it auto-approves nothing they
+  cover. A `preToolUse` hook added later (on the Hooks page, in `~/.kiro/hooks`
+  or in the chat's agent) restarts the chat's session before its next turn when
+  the sub-agent auto-approves what the hook covers, as it does for the chat's
+  own agent. The sub-agent's MCP servers get your ssh-agent socket when the
+  chat's own agent's servers do.
+- **The eight MIRRORED harnesses get individual fields, decided one by one.**
+  `claude`, `codex`, `opencode`, `goose`, `deepseek`, `copilot`, `strands` and `antigravity`. Crew reads the spec and a mirror
   rules on each field. `providers/mirrors/base.py` is the vocabulary: `Concern`
   is the closed list of things a spec expresses, so adding one obliges every
   backend to answer it; `Disposition` is the four answers (`delivered`,
   `translated`, `no-channel`, `withheld`); and `AgentConfigMirror.rulings` is
   abstract, so a new backend cannot inherit silence.
-- **`pi` and `deepseek` have no mirror, so no field is DECIDED field by field.**
-  What they lose is the projection — the spec's own `mcpServers` and its per-tool
-  deny set. Two things still reach them, by channels that are not the mirror and
-  not the spec file: `model`, pushed with `session/set_config_option` (both are in
-  `agent_sdk/backends_models.py`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`), and `prompt`,
-  as ordinary context text. They are still in `registry.py`'s `PROJECTIONS`, which
-  carries an entry for every backend precisely so absence is a statement rather
-  than a lookup miss — `MIRRORS` is the four above, `PROJECTIONS` is all eight.
+- **`pi` has no mirror, so its spec fields have no field-by-field ruling.**
+  Its broker stubs reach the session, but the spec's own `mcpServers` and per-tool
+  deny set are not projected. `model` still reaches it through
+  `session/set_config_option` (`agent_sdk/backends_models.py`,
+  `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`), and `prompt` arrives as ordinary
+  context text. `registry.py` records this as `broker-only`: `MIRRORS` contains
+  the eight harnesses above, while `PROJECTIONS` records all eleven backends.
 
 **Where the mirror runs.** At session establishment, on both ACP seams, over the
 shared translation in `acp/session_mcp.py` (`session_mcp_projection`):
@@ -133,12 +172,13 @@ when the harness asks permission for them (`acp/client_permissions.py`,
 `_deny_spec_disabled_tool`). Only `codex.py` fills that second half —
 `claude_code.py` puts its deny rules in the settings file instead,
 `opencode.py` hands its rules back as `harness_deny_rules` for the client to seed
-into the harness's own `permission` config, and `goose.py` returns an empty set and
-withholds the whole server, which `base.py` calls out on `SessionProjection` itself. A mirrored backend's
-broker stubs are placed by the mirror rather than appended afterwards —
-`AcpClient._pooled_mcp_servers` is inert for one — so a single withhold rule
-covers the whole array instead of an unnarrowed append re-adding what the
-projection withheld.
+into the harness's own `permission` config, and `goose.py`, `deepseek.py`,
+`copilot.py` and `antigravity.py` return an empty deny set and withhold the
+whole server, which `base.py` calls out on `SessionProjection` itself. A
+mirrored backend's broker stubs are placed by the mirror rather than
+appended afterwards: `AcpClient._pooled_mcp_servers` is inert for a mirror.
+That way a single withhold rule covers the whole array instead of an unnarrowed
+append re-adding what the projection withheld.
 
 ### Per-harness rulings
 
@@ -151,9 +191,12 @@ underneath.
 | `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
+| `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them |
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
+| `copilot` | `copilot.py` | `mcpServers` (with stdio also carried in its launch file); the harness-advertised model choice | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `allow_all=off`; `prompt`, `resources`, `autoApprove` and `hooks` withheld |
+| `antigravity` | `antigravity.py` | `mcpServers` through the session array; `model` and `thinking_level` config options | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `mode=default`; `prompt`, `resources`, `autoApprove` withheld; `hooks` — no channel: Crew's turn loop fires every event but `preToolUse`, because file reads run without a permission request; `toolsSettings` — no channel [11] |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
-| `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
+| `deepseek` | `deepseek.py` | `mcpServers` through the session array; `model` through the lane profile before `session/new` | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `availableModels`, `autoApprove`, `permissions.defaultMode`, `prompt`, `resources` and `hooks` withheld |
 | `strands` | `strands.py` | `mcpServers`, by the `--mcp-config` launch file, never the wire [10]; `model`, as the `--model` launch argument [10] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | `availableModels` — no vocabulary advertised; `autoApprove` and `permissions.defaultMode` — gate-preserving (Crew's gate module asks for every call); `prompt` — context-instead [10]; `resources` — no-reader [6]; `toolsSettings` — no channel [11] |
 
 **An empty `tools` list is a second, stronger case of the "allowlist" row.** `tools:
@@ -177,11 +220,34 @@ entirely, so claude closes the gap before any call exists: a session whose
 `zero_tools` holds is started with `_meta.claudeCode.options.tools` empty (no
 built-in is mounted), `strictMcpConfig` (no user, project or plugin server) and
 bypass off, an empty wire array is required, and an adapter below the
-session-options floor is stopped before its first prompt. `codex` is served by
-`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`, which carries
-`spec_denied_tools` but no `zero_tools` and no equivalent refusal, so nothing
-closes the gap on a codex session. An agent spec relying on `tools: []` on codex
-is not enforced at all.
+session-options floor is stopped before its first prompt. A NON-empty `tools`
+list (one without `*`, `@builtin` or `@builtin/*`) is not applied to claude's
+built-ins outside a Bot's worker: the session keeps the whole built-in set. A new
+claude chat session of an agent whose spec Crew does not write, and a sub-agent's
+first prompt on a fresh session and the gateway log, get a notice that the
+list is not applied to the built-ins and the full built-in set is in effect, and a
+`model` pin that is not a Claude Code id and so is not applied
+(`agent_sdk/spec_builtin_tools.py`). `codex` is served by
+`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`. The runtime copies
+`zero_tools` onto the handle on `session/new` and `session/load`, and
+`AcpSessionHandle._deny_zero_tools` refuses EVERY permission request on such a
+session: a command, a file change, an MCP call and a native child's request.
+The refusal comes before any hook, trust grant or auto-approve can answer the
+request. On codex the ban is partial. In `mode=read-only` codex-acp asks nothing
+before a passive read, a hosted web search or a command its sandbox allows, so
+those calls still run.
+codex also starts the MCP servers in your own Codex `config.toml`, whatever Crew
+mounts, and runs a tool of theirs without asking when codex approves it itself
+(`readOnlyHint`, `default_tools_approval_mode` or a trusted entry).
+A new codex session with `tools: []` gets a notice that says so, and codex is
+not in `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`.
+`mimocode` is mirrored and enforced like `opencode`, but the refusal does not run on
+its sessions: some of MiMo Code's own tools (`memory`, `history`, `task`) never send
+a permission request, so no refusal could make `tools: []` hold
+(`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`, subtracted from
+`ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`). A call that asks is judged like any other, so an
+agent spec relying on `tools: []` on mimocode is not enforced; the pool does not run
+on it.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
@@ -209,7 +275,15 @@ harness loads but cannot close one made and restored inside the spawn window.
 `includeMcpJson` is exactly `false`. The same check gates every `deny_all_tools` channel
 turn on `kirocrew-guest` and every `kirocrew-lite` background turn on a backend routed
 through the agent spec; either is refused, and its session reset, when the spec on disk
-mounts anything.
+mounts anything. When the read before the spawn refuses a `kirocrew-lite` turn, the
+background helper first rewrites an existing `kirocrew-lite.json` that is not its template
+(`agent_materialization/service_agents.py:repair_lite_agent_spec`) and reads it again.
+Only the read before that rewrite counts as the pre-spawn read. The `_bg` and
+`_consolidate` sessions are reset after the rewrite, each reset bounded as the guest
+repair's are (`agent.reset_after_spec_repair`). Without a prepared projection the turn
+that triggered the rewrite is refused too. On any backend, a session whose check was
+cancelled or whose reset failed or timed out is refused and reset on its next turn. A
+missing file is not created.
 
 1. Delivered ONLY when Crew governs the session's permission surface
    (`_permission_surface_governed` in `acp/client_class.py`): Crew authored
@@ -250,17 +324,17 @@ mounts anything.
    so it never asks, and the agent can write that file mid-session.
 8. `pi` accepts the array, stores it on its session state and never hands it to
    the pi process, so a projection written into it would report Crew's tools as
-   mounted on a session where none can be called. `deepseek` DOES mount stdio
-   elements, so its session holds the shared gateway's pooled broker stubs — just
-   not the servers its own spec declares, and not its per-tool deny set.
-9. "No mirror" is not "nothing from the spec". Both are in
-   `agent_sdk/backends_models.py`'s `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, so the spec's
-   `model` reaches them with `session/set_config_option` after `session/new` —
-   the same channel `codex`, `opencode` and `goose` use, which is why `model` is
-   the one field no mirror needs to carry. And `prompt` arrives as context text on
-   every harness alike (`build_message` appends the `[AGENT SYSTEM PROMPT]` block for
-   a custom agent with no backend condition on it). What a mirror decides, and
-   these two therefore go without, is the MCP surface.
+   mounted on a session where none can be called. `deepseek` mounts stdio elements
+   from its mirror's array, including the spec servers that survive the allowlist
+   and whole-server deny rules (`providers/mirrors/deepseek.py`).
+9. "No mirror" is not "nothing from the spec". `pi` takes its model through
+   `session/set_config_option` after `session/new`
+   (`agent_sdk/backends_models.py`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`).
+   `deepseek` also supports that model-switch channel, while its mirror declares
+   the initial model delivered by the lane profile before `session/new`.
+   `prompt` arrives as context text on every harness alike (`build_message`
+   appends the `[AGENT SYSTEM PROMPT]` block for a custom agent with no backend
+   condition on it). The mirror decides DeepSeek's MCP surface; Pi has none.
 10. `strands` runs the Strands CLI in its Python-project ACP mode, which refuses a
    non-empty `session/new` or `session/load` `mcpServers` array. So the mirror's
    array is written to an owner-only `--mcp-config` file the CLI reads at start,
@@ -282,8 +356,9 @@ mounts anything.
    so elsewhere the field is applied nowhere. The other exception is
    `subagent.availableAgents`, which Crew's spawn gate reads from the parent's
    spec on every backend (the `toolsSettings` row). Every mirror says so:
-   `no-channel` on `claude`, `codex`, `opencode`, `goose` and `strands`, naming
-   those tiers as the channel, and `withheld` on `copilot` and `deepseek`. A new
+   `no-channel` on `claude`, `codex`, `opencode`, `goose`, `strands` and
+   `antigravity`, naming those tiers as the channel, and `withheld` on `copilot`
+   and `deepseek`. A new
    chat session whose spec sets it gets one notice naming what goes unapplied:
    `toolsSettings` whole, or each entry other than a declared
    `subagent.availableAgents` and, on `claude`, the allowlist keys its gate applies
@@ -301,17 +376,21 @@ context rather than as config — `context.py`'s `_skills_injection_plan` return
 `bool(globs) or not is_custom`, with no backend condition, so Crew injects the
 mapped set on every backend, as a bounded directory plus each `always: true`
 body. The `file://` steering
-load runs on one of them only: it is gated on `is_cc`, which is
-`is_claude_code(provider_type)`, true for the `claude` `acp_backend` (its provider
-label is `claude_code`) and for no other harness. `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
+load runs on two of them only: it is gated on `ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`,
+asked by provider label through `crew_loads_spec_steering(provider_type)`. The
+members are the `claude` `acp_backend` (its provider label is `claude_code`) and
+`codex`. No other harness gets the load. On `codex` the load leaves out the
+project's `AGENTS.md`, because Codex reads that file from its working directory
+(`ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`). `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
 the shared reason `RESOURCES_NO_READER` (`providers/mirrors/base.py`), which opens
 with this page's class name, `no-reader`; `goose.py`'s reason says no channel is
 advertised for them. A new session of a custom agent on a backend whose mirror
 rules `resources` `withheld` or `no-channel` gets one notice row naming the spec's
 `file://` entries (`spec_steering_read_nowhere` in
-`src/kiro_crew/agent_sdk/spec_hooks.py`). The default agent gets no row, because
-its steering trees reach these harnesses by other routes. Injecting the steering
-itself is a separate, open decision. The ruling stays
+`src/kiro_crew/agent_sdk/spec_hooks.py`). The default agent gets no row. On
+`claude` and `codex` Crew's load sends its steering, and on the other harnesses
+folder steering or member essentials can carry it. Injecting a custom agent's
+steering is a separate, open decision. The ruling stays
 **no-reader** rather than context-instead because it is a statement about the
 harness: what reaches the session on the skill half is Crew's own injected
 directory, not the key the mirror declined to project.
@@ -337,17 +416,20 @@ Four classes cover the rest, and `no-channel` is not one of them:
 `no-channel` is the fourth `Disposition` and a different statement, which is why
 `hooks` sits in that column on `claude` and `codex` without being a withhold:
 the backend HAS the capability and this transport cannot carry it. Both run
-hooks natively; what is missing is the delivery path. On `claude` that gap is
+hooks natively; what is missing is the delivery path. On both that gap is
 `preToolUse` alone: Crew's turn loop fires the other four events there
-(`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`). On `goose`, `opencode` and
+(`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`). `antigravity` is ruled the same
+way and for the same gap: its file reads run without a permission request, so
+Crew fires every event but `preToolUse` there too. On `goose`, `opencode` and
 `strands` the ruling is `translated` instead: their session carries no hooks field either,
 so Crew's own turn loop fires the field (`ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`). `Ruling.__post_init__` refuses a
 `no-channel` ruling that does not name the channel it would have to travel on,
 which is what keeps a gap from reading as a decision.
 
 `providers/mirrors/identity.py` is shared by the mirrors that carry identity ON
-an element: `codex.py` and `opencode.py` call it directly, `goose.py` reaches it
-through `opencode_projection`, and `claude_code.py` does not use it at all,
+an element: `codex.py` and `opencode.py` call it directly, and `goose.py`,
+`copilot.py` and `antigravity.py` reach it through `opencode_projection`.
+`claude_code.py` does not use it at all,
 because a claude MCP child inherits the adapter's process env and needs no
 element-level carry. `control_plane_identity_env` is that carried env, and
 `identity_bound_crew_servers` derives which managed servers must not be mounted
@@ -356,9 +438,10 @@ call.
 
 How far a per-tool MCP restriction survives is declared separately, as
 `per_tool_deny` on the projection record (`registry.py`, `PerToolDeny`):
-`settings-file` on `claude` and `opencode`, `per-call` on `codex`, `whole-server`
-on `goose`. It is a declaration, not a requirement — what it owes you is knowing
-which of the three you are getting BEFORE a session runs.
+`settings-file` on `claude` and `opencode`, `per-call` on `codex`, and
+`whole-server` on `goose`, `deepseek`, `copilot`, `strands` and
+`antigravity`. This declaration tells you which form to expect before a session
+runs; it is not itself the enforcement.
 
 ### What this means for a spec author
 
@@ -372,25 +455,27 @@ is the part worth knowing before you switch:
   identically. `@server/tool` does NOT: it narrows to one tool on kiro-cli (for one
   of Kiro Crew's own managed servers, only with `managedToolPolicy.honourToolRefs`) and
   mounts the whole server everywhere else, so a spec that pins one tool of a
-  server widens to that server's siblings on all four mirrors. If that matters,
+  server widens to that server's siblings on every mirrored harness. If that matters,
   the restriction has to be `disabledTools`, not a narrow `tools` ref.
-- **A per-tool restriction can cost the whole server on `goose` and `codex`.**
+- **A per-tool restriction can cost the whole server on `goose`, `deepseek`,
+  `codex`, `copilot`, `strands` and `antigravity`.**
   `per_tool_deny` on the projection record says which of three forms you get
   BEFORE a session runs. `settings-file` on `claude` and `opencode` keeps the
   server mounted and the harness refuses the tool; on `opencode`, a lower config
   source that already names the tool can outrank Crew's rule, and that server is
-  withheld. `whole-server` on `goose` drops the server. `per-call` on `codex` is narrower than it sounds: it keeps the server mounted and refuses the call for Crew's own
-  CONTROL PLANE only, whose tools carry no annotations so codex asks permission
-  for every one of them. A narrowed third-party server is withheld whole there
-  too, because codex approves a `readOnlyHint` tool internally without asking, so
-  there is no permission request for Crew to refuse at. Read per-call as "the
-  control plane survives", not "nothing is dropped".
+  withheld. `whole-server` on `goose`, `deepseek`, `copilot`, `strands` and
+  `antigravity` drops the server. `per-call` on `codex` keeps the control
+  plane mounted and refuses its tool calls; a narrowed third-party server is
+  withheld whole because codex can approve a `readOnlyHint` tool internally.
 - **`autoApprove` and a spec-written `permissions` block travel nowhere.**
   Deliberately, and this is the one degradation you want: every call reaches
   Crew's gate instead of being pre-approved inside the harness.
-- **`hooks` reaches only three mirrors, and `resources` only half-reaches.**
-  `hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's turn loop fires
-  it, and `no-channel` on `claude` and `codex`. Neither URI scheme is loaded natively, but a mapped
+- **`hooks` reaches three mirrors whole, and `resources` only half-reaches.**
+  `hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's
+  turn loop fires it; it is `no-channel` on `claude`, `codex` and `antigravity`
+  and withheld on `deepseek` and `copilot`. On `mimocode` it is `withheld` as well: that fork's
+  projection follows opencode's rules, but some of its tools never ask, so Crew
+  does not fire hooks there. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,
   so an agent whose skills come from its spec keeps them on a mirrored harness. A
   `file://` steering glob is not loaded from the spec; a custom agent's new
@@ -421,23 +506,24 @@ The
 |---|---|---|
 | `name` | str | The dispatch name. Outranks the filename: `spec_by_declared_name` resolves a spec whose declared `name` matches even when the file is called something else, which is how a package installs `<package>-<name>.json` and keeps the bare name. Two specs in one directory declaring the same `name` with differing content are refused, not arbitrated (`AmbiguousAgentSpecError`, raised by `spec_by_declared_name` and `agent.agent_spec_path` alike), unless `agent.spec_pins` pins the name to one of them (`kirocrew agent pin <name> <file>`): every reader then runs the pinned file, a pin naming none of the claimants is refused (`AgentSpecPinError`) and never falls back, and the refusal without a pin lists each file with the pin command for it. A pin is a bare file name and applies to sessions started after it. Exception to the refusal: `spec_by_declared_name` admits claimants whose parsed content is identical, since its callers only read the parse and an identical pair yields the same one whichever file is live; it warns naming each file. `agent.agent_spec_path` writes, so it refuses the pair whatever its content. One resolver reads the ambiguity differently: the spawn gate (`agent.require_fork_governance`) asks only whether the name is a private template copy, and since every duplicate declares the binding name, the lineage it reads is the same for all of them -- a verified non-fork is admitted with a warning naming each file, while a private copy with a same-named twin is still refused, because its refresh cannot pick a file to re-filter -- and so is a pair beside a `<name>.json` that declares a different, fork-backed name, since the backend also matches the file stem and could run that fork's file. A package installer that flattens dependencies writes exactly such twins for an agent two packages vend, so refusing them left the agent unstartable with no lasting repair. The tool-policy read (`api_session_tool_policy`) and the KAS projection (`kas_agents.load_agent_spec`) resolve through `spec_by_declared_name`, so an identical pair gives them its one policy and its one projection, and a differing pair is refused unless pinned. The member mount gate reads `agent.session_agent_spec_path`, the model and `includeCrewContext` lookups and the parent spawn allowlist apply the pin through `agent_spec_pins.pick_spec_row` / `pin_decision`, the pooled overlay uses the pinned file's overlay, and kiro-cli is handed only a skill view built from the pinned file (the authored name of a contested agent is refused at spawn). The gate's two refusals also differ in wording: an unreadable `agent_model_state.json` names that file, an unresolvable spec names the agents directory. |
 | `description` | str | Roster text, and projected on the KAS wire. A non-string reads as absent (`spec_str`) because the agents directory is shared with other tools and a structured value blanked the whole Agent Templates tab. |
-| `welcomeMessage` | str | Rendered once into a new chat transcript, and projected on the KAS wire from the same reading, so the two surfaces cannot disagree. Read by `agent_welcome_message` only, which asks `list_agents` which spec is live rather than re-deciding, then truncates at `WELCOME_MESSAGE_MAX_CHARS`, with the ellipsis inside that budget rather than added to it. Whitespace-only collapses to nothing. Best-effort: an unreadable spec and an absent hint are the same answer. |
+| `welcomeMessage` | str | Shown on a new chat's welcome page until its first message, then rendered once into the transcript when the agent starts answering, as a row the turn's step folding never hides; projected on the KAS wire from the same reading, so the surfaces cannot disagree. Read by `agent_welcome_message` only, which asks `list_agents` which spec is live rather than re-deciding, then truncates at `WELCOME_MESSAGE_MAX_CHARS`, with the ellipsis inside that budget rather than added to it. Whitespace-only collapses to nothing. Best-effort: an unreadable spec and an absent hint are the same answer. |
 | `keyboardShortcut` | str | Carried as an ordinary (non-capability) field through fork and publish (`agent_capabilities.py`, `ORDINARY_FIELDS`). Nothing else in this tree reads it. |
 
 ### Prompt
 
 | Field | Type | Effect |
 |---|---|---|
-| `prompt` | str | The system prompt. A literal string, or a `file://` URI. On the markdown form the body wins over a frontmatter `prompt`. kiro-cli's `systemPrompt` spelling is read when `prompt` is absent. |
+| `prompt` | str | The system prompt. A literal string, or a `file://` URI. On the markdown form the body wins over a frontmatter `prompt`. kiro-cli's `systemPrompt` spelling is read when `prompt` is absent. On a spec Kiro Crew generates whose grants auto-approve `session_create` and not `session_send` (a conductor, the team lead), each write appends one line to a literal prompt: "`session_create`'s `message` is refused for this agent (`message_needs_send_approval`): create, then `session_send`." It follows the grants: a spec that gains `session_send` in `allowedTools`, or loses `session_create`, stops carrying it on the next write. A `file://` prompt, an empty prompt and a fork are left as written ([Session Control](session-control.md)). |
 
 `file://` resolution is Crew's, in `resolve_prompt`, and applies on the **KAS path
 only** — the kiro-cli path never inlines a prompt because kiro-cli reads the file
 itself:
 
 - a relative path is anchored to the agents directory and may use `..`
-  (`file://../prompts/x.md`), as on kiro-cli;
+  (`file://../prompts/x.md`), as on kiro-cli's v2 engine;
 - an absolute path (and `~`) is accepted and resolved; a relative one expands
-  `$VAR` and `${VAR}` first (`file://$HOME/p.md`), as kiro-cli does;
+  `$VAR` and `${VAR}` first (`file://$HOME/p.md`), as kiro-cli's v2 engine
+  does;
 - relative or absolute, the resolved path (symlinks followed) must not be a
   credential or governance location, `~/.config/gh`, the data home's
   `app_receipt_secret` or `session_token_*.sig`, `/proc`, `/sys` or `/dev` —
@@ -445,8 +531,24 @@ itself:
   over the wire, so a spec pointing at `/proc/<pid>/environ` would exfiltrate
   the gateway's environment (`acp/kas_prompt_paths.py`);
 - a checkout spec that loses keys (only `name`, `description`, `prompt`,
-  `tools`, `excludedTools` and `model` are taken), or a user-level spec that wins
-  over a checkout spec of the same name, gets a session-start notice;
+  `tools`, `excludedTools` and `model` are taken), or a user-level spec or a
+  Bot's own file that wins over a checkout spec of the same name, gets a
+  session-start notice. A file in `~/.kiro/mates/agents/` wins over the checkout
+  only while a live Bot is bound to it (`mate_capabilities.binding_is_mate`); a
+  file no Bot owns, such as a deleted Bot's, yields to the checkout's spec;
+- a project-only agent's `hooks` run only when the folder's project-hooks choice
+  is on (`project_hooks_consent.hooks_enabled`): the owner's Turn on / Turn off
+  in Crew first, else kiro-cli's own "Trust this workspace?" record for the
+  folder (`kiro_cli_workspace_trust.py`, read only, never written), else off.
+  A Crew Turn off beats kiro-cli's trust, and a missing, unreadable or unknown
+  kiro-cli record reads as off. The choice lives in `project_hooks_consent.json`
+  on the keystone floor, so no agent can write it. Crew fires the hooks on the
+  chat, sub-agent, task-runner and channel turns (a cron turn fires only the
+  user-level spec's hooks, never a folder agent's own), the
+  folder's `mcpServers` and other grants stay withheld, and a user-level agent of
+  the same name still wins. A new chat session says which applies, with a Turn on
+  or Turn off link; when the hooks run because of kiro-cli, that notice shows once
+  per folder;
 - a spec from a project checkout's `.kiro/agents` is untrusted: its prompt must
   be a relative path that stays inside that directory (a leading `$` counts as
   rooted and is refused);
@@ -459,6 +561,16 @@ itself:
   session falls back to KAS's `vibe` mode. Crew's own `kirocrew-lite` is the one
   exception and gets the short `_KAS_FALLBACK_PROMPT` brief for its one-shot text
   tasks.
+
+On Windows these Crew readers of a `file://` declaration take `file:///C:/...`,
+the form `Path.as_uri()` writes, as the absolute `C:/...`: the KAS and
+session-start prompt readers, the skill projection, the steering globs, the
+member essentials, an app's prompt policy and a local file link in a reply. Only
+the `/` before the drive is dropped and nothing is percent-decoded
+(`file_uri.file_uri_path_text`); each reader's own containment and
+sensitive-path checks are unchanged. kiro-cli itself does not load a resource in
+that spelling, so Crew's Kiro CLI launch record does not count one and Crew sends
+it instead; write `file://C:/...` to have kiro-cli load it.
 
 The managed default (`kirocrew`) spec does NOT point `prompt` at the
 operating-contract template. `build_agent_config` and `_refresh_dynamic_fields`
@@ -508,8 +620,13 @@ on the wire definition (`template://<agent>#prompt`), and the session-start bloc
 left out when it is that text word for word. Any other text keeps the block: a
 persona with Crew's placeholders, a remote-workspace session (whose wire prompt
 carries an added notice), an older or unreadable kiro-cli, and Crew's bundled
-engine, where no capture shows the prompt applied. The turn after a compaction
-re-sends the block on every backend. On kiro-cli the persona still arrives both
+engine, where no capture shows the prompt applied. The default agent's managed
+stub is the one prompt Crew replaces on the wire: on that same KAS a dashboard chat
+sends its session head there instead (`[AGENT SYSTEM PROMPT]`, the dashboard
+`[CRITICAL RULES]` and `[TOOL NAMES]`), so the engine's prompt cache serves them on
+later chats (`session_head.py`); a remote-workspace notice after the head does not
+stop it being recognised. The turn after a compaction re-sends the block on every
+backend. On kiro-cli the persona still arrives both
 natively and through the injection (#13305).
 
 The reader also recognizes an older managed `file://` pointer under a Crew data
@@ -521,21 +638,55 @@ persona paths outside those managed locations retain their normal handling.
 
 `systemPrompt` is kiro-cli's other spelling of `prompt`; Crew reads it only when `prompt` is absent. Prefer `prompt`.
 
-*Unverified:* kiro-cli v3's own on-disk loader is sometimes described as
-requiring a relative `file://` prompt ref. Nothing in this repository asserts
-that, and Crew's own resolver accepts both forms, so treat the restriction as
-unconfirmed.
+kiro-cli's v3 engine reads a profile from disk with a stricter rule (the
+prompt-file resolver of the `@kiro/agent` bundle, the engine kiro-cli downloads
+and Crew installs). It refuses an absolute or `~` `file://` prompt ("Absolute
+file:// URIs are not allowed in agent prompts"), expands no `$VAR` (it reads
+`file://$HOME/p.md` as a path under the agents directory), and refuses a
+relative path that resolves outside its containment root, the home directory
+for an agent in `~/.kiro/agents` ("file:// URI escapes containment boundary").
+Crew does not apply that rule, on purpose: the app bridge
+(`apps/bridges_agents.py`) writes an app agent's prompt as an absolute
+`file://` URI, and refusing the form would leave that agent without its prompt.
+On KAS the engine still refuses the file when it scans the agents directory,
+but Crew sends the text it read over the wire under the same name, and the
+session runs that definition. A Kiro CLI pick runs on KAS too where the host's
+kiro-cli offers v3 and `agent.kas_bundle` is off; otherwise Crew launches
+kiro-cli with `--agent-engine v2`, and the v2 engine reads an absolute prompt.
+So such an agent runs in Crew on both harnesses, but fails to load in a v3
+session kiro-cli starts from the file itself, such as
+`kiro-cli chat --agent <name>`, and under a kiro-cli Crew finds only on `PATH`,
+which it launches without that pin (kiro-cli 3.0.0 and later then run v3; set
+`KIROCREW_KIRO_BIN` to its absolute path). For a prompt that loads everywhere,
+use a path relative to the agents directory that stays inside it.
 
 ### Tools and permissions
 
+On KAS, the tool list below is read after approved MCP additions are merged
+(`template_mcp_additions.merge_at_spawn`) and default Crew servers are projected
+(`acp.default_crew_servers.with_default_crew_servers`), in that order. The
+no-tools chat notice checks the same copy. An editable agent whose file has
+`tools: []` gets `@server` for each approved addition; a nonempty list such as
+`tools: [""]` can gain the default Crew server grants. Either suppresses the
+notice without changing the file. Without an approved addition, an empty list
+still gets the notice because the default-server projection leaves it empty.
+The Custom agents editor reads the detail API's response-only
+`session_lists_tools` boolean. When the configured backend resolves to KAS, it
+checks this same copy. Other backends check the file's tool list as written,
+without KAS's additions or defaults. When the saved file and the draft list no
+tools but the KAS projection lists some, the hint explains that sessions still
+get tools from added MCP servers. **Allow every tool** stays available. The
+boolean describes the saved spec under the configured backend, not server
+health; saving a tool edit refreshes it.
+
 | Field | Type | Effect |
 |---|---|---|
-| `tools` | list \| `"*"` | What is MOUNTED. `"*"` (the whole value or an entry) means every tool; `@server` mounts an MCP server whole; `@server/tool` mounts one action. Absent or malformed on the KAS path sends an empty allowlist and logs that the agent will run with no tool access (`_project_tools`) — it does not infer a default. On the KAS path a kiro-cli built-in name is projected with its KAS family beside it (`fs_read` → `read_file`, `list_directory`; `grep` → `grep_search`; `glob` → `file_search`; `fs_write` → `str_replace`, `fs_append`; `web_search` → `remote_web_search`, the id KAS's remote tool wrapper serves web search under; `use_subagent` → `invoke_sub_agent`, the id KAS registers its sub-agent tool under; `KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME`), because KAS matches an entry against a tool's exact id and translates nothing — spelled only for kiro-cli, the entry mounts nothing there. A family stops at what the kiro-cli tool can do: `fs_write` cannot delete, so `delete_file` mounts only when a spec names it — while an `excludedTools` entry reaches everything governed under the name, so excluding `fs_write` also excludes `delete_file` (`expand_kiro_cli_tool_exclusions`). `@kirocrew-core` here is what grants Crew's own MCP server. |
+| `tools` | list \| `"*"` | What is MOUNTED. `"*"` (the whole value or an entry) means every tool; `@server` mounts an MCP server whole; `@server/tool` mounts one action. Absent or malformed on the KAS path sends an empty allowlist and logs that the agent will run with no tool access (`_project_tools`) — it does not infer a default. A dashboard chat on such an agent says so once, when the file is your own agent the Custom agents tab can edit, and links to that agent's page, where **Allow every tool** or the tool list gives it tools (`dashboard/agent_no_tools_notice.py`); an explicit `[]` is told the same as an absent key. On the KAS path a kiro-cli built-in name is projected with its KAS family beside it (`fs_read` → `read_file`, `list_directory`; `grep` → `grep_search`; `glob` → `file_search`; `fs_write` → `str_replace`, `fs_append`; `web_search` → `remote_web_search`, the id KAS's remote tool wrapper serves web search under; `use_subagent` → `invoke_sub_agent`, the id KAS registers its sub-agent tool under; `execute_bash` → `control_bash_process`, `control_pwsh_process`, KAS's separate tool for starting, reading and stopping a long-running command; `KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME`), because KAS matches an entry against a tool's exact id and translates nothing — spelled only for kiro-cli, the entry mounts nothing there. A family stops at what the kiro-cli tool can do: `fs_write` cannot delete, so `delete_file` mounts only when a spec names it — while an `excludedTools` entry reaches everything governed under the name, so excluding `fs_write` also excludes `delete_file` (`expand_kiro_cli_tool_exclusions`). `@kirocrew-core` here is what grants Crew's own MCP server. On the KAS path a session the operator granted orchestrator memory also gets `memory` appended to this list (`acp/kas_memory.mount_memory_tool`) so the engine's own memory tool is mounted beside the memory index; `"*"` already covers it, an absent `tools` gains nothing, and the entry does NOT join `allowedTools`. KAS's native context and permission policy owns whether a memory retrieval asks approval. |
 | `allowedTools` | list | What is AUTO-APPROVED. Entries are globs, not names: `@srv`, `@srv/`, `@srv/*` all match the whole server (`_canonical_grant_pattern`). This is the ONE path that never reaches Crew's PreToolUse gate, so every writer filters it through the governance ceiling (`_apply_allowed_tools_ceiling`) and the KAS projection re-filters on read (`_ceiling_permitted`), because a file can predate the ceiling that now governs it. The file-tool built-ins `grep`, `glob`, `code`, `fs_read`, `fs_write` and `execute_bash` are withheld even on a host with no ceiling, because a grant here would skip the sensitive-path and denied-command checks. Crew's own gate approves the read-only `grep` and `glob` calls, and the tree-sitter lookups of `code`, without a prompt once those checks pass, when every path they name is absolute and holds no credential store. |
-| `excludedTools` | list | A RESTRICTION, subtracted after `tools`. `spec_grants_tool_search` reads it: a spec that grants `"*"` then excludes `tool_search` grants no loader. Mirrored onto the worker spec alongside the grants, so "superset of what the default grants" cannot quietly become "superset of what it permits". |
-| `permissions` | object | KAS's own currency: `{"rules": [{"capability", "match", "effect"}]}`. Crew WRITES this derived from `allowedTools` (`derived_agent_permissions`) **only when the program that reads the spec accepts the field** (`auto_approve._spec_permissions_accepted`). On the relay route (`agent.kas_bundle` off) that is the installed kiro-cli: `spec_permissions_supported(installed_kiro_cli_version())`, floor `SPEC_PERMISSIONS_MIN_VERSION` (2.23.0) in `kiro_cli.py`. kiro-cli validates specs with `deny_unknown_fields`, so a release below the floor refuses the WHOLE file and drops every Crew MCP server; an unknown version (no pinned binary, refused or unparseable `--version`) withholds too. With `agent.kas_bundle` on, Crew's own installed engine bundle reads the spec too, so the engine's version must also pass: `installed_bundle().version` against `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned engine) through `kas_pin.engine_spec_permissions_supported`; no engine installed or one below the floor withholds. kiro-cli's gate still applies whenever kiro-cli is installed, since it reads the same files for every other backend; a host with no kiro-cli is not probed and gets the block from the engine alone. The default spec's seed (`_seed_kas_permissions`) preserves an existing block before calling the shared gate (`_write_derived_permissions`), so a block already on disk is never removed by seeding; `kirocrew setup --agent-only --clean` repairs a default spec an older release already refuses. Generated conductor and worker writers use the same gate to replace an inherited value on an accepting release and remove it on an older or unknown one. Fork and publish (`_align_permissions` in `agent_capabilities.py`) route the TARGET block through the same `_write_derived_permissions`, so the published spec carries it only when every reader accepts it (kiro-cli on the relay route; the installed engine, plus kiro-cli when installed, with `agent.kas_bundle` on) and has it removed otherwise; the review of the SOURCE block described below runs whatever the version. `kirocrew doctor` prints the verdict as the KAS block's `auto-approve:` row. A block in the file is not an input to DERIVATION, which reads `allowedTools` and nothing else — but on the wire it is a second input, merged by `merge_user_permissions`: parsed against KAS's own shape and refused whole when it does not fit (a `match` over `_MAX_PATTERNS_PER_RULE` patterns is sent as several rules with the same capability, effect and `exclude` instead, and an `allow` whose `exclude` is over it is left out alone), `deny`/`ask` relayed unconditionally, `allow` relayed only where the same ceiling permits that capability and that resource, the shell and filesystem families never relayed as an `allow` (Crew's gate answers an unscoped one, and a `shell` allow's `match` globs, itself after its own checks: `docs/system-specs/modules/security.md` § KAS spec built-in grant), and an `allow` the `allowedTools` derivation could have emitted itself not relayed at all when the spec carries such a list — that list is the governed input and is re-derived every projection, so a block that has gone stale against it (including one the seeder wrote and preserved) cannot put a revoked grant back. Every decision, relay and withhold alike, is recorded in the security event log. Without that merge a pure-KAS agent — `permissions` authored, no `allowedTools` — reaches the backend with the field absent, and absent resolves every request to `ask`. On disk the block is left untouched and the backend reads it. One path does read it: fork and publish (`agent_capabilities.py`, `_align_permissions`) compares it against a fresh derivation and refuses with `alternate_permissions_require_review` when the two disagree, so a hand-edited block blocks forking that template. `src/kiro_crew/acp/kas_permissions.py` owns the translation, and refuses the shell and filesystem families outright: a tool-name allowlist carries no resource pattern, so the rule it would produce is unscoped. |
-| `toolsSettings` | object | Per-tool settings kiro-cli reads. Crew strips exactly two retired keys on every refresh — `execute_bash`/`shell` `deniedCommands` and `autoAllowReadonly` — because denied commands are enforced only at Crew's PreToolUse gate now, and a stale copy in the spec would keep blocking a built-in the user just re-enabled (`_strip_legacy_denied_commands`). Your other keys are preserved. One key Crew READS: `subagent.availableAgents`, kiro-cli's glob allowlist of what this agent may spawn, is honoured at Crew's own `spawn_run` / `spawn_sub_agents` gate too (those bypass kiro-cli's built-in `subagent` tool) — declared, the target must match a glob; omitted, everything is allowed, as upstream. Crew reads every sub-agent spelling kiro-cli accepts, with kiro-cli's precedence: `crew`, `agent_crew`, `agentCrew`, `subagent`, `use_subagent`. The first one the spec sets is read whole and the later ones are ignored, so `use_subagent.availableAgents` is honoured when `use_subagent` is the only spelling, while beside `subagent` (with the same value or another) only `subagent` counts, and a session-start notice that lists entries names `toolsSettings.use_subagent` among them (`tools_settings_aliases.canonical_tools_settings`). The other kiro-cli alias groups (`shell`/`execute_bash`/`executeBash`, `read`/`fsRead`/`fs_read`, …) fold the same way, and every notice names a key as the spec spells it, never as the key Crew reads it under. The gate reads the spec in `~/.kiro/agents` AND, when it knows the parent session's project directory (the live session's cwd and the chat slot's project, or a sub-agent's cwd), in `<project>/.kiro/agents`; a declaration in any scope applies, so a project spec can only narrow what the user-level one allows. When the project directory is unknown and no user-level spec names the parent, a project-scope declaration is not honoured: Crew logs a warning and writes a `parent_spec_unresolved` security event instead of refusing. `subagent.trustedAgents` is a trust grant ("no permission prompts"), not an allowlist, and is not read as one. Details: `docs/system-specs/modules/subagent.md` § Parent agent spec allowlist. No KAS wire slot, so on KAS Crew translates it into `permissions` rules (`kas_permissions.tools_settings_to_permissions`, following KAS's own migration mapping) and merges them like an authored block: `deniedPaths` (read/glob/grep → `fs_read`, write → `fs_write`), `deniedCommands` and `web_fetch.blocked` become `deny` rules. `subagent.availableAgents` becomes a `subagent` `deny` over `"*"` with the listed names in `exclude` (`[]` denies every sub-agent), and `subagent.trustedAgents` a name-scoped `subagent` `allow` that the governance ceiling must permit, both run live on KAS (#25320); a name pattern travels when it is an agent id with `*` as its only wildcard. `write.fallbackAction: "deny"` travels as no rule: Crew's own gate refuses every file write of that agent whose target none of its `allowedPaths` covers, on every approval mode (a scheduled job with `approval_mode: auto` included). Entries are read like kiro-cli's globs (`*` and `**` cross `/`, `?`, a leading `~`, a relative entry anchored at the session's directory, a directory covering what is inside it); an entry with `[`, `{`, `\`, `$` or a `~user` covers nothing, and a write through a symlink must be covered at its real path too. A covered write runs without a prompt, as on kiro-cli (below). `shell.denyByDefault` travels as no rule either: Crew's own gate refuses every shell command of that agent that none of its `allowedCommands` matches whole, on every approval mode (a scheduled job with `approval_mode: auto` included), unless the agent's `allowedTools` names the shell by its exact name (`execute_bash`, `shell`, `@builtin`, `@builtin/*`, or `@builtin/` followed by one of the two names; a `*` or `?` pattern grants nothing): as on kiro-cli, such an agent runs any command its `deniedCommands` do not deny, prompting as usual. That holds only while every `deniedCommands` entry travels as a KAS deny rule; one that cannot (a regex with groups or alternation, a redirect) keeps the refusal. Without that entry, a command that redirects or substitutes counts as unmatched, and a chain split at `&&`, `||`, `;` and `|` matches only when an entry matches every part whole and the chain holds no quote, backslash, non-ASCII character or PowerShell `--%`. An `allowedCommands` entry outside the syntax Crew reads like kiro-cli allows nothing under `denyByDefault`, so its commands are refused, and the notice names it. Crew reads literals, escaped ASCII punctuation, `.`, bracket classes (`[A-Za-z0-9_./-]`, `[^;]`), groups `( )` / `(?: )`, alternation `\|`, the repeats `*`, `+`, `?` and `{n}`, `{n,}`, `{n,m}`, and `\d`/`\s`/`\w` read over ASCII (such an entry never grants a command holding a non-ASCII character), with optional `^`/`$` at the two ends; it refuses POSIX classes (`[[:alpha:]]`), `\D`/`\b`, `{,m}` and flags (`(?i)`). A command's `( )` and `{ }` count only inside a single- or double-quoted argument of an all-ASCII command with no backslash (`git commit -m "fix(x): y"`); `; & \| < > $` and backticks are refused even inside quotes. A regex becomes a glob only when it is a literal plus `.*` with no character KAS reads as glob syntax, and a pattern over the merge's length bound is dropped rather than refusing the whole block. KAS matches a shell rule against the command's words, and a redirect and its target are not among them, so a `deniedCommands` glob holding `<` or `>` still travels as a deny (it stops that character inside a word) but is also named in the notice: it does not stop `cmd > file`. The same holds for an authored `permissions` shell deny. `shell.allowedCommands` travels as no rule: Crew answers a matching command's permission request itself, after its deny floor and governance, never for a command that redirects or substitutes, and for a chain only when an entry matches every part whole and the chain holds no quote, backslash, non-ASCII character or PowerShell `--%` (`docs/system-specs/modules/security.md` § KAS spec built-in grant). A `deniedCommands` or write `deniedPaths` beside a grant keeps it prompting only when Crew cannot read every entry itself; otherwise Crew's gate refuses what a deny names and answers the rest of the grant without a prompt, as kiro-cli does. Such a command still asks, and the card says why: run the script alone, or move the pipeline into the script. `denyByDefault` and `autoAllowReadonly` beside `allowedCommands` keep the grant, as on kiro-cli; any other key beside it keeps those commands asking, and a `deniedCommands` is read as said above. `autoAllowReadonly: true` is carried by Crew's own read-only auto-approve, and beside `denyByDefault` a read-only command is let through instead of refused, as kiro-cli runs it. A write `allowedPaths` travels as no rule either: Crew answers a write whose every target an entry covers itself, whether or not `allowedTools` lists the write tool, unless a `deniedPaths` or another key on the write tool restricts it. A `read.allowedPaths` is answered the same way for a `read_file` of one existing file an entry covers, unless a `deniedPaths` or another key on the read tool restricts it; other reads keep their usual answer. A `web_fetch.trusted` entry that is a plain URL, or a plain URL followed by `.*`, is answered at Crew's own gate on the whole URL, as kiro-cli matches it (anchored, case-sensitive), with string work only: the fetch runs without a prompt when every `web_fetch.blocked` entry has that shape too and none matches, and the spec's own `permissions` neither asks about nor denies `web_fetch` (`docs/system-specs/modules/security.md` § KAS spec `web_fetch.trusted` on a plain URL). Any other trusted entry keeps prompting and is named. The other allow lists (`grep`/`glob` `allowedPaths`, a `web_fetch.trusted` the gate cannot apply), `allowReadOnly`, `use_aws` and any pattern that does not translate are not carried, so those calls keep prompting; the KAS chat shows one notice at session start naming exactly those entries. goose and opencode never receive the rules, so their notice still names `toolsSettings` whole. No other mirrored harness applies the field: a new chat session on codex, copilot or deepseek whose spec sets it gets the same one-row notice naming `toolsSettings` whole (`spec_hooks.spec_tools_settings_applied_nowhere`; see the per-harness rulings, note 11). On `claude` the same two gate rows refuse what `shell.denyByDefault` and `fallbackAction: "deny"` do not allow, on every approval mode: the client reads both allowlists from the spec it projects and stamps them on its session's requests, a native sub-agent's included, and the settings seed adds `permissions.ask` rules for `Bash` and the file-write tools while either is set, so claude asks about those calls. With no KAS policy there, an `allowedTools` naming the shell lifts `denyByDefault` only when the spec has no `deniedCommands`. A session in `bypassPermissions` skips the ask. `deniedPaths`, `web_fetch.blocked` and the other entries are not carried on `claude` (`docs/system-specs/modules/security.md` § claude spec allowlists). A new claude chat session's notice therefore names only what of the field it still does not apply, never a `shell.denyByDefault` or `fallbackAction: "deny"` allowlist it enforces (`tools_settings_reach.tools_settings_unapplied`). |
-| `hooks` | object | Event-keyed hook lists, stored camelCase (`preToolUse`, `postToolUse`, `userPromptSubmit`, `agentSpawn`, `stop`). Crew merges your `kiro_hooks` config and, when autoimport is on, scripts discovered under `~/.kiro/hooks`, capped per event by `_MAX_USER_HOOKS_PER_EVENT` and in total by `_MAX_TOTAL_USER_HOOKS`. This field is the object form only, which is kiro-cli's own schema. The SOURCE that feeds it, `agent.kiro_hooks` in `~/.kiro/crew/config.json`, additionally accepts a kiro-agent hooks ARRAY — `{name, description?, trigger, matcher?, action, timeout?, enabled?, confirm?}` documents, on the twelve trigger names of kiro-agent's alias table in any of its spellings — and projects it onto this object: only a `command` action on the five triggers kiro-cli names is emitted, so an `agent` action, the other seven triggers and the per-hook `name`/`description`/`timeout` stay in your config without running there, and `enabled: false` or `confirm: true` keeps the hook out of the emission entirely (and out of the autoimport scan). See `steering-and-hooks.md` for that field. No KAS wire slot, so `UNSUPPORTED_SPEC_KEYS` drops the key from the agent Crew injects over the wire. On KAS, Crew's own turn loop fires this field instead (`agent_sdk/spec_hooks.py`, gated on `SessionCapabilities.crew_fires_spec_hooks`), through the same hook-store path as a Hooks-page hook: the `capabilities.script_hooks` gate, the sandboxed spawn, the timeout, a PreToolUse exit 2 that blocks the tool, and a hook a policy refused to run, which blocks it too with the refusal as the reason (a crash or timeout warns and the tool runs, as on kiro-cli). An entry's `max_output_size` applies too: its stdout past that many UTF-8 bytes is cut after redaction and ends in a truncation marker, and a larger value, or none, leaves the 64 KiB cap on every hook's stream. Its `cache_ttl_seconds` is not honoured: the hook runs on every event, and the log names each such hook once. A PreToolUse hook runs only on a call that reaches Crew as a permission request, so the KAS projection adds an `ask` rule for every capability that such a hook's matcher covers, this spec's or a Hooks-page one's (`kas_permissions.withhold_hook_gated_auto_approval`). That includes the shell and filesystem, and a spec with no `permissions` at all: a session answer Crew saved, a KAS default or a user-scope rule can otherwise decide the call without a request, and an explicit `ask` outranks all three. A shell `ask` comes with a `deny` naming a command nobody runs (`kas_permissions.UNPARSEABLE_SHELL_GUARD`), so a command KAS cannot parse stays denied. Crew's own answers for what `allowedTools` granted read the policy before these asks, so a hook does not make a granted tool prompt. A matcher written in an MCP form with no wildcard (`@server/tool`, `mcp__server__tool`) is matched, with the hook store's own matcher, against each real tool of each server the policy auto-approves, named as the gate names an MCP call (`@server/tool`, `mcp__server__tool`); the tool names come from the MCP probe cache (`kas_permissions.cached_mcp_tool_names`). A matcher that meets exactly one real tool gets an `ask` on that exact `<server>/<tool>` resource, so the other MCP tools keep their auto-approval and a matcher written in another case, or against a server named `srv_`, still holds the real tool. An `@server` matcher, a wildcard one (`@server/get_*`), which can meet a tool the cache does not list yet, and one whose server's tools are not cached withhold that server (`<server>/*`) when it is one of the servers the policy allows. A `mcp__` title wildcard (`mcp__server__*`), a matcher whose server the policy does not allow, or whose allowed servers cannot be listed, withholds all of MCP. Any other matcher that can reach an MCP call still withholds all of MCP. KAS lets `ask` outrank `allow`, so the call comes back as a permission request and the hook sees it. A live session keeps the batch it registered, so when a hook added later covers a capability that batch auto-approves, the next turn resets the session and the claim registers a fresh batch (`spec_hooks.invalidate_stale_kas_session` before the claim, and `spec_hooks.reproject_claimed_session` again under the claimed lease, so a turn that waited behind a busy session is not run on its stale batch). A mode switch mid-turn activates a batch KAS already holds, so when the agent it moves to auto-approves what its PreToolUse hooks cover, the turn is stopped and the next one starts a fresh session projected for that agent (`spec_hooks.refuse_stale_switch`). A switch to one of KAS's own built-in modes, which has no spec on disk, carries no spec hooks: only the Hooks page's hooks are checked, and the refusal runs before the switch is recorded on the chat slot. A process that registers no hook store (the standalone `kirocrew run` task runner) reads the Hooks page's saved hooks from disk for both the projection and the gate (`hooks.persisted_hook_store`), so they still apply there. A `confirm: true` document does not run, since Crew cannot ask for the confirmation, and a new session gets one notice naming how many were skipped. Only the first `_MAX_SPEC_HOOKS` hooks are read; the rest are named in one warning. When its own backend is KAS, a subagent, task-runner or channel turn runs its PreToolUse hooks (the Hooks page's and its own agent's spec hooks) on each permission request and refuses the call on a deny, and does not fire them again on the tool-call event (KAS sends that frame first); a subagent and a channel turn pass the spec hooks to PostToolUse too. A tool `matcher` keeps kiro-cli's tool names (`execute_bash`, `fs_write`, and the `shell`/`read`/`write` aliases): on a PreToolUse Crew compares it with the id KAS states for the call and the kiro-cli names that id stands for (`acp/kas_permissions.KAS_TOOL_IDS_BY_KIRO_TOOL`, so `execute_bash` meets KAS's `run_command`), never with the call's title. Those kiro-cli v1 names are matcher vocabulary only: the hook's stdin carries kiro-cli V2's own names, as kiro-cli writes them (`tool_name` `shell`/`read`/`write`/`subagent`/`code` or `@server/tool`, `tool_tags`, camelCase `hook_event_name`, `assistant_response` on `stop`). A PreToolUse matcher the table does not know (`use_aws`, `disclose_context`) is kept and warned about: it meets a KAS id it matches as written. A call KAS names no tool for is matched on its title, as a Hooks-page hook is. A PostToolUse matches the same way, on the finished call's id: KAS's tool-call frames name no built-in tool, so it is the id the call's permission request stated, or KAS's shell tool for a call classified as a shell command; a call neither names keeps title matching. A PostToolUse fires once per call, on its terminal result. goose and opencode get the same treatment: their session carries no hooks field either, and every tool call arrives as a permission request, so Crew fires the field there too. A tool matcher meets the tool name the harness states on the call's first `tool_call` frame (goose's `_meta.goose.toolCall.toolName`, opencode's `title`), mapped back to kiro-cli's names (`acp/harness_tool_names.py`, so `execute_bash` meets goose's `shell` and opencode's `bash`). An `mcp__server__tool` matcher meets an MCP call too: goose names the server itself, and opencode's fused `<server>_<tool>` title is split against the servers Crew placed on the session and the ones opencode's own config mounts (which Crew reads back when the session starts, so `mcp__docs.server__lookup` meets a `docs.server` tool even though opencode writes it `docs_server_lookup`; a config with more than 256 such rewritten names, or a name over 256 characters, refuses the session rather than leave one out), and also at every `_` for a server neither names; every split is kept. When the fused title is also one of opencode's own tools (`apply_patch`), that tool's names are kept too and its kiro-cli name stays first, so the hook's stdin still reports the built-in, `write`, as `tool_name`. On these backends and KAS a matcher may also be written in kiro-cli's other kinds: `@server/tool`, the form Crew builds for an MCP call from the server name the harness states, with one literal server name (no glob, so `@*/tool` is refused) and a tool part of the matcher's own characters plus `?` (`@server/*`); `@server`, every tool of that server; `@mcp`, every MCP tool; `@builtin` and `@builtin/<glob>`, built-in tools only; a glob with `?`; and kiro-cli's tags `read` (`fs_read`, `grep`, `glob`, `code`), `write`, `shell`, `web` and `subagent`. The gate gives each call the names these meet (`spec_hooks.spec_hook_kind_names`), for spec hooks only. Only this conversion accepts them, in either hook shape (`spec_hooks._SPEC_MATCHER_RE`); the merge that writes kiro-cli's materialized spec keeps its own rule. On those two backends the spec is read from the checkout's `.kiro/agents` first, then the user level, the same order their MCP projection resolves it in, but a project agent's hooks run only when that checkout is trusted to choose its MCP servers (`acp/session_mcp.py`, `_project_mcp_trusted`), and otherwise the user-level spec of that name supplies the hooks; a project spec that cannot be read blocks every tool call. KAS reads the user level alone. A Bot's worker is read as its session's merged spec (`mate_worker.mate_service_scope_spec`), so the hooks the Bot's file carries fire there (`mate_spec_policy`); the Bot's own chat runs the stock conductor spec. As on KAS, this is the chat, subagent and task-runner turn loops, and a channel bot's turn (Slack, Discord, Telegram and the other transports whose turns run through `messaging/driver.py`'s `TurnDriver`, fired by `messaging/tool_hooks.py`), which fires the spec's hooks on every turn that admits tools, a room's included, while the Hooks page's own observer hooks and, on those events, the user's standalone `~/.kiro/hooks/*.json` files keep their operator-only rule. Crew fires none of the spec's hooks on Slack's native path (review-mode channels, `messaging.use_transport = false`), and a channel-agent turn (`channel.py`) runs no script hooks on any backend. claude and codex do not run the whole field yet: each approves some calls inside the harness without asking, and a PreToolUse hook would be skipped on those. A Hooks-page PreToolUse hook does run on a claude permission request, and its kiro-cli matcher meets claude's built-ins by the name the adapter stamps on the call (`acp/harness_tool_names.CLAUDE_TOOL_IDS_BY_KIRO_TOOL`, so `execute_bash` meets `Bash` and `fs_write` meets `Write` and `Edit`). On claude Crew fires the other four events (`postToolUse`, `userPromptSubmit`, `agentSpawn`, `stop`) on the chat, subagent and channel bot turn loops, so the default agent's `execute_bash` audit hook runs there: a claude call that asked permission is named through the same table (`Edit` meets `fs_write`), and one of kind `execute` that did not is named `execute_bash` for a matcher, and `shell` on the hook's stdin. Its `preToolUse` hooks do not run, and a new chat session whose agent has one gets a notice; nothing gates on the spec there, so one that cannot be read runs no hooks rather than blocking a call. pi does not run the field either: it is handed no agent spec, and Crew does not fire the field there, so a new pi chat session whose agent has hooks gets a session-start notice, as on claude and codex, and the backend card lists `hooks` as not applied. On the dashboard, the notice for a backend where nothing runs the field ends in a Dismiss link: one click hides it in every later session for every agent, and the choice is backed up with the other dismissed tips. A notice that names a `preToolUse` hook has no link and always shows, because such a hook is there to refuse calls. It changes what the dashboard draws, not which hooks run, and the backend card still lists `hooks`. kiro-cli runs the field itself, so Crew never fires it there. | | `hooks` | honoured | dropped from the wire projection; fired by Crew's turn loop | Crew's gate, renamed events |
+| `excludedTools` | list | A RESTRICTION, subtracted after `tools`. `spec_grants_tool_search` reads it: a spec that grants `"*"` then excludes `tool_search` grants no loader. Mirrored onto the worker spec alongside the grants, so "superset of what the default grants" cannot quietly become "superset of what it permits". On `acp_backend: claude`, a Bot worker's native-tool entries (`shell`, `fs_write`, `@builtin/<tool>`, a tag such as `write`) become its session's `tools` allow-list of the claude built-ins for the native tools it keeps (`agent_sdk/claude_worker_tools.CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL`), so a claude built-in that table does not name is withheld from that worker too; any other native entry (`use_aws`, a bare `@builtin`, a glob) refuses the worker before spawn. |
+| `permissions` | object | KAS's own currency: `{"rules": [{"capability", "match", "effect"}]}`. Crew WRITES this derived from `allowedTools` (`derived_agent_permissions`) **only when the program that reads the spec accepts the field** (`auto_approve._spec_permissions_accepted`). On the relay route (`agent.kas_bundle` off) that is the installed kiro-cli: `spec_permissions_supported(installed_kiro_cli_version())`, floor `SPEC_PERMISSIONS_MIN_VERSION` (2.23.0) in `kiro_cli.py`. kiro-cli validates specs with `deny_unknown_fields`, so a release below the floor refuses the WHOLE file and drops every Crew MCP server; an unknown version (no pinned binary, refused or unparseable `--version`) withholds too. With `agent.kas_bundle` on, Crew's own installed engine bundle reads the spec too, so the engine's version must also pass: `installed_bundle().version` against `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned engine) through `kas_pin.engine_spec_permissions_supported`; no engine installed or one below the floor withholds. kiro-cli's gate still applies whenever kiro-cli is installed, since it reads the same files for every other backend; a host with no kiro-cli is not probed and gets the block from the engine alone. The default spec's seed (`_seed_kas_permissions`) preserves an existing block before calling the shared gate (`_write_derived_permissions`), so a block already on disk is never removed by seeding; `kirocrew setup --agent-only --clean` repairs a default spec an older release already refuses. Generated conductor and worker writers use the same gate to replace an inherited value on an accepting release and remove it on an older or unknown one. Fork and publish (`_align_permissions` in `agent_capabilities.py`) route the TARGET block through the same `_write_derived_permissions`, so the published spec carries it only when every reader accepts it (kiro-cli on the relay route; the installed engine, plus kiro-cli when installed, with `agent.kas_bundle` on) and has it removed otherwise; the review of the SOURCE block described below runs whatever the version. `kirocrew doctor` prints the verdict as the KAS block's `auto-approve:` row. A block in the file is not an input to DERIVATION, which reads `allowedTools` and nothing else — but on the wire it is a second input, merged by `merge_user_permissions`: parsed against KAS's own shape and refused whole when it does not fit (a `match` over `_MAX_PATTERNS_PER_RULE` patterns is sent as several rules with the same capability, effect and `exclude` instead, and an `allow` whose `exclude` is over it is left out alone, which a KAS session's start notice names as `permissions.rules[<i>]`), `deny`/`ask` relayed unconditionally, `allow` relayed only where the same ceiling permits that capability and that resource, the shell and filesystem families never relayed as an `allow` (Crew's gate answers an unscoped one, and a `shell` allow's `match` globs, itself after its own checks: `docs/system-specs/modules/security.md` § KAS spec built-in grant), and an `allow` the `allowedTools` derivation could have emitted itself not relayed at all when the spec carries such a list — that list is the governed input and is re-derived every projection, so a block that has gone stale against it (including one the seeder wrote and preserved) cannot put a revoked grant back. Every decision, relay and withhold alike, is recorded in the security event log. Without that merge a pure-KAS agent — `permissions` authored, no `allowedTools` — reaches the backend with the field absent, and absent resolves every request to `ask`. On disk the block is left untouched and the backend reads it. One path does read it: fork and publish (`agent_capabilities.py`, `_align_permissions`) compares it against a fresh derivation and refuses with `alternate_permissions_require_review` when the two disagree, so a hand-edited block blocks forking that template. `src/kiro_crew/acp/kas_permissions.py` owns the translation, and refuses the shell and filesystem families outright: a tool-name allowlist carries no resource pattern, so the rule it would produce is unscoped. |
+| `toolsSettings` | object | Per-tool settings kiro-cli reads. Crew strips exactly two retired keys on every refresh — `execute_bash`/`shell` `deniedCommands` and `autoAllowReadonly` — because denied commands are enforced only at Crew's PreToolUse gate now, and a stale copy in the spec would keep blocking a built-in the user just re-enabled (`_strip_legacy_denied_commands`). Your other keys are preserved. One key Crew READS: `subagent.availableAgents`, kiro-cli's glob allowlist of what this agent may spawn, is honoured at Crew's own `spawn_run` / `spawn_sub_agents` gate too (those bypass kiro-cli's built-in `subagent` tool) — declared, the target must match a glob; omitted, everything is allowed, as upstream. Crew reads every sub-agent spelling kiro-cli accepts, with kiro-cli's precedence: `crew`, `agent_crew`, `agentCrew`, `subagent`, `use_subagent`. The first one the spec sets is read whole and the later ones are ignored, so `use_subagent.availableAgents` is honoured when `use_subagent` is the only spelling, while beside `subagent` (with the same value or another) only `subagent` counts, and a session-start notice that lists entries names `toolsSettings.use_subagent` among them (`tools_settings_aliases.canonical_tools_settings`). The other kiro-cli alias groups (`shell`/`execute_bash`/`executeBash`, `read`/`fsRead`/`fs_read`, …) fold the same way, and every notice names a key as the spec spells it, never as the key Crew reads it under. The gate reads the spec in `~/.kiro/agents` AND, when it knows the parent session's project directory (the live session's cwd and the chat slot's project, or a sub-agent's cwd), in `<project>/.kiro/agents`; a declaration in any scope applies, so a project spec can only narrow what the user-level one allows. When the project directory is unknown and no user-level spec names the parent, a project-scope declaration is not honoured: Crew logs a warning and writes a `parent_spec_unresolved` security event instead of refusing. `subagent.trustedAgents` is a trust grant ("no permission prompts"), not an allowlist, and is not read as one. Details: `docs/system-specs/modules/subagent.md` § Parent agent spec allowlist. No KAS wire slot, so on KAS Crew translates it into `permissions` rules (`kas_permissions.tools_settings_to_permissions`, following KAS's own migration mapping) and merges them like an authored block: `deniedPaths` (read/glob/grep → `fs_read`, write → `fs_write`), `deniedCommands` and `web_fetch.blocked` become `deny` rules (a `web_fetch.blocked` entry KAS cannot carry, because it names a scheme or path or uses other regex syntax, is named in the notice and refuses nothing; with `agent.kas_fail_closed_web_fetch_blocked` on, it becomes one `web_fetch` deny over `"*"`, so that agent fetches no URL until the entry is fixed). `subagent.availableAgents` becomes a `subagent` `deny` over `"*"` with the listed names in `exclude` (`[]` denies every sub-agent), and `subagent.trustedAgents` a name-scoped `subagent` `allow` that the governance ceiling must permit, both run live on KAS (#25320); a name pattern travels when it is an agent id with `*` as its only wildcard. `write.fallbackAction: "deny"` travels as no rule: Crew's own gate refuses every file write of that agent whose target none of its `allowedPaths` covers, on every approval mode (a scheduled job with `approval_mode: auto` included). Entries are read like kiro-cli's globs (`*` and `**` cross `/`, `?`, a leading `~`, a relative entry anchored at the session's directory, a directory covering what is inside it); an entry with `[`, `{`, `\`, `$` or a `~user` covers nothing, and a write through a symlink must be covered at its real path too. A covered write runs without a prompt, as on kiro-cli (below). `shell.denyByDefault` travels as no rule either: Crew's own gate refuses every shell command of that agent that none of its `allowedCommands` matches whole, on every approval mode (a scheduled job with `approval_mode: auto` included), unless the agent's `allowedTools` names the shell by its exact name (`execute_bash`, `shell`, `@builtin`, `@builtin/*`, or `@builtin/` followed by one of the two names; a `*` or `?` pattern grants nothing): as on kiro-cli, such an agent runs any command its `deniedCommands` do not deny, prompting as usual. That holds only while every `deniedCommands` entry travels as a KAS deny rule; one that cannot (a regex with groups or alternation, a redirect) keeps the refusal. Without that entry, a command that redirects or substitutes counts as unmatched, and a chain split at `&&`, `||`, `;` and `|` matches only when an entry matches every part whole and the chain holds no quote, backslash, non-ASCII character or PowerShell `--%`. Kiro Crew reads an `allowedCommands` entry in Rust's regex syntax, as kiro-cli does: literals, escaped ASCII punctuation, the control escapes `\n` `\t` `\r` `\f` `\v` `\a`, `.`, bracket classes (`[A-Za-z0-9_./-]`, `[^;]`) with POSIX classes (`[[:alnum:]]`) and `\d` `\w` `\s` inside, `\d` `\w` `\s` and their negations, the word boundaries `\b` `\B`, `^` `$` `\A` `\z` anywhere, groups `( )` / `(?: )` / named `(?P<n> )`, alternation `\|`, the repeats `*`, `+`, `?`, `{n}`, `{n,}` and `{n,m}`, lazy or not, and the flags `i`, `m`, `s` and `U` (`(?i)`). It reads `\d`, `\w`, `\s`, `\b` and `(?i)` by ASCII where Rust reads them by Unicode, so such an entry matches only an all-ASCII command. An entry outside that syntax (`\p{L}`, `\x41`, the `x` flag, a look-around), one Rust refuses to compile (two groups of one name, a repeat count past 4,294,967,295), or one past Kiro Crew's own bounds, which sit below Rust's so it may refuse an entry kiro-cli runs (more than two repeats on one atom, a counted repeat of a wide class such as `\w{100}`), allows nothing: under `denyByDefault` its commands are refused, and the session-start notice, the refusal a scheduled job records and `kirocrew doctor` each name the entry and why. A command's `( )` and `{ }` count only inside a single- or double-quoted argument of an all-ASCII command with no backslash (`git commit -m "fix(x): y"`); `; & \| < > $` and backticks are refused even inside quotes. A regex becomes a glob only when it is a literal plus `.*` with no character KAS reads as glob syntax, and a pattern over the merge's length bound is dropped rather than refusing the whole block. KAS matches a shell rule against the command's words, and a redirect and its target are not among them, so a `deniedCommands` glob holding `<` or `>` still travels as a deny (it stops that character inside a word) but is also named in the notice: it does not stop `cmd > file`. The same holds for an authored `permissions` shell deny. `shell.allowedCommands` travels as no rule: Crew answers a matching command's permission request itself, after its deny floor and governance, never for a command that redirects or substitutes, and for a chain only when an entry matches every part whole and the chain holds no quote, backslash, non-ASCII character or PowerShell `--%` (`docs/system-specs/modules/security.md` § KAS spec built-in grant). Kiro Crew applies the first 1,024 distinct entries of the list that it can read; an entry written twice counts once, and an entry it cannot read takes no place. This limit is Kiro Crew's own, not the engine's (kiro-cli has none): it bounds the record each session carries, and each entry is also bounded on its own (1,024 characters, and a compiled size limit). A list within that limit is applied whole. Matching one shell call still draws on one step budget shared by the list's regex entries (`docs/system-specs/modules/security.md` § KAS spec built-in grant); a call that uses it up is not granted, so it asks, or is refused under `denyByDefault`. Past it the first 1,024 still apply, each later entry allows nothing (its commands ask for approval, or are refused under `denyByDefault`), and the session-start notice names each such entry by its position in the list and its text; to apply them, shorten the list, for example by joining entries that differ in one word (`(dig|host) .*`). No dashboard screen edits this list today: it is changed in the agent's file. A `deniedCommands` or write `deniedPaths` beside a grant keeps it prompting only when Crew cannot read every entry itself; otherwise Crew's gate refuses what a deny names and answers the rest of the grant without a prompt, as kiro-cli does. Such a command still asks, and the card says why: run the script alone, or move the pipeline into the script. `denyByDefault` and `autoAllowReadonly` beside `allowedCommands` keep the grant, as on kiro-cli; any other key beside it keeps those commands asking, and a `deniedCommands` is read as said above. `autoAllowReadonly: true` is carried by Crew's own read-only auto-approve, and beside `denyByDefault` a read-only command is let through instead of refused, as kiro-cli runs it. A write `allowedPaths` travels as no rule either: Crew answers a write whose every target an entry covers itself, whether or not `allowedTools` lists the write tool, unless a `deniedPaths` or another key on the write tool restricts it. A `read.allowedPaths` is answered the same way for a `read_file` of one existing file an entry covers, unless a `deniedPaths` or another key on the read tool restricts it; other reads keep their usual answer. A `web_fetch.trusted` entry that is a plain URL, or a plain URL followed by `.*`, is answered at Crew's own gate on the whole URL, as kiro-cli matches it (anchored, case-sensitive), with string work only: the fetch runs without a prompt when every `web_fetch.blocked` entry has that shape too and none matches, and the spec's own `permissions` neither asks about nor denies `web_fetch` (`docs/system-specs/modules/security.md` § KAS spec `web_fetch.trusted` on a plain URL). Any other trusted entry keeps prompting and is named. KAS has no AWS tool, so `use_aws.deniedServices` travels as a shell `deny` on `aws <service> *` (`kas_spec_carry.use_aws_shell_denies`), merged after Crew's grant readers take their copy of the policy, so a shell `allowedTools` grant stays answered as on kiro-cli; the key is still named, since a global option before the service (`aws --profile x iam ...`) slips the deny. An agent listing `use_aws` in `tools` or `allowedTools` gets a session-start notice that AWS calls run in the shell. The other allow lists (`grep`/`glob` `allowedPaths`, a `web_fetch.trusted` the gate cannot apply), `allowReadOnly`, the rest of `use_aws` and any pattern that does not translate are not carried, so those calls keep prompting; the KAS chat shows one notice at session start naming exactly those entries. A `deniedCommands` entry KAS cannot carry is the exception: when Kiro Crew can read it (no redirect, separator or substitution character), the gate refuses a plain command it names, and each command of a plain chain, on every approval mode. The notice names it as refused by Kiro Crew's gate and says the gate does not judge any other command (one with `$(...)`, a backtick, a redirect, a newline, a trailing `&`, a tab, a `( )` group, or a quote, `#` or `[[` in a chain), which runs without a refusal. Any other such entry refuses nothing, and the notice names it as not refused. goose and opencode never receive the rules, so their notice still names `toolsSettings` whole. No other mirrored harness applies the field: a new chat session on codex, copilot or deepseek whose spec sets it gets the same one-row notice naming `toolsSettings` whole (`spec_hooks.spec_tools_settings_applied_nowhere`; see the per-harness rulings, note 11). On `claude` the same two gate rows refuse what `shell.denyByDefault` and `fallbackAction: "deny"` do not allow, on every approval mode: the client reads both allowlists from the spec it projects and stamps them on its session's requests, a native sub-agent's included, and the settings seed adds `permissions.ask` rules for `Bash` and the file-write tools while either is set, so claude asks about those calls. With no KAS policy there, an `allowedTools` naming the shell lifts `denyByDefault` only when the spec has no `deniedCommands`. A session in `bypassPermissions` skips the ask. `deniedPaths`, `web_fetch.blocked` and the other entries are not carried on `claude` (`docs/system-specs/modules/security.md` § claude spec allowlists). A new claude chat session's notice therefore names only what of the field it still does not apply, never a `shell.denyByDefault` or `fallbackAction: "deny"` allowlist it enforces (`tools_settings_reach.tools_settings_unapplied`). |
+| `hooks` | object | Event-keyed hook lists, stored camelCase (`preToolUse`, `postToolUse`, `userPromptSubmit`, `agentSpawn`, `stop`). Crew merges your `kiro_hooks` config and, when autoimport is on, scripts discovered under `~/.kiro/hooks`, capped per event by `_MAX_USER_HOOKS_PER_EVENT` and in total by `_MAX_TOTAL_USER_HOOKS`. This field is the object form only, which is kiro-cli's own schema. The SOURCE that feeds it, `agent.kiro_hooks` in `~/.kiro/crew/config.json`, additionally accepts a kiro-agent hooks ARRAY — `{name, description?, trigger, matcher?, action, timeout?, enabled?, confirm?}` documents, on the twelve trigger names of kiro-agent's alias table in any of its spellings — and projects it onto this object: only a `command` action on the five triggers kiro-cli names is emitted, so an `agent` action, the other seven triggers and the per-hook `name`/`description`/`timeout` stay in your config without running there, and `enabled: false` or `confirm: true` keeps the hook out of the emission entirely (and out of the autoimport scan). See `steering-and-hooks.md` for that field. No KAS wire slot, so `UNSUPPORTED_SPEC_KEYS` drops the key from the agent Crew injects over the wire. On KAS, Crew's own turn loop fires this field instead (`agent_sdk/spec_hooks.py`, gated on `SessionCapabilities.crew_fires_spec_hooks`), through the same hook-store path as a Hooks-page hook: the `capabilities.script_hooks` gate, the sandboxed spawn, the timeout, a PreToolUse exit 2 that blocks the tool, and a hook a policy refused to run, which blocks it too with the refusal as the reason (a crash or timeout warns and the tool runs, as on kiro-cli). An entry's `max_output_size` applies too: its stdout past that many UTF-8 bytes is cut after redaction and ends in a truncation marker, and a larger value, or none, leaves the 64 KiB cap on every hook's stream. Its `cache_ttl_seconds` is not honoured: the hook runs on every event, and the log names each such hook once. A PreToolUse hook runs only on a call that reaches Crew as a permission request, so the KAS projection adds an `ask` rule for every capability that such a hook's matcher covers, this spec's or a Hooks-page one's (`kas_permissions.withhold_hook_gated_auto_approval`). That includes the shell and filesystem, and a spec with no `permissions` at all: a session answer Crew saved, a KAS default or a user-scope rule can otherwise decide the call without a request, and an explicit `ask` outranks all three. A shell `ask` comes with a `deny` naming a command nobody runs (`kas_permissions.UNPARSEABLE_SHELL_GUARD`), so a command KAS cannot parse stays denied. Crew's own answers for what `allowedTools` granted read the policy before these asks, so a hook does not make a granted shell, filesystem or MCP tool prompt. Each MCP tool the policy auto-approves before the asks and not after them is recorded on the entry (`kas_hook_coverage.hook_held_grants`, under `kas_permissions.CREW_ANSWERED_HOOK_HELD_KEY`, stripped from the wire), and the gate's `batch-guard-grant` row answers its permission request after its deny rows and governance on the chat, subagent and task-runner turn loops, which tell the gate the hook runs on that request, so the hook can still block it. Every other surface keeps its own approval for the call, a channel bot's turn included, since its gate is not told. An author's own `ask` or `deny` on the tool keeps it out, so it prompts as written. A grant written as a glob (`@server`, `@server/get_*`) is recorded for the tools of that server the MCP probe cache lists, so one on a server with no cached tool list, or one that names no server, still prompts, and so do the other built-ins the projection allows (`web_fetch`, `web_search`, `use_subagent`, `disclose_context`) when a hook covers them. A matcher written in an MCP form with no wildcard (`@server/tool`, `mcp__server__tool`) is matched, with the hook store's own matcher, against each real tool of each server the policy auto-approves, named as the gate names an MCP call (`@server/tool`, `mcp__server__tool`); the tool names come from the MCP probe cache (`kas_permissions.cached_mcp_tool_names`). A matcher that meets exactly one real tool gets an `ask` on that exact `<server>/<tool>` resource, so the other MCP tools keep their auto-approval and a matcher written in another case, or against a server named `srv_`, still holds the real tool. An `@server` matcher, a wildcard one (`@server/get_*`), which can meet a tool the cache does not list yet, and one whose server's tools are not cached withhold that server (`<server>/*`) when it is one of the servers the policy allows. A `mcp__` title wildcard (`mcp__server__*`), a matcher whose server the policy does not allow, or whose allowed servers cannot be listed, withholds all of MCP. Any other matcher that can reach an MCP call still withholds all of MCP. KAS lets `ask` outrank `allow`, so the call comes back as a permission request and the hook sees it. A live session keeps the batch it registered, so when a hook added later covers a capability that batch auto-approves, the next turn resets the session and the claim registers a fresh batch (`spec_hooks.invalidate_stale_kas_session` before the claim, and `spec_hooks.reproject_claimed_session` again under the claimed lease, so a turn that waited behind a busy session is not run on its stale batch). A mode switch mid-turn activates a batch KAS already holds, so when the agent it moves to auto-approves what its PreToolUse hooks cover, the turn is stopped and the next one starts a fresh session projected for that agent (`spec_hooks.refuse_stale_switch`). A switch to one of KAS's own built-in modes, which has no spec on disk, carries no spec hooks: only the Hooks page's hooks are checked, and the refusal runs before the switch is recorded on the chat slot. A process that registers no hook store (the standalone `kirocrew run` task runner) reads the Hooks page's saved hooks from disk for both the projection and the gate (`hooks.persisted_hook_store`), so they still apply there. A `confirm: true` document does not run, since Crew cannot ask for the confirmation, and a new session gets one notice naming how many were skipped. Only the first `_MAX_SPEC_HOOKS` hooks are read; the rest are named in one warning. When its own backend is KAS, a subagent, task-runner or channel turn runs its PreToolUse hooks (the Hooks page's and its own agent's spec hooks) on each permission request and refuses the call on a deny, and does not fire them again on the tool-call event (KAS sends that frame first); a subagent and a channel turn pass the spec hooks to PostToolUse too. On a backend where Crew fires the field, `kirocrew chat` runs the spec's PreToolUse hooks (with, on KAS, the user's standalone `~/.kiro/hooks/*.json` files, but none of the Hooks page's) on each permission request, before its y/n prompt, and none of the spec's other events yet. A tool `matcher` keeps kiro-cli's tool names (`execute_bash`, `fs_write`, and the `shell`/`read`/`write` aliases): on a PreToolUse Crew compares it with the id KAS states for the call and the kiro-cli names that id stands for (`acp/kas_permissions.KAS_TOOL_IDS_BY_KIRO_TOOL`, so `execute_bash` meets KAS's `run_command`), never with the call's title. Those kiro-cli v1 names are matcher vocabulary only: the hook's stdin carries kiro-cli V2's own names, as kiro-cli writes them (`tool_name` `shell`/`read`/`write`/`subagent`/`code` or `@server/tool`, `tool_tags`, camelCase `hook_event_name`, `assistant_response` on `stop`). A PreToolUse matcher the table does not know (`use_aws`, `disclose_context`) is kept and warned about: it meets a KAS id it matches as written. A call KAS names no tool for is matched on its title, as a Hooks-page hook is. A PostToolUse matches the same way, on the finished call's id: KAS's tool-call frames name no built-in tool, so it is the id the call's permission request stated, or KAS's shell tool for a call classified as a shell command; a call neither names keeps title matching. A PostToolUse fires once per call, on its terminal result. goose and opencode get the same treatment: their session carries no hooks field either, and every tool call arrives as a permission request, so Crew fires the field there too. A tool matcher meets the tool name the harness states on the call's first `tool_call` frame (goose's `_meta.goose.toolCall.toolName`, opencode's `title`), mapped back to kiro-cli's names (`acp/harness_tool_names.py`, so `execute_bash` meets goose's `shell` and opencode's `bash`). An `mcp__server__tool` matcher meets an MCP call too: goose names the server itself, and opencode's fused `<server>_<tool>` title is split against the servers Crew placed on the session and the ones opencode's own config mounts (which Crew reads back when the session starts, so `mcp__docs.server__lookup` meets a `docs.server` tool even though opencode writes it `docs_server_lookup`; a config with more than 256 such rewritten names, or a name over 256 characters, refuses the session rather than leave one out), and also at every `_` for a server neither names; every split is kept. When the fused title is also one of opencode's own tools (`apply_patch`), that tool's names are kept too and its kiro-cli name stays first, so the hook's stdin still reports the built-in, `write`, as `tool_name`. On these backends and KAS a matcher may also be written in kiro-cli's other kinds: `@server/tool`, the form Crew builds for an MCP call from the server name the harness states, with one literal server name (no glob, so `@*/tool` is refused) and a tool part of the matcher's own characters plus `?` (`@server/*`); `@server`, every tool of that server; `@mcp`, every MCP tool; `@builtin` and `@builtin/<glob>`, built-in tools only; a glob with `?`; and kiro-cli's tags `read` (`fs_read`, `grep`, `glob`, `code`), `write`, `shell`, `web` and `subagent`. The gate gives each call the names these meet (`spec_hooks.spec_hook_kind_names`), for spec hooks only. Only this conversion accepts them, in either hook shape (`spec_hooks._SPEC_MATCHER_RE`); the merge that writes kiro-cli's materialized spec keeps its own rule. On those two backends the spec is read from the checkout's `.kiro/agents` first, then the user level, the same order their MCP projection resolves it in, but a project agent's hooks run only when that checkout is trusted to choose its MCP servers (`acp/session_mcp.py`, `_project_mcp_trusted`), and otherwise the user-level spec of that name supplies the hooks; a project spec that cannot be read blocks every tool call. KAS reads the user level alone, except a project-only agent's `hooks` when the folder's project-hooks choice is on (see the KAS checkout rules above). A Bot's worker is read as its session's merged spec (`mate_worker.mate_service_scope_spec`), so the hooks the Bot's file carries fire there (`mate_spec_policy`); the Bot's own chat runs the stock conductor spec. As on KAS, this is the chat, subagent and task-runner turn loops, and a channel bot's turn (Slack, Discord, Telegram and the other transports whose turns run through `messaging/driver.py`'s `TurnDriver`, fired by `messaging/tool_hooks.py`), which fires the spec's hooks on every turn that admits tools, a room's included, while the Hooks page's own observer hooks and, on those events, the user's standalone `~/.kiro/hooks/*.json` files keep their operator-only rule. Crew fires none of the spec's hooks on Slack's native path (review-mode channels, `messaging.use_transport = false`). A channel-agent turn (`channel.py`) runs only the spec's PreToolUse hooks, on KAS with the user's `~/.kiro/hooks/*.json` files folded in, on each permission request before any approval (`channel_spec_hooks.py`); the spec's other events and the Hooks page's hooks do not run there. claude and codex do not run the whole field yet: each approves some calls inside the harness without asking, and a PreToolUse hook would be skipped on those. A Hooks-page PreToolUse hook does run on a claude permission request, and its kiro-cli matcher meets claude's built-ins by the name the adapter stamps on the call (`acp/harness_tool_names.CLAUDE_TOOL_IDS_BY_KIRO_TOOL`, so `execute_bash` meets `Bash` and `fs_write` meets `Write` and `Edit`). On claude Crew fires the other four events (`postToolUse`, `userPromptSubmit`, `agentSpawn`, `stop`) on the chat, subagent and channel bot turn loops, so the default agent's `execute_bash` audit hook runs there: a claude call that asked permission is named through the same table (`Edit` meets `fs_write`), and one of kind `execute` that did not is named `execute_bash` for a matcher, and `shell` on the hook's stdin. Its `preToolUse` hooks do not run, and a new chat session whose agent has one gets a notice; nothing gates on the spec there, so one that cannot be read runs no hooks rather than blocking a call. codex gets the same four events: under the `read-only` mode Crew sets, it runs reads and commands that stay inside its own sandbox without asking, so its `preToolUse` hooks do not run either and get the same notice. A codex call is named for these matchers through codex's row in `HARNESS_TOOL_TABLES` (`CODEX_TOOL_IDS_BY_KIRO_TOOL`, the tools codex-acp 2.3.0 offers its model), read off what codex-acp writes and never off the title: a command, including a read, search or listing codex parsed from one, meets `execute_bash`, a file change meets `fs_write`, and a hosted web search meets `web_search`. An MCP call, which codex-acp also sends as kind `execute` but marks as MCP, gets no codex name, so an `@server/tool` matcher meets it instead. codex has no grep, glob, web fetch or subagent tool, and Crew gets no result for its `view_image` call, so a `postToolUse` matcher for `fs_read`, `grep`, `glob`, `web_fetch`, `use_subagent` or `code` meets no built-in call. The session's notice names it and says it still runs after an MCP tool with the same name. pi does not run the field either: it is handed no agent spec, and Crew does not fire the field there, so a new pi chat session whose agent has hooks gets a session-start notice, and the backend card lists `hooks` as not applied. On the dashboard, the notice for a backend where nothing runs the field ends in a Dismiss link: one click hides it in every later session for every agent, and the choice is backed up with the other dismissed tips. A notice that names a `preToolUse` hook has no link and always shows, because such a hook is there to refuse calls. It changes what the dashboard draws, not which hooks run, and the backend card still lists `hooks`. kiro-cli runs the field itself, so Crew never fires it there. On kiro-cli's v2 engine that includes `userPromptSubmit`, whose stdin `prompt` is then the whole prompt Kiro Crew sends (on a session's first message the agent prompt, rules, memory and context around the typed message, and Kiro Crew's per-turn context on later ones) rather than the user's message. A hook Kiro Crew fires in a dashboard chat or on a channel turn that runs the Hooks page's hooks, such as a Slack 1:1 DM, gets that message, with none of the agent prompt, rules or memory (a dashboard turn can still put Kiro Crew text before it, which can be long, such as background context an app queued; on the other channel turns a spec hook Kiro Crew fires reads the backend's prompt too); `steering-and-hooks.md` states the remedies. | | `hooks` | honoured | dropped from the wire projection; fired by Crew's turn loop | Crew's gate, renamed events |
 | `slashCommand` | any | No KAS wire slot: a KAS session runs without it, and the chat shows one notice at session start saying so. Nothing else in this tree reads it. |
 | `toolAliases` | object | Maps a Connections-exposed MCP tool to the short name a `@alias` reference in `tools` / `allowedTools` resolves through. On the default spec's rebuild Crew recomputes it from the connector registry, dropping the pairs its own record proves it wrote and keeping the rest, whose authorship is unproven and therefore yours (`agent_materialization/mcp_aliases.py`, `_reconcile_tool_aliases_from_disk`). It reconciles the path it is given, so a spec that rebuild does not touch keeps whatever it holds. A non-dict value there is replaced rather than merged. |
 | `managedToolPolicy` | object | Which of Crew's managed tools an agent may NOT reach. Read per session by the dashboard (`dashboard/handlers/sessions_parts/tool_policy.py`), which treats a non-object as unreadable rather than absent — the operator wrote something and its meaning is unknown. On an app agent this is CONTAINMENT, not preference, so the framework owns it and a rebuild overwrites it (`apps/bridges_agents.py`). `exclude` lists tool names every managed server hides and refuses. `honourToolRefs: true` (default `false`) also reads the spec's `@<server>/<tool>` entries in `tools` as an include list, for each of Kiro Crew's managed servers (`kirocrew-core`, `kirocrew-dashboard`, ...): when every ref to that server names one tool, with no bare `@<server>`, no glob tool part and no `*`, that server lists only those tools and refuses any other call. A whole-server grant, or a spec without the key, gets the full tool list. A non-bool value is unreadable, so calls are refused until it is fixed. `excludeServers` lists managed server names withheld whole: each one lists no tools and refuses every call (the app framework writes it for a managed server whose tool declaration it could not read). A value that is not a list of server names is unreadable. |
@@ -545,8 +696,8 @@ unconfirmed.
 | Field | Type | Effect |
 |---|---|---|
 | `mcpServers` | object | Name → server entry. The keys become the roster's server chips (`_mcp_server_names`). A local entry may carry `command`, `args`, `type`, `env`, `timeout`, `disabled`, `disabledTools` and `autoApprove`, and Kiro Crew's own opt-in `x-kirocrew-session-label` (a per-session `KIROCREW_SESSION_LABEL` for a server Crew does not own; the App Kit manifest reference documents it). |
-| `includeMcpJson` | bool | Whether the backend also loads its global `mcp.json`. Crew's own generated specs pin `false` (shipped in `defaults.json` and re-pinned by `_refresh_dynamic_fields`), so for those a spec's own `mcpServers` is the complete set. Absent from an agent file, kiro-cli reads it as `false` (`#[serde(default)]` on a `bool`; only its built-in default agent sets `true`), and so does KAS's tool filter, so Crew projects it only when the spec states a bool. On the Kiro CLI harness Crew's MCP rewriter still adds the global `mcp.json` servers as pooled stubs unless the spec states `false`, so there an absent flag behaves as `true`. kiro-cli also takes the `useLegacyMcpJson` spelling, which Crew sends to KAS as `includeMcpJson`. On KAS, the global and workspace `mcp.json` servers an agent does not declare are excluded as `@server` unless the flag is `true` (Kiro Crew's own and the mandatory servers excepted), because KAS would otherwise start them for `tools: ["*"]`. Agent files that already existed when Kiro Crew first ran a KAS session with this rule, and state neither key, keep KAS's earlier behaviour; Kiro Crew records them once in its data home and never edits the files. |
-| `includePowers` | bool | Whether the backend also unions in its Powers tools. Same shape and same absent-default rule as `includeMcpJson`. It widens which tools are VISIBLE, not which are auto-approved: a tool it reveals still has no `permissions` rule, so KAS resolves the call to `ask`. |
+| `includeMcpJson` | bool | Whether the backend also loads its global `mcp.json`. Crew's own generated specs pin `false` (shipped in `defaults.json` and re-pinned by `_refresh_dynamic_fields`), so for those a spec's own `mcpServers` is the complete set. Absent from an agent file, kiro-cli reads it as `false` (`#[serde(default)]` on a `bool`; only its built-in default agent sets `true`), and so does KAS's tool filter, so Crew synthesizes no default. On the Kiro CLI harness Crew's MCP rewriter still pools a stubbed global `mcp.json` server into an agent unless the spec states `false`, so there an absent flag behaves as `true`, but only for a server the agent's `tools` names (`*`, `@server` or `@server/tool`); any other is left to kiro-cli's own merge, which loads it only for `true` and applies `tools` itself. The exception is a server whose env holds a `secret://` reference: that merge would start it with the literal reference, so the agent gets a stub that starts nothing and offers no tools in its place. kiro-cli also takes the `useLegacyMcpJson` spelling. On KAS only `false` travels, because there `true` mounts every MCP tool on top of `tools`, while on kiro-cli it only lets `tools` name the `mcp.json` servers. The global and workspace `mcp.json` servers a KAS agent does not declare, or declares but an MCP config scope switches off, are excluded as `@server` unless the spec states `true` under either spelling (Kiro Crew's own and the mandatory servers excepted), because KAS would otherwise start them for `tools: ["*"]`. Crew carries that opt-in to the exclusion itself, so a `tools` ref still reaches its server. Agent files that already existed when Kiro Crew first ran a KAS session with this rule, and state neither key, keep KAS's earlier behaviour; Kiro Crew records them once in its data home and never edits the files. |
+| `includePowers` | bool | Whether the backend also unions in its Powers tools. Same shape and same absent-default rule as `includeMcpJson`, but either bool travels. It widens which tools are VISIBLE, not which are auto-approved: a tool it reveals still has no `permissions` rule, so KAS resolves the call to `ask`. |
 
 `autoApprove` inside an `mcpServers` entry is the SECOND way a call skips the
 gate. Neither runtime reads the key itself: kiro-cli has no such field and ignores
@@ -581,7 +732,7 @@ routinely holds tokens, and a remote entry's `headers` can hold a static
 author survives only when it is exactly `true` or `false` (any case), its key is
 not credential-shaped (`TOKEN`, `SECRET`, `PASSWORD`, `KEY`, `accessKey` …), and the
 credential redactor would not rewrite it. So `FEATURE_X_ENABLED=true` reaches the
-server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A new chat shows a one-line notice only for a local (command) server Crew and the edition do not ship whose env the local launcher could not carry, and only when turning on Share for it fixes that (no lost key is one the gateway keeps from a shared server): it names the server, never a key, a value or a config term, and points to Share in Customize → Connections → MCP Management. A remote (url) server whose headers stay withheld (an `sse` entry, below) is named in the log only, since nothing on Crew's side supplies them. A value that is exactly `${NAME}`
+server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A new chat shows a one-line notice only for a local (command) server Crew and the edition do not ship whose env the local launcher could not carry, and only when turning on Share for it fixes that (no lost key is one the gateway keeps from a shared server): it names the server, never a key, a value or a config term, and points to Share in MCP Servers → Sharing. A remote (url) server whose headers stay withheld (an `sse` entry, below) is named in the log only, since nothing on Crew's side supplies them. A value that is exactly `${NAME}`
 survives on any server when the edition lists `NAME` through
 `McpToolingProvider.kas_relayed_env_references()` (the public build lists none);
 KAS resolves it at spawn, so only the name crosses the wire. Any other reference
@@ -590,8 +741,10 @@ is withheld, because KAS's own environment holds credentials such as
 kiro-cli: Crew keeps it in an owner-only launch snapshot under the data home's
 `kas-mcp-launch/` and hands KAS its own launcher in the server's place, which reads
 the snapshot and starts the real command with those values. Only the launcher, the
-session, agent and server names and a version cross the wire, so `session.json`
-never holds the value. The same launcher also gives each stdio server KAS starts
+agent and server names and a version cross the wire, so `session.json` never holds
+the value. The reference is the same for every session of the agent, because KAS
+runs one copy of a server per engine process and restarts it whenever a session
+declares it differently. The same launcher also gives each stdio server KAS starts
 for you what a server started by kiro-cli inherits from it: the Kerberos cache
 pointer (`KRB5CCNAME`) and, when the agent's sandbox forwards your ssh-agent,
 `SSH_AUTH_SOCK`. A value your entry's `env` sets wins. A remote streamable-HTTP
@@ -609,11 +762,11 @@ notice names them; it also names Crew's own servers, which KAS drops when the Ki
 profile is registry-governed, since KAS then runs only the admin's registry servers.
 When the engine announces that it accepts registry pointers, Crew instead sends a
 `"type": "registry"` entry of yours as a pointer that keeps its `command` and `args` but
-not its `env` (Crew's own servers are sent as before);
-when the engine announces
-that it keeps a server's `oauth` block, Crew sends its `clientId`, `redirectUri`,
-`clientMetadataUrl` and `oauthScopes`, never its `clientSecret`. Both happen on their own,
-with nothing to set. And
+not its `env` (Crew's own servers are sent as before), with nothing to set.
+For a server's `oauth` block, Crew always sends its `clientId`, `redirectUri` and
+`oauthScopes`, never its `clientMetadataUrl` or `clientSecret`. A block that names a
+`clientSecret`, or keeps nothing Crew can send, is withheld whole, and the session
+notice names its server. And
 `KIROCREW_HOME` survives for Crew's own managed servers,
 because it pins the data home — but only as a literal containing no `${`, since
 KAS would expand a reference under that name too. That recorded pin is also
@@ -721,9 +874,17 @@ On KAS, `to_client_custom_agent` sends a valid object with only the keys KAS's
 `file://` with a path; `~` and `$VAR` are expanded; an absolute path must not be
 a sensitive location and a relative one may not use `..`; each other key must
 have its schema type. Any other object is dropped and the session-start notice
-names it as `resources[<index>]`, because one KAS refuses drops the whole agent. `agent_capabilities._rows` still requires strings, because
-each entry is a catalog key: a member enrolled in capability management cannot
-carry the object until that model represents it.
+names it as `resources[<index>]`, because one KAS refuses drops the whole agent.
+In capability management (`agent_capabilities._rows`) each object is a
+`resources` row of its own, keyed `<type>:<name>` (`<type>:<source>` when it has
+no name; `agent_capabilities_resources.py`). The key comes from the object's
+identity, not its content, so an edited knowledge base stays one changed row. Two
+different entries sharing a key leave the spec `invalid_spec`, since a row's key
+may not depend on what else the list holds. The row's value is the object. An
+enrolled member carries it into its copy unchanged and in place, the owner can
+remove it and set it back to Inherited, and a Parent that adds or changes one
+waits for approval like any other `resources` change. The editor cannot set an
+object row, since no string spells it.
 
 `_skills_injection_plan` is the single decision for `skill://`. It reads the
 mapping, and only an unmapped custom agent's row also depends on the harness:
@@ -782,9 +943,22 @@ nothing duplicates it there, and on KAS the wire projection forwards the array
 while Crew's own directory stays the bounded one.
 
 The `file://` steering block does NOT follow that shape. It is still gated on the
-backend: injected only on the Claude Code backend, and only for the default agent,
-because kiro-cli and KAS read `resources` from the spec themselves and injecting
-would duplicate what the backend already loaded. Session start and the first turn
+backend: injected only on the Claude Code backend and on Codex, and only for the
+default agent, because kiro-cli and KAS read `resources` from the spec themselves
+and injecting would duplicate what the backend already loaded. KAS also loads each root's
+`.kiro/steering` tree natively, honouring `inclusion`, so the KAS projection drops a
+relative `file://.kiro/steering/...` entry that can match only `.md` files
+(`acp/kas_steering.py`). When the workspace tree holds files that may be
+`inclusion: auto` (KAS skips one with no `description`), the shipped
+`file://.kiro/steering/**/*.md` entry gives way to one entry per such file, by its
+own path, so KAS reads just those on every turn. The entry is kept as before when
+the tree holds a link or a folder it cannot read, or when KAS might read those
+paths otherwise or with less of its resource budget (a `*` or `?` in a name,
+another `file://` entry before it or another steering entry, more than 32 files or
+99,000 bytes), so no file is lost. The tree is checked when the session
+starts: such a file added during a session loads from the next one. When
+`chat.disableInheritingDefaultResources` is on, a KAS session says at start that
+AGENTS.md and steering still load: KAS has no switch for its native load. Session start and the first turn
 after a compaction share one gate, `steering_resources_part` in
 `src/kiro_crew/context_assembly/inclusion.py`, so the block comes back after a
 compaction on exactly the sessions that got it at start.
@@ -810,9 +984,9 @@ every other mirrored harness.
 | `tools` | honoured | wire field; absent means NO tools | roster only |
 | `allowedTools` | honoured | translated to `permissions` | not read |
 | `excludedTools` | honoured | wire field | read by Tool Search only |
-| `permissions` | ignored (kiro-cli field set); refused below 2.23.0, so not written there | Crew-derived, plus the author's own block intersected with the ceiling; a block refused whole (a `policies` bundle, a malformed or oversized block) is named in the session-start notice | not read |
+| `permissions` | ignored (kiro-cli field set); refused below 2.23.0, so not written there | Crew-derived, plus the author's own block intersected with the ceiling; a block refused whole (a `policies` bundle, a malformed or oversized block) is named in the session-start notice, and so is an `allow` left out for an `exclude` too long to send | not read |
 | `mcpServers` | honoured | projected, minus `env` / `headers` | session array instead |
-| `includeMcpJson` | honoured; absent: kiro-cli reads `false`, but Crew's rewriter still pools the global `mcp.json` servers unless the spec states `false` | wire field when the spec states a bool; undeclared mcp.json servers excluded unless `true`, or the file predates the rule and states no key | not read |
+| `includeMcpJson` | honoured; absent: kiro-cli reads `false`, but Crew's rewriter still pools the global `mcp.json` servers the agent's `tools` names, and refuses with a stub each other one holding a `secret://` reference, unless the spec states `false` under either spelling (`useLegacyMcpJson` included) | wire field only when the spec states `false`; undeclared mcp.json servers excluded unless the spec states `true`, or the file predates the rule and states no key | not read |
 | `includePowers` | not read | wire field when the spec states a bool | not read |
 | `resources` `skill://` | Crew injects the mapped set; the native launch view carries no `skill://` | forwarded on the wire, and Crew injects the mapped set | Crew injects the mapped set |
 | `resources` `file://` | loaded natively | loaded natively | Crew injects, from `kirocrew.json` only |
@@ -821,7 +995,7 @@ every other mirrored harness.
 | `toolsSettings` | honoured | no wire slot; session-start notice | not read |
 | `toolAliases` | honoured | no wire slot; session-start notice unless Crew's Connections pass wrote every pair | not read |
 | `managedToolPolicy` | Crew-side, per session | Crew-side, per session | Crew-side, per session |
-| `welcomeMessage` | Crew-only (chat transcript) | chat transcript, and a wire field from the same capped reading | Crew-only (chat transcript) |
+| `welcomeMessage` | Crew-only (welcome page, chat transcript) | welcome page and chat transcript, and a wire field from the same capped reading | Crew-only (welcome page, chat transcript) |
 
 ## Ownership and refresh
 
@@ -873,8 +1047,8 @@ not resurrected on the next boot.
 | Spec | Ownership | Refreshed |
 |---|---|---|
 | `kirocrew.json` | generated | every gateway start, and on `kirocrew setup --agent-only` |
-| `kirocrew-lite.json` | generated | every gateway start |
-| `kirocrew-guest.json` | generated | every gateway start (the tool-less agent a non-operator channel sender talks to) |
+| `kirocrew-lite.json` | generated | every gateway start, and before a background turn whose pre-spawn read refused, when the existing file is not the template (the `_bg` and `_consolidate` sessions are reset after that rewrite) |
+| `kirocrew-guest.json` | generated | every gateway start, and before a non-operator channel turn whose pre-spawn read refused, when the existing file is not the template (the tool-less agent a non-operator channel sender talks to; every live session on it is reset after that rewrite) |
 | `kirocrew-worker.json` | DERIVED from `kirocrew.json`; the `skill://` entries of `resources` are mirrored from the default spec, so a worker's skill catalog is its dispatcher's: the mapped set, or the whole catalog when the default maps none | every gateway start, and re-checked before every worker session |
 | `kirocrew-dashboard-author.json` | generated; on a refresh of a spec this installer confirms as its own, an authorized `model` pin and your `resources` skill selection are carried forward (an explicit empty `resources` is preserved) | every gateway start (if a file of this name already exists that is NOT this installer's own — its bytes do not reproduce the ownership digest the installer recorded in the `agent_model_state.json` sidecar for its last managed write, or its read fails — it is left **untouched** and the install is **skipped** — no backup is written and the agent stays unselectable under this name until you remove or rename the file; a user `kirocrew-dashboard-author.md` beside it also blocks the first install, because the `.json` would shadow that markdown spec, while once the `.json` is this installer's own a sibling `.md` no longer stops its refresh) |
 | `kirocrew-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
@@ -916,20 +1090,51 @@ when:
   catalog decides which servers run.
 
 `"*"` gets the entries only; a per-tool grant such as `@kirocrew-core/skill_search`
-is not widened. Crew's own specs, Bot service agents, an app's agents (their
+is not widened.
+
+On KAS the added servers' tools are deferred: the model sees them in the loader's
+catalogue and loads one the first time it calls it, as on Crew's default agent,
+so they no longer ride in every request. Only an entry Crew added counts (the
+managed launch, byte for byte); a server your `mcpServers` declares is yours. A
+tool of an added server you name one by one, such as `@kirocrew-core/skill_search`,
+stays direct (a whole-server `@kirocrew-core` is deferred, whoever wrote it), and so does `mcp_server_wait`; every other tool your spec grants,
+your own servers' included, stays as written. A backend that does not read
+KAS's `neverDefer` list sends them as before.
+Crew's own specs, Bot service agents, an app's agents (their
 containment is the app framework's), project-checkout specs and Crew's derived
 copies are left alone. Templates with a saved capability record, under any name,
 also keep their reviewed server and tool choices unchanged. If the capability
 record cannot be read, no default servers are added. `kirocrew-work` is not a
 default: it serves only a session bound to a work-ledger item. On kiro-cli the
 defaults ride the skill view, so a spawn that falls back to the authored agent
-(projection switched off, or the view ceiling reached) runs without them.
+(projection switched off, or the view ceiling reached) runs without them. When your
+agent's `tools` names `@kirocrew-core` or `@kirocrew-cron` and such a session starts
+without it, the dashboard chat shows one notice naming the server at session start;
+too many views on disk is reported, with the way to clear them, on the skill views
+row of `kirocrew doctor`. `kirocrew doctor` also checks your own agents' `@server`
+refs on the backend in use and names each agent with a ref Kiro Crew's projection
+does not deliver. It counts these defaults as present on KAS, and on kiro-cli only
+while a spawn would use the skill view (projection switched on and the view ceiling
+not reached); when it would fall back, an agent that relies on them is named for
+them. On kiro-cli and KAS it also counts the servers of the global `~/.kiro/settings/mcp.json`,
+but only for an agent that states `includeMcpJson: true` (or `useLegacyMcpJson: true`);
+an agent that states neither key, or `false`, is named for such a ref. The harness may still
+mount a listed server from its own configuration, so the row never says the server
+is absent.
 
 Project shadowing is kiro-cli's rule, not a universal one. kiro-cli resolves
 `--agent` against its cwd before the user directory, which is why `list_agents`
 lets a project spec win. The KAS projection is handed `kiro_agents_dir()` alone
 (`acp/harness/kas.py`), so a project spec of the same name does not shadow
-anything there — the user-level spec is what gets projected. The worker spawn
+anything there — the user-level spec is what gets projected, with only the
+project spec's switch-off keys (`disabledTools`, and `disabled` when it mutes)
+added to the servers the user-level spec already declares. A user-level
+`disabledTools` that is not a list stays as it is, so the session is still
+refused. A server muted that way is also withdrawn from the session's broker
+stubs, and a sub-agent whose own spec enables it keeps its own declaration. A
+server the spec mutes whole is also excluded as `@server` from the session's own
+agent, so a copy of the name from the settings file or `mcp.json` does not reach
+it. The worker spawn
 gate refuses outright rather than choosing, when a checkout ships its own
 `kirocrew-worker` spec.
 

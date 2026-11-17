@@ -1,6 +1,6 @@
 {
   "name": "dev-fleet",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Dev Fleet",
   "description": "A control panel for working on Kiro Crew itself. Lists every feature worktree alongside its pull request state, commit count, and disk usage, and can bring any of them up as a pod: a complete preview instance on its own port with its own data directory, so you can click through an unfinished change without disturbing your live gateway. It also handles the chores around that — pulling main and rebuilding, rebasing a branch, streaming pod logs, and pruning worktrees whose work has already merged. Enabling it also lets AGENT sessions start and stop pods through the pod tools, which means code from a worktree an agent can write runs outside the agent's sandbox, as you.",
   "author": "kirocrew",
@@ -29,7 +29,12 @@
   "permissions": {
     "api": [
       "/apps/dev-fleet/api",
-      "/apps/dev-fleet/api/*"
+      "/apps/dev-fleet/api/*",
+      "/api/apps/dev-fleet/make-live",
+      "/api/apps/dev-fleet/restart-gateway",
+      "/api/apps/dev-fleet/pod-token",
+      "/api/apps/dev-fleet/create-release-worktree",
+      "=/api/apps"
     ],
     "network": true,
     "terminal": true
@@ -71,6 +76,15 @@
               "type": "string",
               "description": "Optional CPU ceiling, e.g. '800%' for eight cores (default 200%, capped at the host CPU count). Kept across restarts",
               "maxLength": 16
+            },
+            "env": {
+              "type": "array",
+              "description": "Optional environment overrides for the pod's gateway, as KEY=VALUE strings, to point it at a test double. Only KIROCREW_KIRO_BIN is accepted: an absolute path to an executable, such as a fake kiro-cli that fails the way you want to see, e.g. ['KIROCREW_KIRO_BIN=/abs/path/fake-kiro-cli']. With it set, a kiro-cli that cannot start no longer stops the pod from booting, so the error shows in the pod's UI. Other keys are refused. Each pod_up replaces the overrides, so a pod_up without env clears them; pod_restart keeps them",
+              "items": {
+                "type": "string",
+                "maxLength": 1100
+              },
+              "maxItems": 4
             }
           },
           "required": [

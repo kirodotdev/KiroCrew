@@ -7,8 +7,13 @@ from unittest.mock import AsyncMock, call
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.client import AcpClient, _make_unified_diff
+
+# A GitHub token with a valid checksum, which the plan redacts (AWS key IDs
+# are kept visible as identifiers).
+_SECRET = github_classic(seed=14)
 
 
 class TestMakeUnifiedDiff:
@@ -496,7 +501,7 @@ class TestBuildPermissionEvent:
                     "title": "Run Command",
                     "kind": "execute",
                     "toolCallId": "tc-secret",
-                    "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+                    "rawInput": {"command": f"echo {_SECRET}"},
                 }
             }
         )
@@ -514,7 +519,7 @@ class TestBuildPermissionEvent:
         event = client._build_permission_event(permission)
 
         assert event.tool_input_redacted is True
-        assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+        assert _SECRET not in event.tool_input
         assert "[REDACTED: credential]" in event.tool_input
         assert client._tool_call_input_redacted["tc-secret"] is True
         repeated = client._build_permission_event(permission)

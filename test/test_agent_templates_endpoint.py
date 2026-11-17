@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent_state
 from kiro_crew.agent_files import LITE_AGENT_FILENAME
@@ -37,6 +38,10 @@ from kiro_crew.dashboard.handlers.agents import (
     default_template_eligible,
 )
 from kiro_crew.webhooks import token_store
+
+# An AWS key ID is an Identifier with the structured detectors on, so the
+# credential-shaped name these tests expect to be masked is a GitHub token.
+SECRET = github_classic(seed=13)
 
 
 @pytest.fixture(autouse=True)
@@ -223,7 +228,7 @@ async def test_roster_flags_which_rows_the_picker_may_offer(agents_dir):
     assert rows["reviewer"] is True
     assert rows["scribe"] is False
     masked = AgentInfo(
-        name="AKIAIOSFODNN7EXAMPLE",
+        name=SECRET,
         filename="masked.json",
         description="",
         model="",
@@ -259,7 +264,7 @@ async def test_roster_flags_which_rows_the_picker_may_offer(agents_dir):
         ({"name": "scribe", "filename": "notes--scribe.json"}, "", False),
         (
             {
-                "name": "AKIAIOSFODNN7EXAMPLE",
+                "name": SECRET,
                 "filename": "masked.json",
             },
             "",
@@ -317,7 +322,7 @@ async def test_roster_masks_package_controlled_strings_like_the_sibling_rosters(
     identity itself would be masked is left out rather than half-shown."""
     from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = SECRET
     _write(agents_dir, "SomePkg-atlas.json", name="atlas", description=f"key {probe}", model=probe)
     _write(agents_dir, "reviewer.json", description="benign")
     _write(agents_dir, f"{probe}.json", name=probe)
@@ -1237,7 +1242,7 @@ async def test_delete_classifies_the_file_on_disk_not_the_row(agents_dir, monkey
 async def test_delete_refusal_masks_reference_labels_like_the_roster(agents_dir):
     from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = SECRET
     _write(agents_dir, "reviewer.json")
     _seed_config({"pr-bot": "kirocrew"}, default="pr-bot")
     _seed_cron("reviewer", name=f"nightly {probe}")
@@ -1440,7 +1445,7 @@ def test_ambiguous_refusal_text_masks_a_credential_shaped_file_name(tmp_path):
     from kiro_crew.dashboard.handlers.agents import _AmbiguousTemplateName
     from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = SECRET
     exc = _AmbiguousTemplateName("atlas", (tmp_path / "atlas.json", tmp_path / f"{probe}.json"))
     text = exc.refusal_text()
     assert probe not in text
@@ -1464,6 +1469,30 @@ async def test_patch_definition_shape_is_validated(agents_dir, body):
     resp = await api_agent_detail(_request("PATCH", "reviewer", body))
     assert resp.status == 400
     assert (await _body(resp))["code"] == "invalid_definition"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "keys"),
+    [
+        ({"description": "new", "mcpServers": {"srv": {"command": "x"}}}, ["mcpServers"]),
+        ({"resources": ["file:///home/x/notes.md"]}, ["resources"]),
+        ({"prompt": "p", "resources": [], "mcpServers": {}}, ["mcpServers", "resources"]),
+    ],
+)
+async def test_patch_refuses_the_read_only_keys_and_writes_nothing(agents_dir, body, keys):
+    """The tab shows MCP servers and resources read-only, so a PATCH carrying either
+    is refused by name rather than answered 200 with the key dropped, and none of
+    its keys is written."""
+    _write(agents_dir, "reviewer.json", description="old", prompt="old", mcpServers={})
+    _seed_config()
+    before = (agents_dir / "reviewer.json").read_text(encoding="utf-8")
+    resp = await api_agent_detail(_request("PATCH", "reviewer", body))
+    assert resp.status == 400, resp.text
+    payload = await _body(resp)
+    assert payload["code"] == "definition_key_read_only"
+    assert payload["keys"] == keys
+    assert (agents_dir / "reviewer.json").read_text(encoding="utf-8") == before
 
 
 # ── PATCH: granting Crew's spawn tools declares the control plane ──────

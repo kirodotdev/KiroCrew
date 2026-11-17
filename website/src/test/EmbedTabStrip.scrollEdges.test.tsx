@@ -20,7 +20,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, cleanup, act } from '@testing-library/react'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders, createTestStore, openAllTabsMenu, stubTabRow } from './helpers'
 import EmbedTabStrip from '../components/EmbedTabStrip'
 import { updateSlot } from '../store/dashboardSlice'
 import type { RootState } from '../store'
@@ -38,6 +38,7 @@ type Slots = RootState['dashboard']['slots']
 const SLOTS = [
   { key: 'chat-1', title: 'First Chat' },
   { key: 'chat-2', title: 'Second Chat' },
+  { key: 'chat-3', title: 'Third Chat' },
 ] as unknown as Slots
 
 /** Tab state the host plugin injects onto `window`. */
@@ -67,27 +68,27 @@ const rightCue = () => screen.queryByTestId('embed-tab-strip-cue-right')
 const scrollerOf = (container: HTMLElement) =>
   container.querySelector('.overflow-x-auto') as HTMLElement
 
-describe('EmbedTabStrip scroll-edge cues', () => {
-  beforeEach(() => {
-    sessionStorage.clear()
-    tabsWindow.__kirocrewTabs = ['chat-1', 'chat-2']
-    tabsWindow.__kirocrewActiveTabIndex = 0
-    if (!window.ResizeObserver) {
-      window.ResizeObserver = class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-    }
-  })
-  afterEach(() => {
-    vi.restoreAllMocks()
-    cleanup()
-    delete tabsWindow.__kirocrewTabs
-    delete tabsWindow.__kirocrewActiveTabIndex
-    sessionStorage.clear()
-  })
+beforeEach(() => {
+  sessionStorage.clear()
+  tabsWindow.__kirocrewTabs = ['chat-1', 'chat-2']
+  tabsWindow.__kirocrewActiveTabIndex = 0
+  if (!window.ResizeObserver) {
+    window.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+  }
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+  cleanup()
+  delete tabsWindow.__kirocrewTabs
+  delete tabsWindow.__kirocrewActiveTabIndex
+  sessionStorage.clear()
+})
 
+describe('EmbedTabStrip scroll-edge cues', () => {
   it('shows no cue when every tab fits', () => {
     stubGeometry({ hidden: 0 })
     renderStrip()
@@ -140,5 +141,32 @@ describe('EmbedTabStrip scroll-edge cues', () => {
       store.dispatch(updateSlot({ key: 'chat-1', title: 'A much longer auto-generated session title' }))
     })
     expect(rightCue()).toBeTruthy()
+  })
+})
+
+describe('EmbedTabStrip all-tabs menu', () => {
+  // The host switches tabs while the store's active slot still names the old one.
+  const renderTabs = () => renderWithProviders(<EmbedTabStrip />, {
+    store: createTestStore({ dashboard: { ...createTestStore().getState().dashboard, slots: SLOTS } }),
+    route: '/embed/chat/chat-1',
+  })
+  beforeEach(() => { tabsWindow.__kirocrewTabs = ['chat-1', 'chat-2', 'chat-3'] })
+
+  it('lists every tab and switches to the one picked', () => {
+    renderTabs()
+    const rows = openAllTabsMenu()
+    expect(rows.map(r => r.textContent)).toEqual(['First Chat', 'Second Chat', 'Third Chat'])
+    act(() => { fireEvent.click(rows[1]) })
+    expect(screen.getAllByRole('tab').map(t => t.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false'])
+  })
+
+  it('scrolls a tab into view when the host makes it active', () => {
+    const { container } = renderTabs()
+    const row = stubTabRow(scrollerOf(container))
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-tab-state', { detail: { tabs: ['chat-1', 'chat-2', 'chat-3'], activeIndex: 2 } }))
+    })
+    expect(row.tabRect('chat-3').right).toBeLessThanOrEqual(100)
+    expect(row.left()).toBeGreaterThan(0)
   })
 })

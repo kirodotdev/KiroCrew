@@ -1031,6 +1031,19 @@ class TestIssueDetail(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(body["from_cache"])
         write.assert_called_once()
 
+    async def test_a_review_dismissal_row_is_not_rendered_in_the_pane(self):
+        # The pane has no row for it and would print the raw kind name.
+        rows = [{"kind": "comment"}, {"kind": "review_dismissed", "review_id": 1}]
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_issue_detail", return_value={"number": 5}),
+            mock.patch.object(gh, "list_issue_timeline", return_value=rows),
+            mock.patch.object(store, "write_issue_detail_cache"),
+        ):
+            body = _body(await self._call({"owner": "o", "repo": "r", "number": "5"}))
+        self.assertEqual(body["timeline"], [{"kind": "comment"}])
+
     async def test_a_provider_failure_is_502_and_writes_nothing(self):
         with (
             _connected(),
@@ -1092,6 +1105,36 @@ class TestPullDetail(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(body["from_cache"])
         checks.assert_called_once()
         patch_row.assert_called_once()
+
+    async def test_a_review_dismissal_is_cached_for_the_summary_but_not_rendered(self):
+        # The AI summary reads the cached timeline and needs the dismissal to fold
+        # the dismissed verdict out; the pane must not show the raw kind name.
+        rows = [
+            {"kind": "reviewed", "review_id": 1, "review_state": "CHANGES_REQUESTED"},
+            {"kind": "review_dismissed", "review_id": 1},
+        ]
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_pr_detail", return_value={"head_sha": None}),
+            mock.patch.object(gh, "list_pr_timeline", return_value=rows),
+            mock.patch.object(gh, "summarize_checks", return_value={}),
+            mock.patch.object(store, "write_pr_detail_cache") as write,
+            mock.patch.object(store, "apply_pr_checks_to_list_cache"),
+        ):
+            body = _body(await self._call({"owner": "o", "repo": "r", "number": "7"}))
+        self.assertEqual([ev["kind"] for ev in body["timeline"]], ["reviewed"])
+        self.assertIn(rows[1], write.call_args.args[-2])
+
+    async def test_a_cached_review_dismissal_is_not_rendered(self):
+        cached = {"detail": {"number": 7}, "timeline": [{"kind": "review_dismissed"}]}
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=cached),
+            mock.patch.object(gh, "summarize_checks", return_value={}),
+        ):
+            body = _body(await self._call({"owner": "o", "repo": "r", "number": "7"}))
+        self.assertEqual(body["timeline"], [])
 
     async def test_a_pull_request_with_no_head_sha_simply_has_no_checks(self):
         # A deleted fork branch leaves no head commit to hang checks off.

@@ -47,7 +47,7 @@ RUNNER_FORMS = {
 
 
 # Every spelling of an explicit worker COUNT of two or more: the form that bypasses the
-# budget hook (`setup.cfg`: "An explicit -n <N> bypasses the budget") and the one the rule
+# budget hook (`setup.cfg`: "An explicit -n <N> bypasses the memory budget") and the one the rule
 # reports. `last-wins-four` is last-wins in the reporting direction; the terminator row
 # is a 32-worker run pointed at a path called `-n0`; the override rows carry the count in
 # the `addopts` an `-o` / `--override-ini` replaces the tree's with; the oversized row is

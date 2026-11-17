@@ -394,10 +394,14 @@ class OrphanStallMonitor(ManagerComponent):
             if coordinator is None:
                 return
             callbacks: list[Any] = []
+            # A run still parking counts: its report can reach the writer thread
+            # ahead of this tick before ``yield_slot`` has set ``_slot_released``.
             live_waiters = frozenset(
                 (task_id, info._taskq_generation)
                 for task_id, info in self._manager._agents.items()
-                if not info.done and not info.reaped and info._slot_released
+                if not info.done
+                and not info.reaped
+                and (info._slot_released or info._dependency_parking)
             )
             woken = await store.run(
                 coordinator.tick, callbacks=callbacks, live_waiters=live_waiters
@@ -827,7 +831,9 @@ class OrphanStallMonitor(ManagerComponent):
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-        result_path = str(agent_dir_for_display(agent_id) / "result.txt")
+        # Off the loop: the display path resolves the run directory (a realpath).
+        run_dir = await asyncio.to_thread(agent_dir_for_display, agent_id)
+        result_path = str(run_dir / "result.txt")
 
         if result_is_whole(state):
             # A run that finished before the restart, caught before delivery:

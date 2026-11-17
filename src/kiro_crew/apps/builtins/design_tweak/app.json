@@ -1,6 +1,6 @@
 {
   "name": "design-tweak",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "displayName": "Design Tweak",
   "iconUrl": "/app-assets/design-tweak/icon.svg",
   "description": "Visually select elements in your live app preview and turn them into scoped, source-mapped edit requests for the agent — like Figma comments, but for code.",
@@ -21,7 +21,9 @@
   "permissions": {
     "api": [
       "/apps/design-tweak/api",
-      "/apps/design-tweak/api/*"
+      "/apps/design-tweak/api/*",
+      "=/api/chat",
+      "/api/chat/slots"
     ],
     "storage": true
   },

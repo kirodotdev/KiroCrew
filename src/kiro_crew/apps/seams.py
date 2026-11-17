@@ -22,7 +22,11 @@ How a provider gets here:
   the app's backend import that module, so it must stay light: heavy imports belong
   in the provider's methods, which run at call time.
 * Any other in-process code, such as an installed app's ``on_startup`` hook, calls
-  :func:`register` itself.
+  :func:`register` itself. An installed copy of a builtin (an adopted former
+  built-in) registers under the builtin's id and so replaces the builtin's
+  provider. When that copy's modules are unloaded (a disable, an update, an
+  uninstall), :func:`release_app` hands each seam back to the builtin's provider,
+  which answers as it did before the copy was installed.
 
 A provider answers whether or not its app is ENABLED. Every core feature above
 worked with its app switched off, which is the default, and a seam must not change
@@ -120,6 +124,9 @@ class StoppedLoopTombstone(Protocol):
 _lock = threading.Lock()
 #: seam -> (app id, provider).
 _providers: dict[str, tuple[str, object]] = {}
+#: seam -> the (app id, provider) entry a builtin's seams module registered while the
+#: one-time load imported it, kept so :func:`release_app` can hand the seam back.
+_builtin_providers: dict[str, tuple[str, object]] = {}
 #: app id -> the worker slot mode it registered, in registration order.
 _worker_slot_modes: dict[str, str] = {}
 #: Serializes the one-time import of the builtin seams modules. :func:`register`
@@ -137,6 +144,7 @@ def register(seam: str, app_id: str, provider: object) -> None:
     The same app registering again replaces its own provider, so a module that is
     imported twice does not fail. A different app is refused.
     """
+    from_builtin_load = _loading_thread == threading.get_ident()
     with _lock:
         held = _providers.get(seam)
         if held is not None and held[0] != app_id:
@@ -144,7 +152,27 @@ def register(seam: str, app_id: str, provider: object) -> None:
                 f"seam {seam!r} is already provided by app {held[0]!r}; "
                 f"app {app_id!r} cannot provide it too"
             )
-        _providers[seam] = (app_id, provider)
+        entry = (app_id, provider)
+        if from_builtin_load:
+            _builtin_providers[seam] = entry
+        _providers[seam] = entry
+
+
+def release_app(app_id: str) -> None:
+    """Hand back every seam *app_id*'s installed code holds over a builtin's provider.
+
+    Called when the app's modules are unloaded. An installed copy of a builtin
+    registers its providers from ``on_startup`` over the ones the builtin's seams
+    module registered, and those providers import the copy's modules at call time,
+    which an unload has just removed. The builtin's provider answers whether or not
+    the app is enabled, so it is restored. A seam no builtin provides is left as it
+    is, and so is a builtin's own provider.
+    """
+    with _lock:
+        for seam, held in list(_providers.items()):
+            builtin = _builtin_providers.get(seam)
+            if held[0] == app_id and builtin is not None and held is not builtin:
+                _providers[seam] = builtin
 
 
 def provider(seam: str) -> object | None:

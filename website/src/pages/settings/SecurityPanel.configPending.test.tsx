@@ -379,6 +379,16 @@ describe('SecurityPanel - settings files changed outside the dashboard', () => {
       .toContain(i18nT('pages.settings.securityPanel.configPending.hint_section'))
   })
 
+  it.each(['auto_approve_tools', 'auto_approve_tool_identities'])(
+    'adding a hooks.%s grant asks first; removing one does not',
+    name => {
+      expect(securityHints('config.json', { path: ['hooks', name], change: 'added', after: ['@a/b'] }))
+        .toEqual([i18nT('pages.settings.securityPanel.configPending.hint_auto_approve')])
+      expect(securityHints('config.json', { path: ['hooks', name], change: 'removed', before: ['@a/b'] }))
+        .toEqual([])
+    },
+  )
+
   it.each(['dangerously_skip_permissions', 'dangerouslySkipPermissions', 'yolo'])(
     'any change to the approve-every-tool grant agent.%s asks first',
     name => {

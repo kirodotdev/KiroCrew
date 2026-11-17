@@ -128,8 +128,8 @@ def _status(args: argparse.Namespace) -> None:
 
     Exits 1 when nothing answers the resolved port (a refused connection), so a
     script can gate on the exit code instead of parsing stdout. Every state in
-    which a gateway answers -- stats, token auth, an HTTP error, a busy timeout
-    or an unexpected body -- exits 0.
+    which a gateway answers -- stats, token auth, an HTTP error, a busy timeout,
+    a connection it accepted and then dropped, or an unexpected body -- exits 0.
     """
     port = resolve_client_port(getattr(args, "port", None))
     url = f"http://127.0.0.1:{port}/api/status"
@@ -160,15 +160,30 @@ def _status(args: argparse.Namespace) -> None:
         # surface on this split module's star-import facade.
         from kiro_crew.loopback_http import deadline_expired
 
+        reason = e.reason if isinstance(e, urllib.error.URLError) else e
         if deadline_expired(e):
             print(f"Kiro Crew gateway is running on port {port} but is busy (did not answer).")
             print("  It may be under load; try again in a moment.")
+        elif isinstance(reason, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            # The connection was accepted and then dropped, so something is
+            # listening -- often a gateway draining after `kirocrew stop`.
+            print(
+                f"Kiro Crew gateway is running on port {port} but closed the "
+                "connection without answering."
+            )
+            print("  It may be stopping or restarting; try again in a moment.")
         else:
             print("Kiro Crew gateway is not running.")
             print("  Start it with: kirocrew gateway")
             sys.exit(1)
         return
     except Exception:
+        print("Kiro Crew gateway is running but returned an unexpected response.")
+        return
+    if not isinstance(data, dict):
+        # Valid JSON that is not an object (``[]``, ``null``, a string) parses
+        # without raising, so the handler above never sees it; the reads below
+        # would then raise on it. The owner fallback can return one too.
         print("Kiro Crew gateway is running but returned an unexpected response.")
         return
 
@@ -343,7 +358,7 @@ async def _gateway(
         logging.getLogger(__name__).warning(
             "Dashboard dist/ not found — the dashboard will show the "
             "'not built' guidance page until the SPA is bundled. "
-            "Run `npm ci && npm run build` in the website/ directory to build "
+            "Run `npm ci`, then `npm run build`, in the website/ directory to build "
             "the full dashboard."
         )
 
@@ -380,6 +395,13 @@ async def _gateway(
         print(f"👻 Created default config: {config_path()}")
 
     cfg = KiroCrewConfig.load()
+    # Local recording is on by default; a host with no dashboard open is told in
+    # one stderr line, once per install. On a daemon thread, so it neither runs on
+    # the loop nor holds the boot back. Imported here: this module's import list
+    # is a frozen facade inventory.
+    from kiro_crew.metrics import notice as usage_notice
+
+    usage_notice.print_notice_in_background(cfg, headless=no_dashboard)
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
@@ -408,6 +430,9 @@ async def _run_task(args: argparse.Namespace) -> None:
 
     await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     cfg = KiroCrewConfig.load()
+    from kiro_crew.metrics import notice as usage_notice
+
+    usage_notice.print_notice_in_background(cfg, headless=True)
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
 
@@ -528,19 +553,31 @@ async def _run_task(args: argparse.Namespace) -> None:
     else:
         print(f"👻 Running spec: {spec_path}")
     task_name = getattr(args, "name", "")
-    result = await runner.run(spec_path, name=task_name)
+    # Local: this module's top-level imports are a frozen facade inventory.
+    from kiro_crew.hooks import FileTooLargeError
 
-    label = result.name or result.task_id
-    if result.status == "completed":
-        print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
-    elif result.status == "failed":
-        print(f"\n❌ Task failed ({label}): {result.error}", file=sys.stderr)
-        sys.exit(1)
-    elif result.status == "cancelled":
-        print("\n⚠️  Task cancelled")
-        sys.exit(1)
+    try:
+        try:
+            result = await runner.run(spec_path, name=task_name)
+        except (ValueError, OSError, FileTooLargeError) as exc:
+            # The runner's own spec checks (an empty spec, one the file gate
+            # refuses, one that is not UTF-8 or too large) and its workspace
+            # writes. Reported like the missing-spec case above, not as a
+            # traceback; the reason names which.
+            print(f"❌ Could not run {spec_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
-    await sessions.close_all()
+        label = result.name or result.task_id
+        if result.status == "completed":
+            print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
+        elif result.status == "failed":
+            print(f"\n❌ Task failed ({label}): {result.error}", file=sys.stderr)
+            sys.exit(1)
+        elif result.status == "cancelled":
+            print("\n⚠️  Task cancelled")
+            sys.exit(1)
+    finally:
+        await sessions.close_all()
 
 
 def _service_cmd(args: argparse.Namespace) -> int:
@@ -778,7 +815,7 @@ def _tail_log_file(path: Path, lines: int, follow: bool) -> None:
     try:
         while True:
             try:
-                fd = platform_compat.open_log_file_for_tail(path)
+                fd = platform_compat.open_file_for_shared_read(path)
             except FileNotFoundError:
                 if not follow:
                     raise
@@ -833,6 +870,8 @@ sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew import update_next_start  # noqa: F401
+    from kiro_crew._bootstrap import _source_checkout_root  # noqa: F401
     from kiro_crew.cli_server_peer import (  # noqa: F401
         _CLI_LOOPBACK,
         _PEER_RESOLVE_RETRY_INTERVAL,
@@ -884,6 +923,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GatewayLogMark,
         _incumbent_from_lock_holder,
         _own_console_script,
+        _print_applying_update,
+        _print_running_cron_runs,
         _print_still_starting,
         _print_token_url,
         _probe_gateway_ready,
@@ -903,11 +944,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SUPERVISOR_SEARCH_DEPTH,
         _config_dir_owner,
         _desktop_supervisor_pid,
+        _force_stop_command,
         _gateway_pid,
         _manual_stop_command,
         _pid_exited,
         _process_path,
         _refuse_desktop_supervised,
+        _refuse_if_gateway_outlived_service_stop,
         _refuse_if_lock_held,
         _refuse_lock_holder,
         _refuse_service_alias,
@@ -923,9 +966,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.cli_server_update import (  # noqa: F401
         _DETACHED_BRANCH_ORDER,
         _detached_upstream_branch,
+        _gateway_holds_update_lock,
         _refresh_agent_config,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,
+        _untracked_collisions,
         _update,
         _update_managed_venv,
         _update_wheel,

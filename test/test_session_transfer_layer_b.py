@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +32,23 @@ from session_transfer_helpers import (  # noqa: F401 -- the autouse fixture regi
     _valid,
 )
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.dashboard.session_transfer import _validate_bundle
+
+
+def _slots_start_on(monkeypatch, backend):
+    """Make every new slot resolve to *backend* through the provider factory's gate."""
+    from kiro_crew import members
+
+    monkeypatch.setattr(members, "select_provider_backend", lambda *_a, **_k: backend)
+
+
+@pytest.fixture(autouse=True)
+def _slots_start_on_kiro_cli(_floor_monkeypatch):
+    """A kiro-cli pair lands only on a slot that starts on kiro-cli, which is the
+    peer every import here models unless the test names another backend."""
+    _slots_start_on(_floor_monkeypatch, ACP_BACKEND_KIRO)
+
 
 # ── Layer B (kiro-cli context) ──────────────────────────────────────────
 
@@ -78,6 +97,90 @@ def test_layer_b_is_absent(monkeypatch, tmp_path, sid):
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
     assert st._read_layer_b(sid) is None
+
+
+_LAYER_B_LOGGER = "kiro_crew.dashboard.session_transfer"
+
+
+def _seed_kiro_cli_pair(kiro_home, sid):
+    """Seed kiro-cli's ``<sid>.{json,jsonl}`` pair; return (envelope, events) paths."""
+    root = kiro_home / "cli"
+    (root / f"{sid}.json").write_text(json.dumps({"session_id": sid}), encoding="utf-8")
+    (root / f"{sid}.jsonl").write_text('{"kind":"Prompt"}\n', encoding="utf-8")
+    return root / f"{sid}.json", root / f"{sid}.jsonl"
+
+
+def _seed_kas_session(kiro_home, sid):
+    """Seed a KAS ``<bucket>/<sid>/`` session; return (session.json, messages.jsonl) paths."""
+    src = kiro_home / "0011f94affd18877" / sid
+    src.mkdir(parents=True)
+    (src / "messages.jsonl").write_text('{"id":"m1"}\n', encoding="utf-8")
+    (src / "session.json").write_text(json.dumps({"id": sid}), encoding="utf-8")
+    return src / "session.json", src / "messages.jsonl"
+
+
+_KIRO_SID = "11111111-2222-3333-4444-555555555555"
+_KAS_SID = "sess_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+@pytest.mark.parametrize(
+    ("sid", "seed", "locked_file"),
+    [
+        pytest.param(_KIRO_SID, _seed_kiro_cli_pair, 0, id="kiro_cli_envelope"),
+        pytest.param(_KIRO_SID, _seed_kiro_cli_pair, 1, id="kiro_cli_events"),
+        pytest.param(_KAS_SID, _seed_kas_session, 0, id="kas_session"),
+        pytest.param(_KAS_SID, _seed_kas_session, 1, id="kas_messages"),
+    ],
+)
+def test_an_unreadable_layer_b_logs_the_error_that_dropped_it(
+    monkeypatch, tmp_path, caplog, sid, seed, locked_file
+):
+    """A Layer B that cannot be read sends the session transcript-only; the default
+    log must say why, so a Windows mid-replace read does not look like a damaged file."""
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard import session_transfer_layers as layers
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "cli")
+    (tmp_path / "cli").mkdir()
+    locked_path = seed(tmp_path, sid)[locked_file]
+    real_read_text = Path.read_text
+
+    def locked_read_text(self, *args, **kwargs):
+        if self == locked_path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    def locked_open(file, *args, **kwargs):
+        if Path(file) == locked_path:
+            raise PermissionError(13, "Permission denied", str(file))
+        return open(file, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", locked_read_text)
+    monkeypatch.setattr(layers, "open", locked_open, raising=False)
+    with caplog.at_level(logging.WARNING, logger=_LAYER_B_LOGGER):
+        assert st._read_layer_b(sid) is None
+    warnings = [
+        r for r in caplog.records if r.name == _LAYER_B_LOGGER and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "PermissionError" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None
+
+
+@pytest.mark.parametrize(
+    "sid",
+    [
+        pytest.param("no-such-sid", id="kiro_cli_pair"),
+        pytest.param("sess_00000000-0000-0000-0000-000000000000", id="kas_session"),
+    ],
+)
+def test_a_missing_layer_b_logs_no_warning(monkeypatch, tmp_path, caplog, sid):
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "cli")
+    with caplog.at_level(logging.WARNING, logger=_LAYER_B_LOGGER):
+        assert st._read_layer_b(sid) is None
+    assert [r for r in caplog.records if r.name == _LAYER_B_LOGGER] == []
 
 
 def test_events_jsonl_loadable_accepts_valid_and_rejects_truncated():
@@ -254,7 +357,7 @@ async def test_a_kas_session_round_trips_through_the_bundle(monkeypatch, tmp_pat
     assert not {"_meta", "description"} & set(wire["layer_b_kas"]["envelope"])
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "receiver" / "cli")
-    monkeypatch.setattr(st, "_slot_runs_kas", lambda _key: True)
+    _slots_start_on(monkeypatch, ACP_BACKEND_KAS)
     state = _stub_state(st, monkeypatch)
     seeded: dict = {}
     state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
@@ -303,7 +406,7 @@ async def test_a_kas_session_sent_to_a_slot_on_another_backend_imports_transcrip
     wire = json.loads(b"".join(chunks))
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "receiver" / "cli")
-    monkeypatch.setattr(st, "_slot_runs_kas", lambda _key: False)
+    _slots_start_on(monkeypatch, ACP_BACKEND_KIRO)
     state = _stub_state(st, monkeypatch)
     seeded: dict = {}
     state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
@@ -313,6 +416,31 @@ async def test_a_kas_session_sent_to_a_slot_on_another_backend_imports_transcrip
     assert state._imported_slot.title.endswith("transcript only")
     assert seeded == {}
     assert not list(st._kas_sessions_root().glob("*/sess_*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("slot_backend", "landed"), [(ACP_BACKEND_KIRO, True), (ACP_BACKEND_KAS, False)]
+)
+async def test_a_kiro_cli_context_lands_only_on_a_slot_that_starts_on_kiro_cli(
+    monkeypatch, tmp_path, slot_backend, landed
+):
+    """A kiro-cli pair joined to a slot that starts on KAS is dropped at its first
+    turn, so the peer must not install it or report a full resume."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    _slots_start_on(monkeypatch, slot_backend)
+    state = _stub_state(st, monkeypatch)
+    seeded: dict = {}
+    state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
+    bundle = _valid(layer_b={"envelope": {"session_id": "s"}, "events": '{"kind":"Prompt"}\n'})
+    resp = await _run_import(st, monkeypatch, bundle, state=state)
+
+    assert json.loads(resp.body)["resume_mode"] == ("session_load" if landed else "prefix")
+    assert state._imported_slot.title.endswith("transcript only") is not landed
+    assert bool(seeded) is landed
+    assert bool(list(tmp_path.glob("*.json*"))) is landed
 
 
 @pytest.mark.asyncio
@@ -1351,10 +1479,13 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
     sizes: list[int] = []
+    test_thread = threading.get_ident()
     real_restrict = platform_compat.restrict_to_owner
 
     def _measuring_restrict(target):
-        sizes.append(os.stat(target).st_size)
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            sizes.append(os.stat(target).st_size)
         return real_restrict(target)
 
     monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)

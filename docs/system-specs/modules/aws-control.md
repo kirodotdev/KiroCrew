@@ -28,6 +28,19 @@ are the `aws_control.conversation_export` row of the sensitive-store read allowl
 files. Neither is a seam: an app must not add itself to the read allowlist, and the
 posture tables are core's audit of the app's code.
 
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-aws-control` with `minAppSdkLevel` 2, the level of the
+`ctx.lifecycle` enabled switch every route checks first, so a host whose record is
+builtin-owned swaps it in place onto that tree at a restart, keeping `data/` (the drive, the library and the
+backup state), `.app_secret`, the approved grants and `enabled`; the rail keeps
+`/aws-control` and the `Cloud` glyph. The repository's `app.json` declares the same
+`permissions` as the wheel copy (its own namespace, `storage`, `network` and `jobs`), so
+E9 holds nothing back. The adopted tree's own seams module fills the three seams above while
+it is loaded, and an unload (disable, update, uninstall) hands each back to the provider
+the wheel copy registered (`seams.release_app`). A fix to the app lands in that
+repository first; a change to the wheel copy needs its `App repo:` line.
+
 These leave with the app, and until then this repository runs them at the app's paths:
 
 * `.github/workflows/crew-image-build.yml`, which runs `crew/scripts/crew_image_build_plan.py`
@@ -166,7 +179,8 @@ canonical path. Missing, uncheckable, or refused fallback directories stay off
 the child `PATH`. This lets the CLI find a bare `credential_process` helper by
 name when a desktop-launched gateway's minimal `PATH` holds neither fallback.
 Per-user dirs such as `~/.local/bin` are reached only through the inherited
-`PATH`.
+`PATH`. The child gets none of the gateway's Python interpreter settings
+(`sandbox.without_python_env`), because aws-cli v1 is a Python program.
 
 ## Drive and destructive operations
 
@@ -2056,7 +2070,13 @@ ledger, the local profile scan) and every mutation whose error was never read
 A failed read must not fall through to the surface's empty state — a failed
 listing is not an empty folder, a failed profile scan is not "nothing left to
 add" — and the tests for each state assert the empty state's absence alongside
-the notice. Two states are deliberately NOT errors: a 403 whose code is
+the notice. A profile scan that fails because the gateway's `aws` is AWS CLI v1,
+which has no `configure list-profiles`, is answered 501 `unsupported_aws_cli_v1`
+by both the listing and the register route (`deploy.profiles.aws_cli_is_v1` asks
+`aws --version` once the scan failed), and its notice names the version and the
+remedy, AWS CLI v2 first on the gateway's PATH, with no Try again, because no
+retry clears it; `kirocrew doctor` names the same cause on its profiles line.
+Two states are deliberately NOT errors: a 403 whose code is
 `app_disabled` renders the disabled-app copy (any other 403 — a non-owner
 caller's `dashboard_owner_required` — is an error to diagnose and goes to the
 notice), and a costs 409 `aws_consent_required` is answered by the Cost Explorer

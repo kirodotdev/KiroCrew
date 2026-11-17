@@ -19,6 +19,7 @@ from channel_folders_helpers import (  # noqa: F401 -- the fixture is requested 
 )
 
 from kiro_crew.dashboard import channel_folders, channel_slots
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class _ModifiedLog(_FakeLog):
@@ -315,7 +316,7 @@ class TestBackfillChannelFolder:
         """Titles are generated from channel content, so they are untrusted here."""
         self._folder(dashboard_state)
         key = "discord:kirocrew:direct:U1"
-        secret = "ghp_" + "a" * 36
+        secret = github_classic(seed=304)
         log = _ModifiedLog([key], {key: {"channel_origin": True, "title": secret}})
         dashboard_state.conversation_log = log
 

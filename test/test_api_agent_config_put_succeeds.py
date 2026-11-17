@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
+from config_pending_helpers import HAND_EDIT, make_config_json_pending
 
 import kiro_crew.config.loader as loader_module
 from kiro_crew.dashboard.handlers import api_agent_config
@@ -70,6 +71,42 @@ async def test_api_agent_config_put_succeeds(tmp_path):
     assert json.loads(installed.read_text(encoding="utf-8"))["name"] == "test"
     assert mc_cfg.exists()
     assert json.loads(mc_cfg.read_text(encoding="utf-8"))["removedTools"]["tools"] == ["c"]
+
+
+@pytest.mark.asyncio
+async def test_api_agent_config_put_of_a_pending_config_json_hands_the_refusal_on(
+    tmp_path, monkeypatch
+):
+    """config.json has a change pending owner review: the removedTools record is
+    refused before the spec is written, and the refusal reaches the dashboard chain,
+    which answers 409, not this handler's own 500."""
+    installed = tmp_path / "kirocrew.json"
+    installed.write_text(json.dumps({"name": "kirocrew"}))
+    loader_module.KiroCrewConfig().save()
+    path = make_config_json_pending(monkeypatch)
+
+    request = MagicMock(spec=web.Request)
+    request.method = "PUT"
+    request.app = {"state": MagicMock()}
+
+    async def mock_json():
+        return {"config": {"name": "test", "tools": ["a"], "allowedTools": ["b"]}}
+
+    request.json = mock_json
+
+    with (
+        patch("kiro_crew.dashboard.handlers._installed_agent_config", return_value=installed),
+        patch("kiro_crew.dashboard.handlers._reset_all_sessions", new_callable=AsyncMock),
+        patch(
+            "kiro_crew.dashboard.handlers.agents.get_shipped_tools",
+            return_value={"tools": ["a", "c"], "allowedTools": ["b"]},
+        ),
+        pytest.raises(loader_module.PendingEditBlocksSave),
+    ):
+        await api_agent_config(request)
+
+    assert path.read_bytes() == HAND_EDIT
+    assert json.loads(installed.read_text(encoding="utf-8")) == {"name": "kirocrew"}
 
 
 @pytest.mark.asyncio

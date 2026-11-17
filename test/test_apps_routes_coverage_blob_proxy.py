@@ -144,13 +144,12 @@ class TestNoEntryBlobCloneUrlResolution:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Invariant (registry cache re-read
-        # blocks the event loop).  Before the subtraction the no-entry branch ran
-        # ``clone_url = _registry_git_url(repo)``, which re-consulted
-        # ``get_registry_app_by_repo`` — an unbounded SYNCHRONOUS registry
-        # JSON read — a SECOND time on the async request path, stalling the
-        # gateway loop and heartbeat under a concurrent registry refresh.  The
-        # subtraction deletes that resolver and resolves the clone URL by a pure
-        # in-memory URL-form check, so the registry entry lookup happens exactly
+        # blocks the event loop).  Re-resolving the clone URL from ``repo`` in
+        # the no-entry branch would consult ``get_registry_app_by_repo`` — an
+        # unbounded SYNCHRONOUS registry JSON read — a SECOND time on the async
+        # request path, stalling the gateway loop and heartbeat under a
+        # concurrent registry refresh.  The handler resolves the clone URL by a
+        # pure in-memory URL-form check, so the registry entry lookup happens exactly
         # ONCE per request (the pre-read at the top of the handler) and never on
         # the no-entry branch.  ``_clone_url_for`` asserts the lookup call count
         # is exactly 1; a reintroduced second read would make it 2 and fail here.
@@ -237,8 +236,7 @@ class TestBlobProxy:
         # ``..`` segment or leading ``/`` in ``ref`` (mirroring the ``file_path``
         # guard) so a ``ref`` can only name a flat branch subtree under its own
         # ``repo_key``.  A traversal ``ref`` must 400 and never reach a fetch or a
-        # sibling repo-key cache read.  Fails at 803dddcb (regex + containment let
-        # it through); passes after.
+        # sibling repo-key cache read.
         _setup_env(tmp_path, monkeypatch)
         monkeypatch.setattr(routes_mod, "known_registry_repos", lambda: {"acme"})
 
@@ -485,8 +483,7 @@ class TestBlobProxy:
         # on A's URL; the resolver now returns B's entry (a DIFFERENT clone URL) for
         # the same key.  The request must NOT serve A's cached bytes — the
         # provenance-bound key differs, so it is a cache miss and the (faked) fetch
-        # runs instead.  Fails at 803dddcb (repo-string key → A's bytes served);
-        # passes after.
+        # runs instead.  A repo-string cache key would serve A's bytes.
         _setup_env(tmp_path, monkeypatch)
         monkeypatch.setattr(routes_mod, "known_registry_repos", lambda: {"acme"})
 
@@ -1137,8 +1134,7 @@ class TestBlobProxyOwnerDesignatedWiring:
         # configured branch; a differing ``ref`` never attaches credentials
         # (``owner_designated`` False → anonymous+strict, still serving a public
         # branch).  The paired control above pins that ``ref=main`` (the configured
-        # branch) on the SAME entry IS credentialed.  Fails at 803dddcb (grant
-        # ignores ref); passes after.
+        # branch) on the SAME entry IS credentialed.
         import kiro_crew.apps.registry as reg_mod
 
         url = "ssh://forge.example/org/registry.git"
@@ -1239,11 +1235,9 @@ class TestBlobProxyOwnerDesignatedWiring:
         # urlA would clone urlB (a different private repo) WITH those credentials.
         #
         # Simulate the concurrent refresh: the entry lookup returns the
-        # owner-designated urlA entry (the decision + the threaded URL).  The
-        # standalone clone-URL resolver that a callee-side re-resolution would
-        # have gone through has been DELETED, so there is structurally no second
-        # read to race: the clone uses the THREADED urlA.  At c6fa20c7 the callee
-        # re-resolved from ``repo`` and would clone urlB with credentials.  We
+        # owner-designated urlA entry (the decision + the threaded URL).  There is
+        # no standalone clone-URL resolver for the callee to re-run, so there is
+        # structurally no second read to race: the clone uses the THREADED urlA.  We
         # drive the real ``handle_blob_proxy`` + ``_fetch_git_blob`` with only the
         # subprocess/env/sandbox faked, so the threading is exercised end to end
         # (never the raw git argv — we read back only the cloned URL and the
@@ -1326,8 +1320,8 @@ class TestBlobProxyOwnerDesignatedWiring:
         # two configured registries — A (owner-designated for repo key X) and B (a
         # separately-configured registry that also lists an app keyed X) — both
         # claim X, a request reachable only through B resolves to A's
-        # owner-designated entry.  Before the provenance gate the handler then
-        # granted A's owner credentials and cloned A's private repo, serving A's
+        # owner-designated entry.  Without the provenance gate the handler would
+        # grant A's owner credentials and clone A's private repo, serving A's
         # private image bytes to a B-reachable caller.
         #
         # The gate: the credentialed carve-out is reachable ONLY when exactly ONE
@@ -1338,8 +1332,7 @@ class TestBlobProxyOwnerDesignatedWiring:
         # bytes are never cloned with a grant on a B-reachable request.  We drive
         # the real ``handle_blob_proxy`` + ``_fetch_git_blob`` with only the
         # subprocess/env/sandbox faked, reading back the env/mode PAIR and the SEL
-        # grants (never the raw git argv).  Fails at 64df951a (repo-keyed lookup
-        # grants A's credentials); passes after.
+        # grants (never the raw git argv).
         import kiro_crew.apps.registry as reg_mod
 
         _setup_env(tmp_path, monkeypatch)
@@ -1418,9 +1411,8 @@ class TestBlobProxyOwnerDesignatedWiring:
         # ``asyncio.to_thread``; this one must be too.
         #
         # Assert via thread-identity: the resolver must observe a threadpool-worker
-        # thread, NOT the event-loop thread.  At 64df951a the call is synchronous
-        # inline, so it runs on the loop thread and this fails; after the offload
-        # it runs on a worker and passes.  (Indexing ``ran_on[0]`` is deliberate: a
+        # thread, NOT the event-loop thread.  An inline synchronous call runs on
+        # the loop thread and fails this.  (Indexing ``ran_on[0]`` is deliberate: a
         # resolver that never ran raises rather than passing vacuously.)
         import kiro_crew.apps.registry as reg_mod
 

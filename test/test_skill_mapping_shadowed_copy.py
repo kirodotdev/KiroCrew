@@ -107,7 +107,9 @@ def test_a_mapped_copy_the_path_screen_refuses_is_not_served(tmp_path, opened, m
     screen = sk.validate_file_path
     # Stands in for a link to a UNC share, which only a Windows host can build.
     monkeypatch.setattr(
-        sk, "validate_file_path", lambda raw: None if Path(raw) == mapped else screen(raw)
+        sk,
+        "validate_file_path",
+        lambda raw, **kw: None if Path(raw) == mapped else screen(raw, **kw),
     )
 
     assert loader._scoped_entries(None, [str(mapped)]) == []
@@ -129,7 +131,9 @@ def test_a_cached_losing_copy_is_screened_before_resolution(tmp_path, opened, mo
     monkeypatch.setattr(loader, "_snapshot_admitted_roots", lambda: (str(winner), str(loser)))
     screen = sk.validate_file_path
     monkeypatch.setattr(
-        sk, "validate_file_path", lambda raw: None if Path(raw) == mapped else screen(raw)
+        sk,
+        "validate_file_path",
+        lambda raw, **kw: None if Path(raw) == mapped else screen(raw, **kw),
     )
     realpath = catalog.os.path.realpath
 

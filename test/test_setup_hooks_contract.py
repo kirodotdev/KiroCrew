@@ -3,8 +3,9 @@
 ``setup.onUpdate`` parses, validates and round-trips through ``SetupConfig``, but no
 code path dispatches it. ``docs/system-specs/modules/app-kit-platform.md`` records
 the stance as declared-not-wired: an app whose update correctness depends on it is
-broken, and the remedy is an idempotent ``onInstall`` -- which a registry update
-re-runs -- not a call site added quietly.
+broken, and the remedy is ``onEnable`` -- which an update of an enabled app re-runs --
+or an idempotent ``onInstall`` -- which a registry update re-runs -- not a call site
+added quietly.
 
 The set of hooks the runtime touches OUTSIDE ``manifest_sections.py``'s own serialization is
 derived from the AST rather than read off a comment. Wiring ``onUpdate`` (or
@@ -31,7 +32,7 @@ _SPEC_MD = _REPO / "docs" / "system-specs" / "modules" / "app-kit-platform.md"
 #: Every ``setup.on*`` hook some code path actually executes. ``onInstall`` is
 #: read by ``registry_pipeline/install.py`` (the install transaction, which a
 #: registry update re-enters); the other three are the ``run_lifecycle_script``
-#: callers in ``routes.py``, ``routes_enable.py`` and ``teardown.py``.
+#: callers in ``routes_lifecycle.py``, ``routes_uninstall.py`` and ``teardown.py``.
 DISPATCHED_HOOKS = frozenset({"onInstall", "onUninstall", "onEnable", "onDisable"})
 
 #: Declared on ``SetupConfig`` and round-tripped, but executed by nothing.
@@ -62,7 +63,9 @@ def _runtime_touched_hooks() -> dict[str, set[str]]:
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if _HOOK_NAME.match(node.value):
                     name = node.value
-            if name is not None and not name.endswith("Timeout"):
+            # `onEnableTimeout` configures a hook and `onEnableFailed` reports one
+            # (an update's response field); neither is a hook of its own.
+            if name is not None and not name.endswith(("Timeout", "Failed")):
                 touched.setdefault(name, set()).add(f"{rel}:{node.lineno}")
     return touched
 

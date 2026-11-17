@@ -16,6 +16,7 @@ import hashlib
 import hmac
 
 import pytest
+from redaction_structured_cases import aws_key_id, github_classic
 
 from kiro_crew import security
 from kiro_crew.security import _exports, redact, redact_path_segments
@@ -25,15 +26,19 @@ from kiro_crew.security.redaction import (
     _REDACTED_CREDENTIAL_TAG,
     _path_segment_label,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# Two DISTINCT credential-shaped tokens. key_a is the documented example id the
-# Semgrep allowlist knows; key_b stays a split literal because the AKIA-shaped
-# detector cannot tell a fixture from a real leak.
-_KEY_A = "AKIAIOSFODNN7EXAMPLE"
-_KEY_B = "AKIA" + "JKLMNOPQRSTUVWXY"
-# A bare 40-char secret-shaped key that contains ``/`` -- it spans two path
-# segments and is matched only by the whole-string pass.
-_SPANNING_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# Two DISTINCT GitHub classic tokens with valid checksums. Their alphabet has no
+# ``/``, so each sits inside one path segment. Key IDs are kept visible, so the
+# fixtures are secrets the plan redacts.
+_KEY_A = github_classic(seed=11)
+_KEY_B = github_classic(seed=12)
+# An AWS secret beside its key ID. The secret contains ``/``, so it spans path
+# segments, and only the whole-string pass sees it beside the key ID that marks it.
+# A ``/`` on either side of the pair would make it part of a longer run, so the
+# path opens with a word and a space and the secret ends it.
+_SPANNING_SECRET = SAMPLE_AWS_SECRET
+_SPANNING = f"{aws_key_id(seed=9)} {_SPANNING_SECRET}"
 
 _SEP = _PATH_SEGMENT_DISCRIMINATOR_SEP
 
@@ -213,7 +218,8 @@ class TestLabelsCarryNoOrder:
         assert len(set(forward.values())) == len(paths)
 
     def test_sorting_the_listing_does_not_change_a_label(self) -> None:
-        paths = [f"models/{_KEY_A[:-1]}{ch}_model.txt" for ch in "FEDCBA"]
+        # Six distinct tokens; editing one character would break the checksum.
+        paths = [f"models/{github_classic(seed=s)}_model.txt" for s in range(20, 26)]
         unsorted_out = [redact_path_segments(p) for p in paths]
         sorted_out = [redact_path_segments(p) for p in sorted(paths)]
         assert sorted(unsorted_out) == sorted(sorted_out)
@@ -227,8 +233,8 @@ class TestNeverLessRedactionThanTheWholeString:
             f"models/{_KEY_A}_model.txt",
             f"cdk.out/{_KEY_A}/index.js",
             f"{_KEY_A}",
-            f"a/{_SPANNING_SECRET}/b",
-            f"{_SPANNING_SECRET}",
+            f"keys {_SPANNING}",
+            f"{_SPANNING}",
         ],
     )
     def test_the_original_sensitive_bytes_never_survive(self, path: str) -> None:
@@ -242,7 +248,8 @@ class TestNeverLessRedactionThanTheWholeString:
         assert redact(out) == out
 
     def test_a_token_spanning_segments_falls_back_to_the_whole_string_result(self) -> None:
-        path = f"a/{_SPANNING_SECRET}/b"
+        path = f"keys {_SPANNING}"
+        assert redact(path) != path
         assert redact_path_segments(path) == redact(path)
         assert _SEP not in redact_path_segments(path)
 

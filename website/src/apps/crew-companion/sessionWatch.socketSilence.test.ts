@@ -106,6 +106,26 @@ describe('crew-companion socket silence watchdog', () => {
     h.stop()
   })
 
+  it('a replacement after a healthy socket starts the backoff over', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const h = harness()
+    // A first socket that never opens grows the next delay to 2000.
+    h.sockets[0].close()
+    vi.advanceTimersByTime(1000)
+    h.sockets[1].open()
+
+    // Healthy for a whole silence window, then silent: the watchdog replaces it.
+    h.tickChecks(WS_SILENCE_MS + WS_SILENCE_CHECK_MS)
+    expect(h.sockets).toHaveLength(3)
+
+    // The replacement fails at once; the retry comes after 1000, not 2000.
+    h.sockets[2].close()
+    vi.advanceTimersByTime(1000)
+    expect(h.sockets).toHaveLength(4)
+    h.stop()
+    vi.restoreAllMocks()
+  })
+
   it('keeps a socket that receives the 5s status frame', () => {
     const h = harness()
     h.sockets[0].open()

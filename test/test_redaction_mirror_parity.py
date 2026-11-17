@@ -179,10 +179,6 @@ class TestBase64BlobMirror:
     def test_backend_carries_the_spelling(self) -> None:
         assert f'r"{self.SPELLING}"' in BACKEND_EXFIL_RULES.read_text(encoding="utf-8")
 
-    def test_frontend_carries_the_spelling(self) -> None:
-        text = FRONTEND.read_text(encoding="utf-8")
-        assert f"const EXFIL_B64_RE = /{self.SPELLING}/i" in text
-
 
 class TestGitObjectNameCarveOutMirror:
     """The blob signal's git-object-name carve-out is spelled identically.
@@ -198,10 +194,6 @@ class TestGitObjectNameCarveOutMirror:
     def test_backend_carries_the_shape(self) -> None:
         text = (BACKEND_PKG / "exfil_git_object.py").read_text(encoding="utf-8")
         assert f'_GIT_OBJECT_NAME_RE = re.compile(r"{self.SHAPE}")' in text
-
-    def test_frontend_carries_the_shape(self) -> None:
-        text = FRONTEND.read_text(encoding="utf-8")
-        assert f"const EXFIL_GIT_OBJECT_NAME_RE = /^{self.SHAPE}$/" in text
 
 
 class TestDeliberateNonMirrors:
@@ -297,10 +289,12 @@ class TestPrefilledIssueCarveOutParity:
             )
 
     def test_the_length_gate_is_unconditional_on_both_sides(self) -> None:
-        """The rule the waivers waived, asserted at its own site on each half.
+        """The rule the waivers waived, asserted at its own site.
 
         Reads the comparison itself rather than the absence of a symbol name, so a
-        waiver spelled with fresh identifiers still fails one of these two tests.
+        waiver spelled with fresh identifiers still fails. The frontend mirror no
+        longer carries the URL heuristics: display redaction masks only credential
+        values inside a URL, so the gate lives on the backend's blocking scan alone.
         """
         backend = BACKEND_EXFIL.read_text(encoding="utf-8")
         assert "if len(heuristic_query) >= _EXFIL_QUERY_MIN_LEN:" in backend, (
@@ -308,11 +302,7 @@ class TestPrefilledIssueCarveOutParity:
             f"{BACKEND_EXFIL.name} — something was added to its condition, or the "
             "classifier moved to another module and this guard needs repointing"
         )
-        frontend = FRONTEND.read_text(encoding="utf-8")
-        assert "query.length >= EXFIL_QUERY_MIN_LEN" in frontend
-        assert "if (!redact && query.length >= EXFIL_QUERY_MIN_LEN)" not in frontend, (
-            "the frontend length signal is behind a conditional again"
-        )
+        assert "EXFIL_QUERY_MIN_LEN" not in FRONTEND.read_text(encoding="utf-8")
 
     def test_the_trusted_channel_the_waiver_was_replaced_by_still_exists(self) -> None:
         """Deleting the waivers is only free while this seam is here.

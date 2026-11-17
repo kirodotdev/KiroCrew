@@ -423,6 +423,45 @@ class TestCommandReplies:
         assert key == self._KEY
         assert owned(_origin(7, 7)) is True and owned(_origin(8, 8)) is False
 
+    def test_a_typed_stop_survives_a_channels_governance_deny(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+        from kiro_crew.telegram import transport_dispatch as td
+
+        async def _denied(_channel_type: str) -> bool:
+            return False
+
+        # Denied in both namespaces that read the ceiling, so a strict read
+        # anywhere on the way in drops the stop.
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        monkeypatch.setattr(td, "channel_inbound_permitted", _denied)
+        d, cli, sess = _dispatcher({7})
+        d.bot_username = "KiroCrewBot"
+
+        async def _takes_every_reply(_state: Any, msg: Any, _notify: Any) -> bool:
+            return bool(getattr(msg, "reply_to_message_id", 0))
+
+        # A stop is never taken as the answer to a bridged approval note.
+        monkeypatch.setattr(
+            "kiro_crew.telegram.dispatch.bridge_reply.consume_bridged_reply", _takes_every_reply
+        )
+        sess._busy = True
+        # Every other message keeps the strict gate, a cancel word Telegram does
+        # not spell and a stop addressed to another bot included.
+        for text in ("hello", "!stop", "/stop now", "/stop@OtherBot"):
+            asyncio.run(d.handle_message(_dm(text)))
+        assert cli.sent == [] and sess._gp.cancelled == 0
+        asyncio.run(d.handle_message(_dm("/cancel@KiroCrewBot")))
+        stop_reply = TelegramInboundMessage(
+            channel_type="telegram",
+            user_id="7",
+            conversation_id="7",
+            text="/stop",
+            chat_type="private",
+            reply_to_message_id=5,
+        )
+        asyncio.run(d.handle_message(stop_reply))
+        assert sess._gp.cancelled == 2 and cli.sent[-1] == ("🛑 Stopped.", None)
+
     def test_a_topic_stop_answers_in_its_topic(self) -> None:
         d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         sess._busy = True

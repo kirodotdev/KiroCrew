@@ -18,6 +18,7 @@ Two layers of defence:
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Container
 
 from kiro_crew.config.loader import (
@@ -212,8 +213,7 @@ def _read_allowlist() -> tuple[set[str] | None, str]:
             )
         # Same per-entry filter the loader applies: Slack enterprise/team ids.
         usable = {
-            e for e in entries
-            if isinstance(e, str) and (e.startswith("E") or e.startswith("T"))
+            e for e in entries if isinstance(e, str) and (e.startswith("E") or e.startswith("T"))
         }
         if entries and not usable:
             return None, (
@@ -273,8 +273,7 @@ def _load_allowed_team_ids() -> bool:
     except Exception:
         configured, refusal = None, "unexpected error reading config"
         logger.exception(
-            "Failed to read slack.allowed_enterprise_ids; failing closed "
-            "with no origin admitted"
+            "Failed to read slack.allowed_enterprise_ids; failing closed " "with no origin admitted"
         )
 
     if configured is None:
@@ -358,7 +357,9 @@ def reload_allowed_team_ids() -> bool:
     when there is one and enforces the configured ids regardless -- and
     ``validate_enterprise()`` re-runs it once the workspace is known.
     """
-    degraded = _load_allowed_team_ids()
+    # Waits for an in-flight validation, then reads the file as it is now.
+    with _state_lock:
+        degraded = _load_allowed_team_ids()
     if degraded:
         logger.error(
             "slack.allowed_enterprise_ids reload read a degraded config; "
@@ -402,7 +403,10 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
         # the posture is policy-only (Rule 6 rejects a profile carrying it), so a
         # surface-bound profile must NOT additionally intersect here.  (The degrade
         # audit below uses the _host surface only for honest SEL attribution.)
-        for leaf, value in (("allowed_enterprise_ids", enterprise_id), ("allowed_team_ids", team_id)):
+        for leaf, value in (
+            ("allowed_enterprise_ids", enterprise_id),
+            ("allowed_team_ids", team_id),
+        ):
             if not value:
                 # An EMPTY id (Slack returns enterprise_id="" for every
                 # non-Enterprise-Grid workspace, the common case) cannot satisfy
@@ -445,7 +449,42 @@ def _governance_posture_permits_workspace(enterprise_id: str, team_id: str) -> b
         return False
 
 
+#: What the gateway had validated when a re-validation started, as
+#: ``(allowlist configured, allowed team ids, self bot id, self user id)``, or
+#: None. The validation clears the live state while its ``auth.test`` runs (off
+#: the event loop), so :func:`check_message_origin` and the self-identity
+#: readers answer from this until the new state is set: a Slack reconnect never
+#: opens an armed allowlist, nor forgets who the bot is, even for a moment.
+_revalidation_hold: tuple[bool, frozenset[str], str, str] | None = None
+#: Orders a validation against an allowlist reload (both run off the event
+#: loop): a reload waits for an in-flight validation and then re-reads the file,
+#: so an older validation can never publish over a newer reload's restriction.
+#: shortcut: a reload waits out the validation's ``auth.test`` (bounded by the
+#: Slack client's own timeout); move the read off the lock if that ever matters.
+_state_lock = threading.RLock()
+
+
 def validate_enterprise(
+    bot_token: str,
+    *,
+    extra_ids: set[str] | None = None,
+) -> bool:
+    """:func:`_validate_enterprise_unheld`, holding an armed restriction while it runs."""
+    global _revalidation_hold
+    with _state_lock:
+        _revalidation_hold = (
+            _allowlist_configured,
+            frozenset(_allowed_team_ids),
+            _validated_self_bot_id,
+            _validated_self_user_id,
+        )
+        try:
+            return _validate_enterprise_unheld(bot_token, extra_ids=extra_ids)
+        finally:
+            _revalidation_hold = None
+
+
+def _validate_enterprise_unheld(
     bot_token: str,
     *,
     extra_ids: set[str] | None = None,
@@ -569,10 +608,7 @@ def validate_enterprise(
         # Default-open: no allowlist configured, so a missing slack_sdk or
         # auth.test failure must not block startup.  Without cached state,
         # check_message_origin() stays default-open too.
-        logger.warning(
-            "Enterprise validation: auth.test unavailable; "
-            "continuing default-open"
-        )
+        logger.warning("Enterprise validation: auth.test unavailable; " "continuing default-open")
         sel().log_api_access(
             caller="gateway",
             operation="slack.enterprise_validation",
@@ -728,7 +764,8 @@ def validated_self_bot_id() -> str:
     apply its self-exclusion cannot be verified, the same posture enterprise
     validation takes for an allowlist with unverifiable workspace identity.
     """
-    return _validated_self_bot_id
+    held = _revalidation_hold
+    return held[2] if held is not None else _validated_self_bot_id
 
 
 def validated_self_user_id() -> str:
@@ -738,7 +775,8 @@ def validated_self_user_id() -> str:
     bot from one addressed only to someone else; "" means unknown, and callers
     then keep their existing behaviour.
     """
-    return _validated_self_user_id
+    held = _revalidation_hold
+    return held[3] if held is not None else _validated_self_user_id
 
 
 def set_validated_self_identity(bot_id: str = "", user_id: str = "") -> None:
@@ -828,7 +866,11 @@ def check_message_origin(event_team_id: str) -> bool:
     :func:`_diagnose_allowlist_id_spaces` warns at load time rather than letting
     that state be silent.
     """
-    if not _allowlist_configured:
+    held = _revalidation_hold
+    configured, allowed = (
+        (held[0], held[1]) if held is not None else (_allowlist_configured, _allowed_team_ids)
+    )
+    if not configured:
         # No operator allowlist — accept all message origins.
         sel().log_api_access(
             caller="gateway",
@@ -848,7 +890,7 @@ def check_message_origin(event_team_id: str) -> bool:
             error="empty_team_id",
         )
         return False
-    if event_team_id in _allowed_team_ids:
+    if event_team_id in allowed:
         sel().log_api_access(
             caller="gateway",
             operation="slack.message_origin_check",

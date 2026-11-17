@@ -321,8 +321,10 @@ def _walk_chat_folder_segments(
             # The endpoint handed back this caller's own same-name folder, which
             # a concurrent walk created after our read. Nothing new exists.
             made = {k: v for k, v in made.items() if k != "reused"}
-            if not any(str(f.get("id") or "") == str(made.get("id") or "") for f in folders):
-                folders.append(made)
+            # The returned row is the authority over the earlier read: replace a
+            # stale row for the same id in place, since the caller keeps the list.
+            folders[:] = [f for f in folders if str(f.get("id") or "") != str(made.get("id") or "")]
+            folders.append(made)
             walked = str(made.get("id") or "")
             parent = walked
             continue

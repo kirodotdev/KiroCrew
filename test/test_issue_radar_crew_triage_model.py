@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 import kiro_crew
 from kiro_crew.apps.builtins.issue_radar.backend import crew_model as cm
@@ -504,6 +505,8 @@ PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
     ("dashboard/session_control_parts/session_create.py", "create_session"): ("pick", 1),
     # A person's harness pick for a crewmate clears its DM chat's model pick.
     ("dashboard/agent_admin/crew_update.py", "_reload"): ("pick", 1),
+    # A person's save of a Bot's model clears its own chat's model pick.
+    ("dashboard/bot_chat_follow.py", "_clear_open"): ("pick", 1),
     ("dashboard/session_control_parts/model_switch.py", "apply_pending_model_pick"): ("pick", 1),
     ("dashboard/server_runtime/config_watch.py", "_switch_provider"): ("runtime", 1),
     # A code channel's session starts on the Slack Code default model a person set.
@@ -685,10 +688,18 @@ class TestStoreField(unittest.TestCase):
 class TestStoredHold(unittest.TestCase):
     """The hold on the crew record: set compare-and-set, released by a model edit."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        self.root = self._tmp_path / "radar-root"
+        self.root.mkdir()
         self.crew = cs.create_crew(
             "o", "r", {"name": "Leo", "model": WORK, "triage_model": TRIAGE}, self.root
         )

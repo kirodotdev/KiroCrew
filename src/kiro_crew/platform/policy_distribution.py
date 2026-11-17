@@ -110,6 +110,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401 - re-export
+from kiro_crew.bounded_read import bounded_read  # noqa: F401 - re-export
 from kiro_crew.config.paths import config_dir  # noqa: F401 - re-export
 from kiro_crew.constants import ENV_TRUTHY  # noqa: F401 - re-export
 from kiro_crew.platform.context import PlatformCompositionError
@@ -1154,6 +1155,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_source,
         _request_header_secrets,
         _unavailable,
+        _without_legacy_terminal_refusal,
         central_ceiling_installed,
         effective_max_cache_age,
         effective_refresh_interval,

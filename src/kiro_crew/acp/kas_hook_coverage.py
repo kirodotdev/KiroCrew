@@ -27,6 +27,7 @@ from kiro_crew.acp.kas_permissions import (
     _MCP_CAPABILITY,
     _MCP_PREFIX,
     CAPABILITY_BY_TOOL,
+    CREW_ANSWERED_HOOK_HELD_KEY,
     HELD_MCP_PREFIX,
     HOOK_BUILTIN_MATCHER,
     HOOK_GATEABLE_CAPABILITIES,
@@ -299,6 +300,83 @@ def withhold_hook_gated_auto_approval(
         asks.append({"capability": "shell", "match": [UNPARSEABLE_SHELL_GUARD], "effect": "deny"})
     base = policy.get("rules") if isinstance(policy, dict) else None
     return {"rules": [*(base if isinstance(base, list) else []), *asks]}
+
+
+def hook_held_grants(
+    policy: dict[str, Any] | None,
+    held: dict[str, Any] | None,
+    *,
+    mcp_tool_names: McpToolNames | None = None,
+) -> list[str]:
+    """The ``@server/tool`` refs *policy* auto-approves and *held*, its
+    :func:`withhold_hook_gated_auto_approval` result, does not.
+
+    Those are the MCP grants a hook's ``ask`` took from KAS. Each such call comes
+    back as a permission request, and on a surface that fires the PreToolUse hooks
+    on it Crew's gate answers it on the spec's behalf after its deny rows and
+    governance (``gate_tiers._tier_batch_guard_grant``), so the granted tool still
+    runs with no prompt and the hook still runs, as on kiro-cli. A surface that
+    does not tell the gate it fires them (a channel bot's turn) keeps asking. Both policies are read as KAS
+    resolves them (``batch_guard._auto_approved``), so an author's own ``ask`` or
+    ``deny`` keeps a tool out, and it prompts as written.
+
+    The candidates are the exact ``<server>/<tool>`` entries of the policy's ``mcp``
+    ``allow`` rules and, for a grant written as a glob, each cached tool
+    (*mcp_tool_names*, the MCP probe cache by default) of every server the policy
+    auto-approves. A glob grant on a server with no cached tool list adds none, so
+    its calls still prompt.
+    """
+    # Deferred: the batch guard reads ``kas_permissions`` at call time too, so
+    # neither module imports the other at load.
+    from kiro_crew.acp.batch_guard import _auto_approved
+
+    before = policy.get("rules") if isinstance(policy, dict) else None
+    after = held.get("rules") if isinstance(held, dict) else None
+    if not isinstance(before, list) or not isinstance(after, list):
+        return []
+    candidates: set[str] = set()
+    for rule in before:
+        if not isinstance(rule, dict) or rule.get("effect") != "allow":
+            continue
+        match = rule.get("match") if rule.get("capability") == _MCP_CAPABILITY else None
+        candidates.update(
+            p
+            for p in (match if isinstance(match, list) else ())
+            if isinstance(p, str) and "/" in p and not _GLOB_METACHARACTERS.intersection(p)
+        )
+    names = mcp_tool_names if mcp_tool_names is not None else _cached_tool_names
+    for server in auto_approved_mcp_servers(policy) or ():
+        candidates.update(f"{server}/{tool}" for tool in names(server) or ())
+    return sorted(
+        f"{_MCP_PREFIX}{resource}"
+        for resource in candidates
+        if _auto_approved(before, resource) and not _auto_approved(after, resource)
+    )
+
+
+def _entry_hook_held(entry: Any) -> frozenset[str]:
+    """The :data:`~kiro_crew.acp.kas_permissions.CREW_ANSWERED_HOOK_HELD_KEY` refs of
+    one projected entry. Anything that is not a list of strings answers empty."""
+    raw = entry.get(CREW_ANSWERED_HOOK_HELD_KEY) if isinstance(entry, dict) else None
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(n for n in raw if isinstance(n, str) and n)
+
+
+def projected_hook_held(custom_agents: Any, agent_id: str) -> frozenset[str]:
+    """The :func:`hook_held_grants` refs of *agent_id*'s registered entry, matched by
+    id exactly like ``kas_agents.projected_crew_answered``. Kept apart from that set:
+    the gate answers them only on a surface that fires the PreToolUse hooks."""
+    from kiro_crew.acp.kas_agents import _registered_entry
+
+    return _entry_hook_held(_registered_entry(custom_agents, agent_id))
+
+
+def switched_hook_held(custom_agents: Any, mode_id: str) -> frozenset[str]:
+    """Those refs once a KAS mode switch moves the session to *mode_id* (a wire id)."""
+    from kiro_crew.acp.kas_agents import _switched_entry
+
+    return _entry_hook_held(_switched_entry(custom_agents, mode_id))
 
 
 def _cached_tool_names(server: str) -> list[str] | None:

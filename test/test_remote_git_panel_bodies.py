@@ -694,11 +694,12 @@ def test_an_indented_pem_with_no_footer_in_a_complete_file_shows_no_key_line(
     output = session_browse._git_diff_from_bodies(bodies, "config.yaml")["output"]
     assert "config:" in output and REDACTED_CREDENTIAL_TAG in output
     assert not any(line in output for line in key_lines)
-    # The shared redactor alone masks a footerless key only through unindented
-    # lines, so without the withholding step this complete file leaks.
+    # With the structured detectors on, the shared redactor masks an
+    # unterminated key block to the end of the text by itself, so the file
+    # stays masked even without the withholding step.
     monkeypatch.setattr(session_browse, "_withhold_unclosed_pem", lambda body: body)
-    leaked = session_browse._git_diff_from_bodies(bodies, "config.yaml")["output"]
-    assert any(line in leaked for line in key_lines)
+    unwithheld = session_browse._git_diff_from_bodies(bodies, "config.yaml")["output"]
+    assert not any(line in unwithheld for line in key_lines)
 
 
 def test_a_complete_pem_uses_whole_body_redaction(tmp_path):

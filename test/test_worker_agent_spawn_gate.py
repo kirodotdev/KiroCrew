@@ -563,8 +563,17 @@ def test_the_harness_spawn_seam_is_reached_only_through_the_gated_owner():
             invocations.append(f"{path.name}:{lineno}")
     assert sorted(name.split(":")[0] for name in invocations) == [
         "client_start.py",
+        "deepseek.py",
         "runtime_spawn_launch.py",
     ], f"the spawn seam is invoked from an unexpected place: {invocations}"
+    # The deepseek call is the harness handing its spawn to the per-process launch
+    # it wraps, so it sits inside ``DeepseekHarness.resolve_spawn`` and is reached
+    # only through the runtime's gated call above.
+    import inspect
+
+    from kiro_crew.acp.harness.deepseek import DeepseekHarness
+
+    assert "launch.resolve_spawn(" in inspect.getsource(DeepseekHarness.resolve_spawn)
     assert not any(issubclass(cls, HarnessAdapter) for cls in _PROCESS_ADAPTERS.values())
     for backend in ACP_BACKENDS_ACP_RUNTIME:
         assert process_adapter_for(backend) is None
@@ -605,6 +614,7 @@ def test_a_re_derive_during_the_hosts_own_pre_spawn_work_does_not_kill_the_sessi
     rt._model = None
     rt._sandbox_mode = "auto"
     rt._member_context = False
+    rt._extra_env = {}
     # ``_harness`` is a cached property over the backend, so the stub is installed
     # through the cache slot the runtime itself fills.
     rt._harness_resolved = _EditingHarness()
@@ -691,7 +701,52 @@ def test_the_kas_projection_reads_nothing_after_the_gate(tmp_path, monkeypatch):
     assert extras.custom_agents
     assert reads == [], f"the harness re-read the spec after the gate: {reads}"
     snap = agent.require_fresh_derived_spec("kirocrew-worker", str(tmp_path / "wd"))
-    assert snap is not None and projected == [snap.spec]
+    from kiro_crew.acp.kas_steering import with_kas_steering
+
+    # The gate's object, with only the steering entries KAS loads itself dropped.
+    assert snap is not None and projected == [with_kas_steering(snap.spec, str(tmp_path / "wd"))]
+
+
+def test_the_kas_steering_check_reads_the_sessions_own_folder(tmp_path, monkeypatch):
+    """A subagent's session runs in its own folder on the parent's runtime: KAS loads
+    that folder's steering, so the steering check and the inheritance notice read it."""
+    import asyncio
+
+    from kiro_crew import agent_state
+    from kiro_crew.acp.harness import harness_for
+    from kiro_crew.acp.harness import kas as kas_harness
+    from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    monkeypatch.setattr(agent_state, "config_dir", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8")
+    agent._install_worker_agent()
+
+    import kiro_crew.config.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: tmp_path)
+    monkeypatch.setattr(agent, "require_fork_governance", lambda a, w: None)
+
+    seen: list[object] = []
+    real_steering = kas_harness.with_kas_steering
+
+    def _record(spec, work_dir):
+        seen.append(work_dir)
+        return real_steering(spec, work_dir)
+
+    monkeypatch.setattr(kas_harness, "with_kas_steering", _record)
+    monkeypatch.setattr(
+        kas_harness, "inheritance_off_notice", lambda work_dir: seen.append(work_dir) or ""
+    )
+
+    session_dir = str(tmp_path / "subagent-cwd")
+    asyncio.run(
+        harness_for(ACP_BACKEND_KAS).session_extras(
+            "kirocrew-worker", work_dir=str(tmp_path / "wd"), session_cwd=session_dir
+        )
+    )
+
+    assert seen == [session_dir, session_dir]
 
 
 def test_the_kas_projection_cannot_be_called_without_a_verified_spec():
@@ -833,11 +888,11 @@ def test_a_default_spec_refused_at_the_read_gate_refuses_the_spawn(tmp_path, mon
 
 
 def test_the_gate_has_no_early_return_at_all(tmp_path):
-    """By construction rather than by audit. Every earlier version of this check grew an
-    early ``return`` for a case it could not evaluate — a missing default, an unreadable
-    one — and each was a fail-OPEN pass on the one path where the mirror is
-    unverifiable. The freshness body now has NO return statement, so falling off the end
-    is reachable only after a verified match or a successful re-derive."""
+    """By construction rather than by audit. An early ``return`` for a case the check
+    cannot evaluate — a missing default, an unreadable one — is a fail-OPEN pass on the
+    one path where the mirror is unverifiable, so the freshness body has NO return
+    statement and falling off the end is reachable only after a verified match or a
+    successful re-derive."""
     import ast
     import inspect
     import textwrap

@@ -47,11 +47,13 @@ def _instance() -> BenchInstance:
     )
 
 
-# ── Finding 1: the store's width comes from the vector, not from a constant ──
+# ── the store's width comes from the vector, not from a constant ─────────────
 
 
 @pytest.mark.parametrize("width", [8, 768, 1024, 1536])
-def test_the_store_adopts_the_embedders_actual_width(tmp_path: Path, width: int) -> None:
+def test_the_store_adopts_the_embedders_actual_width(
+    tmp_path: Path, width: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A non-1024 embedder must ingest cleanly.
 
     `VectorMemoryStore` defaults to 1024 and gates every write on that width, so
@@ -59,6 +61,8 @@ def test_the_store_adopts_the_embedders_actual_width(tmp_path: Path, width: int)
     FAISS add. 1024 is included so the test cannot pass by being width-agnostic in
     a way that breaks the normal case.
     """
+    # One fake vector for every text trips FAISS's near-duplicate check.
+    monkeypatch.setattr("kiro_crew.vector_memory._HAS_FAISS", False)
     loaded = ingest_instance(
         _instance(),
         db_path=tmp_path / f"w{width}.db",
@@ -137,7 +141,7 @@ def test_a_failed_width_probe_refuses(tmp_path: Path) -> None:
     assert "width" in str(excinfo.value)
 
 
-# ── Finding 2: equal counts are not the same population ──────────────────────
+# ── equal counts are not the same population ─────────────────────────────────
 
 
 def _result(qid: str, ranked: tuple[str, ...]) -> QueryRetrieval:

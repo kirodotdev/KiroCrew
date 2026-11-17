@@ -36,11 +36,51 @@ The `spawn_run` tool accepts:
 - `model` — model override for this spawn (e.g. `deepseek-3.2`)
 - `reasoning_effort` — `low` / `medium` / `high` / `xhigh` / `max`, batch-wide
 - `backend` — the agent harness the run starts on instead of the gateway default (`kiro`, `claude`, `codex`, or any other backend installed and allowed on this gateway), batch-wide. A `tasks` entry can set its own `backend` (and `model`) so one wave can send each task to a different harness. A backend that is not allowed here, not installed on this machine, or installed only after the gateway started (restart the gateway to use it), is refused at spawn time with the list of backends that can start (and, for an allowed one that is missing, the command that installs it) rather than replaced by the default. Pass `model` as an id from that backend's own list. A `spawn_continue` follow-up, and a retry, ask for the same backend as the original run
+- `light` — mark a helper job (search, lookup, run-and-report, summarize) as light, batch-wide; a `tasks` entry's own `true` or `false` wins for that task. See [Light helpers](#light-helpers)
 - `keep` — make the run a continuable conversation with guaranteed resumability and longer retention
 - `cwd` — absolute launch directory, which must be under a configured `subagent_cwd_allowed_roots` entry
 
 Setting `model`, `reasoning_effort` or `backend`, or `keep: true`, forces the
 dedicated-process path instead of session sharing.
+
+#### Light helpers
+
+A helper that only searches, looks something up, runs a command and reports, or
+summarizes rarely needs the chat's model at full reasoning effort. With
+`agent.subagent_light_tier` on, a spawn marked `light` runs on the model in
+`agent.role_models.subagent_light` and the effort in
+`agent.role_efforts.subagent_light`. Both pins can be written through the
+configuration API like the plain sub-agent pins; the Settings page does not list
+them yet:
+
+```json
+{ "agent": { "subagent_light_tier": true,
+             "role_models": { "subagent_light": "claude-haiku-4.5" },
+             "role_efforts": { "subagent_light": "low" } } }
+```
+
+- A `model` or `reasoning_effort` the call names always wins; the light pin fills
+  only the one it left unset.
+- A light spawn beats the plain `agent.role_models.subagent` pin; any other spawn
+  keeps it.
+- A spawn that names an `agent`, a `crew` or a `backend` is not changed.
+- A pinned model or effort starts the sub-agent in its own process, like any
+  per-spawn pin (see above).
+- With the setting off, which is the default, every spawn picks the model and
+  effort it always has, and a `light` flag is ignored without a word. With the
+  setting on, a `light` flag that cannot apply (no pin is set for what the call
+  left unset, the pin is not a usable model id) is dropped and the spawn receipt
+  says why, naming the setting it found empty.
+- The model pin applies only where the run starts on the gateway default backend
+  (`agent.acp_backend`), including a backend inherited from a chat created on that
+  same backend. Where the run starts is worked out first, the way the run itself
+  will be started: a helper started by a Bot's worker runs on that Bot's backend.
+  On any other backend, or one that cannot be worked out, only the effort pin
+  applies and the receipt's `warning` says the model pin was dropped.
+- The receipt's `light` line reports what the tier filled in. The effort verdicts
+  (`effort_applied`, `effort_dropped`, `effort_pending`) still report only an
+  effort the call named itself, so a light spawn that took its effort from the
+  pin shows the `light` line and no effort verdict.
 
 #### When to delegate
 
@@ -94,7 +134,7 @@ durably, so it stays dismissed after a restart. A dismissal that answers HTTP 50
 - **Memory guard**: a start is admitted only if at least 2 GB of memory stays available after it, counting what starts still warming up will take. A dedicated-process start (a `model`/`reasoning_effort` override, `keep`, `bare`, `allowed_tools`, or a role model pin) is priced at what such a runtime settles at: about 1 GB until runs of that agent have been measured, then their learned size capped at 2 GB, and never less than `agent.subagent_cost_gb` (0.5 GB by default). A start that shares its parent's runtime is priced about 0.35 GB lower, since it still starts the agent's MCP servers. Each owes that price until two reaper sweeps have measured it (or, where they cannot, two sweep intervals after it first answered), then nothing. If a shared start has to fall back to its own process, the guard re-checks before that process starts. When headroom is insufficient the start waits in the queue rather than failing (an incognito or temporary spawn, or one with the task queue off, waits in memory) and is re-checked as soon as memory can have moved (a subagent finishing, or a free-memory reading taken every few seconds while something waits, which also notices a warming one settling), at the latest when `agent.admit_wait_secs` passes, for at most `agent.subagent_queue_max_wait_secs` (30 minutes by default) of being held back; past that the spawn ends without starting and its parent gets the result `never started: waiting for memory (not enough memory freed up in time); retry once memory frees up`. While it waits, the chip names that limit as the time after which the spawn gives up. Only this floor holds a spawn: the "critically low" memory posture (`agent.resource_critical_gb`) defers cron firings, not subagents. While another chat's subagents wait for memory, a chat that already runs its share of dedicated subagents waits for its next top-level start too, so the memory goes to the waiting chat first (shares follow `agent.lane_weights`); a nested subagent that shares its parent's runtime starts at the floor itself, since its parent already holds its memory. Configure the floor with `agent.spawn_min_memory_gb`; set it to 0 to disable this guard. An install still carrying the old 4.0 default moves to 2.0 once; a value set back afterwards is kept.
 - **Nesting**: a subagent can spawn its own subagents. A nested spawn is tracked apart from the parent's wave, so its children are not counted against that wave's completion total
 - **macOS memory pressure**: on macOS the memory guard also reads the kernel's memory-pressure level (the one Activity Monitor graphs). While it is WARN or CRITICAL and one of this gateway's dedicated subagents is running, a new start waits even when the free-memory figure is above the floor; the chip says "macOS reports memory pressure". Temporary and incognito spawns wait the same way. A held start is re-checked every 15 seconds and whenever a subagent finishes; if it has been held for `agent.subagent_queue_max_wait_secs` (30 minutes by default) with no other top-level start from the same chat beginning in that time (the starts ahead of it in that chat's queue, from any `spawn_run` batch; scheduled and background jobs share one queue, so a start from any of them counts for all of them), it is ended without starting ("never started: waiting for memory"), and the wave's results count it among those that never started, to resubmit once memory eases; and while an episode lasts longer than that, new starts it would hold end at once. With no dedicated subagent of ours running, the start is judged on the figure alone, and a subagent's own nested subagents are never held. `agent.spawn_min_memory_gb = 0` turns this off with the rest of the guard
-- **Redaction**: task strings in SubagentInfo are redacted (credentials + exfiltration URLs) before surfacing to Slack/dashboard
+- **Redaction**: task strings in SubagentInfo are redacted (credentials, inside URLs too) before surfacing to Slack/dashboard
 
 ## Named Agents
 

@@ -403,11 +403,11 @@ class TestLiveSessionFollowsDefaultChange:
         assert _session_model(state) == SLOT_PIN
 
     @pytest.mark.asyncio
-    async def test_crew_pin_is_never_reset(self, tmp_path, _runner_config):
+    async def test_a_session_already_on_the_bot_model_is_kept(self, tmp_path, _runner_config):
         cfg = _config(tmp_path, crew_model=CREW_PIN)
         _runner_config(cfg)
         _grant_researcher(cfg)
-        state = self._live_state(tmp_path, self.OLD_DEFAULT)
+        state = self._live_state(tmp_path, CREW_PIN)
         slot = _slot()
         slot.agent = "researcher"
 
@@ -658,10 +658,8 @@ class TestInheritingSlotStaysUnpinned:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("mid_turn", [False, True], ids=["pre-turn-site", "late-site"])
-    async def test_a_crew_pin_still_backfills_an_empty_slot(
-        self, tmp_path, _runner_config, mid_turn
-    ):
-        """Out of this rule: a slot that pins nothing but whose crewmate does."""
+    async def test_a_bot_pin_does_not_pin_the_slot_either(self, tmp_path, _runner_config, mid_turn):
+        """A Bot thread with no pick of its own keeps following the Bot's model."""
         cfg = _config(tmp_path, crew_model=CREW_PIN, default="auto")
         _runner_config(cfg)
         _grant_researcher(cfg)
@@ -677,8 +675,7 @@ class TestInheritingSlotStaysUnpinned:
             await _drive(state, slot)
 
         assert _requested(state) == CREW_PIN
-        # The served id, not the pin: only the backfill writes what was served.
-        assert slot.model == self.SERVED
+        assert slot.model == ""
 
 
 class TestInheritedDefaultThreadBoundary:

@@ -38,6 +38,7 @@ import { api } from '../api/client'
 
 const SLOT = 'parent-slot-1'
 const FILE = '/home/user/notes/a.md'
+const DIR = '/home/user/notes/'
 
 function storeWithReply(content: string) {
   return createTestStore({
@@ -95,6 +96,9 @@ describe('SideChat opens paths and artifacts through the host', () => {
   const realFetch = globalThis.fetch
 
   beforeEach(() => {
+    // The api mocks live for the whole file: clear their calls, so the
+    // fallback test's reveal is not counted against the tests that refuse one.
+    vi.clearAllMocks()
     __resetPathKindCache()
     stubPathKinds(() => 'file')
   })
@@ -112,6 +116,25 @@ describe('SideChat opens paths and artifacts through the host', () => {
     fireEvent.click(await fileChip(container))
     expect(onFileOpen).toHaveBeenCalledWith(FILE)
     // The host opener took the click; nothing was handed to the OS.
+    expect(api.revealPath as unknown as Mock).not.toHaveBeenCalled()
+  })
+
+  it('a folder chip in a side reply opens the folder through onFolderOpen', async () => {
+    stubPathKinds((p) => (p === DIR ? 'dir' : 'file'))
+    const onFolderOpen = vi.fn()
+    const { container } = renderWithProviders(
+      <SideChat slot={SLOT} onFolderOpen={onFolderOpen} />,
+      { store: storeWithReply(`They are in \`${DIR}\`.`) },
+    )
+    let chip: HTMLElement | null = null
+    await waitFor(() => {
+      chip = container.querySelector(`code[data-path="${DIR}"][data-path-kind="dir"]`)
+      expect(chip).not.toBeNull()
+    })
+    fireEvent.click(chip!)
+    expect(onFolderOpen).toHaveBeenCalledWith(DIR)
+    // Before the side chat handed the folder opener down, this click took the
+    // OS reveal, which a headless gateway answers by copying the path.
     expect(api.revealPath as unknown as Mock).not.toHaveBeenCalled()
   })
 

@@ -24,7 +24,7 @@ Routes (as seen by the backend after prefix stripping by gateway):
   POST /api/pod/provision {name}  -> start async build, returns {run_id}
   POST /api/rebase  {name}
   GET  /api/health            -> {"status": "ok", "start_id": ...}  (restart handshake; proxied)
-  GET  /health                -> same body, HMAC-exempt (gateway-internal liveness poll only)
+  GET  /health                -> {"status": "ok"}, HMAC-exempt (gateway-internal liveness poll only)
 """
 
 from __future__ import annotations
@@ -208,14 +208,15 @@ async def dev_fleet_cleanup(app: web.Application) -> None:
 def create_app() -> web.Application:
     """Build the aiohttp Application with all routes and lifecycle hooks."""
     app = web.Application(middlewares=[http_api.hmac_proxy_middleware])
-    app.router.add_get("/health", http_api.api_health)
+    app.router.add_get("/health", http_api.api_liveness)
     # The dashboard reaches this backend ONLY through the gateway proxy, which
     # matches /apps/dev-fleet/api/{path} and forwards to /api/{path}
     # (handle_app_api_proxy). The bare /health above is reachable only by the
     # gateway's own in-process liveness poll (127.0.0.1:<port>/health, and it is
-    # the one path the HMAC middleware exempts). So the restart-identity
-    # handshake MUST poll a PROXIED path -- expose the same handler
-    # under /api/health, which the browser reaches at /apps/dev-fleet/api/health.
+    # the one path the HMAC middleware exempts), and it answers liveness alone.
+    # So the restart-identity handshake MUST poll a PROXIED path -- the identity
+    # handler is registered under /api/health, which the browser reaches at
+    # /apps/dev-fleet/api/health.
     app.router.add_get("/api/health", http_api.api_health)
     app.router.add_get("/api/fleet", http_api.api_dev_fleet_fleet)
     app.router.add_get("/api/worktree", http_api.api_dev_fleet_worktree)

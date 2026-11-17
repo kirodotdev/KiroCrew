@@ -96,7 +96,9 @@ def _loop_stall_breaker_verdict(self: CronService) -> str | None:
             attribution.unrelated_abandoned,
         )
     paused: str | None = None
-    if attribution.is_cron and attribution.job is not None:
+    # A host-wide pause ended the gateway whatever job was in flight, so the
+    # job is not what the breaker exists to stop.
+    if attribution.is_cron and attribution.job is not None and attribution.host_pause_secs is None:
         settled, paused = self._pause_for_loop_stall(attribution)
         if not settled:
             return None

@@ -29,6 +29,7 @@ and every frame carrying them are untouched.
 from __future__ import annotations
 
 import time
+from bisect import bisect_right
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
@@ -80,6 +81,9 @@ APPEND_CONTENTION_MAX_DELAY = 0.2
 #: tail (a history page, the newest seq) rather than for the whole history, which
 #: the store pages and streams instead.
 MAX_RETAINED_EVENTS = 5000
+
+#: ``(size, mtime_ns, ctime_ns, inode)`` of a log file: what :meth:`MemberLog._stat` reads.
+_Stat = tuple[int, int, int, int]
 
 
 class LogCorrupt(Exception):
@@ -153,9 +157,9 @@ class MemberLog:
         self.retained_from = 0
         self._crew_log: CrewLog | None = None
         self._loaded = False
-        #: The (size, mtime_ns) the loaded events were read at, or None when
-        #: nothing is loaded. Compared by :meth:`refresh_if_changed`.
-        self._loaded_stat: tuple[int, int] | None = None
+        #: The stat the loaded events were read at, or None when nothing is loaded
+        #: or the read raced a write. Compared by :meth:`refresh_if_changed`.
+        self._loaded_stat: _Stat | None = None
 
     @property
     def path(self) -> Path:
@@ -208,13 +212,19 @@ class MemberLog:
         self._loaded = False
         self._loaded_stat = None
 
-    def _stat(self) -> tuple[int, int] | None:
-        """``(size, mtime_ns)`` of the log file, or None when it is absent."""
+    def _stat(self) -> _Stat | None:
+        """``(size, mtime_ns, ctime_ns, inode)`` of the log file, or None when absent.
+
+        The change time and the inode are there for the append path: a rewrite that
+        keeps the size and puts the modification time back still moves the change
+        time, and a file swapped in by rename has another inode. Windows reports the
+        creation time in that field, so there the change time shows nothing.
+        """
         try:
             st = self.path.stat()
         except OSError:
             return None
-        return (st.st_size, st.st_mtime_ns)
+        return (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)
 
     def refresh_if_changed(self) -> bool:
         """Reload when the file changed under us; answer whether it did.
@@ -314,18 +324,73 @@ class MemberLog:
         if self._crew_log is None:
             raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
         stored = _stored_type(type)
+        before = self._stat()
         entry = self._append_through_contention(stored, data)
         event = _as_event(entry)
-        # Refresh from disk rather than appending to the cached list: another
-        # PROCESS may have committed entries ahead of ours, and a cache grown only by
-        # our own entry would hold a hole at those seqs.
-        #
-        # This reload is most of an append's cost (about 3 ms on an empty log, 52 ms
-        # at 8,000 events). Dropping it only moves the cost to the next append, which
-        # needs the header; a cheap append needs the header read split from the parse.
-        self._loaded = False
-        self._ensure_loaded()
+        # Another PROCESS may have committed entries ahead of ours, and a cache grown
+        # only by our own entry would hold a hole at those seqs. So the cached list
+        # takes the entry only when the file proves it is the events held plus this
+        # one; otherwise it is re-read from disk, which costs a parse of the whole log.
+        if not self._adopt_own_append(event, before):
+            self._loaded = False
+            self._ensure_loaded()
         return event
+
+    def _adopt_own_append(self, event: Event, before: _Stat | None) -> bool:
+        """Add the event this instance just wrote to the retained tail; ``True`` if it did.
+
+        A whole-log parse per append makes an append cost the member's lifetime.
+        This skips the parse when the file is provably the events held followed by
+        this event, and answers ``False`` (the caller reloads) otherwise. Four facts
+        make the proof, each read from the file itself:
+
+        * *before*, the stat sampled just ahead of the write, equals the stamp the
+          events held were loaded at. So the file was still the one that was read:
+          same inode, size, modification time and change time.
+        * The newest record on disk is this event.
+        * That record begins at the byte where the loaded file ended. So nothing was
+          added or removed ahead of it after *before* was sampled.
+        * The record before it is the newest event held. So the last record was not
+          replaced by another of the same length in that window.
+
+        The new stamp is sampled BEFORE the tail is read. A write landing after the
+        sample then leaves the file unequal to the stamp, and the next
+        :meth:`refresh_if_changed` reloads; sampled after, the stamp would vouch for
+        a record the events held do not have.
+
+        Not covered: an older record rewritten in place to the same length within the
+        clock tick of the load stamp. Timestamps cannot see it, here or on a read. On
+        Windows the same rewrite with its modification time put back is not seen
+        either, at any distance in time, because no change time is reported there.
+
+        The fresh handle replaces the cached one, as a reload does, so the write lease
+        the append took is released here too.
+        """
+        stamp = self._loaded_stat
+        if not self._loaded or stamp is None or before != stamp:
+            return False
+        after = self._stat()
+        try:
+            crew_log = CrewLog.open(KIND_MEMBER, self.slug)
+            tail = crew_log.tail_records(2)
+        except CrewLogError:
+            return False
+        if after is None or not tail or _as_event(tail[-1][0]) != event:
+            return False
+        if tail[-1][1] != stamp[0]:
+            return False
+        if self.events and (len(tail) < 2 or _as_event(tail[-2][0]) != self.events[-1]):
+            return False
+        # A new list, not an in-place change: a reader may still hold the old one.
+        events = [*self.events, event]
+        if len(events) > MAX_RETAINED_EVENTS:
+            events = events[-MAX_RETAINED_EVENTS:]
+            self.retained_from = events[0]["seq"]
+        self.events = events
+        self._crew_log = crew_log
+        self.header = crew_log.header.to_dict()
+        self._loaded_stat = after
+        return True
 
     def append_if(
         self, type: str, data: dict, *, max_tail_seq: int, deadline: float | None = None
@@ -352,6 +417,8 @@ class MemberLog:
             raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
         stored = _stored_type(type)
         entry = self._append_through_contention(stored, data, max_tail_seq, deadline)
+        # shortcut: a closer still re-reads the whole log, once per ended patrol.
+        # Route it through ``_adopt_own_append`` if closers ever become frequent.
         self._loaded = False
         self._ensure_loaded()
         return None if entry is None else _as_event(entry)
@@ -453,6 +520,24 @@ class MemberLog:
         if self._crew_log is None:
             return iter(())
         return (_as_event(entry) for entry in self._crew_log.iter_from(1))
+
+    def iter_held_events_after(self, floor: int) -> Iterator[Event]:
+        """Events above *floor*, oldest first, as far as this instance has loaded.
+
+        Served from the retained tail when it holds every event above *floor*, which
+        costs the events returned. A *floor* below the tail's window is streamed from
+        the store instead, since the tail would drop the events below it.
+
+        Unlike :meth:`iter_events` this does not re-read the file, so it is only for
+        a caller that has just loaded or appended and wants nothing newer than that.
+        """
+        self._ensure_loaded()
+        if self._crew_log is None:
+            return iter(())
+        if self.retained_from and self.retained_from > floor + 1:
+            return (ev for ev in self.iter_events() if ev["seq"] > floor)
+        events = self.events
+        return iter(events[bisect_right(events, floor, key=lambda ev: ev["seq"]) :])
 
     def last_seq(self) -> int:
         """The newest event's seq, or 0 for a log with no events.

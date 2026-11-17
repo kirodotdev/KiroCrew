@@ -544,6 +544,38 @@ class TestApiUsageSeries:
         assert (status, body["code"]) == (400, "invalid_dimension")
 
     @pytest.mark.asyncio
+    async def test_metric_cost_stacks_the_dollar_cost_and_credits_stays_the_default(
+        self, tmp_path, monkeypatch
+    ):
+        """A dollar-billed harness writes zero credits and a dollar ``cost`` per row."""
+        shard_dir = _patch_shards(monkeypatch, tmp_path)
+        _write_shard(
+            shard_dir,
+            _day(),
+            [
+                _record(_stamp(), credits=0.0, cost=2.5, slot="cron:tick"),
+                _record(_stamp(), credits=4.0, cost=0.0, slot="chat-1-1700000000"),
+            ],
+        )
+
+        status, body = await self._get("?metric=cost")
+        assert status == 200
+        assert (body["metric"], body["total"]) == ("cost", 2.5)
+        assert [s["key"] for s in body["series"]] == ["cron"]
+
+        status, body = await self._get("")
+        assert (body["metric"], body["total"]) == ("credits", 4.0)
+        assert [s["key"] for s in body["series"]] == ["dashboard"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_metric_is_a_400(self, tmp_path, monkeypatch):
+        _patch_shards(monkeypatch, tmp_path)
+
+        status, body = await self._get("?metric=tokens")
+
+        assert (status, body["code"]) == (400, "invalid_metric")
+
+    @pytest.mark.asyncio
     async def test_cohort_dimension_over_the_wire(self, tmp_path, monkeypatch):
         shard_dir = _patch_shards(monkeypatch, tmp_path)
         _write_shard(shard_dir, _day(), [_record(_stamp(), credits=1.0)])

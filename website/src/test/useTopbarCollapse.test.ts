@@ -46,7 +46,7 @@ const TARGETS: Record<TopbarSide, [number, () => HTMLElement][]> = {
     [1, () => el('span', 'tb-drop-metrics')],
     [3, () => el('span', 'tb-drop-usage')],
     [4, () => el('span', 'tb-drop-feedback', [el('span', 'tb-drop-feedback-label')])],
-    [5, () => el('div', 'tb-capsule', [el('span', '', [], { 'data-liquid-glass-layer': '' }), el('span', ''), el('span', '')])],
+    [5, () => el('div', 'tb-capsule', [el('span', '', [], { 'data-liquid-glass-layer': '' }), el('span', 'tb-capsule-keep'), el('span', '')])],
   ],
 }
 
@@ -351,9 +351,9 @@ describe('index.css measured ladders', () => {
       '.tb-right .tb-drop-usage',
       '.tb-right .tb-drop-feedback',
       // The capsule is a Liquid Glass host whose effect layers come first, so the
-      // rung skips `[data-liquid-glass-layer]` on both sides, as the container
-      // ladder's terminal rung does.
-      '.tb-right .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer])',
+      // rung hides what follows the connection dot, as the container ladder's
+      // terminal rung does.
+      '.tb-right .tb-capsule > .tb-capsule-keep ~ *',
       // Last, so the update pill's label cannot push the bell out of the group.
       '.tb-right .tb-drop-update-label',
     ],
@@ -481,6 +481,18 @@ describe('index.css measured ladders', () => {
     expect(s).toMatch(/\.tb-measured\.tbr-5 \.tb-right \.tb-metrics-notice-msg\{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect\(0,0,0,0\);white-space:nowrap;border-width:0\}/)
     expect(s).not.toMatch(/\.tbr-[1-4] [^{]*\.tb-metrics-notice/)
     expect(s).not.toMatch(/\.tb-metrics-notice\{[^}]*(width:0|overflow:hidden)/)
+  })
+
+  it('folds the offline notice to its dot only at the last actions rung', async () => {
+    // The cause in words outranks every other readout, so it is the last thing
+    // the ladder takes, and only visually: the sr-only set keeps the text.
+    const s = await css()
+    expect(s).toMatch(/\.tb-measured\.tbr-6 \.tb-right \.tb-offline-notice-msg\{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect\(0,0,0,0\);white-space:nowrap;border-width:0\}/)
+    expect(s).not.toMatch(/\.tbr-[1-5] [^{]*\.tb-offline-notice-msg/)
+    // Its icon goes with the text, so the capsule's red dot is the one mark left.
+    // The same sr-only set, not display:none: each rung has one display:none rule.
+    expect(s).toMatch(/\.tb-measured\.tbr-6 \.tb-right \.tb-offline-notice > svg\{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect\(0,0,0,0\);white-space:nowrap;border-width:0\}/)
+    expect(s).not.toMatch(/\.tbr-[1-5] [^{]*\.tb-offline-notice >/)
   })
 
   it('lets pinned chips go icon-only once their names are hidden', async () => {

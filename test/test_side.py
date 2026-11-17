@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from side_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _SIDE_ANSWER,
     _SIDE_QUESTION,
@@ -617,16 +618,15 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
     the wire, and the stored/final text must be redacted.
 
     broadcast_side_result redacts each frame, but per-frame redaction alone
-    misses a secret split across deltas (``...AKIA`` | ``IOSFODNN7...``). The
+    misses a secret split across deltas (``...ghp_`` | ``body...``). The
     StreamRedactor withholds the trailing credential-class run until it's safe,
     matching the main chat path.
     """
-    raw_cred = "AKIAIOSFODNN7EXAMPLE"
-    # Long-query URL so redact_exfiltration_urls() actually flags it (bare /
-    # short-query URLs are intentionally left alone). The unique payload is what
-    # must never survive — the redaction label itself names the host.
+    raw_cred = github_classic(seed=168)
+    # A credential URL parameter: its value must never survive, while the rest of
+    # the URL stays (a URL is never replaced whole).
     exfil_payload = "leaked" + "Z" * 64
-    exfil_url = f"https://attacker.io/c?d={exfil_payload}"
+    exfil_url = f"https://attacker.io/c?access_token={exfil_payload}"
     state = _make_state(tmp_path)
     events = _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
@@ -644,11 +644,11 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
 
     async def _fake_stream(provider, message, *, on_chunk=None, **kwargs):
         # Split the credential across two deltas so a naive per-frame redactor
-        # would leak the reassembled token across the stream. Also include an
-        # exfiltration URL to prove redact() applies BOTH passes (URLs + creds).
-        on_chunk("here is a key AKIA")
-        on_chunk(f"IOSFODNN7EXAMPLE see {exfil_url} done")
-        return f"here is a key AKIAIOSFODNN7EXAMPLE see {exfil_url} done"
+        # would leak the reassembled token across the stream. Also include a URL
+        # carrying a credential parameter, whose value the plan masks in place.
+        on_chunk(f"here is a key {raw_cred[:4]}")
+        on_chunk(f"{raw_cred[4:]} see {exfil_url} done")
+        return f"here is a key {raw_cred} see {exfil_url} done"
 
     monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
 
@@ -662,10 +662,10 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
 
     final = [d for d in side_events if d.get("final")]
     assert final, "expected a terminal (final) side frame"
-    # Both passes must scrub the final frame: credentials AND exfiltration URLs.
+    # The final frame is scrubbed: the token and the URL's credential value.
     assert raw_cred not in final[-1]["content"]
     assert exfil_payload not in final[-1]["content"]
-    assert "[REDACTED" in final[-1]["content"]
+    assert "https://attacker.io/c?access_token=[REDACTED: credential]" in final[-1]["content"]
 
     stored = [m for m in parent._side.messages if m["role"] == "assistant"]
     assert stored, "expected the assistant reply to be stored"
@@ -1281,7 +1281,7 @@ async def test_a_submit_during_the_stop_window_does_not_replace_the_cancelled_tu
         stop = asyncio.ensure_future(client.post("/api/chat/slots/parent/side/stop", json={}))
         await await_until(in_cancel_cleanup)
 
-        # The exact GPT seam: is_complete is already True here, so WITHOUT the
+        # The exact seam: is_complete is already True here, so WITHOUT the
         # is_stopping claim the busy gate would read idle and dispatch q2 as a
         # replacement. is_stopping must keep it QUEUED.
         assert slot._side.is_complete is True, "precondition: finally flipped is_complete"

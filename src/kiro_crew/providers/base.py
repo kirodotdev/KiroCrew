@@ -107,6 +107,21 @@ class SessionMcpReport(Protocol):
     #: not name. An unattended run's notice names them.
     def declared_never_reported(self) -> tuple[str, ...]: ...
 
+    #: The servers this session cannot use right now, by state (``connecting``,
+    #: ``failed``, ``needs_sign_in``, ``disabled``, ``registry_dropped``); empty
+    #: when all are usable. A turn's ``[MCP SERVERS]`` block and ``mcp_server_wait``
+    #: read it.
+    def not_ready(self) -> dict[str, tuple[str, ...]]: ...
+
+    #: Called, with no argument, each time a frame changed the report. Set
+    #: through ``LLMProvider.set_mcp_report_changed_hook``.
+    on_change: Callable[[], None] | None
+
+    #: True when the transport already folds each frame into the report as it
+    #: arrives, so a reader of the turn's MCP events only republishes and does
+    #: not ``record_event`` them as well.
+    folded_on_arrival: bool
+
 
 class LLMProvider(ABC):
     """Abstract LLM backend."""
@@ -115,6 +130,16 @@ class LLMProvider(ABC):
     #: just before it starts the provider (rule: ``kiro_crew.start_priority``); a
     #: provider started anywhere else starts BACKGROUND.
     start_priority: StartPriority = StartPriority.BACKGROUND
+    #: The session layer sets this beside ``start_priority`` when the start is the
+    #: dashboard owner's return to a saved chat (the focus resume prefetch): the
+    #: start stays ``BACKGROUND`` in the queues, and a person is about to wait on
+    #: it all the same (rule: ``acp.mcp_start_wait.person_waits``). A provider
+    #: that resumes nothing never reads it.
+    focus_resume: bool = False
+    #: True when the session layer starts this provider for background work (a
+    #: task run's own process); its unshared ACP runtime is then built
+    #: ``background_qos`` (``kiro_crew.windows_background_qos``).
+    background_qos: bool = False
 
     #: True only on a provider whose ``supports_effort()`` reports the live
     #: model. The base ``supports_effort()`` returns a placeholder False, so a
@@ -157,6 +182,17 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def reports_compaction(self) -> bool:
+        """Whether Kiro Crew sees a compaction of this session's conversation.
+
+        True only for a harness in ``ACP_BACKENDS_COMPACTION_REPORTED``. False is
+        "not known": a caller that sends something once per conversation then
+        sends it on every message, so a compaction it never heard of cannot
+        leave the conversation without it.
+        """
+        return False
+
+    @property
     def native_context_documents(self) -> dict[str, str]:
         """Exact documents supplied at native startup, empty without evidence."""
         return {}
@@ -170,6 +206,20 @@ class LLMProvider(ABC):
         session's MCP array answers True/False from that composition.
         """
         return None
+
+    #: Whether this resumed session started with its agent prompt in a session head
+    #: (``kiro_crew.session_head``), set by the session manager on each claim
+    #: (``note_session_head``). False is "not known", and re-sends nothing.
+    session_head_started: bool = False
+
+    @property
+    def session_head_held(self) -> bool:
+        """Whether this live session's agent prompt carries a session head.
+
+        Read from the launch record without any file access, so it is safe on the
+        event loop. False everywhere but a KAS session that recorded one.
+        """
+        return False
 
     @abstractmethod
     async def start(self) -> None:
@@ -458,6 +508,11 @@ class LLMProvider(ABC):
     @property
     def mate_worker_mcp_tool_limits_supported(self) -> bool:
         """Whether the MCP half of a crewmate worker's single-tool limits is honoured here."""
+        return False
+
+    @property
+    def mate_worker_native_tool_limits_supported(self) -> bool:
+        """Whether a crewmate worker's native-tool excludes are honoured here."""
         return False
 
     @property
@@ -773,6 +828,12 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def swaps_conversation_in_place(self) -> bool:
+        """True when a fresh conversation can start on this session's live process
+        now, keeping the sub-agent sessions that process hosts. Default False."""
+        return False
+
+    @property
     def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
         """The capabilities this session's registered agent batch auto-approves.
 
@@ -1033,6 +1094,40 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_mcp_report_changed_hook(self, hook: Callable[[], None] | None) -> None:
+        """Have *hook* called each time a frame changed this session's MCP report.
+
+        The report follows its servers for as long as the transport reads
+        (``McpSessionReport.fold_frame``), turn or no turn, and this is how a
+        reader learns it moved without polling: a server that connects ten
+        seconds after the first reply ended is published then. The hook runs on
+        the event loop, inside the transport's reader, so it must return at
+        once; ``None`` removes it. It follows the session: a transport that
+        re-opens the session hands it to the new report and calls it. A reader
+        handed another provider sets it there. A provider that keeps no report
+        ignores this.
+        """
+        report = self.mcp_session_report()
+        if report is not None:
+            report.on_change = hook
+
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        """Have *hook* told the server name when an MCP sign-in Crew started ends unconnected.
+
+        Only a KAS session starts one (``AcpRuntime.begin_mcp_sign_in``), and its
+        link dies with the attempt. A provider that starts none ignores this.
+        """
+        return None
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        """Whether the MCP sign-in Crew started for *server_name* has already ended.
+
+        Read when its link is drawn: an attempt can end before then, while the
+        link waits in the session's queue, and the hook above had no row to
+        retire. A provider that starts no sign-in answers False.
+        """
+        return False
+
     def note_user_message(self, text: str) -> None:
         """Hand the user's own message, as typed, to the MCP sign-in trigger.
 
@@ -1056,9 +1151,42 @@ class LLMProvider(ABC):
         provider with no effort control."""
         return []
 
+    def advertised_commands(self) -> list[dict[str, str]]:
+        """The slash commands the live session advertised, as ``name`` and ``description``.
+
+        Default empty: only a harness that runs its own commands keeps the list.
+        """
+        return []
+
     def supports_effort(self) -> bool:
         """True when the current model accepts a reasoning-effort level. Default False."""
         return False
+
+    def ultracode_enabled(self) -> bool | None:
+        """Whether the session's ultracode switch is on; ``None`` (the default) when
+        the session offers no such switch."""
+        return None
+
+    async def set_ultracode(self, enabled: bool) -> bool | None:
+        """Turn the session's ultracode switch on or off and return the value read
+        back. Default ``None``: no switch, nothing sent."""
+        return None
+
+    def fast_mode_enabled(self) -> bool | None:
+        """Whether the session's Fast mode switch is on; ``None`` (the default) when
+        the session offers no such switch."""
+        return None
+
+    def fast_mode_unavailable(self) -> str | None:
+        """Why the session's Fast mode switch cannot be turned on, in the harness's
+        words (``""`` when it gives none); ``None`` (the default) when nothing blocks
+        it or the session offers no such switch."""
+        return None
+
+    async def set_fast_mode(self, enabled: bool) -> bool | None:
+        """Turn the session's Fast mode switch on or off and return the value read
+        back. Default ``None``: no switch, nothing sent."""
+        return None
 
     async def change_effort(self, level: str) -> bool:
         """Change reasoning effort live for the current model. Returns True on success,

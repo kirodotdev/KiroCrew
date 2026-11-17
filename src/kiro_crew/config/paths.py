@@ -59,6 +59,11 @@ RECOVERY_BREADCRUMB_NAME = ".kirocrew.breadcrumb"
 
 OUTBOX_DIR_NAME = "outbox"
 
+#: The data-home leaf an ACP process with no caller work directory starts in. Kept
+#: empty and apart from ``workspace``: kiro-cli holds handles per directory under its
+#: cwd, so starting in a large tree costs a long-lived runtime gigabytes.
+KEYLESS_WORK_DIR_NAME = "bg-runtime"
+
 # Cross-platform workspace root for LLM working directories.
 # Override: KIROCREW_WORKSPACE env var or <config_dir>/workspace_dir
 # macOS: /Volumes/workplace/kirocrew-workspace (fallback ~/workplace)
@@ -377,6 +382,20 @@ def valid_scratch_root_override() -> Path | None:
     reset the pin through the ``config.paths`` cache-reset fixture, like ``_resolved_home``.
     """
     return _resolve_scratch_root_override()
+
+
+def scratch_root_override_path_hint() -> Path | None:
+    """Read the pinned override, or its unvalidated spelling, without filesystem I/O.
+
+    Path gates must not allocate or validate scratch while checking a file. Before
+    allocation pins the override, the gate resolves this hint through its own bounded
+    resolver; a hint is never authorization to allocate at that path.
+    """
+    raw = os.environ.get(SCRATCH_ROOT_ENV) or ""
+    pin = _scratch_root_override_pin
+    if isinstance(pin, tuple) and pin[0] == raw:
+        return pin[1]
+    return Path(raw) if raw else None
 
 
 def _resolve_scratch_root_override() -> Path | None:

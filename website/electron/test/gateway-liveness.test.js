@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const { createLivenessMonitor } = require("../gateway-liveness");
 
 // Drive tick() directly with a stubbed probe — no timers, fully deterministic.
-function harness({ results, failureThreshold = 3, isWindowAlive = () => true } = {}) {
+function harness({ results, failureThreshold, isWindowAlive = () => true } = {}) {
   let i = 0;
   const events = [];
   const m = createLivenessMonitor({
@@ -51,6 +51,21 @@ test("a single failure then recovery does not fire, and emits recovered", async 
   await m.tick(); // recover before threshold
   assert.deepStrictEqual(events, ["recovered"]);
   assert.strictEqual(m.getState().consecutiveFailures, 0);
+});
+
+test("the default threshold rides out a five-miss stall and trips once on the sixth", async () => {
+  // A gateway busy with its startup work misses several probes and then answers.
+  const stalled = harness({ results: [false, false, false, false, false, true] });
+  for (let k = 0; k < 6; k++) await stalled.m.tick();
+  assert.deepStrictEqual(stalled.events, ["recovered"]);
+
+  const wedged = harness({ results: [false] });
+  for (let k = 0; k < 5; k++) await wedged.m.tick();
+  assert.deepStrictEqual(wedged.events, []);
+  await wedged.m.tick();
+  assert.deepStrictEqual(wedged.events, ["unresponsive"]);
+  await wedged.m.tick();
+  assert.deepStrictEqual(wedged.events, ["unresponsive"]);
 });
 
 test("failure counter resets after an intermittent success", async () => {
@@ -206,8 +221,8 @@ test("the post-handoff probe waits longer than the boot poll before counting a m
   // The boot poll's 2s is the number this must NOT be: a loop blocked 2-9s by
   // disk I/O still answers, and killing it orphans every subagent for nothing.
   assert.ok(LIVENESS_PROBE_TIMEOUT_MS > 2000, `budget ${LIVENESS_PROBE_TIMEOUT_MS}ms must exceed the 2s boot poll`);
-  // …and short enough that three misses at the 10s poll cadence still land
-  // near the in-process watchdog's 25s budget rather than long after it.
+  // …and no longer than one poll interval, so the next tick never finds it
+  // still in flight and skips its count.
   assert.ok(LIVENESS_PROBE_TIMEOUT_MS <= 10_000, "one probe must not outlast the poll interval");
   const httpMod = recordingHttp();
   const probe = createBackendProbe({ httpMod, url: "http://localhost:5476/api/status" });
@@ -276,6 +291,7 @@ function suspendHarness(plan) {
     },
     onUnresponsive: () => events.push("unresponsive"),
     now: () => clock.t,
+    failureThreshold: 3,
     intervalMs: 10_000,
     log: () => {},
   });

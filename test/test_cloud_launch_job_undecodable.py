@@ -24,6 +24,12 @@ _UNREADABLE = {
     "not_utf8": _UNDECODABLE,
     "bad_json": b'{"status": "running", "tag": "kc-',
     "not_an_object": b'["running"]',
+    # An object whose fields have the wrong JSON type.
+    "created_at_null": b'{"status": "running", "created_at": null}',
+    "created_at_text": b'{"status": "running", "created_at": "soon"}',
+    "step_not_an_object": b'{"status": "running", "steps": ["provision"]}',
+    # A whole number too large for a float: float() raises OverflowError.
+    "created_at_too_large": b'{"status": "running", "created_at": 1' + b"0" * 400 + b"}",
 }
 
 T = TypeVar("T")

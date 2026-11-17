@@ -391,6 +391,33 @@ def test_glab_bin_skips_untrusted_candidates_and_reports_the_last_check(monkeypa
     assert "glab auth login" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    ("platform", "wanted", "unwanted"),
+    [
+        ("win32", f"winget install --id {github_runner.PROVIDER_WINGET_ID['glab']}", "brew install"),
+        ("darwin", "brew install glab", "winget"),
+        ("linux", "brew install glab", "winget"),
+    ],
+)
+def test_glab_bin_not_installed_hint_matches_the_platform(
+    monkeypatch, platform, wanted, unwanted
+):
+    """Windows is told the winget id from the shared map, never brew."""
+    from kiro_crew.dashboard.handlers import source_providers
+
+    monkeypatch.delenv("KIROCREW_ISSUE_RADAR_GLAB", raising=False)
+    monkeypatch.setattr(source_providers, "provider_executable_candidates", lambda name: ())
+    monkeypatch.setattr(sys, "platform", platform)
+    with pytest.raises(gl.ProviderSetupError) as excinfo:
+        gl._glab_bin()
+    message = str(excinfo.value)
+    assert excinfo.value.reason == "not_installed"
+    assert wanted in message
+    assert unwanted not in message
+    assert "glab auth login" in message
+    assert "KIROCREW_ISSUE_RADAR_GLAB" in message
+
+
 def test_glab_bin_accepts_the_first_trusted_candidate(monkeypatch, tmp_path):
     from kiro_crew.dashboard.handlers import source_providers
 

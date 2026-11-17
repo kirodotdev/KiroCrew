@@ -100,6 +100,9 @@ class _ConversationLog:
     def list_sessions(self) -> list[dict]:
         return list(self.rows)
 
+    def list_sessions_indexed(self) -> list[dict]:
+        return self.list_sessions()
+
     def search_sessions(self, query: str, limit: int) -> list[dict]:
         self.searched.append(query)
         needle = query.casefold()
@@ -1486,3 +1489,33 @@ class TestSharedTitleLoader:
         force every caller onto the loop thread.
         """
         assert not asyncio.iscoroutinefunction(core.session_title_of)
+
+
+class TestAReplayThatFindsTheLeaseFree:
+    """A drained payload that re-enters through the busy fallback stays turn content."""
+
+    @pytest.mark.asyncio
+    async def test_a_drained_command_word_still_reaches_the_model(self, monkeypatch) -> None:
+        seen: list[tuple[str, str]] = []
+
+        async def _drive(turn, **_kw):
+            seen.append((turn.session_key, turn.user_text))
+
+        monkeypatch.setattr("kiro_crew.teams.transport_dispatch.drive_turn", _drive)
+        client = _Client()
+        sessions = _Sessions()
+        busy = {"held": True}
+        monkeypatch.setattr(sessions, "is_busy", lambda key: busy["held"])
+        d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
+        real_handle_busy = d._handle_busy
+
+        async def _lease_frees_first(*args, **kwargs):
+            # The running turn ends between the busy check and the busy path.
+            busy["held"] = False
+            await real_handle_busy(*args, **kwargs)
+
+        monkeypatch.setattr(d, "_handle_busy", _lease_frees_first)
+
+        await d.handle_message(_inbound("/new"), interpret_commands=False, drain=False)
+
+        assert seen == [(d._session_key(_OWNER), "/new")], "a drained /new is text, not a command"

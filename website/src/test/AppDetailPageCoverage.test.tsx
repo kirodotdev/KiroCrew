@@ -33,6 +33,8 @@ const updateApp = vi.fn()
 const uninstallApp = vi.fn()
 const trustApp = vi.fn()
 const untrustApp = vi.fn()
+const getAppBotGrants = vi.fn()
+const members = vi.fn()
 
 vi.mock('../api/client', () => ({
   api: {
@@ -46,6 +48,8 @@ vi.mock('../api/client', () => ({
     uninstallApp: (...a: unknown[]) => uninstallApp(...a),
     trustApp: (...a: unknown[]) => trustApp(...a),
     untrustApp: (...a: unknown[]) => untrustApp(...a),
+    getAppBotGrants: (...a: unknown[]) => getAppBotGrants(...a),
+    members: (...a: unknown[]) => members(...a),
   },
 }))
 
@@ -670,7 +674,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
-    expect(within(dialog).getByText("This includes your own chats with your bots.")).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your own chats with your Bots. The app can send your Bots messages in your name.")).toBeInTheDocument()
     expect(enableApp).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true, undefined, true))
@@ -708,7 +712,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
     dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText("This includes your own chats with your bots.")).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your own chats with your Bots. The app can send your Bots messages in your name.")).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenLastCalledWith(NAME, true, undefined, true))
   })
@@ -827,6 +831,27 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ selectionActions: [entry] })))
   })
 
+  it('re-reads the Bot card after the owner approves a held-back Bot scope', async () => {
+    members.mockResolvedValue({ members: [] })
+    enableApp.mockResolvedValue({ ok: true })
+    getAppBotGrants.mockResolvedValue({ bots: [], declaredScopes: ['read'], scopes: [] })
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], bots: ['read'] } },
+      approvedGrants: { api: [], events: [], bots: [] },
+    }))
+    renderDetail()
+    await loaded()
+    await waitFor(() => expect(getAppBotGrants).toHaveBeenCalledTimes(1))
+    getAppBotGrants.mockResolvedValue({ bots: [], declaredScopes: ['read'], scopes: ['read'] })
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], bots: ['read'] } },
+      approvedGrants: { api: [], events: [], bots: ['read'] },
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ bots: ['read'] })))
+    await waitFor(() => expect(getAppBotGrants).toHaveBeenCalledTimes(2))
+  })
+
   it('lists held-back permissions and approves them on click', async () => {
     getApp.mockResolvedValue(installedApp({
       manifest: {
@@ -860,7 +885,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [],
+      api: ['/api/memory'], events: ['log'], bots: [], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [], frameSources: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
@@ -892,6 +917,62 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.getByText(/Can approve tool calls in the background sessions it starts itself/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ workerAutoApprove: ['ownSlots'] })))
+  })
+
+  it('lists a held-back desktop capability and approves only that one', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], desktopCapabilities: ['localFiles', 'gatewayChoice', 'everything'] } },
+      approvedGrants: { api: [], events: [] },
+      desktopCapabilitiesGrant: { approved: ['localFiles'], staged: ['gatewayChoice'] },
+    }))
+    renderDetail()
+    await loaded()
+    expect(screen.getByTestId('staged-desktop-capability')).toHaveTextContent('In the desktop app, its windows can switch to another of your crews, on this computer or a remote one.')
+    const files = screen.getByTestId('desktop-capability-localFiles')
+    const gateways = screen.getByTestId('desktop-capability-gatewayChoice')
+    expect(files).toHaveTextContent('In the desktop app, its windows can show a file in your file manager and open an image in your image viewer.')
+    expect(files).not.toHaveTextContent('not approved')
+    expect(gateways).toHaveTextContent('not approved')
+    expect(screen.queryByTestId('desktop-capability-everything')).toBeNull()
+    expect(screen.getByTestId('desktop-capabilities')).toHaveTextContent('desktopCapabilities')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ desktopCapabilities: ['gatewayChoice'] })))
+  })
+
+  it('lists a held-back framed site and approves only that one', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [] }, ui: { frameSources: ['https://ok.example.com', 'https://new.example.com'] } },
+      approvedGrants: { api: [], events: [] },
+      frameSourcesGrant: { approved: ['https://ok.example.com'], staged: ['https://new.example.com'] },
+    }))
+    renderDetail()
+    await loaded()
+    const staged = screen.getByTestId('staged-frame-sources')
+    expect(staged).toHaveTextContent('https://new.example.com')
+    expect(staged).not.toHaveTextContent('https://ok.example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ frameSources: ['https://new.example.com'] })))
+  })
+
+  it('lists a held-back session reach verb and approves only that verb', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], reachableByUserSessions: ['read', 'send'] } },
+      approvedGrants: { api: [], events: [] },
+      userSessionReachGrant: { approved: ['read'], staged: ['send'] },
+    }))
+    renderDetail()
+    await loaded()
+    // The notice lists the held-back verb; the Permissions card lists both and marks only the held-back one.
+    expect(screen.getByTestId('staged-user-session-reach')).toHaveTextContent('Your chats can send messages to the sessions this app runs.')
+    const read = screen.getByTestId('user-session-reach-read')
+    const send = screen.getByTestId('user-session-reach-send')
+    expect(read).toHaveTextContent('Your chats can read the sessions this app runs.')
+    expect(read).not.toHaveTextContent('not approved')
+    expect(send).toHaveTextContent('Your chats can send messages to the sessions this app runs.')
+    expect(send).toHaveTextContent('not approved')
+    expect(screen.getByTestId('user-session-reach')).toHaveTextContent('reachableByUserSessions')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ reachableByUserSessions: ['send'] })))
   })
 
   it('offers no approval on a disabled app, whose enable would switch it on', async () => {

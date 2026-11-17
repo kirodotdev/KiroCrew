@@ -72,7 +72,9 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 #: full frame. The sub-agent counts (``subagents_running`` / ``subagents_queued``)
 #: are deliberately NOT here: they are derived from the sub-agent manager rather
 #: than the slot row, so ``push_subagent_patch`` re-states them on lifecycle flushes.
-_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "muted", "title", "folder_id"})
+_SLOT_PATCH_FIELDS = frozenset(
+    {"pinned", "mutes_opened", "muted", "title", "folder_id", "work_aggregate"}
+)
 
 
 def _new_card_store(state: Any) -> Any:
@@ -336,6 +338,21 @@ def _running_loop() -> asyncio.AbstractEventLoop | None:
         return None
 
 
+def refresh_app_state() -> None:
+    """The refresh an app's lifecycle or trust change asks for, run off the loop.
+
+    The hidden-chat listing first: it clears the queued flag, so a change landing
+    after that point asks again and the gate's sets below never miss it. Then the
+    tool gate's own-server sets, so a removed or replaced app stops being granted
+    without a restart.
+    """
+    from kiro_crew.apps import hidden_sessions
+    from kiro_crew.apps.builtin_adoption_gate import refresh_gate_app_trust
+
+    hidden_sessions.refresh_hiding_apps()
+    refresh_gate_app_trust()
+
+
 def bind_serving_loop(self: DashboardState, loop: asyncio.AbstractEventLoop) -> None:
     """Record the loop this dashboard is served on, before any request runs.
 
@@ -351,6 +368,26 @@ def bind_serving_loop(self: DashboardState, loop: asyncio.AbstractEventLoop) -> 
     frame that finds the projection cold (see :func:`_attach_slot_parents`).
     """
     self._serving_loop = loop
+    # An app's disable, uninstall or trust change lists or hides its open chats: the
+    # set of apps that hide them is computed off this loop and the slots frame resent.
+    from kiro_crew.apps import hidden_sessions
+
+    # Both run from other threads and may outlive the loop: a closed loop takes nothing.
+    def _refresh_off_loop() -> None:
+        if not loop.is_closed():
+            loop.run_in_executor(None, refresh_app_state)
+
+    def _schedule_refresh() -> None:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(_refresh_off_loop)
+
+    def _resend_slots() -> None:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(self.push_slots_update)
+
+    hidden_sessions.bind_listing(_schedule_refresh, _resend_slots)
+    hidden_sessions.watch_trust_config()
+    hidden_sessions.request_hiding_refresh()
 
 
 def _schedule_trailing_flush(self: DashboardState, delay: float) -> None:
@@ -513,7 +550,9 @@ def _do_slots_broadcast(self: DashboardState) -> None:
     # different tokens for one broadcast, which would make one of the two
     # audiences invalidate while the other did not.
     # test_public_repo_status_rides_general_frame_owner_gets_full asserts the two
-    # frames' governanceGeneration values are equal, so a torn read reddens it.
+    # frames' governanceGeneration values are equal. It never moves the generation
+    # between the reads, so it cannot catch a torn read; the single read is what
+    # prevents one.
     # Filesystem-free by contract: governance_answer_generation is two locked
     # integer reads. The profiles directory re-stat lives in poll_profiles_fresh,
     # which only the async watcher calls, and only off the event loop.

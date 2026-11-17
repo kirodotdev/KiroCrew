@@ -60,14 +60,47 @@ export interface AwsConsentStatus {
 }
 
 /**
- * The owner's credential-redaction switch (Settings > Security > Credential
- * redaction). `enabled` is the position as RECORDED by the backend, which reads a
- * missing or unreadable record as `true`; `changed_at` is empty until the owner
- * has flipped it at least once.
+ * The owner's one credential-redaction setting (Settings > Security > Redaction), the
+ * whole body of GET and PUT `/api/security/credential-redaction`. `enabled` is the
+ * position in force, which the backend reads as `true` when the record cannot be read
+ * or a governance policy keeps redaction on; `changed_at` is empty until the owner has
+ * flipped it at least once. `locked_by_policy` is true on a governed host whose policy
+ * keeps redaction on: the PUT refuses an OFF there (403
+ * `credential_redaction_locked_by_policy`), so the dashboard locks the toggle.
  */
 export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
+  locked_by_policy: boolean
+}
+
+/** One `(server, tool, field)` MCP message-body field. */
+export interface McpBodyFieldRow {
+  server: string
+  tool: string
+  field: string
+}
+
+/** The MCP message-body fields: reviewed defaults, owner-added rows, and the
+ *  fields the tool_input gate recently refused for size. */
+export interface McpBodyFieldsData {
+  defaults: McpBodyFieldRow[]
+  owner: Array<McpBodyFieldRow & { added_at: string }>
+  refused: Array<McpBodyFieldRow & { refused_at: string }>
+}
+
+/** The two config paths `/api/security/safety-switches` reads and writes. */
+export type SafetySwitchKey = 'mcp.protect_kiro_permission_rules' | 'mcp.honour_auto_approve'
+
+/**
+ * The owner's MCP safety switches (Settings > Security > Safety switches).
+ * `enabled` is the configured value; `in_force` is what the gate that reads it
+ * sees now, which differs only when `degraded` (the config could not be read in
+ * full) makes that gate fall back.
+ */
+export interface SafetySwitchesState {
+  degraded: boolean
+  switches: { key: SafetySwitchKey; enabled: boolean; in_force: boolean }[]
 }
 
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
@@ -355,8 +388,49 @@ export interface ManagedSecret {
  *  reached none of the recovery `j` runs, so an expired session read a bare
  *  status code with no way to sign back in (#12240).
  */
+/** What a vault entry holds. `secret` is one value (every entry stored before
+ *  item types existed); `login` is a website credential; `note` is text. */
+export type SecretItemType = 'secret' | 'login' | 'note'
+
+/** The fields a typed write carries. Validation lives on the server
+ *  (`secrets/items.py`); a refusal comes back as a 400 with a `code`. Updating
+ *  an item of the same type, a password, `notes` or `text` left out
+ *  keeps its stored value. `notes` sent as `''` is cleared; a password or
+ *  `text` sent as `''` is refused, because both are required. */
+export type SecretItemFields =
+  | { value: string }
+  | { username?: string; password?: string; urls?: string[]; notes?: string }
+  | { text?: string }
+
+/** The typed body of `POST /api/secrets`. */
+export interface SecretItemBody {
+  type: SecretItemType
+  fields: SecretItemFields
+}
+
+/** The part of a login a listing may show. Never a password, seed or note. */
+export interface SecretLoginPublicFields {
+  username: string
+  urls: string[]
+}
+
+/** One stored entry as `GET /api/secrets` lists it. `fields` is present on a
+ *  login only; `corrupt` marks an entry whose ciphertext authenticated but whose
+ *  content is not the object its type promises. */
+export interface SecretListItem {
+  name: string
+  type: SecretItemType
+  revision: string
+  updated_at?: string
+  fields?: SecretLoginPublicFields | Record<string, never>
+  corrupt?: boolean
+}
+
 export interface SecretsListResponse {
   names: string[]
+  /** Every stored entry with its type; `names` is the same set, for callers
+   *  that predate item types. */
+  items?: SecretListItem[]
   managed: ManagedSecret[]
   /** Stored names the gateway currently ignores, with the reason. Absent when
    *  every stored name is live. */
@@ -365,6 +439,32 @@ export interface SecretsListResponse {
    *  are still authoritative, so this is a warning beside a good list rather
    *  than a failed request. */
   managed_error?: boolean
+}
+
+/** Which kind of place references a vault item (`secrets_usage.py`). */
+export type SecretUsageKind =
+  | 'mcp_server'
+  | 'env_file'
+  | 'cron_job'
+  | 'setting'
+  | 'connection'
+  | 'integration'
+  | 'approved_api'
+  | 'sprites_profile'
+
+/** One place that would read a vault item: its kind, its own name (server,
+ *  file, job or setting) and the key holding the reference. Never a value. */
+export interface SecretUsagePlace {
+  kind: SecretUsageKind
+  name: string
+  key: string
+}
+
+/** What `GET /api/secrets/usage` answers with. An item absent from `usage` has
+ *  no use found in the scanned places; a kind in `incomplete` could not be read. */
+export interface SecretsUsageResponse {
+  usage: Record<string, SecretUsagePlace[]>
+  incomplete: SecretUsageKind[]
 }
 
 /** One changed key in a settings file edited outside the dashboard. `before` /
@@ -424,7 +524,7 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       patch('/api/security/denied-commands/user/' + encodeURIComponent(id), fields).then(j) as Promise<DeniedCommandsData>,
     deleteUserDeniedCommand: (id: string) =>
       del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
-    // Redaction cards: the per-workspace allowed-host list (Settings → Security →
+    // Blocked link cards: the per-workspace allowed-host list (Settings → Security →
     // Redaction). Every route is owner-only.
     redactionAllowedHosts: () =>
       get('/api/redaction/allowed-hosts').then(j) as Promise<{ workspaces: Record<string, string[]> }>,
@@ -476,7 +576,11 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      * and the server-side ephemeral gate always runs, matching every other method
      * here. */
     secretsList: () => get('/api/secrets').then(j) as Promise<SecretsListResponse>,
-    /** Store a vault secret under *name*, replacing any current value.
+    /** Where each stored item is referenced, by place name only. */
+    secretsUsage: () => get('/api/secrets/usage').then(j) as Promise<SecretsUsageResponse>,
+    /** Store a vault secret under *name*, replacing any current value. A string
+     *  stores a plain secret; a `SecretItemBody` stores a typed item (login,
+     *  note) and the server validates its fields.
      *
      *  On this transport rather than the Secrets panel's own `fetch`, which is what
      *  every sibling settings panel already does and what the panel gains by it:
@@ -485,7 +589,8 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      *  instead of the gateway's cryptographic reason. Raw `fetch` reaches none of
      *  that, so an expired session was shown a bare status code and offered only a
      *  retry that could not succeed (#12240). */
-    secretsSave: (name: string, value: string) => post('/api/secrets', { name, value }).then(j),
+    secretsSave: (name: string, value: string | SecretItemBody) =>
+      post('/api/secrets', typeof value === 'string' ? { name, value } : { name, ...value }).then(j),
     /** Remove a vault secret by name. Same transport reason as `secretsSave`. */
     secretsDelete: (name: string) => del('/api/secrets/' + encodeURIComponent(name)).then(j),
   }
@@ -525,6 +630,23 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    // MCP safety switches (Settings > Security > Safety switches). Owner only on
+    // both verbs; the PUT names one switch and is its only dashboard writer.
+    safetySwitches: () =>
+      fetch('/api/security/safety-switches').then(j) as Promise<SafetySwitchesState>,
+    setSafetySwitch: (key: SafetySwitchKey, enabled: boolean) =>
+      put('/api/security/safety-switches', { key, enabled }).then(j) as Promise<SafetySwitchesState>,
+    /** The owner's per-folder choice to run a folder agent's own hooks on KAS.
+     *  Owner only; the handler is the record's only dashboard writer. */
+    setProjectHooksConsent: (folder: string, enabled: boolean) =>
+      put('/api/project-hooks/consent', { folder, enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean }>,
+    /** One folder's current project-hooks state, read-only and owner only: the
+     *  owner's Crew choice (`unset` when none) and whether the hooks run now. */
+    getProjectHooksConsent: (folder: string) =>
+      get(`/api/project-hooks/consent?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{
+        state: 'on' | 'off' | 'unset'
+        enabled: boolean
+      }>,
     /** Reveal one removed credential to the owner. The value lives only in
      *  gateway memory; a 410 means it is gone (restart or expiry). The caller
      *  keeps the answer in memory only: never in storage or a query cache. */
@@ -540,6 +662,18 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/apply', { signature }).then(j) as Promise<ConfigPendingData>,
     discardConfigPending: (leaf: string, signature: string) =>
       post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/discard', { signature }).then(j) as Promise<ConfigPendingData>,
+
+    // MCP message-body fields (Settings > Security > Message body fields). Owner
+    // gated; the add takes only a field the gate itself refused for size.
+    mcpBodyFields: () =>
+      get('/api/security/mcp-body-fields').then(j) as Promise<McpBodyFieldsData>,
+    allowMcpBodyField: (row: McpBodyFieldRow) =>
+      post('/api/security/mcp-body-fields', row).then(j) as Promise<McpBodyFieldsData>,
+    removeMcpBodyField: (row: McpBodyFieldRow) =>
+      del(
+        '/api/security/mcp-body-fields?server=' + encodeURIComponent(row.server)
+        + '&tool=' + encodeURIComponent(row.tool) + '&field=' + encodeURIComponent(row.field),
+      ).then(j) as Promise<McpBodyFieldsData>,
   }
 
   return { posture, policies, secrets, consents }

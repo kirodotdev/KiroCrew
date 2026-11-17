@@ -1,10 +1,10 @@
 ---
 title: The Ultra Mode conductor takes stated defaults instead of asking
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by iamwhatever
 created: 2026-11-06
-last-audited: 2026-11-06
-audited-at: 0984ba735f
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 31878
 implementation-prs: [31822]
 tracking-issues: []
@@ -14,7 +14,9 @@ superseded-by: []
 
 # RFC: The Ultra Mode conductor takes stated defaults instead of asking
 
-Status: accepted. The repository owner (iamwhatever) made this decision on
+Status: implemented in [#31822](https://github.com/kirodotdev/KiroCrew/pull/31822)
+(`0760ba5dd3`, `agent_parts/spec_prompts.py`, `work_ledger_rules.py`). Accepted: the
+repository owner (iamwhatever) made this decision on
 2026-11-06 in the Ultra Mode conductor chat, after reading the stop-point
 research summarised in section 1. It takes effect when this document merges.
 The implementation is

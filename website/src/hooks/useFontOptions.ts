@@ -7,6 +7,7 @@ import {
   queryLocalMonospaceFonts,
 } from '../utils/fontDetect'
 import { CUSTOM_FONT_CANDIDATES } from '../utils/customFontCandidates'
+import { BUNDLED_WEB_FONT_FAMILIES } from '../utils/fontFamilyOptions'
 import type { LocalFontQuery } from '../utils/fontDetect'
 
 /* ── Installed families for a font picker ───────────────────────────────────
@@ -23,7 +24,8 @@ import type { LocalFontQuery } from '../utils/fontDetect'
  * can only confirm names it is handed. The Local Font Access API returns the real
  * font book, but exists only in Chromium, only in a secure context, and only
  * behind a permission prompt — so it is offered as an action the user takes, not
- * something that fires on mount.
+ * something that fires on mount. 'all' also lists the dashboard's bundled web
+ * fonts, which need neither layer.
  *
  * The probe runs in an effect rather than during render: its first call makes the
  * browser resolve every candidate name, which is work that does not belong in a
@@ -31,7 +33,7 @@ import type { LocalFontQuery } from '../utils/fontDetect'
  * exactly the state a browser with no measurable canvas stays in. */
 
 export interface FontOptionsState {
-  /** Installed monospace families, probe order then font-book order. */
+  /** Probed families, then (in 'all') the bundled web fonts, then font-book order. */
   families: string[]
   /** Whether the full-enumeration action is worth offering at all. */
   accessSupported: boolean
@@ -57,10 +59,19 @@ export function useFontOptions(mode: 'mono' | 'all' = 'mono'): FontOptionsState 
   useEffect(() => {
     let cancelled = false
     const probe = () => {
-      // 'all' probes the custom-font candidate list (proportional + mono); 'mono'
-      // uses detectInstalledFonts' default monospace list.
-      const detected = mode === 'all' ? detectInstalledFonts(CUSTOM_FONT_CANDIDATES) : detectInstalledFonts()
-      if (!cancelled) setFamilies(prev => (prev.length ? prev : detected))
+      // 'all' probes the custom-font candidate list (proportional + mono) and
+      // appends the bundled web fonts the probe has not already found; 'mono' uses
+      // detectInstalledFonts' default monospace list.
+      const detected = mode === 'all'
+        ? [...new Set([...detectInstalledFonts(CUSTOM_FONT_CANDIDATES), ...BUNDLED_WEB_FONT_FAMILIES])]
+        : detectInstalledFonts()
+      // An enumeration can land first; 'all' still lists the probed and bundled
+      // rows, ahead of it.
+      if (!cancelled) {
+        setFamilies(prev => (mode === 'all'
+          ? [...new Set([...detected, ...prev])]
+          : prev.length ? prev : detected))
+      }
     }
     // Wait for web fonts before measuring. The dashboard loads its own monospace
     // face, which resolves AFTER first paint, so a probe that runs immediately

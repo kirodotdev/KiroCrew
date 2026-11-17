@@ -49,7 +49,7 @@ from itertools import chain, islice  # noqa: F401
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import mcp_apps_render, model_registry  # noqa: F401
+from kiro_crew import mcp_apps_render, model_registry, redaction_seams  # noqa: F401
 from kiro_crew.agent import kiro_agents_dir_path  # noqa: F401
 from kiro_crew.agent_discovery import agent_model_map  # noqa: F401
 from kiro_crew.atomic_write import TRANSCRIPT_REPLACE_BUDGET_SECONDS, atomic_write
@@ -101,6 +101,7 @@ from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis, Takeo
 from kiro_crew.dashboard.slot_retention import (
     RESTORE_SLOT_BUDGET,
     crew_bound_on_disk,
+    foreground_slot_keys,
     live_loop_slot_keys,
     notify_left_in_history,
     stored_loop_slot_keys,
@@ -150,6 +151,7 @@ from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
+from kiro_crew.security.redaction_switch import bypassed_in
 from kiro_crew.sel import sel  # noqa: F401
 from kiro_crew.session_agent_selection import session_agent_selection_name  # noqa: F401
 from kiro_crew.validation import ARTIFACT_SLUG_RE  # noqa: F401
@@ -496,7 +498,7 @@ def _coerce_requested_mode(raw: Any) -> Any:
 # way the working-set bounds do.
 _ENTRY_MAX_CACHEABLE_BYTES = 256 * 1024
 _entry_cache_lock = threading.Lock()
-_entry_cache: OrderedDict[str, tuple[dict | None, int]] = OrderedDict()
+_entry_cache: OrderedDict[str, tuple[dict | None, int, str | None]] = OrderedDict()
 _entry_cache_bytes = 0
 
 # Lazily resolved ``(max_entries, max_bytes)`` for the entry cache. Resolved
@@ -619,14 +621,21 @@ def _build_message_entry(m: dict, *, attachments: tuple[Path, str] | None = None
     # so serving it to another session would point that session's transcript at
     # a file its own delete will never reclaim. Folded in AFTER the digest rather
     # than into its input, so the message payload keeps exactly one hashing site.
-    key = f"{attachments}\x00{key}"
+    # The redaction setting is part of the key too: an entry built with redaction off
+    # holds raw bytes, which a hit must never hand out once it is on again, nor to a
+    # save whose pass runs in full whatever the setting (``always_scan``).
+    generation = redaction_seams.generation()
+    raw = bypassed_in(redaction_seams.TRANSCRIPT)
+    key = f"{attachments}\x00{redaction_seams.published_off()}\x00{raw}\x00{key}"
     size = len(payload)
     with _entry_cache_lock:
         if key in _entry_cache:
             _entry_cache.move_to_end(key)
             return _entry_cache[key][0]
     entry = _build_message_entry_uncached(m, attachments=attachments)
-    if size > _ENTRY_MAX_CACHEABLE_BYTES:
+    # A build that spanned a change of the redaction setting may hold either position's
+    # bytes under the other's key, so it is not stored.
+    if size > _ENTRY_MAX_CACHEABLE_BYTES or redaction_seams.generation() != generation:
         return entry
     # Refuse to STORE a pairing whose key and entry may describe different states.
     # The flush thread shares message dicts with the event loop, so a variant
@@ -642,17 +651,52 @@ def _build_message_entry(m: dict, *, attachments: tuple[Path, str] | None = None
     # Resolve the configured bounds BEFORE taking the cache lock: the first call
     # in the process reads config from disk, and that read must not run under a
     # lock the flush path contends on.
+    _entry_cache_store(key, (entry, size, None))
+    return entry
+
+
+def _entry_cache_store(key: str, value: tuple[dict | None, int, str | None]) -> None:
+    """File *value* under *key* as the newest entry, then evict to the configured bounds."""
+    global _entry_cache_bytes
     max_entries, max_bytes = _entry_cache_bounds()
     with _entry_cache_lock:
         previous = _entry_cache.pop(key, None)
         if previous is not None:
             _entry_cache_bytes -= previous[1]
-        _entry_cache[key] = (entry, size)
-        _entry_cache_bytes += size
+        _entry_cache[key] = value
+        _entry_cache_bytes += value[1]
         while _entry_cache and (len(_entry_cache) > max_entries or _entry_cache_bytes > max_bytes):
-            _, (_evicted_entry, evicted_size) = _entry_cache.popitem(last=False)
-            _entry_cache_bytes -= evicted_size
-    return entry
+            _entry_cache_bytes -= _entry_cache.popitem(last=False)[1][1]
+
+
+def _build_message_line(
+    m: dict, *, attachments: tuple[Path, str], digest: bytes
+) -> tuple[dict | None, str]:
+    """``(entry, line)`` for a slot save, from the entry cache keyed by the row's *digest*.
+
+    *digest* is the save's own raw-message digest (``transcript_merge.row_digests``),
+    so a hit costs no serialization of *m*. The value also holds the entry's
+    written line, ``json.dumps(entry) + "\\n"`` (``""`` for a row that builds no
+    entry), so a hit writes the bytes a rebuild would. Same guards as
+    :func:`_build_message_entry`: one huge row is not cached, and a row whose
+    digest changed during the build is not filed under the old one.
+    """
+    from kiro_crew.dashboard.slot_persistence.transcript_merge import _row_digest
+
+    generation = redaction_seams.generation()
+    raw = bypassed_in(redaction_seams.TRANSCRIPT)
+    key = f"{attachments}\x00{redaction_seams.published_off()}\x00{raw}\x00{digest.hex()}"
+    with _entry_cache_lock:
+        hit = _entry_cache.get(key)
+        if hit is not None and hit[2] is not None:
+            _entry_cache.move_to_end(key)
+            return hit[0], hit[2]
+    entry = _build_message_entry_uncached(m, attachments=attachments)
+    line = "" if entry is None else json.dumps(entry) + "\n"
+    stable = redaction_seams.generation() == generation
+    if stable and len(line) <= _ENTRY_MAX_CACHEABLE_BYTES and _row_digest(m) == digest:
+        _entry_cache_store(key, (entry, len(line), line))
+    return entry, line
 
 
 def _build_history_prefix(
@@ -695,7 +739,9 @@ from kiro_crew.dashboard import chat_persistence_parts as _parts  # noqa: E402
 from kiro_crew.dashboard.chat_persistence_parts.member_store import (  # noqa: E402,F401
     _member_private_selection,
     _member_restore_identity,
+    _missing_member_database_repair,
     _pin_private_agent_assignment,
+    _recreate_missing_member_database,
     member_store_ownership_holds,
     pin_private_agent_store,
     release_prewarmed_session,
@@ -712,15 +758,18 @@ from kiro_crew.dashboard.chat_persistence_parts.restore_drivers import (  # noqa
     _carry_unread_slot_keys,
     _display_tail,
     _kept_past_budget,
+    _loop_slot_keys,
     _may_restore_as_row,
     _open_slot_restore_plan,
     _over_restore_budget,
     _prefetch_open_slot_inputs,
+    _recent_row_tail,
     _record_unrestored_open_tabs,
     _recover_mcp_app_claims_async,
     _report_restore_budget,
     _report_restore_with_no_seed,
     _restore_open_slots_steps,
+    _restore_queue,
     _restore_recent_sessions_steps,
     _short_scalar,
     _window_can_wait,
@@ -737,6 +786,7 @@ from kiro_crew.dashboard.chat_persistence_parts.save_transaction import (  # noq
 )
 from kiro_crew.dashboard.chat_persistence_parts.slot_builders import (  # noqa: E402,F401
     _IDENTITY_UNRESOLVED,
+    _WINDOW_ROWS,
     _apply_recent_session,
     _apply_restored_open_slot,
     _await_takeover_ordering_settled,
@@ -759,6 +809,8 @@ _facade_compose(
     ),
 )
 
+
+from kiro_crew.dashboard import slot_window_tail as _window_tail  # noqa: E402
 
 # ── Composed owners ─────────────────────────────────────────────────────────────
 # Imported last, once every binding above exists, so loading them leaves the
@@ -814,6 +866,7 @@ from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,
     _is_app_owned_channel_row,
     _load_restore_cfg,
     _read_mcp_app_claims,
+    _read_open_slot_focus,
     _read_open_slots_keys,
     _read_open_slots_snapshot,
     _recent_session_slot_name,

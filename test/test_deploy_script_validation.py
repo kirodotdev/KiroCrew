@@ -30,10 +30,12 @@ def _load_script(name: str):
     return mod
 
 
-class TestAttachBackendValidation:
-    @pytest.fixture(autouse=True)
-    def _mod(self):
-        self.mod = _load_script("attach_backend.py")
+class _InputsBothScriptsAccept:
+    """Valid inputs that ``attach_backend.py`` and ``detach_backend.py`` both accept.
+
+    Each validation class below takes this as a base and loads its own script into
+    ``self.mod``, so every node id stays ``<Class>::<test>``.
+    """
 
     def test_valid_args_pass(self, capsys):
         """Known-good inputs should not raise."""
@@ -49,6 +51,12 @@ class TestAttachBackendValidation:
             is None
         )
         assert capsys.readouterr().err == ""
+
+
+class TestAttachBackendValidation(_InputsBothScriptsAccept):
+    @pytest.fixture(autouse=True)
+    def _mod(self):
+        self.mod = _load_script("attach_backend.py")
 
     def test_empty_profile_allowed(self, capsys):
         """Empty profile (default) should pass."""
@@ -87,24 +95,10 @@ class TestAttachBackendValidation:
         assert exc.value.code == 2
 
 
-class TestDetachBackendValidation:
+class TestDetachBackendValidation(_InputsBothScriptsAccept):
     @pytest.fixture(autouse=True)
     def _mod(self):
         self.mod = _load_script("detach_backend.py")
-
-    def test_valid_args_pass(self, capsys):
-        assert (
-            self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app") is None
-        )
-        assert capsys.readouterr().err == ""
-
-    def test_sso_plus_profile_passes(self, capsys):
-        """IAM Identity Center derived names contain '+'."""
-        assert (
-            self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
-            is None
-        )
-        assert capsys.readouterr().err == ""
 
     def test_empty_profile_allowed(self, capsys):
         assert self.mod._validate_args("", "ap-southeast-2", "ABCDEFGHIJKLM", "demo") is None

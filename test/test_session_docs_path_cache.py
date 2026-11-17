@@ -72,6 +72,8 @@ class _FullTranscriptLog:
     def list_sessions(self):
         return self._log.list_sessions()
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key):
         return self._log.read_messages(key)
 

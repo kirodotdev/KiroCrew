@@ -253,10 +253,10 @@ describe('Alt+Shift+N', () => {
 })
 
 describe('agent-switch notice expiry', () => {
-  function harness() {
+  function harness(isPopout = false) {
     const store = makeStore(ORIGIN)
     renderHook(() => useShellKeyboard({
-      toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout: false,
+      toggleFocusMode: () => {}, toggleNav: () => {}, terminalEnabled: false, isPopout,
       isEmbed: false, terminalPoppedOut: false, activeSlotProject: undefined,
     }), { wrapper: wrapper(store) })
     return store
@@ -272,6 +272,23 @@ describe('agent-switch notice expiry', () => {
     act(() => { store.dispatch(setAgentSwitchNotice({ message: 'new chat?', newChatAgent: 'writer' })) })
     act(() => { vi.advanceTimersByTime(60000) })
     expect(store.getState().chat.agentSwitchNotice).toEqual({ message: 'new chat?', newChatAgent: 'writer' })
+  })
+
+  it('keeps a notice that offers to open a session started in the background', () => {
+    vi.useFakeTimers()
+    const store = harness()
+    const started = { message: 'The follow-up is running in a new chat.', openSlot: 'bg-chat' }
+    act(() => { store.dispatch(setAgentSwitchNotice(started)) })
+    act(() => { vi.advanceTimersByTime(60000) })
+    expect(store.getState().chat.agentSwitchNotice).toEqual(started)
+  })
+
+  it('expires that notice after 6 s in a popout, which shows no offer to open it', () => {
+    vi.useFakeTimers()
+    const store = harness(true)
+    act(() => { store.dispatch(setAgentSwitchNotice({ message: 'The follow-up is running in a new chat.', openSlot: 'bg-chat' })) })
+    act(() => { vi.advanceTimersByTime(6000) })
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
   })
 })
 

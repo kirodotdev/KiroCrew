@@ -435,7 +435,10 @@ class TestGovernanceWithdrawsTheSeam:
         calls: list[str] = []
 
         def _probe(
-            surface_key: str = capability.DASHBOARD_SURFACE_KEY, *, local: bool = False
+            surface_key: str = capability.DASHBOARD_SURFACE_KEY,
+            *,
+            local: bool = False,
+            provider: str | None = None,
         ) -> bool:
             calls.append(surface_key)
             return denied

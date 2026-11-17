@@ -78,6 +78,9 @@ import { store } from '../store'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { setMovedSlot, useMovedSlot, useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
+import { setAgentSwitchNotice } from '../store/chatSlice'
+import { ApiError } from '../api/apiError'
+import { i18nT } from '../i18n/t'
 
 const SLOT = 'chat-move-1'
 
@@ -94,13 +97,14 @@ function renderMove() {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={qc}><Provider store={store}>{children}</Provider></QueryClientProvider>
   )
-  return renderHook(() => useMoveSlotToFolder(), { wrapper })
+  return { ...renderHook(() => useMoveSlotToFolder(), { wrapper }), qc }
 }
 
 beforeEach(() => mocks.setSlotFolder.mockResolvedValue({}))
 afterEach(() => {
   vi.clearAllMocks()
   store.dispatch(sseSlots([]))  // reset slots between tests
+  store.dispatch(setAgentSwitchNotice(null))
   act(() => setMovedSlot(null))  // the move marker is module state
 })
 
@@ -129,6 +133,36 @@ describe('useMoveSlotToFolder', () => {
     act(() => move.current(SLOT, 'f2'))  // optimistically moves to Beta
     expect(folderOf()).toBe('f2')
     await waitFor(() => expect(folderOf()).toBe('f1'))  // rolled back to Alpha
+  })
+
+  it('tells the user a refused move did not happen, with the gateway reason', async () => {
+    mocks.setSlotFolder.mockRejectedValueOnce(new ApiError(403, "a Bot's chats stay inside its own folder"))
+    seedStore('f1')
+    const { result: move } = renderMove()
+    act(() => move.current(SLOT, 'f2'))
+    await waitFor(() => expect(folderOf()).toBe('f1'))
+    expect(store.getState().chat.agentSwitchNotice).toEqual({
+      title: i18nT('hooks.useMoveSlotToFolder.move_refused'),
+      message: "a Bot's chats stay inside its own folder",
+      error: true,
+    })
+  })
+
+  it('reports nothing for a failed move a later move already superseded', async () => {
+    let rejectFirst!: (e: Error) => void
+    mocks.setSlotFolder
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockResolvedValueOnce({})
+    seedStore('f1')
+    const { result: move, qc } = renderMove()
+    act(() => move.current(SLOT, 'f2'))
+    act(() => move.current(SLOT, 'f1'))
+    await waitFor(() => expect(mocks.setSlotFolder).toHaveBeenCalledWith(SLOT, 'f1'))
+    await act(async () => { rejectFirst(new Error('boom')) })
+    // Settled is the signal the rollback handler has run.
+    await waitFor(() => expect(qc.getMutationCache().getAll().map(m => m.state.status)).toEqual(['error', 'success']))
+    expect(folderOf()).toBe('f1')
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
   })
 
   it('marks the moved session after its menu unmounts before the server acknowledges the move', async () => {

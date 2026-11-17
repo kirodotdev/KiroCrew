@@ -31,12 +31,17 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 #: The ending of the one sentence every cause shared: ``... is a private copy; retry.``
 _GENERIC_RETRY = "; retry."
 #: Fragments of the two persistent-cause sentences.
 _AMBIGUOUS = "more than one agent spec file resolves to that name"
 _UNREADABLE = "its ownership record"
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=43)
 
 
 @pytest.fixture(autouse=True)
@@ -162,7 +167,7 @@ async def test_two_specs_for_one_name_name_both_files_and_drop_the_retry(
 async def test_a_credential_shaped_spec_filename_is_masked(tmp_path: Path) -> None:
     """Spec file names are written by whoever writes the agents directory, so
     the listed paths pass through the agents API's credential redaction."""
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = _TOKEN
     files = _claimants_of_two_names("sh-eval", package=probe)
     cfg = _seed_config(tmp_path)
     try:

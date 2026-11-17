@@ -63,9 +63,10 @@ Two one-time steps after the container is up:
    Open the printed link, substituting the host you reach the container on
    (with the mapping above: `http://localhost:5476/?token=...`). Login links
    expire minutes after minting — mint, then open immediately. (The gateway
-   also prints one link at boot, as on every platform; by the time you read
-   it in `docker logs` it has usually expired, so `docker exec` minting is
-   the reliable path.)
+   prints its own link at boot only when its stdout is a terminal. The
+   `docker run -d` above and compose give it none, so `docker logs` shows the
+   bare dashboard URL and a line naming `kirocrew token`, and `docker exec`
+   minting is the path.)
 
 ## Configuration
 
@@ -85,7 +86,7 @@ home). Pass them with `-e` / compose `environment:`:
 | `KIRO_API_KEY` | kiro-cli model credential alternative to interactive login |
 | `KIROCREW_PORT` | Dashboard port (default 5476) |
 | `KIROCREW_BIND` | Bind address inside the container (image default `0.0.0.0`; see below) |
-| `KIROCREW_ALLOW_UNSANDBOXED` | Set `1` to explicitly allow agent exec without the inner sandbox (see Sandbox below) |
+| `KIROCREW_ALLOW_UNSANDBOXED` | Set `1` on first run (no `config.json` in the volume yet) to explicitly allow agent exec without the inner sandbox (see Sandbox below) |
 
 Credential hygiene: on every start the entrypoint moves the channel
 credentials it finds in the environment into the data home's `.env` file
@@ -133,14 +134,45 @@ which need no file edit at all.)
 
 All persistent state — gateway home (`~/.kiro/crew`), kiro-cli credentials,
 agents, skills — lives under `/home/kirocrew`. One named volume covers all
-of it. Upgrade by pulling the newer image; state carries over:
+of it, so an upgrade replaces the container and keeps the volume: the new
+container mounts the same volume and carries on with the same crew.
+
+**Started with `docker run`** (the command at the top of this guide): pull the
+newer image, then stop, remove and re-run the container with the same volume.
+`docker rm` deletes the container, never the `kirocrew-home` volume:
+
+```
+docker pull ghcr.io/kirodotdev/kirocrew:stable
+docker stop kirocrew
+docker rm kirocrew
+docker run -d --name kirocrew \
+  -p 127.0.0.1:5476:5476 \
+  -v kirocrew-home:/home/kirocrew \
+  ghcr.io/kirodotdev/kirocrew:stable
+```
+
+In both commands, use your channel tag (`stable` as above, `insider` or
+`nightly`), or the version tag you are moving to, such as `0.12.0`. Keep the
+same `-v` your first `docker run` used, and repeat any other flag it carried,
+such as `-e` or `--security-opt`.
+
+**Started with compose:** run this from the folder that holds your
+`compose.yaml`:
 
 ```
 docker compose pull && docker compose up -d
 ```
 
+A browser tab opened before the upgrade may ask you to sign in again. Mint a
+new link with `docker exec kirocrew kirocrew token --ttl 2h`, as in
+[First-run setup](#first-run-setup).
+
 There is no in-container auto-update: the image is immutable and the tag is
 the version selector (channel tags track their channel; version tags pin).
+**Settings → About** still checks the release feed: when it lists a newer
+version and GHCR confirms that version's image can be pulled, About names it
+("Version X is available as a container image") with a Release notes link.
+Nothing is applied from there; you still pull the new image as above.
 
 ## Networking and security model
 
@@ -153,7 +185,7 @@ the version selector (channel tags track their channel; version tags pin).
   host-local.
 - **Auth surface, precisely:** the API and WebSocket surface requires a
   valid dashboard token (cookie or minted link) regardless of bind
-  address. Three deliberate carve-outs exist, none of which serve secrets:
+  address. Four deliberate carve-outs exist, none of which serve secrets:
   1. **Liveness probes** — `/api/health`, `/api/live`, `/api/ready` are
      tokenless AND exempt from the DNS-rebinding Host check (orchestrators
      address containers by IP). Their payloads are secret-free; the build
@@ -163,13 +195,23 @@ the version selector (channel tags track their channel; version tags pin).
      similar non-secret static files are served without a token (standard
      SPA bootstrap; the app is useless without a token once loaded).
   3. **Local bootstrap** — `/api/token/local`, `/api/shutdown`,
-     `/api/logout` and `/api/update/revalidate` require a same-machine peer
+     `/api/logout`, `/api/update/revalidate` and `/api/relay-viewer/token`
+     require a same-machine peer
      (a loopback address, or a same-user peer on the dashboard's
      kernel-verified unix socket) **plus** a filesystem secret, so they are
      unreachable through the published port by construction.
-  CSRF origin checks apply to all state-changing requests, and the
-  DNS-rebinding Host barrier applies to every request except the three
-  probe paths.
+  4. **Self-authenticating routes** — inbound webhooks
+     (`POST /api/hooks/agent`, `GET /api/hooks/agent/status`,
+     `POST /api/messaging/teams`), the connection OAuth callback
+     (`GET /api/connections/oauth/callback`), and the HMAC-token frame
+     documents (`/sandbox-doc/`, `/app-frame/`, `/app-frame-fetch/`) skip the
+     dashboard-token gate because each handler checks its own credential
+     (a webhook token, a Bot Framework JWT, a pending sign-in `state`, or a
+     minted path token or capability).
+  CSRF origin checks apply to all state-changing requests except
+  `POST /api/messaging/teams` and `/app-frame-fetch/`, whose handlers read no
+  cookie. The DNS-rebinding Host barrier applies to every request except the
+  three probe paths.
 - **Exposing beyond localhost:** publishing `5476:5476` opens the TCP
   port, but LAN browsers will still be rejected until their origin is
   allowed — set `dashboard.url` (or `KIROCREW_CORS_ORIGINS`) to the
@@ -183,9 +225,10 @@ the version selector (channel tags track their channel; version tags pin).
   hardened native install. If no backend works, agent command execution
   stays DISABLED (fail-closed) — the gateway, dashboard, and channel bots
   run normally. To enable agents in that situation, either permit user
-  namespaces (see **Sandbox troubleshooting** below) or restart with
-  `-e KIROCREW_ALLOW_UNSANDBOXED=1` to explicitly accept unsandboxed agent
-  execution. In the consented posture the container is the only isolation
+  namespaces (see **Sandbox troubleshooting** below) or explicitly accept
+  unsandboxed agent execution: `-e KIROCREW_ALLOW_UNSANDBOXED=1` on first run,
+  or `agent.sandbox_allow_unsandboxed_exec=true` in an existing `config.json`
+  (the entrypoint reads the variable only while `config.json` is absent). In the consented posture the container is the only isolation
   boundary: treat its contents (mounted volumes included) as reachable by
   agent commands, and do not mount host paths you would not hand to the
   agent. The startup log states which posture was chosen.
@@ -378,7 +421,10 @@ docker run -d --name kirocrew \
 ```
 
 In this posture the container is the only isolation boundary. Do not mount
-host paths you would not hand directly to the agent.
+host paths you would not hand directly to the agent. The entrypoint reads
+`KIROCREW_ALLOW_UNSANDBOXED` only on first run; on a volume that already holds
+`config.json`, set `agent.sandbox_allow_unsandboxed_exec` to `true` there
+instead.
 
 ### Option C — `--privileged` (not recommended)
 

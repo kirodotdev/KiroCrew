@@ -278,6 +278,60 @@ class TestMateFileForMember:
         revocations.record("pixel", [], [granted])
         assert granted in mate_worker.resolve_worker_spec(dict(BASE), "pixel")["allowedTools"]
 
+    def test_a_held_limit_takes_away_the_pre_approvals_of_the_capability_it_covers(
+        self, monkeypatch, tmp_path
+    ):
+        """A pre-approved call never asks, so Crew's gate could not hold it for a person."""
+        from kiro_crew.config import paths
+
+        self._home(monkeypatch, tmp_path)
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+        base = dict(
+            BASE,
+            allowedTools=[
+                *BASE["allowedTools"],
+                "web_fetch",
+                "@builtin/web_fetch",
+                "@builtin",
+                "*",
+            ],
+        )
+        rules = [{"text": "deny web_fetch", "capability": "web_fetch"}]
+        (paths.mate_agents_dir().parent / "migrated.json").write_text(
+            json.dumps({"held_rules": {"pixel": {"member_id": "pixel", "rules": rules}}}),
+            encoding="utf-8",
+        )
+
+        allowed = mate_worker.resolve_worker_spec(dict(base), "pixel")["allowedTools"]
+        assert "web_fetch" not in allowed and "@builtin/web_fetch" not in allowed
+        # A blanket approval would pre-approve the held capability too.
+        assert "@builtin" not in allowed and "*" not in allowed
+        assert "@kirocrew-core" in allowed and "@jira/search" in allowed
+        other = mate_worker.resolve_worker_spec(dict(base), "")["allowedTools"]
+        assert "web_fetch" in other
+
+    def test_a_held_limit_takes_away_the_template_allow_rules_for_its_capability(
+        self, monkeypatch, tmp_path
+    ):
+        """An authored ``allow`` rule runs the call inside KAS with no permission request."""
+        from kiro_crew.config import paths
+
+        self._home(monkeypatch, tmp_path)
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+        fetch = {"capability": "web_fetch", "match": ["https://a.example/*"], "effect": "allow"}
+        search = {"capability": "web_search", "effect": "allow"}
+        base = dict(BASE, permissions={"rules": [fetch, search]})
+        rules = [{"text": "deny web_fetch", "capability": "web_fetch"}]
+        (paths.mate_agents_dir().parent / "migrated.json").write_text(
+            json.dumps({"held_rules": {"pixel": {"member_id": "pixel", "rules": rules}}}),
+            encoding="utf-8",
+        )
+
+        held = mate_worker.resolve_worker_spec(dict(base), "pixel")["permissions"]["rules"]
+        assert fetch not in held and search in held
+        other = mate_worker.resolve_worker_spec(dict(base), "")["permissions"]["rules"]
+        assert fetch in other
+
     def test_an_unreadable_crewmate_file_refuses_the_worker(self, monkeypatch, tmp_path):
         self._home(monkeypatch, tmp_path)
         from kiro_crew.config import paths
@@ -318,7 +372,7 @@ class TestTheWorkerSpecIsSourceDefined:
         assert MATE_WORKER_AGENT_FILENAME in OWNED_KIRO_AGENT_FILES
 
     def test_its_base_is_the_default_templates_shape(self, installed):
-        from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+        from kiro_crew.mate_worker import mate_worker_prompt
 
         template = agent.build_agent_config()
         # The work-ledger mount only adds (``test_mate_work_ledger_mount.py``).
@@ -334,7 +388,7 @@ class TestTheWorkerSpecIsSourceDefined:
             t for t in installed["allowedTools"] if not t.startswith("@kirocrew-work/")
         ] == template["allowedTools"]
         # The default prompt, then the worker's own principles after it.
-        assert installed["prompt"] == f"{template['prompt'].rstrip()}\n\n{MATE_WORKER_PROMPT}"
+        assert installed["prompt"] == f"{template['prompt'].rstrip()}\n\n{mate_worker_prompt()}"
 
     def test_its_prompt_says_how_to_report_a_missing_capability(self, installed):
         from kiro_crew.mate_worker import MISSING_CAPABILITY_PREFIX
@@ -534,3 +588,34 @@ def test_the_worker_spec_is_read_by_the_crewmates_member_id(monkeypatch):
     mate_worker.member_worker_spec("Briar")
     mate_worker.member_worker_spec("not-on-the-roster")
     assert seen == ["briar", "not-on-the-roster"]
+
+
+@pytest.mark.parametrize(
+    ("inherited", "backend", "fix"),
+    [
+        (True, "", "or change Settings → Agent Harness"),
+        (
+            False,
+            "deepseek",
+            "or remove the stored agent.member_acp_backend to follow Settings → Agent Harness",
+        ),
+    ],
+)
+def test_worker_refusal_names_pin_and_settings_not_member_field(inherited, backend, fix):
+    """RFC rfc-crewmate-harness-follows-settings Phase 2: an unpinned Bot's refused
+    worker is told to pick a harness in its own settings, or to change Settings ->
+    Agent Harness; a stored ``agent.member_acp_backend`` wins over Settings, so
+    there the fix is removing it. Never "set agent.member_acp_backend"."""
+    from kiro_crew.config.loader_builders import mark_member_backend_inherited
+
+    section = SimpleNamespace(acp_backend="", member_acp_backend=backend, kas_bundle=False)
+    mark_member_backend_inherited(section, inherited)
+    config = SimpleNamespace(agent=section, agents={"pixel": SimpleNamespace(acp_backend="")})
+
+    refusal = mate_worker.worker_kit_backend_refusal(backend, config, "pixel")
+
+    assert refusal is not None
+    assert "in this bot's settings pick a harness that can (" in refusal
+    assert fix in refusal
+    assert "config.json" not in refusal
+    assert "set agent.member_acp_backend" not in refusal.lower()

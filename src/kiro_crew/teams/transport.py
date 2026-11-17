@@ -66,22 +66,18 @@ DispatchFn = Callable[[TeamsInbound], Awaitable[None]]
 #   [OPTIONS:] chips real. The cap is below Slack's 10 because actions render as
 #   full-width buttons on mobile; overflow degrades to a numbered list through
 #   ``apply_options_cap``.
-# * ``files_inbound=True`` -- the dispatcher really does download the files on an
-#   activity and hand their content to the turn, AFTER the personal-scope and
-#   allow-list gates this module applies. Both Teams shapes are covered: a
-#   personal-chat upload (pre-authorized ``downloadUrl``, fetched with no
-#   credential) and an inline image (Teams-hosted ``contentUrl``, fetched with the
-#   bot token only on a recognized Microsoft host). The Teams app MANIFEST must
-#   also declare ``supportsFiles: true`` or the platform never sends the
-#   ``file.download.info`` attachment at all -- see ``docs/teams-integration.md``.
-# * ``files_outbound=True`` -- and deliberately narrower than the platform. The
-#   renderer really does deliver a local raster the reply referenced, as an inline
-#   ``data:`` URI attachment, which needs no hosting and no round trip. A
-#   NON-image file would need the ``FileConsentCard`` flow: consent card, user
-#   accept, an ``invoke`` activity carrying an upload URL, then a PUT of the bytes.
-#   This channel's ingress fast-acks a message activity and dispatches a turn; it
-#   handles no ``invoke``, so that flow is out of scope here and a non-inlinable
-#   reference is refused visibly instead (see ``teams/attachments.py``).
+# * ``files_inbound=True`` -- the dispatcher downloads an activity's files and
+#   gives their content to the turn, AFTER this module's personal-scope and
+#   allow-list gates. Both Teams shapes: a personal-chat upload (pre-authorized
+#   ``downloadUrl``, fetched with no credential) and an inline image (Teams-hosted
+#   ``contentUrl``, fetched with the bot token only on a recognized Microsoft
+#   host). The Teams app MANIFEST must declare ``supportsFiles: true`` or Teams
+#   never sends ``file.download.info`` -- see ``docs/teams-integration.md``.
+# * ``files_outbound=True`` -- narrower than the platform: the renderer sends a
+#   local raster the reply referenced as an inline ``data:`` URI. A NON-image file
+#   needs the ``FileConsentCard`` flow, which ends in an ``invoke`` activity; this
+#   ingress handles no ``invoke``, so such a reference is refused visibly (see
+#   ``teams/attachments.py``).
 def allowed_emails_from_config(entries: object) -> list[str] | None:
     """Normalize ``teams.allowed_emails`` to the lowercased identities to admit.
 

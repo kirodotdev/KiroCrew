@@ -79,7 +79,11 @@ async def pipe(host: str, port: int, token: bytes, stdin_read, stdout_write) -> 
     try:
         reader, writer = await asyncio.open_connection(host, port, limit=wire.MAX_LINE_BYTES * 2)
     except OSError as exc:
-        print(f"crew-remote: relay unreachable: {exc}", file=sys.stderr, flush=True)
+        # Local: only a failed dial pays for the downloader's imports.
+        from kiro_crew.asset_downloader import network_failure_cause
+
+        why = network_failure_cause(exc) or exc
+        print(f"crew-remote: relay unreachable: {why}", file=sys.stderr, flush=True)
         return EXIT_LOST
     writer.write(token + b"\n")
     loop = asyncio.get_running_loop()

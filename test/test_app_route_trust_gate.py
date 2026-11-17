@@ -34,6 +34,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from chat_test_helpers import _make_state
 from off_loop_helpers import off_loop
 
@@ -48,7 +49,21 @@ _NOT_FOUND = {"error": "not found", "code": "slot_not_found"}
 #: own timeout is ``_APPROVAL_TIMEOUT`` (hours), so a regression that leaves it
 #: pending must fail here by name, well inside pytest-timeout.
 _SETTLE = 5.0
-_NO_GRANT = {"error": "app cannot manage session approvals", "code": "session_approval_not_granted"}
+#: The whole 403 body for ``_PLAIN``, which does not declare the grant. Spelled out
+#: so any change to the wording, the code or the cause fails these route tests.
+_NO_GRANT = {
+    "error": (
+        'App "plain-app" cannot approve tool requests, answer question cards or change '
+        "approval modes in chat sessions: its installed app.json does not declare "
+        'permissions.sessionApproval. To fix this, add "sessionApproval": true to '
+        "permissions in the app's app.json and install that version with kirocrew app "
+        "update plain-app. An app that registers itself registers its new manifest again "
+        "instead. The new version is turned off until the dashboard owner opens the app's "
+        'page (/apps/detail/plain-app) and clicks "Enable and allow chat control".'
+    ),
+    "code": "session_approval_not_granted",
+    "cause": "not_declared",
+}
 
 _API = [
     "/api/approvals",
@@ -91,8 +106,13 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr(token_auth, "_get_secret", lambda: b"app-route-trust-gate-key")
+    mark_apps_live(monkeypatch, _MANIFESTS)
     monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    # The app tokens here stand for owner-enabled apps (the sealed marker).
+    monkeypatch.setattr(
+        "kiro_crew.apps.host_exec_grants.host_exec_granted", _MANIFESTS.__contains__
+    )
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
     monkeypatch.setattr(revocation_gen, "_gen", 0)
     monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", _MANIFESTS.get)

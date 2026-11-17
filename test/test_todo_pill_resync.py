@@ -15,6 +15,10 @@ Two repairs, both covered here:
   list with its own tool so the two copies agree again.
 * ``PATCH /api/chat/slots/{slot}/todo`` -- a person ticking one row of the pill
   directly, which was impossible before (the tool result was the only writer).
+
+Neither applies on a harness that keeps its checklist itself
+(``ACP_BACKENDS_PLAN_CHECKLIST``): its list is ``read_only`` and its turns carry
+no block, pinned under "a harness that keeps its checklist itself".
 """
 
 from __future__ import annotations
@@ -931,6 +935,62 @@ async def test_warm_turn_with_a_pending_tick_prepends_the_sync_block(tmp_path, m
     assert sent[0].endswith("BUILT")
 
 
+# ── a harness that keeps its checklist itself (an ACP plan) ──────────────────
+
+
+def _plan_list(slot: _ChatSlot) -> None:
+    """The read-only snapshot ``acp.plan_checklist`` makes of a claude ``plan``."""
+    slot.set_todo(
+        {
+            "description": "",
+            "tasks": [
+                {"id": "1", "text": "Boil water", "completed": True},
+                {"id": "2", "text": "Steep tea bag", "completed": False},
+            ],
+            "read_only": True,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_list_refuses_the_tick() -> None:
+    """No prompt block reaches a harness that keeps its own list, so a tick is refused."""
+    slot = _slot()
+    _plan_list(slot)
+    state = _state(slot)
+    status, body = await _patch(_app(state), "s1", _body(slot, "2", True))
+    assert (status, body["code"]) == (409, "todo_read_only")
+    assert body["todo"] == slot.todo_payload()
+    assert slot.todo_payload()["completed"] == 1  # type: ignore[index]
+    assert slot._todo_overrides == {}
+    state.broadcast_ws.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_warm_turn_on_a_plan_checklist_harness_carries_no_sync_block(
+    tmp_path, monkeypatch
+) -> None:
+    """The sync block says "Call todo_list `complete`", a tool claude does not have.
+
+    The list here is a ``todo_list`` one with a person's tick pending, the one shape
+    that renders a sync block, so the turn's harness alone keeps it out.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+    state, sent = _runner_state(tmp_path, monkeypatch, is_new=False, resumed=False)
+    provider = state.sessions.get_or_create.return_value[0]
+    provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
+    slot = state.get_or_create_slot("pill-chat")
+    _seed_pill(slot)
+    slot.set_todo_task_completed("2", True)
+    await _runner_turn(state, slot)
+    assert sent and "[Task checklist" not in sent[0]
+    assert sent[0].endswith("BUILT")
+    # Not delivered, so not marked stated: it is said if the slot moves to kiro-cli.
+    assert slot._todo_overrides["2"]["stated"] is False
+
+
 @pytest.mark.asyncio
 async def test_edits_are_marked_stated_only_once_the_provider_answers(
     tmp_path, monkeypatch
@@ -1210,6 +1270,68 @@ async def test_a_clear_frame_on_a_turn_that_did_not_type_clear_leaves_the_pill(
     assert slot.todo_payload() is not None
     assert slot.todo_payload()["completed"] == 2  # type: ignore[index]
     assert slot._todo_overrides["2"]["completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_peers_clear_on_a_shared_runtime_wipes_nothing(tmp_path, monkeypatch) -> None:
+    """A shared runtime fans a clear frame to every peer runner (and marks it
+    ownerless whenever a subagent is registered, including for the session that
+    typed it). The gate is therefore THIS turn's own command, not the frame.
+
+    The whole destructive clear is gated, not only the pill: a peer's ``/clear``
+    fanned to this runner must NOT wipe this session's history or broadcast
+    ``slot_clear`` for it, or one session's clear silently empties another's
+    conversation."""
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.providers.base import (
+        EVENT_CLEAR_STATUS,
+        EVENT_COMPLETE,
+        EVENT_TEXT_CHUNK,
+        LLMEvent,
+    )
+
+    state, sent = _runner_state(tmp_path, monkeypatch, is_new=False, resumed=True)
+    slot = state.get_or_create_slot("peer-chat")
+    _seed_pill(slot)
+    slot.set_todo_task_completed("2", True)
+    slot.append("user", "keep me", "msg msg-u")
+    slot.append("assistant", "and me", "msg msg-a")
+    rows_before = len(slot.messages)
+    broadcasts: list[tuple[str, dict[str, Any]]] = []
+    real_broadcast = state.broadcast_ws
+    state.broadcast_ws = lambda kind, payload, *a, **k: (  # type: ignore[assignment]
+        broadcasts.append((kind, payload)),
+        real_broadcast(kind, payload, *a, **k),
+    )[1]
+    provider = (await state.sessions.get_or_create())[0]
+    # A fanned ownerless clear only reaches a peer on a chat-SHARED runtime. The
+    # runner gates the ownerless-clear skip on ``is_shared_chat_runtime(client)``
+    # (the ``_shared_runtime`` flag) so the default (non-sharing) path stays
+    # byte-identical to base -- a runtime lease does NOT separate the two, since
+    # the unshared path takes one at registration too. This shared-runtime
+    # scenario must therefore present a shared provider for the guard to engage.
+    provider._shared_runtime = True
+
+    async def stream(message, *args, **kwargs):
+        sent.append(message)
+        yield LLMEvent(kind=EVENT_CLEAR_STATUS, runtime_global=True)
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    provider.stream = stream
+    state.sessions.get_or_create = AsyncMock(return_value=(provider, False, True))
+    await _runner_turn(state, slot, "carry on")
+    # The pill survives ...
+    assert slot.todo_payload() is not None
+    assert slot.todo_payload()["completed"] == 2  # type: ignore[index]
+    assert slot._todo_overrides["2"]["completed"] is True
+    # ... and so does the history: the fanned-out clear wiped nothing and
+    # announced nothing.
+    assert len(slot.messages) >= rows_before, "a peer's clear wiped this session's history"
+    assert not any(
+        kind == "slot_clear" for kind, _ in broadcasts
+    ), "a peer's clear broadcast slot_clear for a conversation this session never cleared"
 
 
 @pytest.mark.asyncio

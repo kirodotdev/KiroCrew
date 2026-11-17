@@ -170,6 +170,13 @@ describe('chat sidebar — goal-loop progress subtitle', () => {
     expect(queryByText(/Loop 31\/0/)).toBeNull()
   })
 
+  it('groups a long-running loop cycle count in the app number format', () => {
+    const slots = [{ key: 'k', title: 'loop', running: false, messages: 5 }]
+    const { container } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 1234, max_cycles: 0 } } })
+    const icon = container.querySelector('[data-testid="goal-loop-icon"]')
+    expect(icon!.getAttribute('aria-label')).toBe('Goal loop · cycle 1,234 (no cap)')
+  })
+
   it('is NOT gated on running — a mid-turn loop still shows progress, carrying the live tool status', () => {
     // The case the feature exists for: a looping session is mid-turn most of the
     // time, so gating on !running would hide the indicator almost always.

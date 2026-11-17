@@ -14,7 +14,8 @@
  *   published catalog and no per-row manifest clone. Discover renders catalog
  *   rows only, never the wheel's installed builtins, so no builtin appears
  *   here; the Updates tab is therefore always all-current.
- * - Task Runner (name: "projects") is installed and enabled
+ * - Every shipped built-in is registered, so Notes (name: "md-notebook") is
+ *   installed (default-disabled, which Library still lists)
  */
 
 import { test, expect, type Page } from '@playwright/test'
@@ -31,10 +32,10 @@ function browseCards(page: Page) {
 /**
  * An installed app in the Library launchpad grid. Each app renders as a
  * LaunchpadTile whose root carries `data-testid="launchpad-tile-<name>"`
- * (the app NAME, e.g. "projects" -- not the display name). Anchoring on the
+ * (the app NAME, e.g. "md-notebook" -- not the display name). Anchoring on the
  * testid also keeps the lookup unambiguous: the tile's overflow trigger is a
  * button whose accessible name CONTAINS the display name ("More actions for
- * Task Runner"), and an installed builtin also appears in the nav rail.
+ * Notes"), and an enabled builtin also appears in the nav rail.
  */
 function launchpadTile(page: Page, appName: string) {
   return page.getByTestId(`launchpad-tile-${appName}`)
@@ -121,23 +122,23 @@ test.describe('Discover Page — /apps', () => {
 })
 
 test.describe('Library Page — /apps/library', () => {
-  test('lists the installed Task Runner app as a launchpad tile', async ({ page }) => {
+  test('lists the installed Notes app as a launchpad tile', async ({ page }) => {
     await gotoLibrary(page)
-    await expect(launchpadTile(page, 'projects')).toBeVisible({ timeout: 10000 })
-    await expect(tileFace(page, 'projects', 'Task Runner')).toBeVisible()
+    await expect(launchpadTile(page, 'md-notebook')).toBeVisible({ timeout: 10000 })
+    await expect(tileFace(page, 'md-notebook', 'Notes')).toBeVisible()
   })
 
   test('search narrows to matching installed apps', async ({ page }) => {
     await gotoLibrary(page)
-    await expect(tileFace(page, 'projects', 'Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(tileFace(page, 'md-notebook', 'Notes')).toBeVisible({ timeout: 10000 })
 
     const search = page.getByRole('textbox', { name: 'Search library' })
     await search.fill('zzz_no_match_xyz')
     await expect(page.getByTestId('empty-state-title')).toHaveText('No matching apps', { timeout: 5000 })
-    await expect(launchpadTile(page, 'projects')).toHaveCount(0)
+    await expect(launchpadTile(page, 'md-notebook')).toHaveCount(0)
 
     await search.clear()
-    await expect(tileFace(page, 'projects', 'Task Runner')).toBeVisible({ timeout: 5000 })
+    await expect(tileFace(page, 'md-notebook', 'Notes')).toBeVisible({ timeout: 5000 })
   })
 
   test('page round-trip: Library and Discover are independently routable', async ({ page }) => {
@@ -145,7 +146,7 @@ test.describe('Library Page — /apps/library', () => {
     await expect(page.getByRole('heading', { name: 'All apps' })).toBeVisible({ timeout: 5000 })
 
     await gotoLibrary(page)
-    await expect(tileFace(page, 'projects', 'Task Runner')).toBeVisible({ timeout: 10000 })
+    await expect(tileFace(page, 'md-notebook', 'Notes')).toBeVisible({ timeout: 10000 })
     await expect(page.getByRole('heading', { name: 'All apps' })).toHaveCount(0)
 
     await gotoDiscover(page)
@@ -154,10 +155,10 @@ test.describe('Library Page — /apps/library', () => {
 })
 
 test.describe('App Detail Page — /apps/detail/:name', () => {
-  test('renders detail view for Task Runner', async ({ page }) => {
-    await gotoDetail(page, 'projects')
+  test('renders detail view for Notes', async ({ page }) => {
+    await gotoDetail(page, 'md-notebook')
     // The detail page shows the display name
-    await expect(page.locator('text=Task Runner').first()).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=Notes').first()).toBeVisible({ timeout: 10000 })
     await expect(page.getByRole('button', { name: 'Back to Apps' })).toBeVisible()
   })
 
@@ -178,8 +179,8 @@ test.describe('App Detail Page — /apps/detail/:name', () => {
   })
 
   test('detail page shows Details metadata card', async ({ page }) => {
-    await gotoDetail(page, 'projects')
-    await expect(page.locator('text=Task Runner').first()).toBeVisible({ timeout: 10000 })
+    await gotoDetail(page, 'md-notebook')
+    await expect(page.locator('text=Notes').first()).toBeVisible({ timeout: 10000 })
     // The Details card heading
     await expect(page.locator('text=Details').first()).toBeVisible({ timeout: 5000 })
   })
@@ -187,10 +188,10 @@ test.describe('App Detail Page — /apps/detail/:name', () => {
 
 test.describe('App Page — /apps/:name', () => {
   test('builtin app with native route redirects to its page', async ({ page }) => {
-    // Task Runner (name: "projects") has route /projects — navigate to /apps/projects
-    await page.goto('/apps/projects', { waitUntil: 'domcontentloaded' })
-    // Should redirect to the native route /projects
-    await page.waitForURL('**/projects', { timeout: 10000 })
+    // Notes (name: "md-notebook") has route /md-notebook, so open /apps/md-notebook
+    await page.goto('/apps/md-notebook', { waitUntil: 'domcontentloaded' })
+    // Should redirect to the native route /md-notebook
+    await page.waitForURL('**/md-notebook', { timeout: 10000 })
   })
 
   test('nonexistent app shows not-found state via AppHost', async ({ page }) => {

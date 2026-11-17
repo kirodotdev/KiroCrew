@@ -14,7 +14,10 @@
  * exercise the same resolve/reject boundary production hits.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { cleanup, renderHook } from '@testing-library/react'
 import { sendTurn, SEND_ABORT_MS } from '../chat-core/transport/sendTurn'
+import { api } from '../api/client'
+import { clearCrewSteerNotice, noteCrewSteerReceipt, useCrewSteerNotice } from '../lib/crewSteerNotice'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -208,3 +211,40 @@ describe('sendTurn receipt contract', () => {
     })
   })
 })
+
+// A steer's ledger record can fail in the background, and its WS failure frame
+// can land before the send's own `ledger_pending` receipt. Both steer callers
+// clear the old note on submit, so the pending receipt never erases a new one.
+describe('crew steer notice across a send', () => {
+  const PENDING = { ok: true, ledger_event: null, ledger_error: null, ledger_pending: true }
+
+  // Unmount the read hooks first, so the clear is not a state update they see.
+  afterEach(() => { cleanup(); clearCrewSteerNotice('w1') })
+
+  it.each([
+    ['sendTurn', () => sendTurn({ message: 'hi', slot: 'w1' })],
+    ['crewWorkerSteer', () => api.crewWorkerSteer('root', 'w1', 'hi')],
+  ])('%s: a failure frame that beats its pending receipt keeps the note', async (_name, send) => {
+    fetchMock.mockImplementation(async () => {
+      // The frame from useWebSocket arrives while the POST is still out.
+      noteCrewSteerReceipt('w1', { ledger_error: 'crew_log_off' })
+      return jsonResponse(200, PENDING)
+    })
+    await send()
+    expect(crewSteerNoticeFor('w1')).toBe('crew_log_off')
+  })
+
+  it.each([
+    ['sendTurn', () => sendTurn({ message: 'hi', slot: 'w1' })],
+    ['crewWorkerSteer', () => api.crewWorkerSteer('root', 'w1', 'hi')],
+  ])('%s: a new submit clears an old note', async (_name, send) => {
+    noteCrewSteerReceipt('w1', { ledger_error: 'crew_log_off' })
+    fetchMock.mockResolvedValue(jsonResponse(200, PENDING))
+    await send()
+    expect(crewSteerNoticeFor('w1')).toBe('')
+  })
+})
+
+function crewSteerNoticeFor(slot: string): string {
+  return renderHook(() => useCrewSteerNotice(slot)).result.current
+}

@@ -362,8 +362,8 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
     could not write. Reaching that point means the writer is wedged, and the handles
     those jobs would have written through are being dropped in this same call -- so
     keeping them would leave the writer retrying entries against a crew log this
-    process has stopped believing in. A successful wait makes the discard a no-op,
-    which is every call that is not recovering from a wedge. The writer is retired
+    process has stopped believing in. A successful wait leaves only parked loss debt to
+    discard, which is every call that is not recovering from a wedge. The writer is retired
     while still installed, so a job that queues follow-on work during that wait queues
     it into the writer being retired rather than building a new one.
 
@@ -1275,7 +1275,8 @@ def _child_gone_probe(session_id: str) -> "Callable[[str], bool] | None":
     then shows an opener with no match while the registry omits the child. Closing on that reading puts a synthesised ``unknown`` ahead of the
     real outcome and leaves both standing in a file nothing rewrites. The debt
     set is the exact record of what is still owed -- queued, claimed by the
-    writer, retained, and owed loss markers alike -- and it is the one source
+    writer, retained, and owed loss markers alike, bar a parked one no pass will
+    write -- and it is the one source
     here carrying no bound that
     could shed a pending child, which the manager's completed-run retention does
     carry. An entry a hard ceiling refuses is absent from the debt set, which is
@@ -1619,13 +1620,51 @@ def on_session_closed(
         if tracker is not None:
             tracker.forget_session(session_id)
 
+    # on_settled fires BEFORE after (via _after: settle.after() then after()), and
+    # fires with True only when the session/closed entry LANDED (the writer's _job
+    # ran and log.append returned). That is the one path where per-unit FIFO ordering
+    # proves every prior append for this session already resolved, so releasing the
+    # write lease there is safe.
+    #
+    # On the REJECTED path (_settle_rejected, writer queue full) and on permanent
+    # drop (attempt budget spent), on_settled fires with False. An earlier append
+    # may still hold the write lock after reading the tail; freeing the lease there
+    # would let remove_unit unlink the segment and leave the stalled _append_line to
+    # recreate the directory with a headerless log. Keeping release on those paths
+    # preserves main's behaviour: the handle stays held in _open until the GC cycle
+    # collects it, remove_unit keeps returning REMOVE_OWNED, and the write completes.
+    #
+    # writer.close() discards jobs silently without calling any hook, so path C
+    # (reset_caches retiring the writer) never reaches _forget or _on_settled.
+    # The handle stays in _open until reset_caches clears it, as before.
+    #
+    # Because on_settled runs before after, the handle is still in _open here and
+    # can be popped and released in one step under the lock. The subsequent pop in
+    # _forget finds nothing and is a no-op.
+    def _on_settled_with_release(
+        landed: bool, _existing: "Callable[[bool], None] | None" = on_settled
+    ) -> None:
+        if _existing is not None:
+            _existing(landed)
+        if not landed:
+            return
+        tracker = _tracker_instance
+        dropped: "Any" = None
+        with _lock:
+            if tracker is not None:
+                dropped = tracker.pop_unless_live(_open, session_id)
+            else:
+                dropped = _open.pop(session_id, None)
+        if dropped is not None:
+            dropped.release_ownership()
+
     _write(
         session_id,
         "session/closed",
         {"reason": reason},
         src=_SRC_GATEWAY,
         after=_forget,
-        on_settled=on_settled,
+        on_settled=_on_settled_with_release,
     )
 
 

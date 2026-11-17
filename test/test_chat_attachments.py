@@ -104,6 +104,28 @@ def test_same_image_twice_is_stored_once_and_both_refs_rewritten(sessions, tmp_p
     assert out == f"![x]({_dest(copied)}) and ![y]({_dest(copied)})"
 
 
+def test_a_long_basename_is_cut_in_its_stem_and_keeps_its_extension(sessions, tmp_path):
+    """A name over the length cap loses stem characters, never its image suffix.
+
+    The shape is a dashboard upload: a 32-hex uuid, ``_``, then a default macOS
+    screenshot name. The copy must still read as a PNG, and the original must
+    still pair with it for the write boundaries' corroboration.
+    """
+    name = "0" * 32 + "_Screenshot_2026-11-06_at_09.18.00.png"
+    source = _write_png(tmp_path / "uploads" / name)
+    text = f"look ![shot]({source})"
+
+    out = persist_inline_images(text, sessions_dir=sessions, stem=STEM)
+
+    stored = _stored_files(sessions)
+    assert len(stored) == 1, stored
+    assert stored[0].endswith(".png"), stored[0]
+    copied = attachments_dir(sessions, STEM) / stored[0]
+    assert out == f"look ![shot]({_dest(copied)})"
+    assert persist_inline_images(out, sessions_dir=sessions, stem=STEM) == out
+    assert same_text_modulo_images(text, out, sessions_dir=sessions, stem=STEM)
+
+
 def test_remote_and_data_destinations_are_untouched(sessions):
     """(3) Nothing remote is ours to copy."""
     text = (
@@ -692,21 +714,29 @@ def test_an_escaped_bracket_in_the_alt_text_does_not_end_it(sessions, tmp_path):
     assert _stored_files(sessions)
 
 
-def test_a_long_run_of_image_openers_is_left_alone_quickly(sessions, tmp_path):
+def test_a_long_run_of_image_openers_is_left_alone_unscanned(sessions, tmp_path, monkeypatch):
     """Bounded on hostile markup: the scanner is quadratic in the number of ``![``
     openers, and this runs under the session lock, so a row past the opener bound
-    is left as written -- in milliseconds, not the tens of seconds the scan costs.
+    is left as written without the reference scan ever running.
     """
-    import time
+    import kiro_crew.chat_attachments as chat_attachments
 
+    scanned: list[int] = []
+    real_scan = chat_attachments.iter_local_refs
+
+    def recording_scan(text):
+        scanned.append(len(text))
+        return real_scan(text)
+
+    monkeypatch.setattr(chat_attachments, "iter_local_refs", recording_scan)
     png = _write_png(tmp_path / "scratch" / "shot.png")
     text = "![" * 20000 + f"![shot]({png})"
-    started = time.monotonic()
     assert persist_inline_images(text, sessions_dir=sessions, stem=STEM) == text
-    assert time.monotonic() - started < 2.0
+    assert scanned == []
     assert not _stored_files(sessions)
     # And the corroboration helper takes the same exit.
     assert not same_text_modulo_images(text, text + " ", sessions_dir=sessions, stem=STEM)
+    assert scanned == []
 
 
 # A destination has to survive the parser that reads it back.

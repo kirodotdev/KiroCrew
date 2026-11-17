@@ -157,11 +157,11 @@ class TestTheMovedLaneIsTheSameLane:
         # time stays about the same (test_workflow_matrix_max_parallel.py pins
         # the 4).
         assert job["strategy"]["max-parallel"] == 4
-        # 40 is a spend guard as much as a hang guard -- a runaway macOS shard costs
+        # 60 is a spend guard as much as a hang guard -- a runaway macOS shard costs
         # about ten times a Linux one -- so suite growth is absorbed by the shard
-        # COUNT and this number stays put. The cap only means something while the
-        # slowest shard sits inside it with room to spare.
-        assert job["timeout-minutes"] == 40
+        # COUNT, and the cap leaves room for a slow macOS runner. The cap only
+        # means something while the slowest shard sits inside it with room to spare.
+        assert job["timeout-minutes"] == 60
         runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
         # The file-sharding plugin, the same one backend-test and
         # backend-test-windows use: only the owning shard IMPORTS a file, where
@@ -251,7 +251,7 @@ class TestTheMovedLaneIsTheSameLane:
         assert run.index("set -o pipefail") < run.index("pytest "), run
 
     def test_the_shard_log_is_uploaded_even_when_the_shard_is_cancelled(self) -> None:
-        # A shard killed at the 40-minute cap is `cancelled`, and its ids are the
+        # A shard killed at the 60-minute cap is `cancelled`, and its ids are the
         # ones a human most needs. `if: failure()` would drop exactly that case.
         steps = _load("platform-tests.yml")["jobs"]["backend-test-macos"]["steps"]
         upload = next(

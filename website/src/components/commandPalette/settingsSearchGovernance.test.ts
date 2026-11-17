@@ -3,8 +3,8 @@
  *
  * `settingsRegistry.gen.ts` is codegen'd from the static settings tree, so it lists
  * every entry the build ships whether or not the running gateway offers it. The
- * Decisions (Jev) toggle is governed by `capabilities.decisions`: under a pin
- * `FeaturePreviewsSection` renders no card, and an unfiltered corpus would then hand
+ * Decisions toggle is governed by `capabilities.decisions`: under a pin
+ * the card draws only the administrator's notice, and an unfiltered corpus would then hand
  * the user a search result that navigates to a section where the row is absent —
  * which reads as a broken page rather than a feature the fleet withdrew.
  *
@@ -29,7 +29,7 @@ import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
-import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
@@ -45,6 +45,7 @@ import {
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
 import { extractFromSource } from '../../../scripts/settingsExtract'
+import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import type { SettingEntry } from './settingsTypes'
 
@@ -66,10 +67,13 @@ const tipsEntry = (): SettingEntry => {
   return entry
 }
 
+/** Display > View's Channels switch, drawn only while Channels is on. */
+const CHANNELS_SETTING_ID = 'display.show-channels'
+
 /** Every id some governance answer can withhold. */
 const GOVERNED_IDS = new Set([
   ...DECISIONS_SETTING_IDS, FEATURE_TIPS_SETTING_ID, GATEWAY_AUTO_UPDATE_SETTING_ID, APP_AUTO_DOWNLOAD_SETTING_ID,
-  KIRO_SIGN_IN_SETTING_ID, ENABLE_REMOTE_CREWS_SETTING_ID, AUTO_CONNECT_CREWS_SETTING_ID,
+  KIRO_SIGN_IN_SETTING_ID, ENABLE_REMOTE_CREWS_SETTING_ID, AUTO_CONNECT_CREWS_SETTING_ID, CHANNELS_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -115,14 +119,22 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(tipsEntry(), ON)).toBe(true)
   })
 
-  it('offers Start New Chats in Ultra Mode only while the Ultra Mode preview draws its row', () => {
+  it('offers Start New Chats in conductor mode with no preview on, and not in an LTS build', () => {
     const entry = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.new_chat_crew_mode')
     if (!entry) throw new Error('dashboard.new_chat_crew_mode missing from the registry')
-    localStorage.removeItem(PREVIEW_CREW_MODE)
-    expect(settingEntryOffered(entry, ON)).toBe(false)
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     expect(settingEntryOffered(entry, ON)).toBe(true)
-    localStorage.removeItem(PREVIEW_CREW_MODE)
+    turnOffCrewModeAsLts()
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+  })
+
+  it('offers the stale-wake switch only while the stale-fields mark draws it', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake')
+    if (!entry) throw new Error('the stale-wake switch is missing from the registry')
+    localStorage.removeItem(PREVIEW_DASHBOARD_STALE_FIELDS)
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    setPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS, true)
+    expect(settingEntryOffered(entry, ON)).toBe(true)
+    localStorage.removeItem(PREVIEW_DASHBOARD_STALE_FIELDS)
   })
 
   it('the two governed answers do not leak into each other', () => {
@@ -148,6 +160,15 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(signIn, { ...ON, kiroSignInOffered: true })).toBe(true)
     expect(settingEntryOffered(signIn, { ...ON, kiroSignInOffered: false })).toBe(false)
     expect(settingEntryOffered(otherEntry(), { ...ON, kiroSignInOffered: false })).toBe(true)
+  })
+
+  it('offers the Channels switch only once Channels is known to be on', () => {
+    const channels = entryById(CHANNELS_SETTING_ID)
+    expect(channels.configKey).toBe('dashboard.channels_enabled')
+    expect(settingEntryOffered(channels, ON)).toBe(false)
+    expect(settingEntryOffered(channels, { ...ON, channelsOn: false })).toBe(false)
+    expect(settingEntryOffered(channels, { ...ON, channelsOn: true })).toBe(true)
+    expect(settingEntryOffered(otherEntry(), { ...ON, channelsOn: false })).toBe(true)
   })
 
   it('offers Display > Explore only while the Explore preview is on', () => {
@@ -524,6 +545,18 @@ describe('the Kiro sign-in entry follows the selected harness', () => {
   it('offers it while the harness is unknown (no answer in the cache)', async () => {
     const { result } = await renderWithConfig(undefined)
     expect(offersSignIn(result.current)).toBe(true)
+  })
+
+  // The gateway's `kas_in_use` covers Bots: a Kiro CLI or Claude main harness
+  // whose Bots run on KAS (an unset or KAS Bot harness, or a Bot pinned to KAS).
+  it.each(['kiro', 'claude'])('offers it on the %s harness when Bots run on KAS', async backend => {
+    const { result } = await renderWithConfig({ ...harness(backend), kas_in_use: true })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(true))
+  })
+
+  it('withholds it on a KAS-named main harness the gateway says nothing runs on', async () => {
+    const { result } = await renderWithConfig({ ...harness('kas'), kas_in_use: false })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(false))
   })
 })
 

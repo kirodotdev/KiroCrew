@@ -2,15 +2,14 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty-four apps ship inside the Kiro Crew package — Meetings,
-Papyrus, Mochi, Dev Fleet, Notes and the rest — and almost all of them are **off
+backend process. Twenty-one apps ship inside the Kiro Crew package (Meetings,
+Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
 
 If you just want to look around: **sidebar → Apps**. Everything shipped is already
 on disk, so a shipped app needs **Enable**, not Install. An app with a page of its
-own takes a sidebar entry the moment it is enabled; Command Bar has no page and
-replaces the quick-search overlay instead.
+own takes a sidebar entry the moment it is enabled.
 
 ## The App Store
 
@@ -43,8 +42,15 @@ registry, or install a local directory from a path.
 - **Pin** and **Unpin**, in a Library tile's ⋯ menu, control whether an enabled app
   shows in the sidebar; the tile's caption says which. They do not disable anything.
 
-Two shipped apps are on from a fresh install: **Command Bar** and **Task Runner**.
-Everything else waits for you.
+No shipped app is on from a fresh install: everything waits for you. Three parts of
+the dashboard used to be apps: the Command Bar that `Cmd+K` / `Ctrl+K` opens,
+[Task Runner](task-runner.md), and Channels. Turn the first two off or back on in
+**Settings → Display → View**. Channels, a shared room where several agents work one
+problem in the open with no private agent-to-agent messaging, is off until you turn
+it on with `kirocrew app enable channels` (or
+`kirocrew config set dashboard.channels_enabled true`); while it is on, the same
+Settings page has its switch. `kirocrew app enable` and `app disable` work for all
+three, and change the setting.
 
 ## What ships
 
@@ -76,10 +82,8 @@ Each line below is drawn from the app's own manifest description.
 
 | App | What it does |
 |---|---|
-| **Task Runner** (`projects`) | Hand over a multi-step job and let it run to completion unattended. See [task-runner.md](task-runner.md). |
 | **Workflows** (`workflows`) | Author, run and watch multi-phase agent runs written from a plain-language goal. See [workflows.md](workflows.md). |
 | **Research Lab** (`auto-research`) | Multi-cycle research campaigns that keep working after you walk away. See [research-lab.md](research-lab.md). |
-| **Channels** (`channels`) | A shared room where several agents work one problem in the open, with no private agent-to-agent messaging. |
 | **Ops Mission Control** (`ops-mission-control`) | An autonomous ops first responder: claims what fires, investigates it, proposes a fix, and keeps what it learns. |
 
 ### Your machine and your cloud
@@ -88,7 +92,6 @@ Each line below is drawn from the app's own manifest description.
 |---|---|
 | **Files** (`file-explorer`) | Browse and read files on the machine running Kiro Crew, in tabs, with git status and folder search. Read-only by design. |
 | **AWS Control** (`aws-control`) | Your cloud accounts in plain language, plus an S3-backed cloud drive with time-boxed share links. |
-| **Command Bar** (`command-bar`) | Replaces quick-search (`Cmd+K` / `Ctrl+K`) with a launcher: type a command, not a query. |
 
 ### Company while you work
 
@@ -100,17 +103,15 @@ Each line below is drawn from the app's own manifest description.
 | **Personal Shopper** (`personal-shopper`) | A personal advisor that researches real stores. It never buys anything — you do. |
 
 Mochi and Crew Companion need the Kiro Crew **desktop app** for their own windows;
-enabling them from a browser works, but the window does not appear. Channels and
-Workflows are deliberately hidden from Discover and Library while disabled — reach
-them through the features that use them, or enable them from the CLI.
+enabling them from a browser works, but the window does not appear. Workflows is
+deliberately hidden from Discover and Library while disabled; reach it through the
+features that use it, or enable it from the CLI.
 
 ## Where an app's pages live
 
 A shipped app's page is at the route its manifest declares — Mochi's is `/mochi` —
 and an app you installed yourself is hosted at `/apps/:name`. Either way the sidebar
-entry is created for you; you do not need to know the route. Command Bar is the one
-shipped app with no page of its own: it takes over quick-search rather than adding a
-destination.
+entry is created for you; you do not need to know the route.
 
 ## Agents, skills and MCP tools an app brings
 
@@ -190,16 +191,29 @@ kirocrew app info meetings             # one app's details
 kirocrew app enable meetings
 kirocrew app disable meetings
 kirocrew app install /path/to/my-app   # install a local app directory
+kirocrew app install git@github.com:you/my-app.git   # ...or clone a GitHub or GitLab repository
 kirocrew app update my-app             # re-copy it from that directory, keeping its data
 kirocrew app update my-app --source /path/to/my-app-v2   # ...or from another directory
 kirocrew app uninstall my-app          # keeps app data
 kirocrew app uninstall my-app --purge-data   # deletes it permanently
 ```
 
+A git URL (`https://`, `ssh://` or `git@host:org/repo.git`) is cloned with your own git
+setup, so it installs whenever you could `git clone` it yourself, private repositories
+included. `--ref` picks a branch or tag, and `--subdirectory` names the folder holding
+`app.json` when it is neither the repository root nor its only top-level app folder.
+Each install keeps its clone in a new folder under `~/.kiro/crew/app-git-checkouts/`, and
+prints where. To update the app, run `git -C <that folder> pull`, then
+`kirocrew app update <app>` (after a `--ref <tag>` install, the command prints how to move to
+another tag). Old clones are never deleted for you: remove one once its app is uninstalled. A URL with a password
+or token in it, or a plaintext `http://` or `git://` URL, is refused: use an SSH key or a
+git credential helper instead.
+
 `update` is what the Update (or Sync) button on an app's page does, from a terminal: the
 running gateway stops the app, replaces its files, keeps its data and whether it
 was enabled, and starts it again. It needs the gateway running; with none to
-reach it changes nothing and says so.
+reach it changes nothing and says so. It is not available on native Windows; there,
+press Update (or Sync) on the app's page.
 
 Four more subcommands exist for people building apps rather than using them:
 `import` converts a manifest-declared plugin package into an app directory, `init`

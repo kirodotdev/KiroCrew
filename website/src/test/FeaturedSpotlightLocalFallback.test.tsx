@@ -16,6 +16,8 @@
  */
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -188,6 +190,7 @@ describe('FeaturedSpotlight — installed lead swaps to local art on a failed re
   function mountCard(props: Partial<Parameters<typeof FeaturedSpotlight>[0]> = {}) {
     return render(
       <FeaturedSpotlight
+        connected
         type="app"
         apps={[lead({ heroImage: R_HERO } as Partial<RegistryApp>)]}
         onOpenApp={noop}
@@ -279,14 +282,16 @@ describe('DiscoverPage — threads the installed record to the featured lead (#6
   function renderDiscover() {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={['/apps']}>
-          <Routes>
-            <Route path="/apps" element={<DiscoverPage />} />
-            <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
+      <Provider store={createConnectedTestStore()}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/apps']}>
+            <Routes>
+              <Route path="/apps" element={<DiscoverPage />} />
+              <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
     )
   }
 
@@ -348,7 +353,7 @@ describe('FeaturedSpotlight desktop-only Enable name', () => {
     return render(
       <QueryClientProvider client={qc}>
         <MemoryRouter>
-          <FeaturedSpotlight type="app" apps={[desktopOnly]} onOpenApp={noopFn} onGet={noopFn} onEnable={noopFn} />
+          <FeaturedSpotlight connected type="app" apps={[desktopOnly]} onOpenApp={noopFn} onGet={noopFn} onEnable={noopFn} />
         </MemoryRouter>
       </QueryClientProvider>,
     )

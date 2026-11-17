@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- No script runs here: relay-crew-notice-preload.js fills the text and wires the buttons. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+  <title>Kiro Crew</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #f7f7f8; --fg: #1d1d20; --muted: #5f6068; --line: #d9d9de; --btn: #ffffff; --primary: #6a4ad8; --on-primary: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #18181b; --fg: #ececf0; --muted: #a2a2ab; --line: #34343a; --btn: #232327; --primary: #8f73f0; --on-primary: #111114; }
+    }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box;
+      background: var(--bg); color: var(--fg);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    main { max-width: 420px; width: 100%; text-align: center; }
+    h1 { font-size: 17px; font-weight: 600; margin: 0 0 6px; overflow-wrap: anywhere; }
+    p { color: var(--muted); margin: 0 0 20px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px; }
+    button {
+      font: inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--btn); color: var(--fg);
+    }
+    button.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+    button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main role="status">
+    <h1 id="title"></h1>
+    <p id="body"></p>
+    <div class="actions">
+      <button id="check" class="primary" type="button"></button>
+      <button id="close" type="button"></button>
+    </div>
+  </main>
+</body>
+</html>

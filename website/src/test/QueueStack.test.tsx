@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 import { buildOutgoingTurn } from '../chat-core/composer/outgoingTurn'
@@ -647,6 +647,11 @@ describe('isNonInteractiveQueued (composer QueueStack exclusion)', () => {
     expect(isNonInteractiveQueued({ ...followup, meta: { ...followup.meta, kind: 'workflow_followup' } })).toBe(true)
   })
 
+  it("excludes a heartbeat task's queued prompt", () => {
+    const prompt = queued('💓 Heartbeat\n\nTwo CRs have new comments.', 'q1')
+    expect(isNonInteractiveQueued({ ...prompt, meta: { ...prompt.meta, kind: 'heartbeat_prompt' } })).toBe(true)
+  })
+
   it('keeps real user-typed messages interactive', () => {
     expect(isNonInteractiveQueued(queued('please also check the docs', 'q1'))).toBe(false)
     // A user quoting the prefix mid-sentence is still a user message.
@@ -674,6 +679,25 @@ describe('QueueStack editor hold', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onEdit).toHaveBeenCalledWith('q1', 'new words')
     expect(onEditOpen.mock.calls).toEqual([['q1', true]])
+  })
+
+  // The hold lapses on a deadline, so an open editor renews it, and a save
+  // ends the renewals: one landing after the save would hold the queue again.
+  it('renews the hold while the editor stays open, and not after a save', () => {
+    vi.useFakeTimers()
+    try {
+      const onEditOpen = vi.fn()
+      render(<QueueStack messages={[queued('old words', 'q1')]} onCancel={() => {}} onEdit={() => {}} onEditOpen={onEditOpen} />)
+      const input = openEditor()
+      act(() => { vi.advanceTimersByTime(90_000) })
+      expect(onEditOpen.mock.calls).toEqual([['q1', true], ['q1', true], ['q1', true], ['q1', true]])
+      fireEvent.change(input, { target: { value: 'new words' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      act(() => { vi.advanceTimersByTime(90_000) })
+      expect(onEditOpen).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('releases the hold when the stack unmounts with the editor open', () => {
@@ -704,5 +728,15 @@ describe('QueueStack durable verdict', () => {
     expect(labels).toHaveLength(1)
     expect(labels[0]).toHaveTextContent("won't survive a restart")
     expect(labels[0].closest('[data-testid="queue-card"]')).toHaveTextContent('refused')
+  })
+})
+
+describe('QueueStack restored card', () => {
+  it('stops the hourglass on a restored card, which waits for the person', () => {
+    const live = render(<QueueStack messages={[queued('live', 'q1')]} />)
+    expect(screen.getByTestId('queue-card-hourglass').className).toContain('animate-')
+    live.unmount()
+    render(<QueueStack messages={[{ ...queued('restored', 'r1'), meta: { queueId: 'r1', restored: true } }]} />)
+    expect(screen.getByTestId('queue-card-hourglass').className).not.toContain('animate-')
   })
 })

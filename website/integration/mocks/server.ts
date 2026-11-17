@@ -159,6 +159,9 @@ export const handlers = [
     return HttpResponse.json({ url: '/sandbox-doc/msw-test-doc/msw-test-token' })
   }),
 
+  // The weekly-note switch on the Memory page's Repeated failures card.
+  http.get('/api/config/kirocrew', () => HttpResponse.json({ memory: { repeated_failures_notice: false } })),
+
   // Memory endpoints
   http.get('/api/memory/settings', () => {
     return HttpResponse.json(mockMemorySettings)

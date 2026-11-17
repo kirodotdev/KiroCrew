@@ -492,6 +492,46 @@ def _download_artifact(repository: str, artifact_id: int, destination: Path) -> 
         raise PromotionError(f"GitHub artifact download failed: {stderr}")
 
 
+def _release_runs_named_by_check_runs(
+    repository: str, source_sha: str
+) -> list[Mapping[str, Any]]:
+    """The ``release.yml`` push runs the commit's own check-runs name.
+
+    The ``head_sha`` runs listing is a filtered search that can answer no runs
+    for a commit whose runs exist, so an empty answer is read through the
+    commit's check-runs (every row, ``filter=all``): an Actions job's check-run
+    links its run as ``.../<repo>/actions/runs/<run id>/job/<job id>``. Each
+    named run is fetched and kept when it is a ``release.yml`` push run. A read
+    that fails raises, so an unreadable run is never taken as an absent one.
+    """
+    marker = f"/{repository}/actions/runs/"
+    run_ids: set[int] = set()
+    page = 1
+    while True:
+        payload = _gh_json(
+            f"repos/{repository}/commits/{source_sha}/check-runs"
+            f"?filter=all&per_page=100&page={page}"
+        )
+        rows = payload.get("check_runs")
+        if not isinstance(rows, list):
+            raise PromotionError("GitHub check-runs response omitted check_runs")
+        for row in rows:
+            url = row.get("details_url") if isinstance(row, dict) else None
+            if isinstance(url, str) and marker in url:
+                run_id = url.split(marker, 1)[1].split("/", 1)[0]
+                if run_id.isdigit():
+                    run_ids.add(int(run_id))
+        if len(rows) < 100:
+            break
+        page += 1
+    runs: list[Mapping[str, Any]] = []
+    for run_id in sorted(run_ids):
+        run = _gh_json(f"repos/{repository}/actions/runs/{run_id}")
+        if run.get("path") == ".github/workflows/release.yml" and run.get("event") == "push":
+            runs.append(run)
+    return runs
+
+
 def resolve_candidate(
     *,
     repository: str,
@@ -520,6 +560,8 @@ def resolve_candidate(
     runs = runs_payload.get("workflow_runs")
     if not isinstance(runs, list):
         raise PromotionError("GitHub workflow-runs response omitted workflow_runs")
+    if not runs:
+        runs = _release_runs_named_by_check_runs(repository, source_sha)
     candidates = select_candidate_runs(runs, source_sha=source_sha, base_version=base_version)
     if not candidates:
         raise PromotionError(

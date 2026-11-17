@@ -14,6 +14,7 @@ import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../chat-core/composer/composerPastes'
+import { PANE_DICTATION_SCOPE, clearDictated, markDictated, takeDictated, wantsDictationNote } from '../chat-core/composer/dictationProvenance'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { agentSwitchTarget, interceptSlashCommand, isInterceptedSlashCommand, isSideCommand } from '../pages/chat/ChatInput'
@@ -46,11 +47,31 @@ const SCROLL_AFTER_RENDER_MS = 100
 /** What a pane send consumed, in the shape the pane's `restoreIntoComposer` puts back. A crewmate
  *  pane raises none: its transcript draws messages only, so the notice that a removed send was
  *  delivered after all could never reach the user there. */
+/** What an option send came to, in ChatPage.send's delivery classes. */
+export type PaneSendOutcome = 'sent' | 'refused' | 'indeterminate'
+
+/**
+ * Classify one doSend receipt. `landed`: an echo or queue custody already
+ * proved this send reached the server. A refusal did not go out. A lost answer
+ * (the fetch failed, or the deadline passed) may still be running, so a retry
+ * could start it twice. Anything accepted, `unknown` included (a 2xx whose body
+ * did not parse), counts as sent, as ChatPage.send counts it.
+ */
+function paneSendOutcome(status: SendReceiptStatus, landed: boolean): PaneSendOutcome {
+  if (landed) return 'sent'
+  if (status === 'refused') return 'refused'
+  if (status === 'transport-error' || status === 'response-late') return 'indeterminate'
+  return 'sent'
+}
+
 export interface PaneSentRestore {
   text: string
   files: string[]
   pastes: PasteBlock[]
   quote: MessageQuote | null
+  /** The text held dictated words (`dictationProvenance`), so the restore puts
+   *  the mark back and the re-send adds the note once. */
+  dictated?: boolean
 }
 
 /** Two pane sends' payloads as one, so a single restore puts both back. The stage holds one
@@ -63,6 +84,7 @@ export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore)
     files: [...new Set([...earlier.files, ...later.files])],
     pastes: carried.pastes,
     quote: earlier.quote ?? later.quote,
+    ...(earlier.dictated || later.dictated ? { dictated: true } : {}),
   }
 }
 
@@ -177,7 +199,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         const fallback = res.stage === 'agent' ? 'pages.chatPage.agent_command_not_run' : 'pages.chatPage.side_command_not_run'
         const message = res.error || i18nT(fallback)
         // Off screen (the pane was rebound or is gone): the refusal goes to
-        // the sending slot's transcript, as reportUploadFailure does.
+        // the sending slot's transcript.
         if (live) setSlashError({ slot: sentSlot, message })
         else dispatch(appendSlotMessage({ slot: sentSlot, message: { role: 'error', content: message, cls: '' } }))
         return
@@ -188,6 +210,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         if (inputRef.current.trim() === raw && readPastes() === blocks) {
           setInput('')
           setPasteBlocks([])
+          // The command took the composer's words, dictated or not, so the
+          // next message starts unmarked.
+          clearDictated(sentSlot, PANE_DICTATION_SCOPE)
         }
         return
       }
@@ -195,12 +220,15 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       // slot's draft. Drop it there, or coming back would offer to run it
       // again. Parked files are not the command and stay.
       const parked = readPaneDraft(sentSlot)
-      if (parked.text.trim() === raw) writePaneDraft(sentSlot, { text: '', files: parked.files, pastes: [] })
+      if (parked.text.trim() === raw) {
+        writePaneDraft(sentSlot, { text: '', files: parked.files, pastes: [] })
+        clearDictated(sentSlot, PANE_DICTATION_SCOPE)
+      }
     })
     return true
   }, [input, slotKey, openSideChat, agentLocked, paneAgentName, readPastes, setPasteBlocks, dispatch, composerRef, mountedRef, slotKeyRef, inputRef, setInput])
 
-  const doSend = useCallback((optionText?: string, steerNow?: boolean) => {
+  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void) => {
     // `optionText` mirrors ChatPage.send's first parameter: the follow-up
     // bar's direct-send gesture (double-click / split button) hands the option
     // label here so it bypasses the setInput race, superseding any composer
@@ -211,6 +239,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // parent turn already ended, so there is no live turn to inject into). It
     // asks the server to skip the hold that parks a message behind them and
     // start a real turn instead of queueing. Same `/api/chat` flag as a steer.
+    //
+    // `onOutcome` hears once what an option send came to (a discussion card
+    // shows it), in ChatPage.send's delivery classes: see `paneSendOutcome`.
     const text = (optionText || input).trim()
     // A staged quote alone is a sendable message. An option pill's send is its
     // own text and leaves the stage untouched, as it leaves files and pastes.
@@ -230,7 +261,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // quote stays staged for the real one.
     if (!optionText && interceptPaneSlash()) return
     const sentQuote = optionText ? null : consumeQuote('').quote
-    if (isEmptyTurn({ text, files: pendingFiles, quote: sentQuote })) return
+    if (isEmptyTurn({ text, files: pendingFiles, quote: sentQuote })) { onOutcome?.('refused'); return }
     // A send while STREAMING dictation is live ends the dictation, before the
     // composer is read and cleared (see useComposerVoice.disarmForSend).
     composerRef.current?.voice()?.disarmForSend()
@@ -266,15 +297,18 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // on the wire while the bubble keeps them plus `meta.pastes`, and the side table
     // re-collapses the server's expanded echo to that chip on history load; the
     // quoted message opening both texts.
-    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project }, 'send')
+    // Whether the composer text held dictated words; only a composer send takes
+    // it, and a restore below puts it back.
+    const wasDictated = !optionText && takeDictated(slotKey, PANE_DICTATION_SCOPE)
+    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project, dictationNote: wantsDictationNote(wasDictated) }, 'send')
     const { wire: llm, bubble: displayTxt, pastes: bubblePastes } = turn
-    storeSentPastes(turn.storedPaste)
     // sendId correlation (same contract as ChatPage): the wire text differs
     // from the bubble text whenever a folder token serialized, so the store's
     // content-equality fallback can never reconcile the server echo against
     // the optimistic bubble — without this id the echo appends a SECOND user
     // bubble carrying the raw marker.
     const sendId = mintSendId()
+    storeSentPastes(turn.storedPaste, sendId)
     // A crewmate send always appears immediately and stays one bubble: a real
     // queued receipt keeps it, and the queue entry takes its place in the
     // thread. Ordinary Sessions keep their busy-send bubble policy and
@@ -319,7 +353,10 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: true } : {}) }).then((receipt) => {
+    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}) }).then((receipt) => {
+      // Read before the rulings below settle the bubble: an echo that already
+      // proved this send landed outranks a lost or refused answer.
+      onOutcome?.(paneSendOutcome(receipt.status, selectSendConfirmed(store.getState(), slotKey, sendId) || (!!crewmate && selectSendAccepted(store.getState(), slotKey, sendId))))
       // Receipt policy, owned once in chat-core (issue #9457). This is the
       // PARTIAL copy: doSend is a full send, not only a steer, so the rulings
       // applySteerReceipt owns (echo short-circuit, refused/response-late/
@@ -346,6 +383,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         restore: (status) => {
           if (optionText) return
           if (status === 'response-late' && bubbleMinted) return
+          if (wasDictated) markDictated(slotKey, PANE_DICTATION_SCOPE)
           // The quote: back on the stage when this pane is still live and the
           // stage is free, else in the restored text (a rebound pane parks it).
           restoreIntoComposer(recoverQuoteInto(text, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, bubblePastes, slotKey)
@@ -361,7 +399,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         warnUnconfirmed: () => {
           if (bubbleMinted) {
             dispatch(markSendUnconfirmed({ slot: slotKey, sendId }))
-            if (!crewmate) warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote } })
+            if (!crewmate) warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote, ...(wasDictated ? { dictated: true } : {}) } })
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT(crewmate ? 'pages.chatPage.delivery_unconfirmed_resend_manually' : 'pages.chatPage.delivery_unconfirmed_pending'), cls: '', meta: { deliveryNoticeFor: sendId } } }))
           } else if (!optionText) {
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
@@ -403,7 +441,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // conservative shape ChatPage's cancel restores through), so the token
         // string alone would be a dead chip that sends literally on retry —
         // the pasted text itself is the lossless form of what the user put in.
-        stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}) }) },
+        stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}), ...(wasDictated ? { dictated: true } : {}) }) },
       })
       // -- doSend's send-machinery tail (not steer-receipt policy) --
       // Blocking ask resolution, owned by doSend and run on every accepted
@@ -465,7 +503,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // The text-only steer turn: files inlined, the live paste tokens expanded
     // (ChatPage's steer shows the expanded text in its bubble too, so this one
     // does), the quote opening the text.
-    const turn = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocks, quote: sentQuote }, 'steer')
+    const wasDictated = takeDictated(slotKey, PANE_DICTATION_SCOPE)
+    const turn = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocks, quote: sentQuote, dictationNote: wantsDictationNote(wasDictated) }, 'steer')
     const { wire: txt, pastes: steerPastes } = turn
     const sendId = mintSendId()
     // `meta.files` is the ORDERED non-image list the `[attached_file N]`
@@ -504,7 +543,10 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         sendAccepted: () => !!crewmate && selectSendAccepted(store.getState(), slotKey, sendId),
         // refused / response-late hand the payload back into this pane's
         // composer (raw text + files), addressed to the slot it was typed into.
-        restore: () => restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey),
+        restore: () => {
+          if (wasDictated) markDictated(slotKey, PANE_DICTATION_SCOPE)
+          restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey)
+        },
         reportFailure: (reason, status) => reportSendFailure(reason, status),
         // \u26A0 is NoticeCard's warn-tone selector (parseNotice).
         warnUnconfirmed: () => dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } })),
@@ -519,7 +561,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // chip gone (#560).
         // Expanded for the same reason as doSend's stash: no blocks travel
         // with the card, so the token alone would restore as a dead chip.
-        stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}) }),
+        stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}), ...(wasDictated ? { dictated: true } : {}) }),
       })
       // Release a blocking card only once the gateway accepted the steer, so the agent is told to read a message that arrived.
       if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) {

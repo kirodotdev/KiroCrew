@@ -5,14 +5,15 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from kiro_crew.mcp_core import _call_tool_inner
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class TestSpawnListRedactBeforeTruncate:
     def test_credential_at_truncation_boundary_is_redacted(self):
         """A credential straddling the 60-char boundary must be fully redacted."""
-        padding = "A" * 50
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        task = padding + secret  # 70 chars total
+        padding = "A" * 49 + " "
+        secret = github_classic(seed=73)
+        task = padding + secret  # 90 chars total
 
         fake_response = {
             "agents": [
@@ -32,8 +33,8 @@ class TestSpawnListRedactBeforeTruncate:
             result = _call_tool_inner("spawn_list", {})
 
         # The raw key must not appear (even partially) in the output
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
-        assert "AKIA" not in result
+        assert secret not in result
+        assert secret[:6] not in result
 
 
 class TestSpawnListAgentNames:
@@ -47,8 +48,9 @@ class TestSpawnListAgentNames:
 
         fake_response = {"agents": []}
 
-        with patch("kiro_crew.mcp_core._get", return_value=fake_response), patch(
-            "kiro_crew.mcp_core.list_agents", return_value=[fake_agent]
+        with (
+            patch("kiro_crew.mcp_core._get", return_value=fake_response),
+            patch("kiro_crew.mcp_core.list_agents", return_value=[fake_agent]),
         ):
             result = _call_tool_inner("spawn_list", {})
 

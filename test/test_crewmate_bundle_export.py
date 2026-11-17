@@ -38,9 +38,10 @@ from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers import member_export
 from kiro_crew.portability_archive import EXPORT_EXCLUDE
 from kiro_crew.portability_templates import AGENT_TEMPLATE_SECRET_PLACEHOLDER
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: Credential-shaped values that must never reach the file.
-TOKEN = "ghp_" + "a" * 36
+TOKEN = github_classic(seed=79)
 SECRET = "sk-proj-" + "Ab3dE" * 10
 MEMBER = "scout"
 
@@ -819,6 +820,26 @@ def test_avatar_content_changes_the_plan_fingerprint(kind: str) -> None:
     assert ex.plan_fingerprint(first) != ex.plan_fingerprint(second)
     assert ex.preview(first)["avatar_digest"] != ex.preview(second)["avatar_digest"]
     assert len(ex.preview(first)["avatar_digest"]) == 64
+
+
+def test_reasoning_effort_in_the_file_is_in_the_preview_and_fingerprint() -> None:
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    low, high = [
+        ex.plan_export(
+            _sources(model="claude-sonnet", reasoning_effort=effort),
+            MEMBER,
+            ex.ExportChoices(),
+            now=now,
+        )
+        for effort in ("low", "high")
+    ]
+    assert json.loads(_zip(ex.write_bundle(low))["kirobot.json"])["reasoningEffortHint"] == "low"
+    assert ex.plan_fingerprint(low) != ex.plan_fingerprint(high)
+    assert ex.preview(low).get("reasoning_effort") == "low"
+    assert ex.preview(high).get("reasoning_effort") == "high"
+    assert ex.preview(_build(_sources())[0]).get("reasoning_effort") == ""
 
 
 def test_avatar_digest_uses_exported_content_and_canonical_traits() -> None:

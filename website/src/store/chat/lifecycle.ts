@@ -8,6 +8,7 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { crewModeCatalogKnown, crewModeEnabled, newChatCrewModeAgent, setCrewModeCatalog } from '../../lib/crewMode'
+import { featurePreviewLockKnown, whenFeaturePreviewLockKnown } from '../../utils/editionLocks'
 import { addSlotOptimistic, updateSlot } from '../dashboardSlice'
 import { paletteSize, resolveDefaultColor } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
@@ -20,6 +21,7 @@ import { entryActivityOpen, type ChatState } from './state'
 import { filterMessages, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
+import { abortActiveOlderFetch } from './paging'
 
 export const fetchHistory = createAsyncThunk(
   'chat/fetchHistory',
@@ -41,7 +43,7 @@ export const fetchHistory = createAsyncThunk(
 type NewChatConfig = { default_memory_mode?: unknown; new_chat_crew_mode?: unknown }
 
 /**
- * `dashboard.new_chat_crew_mode`: turn Ultra Mode on for a just-created New chat
+ * `dashboard.new_chat_crew_mode`: turn conductor mode on for a just-created New chat
  * the way a press of the composer chip does, by the ordinary agent switch to the
  * conductor (docs/decisions/2026-10-27-crew-mode-is-a-composer-switch-to-the-conductor-template.md):
  * the create itself is unchanged. Runs before the create's `fulfilled`, so the chat
@@ -60,10 +62,13 @@ type NewChatConfig = { default_memory_mode?: unknown; new_chat_crew_mode?: unkno
  * broadcast would otherwise leave the row showing the plain agent.
  */
 async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | undefined, publish: (patch: Partial<ChatSlot> & { key: string }) => void): Promise<void> {
-  if (!crewModeEnabled() || !slot?.key) return
+  if (!slot?.key || (crewModeEnabled() === false && featurePreviewLockKnown())) return
   try {
     const cfg = config ?? await api.dashboardConfig() as NewChatConfig
     if (cfg?.new_chat_crew_mode !== true) return
+    // One-shot: the page's first chat can be made before the edition lock is known.
+    await whenFeaturePreviewLockKnown()
+    if (!crewModeEnabled()) return
     if (!crewModeCatalogKnown()) {
       const catalog = await api.agentCatalog(slot.key)
       setCrewModeCatalog(catalog.crew_mode_agent, catalog.conductor_agents, catalog.default_agent)
@@ -84,7 +89,7 @@ async function startNewChatInCrewMode(slot: ChatSlot, config: NewChatConfig | un
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; prefill?: string; automatic?: boolean } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; crewModeDefault?: boolean; prefill?: string; automatic?: boolean; projectFromSlot?: string } | string | undefined,
   { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
 >(
   'chat/createSlot',
@@ -140,7 +145,7 @@ export const createSlot = createAsyncThunk<
     // can read or write memory.
     let config: NewChatConfig | undefined
     const memory_mode = requestedMemoryMode || await resolveDefaultMemoryMode(async () => (config = await api.dashboardConfig() as NewChatConfig))
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, typeof opts === 'string' ? undefined : opts?.projectFromSlot)
     // `crewModeDefault` is OPT-IN like `defaultFolder`: only the person's own New
     // chat entry points pass it, so an app's launch or a hand-off never lands on
     // the conductor.
@@ -163,7 +168,7 @@ export const createSlot = createAsyncThunk<
       try {
         await api.setSlotColorHex(slot.key, explicitHex)
       } catch (err) {
-        await api.deleteChatSlot(slot.key).catch(() => {})
+        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
         throw err
       }
     } else {
@@ -178,7 +183,7 @@ export const createSlot = createAsyncThunk<
           try {
             await api.setSlotColor(slot.key, ci)
           } catch (err) {
-            await api.deleteChatSlot(slot.key).catch(() => {})
+            await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
             throw err
           }
         } else {
@@ -213,7 +218,7 @@ export const createSlot = createAsyncThunk<
       try {
         await api.chatSlotProject(slot.key, project)
       } catch (err) {
-        await api.deleteChatSlot(slot.key).catch(() => {})
+        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
         throw err
       }
     }
@@ -259,6 +264,8 @@ export const resumeFromHistory = createAsyncThunk<
     const origin = captureForkOrigin(getState() as RootState)
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
+      // A resume re-bases the cursor of the chat it opens, which may own the page in flight.
+      abortActiveOlderFetch()
       dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}), ...(d.history_key ? { history_key: d.history_key } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }

@@ -507,5 +507,9 @@ def _update_approve() -> None:
                 file=sys.stderr,
             )
         sys.exit(1)
+    if body.get("status") == "armed":
+        print(f"\n✅ Approved. v{body.get('version', pending.version)} is armed.")
+        print("   It installs at the gateway's next start; nothing restarts now.")
+        return
     print(f"\n✅ Approved. The gateway is applying v{body.get('version', pending.version)}")
     print("   and will restart itself; watch progress in the dashboard.")

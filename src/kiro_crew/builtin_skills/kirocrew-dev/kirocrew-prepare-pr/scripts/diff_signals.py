@@ -708,7 +708,19 @@ def main(argv):
         base = "main"
 
     if run(["git", "rev-parse", "--verify", "--quiet", "origin/" + base])[0] != 0:
-        err("ERROR: origin/{0} not found - run: git fetch origin {0}".format(base))
+        remote, _, branch = base.partition("/")
+        if (
+            branch
+            and run(["git", "rev-parse", "--verify", "--quiet", "refs/remotes/" + base])[0] == 0
+        ):
+            # A remote ref (upstream/main from a fork clone): no fetch from origin brings it.
+            err(
+                "ERROR: {0} is a ref of the remote {1}; pass the branch name instead: {2}. "
+                "The base is always read from origin/{2}, so in a fork clone sync your "
+                "fork's {2} with upstream first (CONTRIBUTING.md).".format(base, remote, branch)
+            )
+        else:
+            err("ERROR: origin/{0} not found - run: git fetch origin {0}".format(base))
         return 2
 
     body = gitdir = None

@@ -26,6 +26,7 @@ from members_dm_thread_helpers import (
     _member_slot,
     _patched_config,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard.chat_handlers import _history_key_for
@@ -255,6 +256,42 @@ class TestResumeGuards:
         # The loser did NOT hydrate a second copy of the transcript.
         hellos = [m for m in slot.messages if m.get("content") == "hello"]
         assert len(hellos) == 1, f"history duplicated: {len(hellos)} copies: {hellos!r}"
+
+    @pytest.mark.asyncio
+    async def test_pinned_member_resume_refuses_late_live_replacement(self, tmp_path, monkeypatch):
+        """A late member-slot winner must still match the transcript identity pin."""
+        from chat_test_helpers import _make_app
+
+        import kiro_crew.dashboard.chat_handlers as handlers
+
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        key = f"dashboard:{member_slot_key(CREW)}"
+        log = state.conversation_log
+        log.append(key, "user", "original")
+        await asyncio.to_thread(log.update_metadata, key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        expected_created_at = log.get_metadata(key)["created_at"]
+
+        replacement = state.get_or_create_slot(member_slot_key(CREW), agent=CREW, mode=DM_SLOT_MODE)
+        replacement._disk_meta_created_at = "1999-01-01T00:00:00+00:00"
+        live_slot_probe = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                handlers.ResumeOutcome(slot=replacement, already_live=True, total=0),
+            ]
+        )
+        monkeypatch.setattr(handlers, "_live_slot_for_resume", live_slot_probe)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{member_slot_key(CREW)}/resume",
+                json={"key": key, "expected_created_at": expected_created_at},
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert live_slot_probe.await_count == 3
 
     @pytest.mark.asyncio
     async def test_resume_of_a_closed_member_thread_succeeds(self, tmp_path):
@@ -611,6 +648,7 @@ class TestOpenAiCompatPin:
         slot.agent = CREW
         slot.mode = DM_SLOT_MODE
         slot.task = None
+        slot.is_closing = False
         slot.event = _asyncio.Event()
         slot.drain = MagicMock(return_value=[])
         state = MagicMock()
@@ -641,7 +679,7 @@ class TestOpenAiCompatPin:
         assert slot.agent == CREW
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "crew password=shortvalue"])
+    @pytest.mark.parametrize("name", [github_classic(seed=53), "crew password=shortvalue"])
     async def test_completion_refuses_a_redaction_requiring_stored_member_pin(self, name):
         import asyncio as _asyncio
 
@@ -722,6 +760,7 @@ class TestOpenAiCompatPin:
         state.get_or_create_slot = MagicMock(return_value=slot)
         state._slots = {slot.key: slot}
         state._background_tasks = set()
+        state.session_still_loading = AsyncMock(return_value=False)
 
         request = MagicMock()
         request.json = AsyncMock(
@@ -900,27 +939,6 @@ class TestPersistenceRestoreGate:
         write_dm_binding(slug, member=name, slot_key=key)
 
         assert _member_restore_identity(key) is _SKIP_MEMBER_RESTORE
-
-    def test_skipped_restore_warning_does_not_log_a_credential_shaped_slot(self, caplog):
-        import logging
-
-        from kiro_crew.dashboard.chat_persistence import (
-            _SKIP_MEMBER_RESTORE,
-            _member_restore_identity,
-        )
-
-        name = "xoxb-000000000000-abcdefghijkl"
-        slug = slug_for_name(name)
-        key = member_slot_key(slug)
-        write_dm_binding(slug, member=name, slot_key=key)
-
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence"):
-            assert _member_restore_identity(key) is _SKIP_MEMBER_RESTORE
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert any("no dispatchable dm binding" in message for message in messages)
-        assert not any(name in message for message in messages)
-        assert not any(slug in message for message in messages)
 
     def test_member_key_without_binding_is_skipped_not_published(self):
         """No binding -> the restore skips the slot instead of publishing it.

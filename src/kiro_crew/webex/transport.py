@@ -78,28 +78,17 @@ ROOM_GROUP = "group"
 # when a bot filters a group room by mention, so this stays under that.
 _HISTORY_MAX = 50
 
-# Webex capabilities: no streaming (10-edit cap per message), but edits exist
-# (budgeted status placeholder), tappable chips DO exist as Adaptive Card
-# Action.Submit buttons (capped at MAX_CARD_ACTIONS, past which the shared
-# messaging.renderer.apply_options_cap degrades the remainder to numbered text),
-# and proactive send is fine (a bot may post to a room / person at any time). The
-# numbered text always ships alongside a card, because the inbound half of a
-# press travels over the undocumented device websocket.
-#
-# Webex caps messages in UTF-8 BYTES, and ``max_message_chars`` is a CHARACTER
-# count, so the only SAFE char value is the byte budget over four — the worst
-# case for a 4-byte code point. That value is 4x pessimistic for ASCII, which is
-# why ``max_message_bytes`` exists: a caller that can measure bytes uses it and
-# gets the real capacity, while the char floor stays correct for one that cannot.
+# Webex caps messages in UTF-8 BYTES while ``max_message_chars`` counts
+# characters, so the only safe char value is the byte budget over four (a 4-byte
+# code point). A caller that can measure bytes uses ``max_message_bytes`` instead.
 WEBEX_SAFE_MESSAGE_CHARS = WEBEX_MAX_TEXT // 4
 
 WEBEX_CAPABILITIES = TransportCapabilities(
-    # No streaming: Webex caps a message at 10 edits, so a typewriter
-    # edit-stream is structurally impossible rather than merely unimplemented.
+    # Webex caps a message at 10 edits, so a typewriter edit-stream is impossible;
+    # edits go to a budgeted status placeholder.
     streaming=False,
     edit=True,
-    # No reactions API exists in the Webex Messaging surface at all, so Slack's
-    # reaction-as-acknowledgement idiom has no analogue here.
+    # The Webex Messaging API has no reactions.
     reactions=False,
     files_inbound=True,
     files_outbound=True,
@@ -115,8 +104,10 @@ WEBEX_CAPABILITIES = TransportCapabilities(
     # the agent prints uncopyable. ``webex_display_safe`` already omits it on the
     # renderer path; this is the same fact for the channel-neutral sinks.
     mention_grammars=False,
-    # One Action.Submit per choice on an Adaptive Card. Webex's own overview says
-    # five; past that the renderer keeps the numbered-text form, which has no cap.
+    # One Action.Submit per choice on an Adaptive Card; past the cap,
+    # apply_options_cap degrades the rest to numbered text. The numbered text
+    # always ships beside a card, because a press arrives over the undocumented
+    # device websocket.
     max_buttons=MAX_CARD_ACTIONS,
     supports_proactive_send=True,
 )
@@ -257,9 +248,8 @@ class WebexTransport(MessagingTransport):
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
-        # thread_id is HONOURED now that ``threads=True`` is declared: dropping it
-        # while declaring the capability is exactly the dishonesty the capability
-        # ledger exists to catch. Webex threads are flat, so the id is the root.
+        # Honoured because ``threads=True`` is declared. Webex threads are flat,
+        # so the id is the root.
         mid = await self._client.send_message(conversation_id, content, parent_id=thread_id)
         return mid or ""
 
@@ -310,13 +300,9 @@ class WebexTransport(MessagingTransport):
     ) -> list[InboundMessage]:
         """Recent messages in a room, oldest first.
 
-        Conversation CONTINUITY comes from ``conversation_log``, not from here —
-        this exists for a caller that wants the room's own recent context (a
-        freshly linked space, say). Bounded by ``_HISTORY_MAX`` because a room can
-        hold years of messages and none of the callers want them all.
-
-        A failure yields ``[]`` rather than raising: history is supplementary, and
-        a transport read must not be able to fail a turn.
+        For a caller that wants the room's own recent context; conversation
+        continuity comes from ``conversation_log``. Bounded by ``_HISTORY_MAX``.
+        A failure yields ``[]``: history is supplementary and must not fail a turn.
         """
         params = f"?roomId={conversation_id}&max={_HISTORY_MAX}"
         if thread_id:
@@ -390,13 +376,13 @@ class WebexTransport(MessagingTransport):
         person", not "no one is authorized". Matched case-sensitively, because a
         Webex room id is an opaque blob and :meth:`room_permitted` compares it
         exactly. Turning the group switch off, or dropping a room from the list,
-        revokes that space's proactive traffic from the next start: a persisted
-        link outlives the config that authorized it, and this re-decides against
-        the config THIS PROCESS was built with rather than trusting the link. Both
-        sets are frozen in ``__init__`` and the config PATCH reports
-        ``restart_required`` for them, so a narrowing takes effect on restart --
-        which is also why this can never be looser than inbound, since
-        :meth:`room_permitted` reads the very same frozen sets.
+        revokes that space's proactive traffic as soon as the reloaded config is
+        applied: a persisted link outlives the config that authorized it, and
+        this re-decides against the CURRENT settings rather than trusting the
+        link. :meth:`reconfigure` replaces both wholesale on a reload (the config
+        PATCH reports no ``restart_required`` for them), and
+        :meth:`room_permitted` reads the very same attributes, which is why this
+        can never be looser than inbound.
 
         A **direct** route has no such roster: the session binds
         ``inbound.room_id`` (see :meth:`receive`) while the email allow-list holds

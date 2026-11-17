@@ -269,6 +269,12 @@ class TestDispatcher:
         assert dispatcher.routes(_note(priority="passive", silenced=True)) == ()
         assert dispatcher.routes(_note(priority="passive")) == ("slack",)
 
+    def test_a_quiet_keyed_replacement_never_routes(self, settings):
+        settings.update("system.cron", deliver_to=["slack"], deliver_min_priority="all")
+        dispatcher = BridgeDispatcher(settings=lambda: settings)
+        assert dispatcher.routes(_note(priority="critical", key="k", quiet=True)) == ()
+        assert dispatcher.routes(_note(priority="critical", key="k", quiet=False)) == ("slack",)
+
     @pytest.mark.asyncio
     async def test_one_failing_sink_does_not_stop_the_others(self, settings):
         settings.update("system.cron", deliver_to=["slack", "telegram"])
@@ -282,10 +288,17 @@ class TestDispatcher:
 
     @pytest.mark.asyncio
     async def test_routed_transport_without_a_sink_is_skipped(self, settings):
-        settings.update("system.cron", deliver_to=["wecom"])
+        settings.update("system.cron", deliver_to=["wecom", "slack"])
         dispatcher = BridgeDispatcher(settings=lambda: settings)
+        slack = _RecordingSink("slack")
+        dispatcher.register_sink(slack)
+        # The route still names wecom, but only slack can deliver.
+        assert dispatcher.routes(_note()) == ("wecom", "slack")
+        assert dispatcher.transports == ("slack",)
         dispatcher.schedule(_note())
-        await dispatcher.drain()  # nothing registered: nothing to run, nothing raised
+        await dispatcher.drain()
+        # The sinkless transport is skipped, not the whole fan-out.
+        assert len(slack.notes) == 1
 
     def test_unknown_sink_transport_is_refused(self, settings):
         with pytest.raises(ValueError):
@@ -299,7 +312,13 @@ class TestDispatcher:
 
     def test_no_running_loop_and_no_serving_loop_is_a_no_op(self, settings):
         settings.update("system.cron", deliver_to=["slack"])
-        BridgeDispatcher(settings=lambda: settings).schedule(_note())
+        dispatcher = BridgeDispatcher(settings=lambda: settings)
+        sink = _RecordingSink("slack")
+        dispatcher.register_sink(sink)
+        assert dispatcher.schedule(_note()) is None
+        # Nothing was started on any loop, so nothing is left to run or to deliver.
+        assert dispatcher._tasks == set()
+        assert sink.notes == []
 
     @pytest.mark.asyncio
     async def test_worker_thread_queues_behind_the_serving_loop(self, settings):
@@ -382,8 +401,8 @@ def test_bridge_module_never_reaches_the_bus(module):
     )
 
 
-def test_known_transports_match_the_rfc():
-    assert BRIDGE_TRANSPORTS == ("slack", "discord", "telegram", "webex", "wecom")
+def test_the_known_transports_are_pinned():
+    assert BRIDGE_TRANSPORTS == ("slack", "discord", "telegram", "webex", "wecom", "feishu")
 
 
 def _make_app(state) -> web.Application:

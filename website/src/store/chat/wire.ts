@@ -6,7 +6,7 @@
 import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
 import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/messageQuote'
-import { findTokenRanges, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
+import { findTokenRanges, readStoredPasteForSend, type PasteBlock } from '../../utils/pasteTokens'
 import { readRelay, type RelaySender } from '../../pages/chat/sessionRelay'
 import type { KnowledgeEnvelopeMark } from '../../utils/knowledgeEnvelope'
 
@@ -132,6 +132,15 @@ export function queueEntryKnowledgeEnvelope(meta: unknown): { knowledgeEnvelope?
   return e && typeof e === 'object' && Number.isInteger(e.len) && typeof e.hash === 'string' ? { knowledgeEnvelope: { len: e.len as number, hash: e.hash } } : {}
 }
 
+/** The steer's decision receipt (`meta.decisions_strip`) a `queue_pop` frame
+ *  carries when the drained entry supersedes a requeued steer row: that row is
+ *  about to be hidden, so the rebuilt row must draw the receipt instead.
+ *  Copied only as a plain object; `readSteerRecord` validates it at render. */
+export function queueEntryDecisionStrip(meta: unknown): { decisions_strip?: Record<string, unknown> } {
+  const strip = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).decisions_strip : undefined
+  return strip && typeof strip === 'object' && !Array.isArray(strip) ? { decisions_strip: strip as Record<string, unknown> } : {}
+}
+
 /** Display correlation only; no other queue metadata grants client authority. */
 export function queueEntrySendId(meta: unknown): { sendId?: string } {
   const id = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).sendId : undefined
@@ -141,7 +150,8 @@ export function queueEntrySendId(meta: unknown): { sendId?: string } {
 /** The paste blocks behind a queue entry's text, when THIS browser sent it.
  *  The entry holds the wire text, in which every `[ Paste #N ]` token is
  *  already expanded, and the gateway carries no blocks on it (it stores
- *  `meta.pastes` on no row). The sending tab recorded the send in the paste
+ *  `meta.pastes` on no row). Only the entry whose `sendId` saved the record
+ *  reads it, so an injected message with the same text does not. The sending tab recorded the send in the paste
  *  side table under that wire text (`saveStoredPaste`), which is the source
  *  the sent bubble re-collapses from on a reload (`mergePreservedPastes`), so
  *  the queue card and the bubble it becomes agree. Another browser, or an
@@ -149,9 +159,9 @@ export function queueEntrySendId(meta: unknown): { sendId?: string } {
  *  length gate ahead of the read: the text here is trimmed, and a paste that
  *  was collapsed at exactly the threshold with trailing whitespace lies under
  *  it once trimmed. */
-export function queueEntryPastes(content: string): { pastes?: PasteBlock[] } {
+export function queueEntryPastes(content: string, sendId: string | undefined): { pastes?: PasteBlock[] } {
   if (!content) return {}
-  const stored = readStoredPaste(content.trimEnd())
+  const stored = readStoredPasteForSend(content.trimEnd(), sendId)
   if (!stored || !Array.isArray(stored.pastes) || !stored.pastes.length) return {}
   // In TOKEN ORDER, read off the display text the record keeps: the order the
   // bodies stand in the wire, which is what lets the card fold them back to
@@ -177,7 +187,7 @@ export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; quote?: MessageQuote; banner?: string; restored?: boolean; durable?: false; knowledgeEnvelope?: KnowledgeEnvelopeMark } & QueueEntryAttachments
+export type SlotQueueItem = { sendId?: string; content: string; queueId: string; ts: string; kind?: string; appLabel?: string; quote?: MessageQuote; banner?: string; restored?: boolean; durable?: false; knowledgeEnvelope?: KnowledgeEnvelopeMark; editRev?: number } & QueueEntryAttachments
 
 /** Coerce one workflow wire field to the string `WorkflowRunProgress` declares.
  *
@@ -197,11 +207,12 @@ export const workflowText = (value: unknown): string => (typeof value === 'strin
 
 export async function fetchSlotDetail(key: string, limit?: number) {
   // A limit takes the handler's most-recent-N slice. `undefined` is the
-  // handler's read-everything shape; `refreshSlot` and `switchSlot` no longer
-  // take it -- a window that misses the rows they hold is extended by
-  // `walkWindowBackTo`, one bounded page at a time. `warmSlotCache` and the
-  // pane hydrate still may. Omit the arg when unbounded to keep the one-arg
-  // shape.
+  // handler's read-everything shape; none of `refreshSlot`, `switchSlot` and
+  // `warmSlotCache` take it -- a window that misses the rows they hold is
+  // extended by `walkWindowBackTo`, one bounded page at a time. A bounded read
+  // echoes the slot's cursor (`api.chatSlotDetail`), so a refresh that missed
+  // nothing gets a 304 or the one re-sent last row. Omit the arg when
+  // unbounded to keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   return normalizeSlotDetail(key, d, limit !== undefined)
 }
@@ -217,6 +228,6 @@ export function normalizeSlotDetail(key: string, d: Awaited<ReturnType<Response[
  *  `normalizeSlotDetail` and the app-SDK `ChatEmbed`, which reads the same
  *  payload without the store, so both surfaces see one entry shape. */
 export function normalizeQueueEntries(raw: unknown): SlotQueueItem[] {
-  type QueueItem = string | { content: string; id: string; meta?: unknown }
-  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.durable === false ? { durable: false as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta), ...queueEntryKnowledgeEnvelope(q.meta) })
+  type QueueItem = string | { content: string; id: string; meta?: unknown; editRev?: unknown }
+  return ((Array.isArray(raw) ? raw : []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...((q.meta as Record<string, unknown> | undefined)?.restored === true ? { restored: true as const } : {}), ...((q.meta as Record<string, unknown> | undefined)?.durable === false ? { durable: false as const } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta), ...queueEntryBanner(q.meta), ...queueEntrySendId(q.meta), ...queueEntryKnowledgeEnvelope(q.meta), ...(Number.isInteger(q.editRev) ? { editRev: q.editRev as number } : {}) })
 }

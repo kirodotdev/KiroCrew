@@ -9,11 +9,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.coder import session_browse, session_launch
 from kiro_crew.coder.client import CoderClient, CoderClientError
 from kiro_crew.config import live, paths
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture(autouse=True)
@@ -281,12 +283,14 @@ async def test_other_browse_errors_do_not_reinstall(browse_target, monkeypatch):
 @pytest.mark.parametrize(
     ("sensitive", "replacement"),
     [
-        ("AKIAIOSFODNN7EXAMPLE", "[REDACTED: credential]"),
-        ("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "[REDACTED: credential]"),
-        ("?token=opaque-example", "?token=[REDACTED: credential]"),
+        (github_classic(seed=22), "[REDACTED: credential]"),
         (
-            "https://example.com/?data=" + "a" * 300,
-            "[REDACTED: suspicious URL to example.com]",
+            f"aws_secret_access_key={SAMPLE_AWS_SECRET}",
+            "aws_secret_access_key=[REDACTED: credential]",
+        ),
+        (
+            "https://h.example/r.git?token=opaque-example",
+            "https://h.example/r.git?token=[REDACTED: credential]",
         ),
     ],
 )
@@ -337,7 +341,7 @@ async def test_git_browse_redacts_output_and_errors_with_framing(
 async def test_git_browse_redacts_failed_reply(browse_target):
     _config, _record, _runner, guest = browse_target
     guest.return_value = json.dumps(
-        {"git": False, "code": "git_failed", "error_text": "fatal: AKIAIOSFODNN7EXAMPLE"}
+        {"git": False, "code": "git_failed", "error_text": f"fatal: {github_classic(seed=22)}"}
     ).encode()
     result = await session_browse.browse_session(SESSION, "git_log", ".")
     assert result == {
@@ -426,11 +430,12 @@ async def test_git_diff_multiline_credential_keeps_patch_framing(browse_target):
         }
     ).encode()
     result = await session_browse.browse_session(SESSION, "git_diff", "key")
+    # Only the key's body is masked; the BEGIN and END lines stay as patch lines.
     assert result == {
         "git": True,
         "output": (
-            "diff --git a/key b/key\n--- /dev/null\n+++ b/key\n@@ -0,0 +1 @@\n"
-            "+[REDACTED: credential]\n"
+            "diff --git a/key b/key\n--- /dev/null\n+++ b/key\n@@ -0,0 +1,3 @@\n"
+            f"+{_PEM_BEGIN_RSA}\n+[REDACTED: credential]\n+{_PEM_END_RSA}\n"
         ),
     }
     assert "QUJD" not in str(result)
@@ -582,23 +587,70 @@ def test_a_field_prefixed_footer_closes_its_pem():
     assert "+after\n" in session_browse._git_diff_from_bodies(reply, "f")["output"]
 
 
-def test_reordered_repeated_lines_get_their_hunks_fast():
-    """100 distinct lines x 200, reversed: difflib's matcher would compare 4M
-    pairs per pass (measured: over a minute). Git's own diff answers at once."""
-    import time
+def _diff_built_by_git_in_linear_work(monkeypatch, build_reply, path, sizes):
+    """``_git_diff_from_bodies`` at two sizes, the second twice the first.
 
-    body = "".join(f"line-{i:03d} value\n" for i in range(100)) * 200
-    reply = {
-        "git": True,
-        "old": body,
-        "new": "".join(reversed(body.splitlines(keepends=True))),
-        "old_mode": "100644",
-        "new_mode": "100755",
-    }
-    started = time.monotonic()
-    result = session_browse._git_diff_from_bodies(reply, "big.txt")
-    elapsed = time.monotonic() - started
-    assert elapsed < 2  # flake-ok: two-second budget; a difflib diff took over a minute
+    Asserts each diff's hunks are what ONE ``git diff --no-index`` returned, and
+    that doubling the bodies at most about doubles the instructions this thread
+    executes around git (the masking, the header, the hunk split). Git's reply is
+    recorded first and then replayed, so the count reads only this process's
+    Python, which an in-process matcher such as difflib's would dominate. Git's
+    own time is bounded by its 10 s timeout, which the caller's ``truncated``
+    check turns into a failure. Returns the larger size's result.
+    """
+    from denied_commands_security_helpers import _interpreter_work
+
+    real = session_browse.no_index_diff
+    work = []
+    result = None
+    for size in sizes:
+        reply = build_reply(size)
+        patches = []
+
+        def record(old, new, **kwargs):
+            patches.append(real(old, new, **kwargs))
+            return patches[-1]
+
+        with monkeypatch.context() as m:
+            m.setattr(session_browse, "no_index_diff", record)
+            result = session_browse._git_diff_from_bodies(reply, path)
+        assert len(patches) == 1, f"{len(patches)} git diffs built one file's hunks"
+
+        replayed = []
+
+        def replay(old, new, **kwargs):
+            replayed.append(1)
+            return patches[0]
+
+        out = []
+        with monkeypatch.context() as m:
+            m.setattr(session_browse, "no_index_diff", replay)
+            work.append(
+                _interpreter_work(
+                    lambda: out.append(session_browse._git_diff_from_bodies(reply, path))
+                )
+            )
+        assert replayed == [1] and out == [result]
+    small, large = work
+    assert 0 < small and large <= small * 5 // 2, f"{work} instructions at sizes {sizes}"
+    return result
+
+
+def test_reordered_repeated_lines_get_their_hunks_from_git(monkeypatch):
+    """100 distinct lines x 200, reversed: difflib's matcher would compare 4M
+    pairs per pass (measured: over a minute). Git's own diff builds the hunks."""
+
+    def build_reply(repeats):
+        body = "".join(f"line-{i:03d} value\n" for i in range(100)) * repeats
+        return {
+            "git": True,
+            "old": body,
+            "new": "".join(reversed(body.splitlines(keepends=True))),
+            "old_mode": "100644",
+            "new_mode": "100755",
+        }
+
+    result = _diff_built_by_git_in_linear_work(monkeypatch, build_reply, "big.txt", (100, 200))
     assert not result.get("truncated")
     assert result["output"].startswith(
         "diff --git a/big.txt b/big.txt\nold mode 100644\nnew mode 100755\n"
@@ -608,21 +660,18 @@ def test_reordered_repeated_lines_get_their_hunks_fast():
     assert "\n+line-099 value\n" in result["output"]
 
 
-def test_unique_lines_with_swapped_neighbours_get_their_hunks_fast():
+def test_unique_lines_with_swapped_neighbours_get_their_hunks_from_git(monkeypatch):
     """Every match is one line long, which made difflib rescan a shrinking range
-    per match (10,000 lines took about ten seconds)."""
-    import time
+    per match (10,000 lines took about ten seconds). Git's own diff builds the hunks."""
 
-    old = [f"{i}\n" for i in range(10000)]
-    new = list(old)
-    for i in range(0, len(new) - 1, 2):
-        new[i], new[i + 1] = new[i + 1], new[i]
-    started = time.monotonic()
-    result = session_browse._git_diff_from_bodies(
-        {"git": True, "old": "".join(old), "new": "".join(new)}, "moved.txt"
-    )
-    elapsed = time.monotonic() - started
-    assert elapsed < 2  # flake-ok: two-second budget; a difflib diff took about ten
+    def build_reply(lines):
+        old = [f"{i}\n" for i in range(lines)]
+        new = list(old)
+        for i in range(0, len(new) - 1, 2):
+            new[i], new[i + 1] = new[i + 1], new[i]
+        return {"git": True, "old": "".join(old), "new": "".join(new)}
+
+    result = _diff_built_by_git_in_linear_work(monkeypatch, build_reply, "moved.txt", (5000, 10000))
     assert not result.get("truncated")
     assert result["output"].startswith("diff --git a/moved.txt b/moved.txt\n--- a/moved.txt\n")
     assert result["output"].endswith("\n 9999\n+9998\n")
@@ -734,23 +783,20 @@ def test_a_large_file_with_scattered_edits_still_gets_its_hunks():
 
 
 @pytest.mark.parametrize("renamed", [False, True])
-def test_many_short_repeated_lines_have_a_bounded_diff(renamed):
-    import time
+def test_many_short_repeated_lines_have_a_bounded_diff(renamed, monkeypatch):
+    def build_reply(lines):
+        reply = {
+            "git": True,
+            "old": "a\n" * lines,
+            "new": "a\n" * (lines - 1) + "b\n",
+            "old_mode": "100644",
+            "new_mode": "100755",
+        }
+        if renamed:
+            reply["old_path"] = "before"
+        return reply
 
-    reply = {
-        "git": True,
-        "old": "a\n" * 65536,
-        "new": "a\n" * 65535 + "b\n",
-        "old_mode": "100644",
-        "new_mode": "100755",
-    }
-    if renamed:
-        reply["old_path"] = "before"
-    started = time.monotonic()
-    result = session_browse._git_diff_from_bodies(reply, "after")
-    elapsed = time.monotonic() - started
-    print(f"repeated-line diff {renamed=}: {elapsed:.6f}s")
-    assert elapsed < 2  # flake-ok: explicit two-second complexity budget for 64K repeated lines
+    result = _diff_built_by_git_in_linear_work(monkeypatch, build_reply, "after", (32768, 65536))
     assert not result.get("truncated")
     assert "old mode 100644\nnew mode 100755\n" in result["output"]
     assert "-a\n+b\n" in result["output"]

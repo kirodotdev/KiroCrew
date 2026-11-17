@@ -240,6 +240,17 @@ async def test_owner_rows_under_several_local_subjects_fold_into_one():
 
 
 @pytest.mark.asyncio
+async def test_the_owner_row_reports_the_owners_whole_usage_once():
+    startup, app = (local_operator_principal(s) for s in ("local-startup", "local-app"))
+    people.register_usage_source(lambda: {app.id: {"active": 1, "queued": 1}})
+    people.observe(startup, "local")
+    whole = [{"active": 1, "queued": 1}]
+    assert [r["usage"] for r in (await _view(startup))["people"] if r["is_owner"]] == whole
+    people.observe(app, "local")
+    assert [r["usage"] for r in (await _view(startup))["people"] if r["is_owner"]] == whole
+
+
+@pytest.mark.asyncio
 async def test_the_owner_is_never_listed_as_a_sharee():
     access_set.set_owner("Guest@Example.com", str(SHAREE_UID))
     body = await _view(local_operator_principal("local-app"))

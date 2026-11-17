@@ -37,6 +37,19 @@ test("channelForVersion: bare semver -> stable, unstamped/missing -> null", () =
   assert.strictEqual(channelForVersion(undefined), null);
 });
 
+test("channelForVersion: an edition's -N build of a stable release -> stable", () => {
+  // build-desktop.sh carries an edition's 0.13.0.11 into the shell as
+  // 0.13.0-11, and the backend reads that build's BUILD_VERSION as stable.
+  assert.strictEqual(channelForVersion("0.13.0-11"), "stable");
+  assert.strictEqual(channelForVersion("0.13.0-1"), "stable");
+  // Only that shape: a label, a second segment or a non-numeric build is
+  // still a prerelease.
+  assert.strictEqual(channelForVersion("0.13.0-rc.11"), "insider");
+  assert.strictEqual(channelForVersion("0.13.0-11.2"), "insider");
+  assert.strictEqual(channelForVersion("0.13.0-1a"), "insider");
+  assert.strictEqual(channelForVersion("0.13.0-nightly.20261107t060000"), "nightly");
+});
+
 test("channelForFlavor maps beta -> insider", () => {
   assert.strictEqual(channelForFlavor("beta"), "insider");
 });
@@ -997,13 +1010,14 @@ const AUTO_UPDATE_EXPORTS = [
   "resolveLinuxInstall",
   "resolveMacDistArch",
   "readExternallyManaged",
+  "runStartupApply",
   "canRewriteMarker",
   "DEFAULT_FEED_BASE",
   "DOWNLOAD_BASE",
   "SUPPORTED_PLATFORMS",
 ];
 
-test("the facade exports exactly its seventeen names, in order", () => {
+test("the facade exports exactly its eighteen names, in order", () => {
   assert.deepStrictEqual(Object.keys(require("../auto-update")), AUTO_UPDATE_EXPORTS);
 });
 
@@ -1013,7 +1027,9 @@ test("the update runtime loads without Electron and without load-time effects", 
   const runtimeDir = nodePath.join(electronDir, "runtime", "update");
   const owners = nodeFs.readdirSync(runtimeDir).filter((name) => name.endsWith(".js")).sort();
   assert.deepStrictEqual(owners, [
-    "feed-lane.js", "freshness-gate.js", "managed-lane.js", "policy-channel.js", "state-reporter.js",
+    "armed-apply.js", "feed-lane.js", "freshness-gate.js", "gateway-arm.js", "gateway-probe.js",
+    "managed-exec.js", "managed-lane.js", "policy-channel.js", "policy-source.js", "startup-apply.js",
+    "state-reporter.js", "update-arm.js",
   ]);
   // Who composes whom: the facade composes the two lanes and the reporter; the
   // feed lane composes its own freshness gate, which the facade never sees; the
@@ -1023,6 +1039,18 @@ test("the update runtime loads without Electron and without load-time effects", 
     "managed-lane.js": { file: updateFiles[0], path: "./runtime/update/managed-lane" },
     "state-reporter.js": { file: updateFiles[0], path: "./runtime/update/state-reporter" },
     "freshness-gate.js": { file: nodePath.join(runtimeDir, "feed-lane.js"), path: "./freshness-gate" },
+    // The managed lane composes its executor, its arm record and the apply it
+    // shares with the start-time path; the facade composes the start-time apply;
+    // the IPC registrar composes the gateway client.
+    "managed-exec.js": { file: nodePath.join(runtimeDir, "managed-lane.js"), path: "./managed-exec" },
+    "update-arm.js": { file: nodePath.join(runtimeDir, "managed-lane.js"), path: "./update-arm" },
+    "armed-apply.js": { file: nodePath.join(runtimeDir, "managed-lane.js"), path: "./armed-apply" },
+    "startup-apply.js": { file: updateFiles[0], path: "./runtime/update/startup-apply" },
+    "gateway-arm.js": { file: nodePath.join(electronDir, "ipc-registrar.js"), path: "./runtime/update/gateway-arm" },
+    // main.js builds the start-time gateway probe; the start-time apply reads the
+    // policy file through the policy source.
+    "gateway-probe.js": { file: nodePath.join(electronDir, "main.js"), path: "./runtime/update/gateway-probe" },
+    "policy-source.js": { file: nodePath.join(runtimeDir, "startup-apply.js"), path: "./policy-source" },
     "policy-channel.js": {
       file: nodePath.join(electronDir, "ipc-registrar.js"),
       path: "./runtime/update/policy-channel",
@@ -1101,7 +1129,7 @@ test("every lane hands back the handle shape its callers read", () => {
     { keys: stub, disabled: "externally-managed" });
   assert.deepStrictEqual(keys({ isPackaged: false }), { keys: stub, disabled: "dev" });
   assert.deepStrictEqual(keys({ osPlatform: "freebsd" }), { keys: stub, disabled: "platform" });
-  assert.deepStrictEqual(keys({ appVersion: "1.0.0" }).keys, ["check", "download", "install", "getInfo", "isReady"]);
+  assert.deepStrictEqual(keys({ appVersion: "1.0.0" }).keys, ["check", "download", "install", "relaunch", "getInfo", "isReady"]);
 
   const restoreTimers = (() => {
     const originalSetTimeout = global.setTimeout;
@@ -1116,7 +1144,7 @@ test("every lane hands back the handle shape its callers read", () => {
   try {
     assert.deepStrictEqual(
       keys({ externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" } }),
-      { keys: ["check", "download", "install", "getInfo"], disabled: undefined },
+      { keys: ["check", "download", "install", "relaunch", "getInfo"], disabled: undefined },
     );
   } finally {
     restoreTimers();

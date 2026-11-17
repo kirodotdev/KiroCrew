@@ -249,6 +249,9 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     if (sendOnEnter === 'enter-ctrl-newline' && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       const ta = e.currentTarget
+      // `readOnly` (optimizing, disabled, typing-locked) stops native typing
+      // only; this newline is a programmatic write, so it checks it itself.
+      if (ta.readOnly) return
       // The new line this key makes still continues a markdown list unless
       // the IME owns this Enter; that path keeps the existing plain newline.
       if (!ime.isComposing(e) && applyTextareaListBreak(ta, pasteBlocksRef.current ?? [], endUndoBurst)) return
@@ -295,17 +298,19 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     if (
       e.key === 'ArrowUp' && (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.shiftKey &&
       onEditLastRequest && valueRef.current === '' &&
-      !anyPickerOpenRef.current && !ime.isComposing(e)
+      !anyPickerOpenRef.current && !ime.isComposing(e) && !e.currentTarget.readOnly
     ) {
       e.preventDefault()
       onEditLastRequest()
       return
     }
     // Prompt history: ↑/↓ cycles through prior user messages.
-    // Ignore when IME composing, no history, modifier keys, or when
-    // slash-command / file-picker / skill-picker menus are open (they own ↑/↓).
+    // Ignore when IME composing, no history, modifier keys, a read-only
+    // composer (recall replaces the draft programmatically, past `readOnly`),
+    // or when slash-command / file-picker / skill-picker menus are open (they own ↑/↓).
     if (
       !sentMessages?.length ||
+      e.currentTarget.readOnly ||
       anyPickerOpenRef.current ||
       ime.isComposing(e) ||
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey

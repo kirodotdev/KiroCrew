@@ -35,6 +35,8 @@ class _Log:
     def list_sessions(self) -> list[dict[str, Any]]:
         return [dict(s) for s in self._sessions]
 
+    list_sessions_indexed = list_sessions
+
 
 def _state(
     *,

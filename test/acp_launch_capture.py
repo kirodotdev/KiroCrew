@@ -24,10 +24,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp import runtime as runtime_mod
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, ClaudeAcpClient
+from kiro_crew.acp.harness import antigravity as antigravity_mod
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness import codex as codex_harness_mod
 from kiro_crew.acp.harness import deepseek as deepseek_mod
+from kiro_crew.acp.harness import mimocode as mimocode_mod
 from kiro_crew.acp.harness import opencode as opencode_mod
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness import pi_node as pi_node_mod
@@ -38,6 +40,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -67,6 +70,7 @@ _PI_MCP_HANDOFF = "/opt/run/kirocrew_pi_gate_mcp_handoff.json"
 _DSH_EXTENSION = "/opt/run/kiro_crew_tool_gate.mjs"
 _DSH_PATCH = "/opt/run/kiro_crew_dsh_gate.patch.yml"
 _OPENCODE_BIN = "/opt/bin/opencode"
+_MIMOCODE_BIN = "/opt/bin/mimo"
 _GOOSE_BIN = "/opt/bin/goose"
 _DEEPSEEK_BIN = "/opt/bin/dsh"
 _COPILOT_BIN = "/opt/bin/copilot"
@@ -74,8 +78,13 @@ _STRANDS_BIN = "/opt/bin/strands"
 # The Strands gate module, sealed into its project directory in the gate leaf.
 _STRANDS_PROJECT = "/opt/run/strands"
 _STRANDS_GATE = "/opt/run/strands/agent.py"
+_ANTIGRAVITY_SERVER = "/opt/bin/agy_acp_server.par"
+_ANTIGRAVITY_HELPER = "/opt/bin/localharness_external"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
+#: The stubbed return of ``_mimocode_routing_config``. The golden pins this literal, not
+#: the harness's real seed text (which ``json.dumps`` spells with spaces).
+_MIMOCODE_CONFIG = '{"permission":"ask"}'
 
 #: Env keys whose VALUE is a property of the host or the run. The key still has to
 #: appear -- that a harness receives it at all is the fact being pinned.
@@ -376,11 +385,22 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(
                 client_mod, "_resolve_codex_acp_bin", return_value=(_CODEX_ACP_ARGV, _SEARCH_PATH)
             ),
+            patch.object(
+                antigravity_mod,
+                "resolve_antigravity_runtime",
+                return_value=antigravity_mod.AntigravityResolution(
+                    server=_ANTIGRAVITY_SERVER,
+                    helper=_ANTIGRAVITY_HELPER,
+                    search_path=_SEARCH_PATH,
+                ),
+            ),
             patch.object(pi_mod, "_resolve_pi_acp_bin", return_value=(_PI_ACP_ARGV, _SEARCH_PATH)),
             patch.object(pi_mod, "_resolve_pi_bin", return_value=(_PI_BIN, _SEARCH_PATH)),
             patch.object(pi_mod, "_pi_node_choice", return_value=pi_mod.PiNodeChoice()),
             patch.object(claude_mod, "_resolve_claude_code_executable", return_value=""),
-            patch.object(AcpClient, "_write_claude_local_settings", return_value=None),
+            # The thinking default reads the host's Claude Code settings files.
+            patch.object(claude_mod, "a_source_decides_thinking", return_value=False),
+            patch.object(ClaudeAcpClient, "_write_claude_local_settings", return_value=None),
             patch.object(pi_mod, "_seal_pi_gate_extension", return_value=_PI_EXTENSION),
             patch.object(pi_mod, "_ensure_pi_gate_launcher", return_value=_PI_LAUNCHER),
             patch.object(pi_mod, "_verify_pi_gate", return_value=("", "")),
@@ -416,12 +436,18 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(
                 opencode_mod, "_opencode_version_refusal", new=AsyncMock(return_value=("", ""))
             ),
+            patch.object(mimocode_mod, "_verify_mimocode_routing", return_value=("", "")),
+            patch.object(mimocode_mod, "_mimocode_routing_config", return_value=_MIMOCODE_CONFIG),
+            patch.object(
+                mimocode_mod, "_mimocode_version_refusal", new=AsyncMock(return_value=("", ""))
+            ),
             patch.object(launch_mod, "_unlink_readback_launcher", return_value=None),
             patch.object(
                 launch_mod,
                 "_resolve_self_served_bin",
                 side_effect=lambda backend: {
                     ACP_BACKEND_OPENCODE: (_OPENCODE_BIN, _SEARCH_PATH),
+                    ACP_BACKEND_MIMOCODE: (_MIMOCODE_BIN, _SEARCH_PATH),
                     ACP_BACKEND_GOOSE: (_GOOSE_BIN, _SEARCH_PATH),
                     ACP_BACKEND_DEEPSEEK: (_DEEPSEEK_BIN, _SEARCH_PATH),
                     ACP_BACKEND_COPILOT: (_COPILOT_BIN, _SEARCH_PATH),
@@ -445,7 +471,7 @@ _ADAPTER_CACHES: dict[str, Any] = {
 _ADAPTER_CACHE_NAMES = tuple(_ADAPTER_CACHES)
 
 #: The host adapters whose routing read-back binds its own sandbox wrap and scrub.
-_READBACK_MODULES = (pi_mod, opencode_mod, deepseek_mod, strands_mod)
+_READBACK_MODULES = (pi_mod, opencode_mod, mimocode_mod, deepseek_mod, strands_mod)
 
 
 def snapshot_bin_caches() -> dict[str, Any]:
@@ -527,6 +553,16 @@ def _default_home_pins(tmp_path: Path) -> list:
     ]
 
 
+def _stop_the_copilot_walk(tmp_path: Path) -> None:
+    """Make *tmp_path* a git root, so Copilot's project-config walk ends there.
+
+    The walk runs up to the git root, else the filesystem root, and refuses the spawn
+    when it meets a real ``.mcp.json``: a ``tmp_path`` inside the home of a host that
+    holds one (an agent session's scratch) would otherwise reach it.
+    """
+    (tmp_path / ".git").mkdir(parents=True, exist_ok=True)
+
+
 def _capture_runtime_served(
     backend: str, tmp_path: Path, parent_env: dict, extra_patches: Sequence[Any] = ()
 ) -> dict[str, Any]:
@@ -594,6 +630,16 @@ def _capture_runtime_served(
                 codex_harness_mod, "resolve_spawn_masks", new=AsyncMock(return_value=((), ()))
             ),
             patch.object(codex_harness_mod, "_sandbox_wrapper_generations", return_value=0),
+            # No bundled-Codex version and no host ``codex``, so the golden
+            # environment does not depend on what this machine has installed and
+            # no ``codex --version`` child runs.
+            patch.object(codex_harness_mod, "_bundled_codex_version", return_value=None),
+            patch.object(codex_harness_mod, "_resolve_host_codex", return_value=None),
+            patch.object(
+                codex_harness_mod,
+                "_host_codex_version",
+                new=AsyncMock(side_effect=AssertionError("no version child in a capture")),
+            ),
         ]
     )
     stack.extend(extra_patches)
@@ -608,6 +654,7 @@ def _capture_runtime_served(
         for ctx in stack:
             entered.append(ctx.__enter__())
         inherited_env = dict(os.environ)
+        _stop_the_copilot_walk(tmp_path)
         runtime = AcpRuntime(
             work_dir=tmp_path / "workspace",
             agent="kirocrew",
@@ -672,6 +719,7 @@ def capture(
         for ctx in stack:
             entered.append(ctx.__enter__())
         inherited_env = dict(os.environ)
+        _stop_the_copilot_walk(tmp_path)
         client = AcpClient(
             work_dir=tmp_path / "workspace",
             session_key="golden-session",

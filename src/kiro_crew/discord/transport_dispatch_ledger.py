@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.messaging.dispatch import TurnRecord
 from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
 from kiro_crew.security import redact, redact_local_paths
@@ -71,7 +71,10 @@ async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
     key = record.session_key
     reply = record.reply_text if record.reply_text.strip() else ""
     dashboard_state = getattr(self._session_resume, "dashboard_state", None)
-    mirror_mids = project_channel_turn_live(dashboard_state, key, record.user_text, reply)
+    # Both copies need the SAME body, both halves; own hop.
+    safe_text = await asyncio.to_thread(_redact_at_write_boundary, "user", record.user_text)
+    safe_reply = await asyncio.to_thread(_redact_at_write_boundary, "assistant", reply)
+    mirror_mids = project_channel_turn_live(dashboard_state, key, safe_text, safe_reply)
     extra_row: tuple[str, str, str, str | None] | None = None
     if record.kind == "failed":
         exc = record.error
@@ -92,8 +95,8 @@ async def _record_turn(self: DiscordDispatcher, record: TurnRecord) -> None:
     await asyncio.to_thread(
         self._persist_turn,
         key,
-        record.user_text,
-        reply,
+        safe_text,
+        safe_reply,
         record.is_new,
         agent=record.agent,
         mirror_mids=mirror_mids,

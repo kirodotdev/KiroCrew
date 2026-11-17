@@ -166,6 +166,7 @@ class FakeClient:
         reply_to_message_id: Any = None,
         message_thread_id: Any = None,
         disable_notification: bool = False,
+        err_out: Any = None,
     ) -> int:
         # flake-ok: pre-existing zero-length yield standing in for a network await, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0)  # yield like a real network await (exposes races)
@@ -355,6 +356,11 @@ class FakeSessions:
         self.batch_depth = 0
         self.batched_writes: list[bool] = []
         self._pid: Any = None
+        #: Per key, the approval policy a Trust grant wrote (``set_approval_policy``).
+        self.approval_policies: dict[str, str] = {}
+
+    def set_approval_policy(self, key: str, policy: str) -> None:
+        self.approval_policies[key] = policy
 
     async def get_or_create(
         self,

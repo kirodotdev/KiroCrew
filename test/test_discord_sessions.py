@@ -32,6 +32,7 @@ from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.history import transcript_stem
 from kiro_crew.messaging import session_resume as resume_core
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_sessions_helpers._isolated_home
@@ -120,6 +121,22 @@ async def test_a_one_word_chinese_query_keeps_the_title_fallback() -> None:
 
     assert log.search_calls, "the shared search ran first"
     assert _picker_labels(client) == ["1. 内存占用排查"]
+
+
+@pytest.mark.asyncio
+async def test_an_excluded_content_match_does_not_return_through_title_fallback() -> None:
+    log = _OutsideTheWindowLog(
+        [{"key": "dashboard_chat-0", "title": "Deploy plan", "memory_mode": "persistent"}],
+        {"dashboard:chat-0": [{"role": "user", "content": "Vinod deployment notes"}]},
+    )
+
+    choices, total, _note = await resume_core.resolve_session_choices(
+        log, "deploy plan -vinod", lambda text, _limit: text
+    )
+
+    assert choices == []
+    assert total == 0
+    assert log.list_calls == 0
 
 
 @pytest.mark.asyncio
@@ -261,7 +278,7 @@ async def test_sessions_requires_exactly_one_allowed_user() -> None:
 
 @pytest.mark.asyncio
 async def test_sessions_lists_dashboard_and_same_dm_generations_only_and_redacts() -> None:
-    secret = "ghp_" + "a" * 36
+    secret = github_classic(seed=307)
     prior_key = "discord:kirocrew:direct:u1:gen4"
     other_user_key = "discord:kirocrew:direct:u2:gen4"
     log = _ConversationLog(
@@ -748,7 +765,7 @@ async def test_stacked_dashboard_prefix_binds_canonical_session() -> None:
 
 @pytest.mark.asyncio
 async def test_choice_binds_replays_and_routes_followup() -> None:
-    secret = "ghp_" + "b" * 36
+    secret = github_classic(seed=308)
     messages = [
         {"role": "user", "content": "omitted oldest"},
         {"role": "assistant", "content": "context one"},

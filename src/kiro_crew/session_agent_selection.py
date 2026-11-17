@@ -11,6 +11,7 @@ from typing import Any, NamedTuple
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.loader import (
     ResolvedBindings,
+    refresh_materialized_agents,
     resolve_agent_bindings,
 )
 from kiro_crew.execution_context import (
@@ -166,7 +167,9 @@ def resolve_session_agent_bindings(
     once, but a non-owner create (an app token) leaves the first send to resolve
     from the stamp alone.
     """
-    execution = read_session_execution(session_key)
+    execution = read_session_execution(
+        session_key, repair_project=project_dir[0] if project_dir else None
+    )
     # A crewmate's worker runs on its crewmate's backend: publishing the key here,
     # on the read every turn and resume prefetch makes before allocating, is what
     # the backend selection then reads (``members.select_provider_backend``).
@@ -225,6 +228,10 @@ def resolve_session_agent_bindings(
 def record_provider_agent_switch(config, session_key, prior_agent, new_agent, project_dir):
     prior = read_session_execution(session_key)
     selected = resolve_agent_bindings(config, new_agent, project_dir, selection_kind="template")
+    if not selected.requested_resolved:
+        # kiro-cli switched to a spec on disk that the snapshot may not hold yet.
+        refresh_materialized_agents()
+        selected = resolve_agent_bindings(config, new_agent, project_dir, selection_kind="template")
     if not selected.requested_resolved:
         raise UnknownMemoryStore("Conversation agent selection is unavailable")
     selected.selection_revision = _revision(prior)

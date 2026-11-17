@@ -3,7 +3,8 @@
 :meth:`~kiro_crew.cron.CronService.create` builds the service off the event loop and
 moves an unreadable store aside under the store lock; ``start`` loads the jobs, runs
 the loop-stall breaker and arms the timer; ``stop`` cancels the reaper, the timer and
-every run, and saves the run records the store lock refused.
+every run, saves the run records the store lock refused, and waits, bounded, for the
+notices of the runs it interrupted.
 
 Each function here is a :class:`~kiro_crew.cron.CronService` member: the class binds
 it by name, so it reads and writes the service's own state on the instance, and a
@@ -14,8 +15,8 @@ it on each call (``seams``).
 Instance fields written: ``_loop``, ``_reaper_task``, ``_running``, ``_timer_task``,
 ``quarantined_store``.
 
-Instance fields read: ``_held_run_records``, ``_history``, ``_jobs``, ``_load_failed``,
-``_path``.
+Instance fields read: ``_held_run_records``, ``_history``, ``_interrupt_alerts``, ``_jobs``,
+``_load_failed``, ``_path``.
 """
 
 from __future__ import annotations
@@ -133,7 +134,16 @@ async def start(self: CronService) -> None:
 
 
 async def stop(self: CronService) -> None:
-    """Stop the timer loop and cancel running jobs."""
+    """Stop the timer loop and cancel running jobs.
+
+    Each run cancelled before it recorded an outcome starts its notice
+    (``_alert_interrupt``) as it unwinds. Those are awaited last, for at most
+    ``_INTERRUPT_ALERT_WAIT_SECS``, because the gateway exits once this returns
+    and a notice still in flight then reaches no one; one still running after
+    the bound is cancelled.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
     self._running = False
     if self._reaper_task:
         self._reaper_task.cancel()
@@ -155,3 +165,10 @@ async def stop(self: CronService) -> None:
     # this process goes, or the next one finds the job due again.
     if self._held_run_records:
         await asyncio.to_thread(self._flush_held_run_records)
+    notices = set(self._interrupt_alerts)
+    if notices:
+        _, late = await asyncio.wait(notices, timeout=seams._INTERRUPT_ALERT_WAIT_SECS)
+        if late:
+            logger.warning("Cron: %d interrupted-run notice(s) cut at shutdown", len(late))
+        for task in late:
+            task.cancel()

@@ -171,7 +171,7 @@ class MockSlackClient(SlackClientOps):
     async def views_update(self, view_id, view):
         self.actions.append(("views_update", {"view_id": view_id, "view": view}))
 
-    async def upload_file(self, channel, thread_ts, file, filename, title):
+    async def upload_file(self, channel, thread_ts, file, filename, title, initial_comment=None):
         self.actions.append(
             (
                 "upload_file",
@@ -181,6 +181,7 @@ class MockSlackClient(SlackClientOps):
                     "file": file,
                     "filename": filename,
                     "title": title,
+                    "initial_comment": initial_comment,
                 },
             )
         )
@@ -225,8 +226,11 @@ class MockSlackClient(SlackClientOps):
         )
         return True
 
-    async def stop_stream(self, channel, ts, final_text=None):
-        self.actions.append(("stop_stream", {"channel": channel, "ts": ts, "text": final_text}))
+    async def stop_stream(self, channel, ts, final_text=None, blocks=None):
+        action = {"channel": channel, "ts": ts, "text": final_text}
+        if blocks is not None:
+            action["blocks"] = blocks
+        self.actions.append(("stop_stream", action))
         return True
 
     async def set_thread_title(self, channel, thread_ts, title):

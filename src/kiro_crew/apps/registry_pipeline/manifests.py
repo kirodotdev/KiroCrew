@@ -34,6 +34,7 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _communicate_with_timeout,
     _git_fetch_branch,
     _git_fetch_commit,
+    _mkdtemp_settled,
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
@@ -65,6 +66,7 @@ from kiro_crew.sandbox import (
     wrap_argv,
     wrap_argv_async,
 )
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE)
 
@@ -181,7 +183,7 @@ async def _fetch_app_manifest(
             and fresh_enough
         ):
             try:
-                local_manifest_data = json.loads(local_content)
+                local_manifest_data = loads_user_json(local_content)
             except json.JSONDecodeError:
                 pass
             else:
@@ -210,11 +212,9 @@ async def _fetch_app_manifest(
         )
         return None
 
-    import tempfile
-
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-manifest-")
+        tmp_root = await _mkdtemp_settled("kirocrew-manifest-")
         # Credential posture for the manifest fetch. Default: anonymous+strict
         # (confused-deputy defense — see anonymous_git_env). Same-repo
         # carve-out: when owner_designated is True the clone URL is the
@@ -342,7 +342,7 @@ async def _fetch_app_manifest(
         content = await asyncio.to_thread(_read_manifest_text, manifest_dir / "app.json")
         if content is None:
             return None
-        data = json.loads(content)
+        data = loads_user_json(content)
         # A manifest that is not a JSON object (``["x"]``, ``"str"``) is no manifest.
         return data if isinstance(data, dict) else None
     except (asyncio.TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -553,9 +553,20 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
         "setup",
         "ui",
         "openCommand",
+        # The trust prompt lists the desktop windows an app declares before the
+        # user installs it, so a registry row must carry the declaration.
+        "desktop",
     ):
         if key in manifest:
             manifest_fields[key] = manifest[key]
+    # Listing copy per locale, parsed exactly as an install parses it: the block
+    # is untrusted, so a malformed locale is dropped here too. Imported here so
+    # the registry facade's star import gains no name.
+    from kiro_crew.apps.manifest_sections import L10nConfig
+
+    l10n = L10nConfig.from_value(manifest.get("l10n")).to_dict()
+    if l10n:
+        manifest_fields["l10n"] = l10n
     if manifest_fields:
         result["manifest"] = manifest_fields
 

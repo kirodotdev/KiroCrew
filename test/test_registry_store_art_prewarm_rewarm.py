@@ -681,4 +681,7 @@ class TestBlobCacheLstatSweep:
         assert deep.is_file()
 
     def test_a_missing_directory_is_a_no_op(self, tmp_path):
-        reg_mod._gc_blob_cache_sweep_lstat(tmp_path / "absent", time.time() - 60, [100], depth=0)
+        budget = [100]
+        reg_mod._gc_blob_cache_sweep_lstat(tmp_path / "absent", time.time() - 60, budget, depth=0)
+        assert budget == [100]
+        assert not (tmp_path / "absent").exists()

@@ -776,13 +776,17 @@ async def test_refresh_and_cold_reads_never_probe(monkeypatch) -> None:
     monkeypatch.setattr(source, "_fetch_github", fanout)
     monkeypatch.setattr(source, "_gh_conditional_get", AsyncMock(side_effect=AssertionError))
     try:
-        await source.fetch_pull_request(url)  # cold
+        cold = await source.fetch_pull_request(url)  # cold
+        assert cold["headSha"] == "a" * 40
+        assert source._CACHE[url][2]["headSha"] == "a" * 40, "the cold read was cached"
         source._CACHE[url] = (
             source.time.monotonic() - source._CACHE_TTL_SECS - 5,
             10,
             {"state": "OPEN", "headSha": "a" * 40},
         )
-        await source.fetch_pull_request(url, refresh=True)
+        fanout.return_value = {"state": "MERGED", "headSha": "b" * 40}
+        refreshed = await source.fetch_pull_request(url, refresh=True)
+        assert refreshed["state"] == "MERGED", "a refresh returns the full read, not the cache"
         assert fanout.await_count == 2
     finally:
         source._CACHE.clear()

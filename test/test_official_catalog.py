@@ -806,8 +806,7 @@ class TestSkipFetchSwitch:
 
     def test_the_store_degrades_to_the_seed_and_remembers_it(self):
         assert oc.load_official_catalog() == []
-        cached = oc._read_cache()
-        assert cached is not None and oc._FAILED_KEY in cached
+        assert oc._failed_recently()
 
     def test_the_fresh_inventory_fetch_refuses(self):
         with pytest.raises(oc.CatalogUnavailable):
@@ -871,9 +870,31 @@ class TestFailedFetchIsRemembered:
         real_time = time.time
         monkeypatch.setattr(time, "time", lambda: real_time() + oc.FAILURE_TTL + 5)
         assert oc.load_official_catalog(lambda: doc()) != []
-        # And the document replaced the failure marker rather than sitting beside it.
         monkeypatch.setattr(time, "time", real_time)
-        assert oc._FAILED_KEY not in (oc._read_cache() or {})
+        assert oc._read_cache() == doc()
+
+    def test_a_failed_inventory_fetch_keeps_the_saved_document(self, monkeypatch):
+        """Offline, the store keeps listing a still-fresh saved copy.
+
+        The listing reads the saved document AND makes a fresh inventory fetch.
+        When that fetch fails, its failure memory must not replace the document,
+        or every later listing drops to the seed rows -- and the memory must
+        still spare the next listing another timeout.
+        """
+        oc._write_cache(doc())
+        opened: list[str] = []
+
+        def offline(req):
+            opened.append(req.full_url)
+            raise urllib.error.URLError("offline")
+
+        monkeypatch.setattr(oc, "_open_catalog", offline)
+        with pytest.raises(oc.CatalogUnavailable):
+            oc.fetch_inventory_entries()
+        assert oc.load_official_catalog() == doc()["apps"]
+        with pytest.raises(oc.CatalogUnavailable):
+            oc.fetch_inventory_entries()
+        assert len(opened) == 1, "the second inventory fetch must back off"
 
 
 class TestRedirectsAreRefused:

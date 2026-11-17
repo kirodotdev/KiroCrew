@@ -94,6 +94,10 @@ def test_the_index_declares_the_selection_and_gate_vocabularies() -> None:
         "entity": "crewmate",
     }
     assert raw["guide_gates"]["terminal_enabled"] == {"setting_id": None}
+    # The top bar's search box has a display setting that hides it.
+    assert raw["guide_gates"]["topbar_search_shown"] == {
+        "setting_id": "display.show-search-in-the-top-bar"
+    }
     # Every preview flag is a gate on the setting PREVIEW_FLAG_ENABLERS names.
     assert raw["guide_gates"]["preview_flag:mc-preview-artifact-deploy"] == {
         "setting_id": "developer.artifact-deploy"

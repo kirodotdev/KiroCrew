@@ -260,7 +260,7 @@ async def test_first_share_warning_counts_and_is_shown_once(monkeypatch) -> None
     _install()
 
     class Log:
-        def list_sessions(self) -> list[dict[str, Any]]:
+        def list_sessions_indexed(self) -> list[dict[str, Any]]:
             return [{"key": "dashboard:a"}, {"key": "dashboard:b"}, {"key": "dashboard:c"}]
 
     class Vector:

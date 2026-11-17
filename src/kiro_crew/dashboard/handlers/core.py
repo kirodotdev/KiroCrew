@@ -22,12 +22,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 import kiro_crew._facade_mirror as _facade_mirror
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import aws_consent, beacon, platform_compat, stt
+from kiro_crew import aws_consent, beacon, edition, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -77,6 +76,7 @@ from kiro_crew.config.sections import (
     EXTERNAL_TERMINAL_APPS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    PRIVACY_ACK_VERSION_MAX,
     REMOTE_EDITOR_HOST_PATTERN,
     REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
@@ -373,11 +373,13 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
         # The desktop production/nightly cross-app guard calls over loopback and
         # needs exact identity to decide whether it can reuse the shared port.
         # Anonymous non-loopback probes get only the liveness bit, avoiding an
-        # exact-version fingerprint on the public probe boundary.
+        # exact-version fingerprint on the public probe boundary. `edition`
+        # lets an LTS shell tell its own gateway from an oss one on the port.
         payload.update(
             {
                 "app": "kirocrew",
                 "version": kiro_crew.__version__,
+                "edition": edition.EDITION,
                 "gateway_id": await asyncio.to_thread(gateway_id),
             }
         )
@@ -513,11 +515,27 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
     One builder for all four response sites so a newly-added preference cannot
     be surfaced by some of them and silently omitted by the rest.
 
-    An LTS build reports ``privacy_acked`` as true, so the SPA never opens
-    the first-run Privacy chapter there: the admin, not the user, decides where
-    usage data goes. Only the response says so; the stored value is unchanged.
+    An LTS build reports ``privacy_acked`` as true and the notice version as
+    current, so the SPA never opens the first-run Privacy chapter there, nor the
+    once-more showing of a changed notice: the admin, not the user, decides where
+    usage data goes. Only the response says so; the stored values are unchanged.
+
+    The notice version is also reported as current while local recording is off
+    (the heartbeat turned off with ``telemetry.enabled`` unset, a written
+    ``false``, or ``DO_NOT_TRACK``): a user who opted out is not asked again. The
+    one exception is a written ``false`` older builds put in every new config
+    (``kiro_export.off_offer_due``): that user sees the current notice once, in
+    its off form, which asks whether to turn recording on.
     """
+    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
     from kiro_crew.edition import is_lts
+
+    lts = is_lts()
+    try:
+        recording_on = _metrics_provider._consent_enabled(cfg.telemetry)
+    except Exception:  # noqa: BLE001 - unknown keeps today's behaviour
+        recording_on = True
+    notice_current = lts or (not recording_on and not _off_offer_due(cfg))
 
     return {
         "mode": cfg.dashboard.theme_mode or "",
@@ -526,9 +544,42 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "translucent_panels": cfg.dashboard.translucent_panels or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
-        "privacy_acked": cfg.dashboard.privacy_acked or is_lts(),
+        "privacy_acked": cfg.dashboard.privacy_acked or lts,
+        "privacy_ack_version": (
+            max(cfg.dashboard.privacy_ack_version, PRIVACY_NOTICE_VERSION)
+            if notice_current
+            else _ack_version_for_the_chapter(cfg)
+        ),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
+
+
+def _off_offer_due(cfg: Any) -> bool:
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        return kiro_export.off_offer_due(cfg)
+    except Exception:  # noqa: BLE001 - not due, as before
+        return False
+
+
+def _ack_version_for_the_chapter(cfg: Any) -> int:
+    """The acknowledged notice version, held back while Kiro telemetry is owed.
+
+    An acknowledgement whose text never named the build's Kiro telemetry
+    destination (a chapter whose text did not name it, a redirected
+    ``kirocrew telemetry enable``) leaves that destination waiting, so the
+    chapter, which names it, shows once more. Unreadable: the stored value.
+    """
+    stored = cfg.dashboard.privacy_ack_version
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        if kiro_export.destinations() and not kiro_export.notice_shown(cfg):
+            return min(stored, cfg.dashboard.kiro_telemetry_ack_version)
+    except Exception:  # noqa: BLE001 - the stored value, as before
+        logger.debug("kiro telemetry notice state unreadable", exc_info=True)
+    return stored
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:
@@ -538,8 +589,9 @@ async def api_theme_boot(request: web.Request) -> web.Response:
     workspace theme and UI language before the token flow completes. Contains
     no secrets — only workspace-level display preferences and onboarding flags.
     """
-    cfg = KiroCrewConfig.load()
-    return web.json_response(_theme_payload(cfg))
+    # Off the loop: the payload reads config files and the policy profiles.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    return web.json_response(await asyncio.to_thread(_theme_payload, cfg))
 
 
 async def api_theme_config(request: web.Request) -> web.Response:
@@ -547,8 +599,8 @@ async def api_theme_config(request: web.Request) -> web.Response:
 
     GET returns the current config. PUT accepts
     {mode?, color?, language?, translucent_panels?, onboarded?, import_onboarded?,
-    privacy_acked?, crewmates_onboarded?} and persists ONLY those ``dashboard.*``
-    keys.
+    privacy_acked?, privacy_ack_version?, crewmates_onboarded?} and persists ONLY
+    those ``dashboard.*`` keys.
 
     The PUT is a locked delta read-modify-write, never a whole-document
     ``KiroCrewConfig.save()``. A momentarily unreadable ``config.json`` (a torn
@@ -562,8 +614,8 @@ async def api_theme_config(request: web.Request) -> web.Response:
     refused (500 ``config_unreadable``) with its bytes untouched.
     """
     if request.method == "GET":
-        cfg = KiroCrewConfig.load()
-        return web.json_response(_theme_payload(cfg))
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        return web.json_response(await asyncio.to_thread(_theme_payload, cfg))
 
     # PUT
     denied = await require_owner_dashboard_request(request, "config.theme.write")
@@ -616,6 +668,21 @@ async def api_theme_config(request: web.Request) -> web.Response:
             if not isinstance(body[flag], bool):
                 raise web.HTTPBadRequest(text=f"{flag} must be a boolean")
             updates[flag] = body[flag]
+    # A real int only, for the same reason: ``True`` is an int in Python and
+    # would store as 1.
+    for key in ("privacy_ack_version", "kiro_telemetry_ack_version"):
+        if key not in body:
+            continue
+        version = body[key]
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or not 0 <= version <= PRIVACY_ACK_VERSION_MAX
+        ):
+            raise web.HTTPBadRequest(
+                text=f"{key} must be an integer from 0 to {PRIVACY_ACK_VERSION_MAX}"
+            )
+        updates[key] = version
 
     if updates:
 
@@ -649,7 +716,7 @@ async def api_theme_config(request: web.Request) -> web.Response:
             )
 
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    return web.json_response(_theme_payload(cfg))
+    return web.json_response(await asyncio.to_thread(_theme_payload, cfg))
 
 
 async def pwa_file(request: web.Request) -> web.StreamResponse:
@@ -702,15 +769,20 @@ for _owner in _OWNERS:
     _importlib.import_module(_owner)
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.core_config_models import (
+        _KAS_VAULT_IDENTITY_KEY,
+        _LIVE_IDENTITY_KEY,
         _ROLE_PIN_REVALIDATING,
         _ROLE_PIN_REVALIDATION_MAX_RESELECTS,
         _active_advertised_ids,
         _active_provider_and_pin_backend,
         _active_provider_name,
         _advertised_evidence_provider,
+        _kas_select_ids,
         _no_kiro_id_reason,
         _provider_backend,
+        _read_kas_vault_identity,
         _revalidate_role_pin_evidence,
+        _spawned_for_another_account,
         _validate_role_model,
     )
     from kiro_crew.dashboard.handlers.core_config_patch import (
@@ -723,6 +795,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_saved_profiles,
         _profile_ids,
         _session_environment_key_validators,
+        _str_list_problem,
         _tailnet_governance_pinned_off,
         _UnknownDefaultProfile,
         api_kirocrew_config_patch,
@@ -741,9 +814,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_view import (
         _AGENT_UNTRUSTED_TEXT_FIELDS,
+        _DASHBOARD_LOCKS,
         _SENSITIVE_MASK,
         _changed_paths_need_restart,
+        _config_body,
         _hot_apply_after_write,
+        _kas_in_use,
         _mask_agent_free_text,
         _mask_strings,
         _masked_config_dict,
@@ -997,7 +1073,7 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
                 await resp.write(b"event: done\ndata: {}\n\n")
                 break
             await asyncio.sleep(1)
-    except (ConnectionResetError, ClientConnectionResetError):
+    except ConnectionResetError:
         pass
     return resp
 
@@ -1154,7 +1230,8 @@ async def api_app_token(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "missing X-App-Secret header"}, status=403)
 
-    if not validate_app_secret(app_name, provided_secret):
+    # Off the loop: the check reads sealed records from disk.
+    if not await asyncio.to_thread(validate_app_secret, app_name, provided_secret):
         sel().log_api_access(
             caller=app_name,
             operation="app_token_exchange",
@@ -1162,7 +1239,18 @@ async def api_app_token(request: web.Request) -> web.Response:
             source="app_auth",
             error="invalid secret",
         )
-        return web.json_response({"error": "invalid secret"}, status=403)
+        return web.json_response(
+            {
+                "error": "invalid secret",
+                # One message for every refusal reason, so it tells a caller nothing
+                # about which check failed. The second sentence is the upgrade path.
+                "hint": (
+                    "The app must be enabled by the owner. An app installed before "
+                    "this version must be turned off and on once in the App Store."
+                ),
+            },
+            status=403,
+        )
 
     token = generate_token(app_name, app=app_name)
     sel().log_api_access(

@@ -57,7 +57,7 @@ MAX_LISTED_SCAN: Final[int] = 400
 
 #: Unit directories one listing is willing to RETAIN while choosing which to open.
 #: Separate from ``MAX_LISTED_SCAN`` and deliberately larger: the walk skips a
-#: directory that is outside an ``active_within`` window or carries no readable
+#: directory that is outside an ``active_within_ms`` window or carries no readable
 #: unit id WITHOUT counting it as scanned, so the candidate set has to be able to
 #: absorb some skips before the scan cap is reached. It is a bound on MEMORY, not
 #: on what a caller may see -- the newest this many are kept by mtime in a
@@ -579,19 +579,36 @@ def read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
     # ``handle.last_seq`` is this instance's own cached figure -- the store's
     # docstring says it is authoritative only for its OWN appends -- and a reader
     # handle never appends, so a writer that grows the file after this handle
-    # opened is invisible to it. The iteration below reads the file live and walks
-    # the whole tail from ``start``, discarding what is past ``end`` rather than
-    # never seeing it, so the true tail is observable here for free. Deriving
+    # opened is invisible to it. The iteration below reads the file live from
+    # ``start`` and, once past ``end``, takes the newest seq from the file's last
+    # record, so the true tail is observable here. Deriving
     # ``next_from`` from the cached figure instead would let a page return rows up
     # to ``end`` and still report that nothing follows, and a client that believes
     # it stops paging with entries left unread.
     observed_last = handle.last_seq
     entries: list[Any] = []
+    asked_tail = False
     for entry in handle.iter_from(start, strict_seq=False):
         if entry.seq > observed_last:
             observed_last = entry.seq
         if entry.seq <= end:
             entries.append(entry)
+            continue
+        if asked_tail:
+            continue
+        # Past *end*: the rest of the walk only finds the newest seq, which the
+        # file's last record states in one bounded read -- on a unit whose only
+        # segment is ``log.jsonl``, the file this walk already checked the header of.
+        # A unit of more segments walks on, so each later segment's header and
+        # boundary are checked before its seq counts. Walked on too when the tail is
+        # not settled, as before.
+        asked_tail = True
+        if segment_first_seqs(KIND_SESSION, handle.id) != [1]:
+            continue
+        tail = handle.tail_records(1)
+        if tail:
+            observed_last = max(observed_last, tail[-1][0].seq)
+            break
     resolutions: dict[tuple[Any, ...], dict[str, Any]] = {}
     unresolved = 0
     rows: list[dict[str, Any]] = []
@@ -652,7 +669,7 @@ def _unit_id_in(directory: Path) -> str:
         return ""
     try:
         parsed = json.loads(first)
-    except ValueError:
+    except (ValueError, RecursionError):
         return ""
     unit_id = parsed.get("id") if isinstance(parsed, dict) else None
     return unit_id if isinstance(unit_id, str) else ""

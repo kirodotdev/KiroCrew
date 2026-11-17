@@ -14,6 +14,7 @@ document type, webapp metadata, the content token and dashboard-package bindings
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -120,7 +121,7 @@ class TestList:
     async def test_empty(self, isolated_store, patch_restricted) -> None:
         resp = await api_artifacts_list(_request())
         assert resp.status == 200
-        assert _json_body(resp) == {"artifacts": []}
+        assert _json_body(resp) == {"artifacts": [], "output_cap": 200}
 
     @pytest.mark.asyncio
     async def test_returns_items(self, isolated_store, patch_restricted, monkeypatch) -> None:
@@ -708,7 +709,11 @@ class TestCreate:
         }
         resp = await api_artifacts_create(_request(body=body))
         assert resp.status == 201
-        assert _json_body(resp)["content"] == real
+        # The artifact holds the source's bytes. The response shows them as every
+        # surfaced copy is shown, with the value masked by the server's own tag, not
+        # the client's placeholder.
+        assert isolated_store.get(_json_body(resp)["slug"]).content == real
+        assert _json_body(resp)["content"] == "secret = [REDACTED: credential]"
 
     @pytest.mark.asyncio
     async def test_promotion_of_an_oversized_source_is_refused_not_a_500(
@@ -965,6 +970,31 @@ class TestPromoteVerdict:
         assert second.status == 200
         assert _json_body(second)["slug"] == _json_body(first)["slug"]
         assert len(isolated_store.list()) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_source_path_lookup_runs_off_the_event_loop(
+        self, isolated_store, patch_restricted, disposable_file, monkeypatch
+    ) -> None:
+        """The dedup lookup scans every meta.json under the store lock."""
+        real_find = isolated_store.find_by_source_path
+        threads: list[int] = []
+
+        def _find(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return real_find(*args, **kwargs)
+
+        monkeypatch.setattr(isolated_store, "find_by_source_path", _find)
+        resp = await api_artifacts_create(
+            _request(
+                body={
+                    "name": "scratch",
+                    "content": "# scratch",
+                    "source_path": str(disposable_file),
+                }
+            )
+        )
+        assert resp.status == 201
+        assert threads and threading.get_ident() not in threads
 
     @pytest.mark.asyncio
     async def test_copied_artifact_survives_source_deletion(

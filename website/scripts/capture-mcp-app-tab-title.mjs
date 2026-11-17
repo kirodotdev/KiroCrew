@@ -58,6 +58,7 @@ let wsServer = null
 await stubDashboardApi(page, {
   slots,
   theme: 'dark',
+  localStorageEntries: { 'mc-active-slot': SLOT },
   extra: async (path, route) => {
     if (path === '/api/dashboard/config') {
       json(route, {
@@ -74,10 +75,6 @@ await stubDashboardApi(page, {
 // AFTER the shared stub so this wins: the stub swallows /api/ws, but this
 // harness needs the socket to push the mcp_app_render frames.
 await page.routeWebSocket(/\/api\/ws/, ws => { wsServer = ws })
-await page.addInitScript(slot => {
-  localStorage.setItem('mc-active-slot', slot)
-  localStorage.removeItem('kirocrew.tips.lastShownAt')
-}, SLOT)
 
 await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(2500)

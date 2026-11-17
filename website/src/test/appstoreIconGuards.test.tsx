@@ -47,6 +47,7 @@ describe('FeaturedSpotlight with a dark-only icon', () => {
     // art -- so the blob URL below can only have come from the row's icon.
     render(
       <FeaturedSpotlight
+        connected
         type="app"
         apps={[darkOnly]}
         onOpenApp={noop}
@@ -63,7 +64,7 @@ describe('an app with no icon at all still degrades', () => {
   it('renders no blob image when neither variant is present', () => {
     const bare = { ...darkOnly, iconUrlDark: undefined } as unknown as RegistryApp
     render(
-      <FeaturedSpotlight type="app" apps={[bare]} onOpenApp={noop} onGet={noop} onEnable={noop} />,
+      <FeaturedSpotlight connected type="app" apps={[bare]} onOpenApp={noop} onGet={noop} onEnable={noop} />,
     )
     const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src') || '')
     expect(srcs.some(s => s.includes('/api/apps/blob'))).toBe(false)

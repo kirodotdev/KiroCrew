@@ -477,6 +477,7 @@ class TestPendingInjectionIsSpared:
         assert key in mgr._sessions, "reaped a session a turn was committed to mid-sweep"
         await mgr.close_all()
 
+    @pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
     @pytest.mark.asyncio
     async def test_an_injection_starting_inside_the_rss_probe_await_spares_it(
         self, cfg, caplog
@@ -522,6 +523,7 @@ class TestPendingInjectionIsSpared:
             f"RSS recycle: session {key} began an injection mid-check; skipping" in caplog.messages
         )
 
+    @pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
     @pytest.mark.asyncio
     async def test_the_rss_ceiling_still_recycles_when_nothing_is_injecting(self, cfg) -> None:
         """The new read must not disarm the ceiling it guards.

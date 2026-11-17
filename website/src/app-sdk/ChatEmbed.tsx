@@ -728,7 +728,7 @@ function ChatEmbed({
       const key = `optimistic-${p.sendId}`
       const i = p.queueId ? entries.findIndex(e => e.queueId === p.queueId) : -1
       if (i >= 0) entries[i] = { ...entries[i], queueId: key }
-      else if (isShown(p)) entries.push({ content: p.text, queueId: key, ts: p.row.ts ?? '' })
+      else if (isShown(p)) entries.push({ content: p.text, queueId: key, ts: p.row.ts ?? '', sendId: p.sendId })
     }
     return splitPaneMessages(hydrateQueuedBubbles([], entries))
   }, [queueRaw, pendingHere, isShown])
@@ -1203,7 +1203,7 @@ function ChatEmbed({
       : undefined
     const resized = Object.fromEntries(files.filter(p => attachments.resizedInfo[p]).map(p => [p, attachments.resizedInfo[p]]))
     if (files.length) attachments.clear()
-    storeSentPastes(turn?.storedPaste)
+    storeSentPastes(turn?.storedPaste, sendId)
     // No `sendId` on the optimistic row's meta: it would read as this send's
     // own server row and falsely prove an unconfirmed notice delivered.
     const ts = new Date().toISOString()

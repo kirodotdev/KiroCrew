@@ -27,6 +27,10 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     native_subagent_output_tail,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token: a bare 40-character run is no credential by itself.
+_TOKEN = github_classic(seed=66)
 
 
 def _make_state():
@@ -188,7 +192,7 @@ class TestNativeSubagentSync:
 
     def test_done_result_keeps_newest_tail_with_marker(self):
         # Over the cap, keep the NEWEST 8000 chars and prefix an explicit
-        # truncation marker so the dropped head is signalled (finding 3).
+        # truncation marker so the dropped head is signalled.
         state = _make_state()
         slot = _make_slot()
         tracker: dict = {}
@@ -248,11 +252,11 @@ class TestNativeSubagentSync:
         _native_subagent_sync(
             state,
             slot,
-            [_sub("s1", "n", "role", "key AKIAIOSFODNN7EXAMPLE here", "working")],
+            [_sub("s1", "n", "role", f"key {_TOKEN} here", "working")],
             {},
         )
         spawn = _ws_calls(state)["subagent_spawn"][0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in spawn["task"]
+        assert _TOKEN not in spawn["task"]
 
     def test_nongeneric_status_message_emits_tool(self):
         state = _make_state()
@@ -760,7 +764,7 @@ class TestNativeTerminalHydration:
         # terminal (done) cards (dropping running cards + output buffers) so a
         # reconnect in the idle gap after the parent turn exits still replays
         # them. A fresh tracker at the next turn start clears them — no
-        # cross-turn leak (finding 2).
+        # cross-turn leak.
         slot._native_subagent_tracker = _retain_terminal_native(tracker)
         slot._native_subagent_output = {}
         after = DashboardState.native_subagent_snapshots(state)
@@ -1087,7 +1091,7 @@ class TestNativeAutoApproveLogSanitization:
     def test_credential_redacted_before_logging(self) -> None:
         from kiro_crew.dashboard.chat_runner import _safe_native_crew_debug_title
 
-        cred = "ghp_" + "a" * 36
+        cred = github_classic(seed=65)
         safe = _safe_native_crew_debug_title("call " + cred + "\ntrailer")
         # Credential is replaced with the redaction marker.
         assert cred not in safe

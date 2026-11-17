@@ -9,10 +9,11 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster``,
 ``_awaiting_permission``, ``_between_turn_credits``,
-``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_input_wait_emitted``,
+``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_goose_active_run_id``,
+``_goose_steers``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
-``_native_child_overflow``, ``_native_child_redactors``, ``_native_child_sids``,
+``_native_child_overflow``, ``_native_child_sids``,
 ``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
 ``_prompt_written``, ``_skill_reads``, ``_stale_eligible``, ``_stale_probe``,
@@ -27,8 +28,9 @@ Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster`
 ``prompts_written``.
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
-``_cloud_replayed_permissions``, ``_engine_fallback``, ``_mode_model_unjudged``,
-``_queue``, ``_runtime``, ``_session_id``, ``_session_key``, ``_steering_cancel_tasks``.
+``_cloud_replayed_permissions``, ``_drained_child_events``, ``_engine_fallback``, ``_mode_model_unjudged``,
+``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``, ``_session_key``,
+``_steering_cancel_tasks``.
 """
 
 from __future__ import annotations
@@ -60,9 +62,21 @@ from kiro_crew.acp.elicitation import (
     elicitation_reply,
     is_elicitation_request,
 )
-from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
+from kiro_crew.acp.prompt_blocks import (
+    SentImageLedger,
+    StagedImages,
+    build_prompt_blocks,
+    command_drops_pictures,
+    summarize_prompt_structure,
+)
+from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
-from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
+from kiro_crew.acp.session_handle_mcp import hold_untold_first_turn
+from kiro_crew.acp.session_handle_native_children import (
+    _is_claude_subagent_update,
+    _keep_working_claude_redactors,
+)
+from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError, host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
@@ -88,6 +102,12 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
     AcpEvent,
     JsonRpcMessage,
+)
+from kiro_crew.metrics.chat_runtime_share import (
+    chat_leases_on,
+    on_shared_process,
+    record_turn_ended,
+    record_turn_started,
 )
 
 if TYPE_CHECKING:
@@ -144,6 +164,15 @@ async def wait_turn_done(self: AcpSessionHandle, timeout: float = 30.0) -> bool:
 # ── Prompt ──
 
 
+def _forget_sent_images(self: AcpSessionHandle) -> None:
+    """A completed compaction summarized the conversation or a clear wiped it,
+    dropping the pictures it was sent: a later prompt naming one inlines it
+    again."""
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    if sent_images is not None:
+        sent_images.forget()
+
+
 async def prompt(
     self: AcpSessionHandle,
     message: str,
@@ -167,11 +196,21 @@ async def prompt(
     read or inlined, whatever the agent advertises. For a prompt that is
     text ABOUT a session, where a path is quoted history, not an attachment.
 
+    A picture this session's conversation already holds (the same file bytes)
+    is not inlined again; see :class:`~kiro_crew.acp.prompt_blocks.SentImageLedger`.
+
     ``prompt_gate`` is called under the write lock, right before the prompt is
     written; whatever it raises ends the turn with nothing sent.
     """
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    # This prompt's own staging, taken on the loop before the build: a build
+    # abandoned on its worker thread (a cancel mid-encode) can only write to the
+    # staging of the prompt that was cancelled, which nothing commits, never to
+    # the next prompt's.
+    staged: StagedImages | None = None
 
     async def _build() -> tuple[str, dict[str, Any]]:
+        nonlocal staged
         if self._kas_compact_request(message):
             # The engine's own compaction verb, not prompt text: KAS reads a
             # ``/compact`` prompt as a request to write a summary, and the
@@ -179,6 +218,16 @@ async def prompt(
             # text after ``/compact`` is not sent.
             self._kas_compact_turn = True
             return METHOD_KAS_SESSION_COMPACT, {"sessionId": self._session_id}
+        if message.lstrip().startswith("/") and command_drops_pictures(
+            parse_slash_command(message)[0],
+            compacts_inline=self._compacts_inline(),
+        ):
+            # This backend compacts inside the turn, often with no
+            # status frame to say so, and drops the pictures: forget them
+            # before the turn.
+            self._forget_sent_images()
+        if sent_images is not None:
+            staged = sent_images.staging()
         # Offloaded: the builder stats and reads image files (up to
         # MAX_IMAGE_BYTES each) and base64-encodes them. Inline, that
         # blocking I/O runs on the gateway loop and pauses every other
@@ -188,6 +237,7 @@ async def prompt(
             message,
             allow_image=allow_image,
             agent_accepts_image=self._runtime.supports_image_prompt,
+            sent_images=staged,
         )
         # Content-free outbound STRUCTURE diagnostics: one
         # line per turn build recording block counts, per-type counts, and
@@ -242,9 +292,18 @@ async def prompt(
         )
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
         return
+    # The servers this session's start left to its first turn: a prompt that
+    # does not carry them waits briefly here, before any turn state is touched.
+    await hold_untold_first_turn(self, message)
     turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
+            if staged is not None and event.kind == EVENT_COMPLETE and self._last_stop_reason:
+                # Only the backend's own answer to this prompt sets the stop
+                # reason; a synthesized terminal (timeout, unacked cancel,
+                # stall) leaves it empty, and a prompt the conversation may
+                # not hold inlines its pictures again on the next try.
+                staged.commit()
             yield event
     finally:
         await turn.aclose()
@@ -308,6 +367,8 @@ async def stream_command(
             "command": {"command": cmd_name, "args": cmd_args},
         }
 
+    # A command carries no context block, so it is never told (see prompt()).
+    await hold_untold_first_turn(self)
     # Same deterministic finalization as prompt(): see the comment there.
     turn = self._run_turn(
         _build,
@@ -329,6 +390,7 @@ async def _run_turn(
     extract_command_result: bool = False,
     sign_in_ask: str = "",
     prompt_gate: Callable[[], None] | None = None,
+    agent_started: bool = False,
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared turn lifecycle for :meth:`prompt` and :meth:`stream_command`.
 
@@ -338,6 +400,10 @@ async def _run_turn(
     to send; it runs BEFORE the turn is marked active (see the comment at
     the send site below).
 
+    ``agent_started`` (``session_handle_agent_turns.stream_unsolicited``): the
+    turn the agent began on its own, read from its first frame on; nothing is
+    built or sent, and the turn ends on the frame that closes the agent's cycle.
+
     ``timeout=None`` (every dashboard turn) resolves from
     ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
     turn ceiling instead of cutting the turn at the 2h default underneath it.
@@ -345,6 +411,12 @@ async def _run_turn(
     # Discard stale handle text; this attempt's ask arrives only as an argument.
     self._mcp_sign_in_ask = ""
     timeout = await _effective_prompt_timeout_async(timeout)
+    if agent_started and self._agent_turn_start is None:
+        return
+    if not self._turn_done.is_set() and self._agent_turn_reading:
+        # A prompt waits for the turn the agent started, as on the per-chat
+        # client (``client_transport._install_idle_reader``'s gate).
+        await self._turn_done.wait()
     # Guard against concurrent prompts on the same handle: a second call
     # would clear _turn_done and race on the shared _queue, corrupting
     # turn state and losing events. Each caller should use its own handle.
@@ -371,6 +443,7 @@ async def _run_turn(
     self._cancelled = False
     self._cancel_ts = 0.0
     self._turn_done.clear()
+    self._agent_turn_reading = agent_started
     self._prompt_starts += 1
     # Reset the stored stop_reason: only a real `complete` response sets it,
     # and the synthetic-terminal paths (cancel-unacked / stale / tool-stall /
@@ -393,6 +466,7 @@ async def _run_turn(
     self._tool_dispatched = False
     self._report_evicted_attributions()
     self._tool_tracker.clear()
+    self._reset_tool_silence()
     # A new turn starts a new batch window (``acp.batch_guard``).
     batch_window = getattr(self, "_batch_window", None)
     if batch_window is not None:
@@ -400,8 +474,12 @@ async def _run_turn(
     self._tool_output_seen.clear()
     self._status_rejected.clear()
     self._input_wait_emitted = False
-    self._native_child_sids.clear()
-    self._native_child_overflow = 0
+    if not self._claude_children_declared():
+        # Claude children are bounded for the session's life, as on the per-chat
+        # client: their ids gate rows that outlive the turn, and what the bound
+        # refused is said and cleared by ``_reset_claude_child_turn``.
+        self._native_child_sids.clear()
+        self._native_child_overflow = 0
     # Park state is per-turn: carrying it across would charge the previous
     # turn's consumer time to this one, and a permission left unanswered when
     # the last turn died would mask this turn's stalls forever.
@@ -411,6 +489,10 @@ async def _run_turn(
     self._turn_steering_denied = False
     self._steers_proven = []
     self._steers_accepted = []
+    # A goose steer still unechoed was discarded with its run; its caller already
+    # queued the text on the turn's teardown (``steer_needs_loss_recovery``).
+    self._goose_steers = []
+    self._goose_active_run_id = None
     self._prompt_written = False
     self._retire_liveness_state()
     self._working_logged_ts = _WORKING_NEVER_LOGGED
@@ -440,8 +522,9 @@ async def _run_turn(
     # gets a fresh card instead of a resurrected one.
     self._announced_subagent_roster.clear()
     # Each child's redactor goes with its row. A tail still held here belongs
-    # to a card the last turn already closed, so it is dropped, never shown.
-    self._native_child_redactors.clear()
+    # to a card the last turn already closed, so it is dropped, never shown. A
+    # claude child still working outlives the turn, and keeps its own.
+    _keep_working_claude_redactors(self)
     self._legacy_subagent_tool_ids.clear()
 
     # Drain frames left over from a prior abandoned turn. The cancel-unacked
@@ -488,15 +571,26 @@ async def _run_turn(
     # back into the queue being drained would loop forever (the same reason
     # _wait_for_response re-injects from its finally).
     _stale_dropped = 0
+    _stale_owned_dropped = False
+    # Whether this drain started the turn's claude roster (a child's update read).
+    _claude_roster_reset = False
     _stale_terminals = 0
     _stale_reasons: list[str] = []
     _stale_owed: list[JsonRpcMessage] = []
     _cloud_kept: set[str | int | None] = set()
+    # The frames of a turn the agent started that no turn has read yet: this
+    # turn reads them as its own (``_take_agent_turn_frames``).
+    _agent_frames: list[JsonRpcMessage | None] = []
     _sign_in_holds = getattr(self._runtime, "mcp_sign_in_holds", None)
     while True:
         try:
             stale = self._queue.get_nowait()
         except asyncio.QueueEmpty:
+            break
+        _agent_frames = (
+            self._take_agent_turn_frames(stale) if host_checks_sessions(self._runtime) else []
+        )
+        if _agent_frames:
             break
         if stale is not None:
             # A between-turns MCP status snapshot still tells this session
@@ -659,9 +753,33 @@ async def _run_turn(
                 _loggable_request_id(stale.id),
             )
         else:
+            # A frame no turn read can still be the one that moved this session's
+            # permission state; the refusal runs inside the turn guard below.
+            if host_checks_sessions(self._runtime):
+                self._note_permission_state(stale)
             # A compaction terminal can land between turns. It still pays an
             # unresolved idle-compaction debt before this drain discards it.
             consume_stale_compaction_status(self, stale)
+            # A claude child's lifecycle update between turns (it finished) still
+            # settles its row, as the per-chat client reads it in a later turn:
+            # its card shows it ended, a Stop does not name it, and its
+            # redactor goes. What that reading yields (the text the redactor
+            # held, the roster) is shown at the head of this turn's dispatch.
+            if stale is not None and _is_claude_subagent_update(self, stale):
+                if not _claude_roster_reset:
+                    # This turn's roster starts here, so the roster this update
+                    # yields names only children seen in this turn, not the
+                    # cards the last turn already closed.
+                    self._reset_claude_child_turn()
+                    _claude_roster_reset = True
+                _read = self._claude_child_events(stale)
+                if _read is not None:
+                    self._drained_child_events.extend(_read[0])
+            if stale is not None and not stale.fanout_no_owner:
+                # Any frame of this session's that no turn read may have been
+                # the one that dropped its pictures (a late compaction or clear),
+                # so the record cannot vouch for the conversation across it.
+                _stale_owned_dropped = True
             # Everything that is not a permission request is DISCARDED, which
             # is correct (it belongs to a turn nobody is reading any more) but
             # was silent. Count it — and CLASSIFY it: a response (``method``
@@ -704,6 +822,12 @@ async def _run_turn(
     # the normal approval path; the next drain must not keep them again.
     if _cloud_kept:
         self._cloud_replayed_permissions.difference_update(_cloud_kept)
+    # A pending agent-started turn's frames go back first, in arrival order, for
+    # this turn's dispatch loop. A start the drain did not find (a request's
+    # reader took it) is forgotten: nothing is left to hand off.
+    self._agent_turn_start = None
+    for _agent_frame in _agent_frames:
+        self._queue.put_nowait(_agent_frame)
     for _owed in _stale_owed:
         # Order-preserving: the frames go back in the order they were read,
         # and a waiter that has since given up is harmless — the dispatch
@@ -731,6 +855,15 @@ async def _run_turn(
             _stale_reason_note,
         )
 
+    if _stale_owned_dropped:
+        self._forget_sent_images()
+
+    if agent_started and not _agent_frames:
+        # A prompt or a request's reader took the agent's frames first.
+        self._agent_turn_reading = False
+        self._turn_done.set()
+        return
+
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._engine_fallback.begin_prompt(self)
     # Credits reported between turns belong to no turn's window; this turn
@@ -753,6 +886,10 @@ async def _run_turn(
     # exception hierarchy. Re-raised unchanged, so cancellation still
     # propagates.
     try:
+        # A session that left its required permission state between turns is
+        # closed here, before its prompt goes out.
+        if host_checks_sessions(self._runtime):
+            await self._refuse_moved_permission_state()
         # Offer synchronously after the drain, before request building can yield
         # and queue a connected status that makes a reset unsafe. Only a server
         # a user message named is a candidate. The consent link is consumed by
@@ -776,22 +913,33 @@ async def _run_turn(
         # consumes the queue. The BaseException guard unmarks on any
         # failure so a dead write cannot leave the session permanently
         # routed-to.
-        _method, _params = await build_request()
-        _mark = getattr(self._runtime, "mark_turn_active", None)
-        if _mark is not None:
-            _mark(self._session_id, True)
-        if prompt_gate is None:
-            req_id = await self._runtime.send_request(_method, _params)
+        if agent_started:
+            # Nothing to send: the agent's own frames are already queued.
+            _params: dict[str, Any] = {}
+            _mark = getattr(self._runtime, "mark_turn_active", None)
+            if _mark is not None:
+                _mark(self._session_id, True)
+            req_id = AGENT_STARTED_REQUEST_ID
         else:
-            # Asked under the write lock, right before the frame goes out.
-            req_id = await self._runtime.send_request(_method, _params, before_write=prompt_gate)
+            _method, _params = await build_request()
+            _mark = getattr(self._runtime, "mark_turn_active", None)
+            if _mark is not None:
+                _mark(self._session_id, True)
+            if prompt_gate is None:
+                req_id = await self._runtime.send_request(_method, _params)
+            else:
+                # Asked under the write lock, right before the frame goes out.
+                req_id = await self._runtime.send_request(
+                    _method, _params, before_write=prompt_gate
+                )
+            self._prompt_written = True
+            # getattr: a handle built with ``__new__`` has no count of its own yet.
+            self.prompts_written = getattr(self, "prompts_written", 0) + 1
         _sent_at = time.monotonic()
-        self._prompt_written = True
-        # getattr: a handle built with ``__new__`` has no count of its own yet.
-        self.prompts_written = getattr(self, "prompts_written", 0) + 1
     except BaseException:
         self._mcp_sign_in_ask = ""
         self._mcp_sign_in_asked.clear()
+        self._agent_turn_reading = False
         self._turn_done.set()
         _mark = getattr(self._runtime, "mark_turn_active", None)
         if _mark is not None:
@@ -808,6 +956,14 @@ async def _run_turn(
     # logged by whoever caused them.
     _yielded_terminal = False
     _exhausted_clean = False
+    # Chat runtime sharing telemetry: the chat leases on this process when the
+    # prompt went out, ``0`` unless this session holds one of them (a subagent
+    # on its host's process, a background runtime), and whether this turn's
+    # first event has been counted yet.
+    _share_tenants = chat_leases_on(self._runtime, getattr(self, "_session_key", ""))
+    _share_shared = on_shared_process(self._runtime)
+    _share_backend = getattr(self._runtime, "acp_backend", None)
+    _share_started = False
     # A provider failure that codex-acp wrote as text (see
     # ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``). A candidate chunk is
     # HELD, together with a steer-consumed report behind it, until the turn
@@ -846,6 +1002,21 @@ async def _run_turn(
                 ),
             )
         async for _incoming in _dispatch:
+            if (
+                not _share_started
+                and not _incoming.runtime_global
+                and not _incoming.synthetic_completion
+            ):
+                # Prompt written -> this turn's first own event back. A
+                # co-tenant's fanned frame is not this turn starting, and a
+                # terminal the watchdog made up is not the backend answering.
+                _share_started = True
+                record_turn_started(
+                    tenants=_share_tenants,
+                    delay_secs=time.monotonic() - _sent_at,
+                    backend=_share_backend,
+                    shared=_share_shared,
+                )
             _out: list[AcpEvent] = [_incoming]
             _failure: dict[str, Any] | None = None
             if _hold_unattributed:
@@ -901,6 +1072,12 @@ async def _run_turn(
                 # places and every one of them funnels through this `async for`.
                 self._parked_since = time.monotonic()
                 if event.kind == EVENT_COMPLETE:
+                    if not _yielded_terminal:
+                        record_turn_ended(
+                            tenants=_share_tenants,
+                            stop_reason=event.stop_reason,
+                            backend=_share_backend,
+                        )
                     # A codex compaction that errors sends no terminal of its own,
                     # so close it out HERE -- before the turn's terminal, so a
                     # consumer that reads a compaction terminal to leave its
@@ -919,8 +1096,12 @@ async def _run_turn(
                     # next turn resets the roster, so the text an announced
                     # child's redactor still holds goes onto its card now,
                     # whatever ended the turn (an end_turn, a timeout, a stale
-                    # recovery). Same choke point, same reason as above.
-                    for _held_text in self.flush_native_child_text():
+                    # recovery). Same choke point, same reason as above. A claude
+                    # child still working keeps its redactor through any ending
+                    # but a cancel, which stops its work too: it outlives this turn.
+                    for _held_text in self.flush_native_child_text(
+                        keep_working_claude=event.stop_reason != STOP_REASON_CANCELLED
+                    ):
                         yield _held_text
                     # Set BEFORE the yield: a consumer that closes the stream ON
                     # the terminal still received it, and marking it after would
@@ -957,7 +1138,7 @@ async def _run_turn(
         # close, a cancel, or an exception.
         _exhausted_clean = True
     except (asyncio.CancelledError, GeneratorExit):
-        if not _yielded_terminal:
+        if not _yielded_terminal and not agent_started:
             # The consumer left before the turn ended (a caller's timeout, a
             # cancelled task, a closed stream). The backend has not been told,
             # so its late frames would reach the next turn on this session.
@@ -965,6 +1146,8 @@ async def _run_turn(
             # What the cut turn was waiting on, named by id, tool name and age
             # only: a later "prompt already in progress" on this session is
             # otherwise unattributable, and the next prompt clears the map.
+            # The last frame's age tells a backend still streaming at the cut
+            # from one silent for most of the turn.
             _now = time.monotonic()
             _open_calls = ", ".join(
                 f"{_loggable_request_id(call_id)} "
@@ -972,14 +1155,16 @@ async def _run_turn(
                 f"open {_now - state.dispatch_ts:.0f}s)"
                 for call_id, (state, _aux) in self._tool_tracker.active_calls.items()
             )
+            _frame_at = self.session_activity_at
             logger.warning(
                 "prompt req %s cut before its terminal after %.0fs [session=%s sid=%s]; "
-                "open tool calls: %s",
+                "open tool calls: %s; %s",
                 req_id,
                 _now - _sent_at,
                 self._session_key,
                 self._session_id,
                 _open_calls or "none",
+                "no frame" if _frame_at is None else f"last frame {_now - _frame_at:.0f}s ago",
             )
         raise
     finally:
@@ -989,8 +1174,13 @@ async def _run_turn(
         self._mcp_sign_in_asked.clear()
         if _mark is not None:
             _mark(self._session_id, False)
+        self._agent_turn_reading = False
         if not self._turn_done.is_set():
             self._turn_done.set()
+        # A cycle the agent began while this turn read is handed off now, on a host
+        # whose sessions read such turns (``host_checks_sessions``).
+        if host_checks_sessions(self._runtime):
+            self._rearm_agent_turn()
         if _exhausted_clean and not _yielded_terminal:
             # The dispatch loop synthesizes a terminal on every path it knows
             # about (timeout, stale, tool stall, cancel-unacked), so reaching

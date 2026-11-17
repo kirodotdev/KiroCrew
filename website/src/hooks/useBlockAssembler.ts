@@ -178,7 +178,10 @@ type State = 'outside' | 'fence' | 'widget' | 'widget-fence'
  * provisional view.
  */
 export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
-  const lines = raw.split('\n')
+  // CommonMark line endings: `\r\n`, a lone `\r` and `\n` each end a line.
+  // Splitting on `\n` alone missed a closing fence after a lone `\r` and left
+  // a stray `\r` on the block's last line, which renders as an extra row.
+  const lines = raw.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
   const blocks: ContentBlock[] = []
 
   let state: State = 'outside'
@@ -429,7 +432,13 @@ const EMPTY_SNAP: ParseSnap = { blocks: NO_BLOCKS, text: '', nextLine: 1 }
  *  A hand loop, not `split('\n')`, so a snapshot build allocates no line array. */
 function nextLineOf(text: string): number {
   let n = 1
-  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++
+  // Same line endings as parseBlocks: `\r\n` once, a lone `\r`, `\n`.
+  // shortcut: a text ending in `\r` counts it now, so a delta starting with
+  // `\n` is one line high until the next throttled parse corrects it.
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i)
+    if (ch === 10 || (ch === 13 && text.charCodeAt(i + 1) !== 10)) n++
+  }
   return n
 }
 
@@ -587,20 +596,24 @@ function extendTail(snap: ParseSnap, rawText: string): ContentBlock[] {
   const { blocks, text, nextLine } = snap
   if (rawText.length <= text.length || !rawText.startsWith(text)) return blocks
   const delta = rawText.slice(text.length)
+  // parseBlocks joins lines with `\n`; keep the tail in the same form.
+  // shortcut: a `\r\n` split across the snapshot boundary reads as two breaks
+  // until the next throttled parse corrects it.
+  const tailDelta = delta.includes('\r') ? delta.replaceAll('\r\n', '\n').replaceAll('\r', '\n') : delta
   const last = blocks[blocks.length - 1]
   // The still-open buffer: an incomplete fence/widget, or a trailing markdown
   // block (markdown can only be last when it IS the open buffer). Settled
   // blocks keep their object identity so memoized renderers skip them.
   if (last && (!last.complete || last.type === 'markdown')) {
     const next = blocks.slice(0, -1)
-    next.push({ ...last, content: last.content + delta })
+    next.push({ ...last, content: last.content + tailDelta })
     return next
   }
   // No open buffer (empty parse, or the snapshot ended exactly on a closed
   // fence/widget): the delta starts a new trailing markdown block. A
   // whitespace-only delta stays invisible either way; skip the allocation.
   if (!delta.trim()) return blocks
-  return [...blocks, { type: 'markdown', content: delta, complete: true, startLine: nextLine }]
+  return [...blocks, { type: 'markdown', content: tailDelta, complete: true, startLine: nextLine }]
 }
 
 /**

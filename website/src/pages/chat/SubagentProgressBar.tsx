@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand, CircleDashed } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand, CircleDashed, CircleSlash } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone, isActiveSubagent, isAwaitingSpawnApproval, isSpawnApprovalGone, reconcileSubagentApprovalGone } from '../../store/chatSlice'
 import { api } from '../../api/client'
-import { ApiError, apiErrorCode } from '../../api/apiError'
+import { isBenignSupersededRetry } from '../../api/apiError'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Glass } from '../../components/Glass'
@@ -16,20 +16,6 @@ import { queuedWaitText } from './subagentQueuedReason'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useSecondClock } from '../../hooks/useSecondClock'
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
-
-/**
- * Is a rejected retry a BENIGN, self-caused no-op rather than a failure to
- * report? The one such case is the backend's `409 retry_superseded`: the run
- * was already picked up by another retry or a `spawn_continue` (a double-click,
- * two tabs), so retrying it again would double-run its task — the refusal is
- * correct and the failed set is already drained. The code travels in the JSON
- * body `toApiError` keeps on `ApiError.body`; everything else (404 not found,
- * 429 capacity, 503, an older gateway's codeless 409, a proxy's HTML) counts as
- * a genuine failure worth a count.
- */
-function isBenignSupersededRetry(reason: unknown): boolean {
-  return reason instanceof ApiError && reason.status === 409 && apiErrorCode(reason) === 'retry_superseded'
-}
 
 /** Max agent rows rendered in the chip — exceptions (stalled/retrying) sort
  *  first, the healthy remainder collapses into a summary row. Bounds chip DOM
@@ -197,6 +183,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     // A retired never-launched card was not stopped by anyone.
     stopped: all.filter(a => a.status === 'stopped' && !a.approvalRetired).length,
     stalled: activeList.filter(a => a.stalled).length,
+    orphaned: activeList.filter(a => a.parentStopped).length,
   }), [all, activeList])
   // `all` already excludes native:* ids, so error entries here are managed.
   const failedIds = useMemo(() => all.filter(a => a.status === 'error').map(a => a.id), [all])
@@ -388,6 +375,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger" data-testid="subagent-failed-count"><AlertCircle size={12} /> <HistogramCount n={counts.failed} label={i18nT('pages.chat.subagentProgressBar.chip_failed', { count: counts.failed })} /></span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> <HistogramCount n={counts.stopped} label={i18nT('pages.chat.subagentProgressBar.chip_stopped', { count: counts.stopped })} /></span>}
             {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-stalled-count" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> <HistogramCount n={counts.stalled} label={i18nT('pages.chat.subagentProgressBar.chip_stalled', { count: counts.stalled })} /></span>}
+            {counts.orphaned > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-parent-stopped-count" title={i18nT('pages.chat.subagentProgressBar.parent_turn_stopped')}><CircleSlash size={12} /> <HistogramCount n={counts.orphaned} label={i18nT('pages.chat.subagentProgressBar.chip_parent_stopped', { count: counts.orphaned })} /></span>}
           </span>
           <span className="ml-auto shrink-0 flex items-center gap-1.5">
             {failedIds.length > 0 && (
@@ -541,6 +529,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                             stalledAt={a.stalledAt}
                           />
                         </span>
+                      </span>
+                    ) : a.parentStopped ? (
+                      <span className="text-muted flex items-center gap-1">
+                        <CircleSlash size={11} className="shrink-0" />
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.parent_stopped_still_running')}</span>
                       </span>
                     ) : (a.lastTool && <span className="block font-mono text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
                   </span>

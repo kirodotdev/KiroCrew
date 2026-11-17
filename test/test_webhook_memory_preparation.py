@@ -157,3 +157,35 @@ async def test_a_hook_after_readiness_does_not_wait(tmp_path, monkeypatch, close
     await _run(state)
 
     assert sent_to_model == ["deploy finished"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_hook_before_the_task_is_published_waits_for_it(
+    tmp_path, monkeypatch, closed_barrier
+):
+    state, sent_to_model = _hook_state(tmp_path, monkeypatch)
+    from kiro_crew.dashboard.handlers import hooks
+
+    state.memory_startup_task = None  # startup is still restoring sessions
+    waiting = asyncio.Event()
+    real_wait = hooks.wait_for_memory_preparation
+
+    async def observed_wait(task) -> None:
+        waiting.set()
+        await real_wait(task)
+
+    monkeypatch.setattr(hooks, "wait_for_memory_preparation", observed_wait)
+    run = asyncio.create_task(_run(state))
+    await await_until(waiting)
+    await asyncio.sleep(0)
+    assert not run.done()  # today: refused at once as "being restored"
+    assert sent_to_model == []
+
+    async def prepare() -> None:
+        assert closed_barrier.complete()
+
+    state.memory_startup_task = asyncio.create_task(prepare())
+    await await_until(run)
+
+    assert sent_to_model == ["deploy finished"]

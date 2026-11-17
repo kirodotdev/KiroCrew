@@ -4,6 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
+#: The ``_trust_scope`` prefix of a hub conductor's Trust carried to its bound worker
+#: on this crew (rfc-conductor-remote-dispatch §4). It stands in for Trust, so the
+#: ceiling's ``trust`` verdict masks it wherever it is honoured.
+REMOTE_TRUST_SCOPE_PREFIX = "remote-dispatch:"
+
+
+def remote_scope_denied(scope: str) -> bool:
+    """Whether *scope* is a remote Trust grant the ceiling's ``trust`` verdict denies.
+
+    The one mask every reader of such a grant applies: the approval path, the
+    slots poll's Trust label and the hub's ``trust_active``. A memory read.
+    """
+    if not scope.startswith(REMOTE_TRUST_SCOPE_PREFIX):
+        return False
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+
+    return not session_mode_permitted("trust")
+
 
 def trust_reaches_subagents(slot: Any) -> bool:
     """Whether *slot*'s ``_trust`` covers the subagents it spawns.

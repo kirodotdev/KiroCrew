@@ -12,9 +12,15 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact
+
+# A checksummed GitHub token: an AWS key ID is an Identifier and stays visible.
+_TOKEN = github_classic(seed=11)
+#: A token pasted into memory, a second value the redaction must reach.
+_MEMORY_KEY = github_classic(seed=12)
 
 
 def _real_db(path: Path, secret: str | None = None) -> bytes:
@@ -49,7 +55,7 @@ def bundle(tmp_path):
         json.dumps({"telegram": {"bot_token": TOKEN}}), encoding="utf-8"
     )
     (payload / "memory.db").write_bytes(
-        _real_db(tmp_path / "src.db", f"my key is ghp_{'A' * 36} ok")
+        _real_db(tmp_path / "src.db", f"my key is {_MEMORY_KEY} ok")
     )
     (payload / "memory_index.db").write_bytes(_real_db(tmp_path / "idx.db"))
     (payload / "MANIFEST.json").write_text(
@@ -118,7 +124,7 @@ class TestTheOutboundCopyIsRedacted:
     def test_a_key_pasted_into_memory_does_not_leave_either(self, bundle, workdir, capsys):
         redacted = _prepare(bundle, workdir)
         assert redacted is not None, capsys.readouterr().out
-        assert b"ghp_" + b"A" * 36 not in _read_member(redacted, "memory.db")
+        assert _MEMORY_KEY.encode() not in _read_member(redacted, "memory.db")
 
     def test_the_redacted_database_is_still_a_database(self, bundle, workdir, tmp_path, capsys):
         """The whole reason redaction goes through SQL instead of over the bytes."""
@@ -382,7 +388,7 @@ class TestNoRowidIsBelowTheScan:
     FIXED sentinel floor would still miss, so the first page must have no floor.
     """
 
-    TOKEN = "AKIAIOSFODNN7EXAMPLE"
+    TOKEN = _TOKEN
 
     def _staged(self, tmp_path):
         stage = tmp_path / "stage"
@@ -428,7 +434,7 @@ class TestAWriteOnlyTriggerThatReplacesARowIsRefused:
     refusing every non-FTS UPDATE trigger would refuse the product's own index.
     """
 
-    TOKEN = "AKIAIOSFODNN7EXAMPLE"
+    TOKEN = _TOKEN
 
     def _staged(self, tmp_path, schema: str, *, with_other: bool):
         stage = tmp_path / "stage"
@@ -500,7 +506,7 @@ class TestFtsDetectionIsCaseInsensitive:
     uppercase `CONTENT=''`, or a case fix trades a false refusal for a leak.
     """
 
-    TOKEN = "AKIAIOSFODNN7EXAMPLE"
+    TOKEN = _TOKEN
 
     def _staged(self, tmp_path, ddl: str):
         stage = tmp_path / "stage"
@@ -549,8 +555,8 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
     working.
     """
 
-    HEAD = "AKIA"
-    TAIL = "IOSFODNN7EXAMPLE"
+    HEAD = _TOKEN[:20]
+    TAIL = _TOKEN[20:]
 
     def _staged(self, tmp_path, ddl: str, rows: list[tuple]):
         stage = tmp_path / "stage"
@@ -577,7 +583,16 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
     def test_a_generated_column_with_nothing_sensitive_is_not_refused(self, tmp_path):
         """The discrimination half: refusing every generated column would be an outage."""
         stage = self._staged(tmp_path, self._GEN, [(1, "hello", "world")])
-        snapshot_redact.redact_bundle_for_egress(stage)
+        report = snapshot_redact.redact_bundle_for_egress(stage)
+        # Nothing was redacted or dropped, and the harmless row is still there to upload.
+        assert (report.total, report.dropped) == (0, [])
+        conn = snap.sqlite3.connect(str(stage / "memory.db"))
+        try:
+            assert conn.execute("SELECT a, b, joined FROM t").fetchall() == [
+                ("hello", "world", "helloworld")
+            ]
+        finally:
+            conn.close()
 
     def test_a_bytes_valued_generated_column_is_scanned_too(self, tmp_path):
         """`isinstance(value, str)` alone would walk straight past this one.
@@ -628,8 +643,8 @@ class TestAStaleFtsIndexIsRebuiltEvenWithNoRowHits:
     QUERY and on the lowercased bytes, because FTS5's default tokenizer lowercases terms.
     """
 
-    HEAD = "AKIA"
-    TAIL = "IOSFODNN7EXAMPLE"
+    HEAD = _TOKEN[:20]
+    TAIL = _TOKEN[20:]
 
     def _staged(self, tmp_path, *, go_stale: bool):
         stage = tmp_path / "stage"
@@ -686,7 +701,7 @@ class TestATriggerOverwritingAnotherTableIsRefused:
     product's own FTS index or an ordinary mirror column, the allowed shapes pinned below.
     """
 
-    KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+    KEY = _TOKEN
 
     def _run(self, tmp_path, ddl: str, insert_body: str = "items"):
         stage = tmp_path / "stage"
@@ -780,7 +795,7 @@ class TestAWideEncodedCredentialCannotRideOutUnscanned:
     blobs, so the wide encodings are scanned instead; both halves are asserted below.
     """
 
-    KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+    KEY = _TOKEN
 
     def _stage(self, tmp_path):
         stage = tmp_path / "stage"

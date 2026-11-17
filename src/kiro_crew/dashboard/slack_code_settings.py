@@ -25,7 +25,11 @@ from aiohttp import web
 
 from kiro_crew import slack_manifest
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME
-from kiro_crew.config.sections_slack import CODE_CHANNEL_DEFAULT_MAX
+from kiro_crew.config.sections_slack import (
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
+    CODE_CHANNEL_DEFAULT_MAX,
+)
 from kiro_crew.effort import is_valid_effort
 from kiro_crew.slack import features as slack_features
 from kiro_crew.slack import scope_probe
@@ -35,7 +39,11 @@ from kiro_crew.slack import scope_probe
 # ``slack_manifest.FEATURES``), each under its own ``slack.<name>`` key, so
 # registering one there needs nothing here.
 #: The ``code_channel_defaults`` keys the PUT accepts.
-DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort")
+DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort", "approval_mode")
+#: ``slack.code_channel_dispatch``: the opt-in sub-toggle under Code channels
+#: ("Let code channels start helper agents"). Off by default; hot-applied like the
+#: switches, through the live config watcher.
+DISPATCH_KEY = "code_channel_dispatch"
 #: The model picker's "pin nothing, inherit" spelling; stored as unset.
 _INHERIT_MODEL = "auto"
 
@@ -48,6 +56,73 @@ _status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 class CodeSettingsError(ValueError):
     """A refused Slack Code settings field; the message is safe to show."""
+
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _dispatch_overlay_state() -> str:
+    """``"pinned"``, ``"absent"`` or ``"unreadable"``: does ``config.local.json`` set
+    ``slack.code_channel_dispatch``?
+
+    Not ``overlay_pins``, which answers "not pinned" for a file it cannot read:
+    the dispatch save must not take an unreadable overlay -- which may hold the
+    value that wins -- for one that does not set the key.
+
+    Read as the load reads it (``read_endorsed_config_text``), with no
+    ``exists()`` check first, as ``overlay_entry`` does: where the sandbox seals
+    the file, a pending hand-edit or delete still reads as the endorsed copy the
+    loader keeps in force.
+    """
+    import json
+
+    from kiro_crew.config.loader import config_local_path, read_endorsed_config_text
+
+    path = config_local_path()
+    try:
+        node: object = json.loads(read_endorsed_config_text(path))
+    except FileNotFoundError:
+        # Neither a file nor an endorsed copy: what the loader also reads as absent.
+        return "absent"
+    except (OSError, ValueError):
+        return "unreadable"
+    if not isinstance(node, dict):
+        return "unreadable"
+    if "slack" not in node:
+        return "absent"
+    slack = node["slack"]
+    if not isinstance(slack, dict):
+        return "unreadable"
+    return "pinned" if DISPATCH_KEY in slack else "absent"
+
+
+#: How :func:`_overlay_display_path` names the home directory: ``~`` on POSIX,
+#: ``%USERPROFILE%`` on Windows, where Explorer, cmd and PowerShell all expand it
+#: (Explorer and cmd do not expand ``~``).
+HOME_PREFIXES: tuple[str, ...] = ("~/", "%USERPROFILE%\\")
+
+
+def _overlay_display_path() -> str:
+    """``config.local.json``'s path with the home directory shown as one of
+    :data:`HOME_PREFIXES`, in the platform's own separators; else the full path. No I/O."""
+    import os
+    from pathlib import Path
+
+    from kiro_crew.config.loader import config_local_path
+
+    path = config_local_path()
+    try:
+        rel = path.relative_to(Path.home())
+    except ValueError:
+        return str(path)
+    return HOME_PREFIXES[1] + str(rel) if os.name == "nt" else HOME_PREFIXES[0] + rel.as_posix()
+
+
+def _dispatch_overlay_pins() -> bool:
+    """Whether ``config.local.json`` may set ``slack.code_channel_dispatch`` (an
+    unreadable overlay counts: what it holds is unknown)."""
+    return _dispatch_overlay_state() != "absent"
 
 
 def _folders(state: Any) -> list[dict[str, Any]]:
@@ -83,25 +158,33 @@ def _choosable_agent_names(project_dir: str | None) -> list[str]:
     offered), minus Kiro Crew's generated specs (the side-turn read-only spec,
     skill-view aliases) and the background-only agents above.
     """
+    return list(_choosable_agents(project_dir))
+
+
+def _choosable_agents(project_dir: str | None) -> dict[str, str]:
+    """:func:`_choosable_agent_names`, each with its spec's ``description``, in order."""
     from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
     from kiro_crew.dashboard.handlers.agent_catalog import _choosable_templates
 
-    return [
-        a.name
+    return {
+        a.name: str(a.description or "")
         for a in _choosable_templates(list_agents(project_dir=project_dir or None))
         if not is_internal_agent_spec(a)
         and not (a.kirocrew_owned and a.filename in _BACKGROUND_AGENT_FILES)
-    ]
+    }
 
 
 async def _agent_names(project_dir: str | None) -> list[str]:
     """:func:`_choosable_agent_names`, off the event loop."""
+    return list(await _agent_menu(project_dir))
+
+
+async def _agent_menu(project_dir: str | None) -> dict[str, str]:
+    """:func:`_choosable_agents`, off the event loop."""
     from kiro_crew.executors import discovery_executor
 
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        discovery_executor(), lambda: _choosable_agent_names(project_dir)
-    )
+    return await loop.run_in_executor(discovery_executor(), lambda: _choosable_agents(project_dir))
 
 
 def _defaults_project_dir(folders: list[dict[str, Any]], folder_ref: str | None) -> str | None:
@@ -194,11 +277,23 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
         switches[f"{feature}_capability"] = _capability(feature)
     return {
         **switches,
+        # The code-channel dispatch sub-toggle: a plain opt-in under Code channels,
+        # with no manifest scope of its own, so it is not a registered switch.
+        DISPATCH_KEY: getattr(getattr(cfg, "slack", None), DISPATCH_KEY, False) is True,
+        # ``config.local.json`` sets it: a save writes the base file, which the
+        # overlay wins over, so the card disables the toggle and the PUT refuses.
+        f"{DISPATCH_KEY}_overlay": await asyncio.to_thread(_dispatch_overlay_pins),
+        # Which: "pinned" (the value shown is the one it sets) or "unreadable"
+        # (what it sets is unknown), so the card never states a value it cannot know.
+        f"{DISPATCH_KEY}_overlay_state": await asyncio.to_thread(_dispatch_overlay_state),
+        # Where that file is, home shown as ``~``, so the card can name it.
+        f"{DISPATCH_KEY}_overlay_path": _overlay_display_path(),
         "code_channel_defaults": {
             "folder": defaults.folder,
             "agent": defaults.agent,
             "model": defaults.model,
             "reasoning_effort": defaults.reasoning_effort,
+            "approval_mode": defaults.approval_mode,
         },
         "code_channel_effective": {
             "folder": _folder_view(folders, folder),
@@ -208,6 +303,7 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "reasoning_effort": resolved.reasoning_effort,
             "project_dir": resolved.project_dir,
             "project_source": resolved.project_source,
+            "approval_mode": resolved.approval_mode,
             "slack_agent": _slack_agent(cfg),
             "folder_path": resolved.folder_path,
             "folder_auto_create": resolved.folder_auto_create,
@@ -267,13 +363,15 @@ async def validate_code_settings(
     stored: Mapping[str, Any],
     *,
     state: Any,
-    request: web.Request,
+    request: web.Request | None,
 ) -> tuple[dict[str, object], list[str]]:
     """Validate the Slack Code fields of a PUT body against the stored section.
 
     Returns ``(staged, applied)``: the ``slack.*`` keys to write and their names,
     staging only real changes. Raises :class:`CodeSettingsError` on the first
-    refusal; nothing is staged in that case.
+    refusal; nothing is staged in that case. *request* is needed only to check a
+    default model; a caller with none (the code channel's hand-off button) sends
+    no defaults.
     """
     staged: dict[str, object] = {}
     applied: list[str] = []
@@ -286,6 +384,31 @@ async def validate_code_settings(
         if val != (stored.get(key) is True):
             staged[key] = val
             applied.append(key)
+    # Saved only when the body names it: turning Code channels on never saves
+    # dispatch on (it is its own opt-in).
+    if DISPATCH_KEY in body:
+        val = body.get(DISPATCH_KEY)
+        if not isinstance(val, bool):
+            raise CodeSettingsError(f"{DISPATCH_KEY} must be a boolean")
+        # Refused, not acknowledged: the save writes config.json and the overlay
+        # deep-merges over it, so a withdrawal saved here would report success
+        # while dispatch stayed granted.
+        overlay = await asyncio.to_thread(_dispatch_overlay_state)
+        if overlay == "pinned":
+            raise CodeSettingsError(
+                f"Helper agents are set in config.local.json (slack.{DISPATCH_KEY}), "
+                "which overrides this setting; change it there",
+                status=409,
+            )
+        if overlay == "unreadable":
+            raise CodeSettingsError(
+                "config.local.json cannot be read, so whether it turns helper agents on "
+                f"(slack.{DISPATCH_KEY}) is unknown; fix the file and try again",
+                status=409,
+            )
+        if val != (stored.get(DISPATCH_KEY) is True):
+            staged[DISPATCH_KEY] = val
+            applied.append(DISPATCH_KEY)
 
     if "code_channel_defaults" not in body:
         return staged, applied
@@ -328,6 +451,8 @@ async def validate_code_settings(
         else:
             from kiro_crew.dashboard.handlers import core as core_handlers
 
+            if request is None:
+                raise CodeSettingsError("code_channel_defaults.model cannot be checked here")
             # A code channel's session runs on the default harness, so only that
             # harness's live catalog may judge the pin (as the role pins in
             # ``api_kirocrew_config_patch``): a newer member session on another
@@ -348,6 +473,17 @@ async def validate_code_settings(
         raise CodeSettingsError(
             "code_channel_defaults.reasoning_effort must be one of low, medium, high, xhigh, max"
         )
+
+    approval = merged["approval_mode"]
+    if approval is not None and "approval_mode" in raw:
+        if approval not in CODE_CHANNEL_APPROVAL_MODES:
+            raise CodeSettingsError(
+                "code_channel_defaults.approval_mode must be one of "
+                + ", ".join(CODE_CHANNEL_APPROVAL_MODES)
+            )
+        if approval == CODE_CHANNEL_APPROVAL_ASK:
+            # The default: stored as unset, the one spelling the builder reads.
+            merged["approval_mode"] = None
 
     # Only the sub-keys this save changes: the write merges them into the object
     # as re-read inside the config lock (``merge_nested``), so a concurrent edit

@@ -8,6 +8,7 @@ import errno  # noqa: F401
 import faulthandler
 import functools
 import logging
+import mimetypes
 import os
 import socket  # noqa: F401
 import stat  # noqa: F401
@@ -28,6 +29,7 @@ from kiro_crew.apps.backend import (  # noqa: F401
     revive_lost_app_backends,
     start_enabled_app_backends,
 )
+from kiro_crew.apps.frame_sources import frame_src_extra as _app_frame_src_extra  # noqa: F401
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler  # noqa: F401
 from kiro_crew.apps.hooks_integration import (  # noqa: F401
     _stop_spawned_backends,
@@ -79,6 +81,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     claim_dump_notification,
     dump_age_seconds,
+    dump_fired_at,
     dump_replay_lines,
     newest_dump_with_stacks,
     open_dump_file,
@@ -512,11 +515,12 @@ if TYPE_CHECKING:
 # fallback, so aiohttp returns ``application/octet-stream`` for .woff/.woff2/.ttf.
 # Register the correct font MIME types into that singleton at import time so ALL
 # static routes (including ``/fonts``) serve proper Content-Type headers.
-from aiohttp.web_fileresponse import CONTENT_TYPES as _AIOHTTP_CONTENT_TYPES
+# aiohttp 3.9 has no such table (None here) and guesses with the stdlib's module table.
+from kiro_crew.dashboard.dist_file_response import _AIOHTTP_CONTENT_TYPES
 
-_AIOHTTP_CONTENT_TYPES.add_type("font/woff", ".woff")
-_AIOHTTP_CONTENT_TYPES.add_type("font/woff2", ".woff2")
-_AIOHTTP_CONTENT_TYPES.add_type("font/ttf", ".ttf")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/woff", ".woff")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/woff2", ".woff2")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/ttf", ".ttf")
 
 logger = logging.getLogger(__name__)
 
@@ -616,6 +620,8 @@ _BASE_CSP = (
     # The panel isolates the preview host from the dashboard host
     # (isolatePreviewHost) so host-scoped dashboard cookies are never sent to
     # the framed server. The *.localhost tunnel wildcard stays instances-gated.
+    # Also appended: the exact https origins enabled, trusted apps declare in
+    # ui.frameSources (apps/frame_sources.py), for iframes their pages draw.
     "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
     # form-action does not fall back to default-src, so without it an injected
     # <form> could post to any host. Every dashboard form posts to its own origin.
@@ -717,20 +723,13 @@ _CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: and never lists a row the pass is removing. ``GET /api/members`` is not a
 #: pure read either: it calls ``MemberEventLogService.ensure`` for every row
 #: and ``reconcile_member_config`` appends to the member log. Every
-#: ``/api/members`` route reaches the same rows, so the whole prefix waits.
-_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
+#: ``/api/members`` route (and its Crew API twin) reaches the same rows, so both wait.
+_CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members", "/v1/crew/owner/bots")
 
 
 # Strong references to in-flight warm tasks, so the loop cannot collect one
 # before it finishes.
 _OWN_HOST_WARM_TASKS: "set[asyncio.Future[None]]" = set()
-
-
-# Deep link at the approval toggle itself (Settings -> Skills, highlighted), so
-# the notification can offer the opt-out at the exact moment the user is being
-# asked to review yet another candidate. Same highlight=key:<configKey> format
-# the frontend's <SettingRef> builds, consumed by useSettingHighlight.
-_SKILL_APPROVAL_SETTING_URL = "/settings/skills?highlight=key:skills.approval_required"
 
 
 async def start_dashboard(
@@ -752,7 +751,7 @@ async def start_dashboard(
     assume_kiro_ready: bool = False,
     kiro_prerequisite_service: "KiroPrerequisiteService | None" = None,
     defer_channel_agent_resume: bool = False,
-    schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
+    schedule_memory_preparation: "Callable[[DashboardState], asyncio.Task[None] | None] | None" = None,
     approval_mode: str | None = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
@@ -1144,7 +1143,10 @@ async def start_dashboard(
         # handover on to the client-sent relay-header strip.
         from kiro_crew.edition_locks import relay_selected
 
-        app[RELAY_INGRESS_APP_KEY] = RelayIngress(enabled=relay_selected(_cfg))
+        app[RELAY_INGRESS_APP_KEY] = RelayIngress(
+            enabled=relay_selected(_cfg),
+            handle_email_domains=_cfg.tunnel.relay_handle_email_domains,
+        )
         app["allowed_origins"] = build_allowed_origins(
             port, local_only, configured_host, tailnet_host=_tailnet_host
         )
@@ -1333,6 +1335,8 @@ async def start_dashboard(
     # the sidecar is filed under the real one -- which would publish coverage for
     # an address nothing listens on and leave the real one free for anyone to take.
     _bound_port = _resolved_bound_port(runner, port)
+    # The gateway announces this to the MCP gateway daemon it owns.
+    state._listener_bound_port = _bound_port
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
     _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
@@ -1424,7 +1428,7 @@ async def start_dashboard(
     handlers.install_crew_log_publisher(state)
     # The OTel usage export's own subscription to the same bus, gated on telemetry
     # consent rather than on the crew-log flag above: a no-op when
-    # ``telemetry.enabled`` is off (the default), so an unopted host installs no
+    # ``telemetry.enabled`` is off, so a host that turned recording off installs no
     # subscriber and sends nothing. Kicked as a tracked task off the loop, not called
     # inline: on an opted-in host the first ``get_recorder()`` the install reaches
     # builds the recorder synchronously (SDK import plus the install-id write), which
@@ -1592,13 +1596,20 @@ async def start_dashboard(
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
         logger.warning("bot-owned-config migration failed", exc_info=True)
-    # A folder Default agent saved as a crewmate's label is pointed at that
-    # crewmate's key: once per data home, after the socket is up; never raises.
+    # Each folder whose Default agent holds a crewmate's label is named in one
+    # notice: once per data home, after the socket is up; never raises.
     # Imported here, like the Crew Mode start pass below, so the server's own
     # namespace, which its composition contract test freezes, gains no name.
     from kiro_crew.dashboard.chat_folders_records import migrate_folder_member_labels
 
     await migrate_folder_member_labels(state, cfg)
+
+    # Publish and start the gateway's shared memory task before the restore so
+    # the preparation overlaps it rather than following it. The restore awaits,
+    # so the task's worker can start now; state.ready stays False until the end
+    # of boot, and a turn waits on this task, not on ready.
+    if schedule_memory_preparation is not None:
+        state.memory_startup_task = schedule_memory_preparation(state)
 
     await _restore_dashboard_sessions(state, cfg)
 
@@ -1671,11 +1682,6 @@ async def start_dashboard(
     # Boot-to-ready (rec #1): full dashboard init is complete and the server is
     # about to accept traffic. Privacy-safe — the only labels are the fixed
     # ``server``/``outcome`` enums. Best-effort; never blocks the return.
-    # Publish the gateway's shared memory task first and do not yield between
-    # these assignments. create_task cannot enter its restore/open worker until
-    # this coroutine yields back to the gateway after returning the ready state.
-    if schedule_memory_preparation is not None:
-        state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
     # Tells the NEXT boot that this instance got the whole startup battery

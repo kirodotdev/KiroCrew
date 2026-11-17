@@ -348,6 +348,88 @@ async def test_two_stubs_on_one_backend_are_told_apart(tmp_path: Path, short_soc
 
 
 @pytest.mark.asyncio
+async def test_worker_and_conductor_stubs_on_one_backend_keep_their_own_identity(
+    tmp_path: Path, short_sock_dir
+) -> None:
+    """Two crewmate workers and a conductor share ONE backend, and each call
+    reaches it as its own session.
+
+    The worker's base servers are stubbed under ``kirocrew-mate-worker`` while a
+    conductor's are under ``kirocrew-mate-conductor``. The pool has no agent
+    dimension, so the three land on one process; what keeps them apart is the
+    caller block on each forwarded call. Two workers of different crewmates are
+    the case to prove: neither may see the other's session key.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+    from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT
+
+    sock = short_sock_dir / "gw.sock"
+    work_dir = tmp_path / "ws"
+    work_dir.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    launch_log = tmp_path / "launches.txt"
+    caller_log = tmp_path / "callers.txt"
+
+    def _resolver(_key: object) -> tuple[str, list[str], dict[str, str], str]:
+        return (
+            sys.executable,
+            [str(_FAKE_SERVER), str(launch_log), str(caller_log)],
+            {},
+            str(work_dir),
+        )
+
+    stop = asyncio.Event()
+    daemon = asyncio.create_task(
+        gw.run_gatewayd(
+            socket_path=sock,
+            max_backends=8,
+            idle_timeout_secs=300,  # flake-ok: eviction ceiling, never reached by this test
+            stop_event=stop,
+            target_resolver=_resolver,
+            prewarm_count=0,
+        )
+    )
+    procs: list[asyncio.subprocess.Process] = []
+    sessions = [
+        (MATE_WORKER_AGENT, "dashboard:chat-11"),
+        (MATE_CONDUCTOR_AGENT, "dashboard:chat-12"),
+        (MATE_WORKER_AGENT, "dashboard:chat-13"),
+    ]
+    try:
+        await async_wait_until(
+            lambda: transport.endpoint_exists(sock),
+            off_loop=True,
+            describe=lambda: "gatewayd never bound its endpoint",
+        )
+        for i, (agent, key) in enumerate(sessions):
+            proc = await _spawn_stub(
+                socket_path=sock,
+                server="fake",
+                agent=agent,
+                work_dir=work_dir,
+                home=home,
+                session_key=key,
+            )
+            procs.append(proc)
+            reply = await _drive_initialize(proc, req_id=i + 1)
+            assert "result" in reply, f"stub {key} got no initialize result: {reply}"
+        # Interleaved calls, last stub first, so an identity that stuck to the
+        # backend from an earlier call would show up on a later one.
+        for i, proc in reversed(list(enumerate(procs))):
+            reply = await _drive_tool_call(proc, req_id=100 + i)
+            assert "result" in reply, f"stub {sessions[i][1]} got no tools/call result: {reply}"
+
+        assert _launch_count(launch_log) == 1, "the three stubs did not share a backend"
+        observed = _observed_callers(caller_log)
+        assert observed == [key for _agent, key in reversed(sessions)], observed
+    finally:
+        await _reap(procs)
+        stop.set()
+        await asyncio.wait_for(daemon, timeout=_REPLY_TIMEOUT)
+
+
+@pytest.mark.asyncio
 async def test_two_UNNAMED_stubs_on_one_backend_get_distinct_namespaces(
     tmp_path: Path, short_sock_dir
 ) -> None:
@@ -424,7 +506,7 @@ async def test_two_UNNAMED_stubs_on_one_backend_get_distinct_namespaces(
         )
         assert nonces[0] != nonces[1], (
             f"both unnamed co-tenants got the same nonce {nonces[0]!r}. One "
-            "namespace for two sessions is exactly #5322: each one's own "
+            "namespace for two sessions is the failure: each one's own "
             "fingerprint check still passes, so a wrong-target action is silent."
         )
     finally:

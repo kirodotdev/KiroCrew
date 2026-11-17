@@ -15,10 +15,10 @@ from kiro_crew import mcp_guide, ui_index
 @pytest.mark.parametrize(
     "query,lang",
     [
-        ("uninstall Command Bar", "en"),
-        ("remove the Command Bar app", "en"),
-        ("卸载 Command Bar", "zh-CN"),
-        ("删除 Task Runner 应用", "zh-CN"),
+        ("uninstall Papyrus", "en"),
+        ("remove the Papyrus app", "en"),
+        ("卸载 Papyrus", "zh-CN"),
+        ("删除 Research Lab 应用", "zh-CN"),
     ],
 )
 def test_uninstalling_a_named_app_reaches_the_uninstall_guide_with_that_app_as_pick(
@@ -27,8 +27,6 @@ def test_uninstalling_a_named_app_reaches_the_uninstall_guide_with_that_app_as_p
     d = ui_index.find_ui(query, lang)
     assert d["status"] == "ok" and not d["ambiguous"], d
     top = d["results"][0]
-    # "Command Bar" is also what the top bar's search box is called: the
-    # question names the app, so the search must not land on the search box.
     assert top["id"] == "apps.library.tile-uninstall"
     assert top["guide_ref"]["action_id"] == "ui.show"
     named = d["named_item"]

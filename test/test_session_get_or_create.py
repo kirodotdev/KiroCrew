@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import types
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1393,12 +1394,15 @@ class TestSessionState:
     async def test_release_updates_last_used(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.get_or_create("t1")
-        mgr.release("t1")
+        # Freeze the defining module's clock at a reading no earlier stamp can
+        # have: last_used equal to it proves release() itself stamped "now".
+        frozen = time.monotonic() + 1e6
+        clock = types.SimpleNamespace(monotonic=lambda: frozen)
+        with patch("kiro_crew.session_allocation.time", clock):
+            mgr.release("t1")
         async with mgr._lock:
             sess = mgr._sessions["t1"]
-        # last_used should be recent (within last second)
-        # flake-ok: pre-existing real-clock check that release stamped last_used within 1 s; a worker stall over 1 s reds it; moved verbatim; tracked for a de-flake pass
-        assert time.monotonic() - sess.last_used < 1.0
+        assert sess.last_used == frozen, "release() must stamp last_used with the current time"
         await mgr.close_all()
 
 
@@ -1486,7 +1490,12 @@ class TestRealClaimJoinsAnInFlightEagerStart:
         mgr = SessionManager(cfg, provider_factory=self._gated_factory(gate, providers))
         key = "dashboard:join-eager-background"
         queued = asyncio.Event()  # never set: the eager start is still waiting
-        mgr._allocation_state.speculative_starts[key] = (queued, StartPriority.BACKGROUND)
+        mgr._allocation_state.speculative_starts[key] = (
+            queued,
+            StartPriority.BACKGROUND,
+            False,
+            object(),
+        )
 
         real = asyncio.create_task(mgr.get_or_create(key, start_priority=StartPriority.FOREGROUND))
         provider, is_new, _ = await await_until(real, what="real claim", timeout=10.0)

@@ -108,7 +108,8 @@ const LAST_STEP = 5
  * resumes it. `mc-onboarded` is written only when the tour ends, so without
  * this a reload anywhere in steps 2-5 reopened the flow at step 1 and the user
  * met "Pick your look" again on every reload until they reached "Done".
- * Removed when the flow ends; ignored once `mc-onboarded` is set, so a
+ * Removed when the flow ends and whenever the user becomes onboarded by any
+ * path; ignored once `mc-onboarded` is set, so a
  * `/onboarding` replay never resumes a stale step.
  */
 const TOUR_STEP_KEY = 'mc-onboarding-step'
@@ -237,6 +238,7 @@ export default function OnboardingFlow({
     allThemes,
     preference: modePref,
     setTheme: setModePref,
+    onboarded,
   } = useTheme()
   const [open, setOpen] = useState(initialOpen)
   const [step, setStep] = useState(() => (initialOpen ? resumedStep() : 1))
@@ -377,6 +379,13 @@ export default function OnboardingFlow({
       setOpen(false)
     }
   }, [initialOpen])
+
+  // Once the user is onboarded by any path (this flow's finish, the Privacy
+  // chapter's "Skip all", or the server saying so on this or another machine),
+  // the first run is over: a saved step must not resume a later first run.
+  useEffect(() => {
+    if (onboarded) safeRemoveItem(TOUR_STEP_KEY)
+  }, [onboarded])
 
   // Remember the first-run step so a reload resumes it (see TOUR_STEP_KEY).
   useEffect(() => {
@@ -621,7 +630,7 @@ export default function OnboardingFlow({
         }
         onSkipAll={skipAll}
         dialogRef={dialogRef}
-        footer={<SendBtn type="button" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
+        footer={<SendBtn type="button" className="focus-ring-accent" onClick={next}>{i18nT('components.onboardingFlow.continue')}</SendBtn>}
       >
         {/* The product itself, scaled down, as the live preview of every pick
             (mode, Translucent panels, color theme), beside the two switches it
@@ -637,7 +646,7 @@ export default function OnboardingFlow({
               type="button"
               {...radioChip(modePref === m)}
               onClick={() => setModePref(m)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
+              className={`focus-ring-accent flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-[7px] text-[13px] cursor-pointer border-none transition-colors ${
                 modePref === m ? 'font-medium' : 'bg-transparent text-muted hover:text-text'
               }`}
               style={modePref === m ? { background: ACCENT_20, color: 'var(--accent)' } : undefined}
@@ -668,7 +677,7 @@ export default function OnboardingFlow({
               type="button"
               onClick={() => setColorTheme(t.value as ColorTheme)}
               {...radioChip(colorTheme === t.value)}
-              className={`flex min-w-0 items-center justify-center gap-1.5 truncate rounded-lg border px-2 py-1.5 text-[13px] cursor-pointer transition-colors ${
+              className={`focus-ring-accent flex min-w-0 items-center justify-center gap-1.5 truncate rounded-lg border px-2 py-1.5 text-[13px] cursor-pointer transition-colors ${
                 colorTheme === t.value
                   ? 'border-accent font-medium'
                   : 'border-border bg-transparent text-text hover:text-text-strong'
@@ -727,7 +736,7 @@ export default function OnboardingFlow({
             <Btn type="button" className="h-9 rounded-lg px-4" disabled={savingProfile} onClick={() => setStep(1)}>
               {i18nT('components.onboardingFlow.back')}
             </Btn>
-            <SendBtn type="button" disabled={savingProfile} onClick={next}>
+            <SendBtn type="button" className="focus-ring-accent" disabled={savingProfile} onClick={next}>
               {savingProfile ? i18nT('components.onboardingFlow.saving') : i18nT('components.onboardingFlow.continue')}
             </SendBtn>
           </>
@@ -747,7 +756,7 @@ export default function OnboardingFlow({
               onClick={() => pickRole(o.value)}
               disabled={savingProfile}
               {...radioChip(role === o.value)}
-              className={`flex items-center gap-1 rounded-full px-3 py-1.5 text-[13px] cursor-pointer transition-colors border ${
+              className={`focus-ring-accent flex items-center gap-1 rounded-full px-3 py-1.5 text-[13px] cursor-pointer transition-colors border ${
                 role === o.value
                   ? 'border-accent font-medium'
                   : 'border-border bg-transparent text-text hover:text-text-strong'
@@ -803,7 +812,7 @@ export default function OnboardingFlow({
               onClick={() => pickTech(o.value)}
               disabled={savingProfile}
               {...radioChip(techLevel === o.value)}
-              className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] cursor-pointer transition-colors ${
+              className={`focus-ring-accent flex items-center gap-2 rounded-lg border px-3 py-2.5 text-[13px] cursor-pointer transition-colors ${
                 techLevel === o.value
                   ? 'border-accent font-medium'
                   : 'border-border bg-transparent text-text hover:text-text-strong'

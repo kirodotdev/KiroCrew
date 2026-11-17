@@ -4,7 +4,8 @@
  * hold one of the NAV_PINNED_LIMIT slots forever and keep every remaining
  * pin control disabled at the cap. `readNavPinned` drops retired ids BEFORE
  * the cap applies (`capabilities-templates` is the retired Agent Templates
- * tab), so a full set of live pins still fits.
+ * tab, `capabilities-mcp` the retired Customize Connections tab), so a full
+ * set of live pins still fits.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 
@@ -14,12 +15,18 @@ describe('retired surface ids in the persisted pinned set', () => {
   beforeEach(() => localStorage.clear())
 
   it('drops a retired id on read, before the cap applies', () => {
-    const live = ['capabilities-crews', 'capabilities-skills', 'capabilities-mcp', 'capabilities-hooks']
+    const live = ['capabilities-crews', 'capabilities-skills', 'capabilities-workflows', 'capabilities-hooks']
     expect(live.length + 1).toBeLessThanOrEqual(NAV_PINNED_LIMIT)
     localStorage.setItem(NAV_PINNED_KEY, JSON.stringify(['capabilities-templates', ...live]))
     const pinned = readNavPinned()
     expect(pinned.has('capabilities-templates')).toBe(false)
     for (const id of live) expect(pinned.has(id)).toBe(true)
+  })
+
+  it('drops the retired Customize Connections pin before the cap applies', () => {
+    localStorage.setItem(NAV_PINNED_KEY, JSON.stringify(['capabilities-mcp', 'a', 'b', 'c', 'd']))
+    expect(readNavPinned().has('capabilities-mcp')).toBe(false)
+    expect(toggleNavPinned('capabilities-hooks')).toBe(true)
   })
 
   it('a ghost pin no longer consumes a cap slot: a new pin is accepted', () => {

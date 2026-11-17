@@ -84,6 +84,41 @@ describe('useDialogFocusTrap focus restoration', () => {
     expect(utils.getByTestId('inside')).toHaveFocus()
   })
 
+  it('gives focus back to the first opener when one dialog closes into the next in a single update', () => {
+    // The first dialog unmounts in the same commit the second mounts in, and
+    // its restore puts focus back on the trigger before the second's mount
+    // effect runs: the trigger, not the first dialog's removed button, is what
+    // the second must give focus back to.
+    function Step({ label, onDone }: { label: string; onDone: () => void }) {
+      const ref = useRef<HTMLDivElement>(null)
+      useDialogFocusTrap(ref, () => {})
+      return (
+        <div ref={ref} role="dialog">
+          <button onClick={onDone}>{label}</button>
+        </div>
+      )
+    }
+    function Chain() {
+      const [step, setStep] = useState(0)
+      return (
+        <>
+          <button data-testid="trigger" onClick={() => setStep(1)}>open</button>
+          {step === 1 ? <Step label="next" onDone={() => setStep(2)} /> : null}
+          {step === 2 ? <Step label="done" onDone={() => setStep(0)} /> : null}
+        </>
+      )
+    }
+    const utils = render(<Chain />)
+    const trigger = utils.getByTestId('trigger')
+    trigger.focus()
+    fireEvent.click(trigger)
+    fireEvent.click(utils.getByText('next'))
+    expect(utils.getByText('done')).toHaveFocus()
+
+    fireEvent.click(utils.getByText('done'))
+    expect(trigger).toHaveFocus()
+  })
+
   it('does not undo the host\u2019s own focus restore when the return half is off', () => {
     // The Safari shape: the trigger was clicked but is NOT the activeElement,
     // so the hook's capture would be <body>. The host restores focus to the

@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.liveness import (
     EVIDENCE_PLATFORM_LIMITED,
     INTERACTIVE_CONFIRM,
@@ -234,6 +235,40 @@ def test_env_assignments_and_wrappers_are_skipped():
     assert classify_interactive_command("timeout 30 python").risk == INTERACTIVE_REPL
     assert classify_interactive_command("nice -n 10 vim x").risk == INTERACTIVE_EDITOR
     assert classify_interactive_command("exec less x").risk == INTERACTIVE_PAGER
+
+
+@pytest.mark.parametrize(
+    "spelling, bare",
+    [
+        ("git.exe rebase -i HEAD~3", "git rebase -i HEAD~3"),
+        ("GIT.EXE rebase -i HEAD~3", "git rebase -i HEAD~3"),
+        ("Git rebase -i HEAD~3", "git rebase -i HEAD~3"),
+        ("vim.exe notes.txt", "vim notes.txt"),
+        ("C:\\tools\\vim.exe notes.txt", "vim notes.txt"),
+        ("python.exe", "python"),
+        ("ssh.exe host", "ssh host"),
+        ("git.exe log", "git log"),
+        ("FOO=C:\\tmp\\x vim.exe notes.txt", "FOO=1 vim notes.txt"),
+    ],
+)
+def test_windows_reads_the_program_word_the_way_windows_runs_it(monkeypatch, spelling, bare):
+    """On Windows ``git.exe``, ``Git`` and ``C:\\tools\\vim.exe`` are ``git`` and ``vim``;
+    POSIX keeps its exact, case-sensitive basename, so there they match nothing."""
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    found, expected = classify_interactive_command(spelling), classify_interactive_command(bare)
+    assert expected.risk != INTERACTIVE_NONE
+    assert (found.risk, found.narrowing_eligible) == (expected.risk, expected.narrowing_eligible)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    assert classify_interactive_command(spelling).risk == INTERACTIVE_NONE
+
+
+def test_windows_never_reads_a_path_valued_assignment_as_the_program(monkeypatch):
+    """``X=C:/tools/vim.exe`` is an assignment, not the program ``vim``."""
+    command = "env.exe X=C:/tools/vim.exe sleep.exe 900"
+    for is_windows in (True, False):
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", is_windows)
+        assert classify_interactive_command(command).risk == INTERACTIVE_NONE, is_windows
 
 
 def test_non_interactive_sudo_classifies_what_it_wraps():

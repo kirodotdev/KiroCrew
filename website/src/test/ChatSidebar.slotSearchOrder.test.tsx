@@ -175,8 +175,9 @@ describe('ChatSidebar – active-session search preserves backend relevance orde
     })
     await waitFor(() => expect(sessionsSearchMock).toHaveBeenCalledWith('session overload'))
 
+    // A search draws the flat lane, whose rows carry the `flat` scope.
     const pinnedRow = () => document.querySelector<HTMLElement>(
-      '[data-session-row="chat-pinned"][data-session-scope="list"]',
+      '[data-session-row="chat-pinned"][data-session-scope="flat"]',
     )
     await waitFor(() => expect(pinnedRow()).not.toHaveAttribute('aria-keyshortcuts'))
     fireEvent.keyDown(pinnedRow()!, { key: 'ArrowDown', altKey: true })

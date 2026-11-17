@@ -989,7 +989,7 @@ async def test_a_cancel_during_the_startup_settle_spawns_no_second_child():
     startup = asyncio.ensure_future(client.ensure_ready())
     try:
         await await_until(entered)
-        # Timers fire in deadline order, so this lands inside the 0.5 s settle.
+        # Timers fire in deadline order, so this lands inside the spy's 30 s settle.
         await asyncio.sleep(0.1)
         startup.cancel()
         await _settled(startup)
@@ -1154,7 +1154,7 @@ def test_the_failed_handshake_settles_the_drain_before_teardown():
     # The spawn and its failed-start cleanup live in the owner that binds _spawn_admitted.
     owner = sys.modules[runtime_mod.AcpRuntime._spawn_admitted.__module__]
     source = Path(owner.__file__).read_text()
-    handler = source.split("await self._snapshot_descendants(retry_when_empty=True)", 1)[1]
+    handler = source.split("self._record_tree_in_background(retry_when_empty=True)", 1)[1]
     handler = handler.split("\nasync def _handshake_client_capabilities(", 1)[0]
 
     settle = handler.index("await self.settle_stderr()")

@@ -19,7 +19,7 @@ describe('inferLane exhaustiveness and exclusivity', () => {
         const slot: LaneSlotFields = {}
         FIELDS.forEach((f, i) => {
           if (!(mask & (1 << i))) return
-          slot[f as Exclude<keyof LaneSlotFields, 'queue_depth'>] = true
+          slot[f as Exclude<keyof LaneSlotFields, 'queue_depth' | 'queue_held_depth'>] = true
         })
         const lane = inferLane(slot, { subagentAwaiting })
         expect(keys, `mask ${mask}`).toContain(lane)
@@ -144,6 +144,12 @@ describe('inferLane working signals', () => {
 
   it('does not treat a zero queue depth as work', () => {
     expect(inferLane({ queue_depth: 0 })).toBe('idle')
+  })
+
+  it('does not treat restored cards as work: nothing sends them on their own', () => {
+    expect(inferLane({ queue_depth: 2, queue_held_depth: 2 })).toBe('idle')
+    expect(inferLane({ interrupted: true, queue_depth: 1, queue_held_depth: 1 })).toBe('waiting')
+    expect(inferLane({ queue_depth: 2, queue_held_depth: 1 })).toBe('working')
   })
 })
 

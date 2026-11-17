@@ -126,7 +126,7 @@ class TestNextFallbackCandidate:
     def test_bare_pair_id_entry_without_backend_keeps_verbatim_filter(self) -> None:
         # The empty-backend contract: with no backend, the generic fold answers
         # "" for the bare id against bracketed rows, so the entry is skipped --
-        # exactly the pre-fix behaviour, unchanged for non-wire callers.
+        # unchanged for non-wire callers.
         chain = ["openai.gpt-6-astra"]
         adv = ["openai.gpt-6-astra[high]", "openai.gpt-6-astra[max]"]
         assert next_fallback_candidate(chain, "x", adv) is None

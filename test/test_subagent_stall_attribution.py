@@ -391,7 +391,7 @@ async def test_working_cannot_suppress_the_badge_forever():
     assert over.stalled is True, "a WORKING reading suppressed the badge past the ceiling"
 
 
-# ── round-2 review findings ──────────────────────────────────────────
+# ── tool results and the activity snapshot ───────────────────────────
 
 
 def test_a_non_final_tool_result_keeps_the_snapshot():

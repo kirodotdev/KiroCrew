@@ -24,6 +24,7 @@ from channel_turns_helpers import governance_fixture  # noqa: F401
 from channel_turns_helpers import published_fixture  # noqa: F401
 from channel_turns_helpers import spooled_fixture  # noqa: F401
 from channel_turns_helpers import KEY, ROUTE, _answer, _turns
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.discord.renderer import DiscordRenderer
@@ -98,7 +99,7 @@ class TestTheDiscordLeg:
         assert outcome.verdict is Verdict.ANSWERED and sessions.count("release") == 1
 
     def test_a_member_memory_refusal_is_posted_redacted(self, monkeypatch) -> None:
-        secret = "ghp_" + "x" * 36
+        secret = github_classic(seed=132)
 
         async def _refuse(_ctx: Any, _key: str) -> str:
             raise UnknownMemoryStore(

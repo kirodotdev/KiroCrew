@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.session_handle import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -31,6 +32,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
     JsonRpcMessage,
 )
+from kiro_crew.testing.clock import ManualClock
 
 _REQ_ID = 7
 
@@ -175,7 +177,7 @@ async def test_result_text_is_credential_redacted():
     """Command output is backend-echoed text that reaches the dashboard —
     the two-pass redaction (URLs + credentials) must run on it, matching
     send_command's auditable control at the same surface."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=81)
     handle, _ = _make(response_result={"message": f"key {secret} leaked"})
     events = await _collect(handle, "/env")
     text_events = [ev for ev in events if ev.kind == EVENT_TEXT_CHUNK]
@@ -213,6 +215,47 @@ async def test_agent_switch_not_duplicated_when_notification_arrived():
     events = await _collect(handle, "/agent kirocrew")
     switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
     assert len(switches) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_command_turn_switch_is_owned_even_when_the_notification_fans_out():
+    """The issuer's own ``/agent`` switch must be emitted OWNED (not
+    ``runtime_global``) even when the runtime fanned its ``session/update`` out
+    ownerless because a second queue is registered.
+
+    ``fanout_no_owner`` means "nobody can tell", not "a peer's". On a
+    ``commands/execute`` turn THIS handle is provably the issuer, so the switch
+    is taken from the OWNED command result and the ownerless notification is not
+    surfaced -- otherwise the consumer, which gates its persistence/reset/spec-
+    hooks bookkeeping on ``not runtime_global``, would strand the issuer's own
+    switch on the old agent (GPT 6.1 W14 F1).
+    """
+    notification = JsonRpcMessage(
+        method=METHOD_AGENT_SWITCHED,
+        params={"agentName": "kirocrew"},  # no sessionId -> fanned out
+    )
+    notification.fanout_no_owner = True
+    handle, _ = _make(
+        response_result={"data": {"agent": {"name": "kirocrew"}}},
+        updates=[notification],
+    )
+    handle.chat_shared = True
+    events = await _collect(handle, "/agent kirocrew")
+    switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
+    assert [ev.text for ev in switches] == ["kirocrew"]
+    assert switches[0].runtime_global is False, "the issuer's own switch must be owned"
+
+
+@pytest.mark.asyncio
+async def test_an_unshared_handle_still_surfaces_the_fanned_switch_notification():
+    """Off a shared chat runtime the fanned notification is surfaced as before."""
+    notification = JsonRpcMessage(method=METHOD_AGENT_SWITCHED, params={"agentName": "kirocrew"})
+    notification.fanout_no_owner = True
+    handle, _ = _make(response_result={}, updates=[notification])
+    events = await _collect(handle, "/agent kirocrew")
+    switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
+    assert [ev.text for ev in switches] == ["kirocrew"]
+    assert switches[0].runtime_global is True
 
 
 # ── Event draining ───────────────────────────────────────────────────────────
@@ -312,12 +355,20 @@ async def test_no_response_terminates_at_timeout():
     command timeout with a terminal event — not drain for the chat-turn
     ceiling — and leave the handle reusable."""
     handle, _ = _make(respond=False)
-    start = time.monotonic()
+    # The dispatch loop runs to the deadline it is handed; record that budget.
+    budgets: list[float] = []
+    dispatch = handle._dispatch_events
+
+    def _recording_dispatch(req_id, timeout, **kwargs):
+        budgets.append(timeout)
+        assert timeout == 0.5, f"the command turn waits {timeout}s, not its 0.5s timeout"
+        return dispatch(req_id, timeout, **kwargs)
+
+    handle._dispatch_events = _recording_dispatch
     events = await _collect_with_timeout(handle, "/tools", timeout=0.5)
-    elapsed = time.monotonic() - start
     assert events[-1].kind == EVENT_COMPLETE
     assert events[-1].stop_reason == "timeout"
-    assert elapsed < 5.0
+    assert budgets == [0.5]
     assert handle._turn_done.is_set()
     assert handle.is_turn_active is False
 
@@ -336,6 +387,71 @@ def _failed_compaction(params: dict | None = None) -> JsonRpcMessage:
     )
 
 
+def _record_armed_parks(monkeypatch, handle: AcpSessionHandle) -> list[float | None]:
+    """Record the timeout of each queue read the dispatch loop starts on an EMPTY
+    queue while the post-failure budget is armed: each one parks until that
+    timeout. The ``asyncio.wait_for`` spy only records, so it may see every caller;
+    it keeps only the waits on a read this handle's queue started."""
+    parks: list[float | None] = []
+    armed_reads: list[object] = []
+    get = handle._queue.get
+
+    def _get():  # noqa: ANN202
+        read = get()
+        if handle._compaction_failed_at is not None and handle._queue.empty():
+            armed_reads.append(read)
+        return read
+
+    real_wait_for = asyncio.wait_for
+
+    def _recording_wait_for(aw, timeout=None, **kwargs):  # noqa: ANN001, ANN202
+        if any(aw is read for read in armed_reads):
+            parks.append(timeout)
+        return real_wait_for(aw, timeout, **kwargs)
+
+    handle._queue.get = _get  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "wait_for", _recording_wait_for)
+    return parks
+
+
+def _silent_queue_on_clock(monkeypatch, handle: AcpSessionHandle) -> ManualClock:
+    """Put the dispatch loop on a manual clock and make its empty-queue polls
+    instant: a read started on an EMPTY queue (``respond=False`` sends nothing
+    more) times out at once and advances the clock by the timeout the loop
+    handed it. The post-failure budget and the turn deadline are then counted in
+    polls, not host seconds. Install it BEFORE ``_record_armed_parks`` so that
+    spy still sees every park."""
+    from kiro_crew.acp import session_handle_dispatch
+
+    clock = ManualClock()
+    clock.install(monkeypatch, session_handle_dispatch)
+    empty_reads: list[object] = []
+    get = handle._queue.get
+
+    def _get():  # noqa: ANN202
+        read = get()
+        if handle._queue.empty():
+            empty_reads.append(read)
+        return read
+
+    real_wait_for = asyncio.wait_for
+
+    async def _silent_wait_for(aw, timeout=None, **kwargs):  # noqa: ANN001, ANN202
+        if any(aw is read for read in empty_reads):
+            aw.close()
+            clock.advance(timeout)
+            raise asyncio.TimeoutError
+        return await real_wait_for(aw, timeout, **kwargs)
+
+    handle._queue.get = _get  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "wait_for", _silent_wait_for)
+    return clock
+
+
+# The dispatch loop's queue poll; a fired budget is acted on within one poll.
+_QUEUE_POLL_CEILING_SECS = 5.0
+
+
 @pytest.mark.asyncio
 async def test_failed_compaction_then_no_response_ends_the_turn(monkeypatch):
     """kiro-cli reports compaction `failed` and then abandons the prompt: no
@@ -347,19 +463,33 @@ async def test_failed_compaction_then_no_response_ends_the_turn(monkeypatch):
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.2)
 
     handle, _rt = _make(respond=False, updates=[_failed_compaction()])
-    start = time.monotonic()
+    clock = _silent_queue_on_clock(monkeypatch, handle)
+    armed_parks = _record_armed_parks(monkeypatch, handle)
+    t0 = clock.monotonic()
     events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
-    elapsed = time.monotonic() - start
+    elapsed = clock.monotonic() - t0
 
     assert events[0].kind == EVENT_COMPACTION_STATUS
     assert events[0].text == "failed"
     assert events[-1].kind == EVENT_COMPLETE
-    assert events[-1].stop_reason == STOP_REASON_COMPACTION_FAILED
-    # Proves the budget ended it, not the 30s turn deadline. The bound is loose
-    # because the check runs on the loop's own tick: the dispatch loop parks on
-    # the session queue for up to 5s, so a fired budget is acted on at the next
-    # wake, not the instant it expires.
-    assert elapsed < 10.0, f"turn ran too long ({elapsed:.2f}s) — the hang is back"
+    # Only the budget branch ends a turn COMPACTION_FAILED; the 30s turn
+    # deadline ends it "timeout".
+    assert events[-1].stop_reason == STOP_REASON_COMPACTION_FAILED, (
+        f"the turn ended {events[-1].stop_reason!r} after {elapsed:.1f}s on the "
+        "dispatch clock, not at the post-failure budget"
+    )
+    # The budget is checked at the top of every loop pass, so once it is armed
+    # the loop parks on the empty queue at most once (the park whose timeout
+    # carries the clock past the 0.2s budget) before it ends the turn, and that
+    # park is the 5s queue poll, so the turn ends within one poll of its budget.
+    assert len(armed_parks) <= 1, (
+        f"the loop parked {len(armed_parks)} times on an empty queue after the "
+        "budget was armed, so the budget is not acted on at the next check"
+    )
+    assert all(t is not None and t <= _QUEUE_POLL_CEILING_SECS for t in armed_parks), (
+        f"the armed loop parked for {armed_parks!r}, past the "
+        f"{_QUEUE_POLL_CEILING_SECS}s queue poll that bounds acting on the budget"
+    )
     assert handle._turn_done.is_set()
     assert handle.is_turn_active is False
 
@@ -371,17 +501,22 @@ async def test_a_tool_in_flight_suspends_the_post_failure_budget(monkeypatch):
     The tool-stall watchdog owns that case on its own longer, liveness-gated
     budget."""
     from kiro_crew.acp import session_handle as sh
+    from kiro_crew.acp import session_handle_dispatch
 
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.05)
+    monkeypatch.setattr(
+        session_handle_dispatch, "QUEUE_POLL_SECS", 0.2  # flake-ok: more budget ticks per turn
+    )
 
     handle, _rt = _make(respond=False, updates=[_failed_compaction()])
 
-    # The turn ceiling must outlast one queue tick (the loop parks on the
-    # session queue for up to 5s, and the budget is checked at the loop top), or
-    # the unsuspended budget could not fire either and the test would be vacuous.
+    # The turn ceiling must outlast several queue ticks (the loop parks on the
+    # session queue for up to QUEUE_POLL_SECS, and the budget is checked at the
+    # loop top), or the unsuspended budget could not fire either and the test
+    # would be vacuous.
     start = time.monotonic()
     events = []
-    async for ev in handle.prompt("hello", timeout=8.0):
+    async for ev in handle.prompt("hello", timeout=1.5):
         events.append(ev)
         if ev.kind == EVENT_COMPACTION_STATUS and ev.text == "failed":
             # The turn recovers and dispatches a tool. Set from the consumer
@@ -392,7 +527,7 @@ async def test_a_tool_in_flight_suspends_the_post_failure_budget(monkeypatch):
     # The turn ran to its own deadline instead of being reaped at the budget,
     # so the terminal event is the ordinary timeout, not the compaction reason.
     assert events[-1].stop_reason != STOP_REASON_COMPACTION_FAILED
-    assert elapsed >= 7.0, f"turn ended at {elapsed:.2f}s — the budget reaped a live tool"
+    assert elapsed >= 1.4, f"turn ended at {elapsed:.2f}s — the budget reaped a live tool"
     # Still armed: the budget re-fires once the tool resolves.
     assert handle._compaction_failed_at is not None
 
@@ -410,6 +545,8 @@ async def test_failed_compaction_notice_carries_the_reason(monkeypatch):
         respond=False,
         updates=[_failed_compaction({"status": {"type": "failed", "reason": "history too long"}})],
     )
+    # Silent polls on a manual clock: the turn ends in polls, not a real 5s park.
+    _silent_queue_on_clock(monkeypatch, handle)
     events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
 
     assert events[0].title == "history too long"
@@ -441,16 +578,19 @@ async def test_co_tenant_fanout_frames_do_not_defer_the_budget(monkeypatch):
 
     feeder = asyncio.create_task(_co_tenant_chatter())
     try:
-        start = time.monotonic()
         events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
-        elapsed = time.monotonic() - start
     finally:
         stop_feeding.set()
         await feeder
 
     assert events[-1].kind == EVENT_COMPLETE
-    assert events[-1].stop_reason == STOP_REASON_COMPACTION_FAILED
-    assert elapsed < 10.0, f"turn ran {elapsed:.2f}s — co-tenant fanout frames deferred the budget"
+    # The chatter runs until the turn ends, so frames that deferred the budget
+    # would defer it to the 30s turn deadline, which ends the turn "timeout".
+    # Only the budget branch ends it COMPACTION_FAILED.
+    stop = events[-1].stop_reason
+    assert (
+        stop == STOP_REASON_COMPACTION_FAILED
+    ), f"the turn ended {stop!r}: co-tenant fanout frames deferred the budget"
 
 
 @pytest.mark.asyncio
@@ -461,24 +601,28 @@ async def test_ownerless_failure_does_not_arm_a_co_tenant_budget(monkeypatch):
     at the budget — and every consumer resets the session on that terminal, so
     the peer's failure destroys unrelated work."""
     from kiro_crew.acp import session_handle as sh
+    from kiro_crew.acp import session_handle_dispatch
 
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.2)
+    monkeypatch.setattr(
+        session_handle_dispatch, "QUEUE_POLL_SECS", 0.2  # flake-ok: more budget ticks per turn
+    )
 
     frame = _failed_compaction()
     frame.fanout_no_owner = True
     handle, _rt = _make(respond=False, updates=[frame])
 
-    # The deadline must sit past the dispatch loop's queue park (up to 5s) or
-    # the budget never gets a tick to fire on and the test cannot fail.
+    # The deadline must sit several queue parks (QUEUE_POLL_SECS) past the
+    # budget, or the budget never gets a tick to fire on and the test cannot fail.
     start = time.monotonic()
-    events = [ev async for ev in handle.prompt("hello", timeout=7.0)]
+    events = [ev async for ev in handle.prompt("hello", timeout=1.5)]
     elapsed = time.monotonic() - start
 
     assert handle._compaction_failed_at is None, "a peer's failure armed this session"
     assert events[-1].kind == EVENT_COMPLETE
     assert events[-1].stop_reason != STOP_REASON_COMPACTION_FAILED
     assert (
-        elapsed >= 5.5
+        elapsed >= 1.4
     ), f"turn ended after {elapsed:.2f}s — a co-tenant's failure reaped this turn"
 
 
@@ -497,6 +641,8 @@ async def test_ownerless_completion_does_not_disarm_the_budget(monkeypatch):
     # This session's own failure arms the budget; the peer's completion must not
     # clear it.
     handle, _rt = _make(respond=False, updates=[_failed_compaction(), peer_ok])
+    # Silent polls on a manual clock: the budget fires in polls, not host seconds.
+    _silent_queue_on_clock(monkeypatch, handle)
 
     events = [ev async for ev in handle.prompt("hello", timeout=30.0)]
 

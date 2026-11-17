@@ -18,13 +18,18 @@ and writes the state's own fields and calls its siblings through ``self``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
+import time
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.dashboard.slack_session_list import slack_row_stamper
+from kiro_crew.dashboard.slot_row_memo import ROW_MEMO, RowMemoContext
 from kiro_crew.dashboard.state_parts.slot_directory import _is_genuine_slack_link
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -284,10 +289,10 @@ def _attach_slot_parents(
             # nobody opens that page on would stay unnested for the life of the
             # process. Asking here is what makes the retry reach this payload.
             if proj.seed_retry_due:
-                _request_lineage_seed()
+                _request_lineage_seed(_live_roster_of(resolve_aliases))
                 pending = True
         else:
-            _request_lineage_seed()
+            _request_lineage_seed(_live_roster_of(resolve_aliases))
             # Say that this frame's answer is PROVISIONAL, so a reader can come back for
             # the real one. Without it a cold start is indistinguishable from a store
             # with no lineage at all, and an idle sidebar -- nothing running, no frame
@@ -328,8 +333,32 @@ def _attach_slot_parents(
             row["lineage_pending"] = True
 
 
-def _request_lineage_seed() -> None:
+def _live_roster_of(resolve_aliases: Any) -> "Callable[[], tuple[str, ...]] | None":
+    """A callable naming the live slots' ACP session ids, or None when no state is behind
+    *resolve_aliases*. It is ``DashboardState.spend_slot_by_session``, whose owner is the
+    state the registry lookups need; a stand-in without an owner has no roster."""
+    owner = getattr(resolve_aliases, "__self__", None)
+    if owner is None or not hasattr(owner, "sessions"):
+        return None
+    return lambda: live_acp_sids(owner)
+
+
+def live_acp_sids(state: "DashboardState") -> "tuple[str, ...]":
+    """The ACP session id of every live slot, from the session registry.
+
+    ``mapped_sid`` is an in-memory lookup, so this is safe to call from a thread that
+    holds a lock or from the event loop.
+    """
+    keys = state.spend_slot_by_session()
+    return tuple(sid for key in keys if (sid := state.sessions.mapped_sid(key)))
+
+
+def _request_lineage_seed(roster: "Callable[[], tuple[str, ...]] | None" = None) -> None:
     """Seed the session-tree projection on the maintenance pool. Returns immediately.
+
+    *roster* names the live slots' ACP session ids. It is called on the pool, off the loop:
+    the seed admits those units first past the unit cap, and the projection keeps the
+    callable to pin them against eviction as the roster changes.
 
     One seed in flight at a time. The guard is an in-flight flag rather than a
     once-per-process latch, because the projection legitimately needs re-seeding when
@@ -361,7 +390,9 @@ def _request_lineage_seed() -> None:
         try:
             from kiro_crew.crew_log.session_tree_projection import projection
 
-            projection().ensure_seeded()
+            proj = projection()
+            proj.set_live_roster(roster)
+            proj.ensure_seeded(roster() if roster is not None else ())
         except Exception:
             logger.debug("session tree projection could not be seeded", exc_info=True)
         finally:
@@ -673,6 +704,14 @@ def _slot_link_projection(
     channel menu and the releasable-mirror controls all read them that way. The
     origin thread is only where the session's own conversation already is, so
     the dashboard can link to it without treating it as a mirror.
+
+    Inside a ``serialize_slots`` pass the result is memoized per slot (see
+    ``slot_row_memo``). Everything it reads is in the key: the session map's
+    mutation counter (every link, pause flag and nonce lives there), the
+    registered transports (``live``), the redaction stamp (``target``), and the
+    slot's session key and legacy Slack fields. The counter is read when the
+    pass starts, before any row is built, so a mutation landing mid-pass
+    costs one recompute on the next pass and is never hidden.
     """
     # circular import: chat imports state at module scope.
     # Module import (not from-import) avoids the _handle_fromlist __path__
@@ -680,6 +719,36 @@ def _slot_link_projection(
     import kiro_crew.dashboard.chat_utils as _cu
 
     session_key = _cu.effective_session_key(slot)
+    ctx = ROW_MEMO.get()
+    key: tuple[object, ...] | None = None
+    if ctx is not None and ctx.links is not None:
+        key = (
+            ctx.links,
+            ctx.redaction,
+            session_key,
+            getattr(slot, "_slack_thread_ts", None),
+            getattr(slot, "_slack_channel", None),
+        )
+        memo = slot._slot_links_memo
+        if memo is not None and memo[0] == key:
+            ctx.counts["links_hit"] += 1
+            return memo[1]
+        ctx.counts["links_miss"] += 1
+    result = _build_slot_links(self, slot, session_key)
+    if key is not None:
+        # Stored and returned as is: the row embeds the list and nothing
+        # downstream writes into it.
+        slot._slot_links_memo = (key, result)
+    return result
+
+
+def _build_slot_links(
+    self: DashboardState, slot: _ChatSlot, session_key: str
+) -> tuple[list[dict[str, Any]], bool, str, str, tuple[str, str]]:
+    """The uncached body of :func:`_slot_link_projection`."""
+    # circular import: chat imports state at module scope.
+    import kiro_crew.dashboard.chat_utils as _cu
+
     # Resolved once per slot rather than per row: all three are storage reads,
     # and a session holds at most one Slack thread, one born-in conversation
     # and one mirror binding.
@@ -695,12 +764,14 @@ def _slot_link_projection(
         if isinstance(candidate, ChannelLink):
             mirror = candidate
     except Exception:
+        # No readable mirror link: the slot is shown without one.
         pass
     try:
         raw_ts, raw_channel = self.sessions.get_slack_link(session_key)
         persisted_ts = raw_ts if isinstance(raw_ts, str) else None
         persisted_channel = raw_channel if isinstance(raw_channel, str) else None
     except Exception:
+        # No readable Slack link: the in-memory values below are used.
         pass
 
     # Prefer persisted values, but retain explicit in-memory Slack links in
@@ -908,6 +979,14 @@ def serialize_slot(
             "slack_thread_ts": slack_thread_ts,
         }
     )
+    # Present only while a "continue when the usage limit resets" wait is armed on
+    # this chat, so every other slot's frame is unchanged. Imported here: the module
+    # imports chat_utils, which imports this package.
+    from kiro_crew.dashboard.limit_continue import armed_resume_iso
+
+    resume_at = armed_resume_iso(slot)
+    if resume_at:
+        payload["limit_continue_at"] = resume_at
     # The thread a Slack-born session lives in. Not a mirror: `slack_linked`
     # stays False for it. See _slot_link_projection. Only a Slack-born slot
     # carries it, so every other slot's frame is unchanged by it.
@@ -915,6 +994,46 @@ def serialize_slot(
         payload["slack_origin_channel"] = slack_origin_channel
         payload["slack_origin_thread_ts"] = slack_origin_thread_ts
     return payload
+
+
+def _row_memo_context(state: "DashboardState") -> RowMemoContext | None:
+    """The global halves of the per-slot row memo keys, or ``None`` to memo nothing.
+
+    ``None`` inside a scope that changes the display battery's answer. The link
+    part is ``None`` (links unmemoized) unless the session manager reports a
+    real ``(map id, counter)`` generation: a test double answers with a mock.
+    """
+    # circular import: chat_utils_display imports dashboard.state at module scope.
+    from kiro_crew.dashboard.chat_utils_display import display_redaction_stamp
+
+    redaction = display_redaction_stamp()
+    if redaction is None:
+        return None
+    sessions = getattr(state, "sessions", None)
+    reader = getattr(sessions, "session_map_generation", None)
+    generation = reader() if callable(reader) else None
+    links: tuple[object, ...] | None = None
+    if type(generation) is tuple:
+        transports = getattr(state, "channel_transports", None) or {}
+        links = (
+            id(sessions),
+            generation,
+            tuple(
+                (
+                    channel_type,
+                    id(transport),
+                    bool(
+                        getattr(
+                            getattr(transport, "capabilities", None),
+                            "supports_proactive_send",
+                            False,
+                        )
+                    ),
+                )
+                for channel_type, transport in list(transports.items())
+            ),
+        )
+    return RowMemoContext(redaction=redaction, links=links)
 
 
 def serialize_slots(
@@ -930,7 +1049,83 @@ def serialize_slots(
     (``dashboard_user=True``) may see because that lifecycle is already
     world-visible. Private/unknown repos and app tokens stay owner-only.
     """
-    out = []
+    out: list[dict] = []
+    saved_creators: dict[str, str] = {}
+    for _ in _build_rows(
+        self,
+        list(self._slots.values()),
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    ):
+        pass
+    return _finish_rows(
+        self,
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    )
+
+
+#: How long a yielding pass builds rows before it lets the loop run.
+SLOT_PASS_SLICE_S = 0.02
+
+
+async def serialize_slots_yielding(
+    self: DashboardState, *, include_check_status: bool = False, dashboard_user: bool = False
+) -> list:
+    """:meth:`serialize_slots` that lets the event loop run between rows.
+
+    A request handler that needs the whole stamped list (the Crew Mode routes)
+    awaits this instead of the synchronous pass: with a few hundred open sessions
+    one pass can outlast the loop-stall budget, more so when the transcripts it
+    reads have been paged out. The rows are built in slices of at most
+    :data:`SLOT_PASS_SLICE_S`; between slices the loop answers other requests and
+    the liveness probe. A slot closed before its row is built is left out; one
+    closed after keeps its row, as it would in a list taken just before it closed.
+    One opened during the pass waits for the next pass. The lineage stamp, which
+    reads every row, runs once after the last slice. A caller that acts on a slot
+    re-checks it is still registered after this await.
+    """
+    out: list[dict] = []
+    saved_creators: dict[str, str] = {}
+    slice_started = time.monotonic()
+    for _ in _build_rows(
+        self,
+        list(self._slots.values()),
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    ):
+        if time.monotonic() - slice_started >= SLOT_PASS_SLICE_S:
+            await asyncio.sleep(0)
+            slice_started = time.monotonic()
+    return _finish_rows(
+        self,
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    )
+
+
+def _build_rows(
+    self: DashboardState,
+    slots: list,
+    out: list[dict],
+    saved_creators: dict[str, str],
+    *,
+    include_check_status: bool,
+    dashboard_user: bool,
+) -> Iterator[None]:
+    """Append each live slot's row to *out*, yielding after each one.
+
+    The driver decides whether a yield lets the loop run. A slot not
+    registered when its turn comes (closed while the driver yielded) is skipped.
+    """
     subs = getattr(self, "subagents", None)
     # A slot that is registered but still under construction is not yet a
     # session: its transcript is mid-hydration and, for an import, its Layer B
@@ -949,22 +1144,48 @@ def serialize_slots(
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
     queued_reason_by_slot = _published_queued_reason_by_slot(subs)
-    saved_creators: dict[str, str] = {}
-    for s in self._slots.values():
-        if s.key in under_construction:
-            continue
-        saved_creators[s.key] = getattr(s, "_saved_created_by", "") or ""
-        self._drop_orphaned_mcp_report(s)
-        d = self.serialize_slot(
-            s,
-            include_check_status=include_check_status,
-            dashboard_user=dashboard_user,
-        )
-        d["subagents_running"] = bool(subs and subs.running_agents_for(effective_session_key(s)))
-        d["subagents_queued"] = queued_by_slot.get(s.key, 0)
-        if d["subagents_queued"] and s.key in queued_reason_by_slot:
-            d["subagents_queued_reason"] = queued_reason_by_slot[s.key]
-        out.append(d)
+    # ``slack.show_in_session_list`` off: Slack-born rows carry the list filter's stamp.
+    stamp_slack = slack_row_stamper()
+    # Per-slot row memos for this pass; their global key parts are read here,
+    # once, BEFORE any row is built (see ``slot_row_memo``).
+    memo_ctx = _row_memo_context(self)
+    memo_token = ROW_MEMO.set(memo_ctx)
+    try:
+        for s in slots:
+            if s.key in under_construction or self._slots.get(s.key) is not s:
+                continue
+            saved_creators[s.key] = getattr(s, "_saved_created_by", "") or ""
+            self._drop_orphaned_mcp_report(s)
+            d = self.serialize_slot(
+                s,
+                include_check_status=include_check_status,
+                dashboard_user=dashboard_user,
+            )
+            d["subagents_running"] = bool(
+                subs and subs.running_agents_for(effective_session_key(s))
+            )
+            d["subagents_queued"] = queued_by_slot.get(s.key, 0)
+            if d["subagents_queued"] and s.key in queued_reason_by_slot:
+                d["subagents_queued_reason"] = queued_reason_by_slot[s.key]
+            if stamp_slack is not None:
+                stamp_slack(s, d)
+            out.append(d)
+            yield
+    finally:
+        ROW_MEMO.reset(memo_token)
+    if memo_ctx is not None and logger.isEnabledFor(logging.DEBUG):
+        logger.debug("slot row memo pass: %s", dict(sorted(memo_ctx.counts.items())))
+
+
+def _finish_rows(
+    self: DashboardState,
+    out: list[dict],
+    saved_creators: dict[str, str],
+    *,
+    include_check_status: bool,
+    dashboard_user: bool,
+) -> list:
+    """The whole-list steps after every row is built: parents, stamps, badges."""
     # The slot-key/session-key correspondence the lineage join needs, read the same
     # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over
     # UNCALLED: resolving it is pure dict work over the live registry, but it belongs
@@ -1108,6 +1329,13 @@ def _reproject_slots(
         slot = self._slots.get(payload.get("key", ""))
         if slot is None or "source_links" not in payload:
             out.append(payload)
+            continue
+        if payload.get("source_links_total") == 0 and payload["source_links"] == []:
+            # Nothing was extracted in this same synchronous pass, so every
+            # audience's projection of it is the empty list too.
+            view = dict(payload)
+            view["source_links"] = []
+            out.append(view)
             continue
         view = dict(payload)
         view["source_links"] = slot.source_links_view(

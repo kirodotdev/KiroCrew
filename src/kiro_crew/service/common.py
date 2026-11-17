@@ -6,10 +6,11 @@ import enum
 import os
 import shlex
 import shutil
+import stat
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from kiro_crew.config import loader
 from kiro_crew.config.paths import CONFIG_DIR_NAME
@@ -404,19 +405,54 @@ def service_path(home: str) -> str:
     the next install, so a Node mise installs later is found only through the
     shims; without them ``#!/usr/bin/env node`` runs the system Node. That is
     also the order ``mise activate`` gives a shell. launchd's PATH is unchanged.
+
+    nvm bin dirs on the installer's ``$PATH`` (:func:`_nvm_bin_dirs`) follow the
+    shims for the same reason: nvm has no shims, so the versioned bin dir the
+    installing shell resolved ``node`` from is the only way the service finds
+    that Node instead of an older system one in ``/usr/bin``.
+
+    Under ``sudo`` the installer's PATH is sudo's ``secure_path``: it names no
+    nvm dir, and it may name root's own dirs. On Linux, entries under root's home
+    are dropped when *home* is another account's (:func:`_without_root_home`),
+    and when no nvm dir is left :func:`_sudo_user_nvm_bin_dirs` reads the
+    ``SUDO_USER`` account's nvm install from *home*.
+
+    No entry names a versioned install tree, the rule ``ExecStart`` follows
+    (:func:`_persistable_path_entry`): the next update replaces that tree.
     """
+    env_path = [
+        _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(":") if p
+    ]
     required = [f"{home}/.local/bin"]
-    if sys.platform.startswith("linux") and (shims := _mise_shims_dir(home)):
-        required.append(shims)
+    if sys.platform.startswith("linux"):
+        env_path = _without_root_home(env_path, home)
+        if shims := _mise_shims_dir(home):
+            required.append(shims)
+        required += _nvm_bin_dirs(env_path) or _sudo_user_nvm_bin_dirs(home)
     required += [
         "/usr/local/bin",
         "/usr/bin",
         "/bin",
     ]
-    env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
     # dict.fromkeys dedupes on first occurrence and preserves insertion order,
     # so the required prefixes keep their precedence over the installer's $PATH.
     return ":".join(dict.fromkeys(required + env_path))
+
+
+def _persistable_path_entry(entry: str, home: str) -> str:
+    """*entry* as the service PATH may persist it.
+
+    A managed-venv dir (``crew-venv-<version>/bin``) is named through
+    ``crew-venv-current``. A Toolbox tool-version dir under
+    ``~/.toolbox/tools/`` is replaced by ``~/.toolbox/bin``, which reaches
+    every tool across updates; the next update removes that version.
+    """
+    from kiro_crew.platform.tree_liveness import through_stable_link
+
+    toolbox_tools = PurePosixPath(home, ".toolbox", "tools")
+    if PurePosixPath(entry).is_relative_to(toolbox_tools):
+        return str(PurePosixPath(home, ".toolbox", "bin"))
+    return through_stable_link(entry)
 
 
 def _mise_shims_dir(home: str) -> str | None:
@@ -435,6 +471,151 @@ def _mise_shims_dir(home: str) -> str | None:
     if ":" in shims or "\0" in shims or not os.path.isabs(shims):
         return None
     return shims
+
+
+def _nvm_bin_dirs(env_path: list[str]) -> list[str]:
+    """nvm's versioned Node bin dirs among *env_path*, in their PATH order.
+
+    Read from the installer's PATH rather than ``$NVM_BIN``: nvm exports that
+    variable only in shells that source ``nvm.sh``, and ``sudo`` typically drops
+    it, while the PATH entry is what actually resolved ``node`` for the
+    installer. An entry matches only as an absolute
+    ``<root>/versions/node/<version>/bin``, where ``<root>`` is one nvm itself
+    installs to: a dir named ``.nvm`` (the default) or ``nvm`` (the
+    ``$XDG_CONFIG_HOME/nvm`` default), or the installer's ``$NVM_DIR``. So an
+    unrelated dir is never promoted ahead of the system dirs.
+    """
+    nvm_dir = os.environ.get("NVM_DIR", "")
+    nvm_root = PurePosixPath(nvm_dir) if nvm_dir.startswith("/") else None
+    dirs = []
+    for p in env_path:
+        path = PurePosixPath(p)
+        parts = path.parts
+        if not (p.startswith("/") and len(parts) >= 6
+                and parts[-4:-2] == ("versions", "node") and parts[-1] == "bin"):
+            continue
+        root = path.parents[3]
+        if root.name in (".nvm", "nvm") or root == nvm_root:
+            dirs.append(p)
+    return dirs
+
+
+def _root_home() -> str:
+    """Root's home from its passwd entry, else ``/root``."""
+    try:
+        import pwd  # Unix-only; lazy so this module still imports on Windows.
+
+        return pwd.getpwuid(0).pw_dir or "/root"
+    except Exception:
+        return "/root"
+
+
+def _without_root_home(env_path: list[str], home: str) -> list[str]:
+    """*env_path* without entries under root's home, when *home* is not root's.
+
+    ``sudo kirocrew service install`` runs as root but the unit runs as
+    ``SUDO_USER``, which cannot use root's ``~/.local/bin`` and the like.
+    """
+    root_home = PurePosixPath(_root_home())
+    if root_home == PurePosixPath("/") or PurePosixPath(home) == root_home:
+        return env_path
+    return [p for p in env_path if not PurePosixPath(p).is_relative_to(root_home)]
+
+
+# How many alias files one lookup follows: ``default`` -> ``lts/*`` -> ``lts/jod``
+# is nvm's longest chain; the cap also ends an alias loop.
+_NVM_ALIAS_HOPS = 4
+
+
+def _sudo_user_nvm_bin_dirs(home: str) -> list[str]:
+    """The ``SUDO_USER`` account's nvm Node bin dir under *home*, as a list.
+
+    For a ``sudo`` install, whose PATH names no nvm dir. Reads files only and
+    runs nothing from *home* (no ``nvm.sh``, no login shell), because this runs
+    as root. Roots are ``~/.nvm`` then ``~/.config/nvm``; the installer's
+    ``NVM_DIR`` and ``XDG_CONFIG_HOME`` are root's, so they are not used. The
+    first root with an installed version gives the version ``alias/default``
+    names (:func:`_nvm_alias_version`), else its newest version. Empty when not
+    under ``sudo`` for another account, or when no version holds ``node``.
+    """
+    if os.environ.get("SUDO_USER", "").strip() in ("", "root"):
+        return []
+    # Deferred for the reason _mise_shims_dir gives.
+    from kiro_crew.env import _has_node, _node_version_key
+
+    for root in (Path(home, ".nvm"), Path(home, ".config", "nvm")):
+        versions = root / "versions" / "node"
+        try:
+            installed = sorted(
+                (
+                    p.name
+                    for p in versions.iterdir()
+                    if _node_version_key(p.name)[0] and _has_node(p / "bin")
+                ),
+                key=_node_version_key,
+                reverse=True,
+            )
+        except OSError:
+            continue
+        if installed:
+            alias = _nvm_alias_version(root, installed)
+            if alias == "system":
+                return []  # the account chose the system Node over nvm's
+            return [str(versions / (alias or installed[0]) / "bin")]
+    return []
+
+
+def _nvm_alias_version(root: Path, installed: list[str]) -> str | None:
+    """The installed version nvm's ``default`` alias under *root* names, or ``None``.
+
+    An alias names a version (``v22.22.2``), a version prefix (``22``), ``node``
+    / ``stable`` (the newest), ``system`` (returned as is: the account chose the
+    system Node), or another alias file (``lts/*`` -> ``lts/jod``).
+    *installed* is newest first, so a prefix picks its newest match.
+    """
+    value = "default"
+    # One read past the last alias file: it finds no file, so the value it holds is final.
+    for _ in range(_NVM_ALIAS_HOPS + 1):
+        if ".." in PurePosixPath(value).parts or value.startswith("/"):
+            return None
+        target = _read_nvm_alias(root / "alias" / value)
+        if target is None:
+            break
+        value = target
+    else:
+        return None
+    if value == "default":
+        return None
+    if value == "system":
+        return "system"
+    if value in ("node", "stable"):
+        return installed[0]
+    prefix = value[1:] if value[:1] == "v" else value
+    return next((v for v in installed if v[1:] == prefix or v[1:].startswith(prefix + ".")), None)
+
+
+def _read_nvm_alias(path: Path) -> str | None:
+    """First line of the alias file *path*, or ``None`` when it is not a plain file.
+
+    Opened without following a symlink and without blocking, then checked to be
+    a regular file: this runs as root on a file another account controls, so a
+    FIFO there must not hang the install.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        raw = os.read(fd, 256)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    lines = raw.decode("utf-8", "replace").strip().splitlines()
+    return lines[0].strip() if lines else None
 
 
 class Platform(enum.Enum):

@@ -3,7 +3,8 @@
 The bounded prune walk with its reclaim, work and time budgets, run per spawn, at
 projection end (the eager prune and the lease finalizer) and at boot; the
 ownership-proved per-candidate reclaim; the orphan sidecar and alias-lock sweeps; the
-gateway-boot drain that prunes in batches; and the read-only, bounded censuses
+gateway-boot drain that prunes in batches and the one prune a stopping gateway awaits;
+and the read-only, bounded censuses
 ``kirocrew doctor`` reports, counted by the prune's own rules.
 
 :mod:`kiro_crew.acp.skill_projection` stays the import path and the patch surface; see
@@ -64,7 +65,9 @@ from kiro_crew.acp.skill_projection_parts.view_ownership import (
     _view_home_tag,
 )
 from kiro_crew.acp.skill_projection_parts.view_sources import (
+    _VIEW_LEDGER_NAME,
     _admissible_source_agent,
+    _read_json_regular_file,
     _ViewLedgerWrites,
 )
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX, volatile_env_keys
@@ -791,6 +794,75 @@ def _prune_stale_managed_aliases(
     return reclaimed
 
 
+# Where builds before ``v0.10.0`` wrote the view ledger and the ownership
+# sidecars: INSIDE the agents directory. Nothing reads them there, and kiro-cli
+# loads every ``.json`` under the agents directory as an agent profile,
+# dot-prefixed subdirectories included, so a file left there is a subagent in
+# every session. The boot drain removes what Crew provably wrote.
+_LEGACY_METADATA_DIR_NAME = ".kirocrew-skill-projection-metadata"
+
+
+def _is_legacy_metadata_file(name: str, content: object) -> bool:
+    """Whether *name* with parsed *content* is a ledger or sidecar a pre-``v0.10.0`` build wrote.
+
+    The ledger maps view names to agent names and holds nothing else; a sidecar is
+    named by its view and carries the managed marker. Anything else stays.
+    """
+    if name == _VIEW_LEDGER_NAME:
+        return isinstance(content, dict) and all(
+            isinstance(alias, str)
+            and _LEGACY_ALIAS_NAME_RE.fullmatch(alias)
+            and isinstance(agent, str)
+            for alias, agent in content.items()
+        )
+    stem = name.removesuffix(".json")
+    return (
+        stem != name
+        and _LEGACY_ALIAS_NAME_RE.fullmatch(stem) is not None
+        and _managed_marker(content)
+    )
+
+
+def _remove_legacy_metadata_dir(directory: Path) -> int:
+    """Remove the legacy metadata files in *directory*, and the directory once empty.
+
+    Only a real directory is walked (never a link or junction), only regular files
+    whose name and content pass :func:`_is_legacy_metadata_file` are unlinked,
+    each identity-checked, and the walk is bounded by the prune's work limit.
+    Returns how many files it removed.
+    """
+    legacy = directory / _LEGACY_METADATA_DIR_NAME
+    info = pinned_fs.lstat_by_name(legacy)
+    if (
+        info is None
+        or platform_compat.is_link_or_junction(legacy)
+        or not stat.S_ISDIR(info.st_mode)
+    ):
+        return 0
+    removed = 0
+    with os.scandir(legacy) as entries:
+        for walked, entry in enumerate(entries):
+            if walked >= _PROJECTION_PRUNE_WORK_LIMIT:
+                break
+            path = legacy / entry.name
+            current = pinned_fs.lstat_by_name(path)
+            if current is None or not stat.S_ISREG(current.st_mode):
+                continue
+            if not _is_legacy_metadata_file(entry.name, _read_json_regular_file(path)):
+                continue
+            if _unlink_projection_lease_if_unchanged(
+                path, (current.st_dev, current.st_ino), what="legacy projection metadata"
+            ):
+                removed += 1
+    try:
+        os.rmdir(legacy)
+    except OSError:
+        pass  # a file Crew did not write is still there; it stays
+    if removed:
+        logger.info("skill projection: removed %d legacy metadata file(s) from %s", removed, legacy)
+    return removed
+
+
 def drain_stale_aliases() -> int:
     """Best-effort boot drain of unused aliases this data home owns; never raises.
 
@@ -799,7 +871,9 @@ def drain_stale_aliases() -> int:
     kiro-cli's subagent tool. This runs once at gateway boot and repeats that
     same prune, under the publication lock, until three batches in a row
     reclaim nothing or the batch limit is reached, so some unused aliases can
-    remain for later spawns. Returns how many aliases it removed.
+    remain for later spawns. It first removes the metadata a pre-``v0.10.0``
+    build left in the agents directory (:func:`_remove_legacy_metadata_dir`).
+    Returns how many aliases it removed.
     """
     try:
         directory = kiro_agents_dir()
@@ -809,6 +883,10 @@ def drain_stale_aliases() -> int:
         return 0
     if pinned_fs.lstat_by_name(directory) is None:
         return 0
+    try:
+        _remove_legacy_metadata_dir(directory)
+    except OSError:
+        logger.debug("skill projection: legacy metadata not removed", exc_info=True)
     total = 0
     sidecars = 0
     idle_batches = 0
@@ -855,6 +933,34 @@ def drain_stale_aliases() -> int:
             sidecars,
         )
     return total
+
+
+def prune_stale_aliases_at_stop() -> int:
+    """One prune of the unused views this data home owns, as its gateway stops; never raises.
+
+    A projection that ends prunes on a daemon thread (:func:`_end_projection`),
+    which the gateway's hard exit can cut, and a home that is stopped and then
+    deleted has no next boot drain. The gateway runs this once, awaited, after
+    every session has ended. It waits behind this process's other prunes for at
+    most the lock's own ceiling and is capped like any prune, so a backlog past
+    one pass is left for the next boot drain. Returns how many aliases it removed.
+    """
+    try:
+        directory = kiro_agents_dir()
+        crew_home_id = data_home().absolute().as_posix()
+    except (OSError, ValueError, RuntimeError):
+        logger.debug("skill projection: cannot resolve directories to prune", exc_info=True)
+        return 0
+    if pinned_fs.lstat_by_name(directory) is None:
+        return 0
+    try:
+        with _projection_alias_lock(directory, in_process_wait=_PROJECTION_LOCK_TIMEOUT_SECS):
+            return _prune_stale_managed_aliases(directory, crew_home_id, keep=set())
+    except OSError as exc:
+        logger.debug("skill projection: stop prune skipped; lock or I/O error: %s", exc)
+    except Exception:
+        logger.warning("skill projection: stop prune failed", exc_info=True)
+    return 0
 
 
 def _reclaim_prune_candidate(
@@ -1048,6 +1154,9 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
     Every read failure counts toward the side that claims less: an unreadable
     directory is an empty census, an unreadable sidecar is not foreign.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     counts = {
         "total": 0,
         "leased": 0,
@@ -1125,7 +1234,7 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
         else:
             try:
                 try:
-                    raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+                    raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
                 finally:
                     os.close(fd)
                 if len(raw) <= _PROJECTION_LEASE_MAX_BYTES:
@@ -1152,10 +1261,13 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
 
 def _read_alias_spec_bounded(path: Path) -> dict[str, Any] | None:
     """The parsed alias at *path* when it is a small regular file; ``None`` otherwise."""
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
-            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+            raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
         finally:
             os.close(fd)
     except OSError:
@@ -1185,6 +1297,9 @@ def census_projection_residue(
     ``truncated``
         1 when a walk hit :data:`_CENSUS_MAX_ALIASES`, making the rest floors.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     counts = {
         "sidecars": 0,
         "orphan_sidecars": 0,
@@ -1244,14 +1359,14 @@ def census_projection_residue(
                     try:
                         fd = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                         try:
-                            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+                            raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
                         finally:
                             os.close(fd)
                         alias_fd = os.open(
                             directory / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                         )
                         try:
-                            alias_raw = os.read(alias_fd, _CENSUS_ALIAS_MAX_BYTES + 1)
+                            alias_raw = bounded_read_fd(alias_fd, _CENSUS_ALIAS_MAX_BYTES + 1)
                         finally:
                             os.close(alias_fd)
                     except OSError:

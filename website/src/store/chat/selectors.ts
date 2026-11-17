@@ -55,11 +55,15 @@ export const selectSendAccepted = (state: RootState, slot: string, sendId: strin
   selectSendConfirmed(state, slot, sendId) || selectSlotMessages(state, slot).some(m =>
     m.role === 'queued' && m.meta?.sendId === sendId && !m.meta?.optimistic)
 export const selectSlotStreamState = (state: RootState, slot: string): SlotState =>
-  slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun[slot]?.state ?? 'idle')
+  slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun?.[slot]?.state ?? 'idle')
 /** The turn-start count for `slot` (see `ChatState.runEpoch`): the identity a
  *  settlement captures so a late answer about one turn cannot idle the next. */
 export const selectSlotRunEpoch = (state: RootState, slot: string): number =>
   state.chat.runEpoch?.[safeKey(slot)] ?? 0
+/** Whether `slot` has a local send still awaiting server confirmation, on
+ *  screen (`pendingTurnSlot`) or not (its run entry's `pendingTurn`). */
+export const selectPendingTurn = (state: RootState, slot: string): boolean =>
+  state.chat.pendingTurnSlot === slot || !!state.chat.slotRun?.[safeKey(slot)]?.pendingTurn
 
 const EMPTY_TOOLLOG: ToolActivity[] = []
 /** Per-slot tool log, falling back to the global active mirror. */
@@ -136,6 +140,7 @@ const TURN_INJECT_DISPATCHED: Readonly<Record<InjectKind, boolean>> = {
   user_replay: true,
   automation_notice: true,
   workflow: true,
+  heartbeat: true,
 }
 const TURN_INJECT_KINDS: ReadonlySet<unknown> = new Set<string>(
   (Object.keys(TURN_INJECT_DISPATCHED) as InjectKind[]).filter((k) => TURN_INJECT_DISPATCHED[k]),
@@ -199,7 +204,7 @@ export const selectContinuable = (state: RootState, slot?: string | null): boole
   const other = key && key !== c.activeSlot ? key : null
   const dashSlot = slotRowByKey(state.dashboard.slots, key)
   if (other) {
-    if (selectSlotStreamState(state, other) !== 'idle' || c.pendingTurnSlot === other || dashSlot?.running || dashSlot?.stopping) return false
+    if (selectSlotStreamState(state, other) !== 'idle' || selectPendingTurn(state, other) || dashSlot?.running || dashSlot?.stopping) return false
   } else if (c.slotRunning || c.slotStopping || c.pendingTurnSlot) return false
   if (dashSlot?.subagents_running) return false
   // A relay archive has NO continue: `relay_archive_refusal` rejects
@@ -231,6 +236,10 @@ export const selectContinuable = (state: RootState, slot?: string | null): boole
       if ((m.meta as { restored?: boolean } | undefined)?.restored && selectTurnInterrupted(state, key)) continue
       return false
     }
+    // A heartbeat prompt delivered to an unused chat is the only request there,
+    // so a first turn that fails to start stays resumable from it. Mirrors
+    // `_has_conversation` (`src/kiro_crew/dashboard/chat_handlers.py`).
+    if (m.role === 'inject' && m.content && (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'heartbeat') return true
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       // System notices (compaction, session reload) are assistant-role status
@@ -297,6 +306,13 @@ export const isQuietEndRow = (m: ChatMessage): boolean => {
   return meta?.ends_turn === true && absentOr(meta.tool_name, QUIET_END_TOOL) && absentOr(meta.mcp_server, QUIET_END_SERVER)
 }
 
+/** `meta.kind` of the notice row an agent harness's advisory is shown as: text the
+ *  harness sends in place of reply text, such as a hook's block reason. Mirrors
+ *  `HARNESS_ADVISORY_KIND` in `src/kiro_crew/dashboard/system_notices.py`. */
+export const HARNESS_ADVISORY_KIND = 'harness_advisory'
+export const isHarnessAdvisoryRow = (m: ChatMessage): boolean =>
+  m.role === 'notice' && (m.meta as { kind?: unknown } | undefined)?.kind === HARNESS_ADVISORY_KIND
+
 export const selectTurnInterrupted = (state: RootState, slot?: string | null): boolean => {
   // `slot` is the session to ask about, the active one when omitted (see
   // `selectContinuable`); `selectSlotMessages` reads the active mirror for it.
@@ -308,6 +324,9 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
   // A drained sub-agent completion (role `subagent`) opens a turn of its own,
   // so a refused-model card older than it settles only its own turn.
   let sawLaterOpener = false
+  // A harness's advisory of the newest turn answers it as an assistant row does,
+  // whichever side of an error row the runner landed it on.
+  let sawAdvisory = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (m.role === 'subagent') sawLaterOpener = true
@@ -343,11 +362,12 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
     // CONTINUE_SCAN_SKIP, where `inject` stays for the selectors that look
     // through continuations to the prior user floor. Mirrors
     // `is_turn_interrupted` in `dashboard/state_parts/transcript_rows.py`.
-    if (m.role === 'inject' && m.content && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return true
+    if (m.role === 'inject' && m.content && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return sawAdvisory ? sawTrailingError : true
     // A monitor loop's cycle row always dispatches a turn; unanswered, it is
     // the same shape as an unanswered user row. Decided before the skip set,
     // where `nudge` stays for the selectors that look through it.
-    if (m.role === 'nudge' && m.content) return true
+    if (m.role === 'nudge' && m.content) return sawAdvisory ? sawTrailingError : true
+    if (isHarnessAdvisoryRow(m) && m.content) { sawAdvisory = true; continue }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       const meta = m.meta as { kind?: string; notice?: string } | undefined
@@ -375,6 +395,7 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
       // client-side and never sent, so no transcript the server can produce
       // carries a row for it to read, and the two cannot disagree.
       if (m.meta?.optimistic) return false
+      if (sawAdvisory) return sawTrailingError
       // A `/compact` answered by its compaction notice is a FINISHED turn --
       // unless an error row trails the notice, the same evidence the
       // plain-assistant branch honors. First-whitespace-token match using

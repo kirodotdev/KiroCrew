@@ -67,6 +67,21 @@ describe('SlashCommandMenu: /workflow lists the saved workflows to pick from', (
     expect(onSelect).toHaveBeenCalledWith('/workflow deploy ')
   })
 
+  it('offers the id when the slug is shadowed, and leaves out a workflow no ref reaches', async () => {
+    mockApi.workflowDefinitions.mockResolvedValue({ definitions: [
+      { id: 'wfd_hand', slug: 'debug-project', name: 'Hand', description: '', shadowed_refs: ['debug-project'] },
+      { id: 'wfd_gone', slug: 'restored', name: 'Restored', description: '', shadowed_refs: ['restored', 'wfd_gone'] },
+    ] })
+    const onSelect = vi.fn()
+    render(<Harness input="/workflow " onSelect={onSelect} />)
+    await screen.findByText('wfd_hand')
+    expect(screen.queryByText('debug-project')).not.toBeInTheDocument()
+    expect(screen.queryByText('restored')).not.toBeInTheDocument()
+    expect(screen.queryByText('wfd_gone')).not.toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Enter' })
+    expect(onSelect).toHaveBeenCalledWith('/workflow wfd_hand ')
+  })
+
   it('filters by the slug typed so far', async () => {
     render(<Harness input="/workflow tr" />)
     expect(await screen.findByText('triage')).toBeInTheDocument()

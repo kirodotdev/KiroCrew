@@ -37,6 +37,10 @@ ENDPOINT = "https://collector.example.internal:4318/v1/metrics"
 def _patch_config(monkeypatch, **tel_kwargs):
     fake = KiroCrewConfig(telemetry=TelemetryConfig(**tel_kwargs))
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
+    # Treat these configs as an explicit opt-in to recording, which is what lets a
+    # configured export destination attach (``provider.outbound_consented``); the
+    # default alone never does, and these tests are about the readers.
+    monkeypatch.setattr("kiro_crew.metrics.provider.outbound_consented", lambda cfg: True)
     monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
 
 
@@ -175,6 +179,7 @@ class TestAttachment:
 
         mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         mod.OTLPMetricExporter = _StubExporter  # type: ignore[attr-defined]
+        mod._load_session_from_envvar = lambda _variable: None  # type: ignore[attr-defined]
         monkeypatch.setitem(
             sys.modules,
             "opentelemetry.exporter.otlp.proto.http.metric_exporter",
@@ -225,6 +230,7 @@ class TestTemporalityIsACoreDecision:
 
         mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         mod.OTLPMetricExporter = _StubExporter  # type: ignore[attr-defined]
+        mod._load_session_from_envvar = lambda _variable: None  # type: ignore[attr-defined]
         monkeypatch.setitem(
             sys.modules,
             "opentelemetry.exporter.otlp.proto.http.metric_exporter",

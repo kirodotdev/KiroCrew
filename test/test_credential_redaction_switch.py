@@ -14,14 +14,16 @@ import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
-from kiro_crew import security
+from kiro_crew import redaction_seams, security
 from kiro_crew.security import redaction_switch
 
 
-def _synth_aws_key() -> str:
-    prefix = "A" + "KIA"
-    return prefix + hashlib.sha256(b"kc-redaction-switch").hexdigest().upper()[:16]
+def _synth_github_token() -> str:
+    # A GitHub classic token with a valid checksum. An AWS key ID would not do:
+    # it is an Identifier with the structured detectors on, so it stays visible.
+    return github_classic(seed=11)
 
 
 def _synth_token_url() -> str:
@@ -30,16 +32,20 @@ def _synth_token_url() -> str:
 
 
 def _synth_exfil_url() -> str:
-    # A long high-entropy query to a non-exempt host trips the exfil pass.
-    blob = hashlib.sha256(b"kc-exfil").hexdigest() * 4
-    return f"https://collector.example.test/x?d={blob}"
+    # A URL carrying a credential value: only that value is masked.
+    return "https://collector.example.test/x?client_secret=" + hashlib.sha256(b"kc-x").hexdigest()
 
 
 @pytest.fixture(autouse=True)
 def _isolated_switch(tmp_path, monkeypatch):
-    """Point the switch at a tmp keystone and drop any cached verdict."""
+    """Point the switch at a tmp keystone; these tests read the record as ON unless it says off.
+
+    The shipped default is OFF (``test_redaction_one_setting.py`` pins it), so the
+    constant is flipped here: the one line that turns the default back to ON.
+    """
     store = tmp_path / "credential_redaction.json"
     monkeypatch.setattr(redaction_switch, "_path", lambda: store, raising=True)
+    monkeypatch.setattr(redaction_switch, "DEFAULT_REDACTION_ENABLED", True)
     yield store
 
 
@@ -48,7 +54,7 @@ def _isolated_switch(tmp_path, monkeypatch):
 
 class TestSynthesizedMaterialActuallyTrips:
     def test_aws_key_is_redacted_by_default(self):
-        key = _synth_aws_key()
+        key = _synth_github_token()
         assert security.redact_credentials(key)[0] != key
 
     def test_token_url_value_is_redacted_by_default(self):
@@ -114,37 +120,49 @@ class TestSwitchedOffInsideOwnerView:
         assert state.enabled is False
         assert json.loads(_isolated_switch.read_text())["enabled"] is False
 
+    def test_a_save_rewrites_the_existing_record_in_place(self, _isolated_switch):
+        # A running Linux sandbox bind-mounts this inode read-only; a rename over it
+        # would detach that mount and leave the new file writable inside the sandbox.
+        _isolated_switch.write_text("{}", encoding="utf-8")
+        inode = _isolated_switch.stat().st_ino
+        _off()
+        assert _isolated_switch.stat().st_ino == inode
+        assert redaction_switch.read_state().enabled is False
+        redaction_switch.set_enabled(True, changed_at="2026-09-24T23:01:00+00:00")
+        assert _isolated_switch.stat().st_ino == inode
+        assert redaction_switch.read_state().enabled is True
+
     def test_owner_view_passes_credentials_through_when_off(self):
         _off()
-        key, url = _synth_aws_key(), _synth_token_url()
+        key, url = _synth_github_token(), _synth_token_url()
         with _owner_view():
             assert security.redact_credentials(key) == (key, [])
             assert security.redact_credentials(url) == (url, [])
 
     def test_owner_view_still_redacts_when_on(self):
-        key = _synth_aws_key()
+        key = _synth_github_token()
         with _owner_view():
             assert security.redact_credentials(key)[0] != key
 
     def test_set_enabled_true_restores_redaction_in_owner_view(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         with _owner_view():
             assert security.redact_credentials(key)[0] == key
         redaction_switch.set_enabled(True, changed_at="2026-09-24T23:01:00+00:00")
         with _owner_view():
             assert security.redact_credentials(key)[0] != key
 
-    def test_exfiltration_url_redaction_is_untouched_inside_owner_view(self):
+    def test_exfiltration_url_redaction_stands_down_inside_owner_view(self):
         _off()
         url = _synth_exfil_url()
         with _owner_view():
-            assert security.redact_exfiltration_urls(url)[0] != url
-            assert security.redact(url) != url
+            assert security.redact_exfiltration_urls(url)[0] == url
+        assert security.redact_exfiltration_urls(url)[0] != url
 
     def test_the_verdict_is_the_one_the_scope_was_entered_with(self):
         """One render, one verdict: a flip mid-render is seen by the NEXT request."""
-        key = _synth_aws_key()
+        key = _synth_github_token()
         with _owner_view():  # entered ON
             assert redaction_switch.credential_pass_bypassed() is False
             _off()  # the owner flips the switch while this render is in flight
@@ -159,7 +177,7 @@ class TestSwitchedOffInsideOwnerView:
 
     def test_scope_is_task_local_and_restored_on_exit(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         assert redaction_switch.credential_pass_bypassed() is False
         with _owner_view():
             assert redaction_switch.credential_pass_bypassed() is True
@@ -172,7 +190,7 @@ class TestSwitchedOffInsideOwnerView:
         import asyncio
 
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -198,29 +216,29 @@ class TestSwitchedOffOutsideOwnerView:
 
     def test_bare_redact_credentials_is_unconditional(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         assert security.redact_credentials(key)[0] != key
         assert security.redact(key) != key
         assert security.redact_with_findings(key)[0] != key
 
     def test_stream_redactor_default_is_unconditional(self):
         _off()
-        key = _synth_aws_key()
+        key = _synth_github_token()
         sr = security.StreamRedactor()
         out = sr.feed(key + " ") + sr.flush()
         assert key not in out
 
     def test_request_blocking_predicate_is_untouched(self):
         _off()
-        assert security._contains_fixed_credential(_synth_aws_key()) is True
+        assert security._contains_fixed_credential(_synth_github_token()) is True
 
     def test_diagnostics_bundle_scrubs_regardless(self):
         """The bundle goes to a public issue; it never opens the owner scope."""
         from kiro_crew import diagnostics
 
         _off()
-        clean, count = diagnostics._scrub(_synth_aws_key())
-        assert clean != _synth_aws_key()
+        clean, count = diagnostics._scrub(_synth_github_token())
+        assert clean != _synth_github_token()
         assert count >= 1
 
     def test_channel_renderers_never_open_the_scope(self):
@@ -256,12 +274,11 @@ class TestSwitchedOffOutsideOwnerView:
             "src/kiro_crew/security/redaction_switch.py",
         }, files
 
-    def test_the_chat_surface_never_opens_the_scope(self):
-        """Chat is OUT of scope, and deliberately so: ``_flush_segment`` redacts the
-        assistant text BEFORE ``slot.append``, so the transcript holds the redacted
-        bytes and no display-time scope could restore them; the live SSE/WS streams
-        fan one chunk to every connected client besides. An owner-view seam there
-        would advertise a raw transcript it cannot deliver."""
+    def test_the_chat_surface_never_opens_the_owner_view(self):
+        """Chat opens the ``chat`` output seam (``redaction_seams``), never ``owner_view``: the
+        owner-view scope is the Files view's, entered only after the requester is verified
+        as the owner. A chat turn's audience is every connected client, so it takes the
+        process-wide verdict the gateway publishes instead of a per-request one."""
         import inspect
         import sys
         from pathlib import Path
@@ -367,16 +384,12 @@ class TestTheMotivatingLinkThroughTheFileViewerPath:
         assert "token=" in out or "REDACTED" in out
         assert link.split("token=")[1] not in out
 
-    def test_in_the_public_build_the_exfil_pass_still_hides_the_link_when_off(self):
-        """Stated limit: the switch reaches the credential pass only. A long
-        base64 query to a non-exempt host is independently classified as
-        exfiltration and replaced whole, switch or no switch."""
+    def test_in_the_public_build_the_link_renders_when_off(self):
+        """With the setting off the exfil pass leaves the approval link as written."""
         from kiro_crew.platform.context import redact_owner_view_via_context
 
         link = _synth_approval_link()
-        out = redact_owner_view_via_context(link)
-        assert link.split("token=")[1] not in out
-        assert "REDACTED" in out
+        assert redact_owner_view_via_context(link) == link
 
     def test_with_a_companion_host_exemption_the_link_renders_raw_when_off(self, monkeypatch):
         """The internal companion exempts its approval hosts from the exfil
@@ -491,7 +504,11 @@ class TestHandlers:
 
         resp = await api_credential_redaction_get(_request())
         assert resp.status == 200
-        assert json.loads(resp.text) == {"enabled": True, "changed_at": ""}
+        assert json.loads(resp.text) == {
+            "enabled": True,
+            "changed_at": "",
+            "locked_by_policy": False,
+        }
 
     @pytest.mark.asyncio
     async def test_put_false_records_and_audits(self, _isolated_switch, _quiet_audit):
@@ -508,8 +525,8 @@ class TestHandlers:
             True,
         ) in _quiet_audit  # synchronous, fail-loud write; REAL subject
         with _owner_view():
-            assert security.redact_credentials(_synth_aws_key())[0] == _synth_aws_key()
-        assert security.redact_credentials(_synth_aws_key())[0] != _synth_aws_key()
+            assert security.redact_credentials(_synth_github_token())[0] == _synth_github_token()
+        assert security.redact_credentials(_synth_github_token())[0] != _synth_github_token()
 
     @pytest.mark.asyncio
     async def test_put_pushes_the_change_to_every_owner_dashboard(
@@ -562,9 +579,13 @@ class TestHandlers:
         loop = MagicMock()
         loop.call_soon_threadsafe.side_effect = queued.append
         handlers.push_switch_moved_by_policy(app, loop)
+        pushes_before = handlers._push_count
         handlers._push_to_owners(MagicMock(), redaction_switch.RedactionState(True, "t"))  # the PUT
         queued[0]()
         app["state"].broadcast_ws_owners.assert_not_called()
+        # Only the PUT counted as a push, and its ON is what owners were last told.
+        assert handlers._push_count == pushes_before + 1
+        assert handlers._pushed_enabled is True
 
     @pytest.mark.asyncio
     async def test_a_lost_push_does_not_fail_the_put(self, _isolated_switch, _quiet_audit):
@@ -584,7 +605,7 @@ class TestHandlers:
         assert json.loads(resp.text)["enabled"] is True
         assert ("enabled", "owner-1", True) in _quiet_audit
         with _owner_view():
-            assert security.redact_credentials(_synth_aws_key())[0] != _synth_aws_key()
+            assert security.redact_credentials(_synth_github_token())[0] != _synth_github_token()
 
     def test_write_and_audit_are_one_unit_on_the_worker_thread(self):
         """A cancelled handler cannot skip the audit: both run in the same closure,
@@ -596,8 +617,8 @@ class TestHandlers:
 
         src = inspect.getsource(api_credential_redaction_put)
         closure = src[src.index("def _write_and_audit") : src.index("try:\n        state = await")]
-        assert closure.index('outcome="enabled" if enabled else "disabled"') < closure.index(
-            "set_enabled("
+        assert closure.index("outcome=outcome,") < closure.index(
+            "state = redaction_switch.set_enabled("
         )
         assert closure.count("critical=True") == 2
         assert "asyncio.to_thread(_write_and_audit)" in src
@@ -756,6 +777,101 @@ def _host_policy(monkeypatch, controls):
 class TestGovernedHost:
     """Where a policy governs any scope, only its opt-in lets the owner turn redaction off."""
 
+    def test_a_policy_naming_the_retired_seams_row_loads_and_it_grants_nothing(
+        self, monkeypatch, _isolated_switch
+    ):
+        """The seams row went with the seams switch: a policy naming it still loads."""
+        seams = {"capabilities": {"credential_redaction_seams_off": {"enabled": True}}}
+        _host_policy(monkeypatch, {**_GOVERNED, **seams})
+        assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+        _host_policy(monkeypatch, {**_GOVERNED, **seams, **_OPT_IN})
+        assert redaction_switch.missing_opt_in() is None
+
+    def test_a_deny_of_the_retired_seams_row_still_denies(self, monkeypatch, _isolated_switch):
+        """An administrator who denied the seams row keeps redaction on: the deny is read
+        as a deny of the row that governs the setting, even beside its grant."""
+        capabilities = {
+            "credential_redaction_off": {"enabled": True},
+            "credential_redaction_seams_off": {"enabled": False},
+        }
+        _host_policy(monkeypatch, {**_GOVERNED, "capabilities": capabilities})
+        assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+        # Tightest wins in either order: the widening applies to grants only.
+        reversed_order = dict(reversed(list(capabilities.items())))
+        _host_policy(monkeypatch, {**_GOVERNED, "capabilities": reversed_order})
+        assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+
+    @pytest.mark.parametrize("flat", [False, True])
+    def test_a_policy_naming_only_retired_rows_still_governs(
+        self, monkeypatch, _isolated_switch, flat
+    ):
+        """A policy file whose only row is retired governs the host: the retired grant
+        grants nothing, so the default and a stored OFF read as ON; a retired deny
+        alone denies; only the live row's grant lets the owner turn redaction off."""
+
+        def retired(enabled: bool) -> dict:
+            row = {"enabled": enabled}
+            if flat:
+                return {"capabilities.credential_redaction_seams_off": row}
+            return {"capabilities": {"credential_redaction_seams_off": row}}
+
+        for enabled in (True, False):
+            _host_policy(monkeypatch, retired(enabled))
+            assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+            assert redaction_switch.read_state().enabled is True
+            _off()
+            assert redaction_switch.read_state().enabled is True
+        _host_policy(
+            monkeypatch,
+            {**retired(True), "capabilities.credential_redaction_off": {"enabled": True}},
+        )
+        assert redaction_switch.missing_opt_in() is None
+        _host_policy(
+            monkeypatch,
+            {**retired(False), "capabilities.credential_redaction_off": {"enabled": True}},
+        )
+        assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+
+    def test_a_lower_tier_naming_only_a_retired_row_keeps_the_folded_host_governed(
+        self, monkeypatch, _isolated_switch
+    ):
+        """A central policy naming nothing over a home policy that grants only the
+        retired row: the fold keeps the home tier's retired row, so the host stays
+        governed and redaction reads as ON."""
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from kiro_crew.platform import context
+        from kiro_crew.platform.governance import parse_policy
+        from kiro_crew.platform.governance_parts.tiers import _intersect_ceilings
+
+        central = parse_policy({"version": 1, "boot": {}})
+        home = parse_policy(
+            {
+                "version": 1,
+                "boot": {},
+                "capabilities": {"credential_redaction_seams_off": {"enabled": True}},
+            }
+        )
+        folded = replace(_intersect_ceilings(central, home), lower_tier_folded=True)
+        assert folded.retired_rows == ("capabilities.credential_redaction_seams_off",)
+        monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=folded))
+        assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+        assert redaction_switch.read_state().enabled is True
+
+    def test_the_retired_seams_row_spelled_flat_loads_and_folds_the_same_way(
+        self, monkeypatch, _isolated_switch
+    ):
+        """A policy may spell the retired row as one flat dotted key: it loads, its grant
+        is ignored and its deny still denies the row that governs the setting."""
+        flat = "capabilities.credential_redaction_seams_off"
+        _host_policy(monkeypatch, {**_GOVERNED, flat: {"enabled": True}})
+        assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+        _host_policy(monkeypatch, {**_GOVERNED, **_OPT_IN, flat: {"enabled": False}})
+        assert redaction_switch.missing_opt_in() == redaction_switch.DISABLE_SCOPE
+        _host_policy(monkeypatch, {**_GOVERNED, **_OPT_IN, flat: {"enabled": True}})
+        assert redaction_switch.missing_opt_in() is None
+
     @pytest.mark.asyncio
     async def test_without_the_opt_in_a_stored_off_still_redacts_and_off_is_refused(
         self, monkeypatch, _isolated_switch, _quiet_audit
@@ -810,6 +926,67 @@ class TestGovernedHost:
         on = await api_credential_redaction_put(_request(body={"enabled": True}))
         assert on.status == 200
         assert redaction_switch.read_state().enabled is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "controls, allowed",
+        [
+            (_GOVERNED, False),
+            ({**_GOVERNED, **_OPT_IN}, True),
+            ({**_GOVERNED, "capabilities": {"credential_redaction_off": {}}}, False),
+            ({}, True),
+        ],
+    )
+    async def test_the_one_capability_row_gates_the_setting(
+        self, monkeypatch, _isolated_switch, _quiet_audit, controls, allowed
+    ):
+        """OFF needs the row `capabilities.credential_redaction_off`; ON never does."""
+        from kiro_crew.dashboard.handlers.credential_redaction import api_credential_redaction_put
+
+        _host_policy(monkeypatch, controls)
+        resp = await api_credential_redaction_put(_request(body={"enabled": False}))
+        assert resp.status == (200 if allowed else 403)
+        assert redaction_switch.read_state().enabled is (not allowed)
+        if not allowed:
+            assert json.loads(resp.text)["code"] == "credential_redaction_locked_by_policy"
+            assert ("credential_redaction.write", redaction_switch.DISABLE_SCOPE) in (
+                _quiet_audit.refusals
+            )
+            assert ("denied", "owner-1", False) in _quiet_audit
+        else:
+            assert ("disabled", "owner-1", True) in _quiet_audit
+        assert json.loads(resp.text).get("locked_by_policy") in (None, not allowed)
+        redaction_switch.publish_verdict(redaction_switch.read_state())
+        try:
+            with redaction_seams.output_seam(redaction_seams.LOGS):
+                assert redaction_switch.credential_pass_bypassed() is allowed
+        finally:
+            redaction_switch.publish_verdict(redaction_switch.RedactionState(True, ""))
+        on = await api_credential_redaction_put(_request(body={"enabled": True}))
+        assert on.status == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("opted_in", [False, True])
+    async def test_the_view_says_whether_policy_locks_the_setting(
+        self, monkeypatch, _isolated_switch, _quiet_audit, opted_in
+    ):
+        from kiro_crew.dashboard.handlers.credential_redaction import api_credential_redaction_get
+
+        monkeypatch.setattr(redaction_switch, "DEFAULT_REDACTION_ENABLED", False)
+        _host_policy(monkeypatch, {**_GOVERNED, **(_OPT_IN if opted_in else {})})
+        body = json.loads((await api_credential_redaction_get(_request())).text)
+        assert body["locked_by_policy"] is (not opted_in)
+        # A fresh home on a governed host is ON; with the opt-in it is the default, OFF.
+        assert body["enabled"] is (not opted_in)
+
+    def test_a_stored_off_reads_on_until_the_row_is_opted_in(self, monkeypatch, _isolated_switch):
+        """The state in force follows the policy; the stored choice is kept."""
+        _off()
+        _host_policy(monkeypatch, _GOVERNED)
+        assert redaction_switch.owner_may_disable() is False
+        assert redaction_switch.read_state().enabled is True
+        _host_policy(monkeypatch, {**_GOVERNED, **_OPT_IN})
+        assert redaction_switch.read_state().enabled is False
 
     @pytest.mark.parametrize("controls, allowed", [({}, False), (_OPT_IN, True)])
     def test_an_lts_build_keeps_redaction_on_without_the_opt_in(
@@ -876,3 +1053,167 @@ class TestGovernedHost:
         _off()
         assert redaction_switch.owner_may_disable() is False
         assert redaction_switch.read_state().enabled is True
+
+
+# ------------------------------------------------- a field an earlier record carried
+
+
+class TestEarlierEngineField:
+    """``engine`` (and ``seams_enabled``) from an earlier record: read past, dropped, refused."""
+
+    def test_a_stored_legacy_engine_reads_without_error(self, _isolated_switch):
+        _isolated_switch.write_text(
+            json.dumps({"enabled": True, "engine": "legacy", "engine_changed_at": "t0"})
+        )
+        assert redaction_switch.read_state().to_dict() == {"enabled": True, "changed_at": ""}
+
+    def test_a_stored_legacy_engine_leaves_the_plan_on_the_rule_table(self, _isolated_switch):
+        from redaction_structured_cases import aws_key_id
+
+        _isolated_switch.write_text(json.dumps({"enabled": True, "engine": "legacy"}))
+        text = f"AccessKeyId: {aws_key_id()}"
+        # The key ID is an identifier the one engine keeps; no engine masks it any more.
+        assert security.redact(text) == text
+
+    def test_the_next_write_drops_every_earlier_field(self, _isolated_switch):
+        _isolated_switch.write_text(
+            json.dumps({"enabled": True, "engine": "legacy", "seams_enabled": False})
+        )
+        redaction_switch.set_enabled(False, changed_at="t1")
+        assert json.loads(_isolated_switch.read_text()) == {"changed_at": "t1", "enabled": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"engine": "legacy"},
+            {"engine": "structured"},
+            {"enabled": True, "engine": "structured"},
+            {"seams_enabled": False},
+        ],
+    )
+    async def test_the_put_refuses_an_earlier_field(self, _isolated_switch, _quiet_audit, body):
+        from kiro_crew.dashboard.handlers.credential_redaction import api_credential_redaction_put
+
+        resp = await api_credential_redaction_put(_request(body=body))
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "invalid_body"
+        assert not _isolated_switch.exists()
+
+
+def test_a_file_scan_inside_a_chat_seam_with_redaction_off_still_flags_a_credential():
+    """Deciding whether a file may go out is a safety check, not redaction: it scans
+    in full inside a channel turn whatever the owner's setting."""
+    from kiro_crew.platform import binary_content_is_flagged
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    payload = f"deploy token {github_classic(seed=344)}\n".encode()
+    redaction_switch.publish_verdict(redaction_switch.RedactionState(False, ""))
+    try:
+        with redaction_seams.output_seam(redaction_seams.CHAT):
+            assert redaction_switch.credential_pass_bypassed() is True
+            assert binary_content_is_flagged(payload) is True
+    finally:
+        redaction_switch.publish_verdict(redaction_switch.RedactionState(True, ""))
+    assert binary_content_is_flagged(payload) is True
+
+
+def test_an_upload_gate_verdict_holds_across_a_change_of_the_setting(monkeypatch):
+    """One file through the upload gates' content scans, in one flow: flagged with
+    redaction on, inside a chat seam opened while it is off, outside that seam, and
+    after it is back on. Each change of the setting retires the kept verdicts, so the
+    cache never serves an answer computed under the other state."""
+    from collections import OrderedDict
+
+    from kiro_crew.platform import binary_content_is_flagged, context, wide_content_is_flagged
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    line = f"export GITHUB_TOKEN={github_classic(seed=345)}\n"
+    narrow, wide = line.encode(), line.encode("utf-16-le")
+    real = context.redact_via_context
+    # The first pass in a process resolves the platform context, which moves the
+    # governance generation and so keeps that one verdict out of the cache.
+    real("warm")
+    scans: list[str] = []
+
+    def counting(text: str) -> str:
+        scans.append(text)
+        return real(text)
+
+    monkeypatch.setattr(context, "redact_via_context", counting)
+    monkeypatch.setattr(context, "_SCAN_VERDICTS", OrderedDict())
+
+    def scan() -> tuple[tuple[bool, bool], int]:
+        """Both verdicts, and how many detector passes it took (0: both from the cache)."""
+        before = len(scans)
+        verdicts = (binary_content_is_flagged(narrow), wide_content_is_flagged(wide))
+        return verdicts, len(scans) - before
+
+    def publish(enabled: bool) -> None:
+        redaction_switch.publish_verdict(redaction_switch.RedactionState(enabled, ""))
+
+    publish(True)
+    try:
+        verdicts, passes = scan()
+        assert verdicts == (True, True) and passes > 0
+        assert scan() == ((True, True), 0)
+        publish(False)
+        with redaction_seams.output_seam(redaction_seams.CHAT):
+            assert redaction_switch.credential_pass_bypassed() is True
+            verdicts, passes = scan()
+            assert verdicts == (True, True) and passes > 0, "served the verdict kept while on"
+            assert scan() == ((True, True), 0)
+        assert scan() == ((True, True), 0)
+        publish(True)
+        verdicts, passes = scan()
+        assert verdicts == (True, True) and passes > 0, "served the verdict kept while off"
+    finally:
+        publish(True)
+    assert len({key[3] for key in context._SCAN_VERDICTS}) == 3
+
+
+def test_the_upload_gate_decides_in_full_inside_an_off_seam_and_an_owner_view(
+    tmp_path, monkeypatch
+):
+    """The upload gate decides whether a file may LEAVE: a credential in its name or in
+    its bytes refuses it inside a chat seam opened with redaction off and inside an
+    owner view alike, and the verdict it leaves in the cache is the full one the
+    non-owner outbox download reads."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.handlers import files as files_handlers
+    from kiro_crew.platform import binary_content_is_flagged
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    token = github_classic(seed=171)
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    clean = outbox / "notes.txt"
+    clean.write_text("plain notes\n")
+    leaky = outbox / "leak.txt"
+    leaky.write_text(f"push with {token}\n")
+    monkeypatch.setattr(files_handlers.config_loader, "outbox_dir", lambda: outbox)
+    monkeypatch.setattr(files_handlers.config_loader, "workspace_root", lambda: tmp_path / "ws")
+    audit = MagicMock()
+    monkeypatch.setattr(files_handlers, "_sel", lambda: audit)
+
+    def gate(path, name):
+        return files_handlers._gate_upload_file(str(path), name, tool_kind="channel")[0]
+
+    redaction_switch.publish_verdict(redaction_switch.RedactionState(False, ""))
+    try:
+        for scope in (
+            lambda: redaction_seams.output_seam(redaction_seams.CHAT),
+            redaction_switch.owner_view,
+        ):
+            with scope():
+                assert redaction_switch.credential_pass_bypassed() is True
+                refused = gate(clean, f"notes-{token}.txt")
+                assert refused is not None and refused.status == 400
+                assert gate(leaky, "leak.txt") is not None
+                assert binary_content_is_flagged(leaky.read_bytes()) is True
+                assert gate(clean, "notes.txt") is None
+    finally:
+        redaction_switch.publish_verdict(redaction_switch.RedactionState(True, ""))
+    assert binary_content_is_flagged(leaky.read_bytes()) is True
+    assert all(token not in str(call) for call in audit.mock_calls)

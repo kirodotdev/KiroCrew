@@ -5,7 +5,9 @@ attach managed policies to the instance role and widen its permissions boundary
 for them. Three places consume it, and all three read it through this module so
 they cannot disagree: the boundary document (``iam.boundary_policy_document``),
 the launcher-policy addendum (``iam.host_policy_document``) and the
-template's ``ExtraManagedPolicyArns`` parameter (``ec2.deploy``).
+template's ``ExtraManagedPolicyArns`` parameter (``ec2.deploy``). Before that
+deploy, :func:`require_managed_policies` checks that the launch account holds
+each of those policies.
 
 The checks here are a floor, not a review of the edition's policy. They refuse
 the shapes that would make the boundary stop being a ceiling (``NotAction``,
@@ -24,10 +26,13 @@ upgrade would call an out-of-date boundary current.
 from __future__ import annotations
 
 import copy
+import logging
 import re
-from typing import Any
+from typing import Any, Sequence
 
 from kiro_crew.cloud import aws
+
+logger = logging.getLogger(__name__)
 
 #: Stands for the launch account's id in a managed-policy ARN.
 ACCOUNT_PLACEHOLDER = "{account}"
@@ -168,3 +173,64 @@ def managed_policy_arns(account: str) -> list[str]:
     uses, so one document still works in every account.
     """
     return [arn.replace(ACCOUNT_PLACEHOLDER, account) for arn in instance_policy()[0]]
+
+
+def require_managed_policies(arns: Sequence[str], profile: str, region: str) -> None:
+    """Refuse the launch when the launch account holds no policy at one of *arns*.
+
+    CloudFormation attaches *arns* to the instance role, and a policy the account
+    does not hold fails that attach with IAM's NoSuchEntity: the stack rolls back
+    and the user is left with a raw 404. An edition's policy is often put into
+    each account by a separate program, so an account that program never reached
+    has none. Asking IAM first turns that into a refusal that names the policy,
+    before the source upload, the network discovery and the stack. The launch is
+    refused rather than run without the policy, because an instance missing a
+    required policy is the non-compliant one this seam exists to prevent.
+
+    Only an answer whose AWS error code is NoSuchEntity refuses; the code is
+    read from the CLI's prefix (``aws.service_error_code``), because the rest of
+    the message quotes the ARN, and an edition's policy name may spell any code.
+    A read that fails any other way (a launcher policy without ``iam:GetPolicy``
+    on these ARNs, throttling) is logged and the launch goes on: the attach
+    itself still needs the policy, so nothing launches without it.
+    """
+    for arn in arns:
+        rc, _out, err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
+        if rc == 0:
+            continue
+        code = aws.service_error_code(err or "")
+        if code == "NoSuchEntity":
+            raise aws.AWSError(
+                f"this build attaches the managed policy {arn} to every crew's instance "
+                "role, and this AWS account has no policy at that ARN. A crew can launch "
+                "here only once the account holds it: have the account onboarded to the "
+                "program that provides that policy, or launch in an account that has it. "
+                "The launch stopped before uploading anything or changing a stack.",
+                action="iam:GetPolicy",
+                returncode=rc,
+                stderr=err or "",
+            )
+        hint = (
+            " Apply the current `kirocrew cloud iam-policy --host-policies` so the "
+            "launcher may read it."
+            if code == "AccessDenied" and _addendum_grants_read()
+            else ""
+        )
+        logger.warning(
+            "could not check that the host policy %s exists in this account (%s); the "
+            "launch goes on, and CloudFormation fails it if the policy is missing.%s",
+            arn,
+            (err or "").strip()[:200],
+            hint,
+        )
+
+
+def _addendum_grants_read() -> bool:
+    """Whether this build's ``--host-policies`` addendum carries the read.
+
+    It does not when the read would take it past IAM's size cap, and then
+    applying it again would not let the launcher read the policies.
+    """
+    from kiro_crew.cloud import iam
+
+    return iam.grants_host_policy_read(iam.host_policy_document())

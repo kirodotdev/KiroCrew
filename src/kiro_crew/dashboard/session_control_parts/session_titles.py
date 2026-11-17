@@ -1,6 +1,6 @@
-"""Session titles and colors: the hidden-character refusal, title cleaning for a new
-and a renamed session, ``session_rename``, ``session_generate_title`` and
-``session_set_color``.
+"""Session titles, colors and notes: the hidden-character refusal, title cleaning for a
+new and a renamed session, ``session_rename``, ``session_generate_title``,
+``session_set_color`` and the gate of ``session_set_note``.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from kiro_crew.terminal_safe import _is_invisible  # one shared list of invisibl
 from kiro_crew.validation import SESSION_COLOR_CHOICES, SESSION_PALETTE_SIZE
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 # The module's original logger name, which log filters and caplog assertions key on.
 logger = logging.getLogger("kiro_crew.dashboard.session_control")
@@ -268,7 +268,9 @@ async def rename_target(
     )
     # `apply_manual_title` assigns every field before its first await, so the
     # title is on the slot before this coroutine can suspend.
-    if not await apply_manual_title(state, slot, clean_title):
+    if not await apply_manual_title(
+        state, slot, clean_title, route="session_rename", caller=caller_session_key
+    ):
         _audit(
             caller_session_key=caller_session_key,
             operation="rename",
@@ -313,30 +315,30 @@ def _parse_session_color(color: str) -> int | None:
     )
 
 
-async def set_color_target(
+#: The source label of every ``session_set_note`` note: the frame its target reads
+#: names it and its context half counts against this one per-source cap there.
+SESSION_NOTE_SOURCE = "session_set_note"
+
+
+async def authorize_created_target(
     state: "DashboardState",
     *,
     caller_session_key: str,
     target: str,
-    color: str,
+    operation: str,
     caller_fenced: bool | None = None,
-) -> dict[str, Any]:
-    """Set *target*'s sidebar color, the way the session color menu does.
+) -> "_ChatSlot":
+    """The session *target* names, if the caller created it, or a refusal.
 
-    Reach is the sessions the caller created. Every rule in
-    :func:`authorize_target` applies, including its ``self_target`` refusal, and
-    then the creator fence runs for EVERY caller, as :func:`end_wait_target`'s
-    does: the target must carry ``created_by`` equal to the caller's slot key. So an owner session with
-    session control switched on for everyone still cannot recolor the person's
-    own tabs. The write is the one a swatch
-    click in ``PATCH /api/chat/slots/{slot}/color`` makes: the index is set and
-    any custom hex the person picked is cleared, so exactly one color shows;
-    ``"none"`` clears both. Metadata only.
+    The reach of ``session_set_color`` and ``session_set_note``: every rule in
+    :func:`authorize_target`, its ``self_target`` refusal included, then the creator
+    fence for EVERY caller, as :func:`end_wait_target`'s is. The target must carry
+    ``created_by`` equal to the caller's slot key, so an owner session with session
+    control switched on for everyone still cannot reach the person's own tabs.
+    Nothing suspends after the gate, so the caller's write lands under it.
 
     ``caller_fenced`` has the meaning :func:`stop_target` documents.
     """
-    # Validated before any gate, as `set_model_target` does.
-    color_index = _parse_session_color(color)
     # Same prewarm ordering as `stop_target`: nothing may suspend between the
     # gate and the write it authorizes.
     try:
@@ -348,15 +350,43 @@ async def set_color_target(
         state,
         caller_session_key=caller_session_key,
         target=target,
-        operation="set_color",
+        operation=operation,
         precomputed_ownership_fenced=caller_fenced,
     )
-    caller_key = caller_slot_key(state, caller_session_key)
-    if _created_by_other(slot, caller_key):
+    if _created_by_other(slot, caller_slot_key(state, caller_session_key)):
         deny = _deny_factory(
-            caller_session_key=caller_session_key, operation="set_color", target=target
+            caller_session_key=caller_session_key, operation=operation, target=target
         )
         raise deny("this verb reaches only sessions the caller created", "not_creator")
+    return slot
+
+
+async def set_color_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    color: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Set *target*'s sidebar color, the way the session color menu does.
+
+    Reach is the sessions the caller created (:func:`authorize_created_target`).
+    The write is the one a swatch click in ``PATCH /api/chat/slots/{slot}/color``
+    makes: the index is set and any custom hex the person picked is cleared, so
+    exactly one color shows; ``"none"`` clears both. Metadata only.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    # Validated before any gate, as `set_model_target` does.
+    color_index = _parse_session_color(color)
+    slot = await authorize_created_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="set_color",
+        caller_fenced=caller_fenced,
+    )
     # The one color write the sidebar menu's PATCH route also makes. A swatch
     # always clears any custom hex, so exactly one color shows.
     write_slot_color(state, slot, color_index=color_index, color_hex=None)

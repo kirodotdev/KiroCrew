@@ -48,7 +48,8 @@ PATTERNS: Tuple[Tuple[str, str], ...] = (
     # A recorder's scratch project directory. Not a home path, but the same class: an
     # absolute path that exists only on the machine that recorded the frame.
     (r"/tmp/[A-Za-z0-9._-]+", "an absolute scratch path"),
-    (r"(?i)runtime-[0-9a-f]{8}", "a scratch run id"),
+    # A scratch dir, as `scratch/<token8>` or as the `runtime-<token8>` the KAS fixture records.
+    (r"(?i)runtime-[0-9a-f]{8}|scratch[/\\\\]+[0-9a-f]{8}\b", "a scratch run id"),
     (r"(?i)\b(?:localhost|127\.0\.0\.1)\b", "a local endpoint"),
     (r"\.venv|site-packages|node_modules", "the recording toolchain"),
     (r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "a run or request uuid"),

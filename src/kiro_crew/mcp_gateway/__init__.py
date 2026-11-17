@@ -37,9 +37,9 @@ from typing import TYPE_CHECKING, Any
 #:
 #: * The same-name ``session/new`` override precedence that pooling relies on is
 #:   pinned by ``test_mcp_gateway_session_inject`` but is not documented by
-#:   kiro-cli. That pinning test now runs on any platform where kiro-cli is on
-#:   PATH, so a Windows machine with the CLI installed verifies it; the CI runner
-#:   has no kiro-cli, so CI alone cannot.
+#:   kiro-cli. That pinning test runs on any platform where kiro-cli is on PATH
+#:   and ``KIROCREW_E2E_REAL_KIRO_CLI=1`` is set, so a Windows machine with the CLI
+#:   installed can verify it; the CI runner has no kiro-cli, so CI alone cannot.
 #: * A macOS peer-*principal* check is still unimplemented (see
 #:   ``socketsec``), so macOS falls back to the filesystem gate. Windows does
 #:   compare SIDs.

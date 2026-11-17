@@ -28,7 +28,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard import token_auth
 from kiro_crew.dashboard.handlers import gateway_footprint as mcp_footprint
-from kiro_crew.mcp_gateway import footprint
+from kiro_crew.mcp_gateway import footprint, footprint_probe
 
 OWNER = "owner-subject"
 PATH = "/api/mcp-gateway/footprint"
@@ -72,8 +72,9 @@ def reading(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """A fixed reading, so the owner row tests the payload, not this host."""
     seen: dict[str, Any] = {}
 
-    def _measure(sessions: Any, specs: Any, backends: Any = ()) -> footprint.Footprint:
+    def _measure(sessions: Any, specs: Any, backends: Any = (), **kw: Any) -> footprint.Footprint:
         seen["sessions"] = list(sessions)
+        seen["stub_reading"] = kw.get("stub_reading")
         return footprint.Footprint(
             using_now_bytes=5 * 1024**3,
             with_sharing_bytes=2 * 1024**3,
@@ -164,6 +165,8 @@ async def test_the_owner_gets_numbers_and_chat_names_only(
     text = json.dumps(body)
     assert "/" not in text and "=" not in text
     assert reading["sessions"] == [("dashboard:chat-1", 4242)]
+    # With no stub running, a stub is priced by the probe's kept reading.
+    assert reading["stub_reading"] is footprint_probe.idle_stub_bytes
 
 
 def test_settings_servers_are_read_with_the_rewriters_filter(tmp_path: Path) -> None:
@@ -234,7 +237,7 @@ async def test_unanswered_pool_stats_null_both_figures(
     the handler passes ``None`` and no figure is drawn from half the processes."""
     seen: dict[str, Any] = {}
 
-    def _measure(sessions: Any, specs: Any, backends: Any = ()) -> footprint.Footprint:
+    def _measure(sessions: Any, specs: Any, backends: Any = (), **_kw: Any) -> footprint.Footprint:
         seen["backends"] = backends
         return footprint.Footprint(None, None, 0, [])
 
@@ -298,7 +301,7 @@ async def test_unlisted_private_or_draining_backends_null_both_figures(
     is running but unlisted, so the reading would be short."""
     seen: dict[str, Any] = {}
 
-    def _measure(sessions: Any, specs: Any, backends: Any = ()) -> footprint.Footprint:
+    def _measure(sessions: Any, specs: Any, backends: Any = (), **_kw: Any) -> footprint.Footprint:
         seen["backends"] = backends
         return footprint.Footprint(None, None, 0, [])
 

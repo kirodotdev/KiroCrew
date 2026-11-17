@@ -18,7 +18,6 @@
   "api_work_ledger_rebuild",
   "api_work_ledger_record",
   "api_work_report",
-  "caller_admission",
   "conductor_patrol",
   "contained_channel_caller",
   "crew_log_emit",
@@ -39,7 +38,7 @@
   "work_metrics",
   "worker_holds_open_item"
  ],
- "note": "Frozen at the split of src/kiro_crew/dashboard/handlers/work_ledger.py (S58): every public name it defined, and every name it bound from the rest of kiro_crew.",
+ "note": "Frozen at the split of src/kiro_crew/dashboard/handlers/work_ledger.py (S58): every public name it defined, and every name it bound from the rest of kiro_crew. caller_admission left the surface deliberately (#22001): its replacement, caller_admission_with_route, also answers whether the caller was admitted through the code-channel dispatch exemption, which a caller must read to publish only the published fields; a three-value form would drop that answer.",
  "rebound": {
   "CrewLogError": "kiro_crew.crew_log.errors",
   "DashboardState": "kiro_crew.dashboard.state",

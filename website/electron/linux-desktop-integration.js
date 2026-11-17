@@ -237,6 +237,9 @@ function renderDesktopEntry(fields) {
   lines.push("Terminal=false");
   emit("StartupWMClass", fields.wmClass);
   emit("Categories", fields.categories);
+  // The bundled x-scheme-handler/kirocrew line: without it update-desktop-database
+  // binds no handler to this launcher, so kirocrew:// links never reach the AppImage.
+  emit("MimeType", fields.mimeType);
   return lines.join("\n") + "\n";
 }
 
@@ -875,9 +878,10 @@ function writeManifest(fs, path, stateRoot, manifestPath, state) {
     throw e;
   }
   const tmp = uniqueSidePath(manifestPath, "tmp");
-  fs.writeFileSync(tmp, body, { flag: "wx", mode: 0o600 });
   let committed = false;
   try {
+    // Inside the try so a write that fails part-way (ENOSPC) still unlinks tmp.
+    fs.writeFileSync(tmp, body, { flag: "wx", mode: 0o600 });
     syncPath(fs, tmp);
     fs.renameSync(tmp, manifestPath);
     committed = true;
@@ -1659,6 +1663,7 @@ function integrateLinuxDesktop(deps) {
     iconName,
     wmClass: entry.StartupWMClass || iconName,
     categories: entry.Categories,
+    mimeType: entry.MimeType,
   });
 
   const stateRoot = path.join(stateDir, MANIFEST_DIR);

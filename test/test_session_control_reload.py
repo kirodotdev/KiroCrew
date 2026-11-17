@@ -91,7 +91,9 @@ def test_a_created_idle_session_is_reset_and_respawned(tmp_path, eager, audits):
     out = _reload(state, caller)
 
     assert out == {"ok": True, "target": "chat-2"}
-    state.sessions.reset.assert_awaited_once_with("dashboard:chat-2", skip_if_busy=True)
+    state.sessions.reset.assert_awaited_once_with(
+        "dashboard:chat-2", skip_if_busy=True, forget_unused_start=True
+    )
     eager.assert_called_once()
     assert eager.call_args.kwargs.get("allow_resume") is True
     assert audits[-1]["operation"] == "reload"
@@ -100,10 +102,34 @@ def test_a_created_idle_session_is_reset_and_respawned(tmp_path, eager, audits):
     assert audits[-1]["slot_key"] == "chat-2"
 
 
+def test_a_reload_whose_reset_dropped_an_unused_start_respawns_fresh(tmp_path, eager, audits):
+    """A start no turn prompted loses its resume pointer in the reset, so the
+    respawn is a fresh eager start: a resume prefetch would find no pointer and
+    start nothing."""
+    state, caller, _target = _world(tmp_path)
+    state.sessions.fresh_start_unclaimed = MagicMock(return_value=True)
+
+    _reload(state, caller)
+
+    eager.assert_called_once()
+    assert eager.call_args.kwargs.get("allow_resume") is False
+
+
+def test_a_reload_of_a_session_a_turn_claimed_still_resumes(tmp_path, eager, audits):
+    state, caller, _target = _world(tmp_path)
+    state.sessions.fresh_start_unclaimed = MagicMock(return_value=False)
+
+    _reload(state, caller)
+
+    assert eager.call_args.kwargs.get("allow_resume") is True
+
+
 def test_the_transcript_is_untouched_except_one_notice_naming_the_caller(tmp_path, eager):
     """Mutation guard: a reload that rewrote or dropped history, or appended an
-    unattributed notice, fails here."""
+    unattributed notice, fails here. The one row after the notice says how the
+    respawn ended (here: eager spawn is off, so nothing was scheduled)."""
     state, caller, target = _world(tmp_path)
+    state.sessions.has_session = MagicMock(return_value=False)
     target.append("user", "hello", "msg msg-u")
     target.append("assistant", "hi there", "msg msg-a")
     before = [dict(m) for m in target.messages]
@@ -111,8 +137,11 @@ def test_the_transcript_is_untouched_except_one_notice_naming_the_caller(tmp_pat
     _reload(state, caller)
 
     assert target.messages[: len(before)] == before
-    assert len(target.messages) == len(before) + 1
-    notice = target.messages[-1]
+    assert len(target.messages) == len(before) + 2
+    outcome = target.messages[-1]
+    assert outcome["meta"]["kind"] == "session_reload"
+    assert outcome["content"] == "The reloaded agent starts with the next message."
+    notice = target.messages[-2]
     assert notice["role"] == "assistant"
     assert notice["meta"]["kind"] == "session_reload"
     assert notice["meta"]["kind"] == "session_reload"

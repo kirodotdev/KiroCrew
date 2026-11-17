@@ -21,7 +21,8 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import api_session_detail, api_sessions, api_sessions_search
 from kiro_crew.dashboard.handlers.sessions_parts import history_reads
-from kiro_crew.history import INCOGNITO_EXCLUDED_HEADER, ConversationLog
+from kiro_crew.history import INCOGNITO_EXCLUDED_HEADER, ConversationLog, TranscriptBusy
+from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_RESULT_KIND
 
 
 def _make_app(log: ConversationLog) -> web.Application:
@@ -209,3 +210,112 @@ class TestDetailHeader:
             resp = await client.get("/api/sessions/hidden")
             assert INCOGNITO_EXCLUDED_HEADER not in resp.headers
             assert len(await resp.json()) == 1
+
+
+def _long_session(log: ConversationLog, key: str = "long") -> None:
+    """Six rows: three a recall reads, a tool row, a system row and a task brief."""
+    log.append(key, "user", "first question")
+    log.append(key, "tool", "a tool step")
+    log.append(key, "assistant", "first answer")
+    log.append(key, "system", "an internal row")
+    log.append(key, "assistant", "a task brief", extra_meta={"kind": WARM_TASK_BRIEF_RESULT_KIND})
+    log.append(key, "inject", "a note left for later")
+
+
+class TestDetailCountedRead:
+    """``max_messages`` on the guarded arm: the newest recall rows, read from the end."""
+
+    @pytest.mark.asyncio
+    async def test_a_counted_read_answers_the_newest_recall_rows(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        _long_session(log)
+        async with TestClient(TestServer(_make_app(log))) as client:
+            resp = await client.get("/api/sessions/long?exclude_incognito=1&max_messages=2")
+            assert resp.headers.get(INCOGNITO_EXCLUDED_HEADER) == "1"
+            assert await resp.json() == [
+                {"role": "assistant", "content": "first answer"},
+                {"role": "inject", "content": "a note left for later"},
+            ]
+
+    @pytest.mark.asyncio
+    async def test_a_counted_read_does_not_read_the_whole_transcript(self, tmp_path, monkeypatch):
+        log = ConversationLog(base_dir=tmp_path)
+        _long_session(log)
+        whole_reads: list[str] = []
+        real = log._read_messages
+        monkeypatch.setattr(log, "_read_messages", lambda key: whole_reads.append(key) or real(key))
+        async with TestClient(TestServer(_make_app(log))) as client:
+            resp = await client.get("/api/sessions/long?exclude_incognito=1&max_messages=2")
+            assert len(await resp.json()) == 2
+            assert whole_reads == []
+            # The same read with no count is the whole transcript, as before.
+            resp = await client.get("/api/sessions/long?exclude_incognito=1")
+            assert len(await resp.json()) == 6
+            assert whole_reads == ["long"]
+
+    @pytest.mark.asyncio
+    async def test_a_counted_read_of_a_restricted_transcript_is_withheld(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        _three_sessions(log)
+        async with TestClient(TestServer(_make_app(log))) as client:
+            resp = await client.get("/api/sessions/hidden?exclude_incognito=1&max_messages=5")
+            assert resp.headers.get(INCOGNITO_EXCLUDED_HEADER) == "1"
+            assert await resp.json() == []
+
+    @pytest.mark.asyncio
+    async def test_a_counted_read_of_a_busy_transcript_is_retryable(self, tmp_path, monkeypatch):
+        log = ConversationLog(base_dir=tmp_path)
+        _long_session(log)
+
+        def busy(*_args, **_kwargs):
+            raise TranscriptBusy("held by a writer")
+
+        monkeypatch.setattr(log, "derive_recent", busy)
+        async with TestClient(TestServer(_make_app(log))) as client:
+            resp = await client.get("/api/sessions/long?exclude_incognito=1&max_messages=5")
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "transcript_busy"
+
+    @pytest.mark.asyncio
+    async def test_a_count_past_the_ceiling_is_clamped(self, tmp_path, monkeypatch):
+        log = ConversationLog(base_dir=tmp_path)
+        _long_session(log)
+        asked: list[int] = []
+        real = log.derive_recent
+        monkeypatch.setattr(
+            log,
+            "derive_recent",
+            lambda key, count, roles: asked.append(count) or real(key, count, roles),
+        )
+        async with TestClient(TestServer(_make_app(log))) as client:
+            resp = await client.get("/api/sessions/long?exclude_incognito=1&max_messages=100000")
+            assert resp.status == 200
+        assert asked == [history_reads._GUARDED_TAIL_MAX_MESSAGES]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("count", ["0", "-3", "many", ""])
+    async def test_a_count_that_is_not_a_positive_number_reads_the_whole_transcript(
+        self, tmp_path, count
+    ):
+        log = ConversationLog(base_dir=tmp_path)
+        _long_session(log)
+        async with TestClient(TestServer(_make_app(log))) as client:
+            resp = await client.get(f"/api/sessions/long?exclude_incognito=1&max_messages={count}")
+            assert [m["role"] for m in await resp.json()] == [
+                "user",
+                "tool",
+                "assistant",
+                "system",
+                "assistant",
+                "inject",
+            ]
+
+    @pytest.mark.asyncio
+    async def test_the_dashboard_read_ignores_the_count(self, tmp_path):
+        """Without ``exclude_incognito`` the route is the owner's whole-transcript read."""
+        log = ConversationLog(base_dir=tmp_path)
+        _long_session(log)
+        async with TestClient(TestServer(_make_app(log))) as client:
+            resp = await client.get("/api/sessions/long?max_messages=2")
+            assert INCOGNITO_EXCLUDED_HEADER not in resp.headers
+            assert len(await resp.json()) == 6

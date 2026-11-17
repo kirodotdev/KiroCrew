@@ -46,6 +46,10 @@ def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
 def _patch_config(monkeypatch, **tel_kwargs):
     fake = KiroCrewConfig(telemetry=TelemetryConfig(**tel_kwargs))
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
+    # Treat these configs as an explicit opt-in to recording, which is what lets a
+    # configured export destination attach (``provider.outbound_consented``); the
+    # default alone never does, and these tests are about the readers.
+    monkeypatch.setattr("kiro_crew.metrics.provider.outbound_consented", lambda cfg: True)
     # Keep the consent gate deterministic: a stray KIROCREW_TELEMETRY in the
     # ambient env must not flip these tests. Individual env-var tests re-set it.
     monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
@@ -343,11 +347,12 @@ def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
     endpoint = "https://user:super-secret@example.test/v1/metrics?token=hidden"
 
     class _FailingOTLPMetricExporter:
-        def __init__(self, *, endpoint):
+        def __init__(self, *, endpoint, **kwargs):
             raise ValueError(f"invalid endpoint: {endpoint}")
 
     mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
     mod.OTLPMetricExporter = _FailingOTLPMetricExporter  # type: ignore[attr-defined]
+    mod._load_session_from_envvar = lambda _variable: None  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
         "opentelemetry.exporter.otlp.proto.http.metric_exporter",
@@ -362,12 +367,12 @@ def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
 
 
 def test_retention_config_defaults():
-    """Retention caps default off so upgrades never delete existing shards."""
+    """Recording is on by default, so the disk caps are on by default too."""
     from kiro_crew.config.loader import TelemetryConfig
 
     cfg = TelemetryConfig()
-    assert cfg.retention_days == 0
-    assert cfg.max_total_mb == 0
+    assert cfg.retention_days == 30
+    assert cfg.max_total_mb == 100
     # Negative values are clamped to 0 (disabled) rather than pruning everything.
     clamped = TelemetryConfig(retention_days=-5, max_total_mb=-1)
     assert clamped.retention_days == 0
@@ -451,7 +456,10 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
         mod,
     )
 
-    session = object()  # stands in for a requests.Session carrying rotating auth
+    import requests
+
+    session = requests.Session()
+    session.auth = ("edition", "rotating")  # stands in for rotating auth
     cfg = TelemetryConfig(enabled=True, otlp_endpoint="http://localhost:4318/v1/metrics")
     reader = _build_otlp_reader(
         _dest("http://localhost:4318/v1/metrics", session=session),
@@ -459,7 +467,7 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
     )
     assert reader is not None, "a supplied destination must build an OTLP reader"
     assert captured["endpoint"] == "http://localhost:4318/v1/metrics"
-    assert captured["session"] is session, "the edition's authenticated transport"
+    assert captured["session"].auth is session.auth, "the edition's authenticated transport"
     # Clean shutdown so the reader's daemon thread doesn't linger.
     try:
         reader.shutdown()

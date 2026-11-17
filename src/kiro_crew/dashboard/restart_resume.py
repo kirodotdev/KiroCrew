@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
 
 if TYPE_CHECKING:
@@ -69,7 +70,7 @@ def take_intent() -> frozenset[str]:
     try:
         with open(path, "rb") as fh:
             age = time.time() - os.fstat(fh.fileno()).st_mtime
-            raw = fh.read(_INTENT_MAX_BYTES + 1)
+            raw = bounded_read(fh, _INTENT_MAX_BYTES + 1)
     except FileNotFoundError:
         return frozenset()
     path.unlink(missing_ok=True)

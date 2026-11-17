@@ -18,7 +18,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
@@ -70,6 +70,31 @@ logger = logging.getLogger("kiro_crew.platform.policy_distribution")
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _without_legacy_terminal_refusal(data: Dict[str, Any]) -> Dict[str, Any]:
+    """*data* with ``boot.allow_terminal`` dropped when an older translation wrote it.
+
+    The enterprise translation (``enterprise_policy_translate.BOOT``) does not state
+    ``allow_terminal``; translations before ``TRANSLATION_REVISION`` ``t3`` wrote
+    ``false``, which nothing enforced. So a translated document that states it is an
+    older build's cached copy, and reading the key as left out keeps the terminal those
+    hosts have today, offline included. Any other document applies as written.
+    shortcut: detected by content, not by the cache's revision, because the etag does
+    not reach this parse; if the translation ever states the key, make this
+    revision-aware.
+    """
+    from kiro_crew.platform.enterprise_policy_fetch import ISSUER_PREFIX
+
+    identity = data.get("identity")
+    issuer = identity.get("issuer") if isinstance(identity, dict) else None
+    boot = data.get("boot")
+    if not (isinstance(issuer, str) and issuer.startswith(ISSUER_PREFIX)):
+        return data
+    if not (isinstance(boot, dict) and "allow_terminal" in boot):
+        return data
+    trimmed = {key: value for key, value in boot.items() if key != "allow_terminal"}
+    return {**data, "boot": trimmed}
+
+
 def parse_distributed_policy(body: bytes, *, source: str) -> GovernanceCeiling:
     """Turn fetched bytes into a verified ceiling, or raise.
 
@@ -104,7 +129,7 @@ def parse_distributed_policy(body: bytes, *, source: str) -> GovernanceCeiling:
         raise PlatformCompositionError(f"policy fetched from {label} is not a JSON object")
 
     state = _verify_policy_signature(data, source=label)
-    ceiling = parse_policy(data, signature_state=state)
+    ceiling = parse_policy(_without_legacy_terminal_refusal(data), signature_state=state)
     # Mandated provenance is enforced HERE as well as at the shared boot gate, so a
     # refused document never reaches the cache. The opt-in is ``require_policy_signature``
     # in the admission policy — the operator-controlled trust root that is on the

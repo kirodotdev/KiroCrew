@@ -22,6 +22,8 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from named_cases_helpers import named_cases
+from redaction_structured_cases import github_classic
 
 import kiro_crew.dashboard.handlers.steering as steering_mod
 from kiro_crew.dashboard.handlers._shared import active_project_dir, active_project_state
@@ -44,6 +46,7 @@ from kiro_crew.dashboard.handlers.steering import (
     steering_roots,
 )
 from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # ── Fixtures / helpers ──
 
@@ -370,12 +373,12 @@ class TestInclusionMetadata:
     def test_free_text_metadata_is_redacted(self, fake_home):
         """``inclusion``/``fileMatchPattern`` are author-supplied text on the
         same never-round-tripped path as the description."""
-        leak = "AKIAIOSFODNN7EXAMPLE1234567890abcdefghij"
+        leak = github_classic(seed=31)
         entry = self._entry(
             fake_home,
             f"---\ninclusion: fileMatch\nfileMatchPattern: {leak}\n---\n# Doc\n",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in entry["file_match_pattern"]
+        assert leak not in entry["file_match_pattern"]
 
     def test_free_text_metadata_is_capped(self, fake_home):
         entry = self._entry(
@@ -400,13 +403,21 @@ class TestKeyParsing:
         assert _split_key("workspace/team/style.md") == ("workspace", "team/style.md")
 
     @pytest.mark.parametrize("raw,expected", [
-        ("api standards", "api standards.md"),
-        ("API_Standards.md", "API_Standards.md"),
-        ("../../etc/passwd", "etc/passwd.md"),
-        ("nested/../thing", "nested/thing.md"),
-        ("bad;chars|here", "bad-chars-here.md"),
-        ("   ", ""),
-        ("/", ""),
+        *named_cases("test_safe_rel_name", "raw,expected", [
+            ("api standards", "api standards.md"),
+            ("API_Standards.md", "API_Standards.md"),
+            ("../../etc/passwd", "etc/passwd.md"),
+            ("nested/../thing", "nested/thing.md"),
+            ("bad;chars|here", "bad-chars-here.md"),
+            ("   ", ""),
+            ("/", ""),
+        ]),
+        *named_cases("test_segment_keeping_ascii_is_rewritten_as_before", "raw,expected", [
+            ("规范v2", "--v2.md"),
+            ("a.md.md", "a.md.md"),
+            ("x/.md", "x/.md"),
+            ("---", "---.md"),
+        ]),
     ])
     def test_safe_rel_name(self, raw, expected):
         assert _safe_rel_name(raw) == expected
@@ -425,15 +436,6 @@ class TestKeyParsing:
         hashed = slug_hash_fallback("编码规范", "steering")
         assert _safe_rel_name("team/编码规范") == f"team/{hashed}.md"
         assert _safe_rel_name("编码规范/style") == f"{hashed}/style.md"
-
-    @pytest.mark.parametrize("raw,expected", [
-        ("规范v2", "--v2.md"),
-        ("a.md.md", "a.md.md"),
-        ("x/.md", "x/.md"),
-        ("---", "---.md"),
-    ])
-    def test_segment_keeping_ascii_is_rewritten_as_before(self, raw, expected):
-        assert _safe_rel_name(raw) == expected
 
 
 class TestResolution:
@@ -940,7 +942,8 @@ class TestProjectStateReason:
 class TestRedaction:
     """Listing metadata is redacted; editor content deliberately is not."""
 
-    FAKE = "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE1234567890abcdefghij"
+    SECRET = SAMPLE_AWS_SECRET
+    FAKE = f"aws_secret_access_key={SECRET}"
 
     @pytest.mark.asyncio
     async def test_listing_description_is_redacted(self, fake_home):
@@ -948,7 +951,7 @@ class TestRedaction:
         async with TestClient(TestServer(_make_app(_state()))) as client:
             data = await (await client.get("/api/steering")).json()
         desc = data["files"][0]["description"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in desc
+        assert self.SECRET not in desc
 
     @pytest.mark.asyncio
     async def test_detail_content_is_verbatim(self, fake_home):

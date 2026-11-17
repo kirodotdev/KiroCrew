@@ -54,7 +54,9 @@ def detect_project_dir(saved_file: Callable[[], Path]) -> str | None:
         if not pdf.is_file():
             return None
         saved = pdf.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Not UTF-8 holds no usable path either; raising here would stop every
+        # command at startup, before doctor could report the file.
         return None
     p = Path(saved)
     if _is_dir(p) and _is_checkout(p):

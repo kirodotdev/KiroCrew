@@ -16,6 +16,7 @@ import {
   ExternalLink,
   Loader2,
   KeyRound,
+  X,
 } from 'lucide-react'
 import {
   type LaunchJob,
@@ -519,9 +520,11 @@ export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; on
   )
 }
 
-/** One AWS prerequisite row (ok / warn) with optional command + actions. */
+/** One AWS prerequisite row (ok / failed) with optional command + actions.
+ *  Every row gates Launch, so a failed one is drawn as an error, not a warning. */
 export function PrereqRow({
   ok,
+  stale,
   title,
   detail,
   command,
@@ -538,6 +541,9 @@ export function PrereqRow({
   commandNote,
 }: {
   ok: boolean
+  /** The profile or Region changed since this verdict: its mark is greyed,
+   *  while its text and actions stay readable and live. */
+  stale?: boolean
   title: string
   detail: string
   command?: string
@@ -571,8 +577,8 @@ export function PrereqRow({
 }) {
   return (
     <li className="flex items-start gap-3 py-2.5 border-b border-border last:border-b-0">
-      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${ok ? 'bg-ok text-ok-fg' : 'bg-warn text-warn-fg'}`}>
-        {ok ? <Check size={11} /> : <AlertTriangle size={11} />}
+      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
+        {ok ? <Check size={11} /> : <X size={11} />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
@@ -580,7 +586,7 @@ export function PrereqRow({
           // askAgent ON: the launch form on this tab keeps every entry the
           // reader has not launched with (size, account, subnet, sign-in), so
           // the navigation loses nothing. showIcon OFF: the row's
-          // warning circle already marks the failed check.
+          // error circle already marks the failed check.
           <div className="mt-0.5">
             {failureDetail ? (
               <ErrorNotice

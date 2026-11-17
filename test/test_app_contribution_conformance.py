@@ -1,7 +1,7 @@
 """The backend half of the contributed-command conformance suite.
 
 Reads the SAME fixture as
-``website/src/apps/command-bar/contributedCommands.conformance.test.ts``. The point is
+``website/src/components/commandBar/contributedCommands.conformance.test.ts``. The point is
 not extra coverage -- both sides already have their own unit tests -- but that the two
 hand-written rulebooks cannot disagree about a verdict without a build failing. They
 drifted twice while this contract was being written (the title cap and the per-app

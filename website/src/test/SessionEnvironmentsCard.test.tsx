@@ -1081,7 +1081,8 @@ describe('Sprites and boxd providers', () => {
       const notes = screen.getByTestId('shutdown-provider-notes')
       expect(within(notes).getByText(boxd)).toBeVisible()
       expect(within(notes).getByText(sprites)).toBeVisible()
-      expect(shutdown()).toHaveAccessibleDescription(`${boxd} ${sprites}`)
+      // The row's own line is read first, then the two provider notes.
+      expect(shutdown()).toHaveAccessibleDescription(`${screen.getByText(coder).textContent} ${boxd} ${sprites}`)
     }
   })
 

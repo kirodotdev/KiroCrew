@@ -84,8 +84,14 @@ def write_lesson(
     defer_backfills: bool = False,
     facets: "memory_schema.MemoryFacets | None" = None,
     written_by: Mapping[str, str] | None = None,
+    source_ref: str | None = None,
 ) -> LessonWriteResult:
     """Write a lesson as a semantic entry with key lesson.<hash>.
+
+    *source_ref* is the record metadata ``source_ref`` the row is stamped with
+    (``memory_record_meta``), for a caller that knows which session produced the
+    lesson. It never enters ``source`` or the stored value, so every reader that
+    compares ``source`` sees what it saw before.
 
     Returns which outcome occurred (see :class:`LessonWriteOutcome`) rather than a
     bare ``bool``, whose ``False`` conflated "validation refused this", "a dedup
@@ -157,6 +163,7 @@ def write_lesson(
     task-runner, and direct callers share the boundary.
     """
 
+    from kiro_crew import memory_lesson_dedup as _lesson_dedup
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
     _MAX_BACKFILLS_PER_CALL = vm._MAX_BACKFILLS_PER_CALL
@@ -315,12 +322,12 @@ def write_lesson(
     # Pass 1 resolves THIS lesson. Pass 2 runs the generic dedup rules, and those
     # can claim the write on an UNRELATED row -- a superset whose text contains our
     # rule. get_lessons() orders by updated_at DESC, then by md5 key within one
-    # stamp, so whether such a row is scanned before ours is effectively random,
-    # and doing both in one loop made the outcome depend on that order: an
-    # unrelated superset seen first discarded an enrichment we had already
-    # selected, and the clause was dropped on HTTP 200.
-    # Resolving the exact match first makes the result order-independent, and
-    # pass 2 is skipped entirely once pass 1 claims the write.
+    # stamp, so whether such a row comes before ours is effectively random. In
+    # one loop, an unrelated superset seen first would discard an enrichment
+    # already selected, dropping the clause on HTTP 200. Resolving the exact
+    # match first makes the result order-independent, and pass 2 is skipped
+    # once pass 1 claims the write.
+    #
     # Deduplication is SCOPE-LOCAL, and both passes below share this list.
     #
     # A lesson scoped to one repository and a global one are different lessons
@@ -374,6 +381,9 @@ def write_lesson(
     # emptied part of the store. Draining after ``set_semantic`` extends the
     # same guarantee to a value the store itself rejects.
     deferred_supersedes: list[tuple[str, str, str, str]] = []
+    # Cosine of each queued similarity supersede, by row key, so the merges that
+    # land can be counted for memory.member_lesson_dedup (kiro_crew.memory_lesson_dedup).
+    queued_cosines: dict[str, float] = {}
 
     # AUTHORITY PRE-PASS -- non-mutating, decided before the scan's first
     # deletion. The invariant: every refusal the authority rule can make
@@ -457,7 +467,8 @@ def write_lesson(
                 backfills_done += 1
             if row_blob is None:
                 continue
-            if similarity({"embedding": row_blob}) > 0.85:
+            pre_sim = similarity({"embedding": row_blob})
+            if pre_sim > 0.85:
                 # Outranking means a ``user_explicit`` row over this
                 # lower-authority write, or a strictly higher stored
                 # confidence -- the confidence half on its own merit: the
@@ -479,6 +490,7 @@ def write_lesson(
                     # mutating scan entirely, so a declined write costs no
                     # stored row and ``superseded`` is always empty here.
                     _flush_backfills()
+                    _lesson_dedup.record_default_merges(self, [pre_sim])
                     return LessonWriteResult(
                         LessonWriteOutcome.DEDUPED,
                         "semantic_similarity",
@@ -616,12 +628,11 @@ def write_lesson(
                     # ``len(rule) > len(existing_text)`` would DROP the
                     # submission when it loses, making character count
                     # decide which of two near-identical rules is current.
-                    # A correction is frequently SHORTER than the stale
-                    # lesson it corrects (a retracted claim collapses to a
-                    # one-line "not installed"), so the losing case landed
-                    # exactly on corrections -- and left the stale lesson in
-                    # effect, the one outcome that actively misleads the
-                    # agent rather than merely losing information.
+                    # A correction is often SHORTER than the stale lesson it
+                    # corrects (a retracted claim becomes a one-line "not
+                    # installed"), so a length rule would drop exactly the
+                    # corrections and keep the stale lesson, which actively
+                    # misleads the agent.
                     #
                     # The non-mutating pre-pass above already returned
                     # DEDUPED if any purely-semantic row outranks the write. Like
@@ -638,6 +649,7 @@ def write_lesson(
                                 "%.2f cosine" % sim,
                             )
                         )
+                        queued_cosines[existing["key"]] = sim
                     continue
 
     # No pending backfill is dropped for a queued row. The queue is a list of
@@ -659,7 +671,14 @@ def write_lesson(
             facets if facets is not None else memory_schema.MemoryFacets()
         )
         facets = dataclasses.replace(prior, scope=repo_scope)
-    err = self.set_semantic(key, value, confidence, source, facets=facets)
+    err = self.set_semantic(
+        key,
+        value,
+        confidence,
+        source,
+        facets=facets,
+        metadata={"source_ref": source_ref} if source_ref else None,
+    )
     if err is not None:
         # Nothing was deleted: the scan only QUEUED its supersedes, and the
         # queue drains below this return. So a value the store rejects costs
@@ -688,8 +707,8 @@ def write_lesson(
     # retired row's tombstone and audit event, and by its "so far" count to the
     # matching ``superseded`` entry in the result. Logging the keys rather than a
     # fresh digest is deliberate: a newly computed hash would correlate with
-    # nothing. No log line here hashes anything; a weak-hash finding belongs at
-    # ``_lesson_slug``'s digest, not at a line that logs a key.
+    # nothing. No log line here hashes anything (``_lesson_slug`` owns the
+    # digest).
     #
     # The attribution is passed INTO delete_semantic (winning key + reason), so
     # the tombstone's record status and audit event record it durably in the
@@ -698,6 +717,7 @@ def write_lesson(
     # durable trace; the line below logs at WARNING so the same deletion is
     # visible to a human tailing gateway.log (a default install records WARNING+
     # to disk), not only to a query against the audit table.
+    landed_cosines: list[float] = []
     for d_key, d_report, d_body, d_reason in deferred_supersedes:
         if not self.delete_semantic(
             d_key,
@@ -721,6 +741,9 @@ def write_lesson(
             len(superseded) + 1,
         )
         superseded.append(d_report)
+        if d_key in queued_cosines:
+            landed_cosines.append(queued_cosines[d_key])
+    _lesson_dedup.record_default_merges(self, landed_cosines)
 
     if rule_emb:
         emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)

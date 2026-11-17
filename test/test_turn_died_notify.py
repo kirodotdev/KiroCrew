@@ -114,7 +114,7 @@ class TestItNotifiesAHumanSession:
         assert _fire(key="dashboard:a b/c")[0]["url"] == "/chat?sid=dashboard%3Aa%20b%2Fc"
 
     def test_group_key_survives_onto_the_delivered_note(self) -> None:
-        # Regression: group_key must be set on the PAYLOAD, not passed in meta,
+        # group_key must be set on the PAYLOAD, not passed in meta,
         # which the bus drops. The real bus is what proves it lands.
         assert _fire(session_key="sid-9")[0]["group_key"] == "turn-died:sid-9"
 

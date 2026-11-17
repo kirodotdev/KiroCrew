@@ -198,6 +198,22 @@ class TestPlanPage:
         plan = plan_page(frags, self._ids(frags), page_start=0, total=3, window=10, cursor=None)
         assert plan.cursor == {"from": 0, "since": 2, "digest": span_digest([b"a", b"b"], 0, 2)}
 
+    def test_a_row_removed_from_the_span_is_a_full_page(self):
+        """A rewind or redaction that drops a held row shifts every later position."""
+        held = ["a", "b", "c", "d", "e"]
+        cursor = plan_page(held, self._ids(held), page_start=0, total=5, window=10, cursor=None)
+        assert cursor.cursor is not None
+        after = ["a", "b", "d", "e", "f"]  # "c" removed, "f" arrived
+        plan = plan_page(
+            after,
+            self._ids(after),
+            page_start=0,
+            total=5,
+            window=10,
+            cursor=DeltaCursor(**{"start": 0, "since": 4, "digest": cursor.cursor["digest"]}),
+        )
+        assert plan.delta is None and plan.fragments == after
+
     def test_the_digest_is_bound_to_position(self):
         assert span_digest([b"a"], 0, 1) != span_digest([b"a"], 1, 2)
 
@@ -253,7 +269,7 @@ class TestRowIdentities:
     def test_owner_view_rows_have_no_identity(self, monkeypatch):
         from kiro_crew.dashboard import wire_render
 
-        monkeypatch.setattr(wire_render, "credential_pass_bypassed", lambda: True)
+        monkeypatch.setattr(wire_render, "bypassed_in", lambda _seam: True)
         _, ids = wire_render.prepare_message_rows(
             [{"role": "assistant", "content": "x", "cls": "msg msg-a"}], False, live_child=""
         )

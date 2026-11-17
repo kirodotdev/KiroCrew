@@ -3,5 +3,13 @@
   "displayName": "Fixture Notes",
   "version": "1.0.0",
   "description": "A tiny installed app used by the apps-installed seed fixture.",
-  "author": "kirocrew-fixture"
+  "author": "kirocrew-fixture",
+  "ui": {
+    "pages": [
+      {
+        "route": "/apps/fixture-notes",
+        "label": "Fixture Notes"
+      }
+    ]
+  }
 }

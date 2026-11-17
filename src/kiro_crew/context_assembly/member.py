@@ -334,6 +334,7 @@ def build_member_section(
     strict: bool = False,
     include_briefing: bool = True,
     desk_withheld: bool = False,
+    dispatch_mounted: bool | None = None,
 ) -> str:
     """Assemble the four-layer identity for a member's bound execution.
 
@@ -378,6 +379,12 @@ def build_member_section(
     writes is that member's; layer 3 stays because the user's bounds on a
     member follow its memory, not its surface or template.
 
+    ``dispatch_mounted`` is the live session's ``member_dispatch_mounted``
+    (``None`` when no session evidence reached the build). The tracking sentence
+    names the ledger tools only where :func:`_member_dispatch_held` also teaches
+    the operating-mode block, so a turn is never told to track worker hand-offs
+    it cannot make.
+
     V1 retains its existing optional-layer failure behavior. V2 passes
     ``strict=True`` with a stable member ID, never a configured-name fallback,
     and never suppresses assembly errors. An existing but
@@ -409,6 +416,7 @@ def build_member_section(
         if strict:
             raise
         return ""
+    crew_key = member
     # Type-guarded, not just None-guarded: these fields come from an
     # operator-editable JSON file, and a hand-edited non-string value
     # (`"description": 1`) must degrade to the identity floor rather than
@@ -487,14 +495,33 @@ def build_member_section(
             mate_tools_identity = _MATE_TOOLS_IDENTITY_MANUAL
         else:
             mate_tools_identity = _MATE_TOOLS_IDENTITY
-        # The ledger tools are named only where this chat's spec mounts and grants
-        # them (``member_mate_tools.binding_has_ledger_tools``).
-        from kiro_crew.member_mate_tools import binding_has_ledger_tools
-
-        tracking = (
-            "conductor.tracking_ledger" if binding_has_ledger_tools(crew) else "conductor.tracking"
+        # The ledger tools are named only where this chat's spec mounts them
+        # (``member_mate_tools.binding_ledger_off_reason``) AND the operating-mode
+        # block is taught: its sentence is about tasks handed to workers, which a turn
+        # without the ``session_*`` tools cannot hand (``_member_dispatch_held``, the
+        # same verdict ``session_start`` gives that block).
+        from kiro_crew.member_mate_tools import (
+            LEDGER_OFF_CONFIG,
+            LEDGER_OFF_UNREADABLE,
+            binding_ledger_off_reason,
         )
-        identity.append(mate_tools_identity + _prompt(tracking))
+
+        off = binding_ledger_off_reason(crew)
+        tracking = (
+            "conductor.tracking_ledger"
+            if not off and ctx._member_dispatch_held(dispatch_mounted, cfg, crew_key)
+            else "conductor.tracking"
+        )
+        off_key = {
+            LEDGER_OFF_UNREADABLE: "conductor.tracking_off_unreadable",
+            LEDGER_OFF_CONFIG: "conductor.tracking_off_config",
+        }.get(off)
+        identity.append(
+            mate_tools_identity
+            + _prompt(tracking)
+            # Fail closed but never silently (owner decision in docs/decisions, cases N3 and N4).
+            + (_prompt(off_key) if off_key else "")
+        )
 
     parts = ["\n".join(identity)]
     if not desk_withheld:
@@ -600,6 +627,7 @@ def build_v2_essentials(
     steering_dirs: tuple[str, ...],
     desk_withheld: bool,
     provider_type: str | None,
+    dispatch_mounted: bool | None = None,
 ) -> str:
     """Refresh complete member essentials without opening learned memory.
 
@@ -648,7 +676,11 @@ def build_v2_essentials(
         context_groups, _inclusion.CONTEXT_GROUP_PROJECT
     )
     identity = builder._build_member_section(
-        owner, strict=True, include_briefing=reads, desk_withheld=desk_withheld
+        owner,
+        strict=True,
+        include_briefing=reads,
+        desk_withheld=desk_withheld,
+        dispatch_mounted=dispatch_mounted,
     )
     # A validation pass measures the largest envelope any harness can build,
     # so it keeps inheritance and never reads kiro-cli's opt-out. On a normal

@@ -15,13 +15,17 @@ import StatusNotice from '../StatusNotice'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, noteLinkLabel, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
 import { buildNotificationPrompt, isCutCronResult, wholeCronResult } from './notificationHandoff.prompt'
 import { cronJobsQuery } from '../../api/cronJobsQuery'
 import { isMemberThreadSlot } from '../../hooks/unreadOnAttention'
+import { useLoadedInstalledApps } from '../../hooks/panelTabRegistry'
+import { appNavTarget } from '../../appNav'
+import { isChatPageSurface } from '../../utils/channelOrigin'
+import type { InstalledApp } from '../appstore/types'
 
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -47,6 +51,20 @@ function memberThreadPage(
   const name = openSlot ? openSlot.agent : member?.name
   if (name) return `/members?member=${encodeURIComponent(name)}`
   return openSlot ? '/members' : null
+}
+
+/** The page of the app that keeps this open chat out of the session lists
+ *  (`permissions.hiddenSessions`), or null. /chat does not list such a chat, so
+ *  "Go to chat" opens the app's page, where it lives. */
+function hiddenChatAppPage(
+  openSlot: { mode?: string; surface?: string } | null | undefined,
+  apps: readonly InstalledApp[] | undefined,
+): string | null {
+  // `surface` is "" while the app may not hide the chat: it is listed on /chat.
+  const mode = openSlot?.surface ?? openSlot?.mode
+  if (!mode || isChatPageSurface(mode)) return null
+  const app = apps?.find(a => a.name === mode && a.manifest?.permissions?.hiddenSessions === true)
+  return app ? appNavTarget(app)?.route ?? null : null
 }
 
 /**
@@ -102,7 +120,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   // A retired row says "no longer pending", so its failed DELETE shows no
   // recorded decision; the feed reads the same rule.
   const decidedDismissFailed = phase === 'decided'
-  const refusalCopy = failureHere && !buttonsWithdrawn ? decisionFailedCopy(failureHere.reason, { targeted: !!n.approval_instance })
+  const refusalCopy = failureHere && !buttonsWithdrawn ? decisionFailedCopy(failureHere.reason)
     : endedFailure !== null ? decisionFailedCopy(endedFailure, { ended: true }) : null
   // Withdrawing the buttons unmounts the one the user just pressed, which
   // drops keyboard focus to <body>. Move it to the panel's Close, which only
@@ -184,6 +202,8 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   const directSlot = n.slot ? slots.find(s => s.key === n.slot) : null
   const { title, body } = noteText(n)
   const memberPage = memberThreadPage(n.slot, directSlot, member, slots)
+  const installedApps = useLoadedInstalledApps()
+  const appPage = hiddenChatAppPage(directSlot, installedApps)
 
   // Fuzzy match: try to find a related chat slot from the body/title
   const relatedSlot = useMemo(() => {
@@ -258,7 +278,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           {handoffNotice}
         </>)}
         {directSlot && !(n.kind === 'cron' && n.job_id && n.slot) && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { if (memberPage) { navigate(memberPage); return } dispatch(switchSlot({ key: directSlot.key, announceOnMissing: true, gesture: true })); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => { if (memberPage) { navigate(memberPage); return } if (appPage) { navigate(appPage); return } dispatch(switchSlot({ key: directSlot.key, announceOnMissing: true, gesture: true })); navigate('/chat') })}><MessageSquare className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.go_to_chat')}</button>
         )}
         {!directSlot && n.slot && !(n.kind === 'cron' && n.job_id && n.slot) && (
           /* `.unwrap()` is load-bearing for the diagnostic: a thunk dispatch
@@ -278,7 +298,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
         )}
         {/* RFC Phase 4: dashboard-internal deep link (validated path-only). */}
         {safeInternalUrl(n.url) && (
-          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => navigate(safeInternalUrl(n.url)!), safeInternalUrl(n.url)!)}><ArrowUpRight className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.open')}</button>
+          <button className="px-3 py-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => leave(() => navigate(safeInternalUrl(n.url)!), safeInternalUrl(n.url)!)}><ArrowUpRight className="lucide-inline" /> {noteLinkLabel(n)}</button>
         )}
       </div>
 
@@ -326,10 +346,10 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
                 testId="notif-approval-refusal"
                 message={refusalCopy}
               />
-              {/* A refused decide failed, so it is an error; see the no
-                  hand-off note above. */}
-              <ErrorNotice
-                variant="inline"
+              {/* A decide that found the approval gone is status, not an
+                  error: nothing the user did failed. */}
+              <StatusNotice
+                tone="info"
                 className={refusalCopy !== null ? 'mt-2' : 'mt-4'}
                 testId="notif-approval-retired"
                 message={retired ? i18nT('components.approvalCard.approval_no_longer_pending') : null}
@@ -344,12 +364,11 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
                 testId="notif-decision-recorded"
                 message={decidedDismissFailed ? i18nT('components.notifications.notificationFeed.decision_recorded') : null}
               />
-              {/* Boxed beside the boxed StatusNotice above it, so the two
-                  read as one pair; on a retired row it stays inline under
-                  "no longer pending". */}
+              {/* Boxed beside the boxed StatusNotice above it (decision
+                  recorded, or no longer pending), so the two read as one
+                  pair. */}
               <ErrorNotice
-                variant={decidedDismissFailed ? 'block' : 'inline'}
-                className={decidedDismissFailed ? 'mt-1' : retired ? 'mt-2' : 'mt-4'}
+                className="mt-1"
                 testId="notif-dismiss-failed"
                 message={dismissFailed ? decidedClearFailedCopy() : null}
               />

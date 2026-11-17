@@ -1,6 +1,6 @@
 """The Crew board read carries the conductor's offered answers (goal-board's ``asks``).
 
-The Ultra Mode Board's Needs your input draws them as Reply buttons, the way the
+The conductor mode Board's Needs your input draws them as Reply buttons, the way the
 goal-board page does, so the read hands them over keyed by item: only for this
 board's open items, only non-empty strings, at most six each, and ``{}`` when the
 conductor's agentic fold cannot be read.

@@ -32,8 +32,13 @@ describe('isTerminalFullscreenAllowed', () => {
 describe('mainStackingClass', () => {
   const docked = { terminalEnabled: true, terminalPoppedOut: false }
 
-  it('isolates <main> only when a maximized dock panel is actually on screen', () => {
+  it('isolates <main> when a maximized dock panel is actually on screen', () => {
     expect(mainStackingClass({ isTerminalFullscreen: true, ...docked })).toBe('isolate')
+  })
+  it('isolates <main> while relay retrying even without a maximized terminal, but not otherwise', () => {
+    const opts = { isTerminalFullscreen: false, ...docked }
+    expect(mainStackingClass({ ...opts, relayRetrying: true })).toBe('isolate')
+    expect(mainStackingClass({ ...opts, relayRetrying: false })).toBe('')
   })
   it('adds no stacking class when the terminal is not fullscreen', () => {
     // Docked but not maximized: a page-level inline modal must paint over the dock.

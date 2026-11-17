@@ -170,6 +170,7 @@ BASE_NAMES = frozenset(
         "entry_channel",
         "entry_person_origin",
         "handle_channel_agent_command",
+        "inbound_permitted",
         "is_bare_mid_turn_override",
         "live",
         "logger",
@@ -494,7 +495,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, request_id: 'str', description: 'str', parent_session_key: 'str') -> "
-            "'bool | None'"
+            "'bool | HostSpawnDecision | None'"
         ),
     ),
     "handle_message": (
@@ -700,10 +701,15 @@ async def test_a_facade_patch_reaches_each_moved_reader(monkeypatch: pytest.Monk
     reached: list[str] = []
     d, cli, _sess = _dispatcher({"u1"})
 
+    async def _refuse(channel: str, **_kw: object) -> bool:
+        reached.append("inbound_permitted")
+        return False
+
     async def _deny(channel: str) -> bool:
         reached.append("channel_inbound_permitted")
         return False
 
+    monkeypatch.setattr(td, "inbound_permitted", _refuse)
     monkeypatch.setattr(td, "channel_inbound_permitted", _deny)
     await d.on_interaction(_command("status"))
     assert cli.responses and "disabled by policy" in cli.responses[-1][1]
@@ -740,7 +746,7 @@ async def test_a_facade_patch_reaches_each_moved_reader(monkeypatch: pytest.Monk
     assert replies and "YOLO ON (for 30 minutes)" in replies[-1]
 
     assert reached == [
-        "channel_inbound_permitted",
+        "inbound_permitted",
         "channel_inbound_permitted",
         "channel_outbound_permitted",
         "safety_override",

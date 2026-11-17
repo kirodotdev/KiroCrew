@@ -47,6 +47,8 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'about.install-app-updates-automatically': ['auto update', 'auto-update', 'automatic updates', 'auto update on restart', 'auto-update on restart', 'auto download', 'app updates'],
   // About (manual entries — settingsManual.ts)
   'about.update-channel': ['stable', 'insider', 'nightly', 'release channel', 'beta'],
+  'about.version': ['version', 'about', 'build', 'what version', 'licence', 'license'],
+  'about.release-notes': ['release notes', 'releases', 'changelog', 'change log', "what's new", 'whats new', 'what changed'],
 
   // Channels (manual entry — settingsManual.ts): the bot token WeCom calls a secret.
   'channels.wecom-bot-secret': ['bot token'],
@@ -62,6 +64,8 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'security.trust-this-machine-s-tailnet-name': ['lan', 'network', 'remote', 'expose', 'tailscale', 'origin'],
   'security.denied-commands': ['deny', 'denylist', 'blocklist', 'blocked commands', 'command rules'],
   'security.trust-every-third-party-app': ['apps', 'third party', 'auto approve apps', 'trust'],
+  'security.stop-the-agent-from-editing-its-own-permission-rules': ['kiro-cli', 'permissions.yaml', 'permission rules', 'protect_kiro_permission_rules', 'changing its own permission rules'],
+  'security.ask-me-before-running-tools-an-mcp-server-pre-approves': ['mcp', 'autoApprove', 'auto approve', 'honour_auto_approve', 'pre-approved tools', 'tools a server marks as safe'],
 
   // General navigation
   'chat.split-view-session-grid': ['split pane', 'multi session', 'grid view'],

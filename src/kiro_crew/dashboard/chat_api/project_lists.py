@@ -183,7 +183,10 @@ def _probe_favorite_candidate(path: str) -> tuple[str, bool, bool]:
     resolves too, and on a stalled network mount either would freeze the event loop.
     """
 
-    resolved = os.path.realpath(os.path.expanduser(path))
+    try:
+        resolved = os.path.realpath(os.path.expanduser(path))
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        return path, False, False
     return resolved, os.path.isdir(resolved), is_sensitive_path(resolved)
 
 
@@ -213,7 +216,10 @@ def _remove_favorite_project(path: str) -> list[str]:
     spelling would leave a row the user cannot get rid of. Missing is a no-op.
     """
 
-    resolved = os.path.realpath(os.path.expanduser(path))
+    try:
+        resolved = os.path.realpath(os.path.expanduser(path))
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        resolved = path
     with _favorite_projects_lock:
         stored = _load_favorite_projects(strict=True)
         kept = [p for p in stored if p != path and p != resolved]

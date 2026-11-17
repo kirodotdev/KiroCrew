@@ -85,9 +85,20 @@ describe('appRunStates', () => {
       // pause (cron_service/model.py record_failure), so reading `enabled`
       // alone dropped the mark on an app's WORST job -- the one that failed
       // enough times for the scheduler to give up on it. The wire
-      // distinguishes them with `user_paused`, which execution never sets.
+      // distinguishes them with `user_paused`, which an auto-pause never sets.
       expect(appRunStates([
         job({ app: 'ledger', enabled: false, user_paused: false, last_status: 'error' }),
+      ], NOW)).toEqual({ ledger: 'error' })
+    })
+
+    it('REPORTS a failed one-shot its own run parked', () => {
+      // A fired one-shot is stored with the user-pause flags, so `user_paused`
+      // alone would hide its failure. `parked_after_run` says the park is the run's.
+      expect(appRunStates([
+        job({
+          app: 'ledger', enabled: false, user_paused: true, parked_after_run: true,
+          last_status: 'error',
+        }),
       ], NOW)).toEqual({ ledger: 'error' })
     })
 

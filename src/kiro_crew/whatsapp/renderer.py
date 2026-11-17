@@ -100,6 +100,12 @@ _DIAGRAM_HEADING = "**Diagram**"
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+#: Markdown ``*x*`` is italic; WhatsApp reads ``*x*`` as BOLD, so it must become
+#: ``_x_``. Not touching another ``*`` (bold, bullets) or a space inside the marks.
+_ITALIC_STAR_RE = re.compile(r"(?<![\w*])\*(?![\s*])([^*\n]+?)(?<!\s)\*(?![\w*])")
+#: ``***x***`` (bold italic) -> ``*_x_*``; read before the bold pass, which would
+#: otherwise leave ``*`` litter round a bold ``*x*``.
+_BOLD_ITALIC_RE = re.compile(r"\*\*\*([^*\n]+?)\*\*\*")
 _BOLD_US_RE = re.compile(r"__(.+?)__")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 #: A balanced pair may sit inside the url (``.../Python_(programming_language)``);
@@ -107,13 +113,32 @@ _STRIKE_RE = re.compile(r"~~(.+?)~~")
 #: display-safety screen's: no ``[``, ``]`` or line break.
 _LINK_DESTINATION_CHAR_CLASS = r"[^()\s]"
 _LINK_RE = re.compile(
-    rf"\[([^\[\]\n]+)\]\((https?://{md_link_destination(_LINK_DESTINATION_CHAR_CLASS)}+)\)"
+    rf"!?\[([^\[\]\n]+)\]\((https?://{md_link_destination(_LINK_DESTINATION_CHAR_CLASS)}+)\)"
 )
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+")
 #: A single-backtick inline-code span, matching the Telegram renderer's shape.
 #: The dialect has ONE code marker, so a longer run carries no distinct meaning
 #: here, and a span containing a backtick cannot be expressed at all.
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+#: A bare url, for the emphasis passes to leave alone. Built from the link
+#: destination unit, so it keeps a balanced ``(...)`` (``?q=(draft)+*+x+*``) and
+#: stops at whitespace, a bracket or an unbalanced paren. :func:`_bare_url_spans`
+#: gives back the trailing marks that close a sentence or an emphasis around it.
+_BARE_URL_RE = re.compile(rf"https?://{md_link_destination(r'[^()\s<>\[\]]')}+")
+_BARE_URL_TRAILING = "*_~.,;:!?'\""
+
+
+def _bare_url_spans(line: str) -> list[tuple[int, int]]:
+    """Spans of the bare urls in *line*, without trailing sentence or emphasis marks."""
+    spans = []
+    for match in _BARE_URL_RE.finditer(line):
+        start, end = match.span()
+        while end > start and line[end - 1] in _BARE_URL_TRAILING:
+            end -= 1
+        spans.append((start, end))
+    return spans
+
+
 #: The info string of a fence opener: whatever follows the delimiter run. The run
 #: is greedy, so an all-delimiter line (a 5,000-backtick opener) yields ``""``.
 _FENCE_INFO_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})[ \t]*(\S*)")
@@ -170,6 +195,10 @@ def _sub_outside_code(
     themselves never move, since nothing here rewrites inside one.
     """
     spans = [match.span() for match in _INLINE_CODE_RE.finditer(line)]
+    # A url is not prose either: an emphasis pass reading ``*`` or ``_`` inside one
+    # rewrites the address the reader follows (``?q=*+x+*`` -> ``?q=_+x+_``).
+    spans += [match.span(2) for match in _LINK_RE.finditer(line)]
+    spans += _bare_url_spans(line)
     if not spans:
         return pattern.sub(repl, line)
 
@@ -187,9 +216,19 @@ def _sub_outside_code(
 def _convert_line(line: str) -> str:
     heading = _HEADING_RE.match(line)
     if heading:
-        # WhatsApp has no headings; bold the text instead.
-        line = f"*{heading.group(2).strip()}*"
-    line = _BULLET_RE.sub(lambda m: f"{m.group(1)}• ", line)
+        # WhatsApp has no headings; bold the text instead. Bold cannot nest, so
+        # bold marks already inside the heading are dropped first: wrapping
+        # ``**Summary**`` again left literal asterisks around the word. The wrap
+        # comes last, after the passes below, so the italic pass never reads it.
+        inner = heading.group(2).strip()
+        inner = _sub_outside_code(_BOLD_RE, lambda m: m.group(1), inner)
+        inner = _sub_outside_code(_BOLD_US_RE, lambda m: m.group(1), inner)
+        line = inner
+    else:
+        line = _BULLET_RE.sub(lambda m: f"{m.group(1)}• ", line)
+    # Italic first: the bold passes below emit ``*x*``, which it must not see.
+    line = _sub_outside_code(_ITALIC_STAR_RE, lambda m: f"_{m.group(1)}_", line)
+    line = _sub_outside_code(_BOLD_ITALIC_RE, lambda m: f"*_{m.group(1)}_*", line)
     line = _sub_outside_code(_BOLD_RE, lambda m: f"*{m.group(1)}*", line)
     line = _sub_outside_code(_BOLD_US_RE, lambda m: f"*{m.group(1)}*", line)
     line = _sub_outside_code(_STRIKE_RE, lambda m: f"~{m.group(1)}~", line)
@@ -199,7 +238,7 @@ def _convert_line(line: str) -> str:
         lambda m: m.group(2) if m.group(1) == m.group(2) else f"{m.group(1)} ({m.group(2)})",
         line,
     )
-    return line
+    return f"*{line}*" if heading else line
 
 
 def to_whatsapp_text(content: str) -> str:
@@ -316,18 +355,13 @@ def render_chunks(
     if not text:
         return []
     if stable:
-        # PREFIX-STABLE: this caller opts into the shared splitter's stable mode
-        # (``split_markdown_safe(..., stable=True)``) rather than its default
-        # whole-body search. The streaming turn renderer re-splits its growing
-        # body every frame and treats all but the last chunk as delivered, so it
-        # needs chunk *i* decided by the text before it and NOTHING later. A sealed
-        # chunk is a promise to the client that nothing may rewrite, so this cut
-        # redacts the whole body (``stable=True``) then splits at the budget with
-        # no whole-body search that could move a boundary under a message already
-        # sent. The cross-message seam -- a chunk ending in a credential PREFIX the
-        # next completes -- is graded by the turn renderer, which knows which
-        # chunks are still unsealed and gives up only the completing span on a
-        # boundary it has not yet promised.
+        # PREFIX-STABLE (``split_markdown_safe(..., stable=True)``), not the
+        # default whole-body search. The streaming turn renderer re-splits its
+        # growing body every frame and treats all but the last chunk as sent, so
+        # chunk *i* must depend only on the text before it. This mode redacts the
+        # whole body, then cuts at the budget, so no boundary moves under a sent
+        # message. A chunk ending in a credential PREFIX that the next completes is
+        # graded by the turn renderer, which knows which chunks are still unsealed.
         return split_markdown_safe(text, limit, redactor=_redact_all, stable=True)
     # A credential-aware cut can DECLINE to cut, answering with the text whole,
     # which is fail-closed but one chunk over ``limit``. This channel's own sender

@@ -1,12 +1,15 @@
 """The dashboard turn's stream of text and thinking chunks: each chunk's live redaction (the
 live-stream and thinking-stream sinks' redactors) and the segment a text chunk extends
-(``_on_text_chunk``, ``_on_thinking_chunk``, ``_release_held_text``)."""
+(``_on_text_chunk``, ``_on_thinking_chunk``, ``_release_held_text``), and the hold that keeps the
+backend's alternation placeholder out of the reply (``_settle_echo_hold``)."""
 
 from __future__ import annotations
 
 import time
+from dataclasses import replace as _event_with_text
 from typing import TYPE_CHECKING
 
+from kiro_crew.dashboard.alternation_echo import could_be_echo, echo_prefix_len, is_echo
 from kiro_crew.dashboard.chat_utils import chunk_generation, open_construct_at_end
 
 if TYPE_CHECKING:
@@ -21,10 +24,13 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment, _settle_held
 
 
-async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> None:
+async def _on_text_chunk(
+    turn: _ChatTurn, event, *, released: bool = False, echo_checked: bool = False
+) -> None:
     """A chunk of the reply's text: its live redaction and the segment it extends.
 
     ``released``: a chunk ``_release_held_text`` replays, past the post-terminal drop.
+    ``echo_checked``: a chunk ``_settle_echo_hold`` replays, past the placeholder hold.
     """
     _activity_after_terminal = turn._activity_after_terminal
     _compaction_notice_chunks = turn._compaction_notice_chunks
@@ -129,6 +135,28 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
             # May answer a pending steer: _release_held_text streams it.
             turn._held_after_terminal.append(event)
         return None
+    if not echo_checked and not event.control_notice and not turn.has_assistant_text:
+        # A segment that opens like the backend's alternation placeholder
+        # (``alternation_echo``) is held off the wire and the window until it
+        # either is that text, and is dropped, or stops matching it.
+        _echo_held = turn._echo_held
+        _echo_text = "".join(e.text or "" for e, _ in _echo_held) + (event.text or "")
+        if could_be_echo(_echo_text):
+            _echo_held.append((event, released))
+            return None
+        _echo_replay = [*_echo_held, (event, released)]
+        _echo_held.clear()
+        _echo_end = echo_prefix_len(_echo_text)
+        if _echo_end:
+            # The placeholder, then the model's own words in the same segment.
+            await _drop_echo(turn)
+            _echo_rest = _echo_text[_echo_end:].lstrip()
+            _echo_replay = (
+                [(_event_with_text(event, text=_echo_rest), released)] if _echo_rest else []
+            )
+        for _echo_ev, _echo_rel in _echo_replay:
+            await _on_text_chunk(turn, _echo_ev, released=_echo_rel, echo_checked=True)
+        return None
     # The streamed delta is NOT written to the ledger. Redacting each
     # delta on its own cannot see a credential split across two of
     # them, and token-by-token streaming makes that split the common
@@ -151,6 +179,8 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
     if not turn.has_assistant_text:
         _compaction_text_offset = 0
         turn._compaction_text_offset = _compaction_text_offset
+    if not event.control_notice and safe_chunk.strip():
+        slot._turn_wrote_text = True
     turn.append_assistant_text(safe_chunk)
     if event.control_notice:
         # A backend control notice that arrived as assistant text
@@ -167,8 +197,9 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
         # notice-only row must not replace the previous reply.
         note_regenerate_notice(slot, safe_chunk)
     # Set BEFORE the `_turn_emitted` flip: the consumption report
-    # below must stay adjacent to that flip (pinned by
-    # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes
+    # below must stay adjacent to that flip
+    # (test_subagent_delivery_ttl_anchor pins that consumption is reported at the
+    # first text or tool event), so a diagnostic flag goes
     # above it rather than between the two.
     _saw_text_chunk = True
     turn._saw_text_chunk = _saw_text_chunk
@@ -183,7 +214,9 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
     # accumulates the full text for the authoritative final redaction.
     # The first output after a tool call or approval prompt also
     # settles the run held there (see _cut_segment).
-    wire = _wsred.feed(event.text)
+    # A run left withheld that is one plain word ending a sentence goes out with
+    # this chunk: nothing after it can make it part of a credential.
+    wire = _wsred.feed(event.text) + _wsred.release_sentence_end()
     if wire:
         wire = _settle_held(turn, wire, continued=True)
     if wire:
@@ -235,6 +268,36 @@ async def _release_held_text(turn: _ChatTurn, *, before_tool: bool = False) -> N
         await _on_text_chunk(turn, _held_event, released=True)
     in_tool_group = _open_tool_group
     turn.in_tool_group = in_tool_group
+    return None
+
+
+async def _drop_echo(turn: _ChatTurn) -> None:
+    """Drop the held alternation placeholder: no chunk, no row, one log line.
+
+    The turn is then judged as if the placeholder never came: one with no other
+    text takes the usual empty-reply handling.
+    """
+    # The model did read the prompt and answer it, with the placeholder.
+    await _report_consumed(turn, irreversible=True)
+    logger.info("dropped the backend's alternation placeholder echoed on %s", turn.slot.key)
+
+
+async def _settle_echo_hold(turn: _ChatTurn) -> None:
+    """End the placeholder hold at a segment's end (a tool call, the turn's end).
+
+    A held segment that is the whole placeholder is dropped; any other is replayed
+    in order, so the transcript keeps the model's own words.
+    """
+    _echo_held = turn._echo_held
+    if not _echo_held:
+        return None
+    _echo_replay = list(_echo_held)
+    _echo_held.clear()
+    if is_echo("".join(e.text or "" for e, _ in _echo_replay)):
+        await _drop_echo(turn)
+        return None
+    for _echo_ev, _echo_rel in _echo_replay:
+        await _on_text_chunk(turn, _echo_ev, released=_echo_rel, echo_checked=True)
     return None
 
 

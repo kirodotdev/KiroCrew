@@ -729,7 +729,7 @@ class TestRewriter:
         src = tmp_path / "agents"
         src.mkdir()
         (src / "mdbot.md").write_text(
-            "---\nname: mdbot\nmcpServers:\n  srv:\n    command: "
+            '---\nname: mdbot\ntools: ["*"]\nmcpServers:\n  srv:\n    command: '
             + json.dumps(sys.executable)
             + '\n    args: ["-x"]\n---\nprompt\n',
             encoding="utf-8",
@@ -765,7 +765,11 @@ class TestRewriter:
         src.mkdir()
         (src / "Foo.json").write_text(
             json.dumps(
-                {"name": "Foo", "mcpServers": {"srv": {"command": sys.executable, "args": ["-x"]}}}
+                {
+                    "name": "Foo",
+                    "tools": ["*"],
+                    "mcpServers": {"srv": {"command": sys.executable, "args": ["-x"]}},
+                }
             ),
             encoding="utf-8",
         )
@@ -815,7 +819,7 @@ class TestRewriter:
         src.mkdir()
         (src / "Foo.json").write_text("{not json", encoding="utf-8")
         (src / "foo.md").write_text(
-            "---\nname: foo\nmcpServers:\n  srv:\n    command: "
+            '---\nname: foo\ntools: ["*"]\nmcpServers:\n  srv:\n    command: '
             + json.dumps(sys.executable)
             + '\n    args: ["-x"]\n---\nprompt\n',
             encoding="utf-8",
@@ -1104,9 +1108,83 @@ def test_doctor_dead_path_walk_reads_markdown(tmp_path: Path) -> None:
     assert unreadable is None
     assert [d.server for d in dead] == ["gone"]
 
+    # A fenced file that fails to parse announced itself as a spec: still
+    # reported as malformed.
+    (tmp_path / "broken.md").write_text("---\nname: [unclosed\n---\nhi\n", encoding="utf-8")
+    dead, unreadable = dp._walk_spec(tmp_path / "broken.md")
+    assert dead == [] and unreadable is not None and "malformed frontmatter" in unreadable
+
+    # A plain markdown document with no opening fence is not a spec.
     (tmp_path / "README.md").write_text("# notes\n", encoding="utf-8")
-    dead, unreadable = dp._walk_spec(tmp_path / "README.md")
-    assert dead == [] and unreadable is not None and "frontmatter" in unreadable
+    assert dp._walk_spec(tmp_path / "README.md") is None
+
+
+def test_doctor_dead_paths_skips_a_plain_readme(tmp_path: Path) -> None:
+    """A plain README.md in the agents folder adds no row and no issue,
+    while a fenced-but-broken .md is still reported and a valid .md is walked."""
+    from kiro_crew import doctor_deadpath as dp
+
+    (tmp_path / "fine.json").write_text('{"name": "fine"}', encoding="utf-8")
+    (tmp_path / "README.md").write_text("# My agents\nnotes\n", encoding="utf-8")
+    (tmp_path / "bot.md").write_text(
+        "---\nname: bot\nmcpServers:\n  gone:\n    command: /definitely/not/here/bin\n---\nhi\n",
+        encoding="utf-8",
+    )
+    report = dp.check_dead_paths(agents_dir=tmp_path, repair=dp._report_only)
+    specs = {r.spec: r for r in report.results}
+    assert "README.md" not in specs
+    assert [d.server for d in specs["bot.md"].dead] == ["gone"]
+
+    issues: list[str] = []
+    (tmp_path / "bot.md").unlink()
+    dp.doctor_dead_paths(issues, agents_dir=tmp_path)
+    assert not any("README.md" in i for i in issues)
+
+    (tmp_path / "broken.md").write_text("---\nname: [unclosed\n---\n", encoding="utf-8")
+    dp.doctor_dead_paths(issues, agents_dir=tmp_path)
+    assert any("broken.md" in i for i in issues)
+
+
+def test_doctor_dead_path_walk_skips_an_over_cap_plain_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fence probe judges the opening, not the length, so an over-cap plain
+    document is skipped like every other agents-folder reader skips it, while
+    an over-cap fenced file stays reported."""
+    from kiro_crew import doctor_deadpath as dp
+    from kiro_crew import hooks
+
+    monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 32)
+    (tmp_path / "README.md").write_text("# notes\n" + "x" * 100, encoding="utf-8")
+    assert dp._walk_spec(tmp_path / "README.md") is None
+    (tmp_path / "bot.md").write_text("---\nname: bot\n---\n" + "x" * 100, encoding="utf-8")
+    dead, unreadable = dp._walk_spec(tmp_path / "bot.md")
+    assert dead == [] and unreadable is not None
+
+
+def test_doctor_dead_path_walk_reports_a_plain_document_behind_a_sensitive_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fenceless .md linked to a sensitive target is never skipped as plain:
+    the fence probe refuses the target, so the file stays reported."""
+    from kiro_crew import doctor_deadpath as dp
+    from kiro_crew.testing.links import make_dir_link
+
+    secret = tmp_path / "vault" / "README.md"
+    secret.parent.mkdir()
+    secret.write_text("# private notes\n", encoding="utf-8")
+    # A directory link (a junction on Windows, which needs no privilege), so
+    # the refusal is asserted on every platform.
+    make_dir_link(tmp_path / "linked", secret.parent)
+    monkeypatch.setattr(
+        agent_discovery,
+        "is_sensitive_canonical_path",
+        lambda p: str(p) == str(secret.resolve()),
+    )
+    walked = dp._walk_spec(tmp_path / "linked" / "README.md")
+    assert walked is not None
+    dead, unreadable = walked
+    assert dead == [] and unreadable is not None
 
 
 def test_doctor_dead_path_walk_reads_through_the_hardened_gate(

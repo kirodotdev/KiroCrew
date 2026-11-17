@@ -12,9 +12,13 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from redaction_structured_cases import github_classic
+
 from kiro_crew.mcp_core import _call_tool_inner
 
-_LEAKY = "notes AKIAIOSFODNN7EXAMPLE"
+_KEY = github_classic(seed=14)  # a token the credential plan redacts
+
+_LEAKY = f"notes {_KEY}"
 
 
 def _add(title: str) -> str:
@@ -27,7 +31,7 @@ def _add(title: str) -> str:
 
 def test_a_credential_in_the_title_does_not_reach_the_chat_result():
     out = _add(_LEAKY)
-    assert "AKIAIOSFODNN7EXAMPLE" not in out, (
+    assert _KEY not in out, (
         "the tool result is rendered into chat and persisted -- redact the title")
     assert "REDACTED" in out or "notes" in out
 

@@ -165,17 +165,19 @@ RUN --mount=type=bind,source=dist,target=/tmp/wheels \
 # reports the wheel channel and the two are indistinguishable. Overwrite the
 # baked module in the installed package rather than setting
 # KIROCREW_DISTRIBUTION -- the baked value deliberately outranks the env var,
-# so an ENV here would be ignored.
+# so an ENV here would be ignored. Carry over the wheel's baked build lane.
 RUN set -eux; \
     PKG_DIR="$(python -c 'import kiro_crew, pathlib; print(pathlib.Path(kiro_crew.__file__).parent)')"; \
+    CHANNEL="$(python -c 'from kiro_crew.build_channel import baked_build_channel; print(baked_build_channel())')"; \
     printf '%s\n' \
       '"""Build-time provenance. GENERATED -- do not edit."""' \
       '' \
       'from __future__ import annotations' \
       '' \
       'DISTRIBUTION = "docker"' \
+      "BUILD_CHANNEL = \"${CHANNEL}\"" \
       > "${PKG_DIR}/_build_info.py"; \
-    python -c 'from kiro_crew import beacon; assert beacon.distribution() == "docker", beacon.distribution()'
+    python -c 'import sys; from kiro_crew import beacon; from kiro_crew.build_channel import baked_build_channel; assert beacon.distribution() == "docker", beacon.distribution(); assert baked_build_channel() == sys.argv[1], baked_build_channel()' "${CHANNEL}"
 
 # Non-root runtime user. HOME holds ALL persistent state; users mount a
 # named volume at /home/kirocrew (recommended over a bind mount: named

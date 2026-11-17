@@ -43,9 +43,14 @@ _DESTRUCTIVE = [
 # ~/.netrc, ~/.git-credentials, the SSO/kiro-cli auth stores, and KiroCrew's own
 # governance trust-root files. The trailing ``(?!\w)`` keeps ``.env`` from
 # matching ``os.environ`` while still catching ``.env`` / ``.env.local``.
+# Entries are written with "/"; the separator also accepts "\" (and the doubled
+# "\\" string-literal form) so Windows spellings are caught too.
 _SENSITIVE_PATH_RE = re.compile(
     "(?:"
-    + "|".join(re.escape(d) for d in sorted(_SENSITIVE_HOME_DIRS, key=len, reverse=True))
+    + "|".join(
+        re.escape(d).replace("/", r"[\\/]+")
+        for d in sorted(_SENSITIVE_HOME_DIRS, key=len, reverse=True)
+    )
     + r")(?!\w)",
     re.I,
 )

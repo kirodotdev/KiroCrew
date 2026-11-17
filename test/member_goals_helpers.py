@@ -18,9 +18,10 @@ from kiro_crew.dashboard import goal_reminder
 from kiro_crew.dashboard.handlers import guide as guide_routes
 from kiro_crew.dashboard.handlers import member_goals as goal_routes
 from kiro_crew.dashboard.handlers import member_self as self_routes
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: A credential-shaped string the goal text must never carry through.
-TOKEN = "ghp_" + "a" * 36
+TOKEN = github_classic(seed=403)
 DEFAULT = "kirocrew"
 
 

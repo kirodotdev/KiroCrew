@@ -29,6 +29,8 @@ from kiro_crew.telegram.renderer_display import (
     _neutralize_md,
     _strip_hr,
     _strip_steering,
+    _utf16_cut,
+    _utf16_len,
 )
 
 if TYPE_CHECKING:
@@ -142,10 +144,10 @@ async def _stream_live_locked(self: TelegramRenderer, *, force: bool) -> None:
     footer = f"🔧 {self._tool}…" if self._tool else stall
     if footer:
         # Keep the footer visible even when it must displace body tail chars.
-        room = self._limit() - len(footer) - 2
-        text = f"{body[:room]}\n\n{footer}".strip() if room > 0 else footer
+        room = self._limit() - _utf16_len(footer) - 2
+        text = f"{body[:_utf16_cut(body, room)]}\n\n{footer}".strip() if room > 0 else footer
     else:
-        text = body[: self._limit()]
+        text = body[: _utf16_cut(body, self._limit())]
     # Recorded BEFORE the suppression check: when the frame is unchanged there
     # is nothing to send, but the typing tick compares against this to decide
     # whether to try at all — leaving it stale makes it retry every tick for

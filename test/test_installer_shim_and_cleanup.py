@@ -363,7 +363,7 @@ def _spy_backfill(monkeypatch, calls, *, raises=None):
         calls.append(True)
         if raises is not None:
             raise raises
-        return ["command-bar"]
+        return ["late-default-on"]
 
     monkeypatch.setattr("kiro_crew.apps.manager.backfill_default_on_builtins", _fake)
 

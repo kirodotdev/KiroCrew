@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from conftest import requires_symlinks
 from kiro_crew import artifacts as art_mod
@@ -30,6 +31,8 @@ class _FakeLog:
 
     def list_sessions(self):
         return [{"key": "dashboard_test", "modified": 1000.0, "title": "T"}]
+
+    list_sessions_indexed = list_sessions
 
     def read_messages(self, key):
         return [
@@ -198,6 +201,8 @@ class _MalformedLog:
             {"key": "dashboard_ok", "modified": 5.0, "title": "ok"},
         ]
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key):
         return [
             "not-a-dict",
@@ -220,6 +225,8 @@ def test_scan_session_docs_prefers_lightweight_history_projection():
     class _ProjectedLog:
         def list_sessions(self):
             return [{"key": "dashboard_ok", "modified": 5.0, "title": "ok"}]
+
+        list_sessions_indexed = list_sessions
 
         def read_file_change_messages(self, key):
             assert key == "dashboard_ok"
@@ -252,12 +259,15 @@ def test_redaction_lives_at_the_api_boundary_only():
     shared flag. The external ``_scan_session_docs`` MUST redact a
     credential-shaped path; the internal ``_collect_session_docs`` (used by the
     authorization scan) MUST preserve the TRUE path so it can be ``stat``'d."""
-    cred_path = "/tmp/AKIAIOSFODNN7EXAMPLE/report.md"
+    # A GitHub token with a valid checksum is redacted; an AWS key ID would stay
+    # visible as an identifier.
+    segment = github_classic(seed=111)
+    cred_path = f"/tmp/{segment}/report.md"
     log = _FakeLog([cred_path])
     # API boundary: the path is redacted (never leaks a credential substring).
     api = h._scan_session_docs(log, {})
     assert api[0]["path"] != cred_path
-    assert "AKIAIOSFODNN7EXAMPLE" not in api[0]["path"]
+    assert segment not in api[0]["path"]
     # Internal collector: the true path is preserved (authorization can stat it).
     raw = h._collect_session_docs(log, {})
     assert raw[0]["path"] == cred_path
@@ -276,6 +286,8 @@ class _BadTimestampLog:
             {"key": "s3", "modified": float("inf"), "title": "c"},
             {"key": "s4", "modified": 10.0, "title": "d"},
         ]
+
+    list_sessions_indexed = list_sessions
 
     def read_messages(self, key):
         return [{"meta": {"file_changes": [{"path": self._doc}]}}]

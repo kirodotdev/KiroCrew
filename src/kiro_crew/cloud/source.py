@@ -1280,8 +1280,8 @@ def _ensure_boundary(
     if aws.is_access_denied(read_err):
         read_missing = aws.map_missing_action(read_err) or "iam:GetPolicy"
         raise aws.AWSError(
-            f"could not read the permissions boundary '{name}': "
-            f"{(read_err or '').strip()[:300]} — grant `{read_missing}` and retry",
+            f"could not read the permissions boundary '{name}': grant `{read_missing}` "
+            f"(see `kirocrew cloud iam-policy`) and retry — {(read_err or '').strip()[:300]}",
             action="iam:GetPolicy",
             missing_action=read_missing,
             returncode=rc,

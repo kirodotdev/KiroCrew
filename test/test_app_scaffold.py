@@ -741,6 +741,29 @@ class TestScaffold:
         assert captured.err.startswith("\u274c ")
         assert not (tmp_path / "evil").exists()
 
+    def test_scaffold_cli_dir_that_is_a_file_prints_clean_error(self, tmp_path, monkeypatch, capsys):
+        """A --dir that is a file exits 1 with one clean line, not an OSError traceback."""
+        home = tmp_path / "kirocrew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+
+        import argparse
+
+        from kiro_crew.cli_commands import _handle_app
+        afile = tmp_path / "afile.txt"
+        afile.write_text("x", encoding="utf-8")
+        ns = argparse.Namespace(app_action="init", name="demo", dir=str(afile), backend=False)
+        try:
+            _handle_app(ns)
+        except SystemExit as exc:
+            code = exc.code
+        except OSError as exc:
+            pytest.fail(f"the OSError escaped as a traceback: {exc!r}")
+        assert code == 1
+        captured = capsys.readouterr()
+        assert captured.err.startswith("\u274c cannot write ")
+        assert captured.out == ""
+
     def test_scaffold_with_ui(self, tmp_path):
         """--ui generates ui/ directory with package.json, vite config, and App.tsx."""
         app_dir = scaffold_app(tmp_path, "ui-app", include_ui=True)

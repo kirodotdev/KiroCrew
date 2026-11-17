@@ -32,7 +32,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from kiro_crew.agent_files import is_mate_service_agent
+from kiro_crew.agent_files import AGENT_FILENAME, is_mate_service_agent
 from kiro_crew.agent_sdk import agent_specs
 from kiro_crew.config import paths as paths_mod
 from kiro_crew.config.loader import KiroCrewConfig
@@ -42,6 +42,14 @@ from kiro_crew.mate_config import (
     has_mate_config,
     source_agents_dir,
     write_mate_spec,
+)
+from kiro_crew.mate_ledger_lock import ledger_transaction
+from kiro_crew.mate_restriction_carry import (  # noqa: F401 - carried_policy: import path
+    _GRANT_ONLY_SETTINGS,
+    _drop_hold,
+    _limiting_settings,
+    carried_policy,
+    carry_restrictions,
 )
 from kiro_crew.mate_spec_policy import POLICY_KEYS, SpecPolicyUncarried
 from kiro_crew.mate_worker import (
@@ -59,6 +67,9 @@ logger = logging.getLogger(__name__)
 
 #: How many differences a skip reason names before it says "and N more".
 _REASON_ITEMS = 5
+
+#: The default template a binding with an empty ``kiro_agent`` chats on.
+_DEFAULT_TEMPLATE = AGENT_FILENAME.removesuffix(".json")
 
 
 @dataclasses.dataclass
@@ -149,6 +160,7 @@ def _already_moved(data: dict[str, Any], name: str, member_id: str) -> bool:
     return recorded is None or recorded == member_id
 
 
+@ledger_transaction
 def _record_migrated(name: str, source: str = "", *, moved: bool = True, reason: str = "") -> None:
     """Record *name* as moved (*moved*); with *source*, owe a repoint of its old threads.
 
@@ -261,6 +273,7 @@ def _repoint_member_threads(member_id: str, slugs: set[str], source: str) -> tup
     return moved, complete
 
 
+@ledger_transaction
 def repoint_moved_threads() -> dict[str, list[str]]:
     """Put every moved crewmate's pre-upgrade DM threads on its conductor. Never raises.
 
@@ -558,7 +571,8 @@ def _candidates(
     """Crewmates whose ``kiro_agent`` does not resolve to their own file yet.
 
     ``{member_name: source_agent}``, leaving out ``default``, bindings with no
-    ``kiro_agent`` or ``member_id``, ones already on their own file, and moved ones.
+    ``member_id``, ones already on their own file, and moved ones. A binding with
+    no ``kiro_agent`` maps to ``""`` and is read as the default template.
     """
     out: dict[str, str] = {}
     ledger = _read_ledger()
@@ -580,8 +594,12 @@ def _candidates(
             )
             continue
         source = getattr(binding, "kiro_agent", "")
-        if not source:
+        if not isinstance(source, str):
             continue
+        # An empty ``kiro_agent`` chats on the default template
+        # (``mate_worker.member_chat_agent``), so it moves as a row bound to that
+        # template does (owner decision in docs/decisions, case N5); it stays recorded as ``""``,
+        # the value the repoint compares against.
         if source == name and has_mate_config(name) and not _shadowed_by_user_agent(name):
             # A file that a user-level spec still shadows is not read yet: a move
             # that stopped before retiring its private copy is resumed.
@@ -657,6 +675,19 @@ def _describe(label: str, tokens: set[tuple[str, ...]]) -> str:
 def _hook_entries(spec: dict[str, Any]) -> set[tuple[str, str]]:
     """``(event, entry)`` for every hook *spec* declares, each entry canonical."""
     hooks = spec.get("hooks")
+    if isinstance(hooks, list):
+        # The array form: each entry names its own event (``trigger``, or ``event``).
+        return {
+            (
+                (
+                    str(e.get("trigger") or e.get("event") or "hook")
+                    if isinstance(e, dict)
+                    else "hook"
+                ),
+                _canon(e),
+            )
+            for e in hooks
+        }
     if not isinstance(hooks, dict):
         return set()
     out: set[tuple[str, str]] = set()
@@ -726,9 +757,9 @@ class Differences:
     its user is told once (owner decision, ``docs/decisions``). A *loosening* (a grant
     gained, a switched-off server started, a hook or a ``permissions`` /
     ``toolsSettings`` restriction not kept) would let the worker do more than the
-    old agent was allowed to. A gain or a relaunched server keeps the crewmate where
-    it is; a restriction not kept moves with it and its notice names it
-    (:func:`dropped_restrictions`, owner decision, ``docs/decisions``).
+    old agent was allowed to. A gained grant or a started server keeps the
+    crewmate where it is; a restriction the worker cannot keep is held instead
+    (``mate_held_rules``), so the crewmate still moves and those calls ask a person.
     """
 
     lost: set[tuple[str, ...]] = dataclasses.field(default_factory=set)
@@ -923,11 +954,10 @@ def dropped_restrictions(
 ) -> list[str]:
     """Each restriction *source* states that the worker *merged* would not keep.
 
-    The upgrade migration's file (:func:`migration_file`) carries no ``hooks``,
-    ``permissions`` or ``toolsSettings``, so such a restriction does not apply to
-    the moved crewmate until its template is added again. It
-    does not keep the crewmate where it is (owner decision, docs/decisions); the
-    governance ceiling still governs the merged worker. One phrase per restriction,
+    The upgrade migration carries every one it can (:func:`carried_policy`) and
+    holds the rest (``mate_held_rules.split_policy``); a crewmate an earlier
+    release moved without them gets them back at startup
+    (``mate_policy_repair``). One phrase per restriction,
     for the notice: a hook by its event and matcher, a ``permissions`` rule by its
     effect and capability, a ``toolsSettings`` entry by its tool.
     """
@@ -955,19 +985,13 @@ def dropped_restrictions(
     return out
 
 
-def restrictions_notice(dropped: list[str]) -> str:
-    """The notice's sentence naming each restriction that does not apply on the worker."""
-    if not dropped:
-        return ""
-    return "these no longer apply on its worker: " + "; ".join(dropped)
-
-
 def _loosening_besides_restrictions(diff: Differences) -> str:
-    """:meth:`Differences.loosening` without the restrictions the file cannot carry.
+    """:meth:`Differences.loosening` without the restrictions the move carries or holds.
 
-    A dropped hook or ``permissions`` / ``toolsSettings`` restriction moves with the
-    crewmate and is named in its notice; a gain or a switched-off server starting
-    still keeps it where it is.
+    A hook or ``permissions`` / ``toolsSettings`` restriction is carried into the
+    file when it lands exactly, and held otherwise (:func:`carry_restrictions`);
+    neither keeps the crewmate where it is. A gain or a switched-off server
+    starting still does.
     """
     return dataclasses.replace(diff, hooks_lost=False, limits_lost=set()).loosening()
 
@@ -1008,7 +1032,8 @@ def _restrictions(spec: dict[str, Any]) -> set[tuple[str, str]]:
     """Every restriction *spec* states in ``permissions`` or ``toolsSettings``, as keys.
 
     A permission rule that only allows (``effect: allow`` and no ``exclude``) is a
-    grant, compared by the grant checks above, not a restriction.
+    grant, compared by the grant checks above, not a restriction; so is a
+    ``toolsSettings`` key in :data:`_GRANT_ONLY_SETTINGS`.
     """
     out: set[tuple[str, str]] = set()
     perms = spec.get("permissions")
@@ -1020,7 +1045,7 @@ def _restrictions(spec: dict[str, Any]) -> set[tuple[str, str]]:
     if isinstance(settings, dict):
         # One per tool: a worker that keeps a tool's entry keeps its limits,
         # whatever entries it holds for other tools.
-        for tool, entry in settings.items():
+        for tool, entry in _limiting_settings(settings).items():
             out.add(("toolsSettings", json.dumps({tool: entry}, sort_keys=True)))
     return out
 
@@ -1107,7 +1132,7 @@ def _tool_offs(spec: dict[str, Any]) -> set[str]:
 
 def _fallback_keeping_limits(
     source_agent: str, base: dict[str, Any], fallback: dict[str, Any]
-) -> tuple[dict[str, Any], str, str]:
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
     """The default-template *fallback* made to keep *source_agent*'s readable limits.
 
     For an agent :func:`_governed_source` refused. One whose spec does not parse
@@ -1115,15 +1140,14 @@ def _fallback_keeping_limits(
     ``file://`` prompt that does not resolve, say) is read raw, and the fallback
     never loosens it: a server it switched off is written switched off, a tool it
     takes out is written into ``excludedTools``, and a grant it never had is
-    taken out. A hook or a ``permissions`` / ``toolsSettings`` restriction the
-    file cannot carry moves with it (:func:`dropped_restrictions`). Returns the
-    file, why it would still loosen (a gain or a relaunched server), else ``""``,
-    and the notice's sentence naming each restriction that does not apply there.
+    taken out. Returns the file, why it would still loosen (else ``""``), and the
+    raw spec, whose hooks and ``permissions`` / ``toolsSettings`` restrictions the
+    caller carries or holds (:func:`carry_restrictions`); ``{}`` when unreadable.
     """
     try:
         raw = agent_specs.load_agent_spec(source_agents_dir(source_agent), source_agent)
     except (agent_specs.AgentSpecUnreadable, OSError):
-        return fallback, "", ""
+        return fallback, "", {}
     raw = {**copy_json_document(raw), "prompt": ""}
     planned = copy_json_document(fallback)
     diff = differences(base, raw, planned)
@@ -1149,7 +1173,7 @@ def _fallback_keeping_limits(
                 None, [reason, _describe("its worker would run", {("tool", t) for t in kept_off})]
             )
         )
-    return planned, reason, restrictions_notice(dropped_restrictions(base, raw, merged))
+    return planned, reason, raw
 
 
 def _worker_base() -> dict[str, Any]:
@@ -1192,7 +1216,9 @@ def repair_partial_platform_servers() -> list[str]:
     """Rewrite each crewmate file holding a platform server with no transport.
 
     Returns the crewmates repaired. Never raises; a bad file is logged and left.
+    Each file is read and written under the lock an owner's edit of it takes.
     """
+    from kiro_crew.agent import agents_spec_lock
     from kiro_crew.mate_worker import drop_partial_platform_servers
 
     repaired: list[str] = []
@@ -1206,10 +1232,11 @@ def repair_partial_platform_servers() -> list[str]:
             # The generated conductor and worker specs share the folder.
             continue
         try:
-            spec = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(spec, dict) or not drop_partial_platform_servers(spec):
-                continue
-            write_mate_spec(name, spec)
+            with agents_spec_lock(path.parent):
+                spec = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(spec, dict) or not drop_partial_platform_servers(spec):
+                    continue
+                write_mate_spec(name, spec)
         except (OSError, ValueError, MateConfigError):
             logger.warning("crewmate file %s: platform server entry not repaired", name)
             continue
@@ -1230,6 +1257,12 @@ def migrate_existing_crewmates(
     del work_dir
     report = MigrationReport()
     repair_partial_platform_servers()
+    from kiro_crew.mate_mount_repair import restore_withheld_mounts
+    from kiro_crew.mate_policy_repair import restore_dropped_policy
+
+    # Before the moves, so only a Bot an earlier start moved is read.
+    restore_withheld_mounts(cfg)
+    restore_dropped_policy(cfg)
     try:
         cfg = cfg or KiroCrewConfig.load()
         paths_mod.mate_agents_dir().mkdir(parents=True, exist_ok=True)
@@ -1258,6 +1291,10 @@ def migrate_existing_crewmates(
     retire: dict[str, Any] = {}
     #: Per crewmate moved with a difference, the sentence its notice names.
     changes: dict[str, str] = {}
+    #: Per crewmate, the restrictions its worker could not carry exactly.
+    held: dict[str, list[dict[str, str]]] = {}
+    #: Per crewmate, the ``member_id`` its held restrictions were recorded under.
+    held_as: dict[str, str] = {}
     for name, source in candidates.items():
         label = _label(cfg, name)
         if source == MATE_CONDUCTOR_AGENT:
@@ -1298,13 +1335,13 @@ def migrate_existing_crewmates(
             )
             continue
         try:
-            old = _governed_source(source)
+            old = _governed_source(source or _DEFAULT_TEMPLATE)
         except MateConfigError as exc:
             # Moved anyway (owner decision, docs/decisions): its worker starts from
             # the default template, as a fresh create's does, and its user is told.
             logger.info("crewmate migration: %s's agent %r unreadable: %s", label, source, exc)
-            fallback, kept_limit, limits_said = _fallback_keeping_limits(
-                source, base, _default_template_file(name, base)
+            fallback, kept_limit, raw = _fallback_keeping_limits(
+                source or _DEFAULT_TEMPLATE, base, _default_template_file(name, base)
             )
             if kept_limit:
                 # Its spec parses (only its prompt did not resolve) and states a
@@ -1314,6 +1351,9 @@ def migrate_existing_crewmates(
                     "crewmate migration: %s stays on %r because %s", label, source, kept_limit
                 )
                 continue
+            # Its held limits are recorded just before its repoint, once this
+            # start has written and proven the file it moves onto.
+            fallback, held[name] = carry_restrictions(cfg, base, name, raw, fallback)
             try:
                 _write_file(name, fallback)
                 _read_back(name)
@@ -1325,30 +1365,26 @@ def migrate_existing_crewmates(
                 continue
             report.moved_from_default.append(name)
             changes[name] = (
-                f"the agent it ran on ({source}) could not be read, so its worker starts "
+                f"the agent it ran on ({source or _DEFAULT_TEMPLATE}) could not be read, so its worker starts "
                 "from the default template and nothing that agent added was carried over"
             )
-            if limits_said:
-                changes[name] += "; " + limits_said
             verified.append(name)
             continue
         planned, diff, withheld = plan_move(name, base, old)
-        # A hook or a ``permissions`` / ``toolsSettings`` restriction the file
-        # cannot carry moves with the crewmate and is named in its notice (owner
-        # decision, docs/decisions); a gain or a relaunched server still keeps it.
+        # A hook or a ``permissions`` / ``toolsSettings`` restriction is carried
+        # when it lands exactly and held for a person otherwise (never written in
+        # a form that stops the worker); a gain or a relaunched server still keeps it.
         reason = _loosening_besides_restrictions(diff)
         if reason:
             report.dry_run_failed[name] = reason
             logger.warning("crewmate migration: %s stays on %r because %s", label, source, reason)
             continue
+        planned, held[name] = carry_restrictions(cfg, base, name, old, planned)
         try:
             _write_file(name, planned)
             written = _read_back(name)
             diff = differences(base, old, written)
             reason = _loosening_besides_restrictions(diff)
-            dropped = dropped_restrictions(
-                base, old, merge_worker_spec(base, worker_additions(base, written))
-            )
         except (MateConfigError, agent_specs.AgentSpecUnreadable) as exc:
             report.copy_failed[name] = str(exc)
             logger.warning("crewmate migration: %s's file was not written: %s", label, exc)
@@ -1362,9 +1398,7 @@ def migrate_existing_crewmates(
                 reason,
             )
             continue
-        change = "; ".join(
-            filter(None, [change_notice(diff, withheld), restrictions_notice(dropped)])
-        )
+        change = change_notice(diff, withheld)
         if change:
             # Moved anyway (owner decision, docs/decisions): a loss is told once, a gain
             # was not written and waits for the user's card.
@@ -1392,7 +1426,9 @@ def migrate_existing_crewmates(
     # Pointers move only once every candidate above has been written and proven.
     for name in verified:
         binding = cfg.agents.get(name)
-        source = "" if name in unchanged else candidates[name]
+        # The agent its earlier threads ran on: an empty ``kiro_agent`` ran on the
+        # default template. ``candidates[name]`` stays the compare-and-set value.
+        source = "" if name in unchanged else (candidates[name] or _DEFAULT_TEMPLATE)
         try:
 
             undos: list[Callable[[], None]] = []
@@ -1402,6 +1438,15 @@ def migrate_existing_crewmates(
             ) -> None:
                 # Intent first: the thread pass is owed before the binding moves.
                 _record_migrated(name, source, moved=False)
+                if held.get(name):
+                    # Under the identity this move just gave the row, before it is
+                    # published, so its sessions find its held limits.
+                    from kiro_crew.mate_held_rules import record_held
+
+                    allocated = cfg.agents.get(name)
+                    member_id = getattr(allocated, "member_id", "") or ""
+                    record_held(name, member_id, held[name])
+                    held_as[name] = member_id
                 if name in retire:
                     undos.append(_retire_shadow(cfg, name, retire[name]))
 
@@ -1426,6 +1471,7 @@ def migrate_existing_crewmates(
                         name,
                         exc_info=True,
                     )
+            _drop_hold(name, held_as.get(name))
             report.repoint_failed[name] = str(exc)
             logger.warning("crewmate migration: repoint failed for %s: %s", _label(cfg, name), exc)
             continue
@@ -1440,6 +1486,11 @@ def migrate_existing_crewmates(
         clear_kept_owed(name)
         if name not in unchanged:
             mark_notice_owed(name, changes.get(name, ""))
+        if held.get(name):
+            from kiro_crew.mate_held_rules import owe_held_notice
+            from kiro_crew.mate_restriction_carry import worker_on_kiro_cli
+
+            owe_held_notice(name, held[name], kiro_cli=worker_on_kiro_cli(cfg, name))
         if name in unchanged:
             how = "already on the conductor"
         elif name in changes:
@@ -1448,6 +1499,12 @@ def migrate_existing_crewmates(
             how = "moved; its worker grants what its old agent did"
         try:
             _record_migrated(name, source, reason=how)
+            if name not in unchanged:
+                from kiro_crew.mate_policy_repair import mark_checked
+
+                # Moved with every limit carried or held: the startup repair,
+                # meant for a Bot an earlier release moved, is not owed.
+                mark_checked(name)
         except OSError:
             # The binding already points at the file, so it is not a candidate
             # again either way; only a later hand-made rollback is affected.

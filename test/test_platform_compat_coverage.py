@@ -149,17 +149,7 @@ class TestTccWalkPruning:
         self._as_macos(monkeypatch, str(tmp_path))
         root = str(tmp_path)
         kept = pc.tcc_prune_walk_dirs(root, root, ["Downloads", "Desktop", "Library", "code"])
-        # Library survives so the walk can descend to the cloud mounts below it.
-        assert kept == ["Library", "code"]
-
-    def test_library_position_keeps_only_the_cloud_mounts(self, monkeypatch, tmp_path):
-        self._as_macos(monkeypatch, str(tmp_path))
-        root = str(tmp_path)
-        library = os.path.join(root, "Library")
-        kept = pc.tcc_prune_walk_dirs(
-            root, library, ["Mail", "Safari", "CloudStorage", "Mobile Documents"]
-        )
-        assert sorted(kept) == ["CloudStorage", "Mobile Documents"]
+        assert kept == ["code"]
 
     def test_deeper_positions_are_untouched(self, monkeypatch, tmp_path):
         # A project's own Documents/ deeper in the tree is not TCC-gated.
@@ -1384,6 +1374,32 @@ class TestFlockOwnerPid:
         fdinfo = {"/proc/44/fdinfo/9": f"lock:\t1: FLOCK ADVISORY WRITE 44 {triple} 0 EOF\n"}
         _fake_fdinfo(monkeypatch, [(43, "7"), (44, "9")], fdinfo)  # 43 raises: gone
         assert pc.flock_owner_pid(lock) == 44
+
+    @pytest.mark.parametrize("owner", ["0", "-1"])
+    def test_an_owner_the_kernel_cannot_name_is_nobody(self, monkeypatch, tmp_path, owner):
+        # Linux 6.1 prints owner 0 once the acquirer of an inherited flock has
+        # exited; pid 0 is never a process, so neither surface may report it.
+        lock = tmp_path / "gateway.lock"
+        lock.write_text("")
+        info = os.stat(lock)
+        triple = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+        _fake_proc_locks(monkeypatch, f"1: FLOCK ADVISORY WRITE {owner} {triple} 0 EOF\n")
+        assert pc.flock_owner_pid(lock) is None
+        fdinfo = {"/proc/45/fdinfo/3": f"lock:\t1: FLOCK ADVISORY WRITE {owner} {triple} 0 EOF\n"}
+        _fake_fdinfo(monkeypatch, [(45, "3")], fdinfo)
+        assert pc.flock_owner_pid(lock) is None
+
+    def test_an_unnameable_row_does_not_hide_a_later_named_one(self, monkeypatch, tmp_path):
+        lock = tmp_path / "gateway.lock"
+        lock.write_text("")
+        info = os.stat(lock)
+        triple = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+        fdinfo = {
+            "/proc/45/fdinfo/3": f"lock:\t1: FLOCK ADVISORY WRITE 0 {triple} 0 EOF\n",
+            "/proc/46/fdinfo/4": f"lock:\t1: FLOCK ADVISORY WRITE 46 {triple} 0 EOF\n",
+        }
+        _fake_fdinfo(monkeypatch, [(45, "3"), (46, "4")], fdinfo)
+        assert pc.flock_owner_pid(lock) == 46
 
     def test_an_unlistable_proc_after_a_scan_miss_is_none(self, monkeypatch, tmp_path):
         lock = tmp_path / "gateway.lock"

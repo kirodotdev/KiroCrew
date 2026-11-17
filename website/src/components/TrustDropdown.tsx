@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown, Clock } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import {
@@ -62,6 +62,12 @@ interface TrustDropdownProps {
       not render, because a label naming a lifetime the backend never records
       would be consent to a grant that is not the one made. */
   timedGrants?: boolean
+  /** The server-derived `@server/tool` an approval card may grant for good
+      ("Always allow this tool"). Fired as `always_allow_tool` with this ref as
+      its pattern, which the server only checks against the card's own. */
+  alwaysAllowTool?: string
+  /** Why that grant is refused for this card; renders the row disabled with it. */
+  alwaysAllowRefusal?: string
   /** `ttlSeconds` is present only for a timed row, and is the grant's
       lifetime in whole seconds. */
   onAction: (action: string, pattern?: string, ttlSeconds?: number) => void
@@ -77,7 +83,7 @@ const BASE_TIMED_KEYS: Record<GrantDuration, string> = {
   today: 'components.trustDropdown.trust_all_base_today',
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, timedGrants = false, onAction }: TrustDropdownProps) {
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, timedGrants = false, alwaysAllowTool, alwaysAllowRefusal, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
@@ -108,6 +114,8 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
     icon: ReactNode
     /** The menu item's body, and the whole label of the collapsed button. */
     body: ReactNode
+    /** A row shown with its reason but not choosable. */
+    disabled?: boolean
   }[] = []
   // A command row's body, shared by the chat-long row and its timed rows. Why
   // it renders the whole command, wrapped, is set out on the command row below.
@@ -216,6 +224,17 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       body: <span className="min-w-0">{i18nT(trustReadsLabelKey)}</span>,
     })
   }
+  if (alwaysAllowTool || alwaysAllowRefusal) {
+    tiers.push({
+      id: 'always_allow_tool',
+      action: 'always_allow_tool',
+      fire: () => { if (alwaysAllowTool) onAction('always_allow_tool', alwaysAllowTool) },
+      icon: <ShieldCheck size={12} className="shrink-0 text-ok" />,
+      disabled: !alwaysAllowTool,
+      body: <span className="min-w-0">{i18nT('components.trustDropdown.always_allow_this_tool')}{alwaysAllowRefusal && !alwaysAllowTool
+        ? <span className="block text-muted text-[11px]">{alwaysAllowRefusal}</span> : null}</span>,
+    })
+  }
   if (showTrustAll) {
     const label = trustAllLabelKey
       ? i18nT(trustAllLabelKey)
@@ -244,7 +263,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
     const only = tiers[0]
     return (
       <button
-        disabled={disabled}
+        disabled={disabled || only.disabled}
         className={className}
         onClick={only.fire}
       >
@@ -272,6 +291,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
             <DropdownMenuItem
               key={tier.id}
               className="gap-2 text-[12px]"
+              disabled={tier.disabled}
               onSelect={tier.fire}
             >
               {tier.icon}
@@ -281,5 +301,24 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
         </DropdownMenuContent>
       </DropdownMenu>
     </GuideTrustRootProvider>
+  )
+}
+
+/** Trust's place on an approval bar whose request takes no standing grant: the
+    menu's own trigger, disabled and just as wide, so Allow once and Reject sit
+    where they do beside the Trust menu and a reflex click there never lands on a
+    grant. Native `disabled` keeps it out of the tab order and the approve chord's
+    probe. The reason is a `title` on the wrapper, since a disabled button gets no
+    pointer events, rather than an InfoTip, which would add a control to the row. */
+export function TrustUnavailable({ className }: { className?: string }) {
+  const reasonId = useId()
+  const reason = i18nT('components.trustDropdown.trust_unavailable')
+  return (
+    <span title={reason} className="inline-flex cursor-not-allowed">
+      <button disabled aria-describedby={reasonId} className={`${className ?? ''} pointer-events-none`}>
+        <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
+      </button>
+      <span id={reasonId} hidden>{reason}</span>
+    </span>
   )
 }

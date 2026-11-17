@@ -49,8 +49,8 @@ NOT_A_MARKER = [
     "[OPTIONS: Alpha | Beta]` and more",  # wrapper then prose breaks the anchor
     # The trailing tolerance requires the marker to have OPENED a wrapper
     # (nonempty ``lwrap``): a run the marker did not open belongs to the
-    # enclosing Markdown and must survive. These are the three reviewed
-    # corruption shapes (GPT rounds 1/3/4, span f634241daeea).
+    # enclosing Markdown and must survive. An unconditional trailing
+    # tolerance would corrupt each of these.
     "`Use [OPTIONS: Alpha | Beta]`",  # inline code span quoting a marker
     "Pick **[OPTIONS: Alpha | Beta]**",  # mid-line emphasis-wrapped marker
     "x [OPTIONS: Alpha | Beta]**",  # mid-line marker, trailing wrapper
@@ -114,9 +114,9 @@ class TestScopeStaysTight:
         assert OPTIONS_RE_TRAILER.search(text) is None
 
     def test_inline_code_span_keeps_its_closing_backtick(self):
-        # The GPT server finding on e0709b843: with an unconditional trailing
-        # tolerance, this stripped the marker AND the span's closing backtick,
-        # corrupting the prose and emitting bogus buttons. It must not match.
+        # With an unconditional trailing tolerance, this would strip the marker
+        # AND the span's closing backtick, corrupting the prose and emitting
+        # bogus buttons. It must not match.
         text = "`Use [OPTIONS: Alpha | Beta]`"
         assert OPTIONS_RE_LINE.search(text) is None
         assert OPTIONS_RE_TRAILER.search(text) is None

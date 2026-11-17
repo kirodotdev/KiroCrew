@@ -4,13 +4,13 @@
  * The frame router is covered in UseWebSocketCoverage.test.tsx and its
  * siblings; the fakes are in UseWebSocketCoverageTestUtils.tsx.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { RECONNECT_HEALTHY_MS, useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, sseChatMessage, setQuestionCard, resolveQuestionCard, sseAutomation } from '../store/chatSlice'
@@ -36,6 +36,13 @@ vi.mock('../api/client', () => ({
     sessions: vi.fn().mockResolvedValue({ sessions: [], has_more: false }),
   },
 }))
+
+/** Pin the reconnect jitter for this test: `Math.random` returns `r`, so a delay
+ *  is the backoff less `r` times half of it (0 keeps the whole backoff). */
+function pinJitter(r: number) {
+  const random = vi.spyOn(Math, 'random').mockReturnValue(r)
+  onTestFinished(() => { random.mockRestore() })
+}
 
 describe('useWebSocket connection lifecycle', () => {
   let testStore: ReturnType<typeof createTestStore>
@@ -94,6 +101,7 @@ describe('useWebSocket connection lifecycle', () => {
   })
 
   it('doubles the reconnect delay up to the ten-second ceiling', () => {
+    pinJitter(0)
     vi.useFakeTimers()
     try {
       const { unmount } = renderHook(() => useWebSocket(), { wrapper })
@@ -111,6 +119,29 @@ describe('useWebSocket connection lifecycle', () => {
         attempt += 1
         expect(WS_INSTANCES).toHaveLength(attempt + 1)
       }
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes up to half off each reconnect delay, at random', () => {
+    // Every tab loses its socket at the same moment, so the same delay everywhere
+    // would bring them all back at once.
+    pinJitter(0.5)
+    vi.useFakeTimers()
+    try {
+      const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+      act(() => { WS_INSTANCES[0].onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(749) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(WS_INSTANCES).toHaveLength(2)
+      act(() => { WS_INSTANCES[1].onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1499) })
+      expect(WS_INSTANCES).toHaveLength(2)
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(WS_INSTANCES).toHaveLength(3)
       unmount()
     } finally {
       vi.useRealTimers()
@@ -173,17 +204,48 @@ describe('useWebSocket connection lifecycle', () => {
     }
   })
 
-  it('forces a reconnect with no socket to close', () => {
+  it('brings a backed-off reconnect forward when the last socket was refused', () => {
+    pinJitter(0)
     vi.useFakeTimers()
     try {
       const { result } = renderHook(() => useWebSocket(), { wrapper })
-      const first = WS_INSTANCES[0]
-      act(() => { first.simulateOpen() })
-      act(() => { first.onclose?.(new CloseEvent('close')) })  // wsRef is now null
+      // Two refused handshakes: the next attempt is 2s away, and wsRef is null.
+      act(() => { WS_INSTANCES[0].onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1000) })
+      act(() => { WS_INSTANCES[1].onclose?.(new CloseEvent('close')) })
 
+      // The health probe reached the gateway: reconnect within the first delay.
       act(() => { result.current.forceReconnect() })
-      act(() => { vi.advanceTimersByTime(0) })
+      act(() => { vi.advanceTimersByTime(999) })
       expect(WS_INSTANCES).toHaveLength(2)
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(WS_INSTANCES).toHaveLength(3)
+      // The backed-off attempt it replaced does not fire as well.
+      act(() => { vi.advanceTimersByTime(2000) })
+      expect(WS_INSTANCES).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the backoff when a forced reconnect follows a socket that dropped young', () => {
+    pinJitter(0)
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useWebSocket(), { wrapper })
+      act(() => { WS_INSTANCES[0].simulateOpen() })
+      act(() => { WS_INSTANCES[0].onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1000) })
+      // The gateway accepts the next socket and drops it at once.
+      act(() => { WS_INSTANCES[1].simulateOpen() })
+      act(() => { WS_INSTANCES[1].onclose?.(new CloseEvent('close')) })
+
+      // A probe answering now says nothing new: the 2s backoff stands.
+      act(() => { result.current.forceReconnect() })
+      act(() => { vi.advanceTimersByTime(1999) })
+      expect(WS_INSTANCES).toHaveLength(2)
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(WS_INSTANCES).toHaveLength(3)
     } finally {
       vi.useRealTimers()
     }
@@ -210,18 +272,18 @@ describe('useWebSocket connection lifecycle', () => {
 
   it('rehydrates approvals and question cards the socket missed', async () => {
     ;(api.approvals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      { id: 'ap-missed', slot: ACTIVE, source: 'cron', tool: 'execute_bash', tool_input: '{}', tool_call_id: 'tc-1', ts: 3 },
-      // Already in the feed: skipped rather than delivered twice.
-      { id: 'ap-known', slot: ACTIVE, source: 'cron', tool: 'execute_bash', ts: 4 },
+      { id: 'ap-missed', instance: 'inst-ap-missed', slot: ACTIVE, source: 'cron', tool: 'execute_bash', tool_input: '{}', tool_call_id: 'tc-1', ts: 3 },
+      // Already in the feed: its note is not delivered twice.
+      { id: 'ap-known', instance: 'inst-ap-known', slot: ACTIVE, source: 'cron', tool: 'execute_bash', ts: 4 },
       // No slot: feed only.
-      { id: 'ap-global' },
+      { id: 'ap-global', instance: 'inst-ap-global' },
     ])
     ;(api.pendingQuestions as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       { ask_id: 'ask-missed', slot: ACTIVE, questions: [{ question: 'Resume?', options: [{ label: 'Yes' }] }] },
     ])
     // The dedupe check reads the SINGLETON feed.
     globalStore.dispatch(addNotification({
-      kind: 'approval', title: 'known', body: '', ts: '4', approval_id: 'ap-known',
+      kind: 'approval', title: 'known', body: '', ts: '4', approval_id: 'ap-known', approval_instance: 'inst-ap-known', slot: ACTIVE,
     } as Parameters<typeof addNotification>[0]))
 
     try {
@@ -233,8 +295,11 @@ describe('useWebSocket connection lifecycle', () => {
       expect(notifs.filter(n => n.approval_id === 'ap-missed')).toHaveLength(1)
       expect(notifs.some(n => n.approval_id === 'ap-known')).toBe(false)
       expect(notifs.some(n => n.approval_id === 'ap-global')).toBe(true)
-      // Only the slot-owning approval got an inline card.
-      expect(testStore.getState().chat.messages.filter(m => m.role === 'permission')).toHaveLength(1)
+      // Each slot-owning approval gets its inline card, including the one the
+      // feed already held (a fresh tab has the stored note but no chat row);
+      // the slotless one gets none.
+      expect(testStore.getState().chat.messages.filter(m => m.role === 'permission').map(m => m.meta?.approval_id))
+        .toEqual(['ap-missed', 'ap-known'])
       expect(testStore.getState().chat.pendingQuestions[ACTIVE]?.ask_id).toBe('ask-missed')
       expect(result.current.forceReconnect).toBeTypeOf('function')
     } finally {
@@ -341,17 +406,42 @@ describe('useWebSocket connection lifecycle', () => {
     }
   })
 
-  it('resets the backoff window after a successful reconnect', () => {
+  it('resets the backoff window once a reconnected socket proves healthy', () => {
+    pinJitter(0)
     vi.useFakeTimers()
     try {
       const { unmount } = renderHook(() => useWebSocket(), { wrapper })
       act(() => { WS_INSTANCES[0].simulateOpen() })
       act(() => { WS_INSTANCES[0].onclose?.(new CloseEvent('close')) })
       act(() => { vi.advanceTimersByTime(1000) })
-      // Second socket connects successfully, which resets the delay to 1s.
+      // Second socket stays open long enough to prove healthy: back to 1s.
       act(() => { WS_INSTANCES[1].simulateOpen() })
+      act(() => { vi.advanceTimersByTime(RECONNECT_HEALTHY_MS) })
       act(() => { WS_INSTANCES[1].onclose?.(new CloseEvent('close')) })
       act(() => { vi.advanceTimersByTime(999) })
+      expect(WS_INSTANCES).toHaveLength(2)
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(WS_INSTANCES).toHaveLength(3)
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps doubling the backoff for a socket that drops before it proves healthy', () => {
+    // A gateway that accepts sockets and drops them: an open alone is no reset,
+    // or every tab would retry each second for as long as it lasts.
+    pinJitter(0)
+    vi.useFakeTimers()
+    try {
+      const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+      act(() => { WS_INSTANCES[0].simulateOpen() })
+      act(() => { WS_INSTANCES[0].onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1000) })
+      act(() => { WS_INSTANCES[1].simulateOpen() })
+      act(() => { vi.advanceTimersByTime(RECONNECT_HEALTHY_MS - 1) })
+      act(() => { WS_INSTANCES[1].onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(1999) })
       expect(WS_INSTANCES).toHaveLength(2)
       act(() => { vi.advanceTimersByTime(1) })
       expect(WS_INSTANCES).toHaveLength(3)

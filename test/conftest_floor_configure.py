@@ -1,6 +1,6 @@
 """Process-wide redirects ``pytest_configure`` installs once per run (the
-hypothesis database, bytecode, child ``PYTHONPATH``, the pytest-asyncio scan gate, the
-crew-log switch), and the hook that trims every recorded warning.
+hypothesis database, bytecode, child ``PYTHONPATH``, the real ``node`` on ``PATH``, the
+pytest-asyncio scan gate, the crew-log switch), and the hook that trims every recorded warning.
 
 Part of the rootdir ``conftest.py``'s host-mutation floor. That file loads this module by
 path and binds the names it needs, so pytest registers every fixture and hook here as
@@ -15,6 +15,8 @@ from __future__ import annotations
 import functools
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 import warnings
 
@@ -177,6 +179,59 @@ def _put_the_tree_under_test_first_on_child_paths() -> None:
     os.environ["PYTHONPATH"] = os.pathsep.join([src, *inherited])
 
 
+#: Set by the first process that resolved ``node``, so the xdist workers, which inherit
+#: that process's environment, do not spawn the probe again.
+_REAL_NODE_RESOLVED_ENV = "KIROCREW_TEST_REAL_NODE_RESOLVED"
+
+#: A lost-run ceiling for the one ``node -e`` probe: a cold node start on a loaded
+#: Windows runner takes seconds, and a probe that runs out only leaves ``PATH`` alone.
+_NODE_PROBE_CEILING_S = 30.0
+
+
+def _put_the_real_node_first_on_path() -> None:
+    """Make a bare ``node`` (and ``npm``/``npx`` beside it) resolve to a real binary.
+
+    A version manager (mise, asdf, nodenv, volta) puts a SHIM first on ``PATH``, and
+    the shim picks its node from ``HOME``, ``$XDG_CONFIG_HOME`` and the version files
+    above the CWD. Every test runs with ``$XDG_CONFIG_HOME`` redirected (the Services
+    part of this floor), and many run node with a ``tmp_path`` CWD or a substituted
+    ``HOME``, so the shim finds no version: mise exits "No version is set for shim",
+    and a manager whose shim waits on its own state can hang until the timeout. CI's
+    node is a real binary, so those tests are green there and red on a developer host.
+
+    Node names its own binary (``process.execPath``). Asking once here, under the
+    operator's environment and the CWD pytest started in, and putting that directory
+    first pins the same node for every test and every child that inherits ``PATH`` --
+    the HOME-and-PATH pair rule (testing-conventions § Rules). A real node, an absent
+    one, or a probe that fails leaves ``PATH`` as it was.
+    """
+    if os.environ.get(_REAL_NODE_RESOLVED_ENV) == "1":
+        return
+    os.environ[_REAL_NODE_RESOLVED_ENV] = "1"  # flake-ok: process-wide pin
+    found = shutil.which("node")
+    if found is None:
+        return
+    try:
+        probe = subprocess.run(  # flake-ok: a probe that runs out leaves PATH alone
+            [found, "-e", "process.stdout.write(process.execPath)"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=_NODE_PROBE_CEILING_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    real = probe.stdout.strip()
+    if probe.returncode != 0 or not os.path.isabs(real):
+        return
+    real_dir = os.path.dirname(real)
+    if os.path.realpath(os.path.dirname(found)) == os.path.realpath(real_dir):
+        return
+    rest = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and p != real_dir]
+    os.environ["PATH"] = os.pathsep.join([real_dir, *rest])  # flake-ok: process-wide pin
+
+
 class _AsyncFixtureScanGate:
     """Run pytest-asyncio's fixture scan only when a fixture was registered since.
 
@@ -265,6 +320,43 @@ def _pin_crew_log_off_for_the_process() -> None:
     ``"0"`` to assert the off path, and ``monkeypatch.delenv`` to assert the default.
     """
     os.environ["KIROCREW_CREW_LOG"] = "0"
+
+
+def _pin_the_profile_standalone_for_the_process() -> None:
+    """``KIROCREW_PROFILE=standalone`` for the whole run, not only inside each test.
+
+    ``_reset_platform_context`` pins it per test, but a module import, a session or
+    module fixture, and every child they start run outside that pin. On a host with a
+    companion installed such a child resolves the enterprise profile and its hooks
+    fail closed. A test that wants another profile still sets it itself.
+    """
+    os.environ["KIROCREW_PROFILE"] = "standalone"  # flake-ok: process-wide pin
+
+
+def _hide_the_hosts_companion_plugins() -> None:
+    """Hide the companion plugins installed on this host from in-process discovery.
+
+    A developer venv can hold a real ``kirocrew.plugins`` companion; CI has none, and a
+    test that plants no companion of its own assumes none. With one installed the
+    profile resolves to the enterprise edition, so ``current_context()`` fails closed,
+    the STT registry defers every unknown name, and boot composes the companion. The
+    wrapper drops the entry points present at configure time and keeps any a test
+    plants later through ``importlib.metadata``. ``bootstrap`` imported the function by
+    name, so its binding is replaced too. A child process still sees the companion.
+    """
+    from kiro_crew.platform import bootstrap, discovery
+
+    real = discovery.plugin_entry_points
+    host = {(ep.name, ep.value) for ep in real()}
+    if not host:
+        return
+
+    @functools.wraps(real)
+    def without_host_companions():
+        return [ep for ep in real() if (ep.name, ep.value) not in host]
+
+    discovery.plugin_entry_points = without_host_companions
+    bootstrap.plugin_entry_points = without_host_companions
 
 
 @pytest.hookimpl(trylast=True)

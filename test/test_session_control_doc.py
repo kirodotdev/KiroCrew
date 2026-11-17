@@ -63,14 +63,25 @@ def test_the_page_names_every_advertised_tool(doc_text: str, advertised_tools: l
     )
 
 
-def test_the_page_states_the_tool_count_it_documents(
-    doc_text: str, advertised_tools: list[dict]
-) -> None:
-    """The page opens on a count, and a count is the one claim a reader cannot check."""
-    assert f"all {len(advertised_tools)} of its tools" in doc_text
-    assert f"the {len(advertised_tools)} `kirocrew-dashboard` MCP tools" in INDEX.read_text(
-        encoding="utf-8"
-    ), "index.md's row states a different tool count than the server advertises"
+def test_the_page_states_no_tool_count(doc_text: str) -> None:
+    """The page and its index row name the tools, never how many there are.
+
+    A count in the prose is one line every PR that adds a tool edits, and two such PRs
+    merge into a page neither tested. The name sets above already pin the surface
+    exactly (testing-conventions.md § Merge-safe ratchets and counts).
+    """
+    count = re.compile(r"\b\d+ (?:of its tools|`kirocrew-dashboard` MCP tools)")
+    assert not count.search(doc_text), "session-control.md states a tool count again"
+    assert not count.search(
+        INDEX.read_text(encoding="utf-8")
+    ), "index.md's Session Control row states a tool count again"
+
+
+def _half(doc_text: str, label: str) -> set[str]:
+    """The backticked names in one of the two bullets that split the server."""
+    match = re.search(rf"^- \*\*{label}\*\* — (.*?)\. These ", doc_text, re.MULTILINE | re.DOTALL)
+    assert match, f"session-control.md lost its '{label}' bullet"
+    return set(re.findall(r"`([a-z_]+)`", match.group(1)))
 
 
 def test_the_agent_inheritance_warning_quotes_the_live_schema(
@@ -120,7 +131,7 @@ def test_the_documented_defaults_match_the_schemas(
 
 
 def test_the_page_matches_the_session_control_group_and_the_channel_block(
-    doc_text: str,
+    doc_text: str, advertised_tools: list[dict]
 ) -> None:
     """Which tools are session control, and which a channel agent may never call.
 
@@ -131,7 +142,11 @@ def test_the_page_matches_the_session_control_group_and_the_channel_block(
     from kiro_crew.channel import CHANNEL_AGENT_BLOCKED_TOOLS
     from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS
 
-    assert len(SESSION_CONTROL_TOOLS) == 24
+    # Each half of the page's split is the exact set its source decides, so a tool
+    # that leaves the gated group is a wrong bullet here, with no total to keep.
+    advertised = {str(t["name"]) for t in advertised_tools}
+    assert _half(doc_text, "Session control") == set(SESSION_CONTROL_TOOLS)
+    assert _half(doc_text, "Sidebar shape") == advertised - set(SESSION_CONTROL_TOOLS)
     for tool in SESSION_CONTROL_TOOLS:
         assert f"`{tool}`" in doc_text
         assert tool in CHANNEL_AGENT_BLOCKED_TOOLS, (

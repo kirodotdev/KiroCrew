@@ -150,7 +150,7 @@ RADAR_CLEARABLE_FIELDS: tuple[str, ...] = (
 RADAR_CI_KEYS: tuple[str, ...] = ("state", "passed", "total", "round", "inherited_reds")
 
 #: Each CI member's type and ceiling -- the record tool's own bounds on its ``ci_*``
-#: arguments (``validation_parts/app_schemas.py``), restated here so the fold re-applies them to the
+#: arguments (Issue Radar's ``app.json`` ``agentTools``), restated here so the fold re-applies them to the
 #: bytes it reads and the carry applies them to a pre-projection file: a string
 #: verdict clipped to its length, a counter kept only as a non-negative int within
 #: the tool's range. A test pins this table against the tool's field specs.
@@ -185,9 +185,17 @@ RADAR_NUMBER_BOUNDS: dict[str, tuple[int, int]] = {
 #: coerced producer would be a record attributed to a mechanism that did not make
 #: it. ``probe`` is the structured monitor's provider probe. A second producer (a
 #: recogniser on the tool-result path, say) is added here, in one commit with the
-#: site that writes it, or not at all.
+#: site that writes it, or not at all. ``warm_brief`` is the warm welcome's own
+#: pull-request read (``warm_task_brief_inputs.read_live_prs``). It is code:
+#: the model types none of it.
 OBJECT_PRODUCER_PROBE = "probe"
-OBJECT_PRODUCERS: tuple[str, ...] = (OBJECT_PRODUCER_PROBE,)
+OBJECT_PRODUCER_WARM_BRIEF = "warm_brief"
+OBJECT_PRODUCERS: tuple[str, ...] = (
+    OBJECT_PRODUCER_PROBE,
+    OBJECT_PRODUCER_WARM_BRIEF,
+)
+#: The slot fold that keeps the newest observation per subject and producer.
+OBJECTS_FOLD_NAME = "objects"
 
 #: The conductor work board's vocabularies live in :mod:`kiro_crew.work_vocab`, a
 #: pure-data leaf outside this package, so the type declared below, the store and
@@ -274,7 +282,8 @@ TYPES: tuple[EntryType, ...] = (
                     "Which mechanism made the observation. Closed: the emitter refuses a "
                     "value outside the vocabulary instead of coercing it, so a reader can "
                     "tell a measured record from a sentence an agent typed. probe is the "
-                    "structured monitor's provider probe."
+                    "structured monitor's provider probe, warm_brief the warm welcome's "
+                    "pull-request read."
                 ),
             ),
             Field(
@@ -637,6 +646,24 @@ TYPES: tuple[EntryType, ...] = (
                     "without it clears the item's reason."
                 ),
             ),
+            Field(
+                "wake_at",
+                JSON_STRING,
+                note=(
+                    "When a progress report's worker will resume, set by report. A report "
+                    "without it clears the item's wake_at."
+                ),
+            ),
+            Field(
+                "discussion",
+                JSON_OBJECT,
+                note=(
+                    "Where a discussion the worker hosts stands, set by report: phase, "
+                    "round, minutes, direction, agreed, disputed, checking, recent and "
+                    "thread, checked for shape by the fold. A report without it clears "
+                    "the item's discussion."
+                ),
+            ),
             Field("summary", JSON_STRING, note="The worker's summary, set by report."),
             Field(
                 "artifacts",
@@ -663,6 +690,15 @@ TYPES: tuple[EntryType, ...] = (
                 note=(
                     "When the item's run of pending verdicts began, carried by a pending "
                     "verdict; any other verdict, or an accept, clears it."
+                ),
+            ),
+            Field(
+                "ask",
+                JSON_OBJECT,
+                note=(
+                    "What the item needs from the person, set by ask: {what, why, options: "
+                    "[{label, outcome}], pick, pick_why, written_at}, written_at the "
+                    "store's stamp. decide and close clear it without logging the field."
                 ),
             ),
             Field(
@@ -717,6 +753,36 @@ TYPES: tuple[EntryType, ...] = (
                     "True on the worker's own copy of a report whose board copy landed. "
                     "The work and worktree folds skip it (the board copy is the record); "
                     "the workers fold reads it as the worker's own report."
+                ),
+            ),
+            Field(
+                "peer_event_id",
+                JSON_STRING,
+                note=(
+                    "On a report the hub ingested from a remote peer: the peer's own id "
+                    "for that report event, verbatim (also the entry's event_id). The work "
+                    "fold files each peer event id once per binding and derives where "
+                    "ingest stands from the ids it holds."
+                ),
+            ),
+            Field(
+                "peer_seen",
+                JSON_ARRAY,
+                item_type=JSON_STRING,
+                note=(
+                    "On an ingested peer report: peer ids before it the hub passes "
+                    "over for good (reports that can never file, or, on a binding "
+                    "filed before peer ids were kept, the reports filed then). The "
+                    "work fold holds them as filed."
+                ),
+            ),
+            Field(
+                "peer_skipped",
+                JSON_INT,
+                note=(
+                    "On an ingested peer report: places before it in the peer's reports "
+                    "the hub could not file. A peer log that rolled past where ingest "
+                    "stood counts one; a report that can never file counts one."
                 ),
             ),
             Field(

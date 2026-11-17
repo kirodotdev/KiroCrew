@@ -340,6 +340,7 @@ describe('a send the host refuses for another reason', { timeout: 20_000 }, () =
     await waitFor(() => expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true))
     expect(input().value).toBe('send under hard limits')
     expect(userRow(store)?.meta?.optimistic).toBe(true)
+    expect(store.getState().chat.slotRunning).toBe(false)
   })
 
   it('keeps its pending bubble on a transport error while the draft comes back', async () => {
@@ -350,6 +351,37 @@ describe('a send the host refuses for another reason', { timeout: 20_000 }, () =
     await waitFor(() => expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true))
     expect(input().value).toBe('never left')
     expect(userRow(store)?.meta?.optimistic).toBe(true)
+    expect(store.getState().chat.slotRunning).toBe(false)
+  })
+
+  type Answer = { resolve: (value: unknown) => void; reject: (reason: unknown) => void }
+  it.each<[string, (answer: Answer) => void]>([
+    ['a transport error', answer => answer.reject(new TypeError('Failed to fetch'))],
+    ['a refusal', answer => answer.resolve({ ok: false, status: 503, json: () => Promise.resolve({ error: 'cannot run new work safely', code: 'containment_unavailable' }) })],
+  ])('keeps a turn that is already streaming running after %s', async (_kind, fail) => {
+    const answer = {} as Answer
+    sendChat.mockReturnValue(new Promise((resolve, reject) => { Object.assign(answer, { resolve, reject }) }))
+    const store = makeStore()
+    await renderPage(store)
+    await sendText('run the build')
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    // The server started the turn: its first chunk streams before the POST answers.
+    act(() => { store.dispatch(sseChatMessage({ slot: 'slot-a', role: 'chunk', content: 'Building now', seq: 1 })) })
+    await act(async () => { fail(answer) })
+    await waitFor(() => expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true))
+    expect(store.getState().chat.slotRunning).toBe(true)
+  })
+
+  it('keeps a running turn running when a send queued behind it fails', async () => {
+    localStorage.setItem('mc-busy-send-mode', 'queue')
+    sendChat.mockRejectedValue(new TypeError('Failed to fetch'))
+    const store = makeStore({ running: true })
+    await renderPage(store)
+    act(() => { store.dispatch(sseChatMessage({ slot: 'slot-a', role: 'chunk', content: 'Still building', seq: 1 })) })
+    await sendText('run the linter next')
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(true))
+    expect(store.getState().chat.slotRunning).toBe(true)
   })
 })
 

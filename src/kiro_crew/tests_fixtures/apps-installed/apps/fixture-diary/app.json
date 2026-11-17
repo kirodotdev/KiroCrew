@@ -1,0 +1,15 @@
+{
+  "name": "fixture-diary",
+  "displayName": "Fixture Diary",
+  "version": "1.0.0",
+  "description": "A page-only local app; with the other fixture apps it fills the Apps rail past its fold.",
+  "author": "kirocrew-fixture",
+  "ui": {
+    "pages": [
+      {
+        "route": "/apps/fixture-diary",
+        "label": "Fixture Diary"
+      }
+    ]
+  }
+}

@@ -106,6 +106,7 @@ def test_a_changed_agent_spec_is_not_deferred_by_a_settings_read_failure(
                 "mcpServers": {
                     "srv": {"command": _CMD, "args": ["a0"], "env": {"K": "v"}, "disabled": True}
                 },
+                "tools": ["*"],
             }
         )
     )

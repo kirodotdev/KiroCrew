@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import resource_status
 from kiro_crew.agent_capabilities import CapabilityError
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _recover_app_agent_binding,
         app_agent_binding_applies,
+        app_session_selects_bot,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
     from kiro_crew.dashboard.chat_turn.model_fallback import (
@@ -51,8 +52,15 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import _require_session_memory_assignment
 
 # Debounce before a speculative spawn. Absorbs rapid consecutive signals
-# (slot create immediately followed by a project set, or a user re-picking
-# the project) so only the settled state spawns a session.
+# (a user re-picking the project or the agent) so only the settled state
+# spawns a session. The owner's own new chat skips it (``debounce=0.0`` from
+# the slot-create handler): measured on a pod, a message sent 2 s after "New
+# chat" waited a median 4.3-4.5 s (two runs of five) for its first output with
+# the debounce and 3.0 s without it, because the start had 1.5 s less of its 3 s left to run. A
+# create that a binding change follows (the client sets the project right after
+# it, ``no_session_folder``, or switches it to the Crew Mode conductor) keeps
+# the debounce: that change landing on a start that already reserved the key
+# would throw the start away, and for a project would owe a session reset.
 _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 
 
@@ -64,7 +72,8 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 # queued for later, and the first signal after the window starts normally. With
 # a cap of 3 the reachable windows are 10s after the first failure and 20s after
 # the second (the doubling and its 300s ceiling bound a larger cap). After the cap the slot stops starting in the background and says so once (one ERROR
-# log line and one error row in the chat). From then on background starts stay
+# log line, and one error row in the chat unless the start was policy-blocked,
+# below). From then on background starts stay
 # OFF for that slot until a start succeeds -- the user's own next message still
 # starts it, and that success clears the count -- or the gateway restarts: the
 # count lives only on the in-memory slot, so a restart starts it again at zero.
@@ -74,6 +83,9 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 # binding/selection write, the admission bookkeeping around it, or a capability
 # refusal raised before any process ran (``_is_pre_spawn_refusal``) spawned no
 # agent process, so it is logged and does not move the slot toward the cap.
+# A start Windows policy refused (``AcpSpawnBlocked``, read by its
+# ``windows_spawn_blocked`` tag) goes to the cap at once, with no stop row of its
+# own: every retry meets the same policy, and the next send shows the policy card.
 _EAGER_SPAWN_FAILURE_CAP = 3
 
 
@@ -438,6 +450,9 @@ def schedule_eager_spawn(
     *,
     allow_resume: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    on_ended: Callable[[Exception | None], None] | None = None,
+    focus_resume: bool = False,
+    debounce: float | None = None,
 ) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
@@ -449,6 +464,10 @@ def schedule_eager_spawn(
     At most one pending task per slot: a newer signal cancels the older task,
     so the spawn always reflects the slot's settled agent/model/project.
 
+    ``debounce`` overrides the wait before the start
+    (``_EAGER_SPAWN_DEBOUNCE_SECS`` when ``None``); the owner's new chat passes
+    ``0.0`` because a person is about to type into it.
+
     ``allow_resume`` opts this spawn into resume prefetch (the slot-focused
     intent signal): a resumable key performs the speculative ``session/load``
     instead of skipping, with the ``resumed=True`` observation armed for the
@@ -457,9 +476,19 @@ def schedule_eager_spawn(
     agent/project switch handlers reset the session themselves.
 
     ``start_priority`` is FOREGROUND only from a handler serving the dashboard
-    owner's own slot action (create, agent or project switch), where the person is
-    about to type; the focus-driven resume prefetch, reloads and app callers stay
-    BACKGROUND (rule: ``kiro_crew.start_priority``).
+    owner's own slot action (create, agent or project switch, the tab menu's
+    Reload), where the person is about to type; the focus-driven resume prefetch,
+    the other reloads and app callers stay BACKGROUND (rule:
+    ``kiro_crew.start_priority``).
+
+    ``focus_resume`` is set by the focus-driven resume prefetch alone. Its start
+    keeps that BACKGROUND place in the queues, and the session layer is told the
+    owner came back to the chat, so the re-open is done as one a person is about
+    to wait on (rule: ``acp.mcp_start_wait.person_waits``).
+
+    ``on_ended`` is called once the start has ended without being cancelled,
+    with the exception that failed it or ``None``; a reload reads it to say how
+    its respawn went. It is not called when this returns ``None``.
 
     The flag is read from the live-config watcher's adopted snapshot, a plain
     attribute read, and there is deliberately no disk fallback behind it: this
@@ -507,9 +536,16 @@ def schedule_eager_spawn(
             allow_resume=allow_resume,
             signal_generation=_arm_generation,
             start_priority=start_priority,
+            on_ended=on_ended,
+            focus_resume=focus_resume,
+            debounce=debounce,
         )
     )
     slot._eager_spawn_task = task
+    # A resume start whose signal waits on its end (a reload's respawn): a focus
+    # frame keeps it. A focus's own prefetch reports to nobody, so another
+    # window's focus still re-arms it (``ws._handle_slot_focused``).
+    slot._eager_spawn_reported_resume = allow_resume and on_ended is not None
     return task
 
 
@@ -563,6 +599,9 @@ async def _eager_spawn(
     allow_resume: bool = False,
     signal_generation: float | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    on_ended: Callable[[Exception | None], None] | None = None,
+    focus_resume: bool = False,
+    debounce: float | None = None,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -582,7 +621,13 @@ async def _eager_spawn(
        registered. For eligible V1 sessions, a first message arriving during
        the handshake blocks on the same semaphore and reuses the created
        session.
+
+    ``on_ended`` (see ``schedule_eager_spawn``) is called on every exit but a
+    cancel: a cancelled start was replaced by a newer slot signal or stopped by
+    the shutdown, and has nothing to report.
     """
+    failure: Exception | None = None
+    cancelled = False
     try:
         # The arm generation as of this slot signal. ``schedule_eager_spawn``
         # reads it synchronously at signal arrival (create_task only queues
@@ -592,7 +637,7 @@ async def _eager_spawn(
         # a concurrent signal, and the admission below must not evict it.
         if signal_generation is None:
             signal_generation = _arm_generation
-        await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS)
+        await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS if debounce is None else debounce)
         sessions = getattr(state, "sessions", None)
         if sessions is None:
             return
@@ -661,6 +706,7 @@ async def _eager_spawn(
                     cfg,
                     session_key,
                     _bound[0] or None,
+                    _bound[2] or None,
                 )
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
@@ -694,6 +740,7 @@ async def _eager_spawn(
                         cfg,
                         session_key,
                         _bound[0] or None,
+                        _bound[2] or None,
                     )
                     kiro_agent = bindings.kiro_agent
                     crew_alias = bindings.resolved_alias
@@ -706,6 +753,10 @@ async def _eager_spawn(
                 if bindings.selection_kind == "template":
                     crew_alias = ""
                 resolved_ok = bindings.requested_resolved
+                if app_session_selects_bot(slot, bindings):
+                    # The first real turn refuses it, so nothing starts as the Bot.
+                    logger.info("Eager spawn: app slot %s names a Bot; not started", slot.key)
+                    return
                 await asyncio.to_thread(
                     _require_session_memory_assignment, session_key, bindings.memory_store_name
                 )
@@ -878,6 +929,8 @@ async def _eager_spawn(
                     allow_resume=allow_resume,
                     _bound=_bound,
                     start_priority=start_priority,
+                    focus_resume=focus_resume,
+                    store_to_warm=selected_store,
                 )
             finally:
                 # Every exit that is not a registration -- refused, another
@@ -885,19 +938,29 @@ async def _eager_spawn(
                 # cancelled -- gives the reserved allowance back.
                 _release_prefetch_reservation(session_key)
     except asyncio.CancelledError:
+        cancelled = True
         raise
     except SessionClosingError:
         # Same shutdown race as _on_session_closing: the gateway began
         # closing while the speculative spawn was mid-start. Not a failure —
         # the allocation path already reaped the half-started provider.
         logger.info("Eager spawn for %s aborted — gateway is shutting down", slot.key)
-    except Exception:
+    except Exception as exc:
         # Logged, not counted: the agent-start failures that count toward the
         # background-start cap were already noted at the allocation itself
         # (``_spawn_admitted_prefetch``); everything else reaching here -- a
         # pending-reset consume, a selection write, admission bookkeeping --
         # spawned no agent and must not stop background starts.
+        failure = exc
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
+    finally:
+        if on_ended is not None and not cancelled:
+            try:
+                on_ended(failure)
+            except Exception:
+                logger.warning(
+                    "Eager spawn: the end callback for slot %s failed", slot.key, exc_info=True
+                )
 
 
 async def _spawn_admitted_prefetch(
@@ -913,6 +976,8 @@ async def _spawn_admitted_prefetch(
     allow_resume: bool,
     _bound: tuple,
     start_priority: StartPriority,
+    focus_resume: bool = False,
+    store_to_warm: str | None = None,
 ) -> None:
     """The admitted half of ``_eager_spawn``: handshake, guards, registration.
 
@@ -969,6 +1034,7 @@ async def _spawn_admitted_prefetch(
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
                 start_priority=start_priority,
+                focus_resume=focus_resume,
                 **_app_allocation_kwargs(slot),
                 **_slot_backend_allocation_kwargs(slot),
             )
@@ -982,7 +1048,14 @@ async def _spawn_admitted_prefetch(
             # ``_eager_spawn``'s catch-all, so a reset or binding error raised
             # around this call never moves the slot toward the cap. A
             # capability refusal raised before any process ran is not one.
-            if not _is_pre_spawn_refusal(exc):
+            if getattr(exc, "windows_spawn_blocked", False) is True:
+                slot._eager_spawn_failures = _EAGER_SPAWN_FAILURE_CAP
+                logger.error(
+                    "Eager spawn: Windows policy blocked the agent for slot %s; "
+                    "background starts stay off until a start succeeds or the gateway restarts",
+                    slot.key,
+                )
+            elif not _is_pre_spawn_refusal(exc):
                 _note_eager_spawn_failure(slot, exc)
             raise
     except SpeculativeResumeRefused:
@@ -991,10 +1064,35 @@ async def _spawn_admitted_prefetch(
         # or a failed speculative LOAD (allow_resume path: F2 fell
         # back / mapping vanished / provider switch), rejected before
         # registration so no claimable fallback session exists. Both
-        # end the same way: the first real message handles it.
+        # end the same way: the first real message handles it. The same
+        # refusal stands down a resume start a person's message took over
+        # before it reached its spawn door (``get_or_create``): that
+        # message starts the agent itself.
         logger.info("Eager spawn: %s left to first turn (refused)", session_key)
         return
     sessions.release(session_key)
+    if is_new and not resumed and not slot.blocks_reads:
+        # The first message's build reads every recent-history file (about 75 in a
+        # busy store, a quarter of a second through the hardened reader). None of
+        # that depends on the message, so it is read now, beside the person's
+        # think time, and the build reuses it while the directory is unchanged
+        # (``MemoryStore.warm_recent_history``). A failure only costs the head start.
+        builder = getattr(state, "context_builder", None)
+        if builder is not None:
+            workspace = slot.workspace or None
+
+            def _read_history_early(warm_builder: Any) -> None:
+                warm_builder.get_memory_for(workspace, store_to_warm).warm_recent_history(days=14)
+
+            async def _warm_history() -> None:
+                try:
+                    await asyncio.to_thread(_read_history_early, builder)
+                except Exception:  # noqa: BLE001 - the first build reads for itself
+                    logger.debug("Eager spawn: history was not read early", exc_info=True)
+
+            warm = asyncio.create_task(_warm_history())
+            state._background_tasks.add(warm)
+            warm.add_done_callback(state._background_tasks.discard)
     # The cleanup below may only tear down a session THIS task created.
     # is_new=False means another creator won the same-key race (or the
     # claim attached to an already-registered session): a real turn

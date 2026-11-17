@@ -77,6 +77,7 @@ def test_pending_options_copies_only_the_chip_bar_source(rows, expected):
 
 def test_brief_row_carries_the_copied_marker_as_its_last_line(monkeypatch):
     from kiro_crew.dashboard import state as state_mod
+    from kiro_crew.dashboard.warm_task_brief_welcome import WORDS as welcome_words
 
     posted: list[str] = []
     monkeypatch.setattr(
@@ -89,8 +90,20 @@ def test_brief_row_carries_the_copied_marker_as_its_last_line(monkeypatch):
         None, None, "x", kind=kind, fingerprint="f", options="[OPTIONS: A]"
     )
     warm_task_brief._post_message(None, None, "x", kind=kind, fingerprint="f")
+    hint = welcome_words["en"]["tap_reply"]
+    warm_task_brief._post_message(
+        None, None, "x", kind=kind, fingerprint="f", options="[OPTIONS: A]", reply_hint=hint
+    )
+    warm_task_brief._post_message(None, None, "x", kind=kind, fingerprint="f", reply_hint=hint)
 
-    assert posted == ["x\n\n[OPTIONS: A]", "x"]
+    # The hint says a chip only sends a reply, so it rides only with the chips.
+    assert posted == [
+        "x\n\n[OPTIONS: A]",
+        "x",
+        "x\n\nTap an option below to reply.\n\n[OPTIONS: A]",
+        "x",
+    ]
+    assert all(words["tap_reply"] for words in welcome_words.values())
 
 
 def test_waiting_item_keeps_the_ask_as_its_source_under_a_brief_with_copied_buttons():

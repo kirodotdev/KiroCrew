@@ -35,3 +35,12 @@ def test_the_timeout_description_states_the_schema_range():
     spec = next(s for s in CRON_ADD_SCHEMA.fields if s.name == "timeout")
     text = _cron_add_properties()["timeout"]["description"]
     assert f"{int(spec.min_val)}..{int(spec.max_val)}" in text
+
+
+def test_the_description_says_a_bots_scheduled_turn_cannot_message_sessions():
+    """A Bot's scheduled agent turn runs on its worker, which has no session tools."""
+    tool = next(t for t in _list_tools() if t["name"] == "cron_add")
+    text = tool["description"]
+    assert "runs on its worker" in text
+    assert "cannot message other sessions" in text
+    assert "worker report" in text

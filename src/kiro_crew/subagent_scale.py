@@ -15,6 +15,8 @@ callback and ``DashboardState``:
   ``subagent_stalled``, ``subagent_retrying``) are buffered per agent (latest
   state wins) and flushed on a ~1s tick as ONE ``subagent_batch_update`` frame
   ``{updates: [{id, slot, ...merged extras}, ...]}`` broadcast to all clients.
+  A tool-title refinement never merges with a frame of another call: it renames
+  the buffered call it refines, or the buffered entry is sent first.
   ``subagent_chunk`` text is buffered per agent (append-concatenated, bounded)
   and flushed on the same tick as ONE ``subagent_batch_chunks`` frame
   ``{chunks: [{id, slot, text}, ...]}`` to subagent subscribers only —
@@ -96,7 +98,7 @@ class SubagentEventCoalescer:
             )
             text = buf["text"] + str(payload.get("text", ""))
             if len(text) > _CHUNK_BUF_CAP:
-                text = "…(truncated)\n" + text[-(_CHUNK_BUF_CAP - 100):]
+                text = "…(truncated)\n" + text[-(_CHUNK_BUF_CAP - 100) :]
             buf["text"] = text
             self._ensure_tick()
             return True
@@ -104,16 +106,29 @@ class SubagentEventCoalescer:
             if self._active() <= self._threshold:
                 self._flush_if_pending()
                 return False
-            entry = self._updates.setdefault(
-                payload.get("id", ""), {"slot": payload.get("slot", "")}
-            )
+            aid = payload.get("id", "")
+            if etype == "subagent_tool":
+                payload = self._fit_tool_frame(aid, payload)
+            entry = self._updates.setdefault(aid, {"slot": payload.get("slot", "")})
             # Latest state wins; merge so a tool update and a stalled update
             # for the same agent ride one entry. Incompatible fields are
             # cleared to mirror the per-event reducer semantics: tool activity
             # means the agent is WORKING again, so a stale buffered `attempt`
             # (retrying) must not survive the merge and leave the row marked
             # retrying after work resumed.
+            # Retrying and stalled are one health state, so the later of the two
+            # drops the earlier one: the frontend applies `attempt` before
+            # `stalled` and would otherwise always show the stall.
+            # A call frame drops a buffered refinement's `is_update` for the same
+            # call, which would otherwise mark the call frame as a refinement.
             if etype == "subagent_tool":
+                entry.pop("attempt", None)
+                if not payload.get("is_update"):
+                    entry.pop("is_update", None)
+            elif etype == "subagent_retrying":
+                entry.pop("stalled", None)
+                entry.pop("idle_secs", None)
+            elif etype == "subagent_stalled" and payload.get("stalled"):
                 entry.pop("attempt", None)
             entry.update({k: v for k, v in payload.items() if k != "id"})
             self._ensure_tick()
@@ -126,6 +141,29 @@ class SubagentEventCoalescer:
         if etype in ("subagent_done", "subagent_spawn", "subagent_recovering"):
             self._flush_if_pending()
         return False
+
+    def _fit_tool_frame(self, aid: str, payload: dict) -> dict:
+        """Fit a ``subagent_tool`` frame to the tool frame buffered for its agent.
+
+        The card lists a row for a call frame and only renames one for a refinement
+        (a frame marked ``is_update``), and a refinement is sent once. So a
+        refinement never merges with a frame of another call: the buffered entry is
+        sent on its own first, then the new frame buffers alone. A refinement of the
+        buffered call frame renames it before it is sent: it goes out as the call,
+        without the mark.
+        """
+        entry = self._updates.get(aid)
+        if entry is None or "tool" not in entry:
+            return payload
+        refines = payload.get("is_update") is True
+        if entry.get("tool_call_id") == payload.get("tool_call_id"):
+            if refines and not entry.get("is_update"):
+                return {k: v for k, v in payload.items() if k != "is_update"}
+            return payload
+        if refines or entry.get("is_update"):
+            del self._updates[aid]
+            self._send_updates([{"id": aid, **entry}])
+        return payload
 
     # ── flushing ─────────────────────────────────────────────────────
 
@@ -144,10 +182,7 @@ class SubagentEventCoalescer:
         if self._updates:
             updates = [{"id": aid, **extra} for aid, extra in self._updates.items()]
             self._updates.clear()
-            try:
-                self._broadcast_all("subagent_batch_update", {"updates": updates})
-            except Exception:
-                logger.debug("batch_update broadcast failed", exc_info=True)
+            self._send_updates(updates)
         if self._chunks:
             chunks = [
                 {"id": aid, "slot": buf["slot"], "text": buf["text"]}
@@ -160,6 +195,12 @@ class SubagentEventCoalescer:
                     self._broadcast_subs("subagent_batch_chunks", {"chunks": chunks})
                 except Exception:
                     logger.debug("batch_chunks broadcast failed", exc_info=True)
+
+    def _send_updates(self, updates: list[dict]) -> None:
+        try:
+            self._broadcast_all("subagent_batch_update", {"updates": updates})
+        except Exception:
+            logger.debug("batch_update broadcast failed", exc_info=True)
 
     def close(self) -> None:
         """Flush remaining state and stop the tick (gateway shutdown)."""

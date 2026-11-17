@@ -183,13 +183,19 @@ test("classifyStartFailure: a plain spawn failure and a timeout stay distinct", 
 
 // #6138: the client-only dialog must not dress an expected state as a crash.
 test("client-only: the failure dialog derives its log pane from that one bit", () => {
-  // Source-level pin. The log pane is exactly the client-only condition, so a
-  // second flag for it would be a duplicate spelling that can drift.
+  // Source-level pin. The log pane follows the client-only condition, so a
+  // second spelling of that condition could drift. The one exception is the
+  // foreign-holder refusal: that launch did probe the port and logged the
+  // holder's pid and command, so its log is evidence, not an earlier run's.
   const source = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8").replace(/\r\n/g, "\n"))
     .join("\n");
-  assert.match(source, /const showLog = !localGatewayOff;/);
-  assert.doesNotMatch(source, /showLog:/);
+  assert.match(source, /const showLog = configuredShowLog \?\? !localGatewayOff;/);
+  assert.deepStrictEqual(
+    (source.match(/[^\n]*showLog: true[^\n]*/g) || []).map((line) => line.trim()),
+    ['...(failureRecord?.localStartBlocked === "foreign-holder" ? { showLog: true } : {}),'],
+    "only the foreign-holder state overrides the log pane",
+  );
 });
 
 test("client-only: the local-start offer routes through a re-exec on a crew's port", () => {
@@ -201,7 +207,7 @@ test("client-only: the local-start offer routes through a re-exec on a crew's po
   // in place; client-only on a crew's port -> offer while a re-exec is
   // possible; noRetry -> no offer.
   const source = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8").replace(/\r\n/g, "\n"))
     .join("\n");
   assert.match(source, /const enableButton = offerLocalStart && !noRetry/);
   assert.match(source, /offerLocalStart: canOfferLocalStart\(localGatewayOff, remoteTarget\)/);

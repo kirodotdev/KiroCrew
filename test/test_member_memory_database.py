@@ -545,6 +545,21 @@ async def test_unknown_metadata_field_commits_the_span_on_its_one_billed_extract
     assert "Recorded the work email." in member_db.read_editable_history()
 
 
+@pytest.mark.parametrize("zone", ["UTC", "Pacific/Guam", "Pacific/Kiritimati", "America/St_Johns"])
+def test_member_activity_index_lists_entries_not_history_stamps(member_db, local_tz, zone):
+    """The member writer's day header and time stamps never take an index slot."""
+    local_tz(zone)
+    facade = MemoryStore(
+        workspace=member_db._db_path.parent, memory_version=2, vector_store=member_db
+    )
+    facade.init()
+    for name in ("Alphaquartz", "Betaquartz", "Gammaquartz"):
+        facade.append_history(f"{name} entry")
+    index = facade.activity_index()
+    titles = [line.split(": ", 1)[1] for line in index.splitlines() if line.startswith("- ")]
+    assert titles == ["Gammaquartz entry", "Betaquartz entry", "Alphaquartz entry"]
+
+
 def test_history_does_not_duplicate_full_bodies_in_a_revision_table(member_db):
     member_db.append_history("A retained authoritative history entry.")
     before = member_db.read_editable_history()

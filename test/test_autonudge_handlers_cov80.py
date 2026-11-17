@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
@@ -202,7 +203,7 @@ async def test_session_monitor_read_admits_webex_legacy_loop(
 async def test_session_monitor_read_redacts_provider_controlled_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=19)
     loop = _monitor_loop(slot_key="chat-1-111")
     assert loop.monitor is not None
     loop.monitor.last_observation = {
@@ -447,7 +448,7 @@ async def test_monitor_list_excludes_persistence_only_fields(
         "review_decision": "approved",
         "review_threads_complete": True,
         "state": "open",
-        "target": f"github.com/acme/widgets#7?token={secret}",
+        "target": f"https://github.com/acme/widgets/pull/7?token={secret}",
         "unresolved_review_threads": 0,
     }
     _svc(monkeypatch, _FakeSvc([loop]))
@@ -1481,7 +1482,7 @@ async def test_start_400_on_undecodable_body(monkeypatch: pytest.MonkeyPatch) ->
     _svc(monkeypatch, _FakeSvc())
     response = await h.api_autonudge_start(_mk("POST", "/api/autonudge", body=None))
     assert response.status == 400
-    assert _body(response) == {"error": "invalid JSON"}
+    assert _body(response) == {"error": "invalid JSON", "code": "invalid_json"}
 
 
 @pytest.mark.asyncio
@@ -1645,7 +1646,7 @@ async def test_update_400_on_undecodable_body(monkeypatch: pytest.MonkeyPatch) -
     request = _mk("PATCH", "/api/autonudge/lp-1", match={"loop_id": "lp-1"}, body=None)
     response = await h.api_autonudge_update(request)
     assert response.status == 400
-    assert _body(response) == {"error": "invalid JSON"}
+    assert _body(response) == {"error": "invalid JSON", "code": "invalid_json"}
 
 
 @pytest.mark.asyncio

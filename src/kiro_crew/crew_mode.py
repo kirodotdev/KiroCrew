@@ -52,9 +52,9 @@ from kiro_crew.agent_files import (
     TEAM_LEAD_AGENT_FILENAME,
 )
 
-#: The agent Crew Mode (Ultra Mode) runs while ``agent.crew_mode_agent`` is unset:
-#: the team lead. A person who set the key keeps their value.
-DEFAULT_CREW_MODE_AGENT: Final[str] = TEAM_LEAD_AGENT_FILENAME.removesuffix(".json")
+#: The agent Crew Mode (conductor mode) runs while ``agent.crew_mode_agent`` is unset:
+#: the conductor. A person who set the key keeps their value.
+DEFAULT_CREW_MODE_AGENT: Final[str] = CONDUCTOR_AGENT_FILENAME.removesuffix(".json")
 
 #: The shipped conductors: every agent whose job is dispatching work to other
 #: sessions, all kept out of a normal chat's agent picker. Derived from the
@@ -97,10 +97,15 @@ DISPATCHER_FIELD: Final[str] = "crew_dispatched_by"
 #: session it dispatched, directly or through another; ``mate_dispatched_by`` is that
 #: row's direct creator. Absent elsewhere. Read by the Crew panel's routes
 #: (``dashboard/handlers/crew_workers.py``), which answer a mate thread as a root,
-#: and, behind the mate sessions preview, by :func:`list_view`
+#: and by :func:`list_view`
 #: (``docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md``).
 MATE_ROOT_FIELD: Final[str] = "mate_root"
 MATE_DISPATCHER_FIELD: Final[str] = "mate_dispatched_by"
+#: On a mate thread's own row only: its Bot's ``show_sessions_in_list`` switch.
+#: False (the default) leaves the sessions it dispatched out of the person's lists,
+#: for the Bot's Sessions tab; True keeps them listed. Read by :func:`list_view`
+#: and the dashboard's ``crewModeView``.
+MATE_LISTED_FIELD: Final[str] = "show_sessions_in_list"
 #: The slot ``mode`` of a mate thread: ``members.DM_SLOT_MODE``, spelled here because
 #: this module is a leaf (``test_crew_mode_mate_stamps`` pins the two equal).
 MATE_SLOT_MODE: Final[str] = "member"
@@ -489,6 +494,9 @@ def stamp_rows(
         row.pop(DISPATCHER_FIELD, None)
         row.pop(MATE_ROOT_FIELD, None)
         row.pop(MATE_DISPATCHER_FIELD, None)
+        row.pop(MATE_LISTED_FIELD, None)
+        if key in mate_roots:
+            row[MATE_LISTED_FIELD] = mate_lists_sessions(row.get("agent"))
         if key in roots or key in mate_roots:
             continue
         seen = {key}
@@ -582,42 +590,38 @@ def workers_of(rows: Iterable[Mapping[str, Any]], root_key: str) -> list[Mapping
 #: The ``GET /api/chat/slots?crew=`` value that keeps every row, workers included.
 VIEW_ALL: Final[str] = "all"
 
-#: The feature preview (``dashboard.feature_previews``) that takes a mate's sessions
-#: out of the person's lists: step 6 of
-#: ``docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md``.
-MATE_SESSIONS_PREVIEW: Final[str] = "mate_sessions"
+
+def mate_lists_sessions(agent: Any) -> bool:
+    """Whether Bot *agent* keeps its sessions in the person's lists, by the live config.
+
+    Its ``show_sessions_in_list`` switch; off when unset, unread or not a bool. No I/O.
+    """
+    cfg = _live_cfg()
+    agents = getattr(cfg, "agents", None)
+    record = agents.get(agent) if isinstance(agents, Mapping) and isinstance(agent, str) else None
+    return getattr(record, "show_sessions_in_list", False) is True
 
 
-def mate_sessions_hidden(cfg: Any = None) -> bool:
-    """Whether the mate sessions preview is on: *cfg*, else the live config. Off when unread."""
-    cfg = cfg if cfg is not None else _live_cfg()
-    previews = getattr(getattr(cfg, "dashboard", None), "feature_previews", None)
-    return isinstance(previews, Mapping) and previews.get(MATE_SESSIONS_PREVIEW) is True
-
-
-def list_view(
-    rows: list[dict[str, Any]], view: str, *, agent: bool, cfg: Any = None
-) -> list[dict[str, Any]]:
+def list_view(rows: list[dict[str, Any]], view: str, *, agent: bool) -> list[dict[str, Any]]:
     """The session list's Crew Mode view of stamped *rows*.
 
     A session a Crew Mode root dispatched is that root's to show (its side panel's
-    worker list), so a PERSON's list leaves it out unless *view* is ``all``. With the
-    mate sessions preview on (:func:`mate_sessions_hidden`), a session a mate
-    dispatched (:data:`MATE_ROOT_FIELD`) is the mate's Sessions tab's to show and is
-    left out the same way; the mate thread itself carries no stamp and stays. An
-    *agent*'s read keeps every row by default: its folder, status and lineage tools
-    resolve their own and their children's rows from this list.
+    worker list), so a PERSON's list leaves it out unless *view* is ``all``. A
+    session a live mate thread dispatched (:data:`MATE_ROOT_FIELD`) is the mate's
+    Sessions tab's to show and is left out the same way, unless the mate's Bot
+    turned on ``show_sessions_in_list`` (:data:`MATE_LISTED_FIELD` on the mate
+    thread's row); the mate thread itself stays. An *agent*'s read keeps every row
+    by default: its folder, status and lineage tools resolve their own and their
+    children's rows from this list.
 
-    The dashboard reads ``crew=all`` and leaves workers out of the person's lists
-    on the client (``crewModeView``), because its live slot frame must carry every
-    row; this default serves other person clients (scripts, ``curl``).
+    The dashboard reads ``crew=all`` and leaves the same rows out of the person's
+    lists on the client (``crewModeView``), because its live slot frame must carry
+    every row; this default serves other person clients (scripts, ``curl``).
     """
     if view == VIEW_ALL or agent:
         return rows
-    hide_mates = mate_sessions_hidden(cfg)
-    return [
-        r for r in rows if not r.get(WORKER_FIELD) and not (hide_mates and r.get(MATE_ROOT_FIELD))
-    ]
+    hiding = {r["key"] for r in rows if r.get(MATE_LISTED_FIELD) is False and r.get("key")}
+    return [r for r in rows if not r.get(WORKER_FIELD) and r.get(MATE_ROOT_FIELD) not in hiding]
 
 
 def _live_row(slot: Any) -> dict[str, Any]:
@@ -671,6 +675,72 @@ def live_stamp_rows(
     saved = {str(row["key"]): str(row.pop("saved_created_by") or "") for row in rows}
     stamp_rows(rows, settled=settled and parents is not None, saved_creators=saved)
     return {str(row["key"]): row for row in rows}
+
+
+def share_tree_root(
+    slots: Mapping[str, Any],
+    slot_key: str,
+    parents: Mapping[str, Any] | None = None,
+    *,
+    settled: bool = False,
+) -> str:
+    """The top of live slot *slot_key*'s creator chain: its session tree's root.
+
+    Read by chat runtime sharing (``acp.chat_runtime_sharing.share_tree_root_of``)
+    once per session start. The walk follows the creators :func:`stamp_rows` nests
+    on (the crew log's ``parent`` edge, then ``created_by``, then the saved one),
+    past a closed creator through the frame's live ancestor or the persisted
+    lineage. Unlike the Crew Mode root it asks nothing of the root's agent or
+    mode: a Bot thread, a conductor and a plain chat all root their own tree. A
+    slot with no creator is its own root, and the walk stops on a repeat, so a
+    cycle in forged records cannot loop. No I/O.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for slot in list(slots.values()):
+        row = _live_row(slot)
+        if parents is not None:
+            row["parent"] = parents.get(row["key"])
+        else:
+            row.pop("parent", None)
+        rows[str(row["key"])] = row
+    settled = settled and parents is not None
+    tree: list[frozenset[str] | None] = []
+
+    def creator_of(key: str, row: Mapping[str, Any]) -> str:
+        saved = row.get("saved_created_by") or ""
+        if not isinstance(saved, str) or saved == key:
+            saved = ""
+        untracked = False
+        if saved and settled:
+            if not tree:
+                tree.append(persisted_tree_slots())
+            known = tree[0]
+            untracked = known is not None and key not in known and f"dashboard:{key}" not in known
+        return _creator_of(row, settled, saved, untracked)
+
+    lineage: list[Mapping[str, str]] = []
+
+    def persisted(key: str) -> str:
+        if not lineage:
+            lineage.append(persisted_parents())
+        return lineage[0].get(key, "") or ""
+
+    root = slot_key
+    seen = {slot_key}
+    current: Mapping[str, Any] | None = rows.get(slot_key)
+    creator = creator_of(slot_key, current) if current is not None else persisted(slot_key)
+    while creator and creator not in seen:
+        root = creator
+        seen.add(creator)
+        above = rows.get(creator)
+        if above is None:
+            live_ancestor = _live_ancestor_of(current) if current is not None else ""
+            current = None
+            creator = live_ancestor or persisted(creator)
+            continue
+        current = above
+        creator = creator_of(creator, above)
+    return root
 
 
 def mate_workers_of(rows: Iterable[Mapping[str, Any]], root_key: str) -> list[Mapping[str, Any]]:

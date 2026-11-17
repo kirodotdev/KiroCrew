@@ -1,10 +1,14 @@
-"""Per-part channel authorization on the ``channel_type`` leg of send_message.
+"""Per-part channel authorization on the three channel legs of send_message.
 
-The route, state and transport doubles come from ``test_send_message_targeted.py``.
+The ``channel_type`` leg is driven through the route, with the state and transport
+doubles from ``test_send_message_targeted.py``; the owner-DM and configured-target
+legs are called directly.
 """
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,7 +23,9 @@ from test_send_message_targeted import (
     _permitted,
 )
 
+from kiro_crew.dashboard.handlers import messaging as mod
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.transport import ConfiguredChannelTarget
 from kiro_crew.telegram.client import TELEGRAM_MAX_TEXT
 
 
@@ -286,3 +292,156 @@ class TestPerPartRevalidation:
         assert status == 200, data
         assert data["ok"] is True
         assert transport.send_message.await_count >= 3
+
+
+def _parted_leg_transport():
+    """A transport for the owner-DM and target legs that chunks into several parts.
+
+    Those legs chunk through ``chunk_for_transport``, which reads the byte cap
+    too, so both caps are real numbers. One configured DM target is the owner.
+    """
+    transport, delivered = _parted_transport()
+    transport.capabilities.max_message_bytes = 0
+    transport.configured_targets.return_value = [ConfiguredChannelTarget("user:123", "DM")]
+    transport.resolve_configured_target = AsyncMock(return_value=("123", None))
+    transport.may_send_to = lambda *a, **k: True
+    return transport, delivered
+
+
+async def _owner_dm(transport, text=_PARTED_TEXT):
+    state = MagicMock()
+    state.get_channel_transport.return_value = transport
+    return await mod._deliver_channel_dm(state, "telegram", text, caller_session="")
+
+
+class TestPerPartOnTheOwnerDmLeg:
+    @pytest.mark.asyncio
+    async def test_a_multi_part_dm_still_delivers_every_part(self, mock_sel):
+        transport, _ = _parted_leg_transport()
+
+        with _governance(True):
+            outcome = await _owner_dm(transport)
+
+        assert outcome == (True, "", "")
+        assert transport.send_message.await_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_narrowed_mid_dm_stops_the_remainder(self, mock_sel):
+        transport, delivered = _parted_leg_transport()
+
+        with patch(
+            "kiro_crew.platform.governance_profiles.vet_and_audit",
+            side_effect=lambda *a, **k: _permitted(not delivered["any"]),
+        ):
+            sent, code, detail = await _owner_dm(transport)
+
+        assert transport.send_message.await_count == 1
+        assert (sent, code) == (False, "channel_not_permitted")
+        assert "aborted before part 2 of " in detail
+        assert detail.endswith("(1 already delivered)")
+
+    @pytest.mark.asyncio
+    async def test_an_owner_dropped_mid_dm_stops_the_remainder(self, mock_sel):
+        transport, delivered = _parted_leg_transport()
+        transport.may_send_to = lambda *a, **k: not delivered["any"]
+
+        with _governance(True):
+            sent, code, _ = await _owner_dm(transport)
+
+        assert transport.send_message.await_count == 1
+        assert (sent, code) == (False, "channel_not_permitted")
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_renders_to_no_part_is_still_authorized(self, mock_sel):
+        """A bare ``[OPTIONS:]`` trailer renders to nothing, so no part is ever
+        sent: the recipient is still decided, rather than reporting a send."""
+        transport, _ = _parted_leg_transport()
+        transport.may_send_to = lambda *a, **k: False
+
+        with _governance(True):
+            sent, code, _ = await _owner_dm(transport, "[OPTIONS:]")
+
+        assert (sent, code) == (False, "channel_not_permitted")
+
+
+async def _target_send(transport, text=_PARTED_TEXT):
+    state = SimpleNamespace(channel_transports={"telegram": transport})
+    resp = await mod._send_to_channel_target(state, "telegram", "user:123", text)
+    return resp.status, json.loads(resp.body.decode("utf-8"))
+
+
+class TestPerPartOnTheConfiguredTargetLeg:
+    @pytest.mark.asyncio
+    async def test_a_multi_part_target_send_still_delivers_every_part(self, monkeypatch):
+        transport, _ = _parted_leg_transport()
+        monkeypatch.setattr(mod, "_vet_channel_send", lambda *_a, **_k: "")
+
+        status, data = await _target_send(transport)
+
+        assert status == 200, data
+        assert data["parts"] == transport.send_message.await_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_narrowed_mid_send_stops_the_remainder(self, monkeypatch):
+        transport, delivered = _parted_leg_transport()
+        monkeypatch.setattr(
+            mod, "_vet_channel_send", lambda *_a, **_k: "denied" if delivered["any"] else ""
+        )
+
+        status, data = await _target_send(transport)
+
+        assert transport.send_message.await_count == 1
+        assert status == 403
+        assert data["code"] == "channel_denied"
+        assert "aborted before part 2 of " in data["error"]
+        assert data["error"].endswith("(1 already delivered)")
+
+    @pytest.mark.asyncio
+    async def test_a_target_dropped_mid_send_stops_the_remainder(self, monkeypatch):
+        transport, delivered = _parted_leg_transport()
+        transport.resolve_configured_target = AsyncMock(
+            side_effect=lambda _target: None if delivered["any"] else ("123", None)
+        )
+        monkeypatch.setattr(mod, "_vet_channel_send", lambda *_a, **_k: "")
+
+        status, data = await _target_send(transport)
+
+        assert transport.send_message.await_count == 1
+        assert status == 403
+        assert data["code"] == "target_not_allowed"
+
+    @pytest.mark.asyncio
+    async def test_a_target_dropped_during_its_resolve_stops_the_remainder(self, monkeypatch):
+        """Discord checks membership, then awaits ``create_dm_channel``: a reload
+        landing in that await must still stop the part about to be sent."""
+        transport, delivered = _parted_leg_transport()
+        allowed = {"123"}
+        transport.configured_targets = lambda: [
+            ConfiguredChannelTarget(f"user:{user}", "DM") for user in allowed
+        ]
+
+        async def _resolve(target_id):
+            if target_id.removeprefix("user:") not in allowed:
+                return None
+            if delivered["any"]:
+                allowed.clear()
+            return "dm-channel", None
+
+        transport.resolve_configured_target = _resolve
+        monkeypatch.setattr(mod, "_vet_channel_send", lambda *_a, **_k: "")
+
+        status, data = await _target_send(transport)
+
+        assert transport.send_message.await_count == 1
+        assert status == 403
+        assert data["code"] == "target_not_allowed"
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_renders_to_no_part_is_still_authorized(self, monkeypatch):
+        transport, _ = _parted_leg_transport()
+        monkeypatch.setattr(mod, "_vet_channel_send", lambda *_a, **_k: "denied")
+
+        status, data = await _target_send(transport, "[OPTIONS:]")
+
+        assert status == 403
+        assert data["code"] == "channel_denied"

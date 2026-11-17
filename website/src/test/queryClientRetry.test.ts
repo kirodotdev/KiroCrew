@@ -79,4 +79,12 @@ describe('refetchWhileFailed', () => {
     expect(refetchWhileFailed({ state: { status: 'success' } })).toBe(false)
     expect(refetchWhileFailed({ state: { status: 'pending' } })).toBe(false)
   })
+
+  it('never re-reads a permission refusal, which answers the same every time', () => {
+    const guestRefused = new ApiError(403, 'owner only', '{"code":"owner_only"}', false, false)
+    expect(refetchWhileFailed({ state: { status: 'error', error: guestRefused } })).toBe(false)
+    // A session-expiry 403 is not one: a refreshed cookie does recover it.
+    const lapse = new ApiError(403, 'Session expired', '{"code":"owner_only"}', true, false)
+    expect(refetchWhileFailed({ state: { status: 'error', error: lapse } })).toBe(30_000)
+  })
 })

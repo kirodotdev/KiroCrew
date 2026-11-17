@@ -262,15 +262,22 @@ class TestStripImageRefs:
     def test_a_long_message_of_path_fragments_scans_in_linear_time(self):
         # Space is both a delimiter and a legal path character, so every "/" here
         # opens a path body that would walk to the suffix: the bounded body is
-        # what keeps this linear.
-        text = (" /a" * 20000) + ".png~"
+        # what keeps this linear. The cost is inside the regex engine, which no
+        # work counter can see, so the shared ramp holds this thread's CPU to its
+        # default budget, one fragment at a time and then at growing pumps, each
+        # costing at most a linear multiple of the one before.
+        from conftest import assert_rejected_without_backtracking
 
-        started = time.perf_counter()
-        out = strip_image_refs(text)
-        elapsed = time.perf_counter() - started
+        def left_alone(text: str) -> None:
+            assert strip_image_refs(text) == text
 
-        assert out == text
-        assert elapsed < 5.0, f"image-reference scan took {elapsed:.3f}s"
+        # The long pumps carry a quarter of the fragments (the one-unit ramp keeps
+        # every unit): a linear scan of 20 000 fragments costs about a third of the
+        # budget on an idle host, too close to it on a slow one, and the 10x step
+        # between long pumps that the growth check reads is unchanged.
+        assert_rejected_without_backtracking(
+            left_alone, lambda n: (" /a" * (n if n < 200 else n // 4)) + ".png~"
+        )
 
     def test_a_path_component_after_an_image_suffix_is_stripped_whole(self, tmp_path):
         p = _dest(_png(tmp_path))
@@ -649,7 +656,9 @@ class TestBarePathPassKeepsProse:
         # One lead read per line that held a candidate the lead reached, not one
         # per candidate: 6 001 candidates on the first line share a single read.
         assert lead.fullmatch_calls == 2
-        assert cpu < 2.0, f"scrub spent {cpu:.1f}s of CPU"
+        assert (
+            cpu < 2.0
+        ), f"scrub spent {cpu:.1f}s of CPU"  # flake-ok: existing complexity guard's thread-CPU budget at its original constant (D7); the fullmatch count above is the work proof
 
     def test_no_file_is_consulted(self):
         # Lexical by contract: a probe here would run on the event loop, and the

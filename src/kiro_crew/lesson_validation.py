@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from kiro_crew import context_omissions, injection_receipts
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs
@@ -236,7 +237,7 @@ def split_cjk_word(word: str) -> tuple[list[str], set[str]]:
     A word with no CJK character comes back as itself with no pairs, so Latin
     text tokenizes exactly as it would without this split.
     """
-    if not any(is_cjk_char(ch) for ch in word):
+    if word.isascii() or not any(is_cjk_char(ch) for ch in word):
         return [word], set()
     pieces: list[str] = []
     pairs: set[str] = set()
@@ -267,30 +268,78 @@ def cjk_parts(text: str) -> set[str]:
     return parts
 
 
+class _NonAlnumToSpace(dict[int, int]):
+    """``str.translate`` table mapping every non-alphanumeric code point to a space.
+
+    Each code point is classified once, by ``str.isalnum``, the test the tokenizer
+    always used; after that ``translate`` runs in C with no per-character Python.
+    """
+
+    def __missing__(self, cp: int) -> int:
+        self[cp] = cp if chr(cp).isalnum() else 0x20
+        return self[cp]
+
+
+_NON_ALNUM_TO_SPACE = _NonAlnumToSpace()
+
+
+def _cjk_word_tokens(word: str) -> frozenset[str]:
+    """Non-CJK pieces (length rule applied) and CJK pairs of one non-ASCII word."""
+    pieces, pairs = split_cjk_word(word)
+    return frozenset(piece for piece in pieces if len(piece) >= _RELEVANCE_MIN_TOKEN) | pairs
+
+
+# The caches hold stored rows only: a request (a pasted log, say) is tokenized by
+# the uncached ``_relevance_tokens`` and never held here. Every retained key is
+# bounded in length too, so the memory bound is entries x maximum cached length:
+# at most 65,536 x 2,048 chars of row text and 65,536 x 64 chars of word text,
+# plus their token sets. A longer row or word is tokenized afresh on each call
+# and gives the same tokens. The entry count is above the rows one scan reads, so
+# a large store does not evict every entry before the next call reads it.
+# shortcut: the cache keeps each row's text and token set alive; store the tokens
+# with the row if stores grow far past it.
+_MAX_CACHED_ROW_CHARS = 2048
+_MAX_CACHED_WORD_CHARS = 64
+_lru_cjk_word_tokens = functools.lru_cache(maxsize=65536)(_cjk_word_tokens)
+
+
+def _cached_cjk_word_tokens(word: str) -> frozenset[str]:
+    if len(word) > _MAX_CACHED_WORD_CHARS:
+        return _cjk_word_tokens(word)
+    return _lru_cjk_word_tokens(word)
+
+
+def _tokenize(text: str, cjk_word_tokens: Callable[[str], frozenset[str]]) -> frozenset[str]:
+    lowered = text.lower()
+    words = lowered.translate(_NON_ALNUM_TO_SPACE).split()
+    tokens = {word for word in words if len(word) >= _RELEVANCE_MIN_TOKEN}
+    if not lowered.isascii():  # only a non-ASCII word can hold CJK text
+        for word in [w for w in words if not w.isascii()]:
+            tokens |= cjk_word_tokens(word)
+    return frozenset(tokens)
+
+
 def _relevance_tokens(text: str) -> frozenset[str]:
-    """Lowercase tokens for a cheap lexical overlap score.
+    """Lowercase tokens for a cheap lexical overlap score, never cached.
 
     The result is a superset of the plain word split: every alphanumeric word
     of length >= 3 is kept whole, and a word holding CJK text adds its non-CJK
     pieces (same length rule) and the pairs of its CJK runs (``split_cjk_word``).
     A word with no CJK character contributes only itself.
     """
-    words, word = [], []
-    for char in text.lower():
-        if char.isalnum():
-            word.append(char)
-        else:
-            words.append("".join(word))
-            word = []
-    words.append("".join(word))
-    tokens: set[str] = set()
-    for candidate in words:
-        if len(candidate) >= _RELEVANCE_MIN_TOKEN:
-            tokens.add(candidate)
-        pieces, pairs = split_cjk_word(candidate)
-        tokens.update(piece for piece in pieces if len(piece) >= _RELEVANCE_MIN_TOKEN)
-        tokens |= pairs
-    return frozenset(tokens)
+    return _tokenize(text, _cjk_word_tokens)
+
+
+@functools.lru_cache(maxsize=65536)
+def _lru_row_tokens(text: str) -> frozenset[str]:
+    return _tokenize(text, _cached_cjk_word_tokens)
+
+
+def _row_tokens(text: str) -> frozenset[str]:
+    """``_relevance_tokens`` of one stored row, cached by the row's text when short."""
+    if len(text) > _MAX_CACHED_ROW_CHARS:
+        return _tokenize(text, _cached_cjk_word_tokens)
+    return _lru_row_tokens(text)
 
 
 def order_by_request_relevance(
@@ -328,7 +377,7 @@ def order_by_request_relevance(
         return entries
     # ``sorted`` is stable, so equal-scoring rows keep the caller's newest-first
     # order and a zero-overlap store renders byte-identically to an unordered one.
-    return sorted(entries, key=lambda e: -len(wanted & _relevance_tokens(e[1])))
+    return sorted(entries, key=lambda e: -len(wanted & _row_tokens(e[1])))
 
 
 def any_request_overlap(entries: Sequence[tuple[object, str]], query_text: str) -> bool:
@@ -347,7 +396,7 @@ def any_request_overlap(entries: Sequence[tuple[object, str]], query_text: str) 
     wanted = _relevance_tokens(query_text)
     if not wanted or not entries:
         return False
-    return any(wanted & _relevance_tokens(text) for _, text in entries)
+    return any(wanted & _row_tokens(text) for _, text in entries)
 
 
 #: The injection-receipt tier each omission kind names (:mod:`kiro_crew.injection_receipts`).

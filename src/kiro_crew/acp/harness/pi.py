@@ -33,6 +33,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import acp_tool_gate, agent_sdk
 from kiro_crew import env as env_mod
@@ -175,7 +176,7 @@ _PI_MCP_SERVER_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 # digest over the raw bytes would read every Windows install as tampered and refuse
 # every pi session there. ``.gitattributes`` pins the checkout LF as well; the
 # normalization here is what keeps the property from resting on a repo-config line.
-PI_GATE_EXTENSION_SHA256 = "af5c5c6fa2b638cb4e8ca043c8aa6677c237237b94cdf58d90b4578fef6c0d95"
+PI_GATE_EXTENSION_SHA256 = "9025960d714f2b71806b0fc24b85e06e9a5701b2e9ba67e881cba3f8be71670f"
 
 _pi_acp_argv_cache: tuple[list[str] | None, str] | object = launch_mod._UNRESOLVED
 
@@ -888,10 +889,13 @@ def _verify_pi_gate(
     # that waits on the network is a probe that can stall the spawn.
     env["PI_OFFLINE"] = "1"
     try:
-        completed = subprocess_mod.run(
+        # In its own process group, so a timeout ends everything the probe started.
+        completed = platform_compat.run_killing_tree_on_timeout(
             argv,
             cwd=session._spawn_work_dir,
             env=env,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             input=json.dumps(_PI_READBACK_REQUEST) + "\n",
             capture_output=True,
             text=True,
@@ -936,6 +940,7 @@ class PiLaunch(ProcessAdapter):
     backend = ACP_BACKEND_PI
 
     def __init__(self) -> None:
+        super().__init__()
         # The launcher the read-back verified, and the nonce its dialogs echo --
         # carried from the read-back to the child's environment.
         self._launcher = ""
@@ -1097,6 +1102,10 @@ class PiLaunch(ProcessAdapter):
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
         )
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """The pi session's own ``mcpServers`` entries, warmed by the spawn."""
+        return session._pi_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Point the adapter at the verified launcher, and hand pi its nonce.

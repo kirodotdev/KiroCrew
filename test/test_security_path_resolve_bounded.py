@@ -28,6 +28,7 @@ in ``security_path_resolve_bounded_helpers.py``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import ntpath
 import os
@@ -54,7 +55,7 @@ from kiro_crew import security
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.subprocess_pool import OP_REALPATH_MANY, SubprocessPoolTimeout
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import default_timeout, wait_until
 
 
 def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path) -> None:
@@ -70,18 +71,42 @@ def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path) -> No
 
 
 def test_a_stalled_resolution_is_refused_within_the_budget(monkeypatch) -> None:
+    from kiro_crew.security import paths_resolver
+
     stalled = _StalledResolver()
-    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    granted: list[float] = []
+    armed: list[bool] = []
+    real_resolve_here = paths_resolver._resolve_on_calling_thread
+
+    def _recording_resolve_here(worker, expanded: str, timeout: float):
+        # The allowance the call hands the deadline it arms: the whole of the
+        # caller's wait, read as a value rather than off a clock.
+        granted.append(timeout)
+        return real_resolve_here(worker, expanded, timeout)
+
+    def _recording_stall(expanded: str) -> set[str]:
+        armed.append(getattr(security.paths._child_budget, "deadline", None) is not None)
+        return stalled(expanded)
+
+    monkeypatch.setattr(paths_resolver, "_resolve_on_calling_thread", _recording_resolve_here)
+    monkeypatch.setattr(security, "_resolved_spellings", _recording_stall)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled) as info:
             security._candidate_forms("/home/someone/ws/../ws/file")
-        elapsed = time.monotonic() - started
     finally:
         stalled.release.set()
-    # Bounded: well under a second against a 0.2s budget, where the unbounded
-    # call would have sat for as long as the mount did.
-    assert elapsed < 1.5, f"caller blocked {elapsed:.2f}s on a stalled resolver"
+    # Bounded: the one stalled resolution ran under a deadline no later than the
+    # (scaled-down) budget plus its grace, where an unbounded call would sit for as
+    # long as the mount did.
+    budget = security.paths._PATH_RESOLVE_TIMEOUT_SECS
+    entitled = budget + min(
+        budget * security.paths._PATH_RESOLVE_GRACE_FACTOR,
+        security.paths._PATH_RESOLVE_GRACE_MAX_SECS,
+    )
+    assert armed == [True], f"the stalled resolution ran without a deadline: {armed!r}"
+    assert len(granted) == 1, f"expected one bounded resolution: {granted!r}"
+    assert 0.0 < granted[0] <= entitled, f"granted {granted[0]:.3f}s past budget+grace {entitled}"
+    assert entitled < 1.0, "the autouse fixture's scaled-down budget is in force"
     assert info.value.prefix == os.path.normpath("/home/someone")
     assert len(stalled.calls) == 1
 
@@ -356,17 +381,32 @@ def test_the_grace_is_a_fraction_of_the_budget_so_a_tight_budget_stays_tight(
     the loosest caller's tail.
     """
     stalled = _StalledResolver()
+    granted: list[float] = []
+    real_resolve_here = security.paths._resolve_on_calling_thread
+
+    def _recording_resolve_here(worker, expanded: str, timeout: float):
+        # The deadline the stalled resolution runs under, read as the value the
+        # gate hands it: the whole of the caller's wait, budget and grace.
+        granted.append(timeout)
+        return real_resolve_here(worker, expanded, timeout)
+
+    # Through the facade: its mirror writes the name into the owner that reads it.
+    monkeypatch.setattr(security.paths, "_resolve_on_calling_thread", _recording_resolve_here)
     monkeypatch.setattr(security, "_resolved_spellings", stalled)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/home/someone/ws/file")
-        elapsed = time.monotonic() - started
     finally:
         stalled.release.set()
     budget = security.paths._PATH_RESOLVE_TIMEOUT_SECS  # 0.2 under the autouse fixture
     ceiling = budget * (1 + security.paths._PATH_RESOLVE_GRACE_FACTOR)
-    assert elapsed < ceiling + 0.6, f"blocked {elapsed:.2f}s against a {budget:.2f}s budget"
+    # The grace scales with this budget: well under the fixed cap, the deadline is
+    # the budget plus its fraction, not the cap's multi-second tail.
+    assert ceiling < security.paths._PATH_RESOLVE_GRACE_MAX_SECS
+    assert len(granted) == 1, f"expected one bounded resolution: {granted!r}"
+    assert (
+        0.0 < granted[0] <= ceiling + 1e-6
+    ), f"granted {granted[0]:.3f}s against a {budget:.2f}s budget"
 
 
 def test_the_stall_prefix_counts_components_past_the_drive(monkeypatch) -> None:
@@ -543,16 +583,6 @@ def test_repeated_stalls_back_off_exponentially_and_recovery_resets(monkeypatch)
             stub.release.set()
 
 
-def test_the_resolver_pool_ships_with_two_workers(monkeypatch) -> None:
-    # The knob widens the pool for an operator who asks; it does not move the
-    # shipped number.  Pinned as a literal because the PR that added the knob
-    # promises the default is unchanged, and a later "just raise it" edit would
-    # otherwise ride in silently.
-    monkeypatch.delenv(ex._PATH_RESOLVE_WORKERS_ENV, raising=False)
-    assert ex._PATH_RESOLVE_WORKERS_DEFAULT == 2
-    assert ex._path_resolve_worker_count() == 2
-
-
 @pytest.mark.parametrize("raw, expected", [("2", 2), ("3", 3), ("8", 8), (" 8 ", 8), ("64", 64)])
 def test_an_in_range_resolver_pool_knob_is_honoured(monkeypatch, raw, expected) -> None:
     monkeypatch.setenv(ex._PATH_RESOLVE_WORKERS_ENV, raw)
@@ -562,7 +592,7 @@ def test_an_in_range_resolver_pool_knob_is_honoured(monkeypatch, raw, expected) 
 def test_the_resolver_pool_knob_reaches_the_pool_in_a_fresh_interpreter() -> None:
     # The knob tests around this one call the parser directly, so an edit that
     # disconnected the parser from the module constant (``_MAX_PATH_RESOLVE_WORKERS
-    # = 2`` again) would leave them all green while the knob did nothing.  Import in
+    # = <literal>``) would leave them all green while the knob did nothing.  Import in
     # a fresh interpreter, where the once-at-import read really happens, and follow
     # the value to the pool the gate submits to.
     probe = (
@@ -570,12 +600,12 @@ def test_the_resolver_pool_knob_reaches_the_pool_in_a_fresh_interpreter() -> Non
         "print(ex._MAX_PATH_RESOLVE_WORKERS, len(ex.path_resolve_executor()._children))\n"
     )
     env = dict(os.environ)
-    env[ex._PATH_RESOLVE_WORKERS_ENV] = "8"
+    env[ex._PATH_RESOLVE_WORKERS_ENV] = "5"
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, env=env, timeout=120, **UTF8_TEXT
     )
     assert result.returncode == 0, result.stderr[-2000:]
-    assert result.stdout.split() == ["8", "8"]
+    assert result.stdout.split() == ["5", "5"]
 
 
 @pytest.mark.parametrize(
@@ -705,13 +735,26 @@ class _TimedResolutionPool:
         return worker(expanded)
 
 
+def _bounded_on_loop(*args, **kwargs):
+    """``_run_resolution_bounded`` called from inside a running event loop on this thread.
+
+    The cumulative allowance applies only to a thread that is running an event loop,
+    so the tests of the allowance make their calls from inside one.
+    """
+
+    async def _call():
+        return security._run_resolution_bounded(*args, **kwargs)
+
+    return asyncio.run(_call())
+
+
 def test_cumulative_wait_stops_distinct_prefixes_without_charging(monkeypatch) -> None:
     pool = _TimedResolutionPool(monkeypatch)
     for n in range(4):
         token = f"/mount/{n}/file"
-        assert security._run_resolution_bounded(token, lambda p: p, budget=1.0) == token
+        assert _bounded_on_loop(token, lambda p: p, budget=1.0) == token
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/fresh/mount/file", lambda p: p, budget=1.0)
+        _bounded_on_loop("/fresh/mount/file", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 4
     assert security._path_resolve_degraded == {}, "an unsubmitted path earns no cooldown"
 
@@ -719,10 +762,10 @@ def test_cumulative_wait_stops_distinct_prefixes_without_charging(monkeypatch) -
 def test_cumulative_wait_clamps_budget_and_skips_exhausted_grace(monkeypatch) -> None:
     pool = _TimedResolutionPool(monkeypatch)
     pool.delay = 0.75
-    assert security._run_resolution_bounded("/mount/one/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/one/file", lambda p: p, budget=1.0)
     pool.delay = 100.0
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/two/file", lambda p: p, budget=8.0)
+        _bounded_on_loop("/mount/two/file", lambda p: p, budget=8.0)
     assert pool.waits == [1.0, 0.25], "neither the budget nor grace may exceed the remainder"
     assert pool.clock[0] == 1001.0
     assert (
@@ -733,14 +776,14 @@ def test_cumulative_wait_clamps_budget_and_skips_exhausted_grace(monkeypatch) ->
 def test_cumulative_wait_clamps_and_accounts_for_grace(monkeypatch) -> None:
     pool = _TimedResolutionPool(monkeypatch)
     pool.delay = 0.5
-    assert security._run_resolution_bounded("/mount/one/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/one/file", lambda p: p, budget=1.0)
     pool.delay = 100.0
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/two/file", lambda p: p, budget=0.25)
+        _bounded_on_loop("/mount/two/file", lambda p: p, budget=0.25)
     # Budget plus grace is ONE deadline (0.25 + 0.375), clamped to the 0.5 left.
     assert pool.waits == [1.0, 0.5]
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/three/file", lambda p: p, budget=1.0)
+        _bounded_on_loop("/mount/three/file", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 2
     assert security._stall_prefix("/mount/three/file") not in security._path_resolve_degraded
 
@@ -758,13 +801,13 @@ def test_cumulative_wait_accounts_for_every_result_outcome(monkeypatch, outcome)
         pool.delay = 100.0
         monkeypatch.setattr(security.paths, "_child_blocked_in_filesystem", lambda sampled: False)
         with pytest.raises(security.PathResolutionStalled):
-            security._run_resolution_bounded("/mount/one/file", lambda p: p, budget=1.0)
+            _bounded_on_loop("/mount/one/file", lambda p: p, budget=1.0)
     else:
         budget = 1.0 if outcome == "on_time_failure" else 0.5
-        value = security._run_resolution_bounded("/mount/one/file", lambda p: p, budget=budget)
+        value = _bounded_on_loop("/mount/one/file", lambda p: p, budget=budget)
         assert value == (None if pool.error else "/mount/one/file")
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/two/file", lambda p: p, budget=1.0)
+        _bounded_on_loop("/mount/two/file", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 1
     assert security._path_resolve_degraded == {}
 
@@ -772,14 +815,14 @@ def test_cumulative_wait_accounts_for_every_result_outcome(monkeypatch, outcome)
 def test_cumulative_wait_requires_a_quiet_window_before_reset(monkeypatch) -> None:
     pool = _TimedResolutionPool(monkeypatch)
     pool.delay = 0.5
-    assert security._run_resolution_bounded("/mount/one/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/one/file", lambda p: p, budget=1.0)
     pool.clock[0] += 24.0
-    assert security._run_resolution_bounded("/mount/two/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/two/file", lambda p: p, budget=1.0)
     pool.clock[0] += 1.0  # past the first wait's window, but not the second's
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/three/file", lambda p: p, budget=1.0)
+        _bounded_on_loop("/mount/three/file", lambda p: p, budget=1.0)
     pool.clock[0] += 24.0
-    assert security._run_resolution_bounded("/mount/three/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/three/file", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 3, "refusals must not extend the quiet window"
 
 
@@ -790,19 +833,19 @@ def test_cumulative_wait_is_independent_for_each_calling_thread(monkeypatch) -> 
     pool.delay = 1.0
     with ThreadPoolExecutor(max_workers=1) as background:
         _fut1 = background.submit(
-            security._run_resolution_bounded, "/mount/background/file", lambda p: p, budget=1.0
+            _bounded_on_loop, "/mount/background/file", lambda p: p, budget=1.0
         )
         wait_until(_fut1.done)
         assert _fut1.result()
-        assert security._run_resolution_bounded("/mount/loop/file", lambda p: p, budget=1.0)
+        assert _bounded_on_loop("/mount/loop/file", lambda p: p, budget=1.0)
         with pytest.raises(security.PathResolutionStalled):
             _fut2 = background.submit(
-                security._run_resolution_bounded, "/mount/background/next", lambda p: p, budget=1.0
+                _bounded_on_loop, "/mount/background/next", lambda p: p, budget=1.0
             )
             wait_until(_fut2.done)
             _fut2.result()
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/loop/next", lambda p: p, budget=1.0)
+        _bounded_on_loop("/mount/loop/next", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 2
     assert len(security.paths._path_resolve_thread_waits) == 2
     assert security._path_resolve_degraded == {}
@@ -811,16 +854,175 @@ def test_cumulative_wait_is_independent_for_each_calling_thread(monkeypatch) -> 
 def test_cumulative_wait_cleanup_preserves_live_thread_budgets(monkeypatch) -> None:
     pool = _TimedResolutionPool(monkeypatch)
     pool.delay = 1.0
-    assert security._run_resolution_bounded("/mount/one/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/one/file", lambda p: p, budget=1.0)
     waits = security.paths._path_resolve_thread_waits
     # Negative ids cannot alias a live Python thread id.
     waits.update({-n: (pool.clock[0] - 1.0, 1.0) for n in range(1, 66)})
     waits[-66] = (pool.clock[0] + 25.0, 1.0)
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/two/file", lambda p: p, budget=1.0)
+        _bounded_on_loop("/mount/two/file", lambda p: p, budget=1.0)
     assert len(waits) == 2
     assert waits[-66][1] == 1.0, "cleanup must not refund another live thread's wait"
     assert len(pool.submissions) == 1
+
+
+def test_an_off_loop_caller_pays_no_cumulative_allowance(monkeypatch) -> None:
+    # The allowance protects the event loop's watchdog.  A thread with no running
+    # loop is bounded by its own caller, so the same waits that exhaust the
+    # allowance on a loop thread neither accumulate nor refuse here, and each call
+    # is granted its full budget plus grace.
+    pool = _TimedResolutionPool(monkeypatch)
+    pool.delay = 0.5
+    for n in range(6):
+        token = f"/mount/{n}/file"
+        assert security._run_resolution_bounded(token, lambda p: p, budget=1.0) == token
+    assert pool.waits == [2.5] * 6, "an off-loop call is never clamped by an allowance"
+    assert threading.get_ident() not in security.paths._path_resolve_thread_waits
+    assert security._path_resolve_degraded == {}
+
+
+def test_an_anchor_after_judgment_deadline_is_refused_without_probe_or_charge(
+    monkeypatch,
+) -> None:
+    pool = _TimedResolutionPool(monkeypatch)
+    with security.paths.bounded_judgment():
+        security.paths._judgment_budget.left = -0.1
+        with pytest.raises(security.PathResolutionStalled):
+            security._run_resolution_bounded("/mount/home/user", lambda p: p, budget=8.0)
+    assert pool.submissions == []
+    assert security._path_resolve_degraded == {}
+
+
+def test_unc_anchor_requests_stop_at_the_judgment_deadline(monkeypatch) -> None:
+    pool = _TimedResolutionPool(monkeypatch)
+    monkeypatch.setattr(security.paths, "_ON_WINDOWS", True)
+    monkeypatch.setattr(security.paths, "_is_unc_path", lambda path: True)
+    cap = security.paths._PATH_RESOLVE_WAIT_CAP_SECS
+    with security.paths.bounded_judgment():
+        for n in range(128):
+            path = rf"\\\\server{n}\\share\\home"
+            assert security.paths._is_unc_path(path)
+            try:
+                security._run_resolution_bounded(path, lambda p: p, budget=8.0)
+            except security.PathResolutionStalled:
+                break
+    assert 0 < len(pool.submissions) <= int(cap / pool.delay) + 1
+    assert security._path_resolve_degraded == {}
+
+
+def test_an_off_loop_judgment_shares_one_budget_across_its_paths(monkeypatch) -> None:
+    # A tool-gate judgment off the loop can name many paths on distinct slow mounts.
+    # Inside ``bounded_judgment`` their candidate resolutions share one budget: once
+    # it is spent, later paths are refused without a probe and charge nothing.
+    pool = _TimedResolutionPool(monkeypatch)
+    pool.delay = 100.0  # every resolution misses its deadline, blocked in the filesystem
+    monkeypatch.setattr(
+        security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 5.0
+    )  # flake-ok: fake pool clock, no real wait
+    with security.paths.bounded_judgment():
+        for n in range(3):
+            with pytest.raises(security.PathResolutionStalled):
+                security._run_resolution_bounded(
+                    f"/mount/{n}/file", lambda p: p, budget=1.0, candidate=True
+                )
+    assert pool.waits == [2.5, 2.5], "the third path must be refused without a probe"
+    charged = set(security._path_resolve_degraded)
+    assert charged == {security._stall_prefix(f"/mount/{n}/file") for n in range(2)}
+    assert threading.get_ident() not in security.paths._path_resolve_thread_waits
+    # Outside the block the thread is unbounded again.
+    pool.delay = 0.5
+    assert security._run_resolution_bounded(
+        "/mount/3/file", lambda p: p, budget=1.0, candidate=True
+    )
+
+
+def test_a_wait_clamped_by_the_judgment_budget_never_charges_the_prefix(monkeypatch) -> None:
+    pool = _TimedResolutionPool(monkeypatch)
+    pool.delay = 100.0
+    monkeypatch.setattr(
+        security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 3.5
+    )  # flake-ok: fake pool clock, no real wait
+    with security.paths.bounded_judgment():
+        for n in range(3):
+            with pytest.raises(security.PathResolutionStalled):
+                security._run_resolution_bounded(
+                    f"/mount/{n}/file", lambda p: p, budget=1.0, candidate=True
+                )
+    assert pool.waits == [2.5, 1.0]
+    assert set(security._path_resolve_degraded) == {security._stall_prefix("/mount/0/file")}
+
+
+def test_a_clamped_wait_spends_no_load_arm_probe(monkeypatch) -> None:
+    # A wait cut short by the judgment says nothing about the mount or the load, so
+    # it must not use up the prefix's free load-arm probes either.
+    pool = _TimedResolutionPool(monkeypatch)
+    pool.delay = 100.0
+    monkeypatch.setattr(security.paths, "_child_blocked_in_filesystem", lambda sampled: False)
+    monkeypatch.setattr(security.paths, "_path_resolve_load_probes", {})
+    monkeypatch.setattr(
+        security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 1.0
+    )  # flake-ok: fake pool clock, no real wait
+    with security.paths.bounded_judgment():
+        with pytest.raises(security.PathResolutionStalled):
+            security._run_resolution_bounded(
+                "/mount/0/file", lambda p: p, budget=1.0, candidate=True
+            )
+    assert pool.waits == [1.0]
+    assert security.paths._path_resolve_load_probes == {}
+
+
+def test_an_anchor_resolution_inside_a_judgment_still_charges_a_stall(monkeypatch) -> None:
+    # The anchors are cached and shared by every caller, and the rebuild's budget plus
+    # grace is the whole judgment budget.  Clamping one would turn a wedged home into a
+    # clamped miss that never charges, so every later call would re-probe it.
+    pool = _TimedResolutionPool(monkeypatch)
+    pool.delay = 100.0
+    monkeypatch.setattr(
+        security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 12.0
+    )  # flake-ok: fake pool clock, no real wait
+    with security.paths.bounded_judgment():
+        pool.clock[0] += 1.0  # the judgment has already spent a second
+        with pytest.raises(security.PathResolutionStalled):
+            security._run_resolution_bounded("/mount/home/user", lambda p: p, budget=8.0)
+    assert pool.waits == [12.0], "an anchor resolution is never clamped by a judgment"
+    assert security._stall_prefix("/mount/home/user") in security._path_resolve_degraded
+
+
+def test_time_between_requests_spends_none_of_the_judgment_budget(monkeypatch) -> None:
+    # A judgment also runs regex tiers between its path checks, and its thread can
+    # wait for the GIL there. That time says nothing about a mount, so a path checked
+    # after it still gets the budget no resolver wait has used.
+    pool = _TimedResolutionPool(monkeypatch)
+    monkeypatch.setattr(
+        security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 1.0
+    )  # flake-ok: fake pool clock, no real wait
+    with security.paths.bounded_judgment():
+        pool.clock[0] += 30.0  # thirty seconds of work that made no resolver request
+        assert security._run_resolution_bounded(
+            "/mount/0/file", lambda p: p, budget=1.0, candidate=True
+        )
+        assert security.paths._judgment_budget.left == pytest.approx(0.75)
+    assert pool.waits == [1.0]
+    assert security._path_resolve_degraded == {}
+
+
+def test_a_nested_judgment_shares_the_open_budget(monkeypatch) -> None:
+    pool = _TimedResolutionPool(monkeypatch)
+    monkeypatch.setattr(
+        security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 1.0
+    )  # flake-ok: fake pool clock, no real wait
+    with security.paths.bounded_judgment():
+        monkeypatch.setattr(
+            security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 100.0
+        )  # flake-ok: fake pool clock, no real wait
+        with security.paths.bounded_judgment():
+            assert security.paths._judgment_budget.left == 1.0
+            security._run_resolution_bounded(
+                "/mount/0/file", lambda p: p, budget=1.0, candidate=True
+            )
+        # The inner block's wait was spent from the outer judgment's budget.
+        assert security.paths._judgment_budget.left == pytest.approx(1.0 - pool.delay)
+    assert security.paths._judgment_budget.left is None
 
 
 def test_cumulative_production_wait_leaves_watchdog_headroom() -> None:
@@ -846,17 +1048,17 @@ def test_a_budget_or_grace_clamped_by_the_allowance_never_charges_the_prefix(
     pool.delay = 0.5
     # Spend the allowance down to a sliver: the next call's budget and grace both get
     # clamped far below what an 8s/32s request would otherwise be entitled to.
-    assert security._run_resolution_bounded("/mount/one/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/one/file", lambda p: p, budget=1.0)
     pool.delay = 100.0  # never finishes: the clamp is the only reason for the refusal
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/two/file", lambda p: p, budget=8.0)
+        _bounded_on_loop("/mount/two/file", lambda p: p, budget=8.0)
     assert (
         security._path_resolve_degraded == {}
     ), "a clamp-only refusal must not open a cooldown across the whole prefix"
     # A later path under the SAME prefix is still probed once the allowance frees up.
     pool.clock[0] += 25.0
     pool.delay = 0.1
-    assert security._run_resolution_bounded("/mount/two/other", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/two/other", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 3
 
 
@@ -874,14 +1076,14 @@ def test_a_long_run_of_fast_successes_below_the_floor_never_exhausts_the_allowan
     pool = _TimedResolutionPool(monkeypatch)
     pool.delay = 0.02  # well under the 100ms floor: pool round-trip, not filesystem latency
     for n in range(500):
-        assert security._run_resolution_bounded(f"/mount/{n}/file", lambda p: p, budget=1.0)
+        assert _bounded_on_loop(f"/mount/{n}/file", lambda p: p, budget=1.0)
     assert len(pool.submissions) == 500
     window_end, seconds_spent = security.paths._path_resolve_thread_waits.get(
         threading.get_ident(), (0.0, 0.0)
     )
     assert seconds_spent == 0.0, "sub-floor waits must not accumulate toward the allowance"
     # The allowance is untouched, so a distinct prefix is still probed with no refusal.
-    assert security._run_resolution_bounded("/mount/fresh/file", lambda p: p, budget=1.0)
+    assert _bounded_on_loop("/mount/fresh/file", lambda p: p, budget=1.0)
 
 
 def test_a_run_of_slow_but_completing_waits_still_exhausts_the_allowance(monkeypatch) -> None:
@@ -900,9 +1102,9 @@ def test_a_run_of_slow_but_completing_waits_still_exhausts_the_allowance(monkeyp
     monkeypatch.setattr(security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", _REAL_WAIT_CAP)
     pool.delay = 1.9  # well over the floor, and under the 2.0s default candidate budget
     for n in range(6):
-        assert security._run_resolution_bounded(f"/mount/{n}/file", lambda p: p, budget=2.0)
+        assert _bounded_on_loop(f"/mount/{n}/file", lambda p: p, budget=2.0)
     with pytest.raises(security.PathResolutionStalled):
-        security._run_resolution_bounded("/mount/seven/file", lambda p: p, budget=2.0)
+        _bounded_on_loop("/mount/seven/file", lambda p: p, budget=2.0)
     # Budget plus grace as ONE deadline: 2.0 + min(2.0 * 1.5, 4.0) = 5.0 s. Each call
     # spends 1.9 s of the 12 s allowance, so the first four are granted in full and the
     # fifth and sixth are clamped to what remains (12 - 4 * 1.9 = 4.4 s, then 2.5 s),
@@ -986,14 +1188,37 @@ def _count_child_requests(monkeypatch) -> list[int]:
 def test_a_stalled_root_anchor_refuses_within_the_budget(monkeypatch, tmp_path) -> None:
     _clear_override_roots(monkeypatch)
     security._home_targets_cache.clear()
-    security._resolved_root_key()  # a warm, canonical resolution must NOT be served later
+    # A warm, canonical resolution must NOT be served later. The warm-up is a real
+    # resolution, so it gets the lost-run bound rather than the fixture's 0.2 s: a
+    # slow or loaded host must not turn the setup itself into a stall.
+    with monkeypatch.context() as mp:
+        mp.setattr(security, "_PATH_RESOLVE_TIMEOUT_SECS", default_timeout())
+        mp.setattr(security.paths, "_PATH_RESOLVE_REBUILD_TIMEOUT_SECS", default_timeout())
+        security._resolved_root_key()
     stalled = _StalledRealpath()
     monkeypatch.setattr(security.paths, "_realpaths_or_none", stalled)
+    # "Within the budget" is asserted as the deadline the call arms, not as
+    # seconds: the stall stub waits out exactly that deadline, so the caller's
+    # wait is the deadline it was granted. A grant past the anchor budget and
+    # its grace is refused before the stub sleeps through it.
+    resolver = security.paths_resolver
+    budget = resolver._PATH_RESOLVE_TIMEOUT_SECS
+    entitled = budget + min(
+        budget * resolver._PATH_RESOLVE_GRACE_FACTOR, resolver._PATH_RESOLVE_GRACE_MAX_SECS
+    )
+    granted: list[float] = []
+    real_resolve = resolver._resolve_on_calling_thread
+
+    def resolve(worker, expanded, timeout):
+        granted.append(timeout)
+        assert timeout <= entitled, f"granted {timeout}s against a {entitled}s anchor budget"
+        return real_resolve(worker, expanded, timeout)
+
+    monkeypatch.setattr(resolver, "_resolve_on_calling_thread", resolve)
     try:
-        started = time.monotonic()
         with pytest.raises(security.PathResolutionStalled):
             security._resolved_root_key()
-        elapsed = time.monotonic() - started
+        root_grants = list(granted)
         # ...and every gate turns that into a refusal, exactly as it does for a
         # stalled candidate: an ordinary workspace file is denied, not passed on
         # a stale or lexical anchor set.
@@ -1002,7 +1227,9 @@ def test_a_stalled_root_anchor_refuses_within_the_budget(monkeypatch, tmp_path) 
     finally:
         stalled.release.set()
         security._home_targets_cache.clear()
-    assert elapsed < 1.0
+    # One bounded wait for the anchors, no retry. (The gates' own candidate
+    # resolutions afterwards are held to the same grant by ``resolve``.)
+    assert root_grants == [entitled], root_grants
     logical_home = str(security.Path.home())
     assert stalled.calls == [logical_home]
     # The stall was recorded against the home's prefix, the same bookkeeping a

@@ -1340,6 +1340,7 @@ async def api_chat_slot_merge_back(request: web.Request) -> web.Response:
                 "session": fork_session,
                 "slot": fork.key,
                 "title": _fork_title(fork),
+                "createdAt": inputs.fork_created_at,
                 "after": after,
                 "through": through,
                 "digest": digest,

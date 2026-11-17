@@ -208,6 +208,9 @@ def _covered_by_own_mask(launch, target):
     aimed at a stand-in reads as not covered and the caller refuses as it would for any
     vanished object.
 
+    A recorded ancestor that is itself absent does not end the walk: a later mask over a
+    directory above it hid it, and that higher record still has to reach its stand-in.
+
     A private window met on the way up ends the walk with ``False``: below a window the
     name resolves into the real tree the window mounted back, so no stand-in above it
     covers the leaf, and its absence is the leaf having moved.
@@ -228,6 +231,16 @@ def _covered_by_own_mask(launch, target):
             continue
         try:
             entry = os.lstat(name)
+        except FileNotFoundError:
+            # A masked directory that is itself ABSENT now is covered only if a mask
+            # placed later over one of ITS ancestors hid it: ``scratch`` is masked
+            # before the whole data home a probe hides. So keep walking; the
+            # higher record must still reach its own stand-in, and with none above, the
+            # walk ends ``False`` and the leaf refuses as vanished.
+            continue
+        except OSError:
+            return False
+        try:
             if _mode_is_link(entry.st_mode):
                 pinned = launch.pinned_occupants.get(name)
                 if (
@@ -737,6 +750,10 @@ def _stand_in_identity(stand_in):
     """
     try:
         fd = os.open(stand_in, os.O_RDONLY | _O_PATH | os.O_NOFOLLOW)
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
     except OSError as exc:
         sys.exit(
             "sandbox: BLOCKED -- cannot pin the stand-in %s this launcher just "
@@ -744,10 +761,6 @@ def _stand_in_identity(stand_in):
             "Lower agent.sandbox to run without this control deliberately."
             % (os.fsdecode(stand_in), exc)
         )
-    try:
-        st = os.fstat(fd)
-    finally:
-        os.close(fd)
     return (st.st_dev, st.st_ino)
 
 

@@ -95,6 +95,7 @@ def create_agent_folder(
     execution_context=None,
     backend=None,
     depth=None,
+    silent=False,
 ) -> Path:
     from kiro_crew.execution_context import ExecutionContext, execution_for_store
 
@@ -135,6 +136,10 @@ def create_agent_folder(
         # The lineage depth, so a continuation after a restart carries it back
         # into admission instead of restarting the count. Absent = unknown.
         **({"depth": depth} if type(depth) is int else {}),
+        # The resolved completion-notification opt-out, so a continuation after
+        # a restart — and a child naming this run's conversation key after the
+        # live record is gone — stays off the bell. Absent = loud.
+        **({"silent": True} if silent is True else {}),
         "execution_context": execution.to_record(),
         "memory_store": execution.store.legacy_name,
         "memory_mode": execution.memory_mode,
@@ -200,23 +205,19 @@ def read_run_execution(agent_id: str, *, state=...) -> "ExecutionContext":
 def update_execution_context(agent_id: str, execution, *, expected=...) -> None:
     """Bind *execution* onto a run, rewriting ``state.json`` whole.
 
-    The SECOND whole-file rewrite path for this file, and it does NOT share
-    :func:`update_state`'s on-loop/off-loop asymmetry: the per-agent lock is held
-    UNCONDITIONALLY, across the admission checks, the read and the write. Session
-    binding, mode tightening and the pre-run write all reach this from a pool
-    thread, so that hold serializes them like any off-loop writer. Only
-    :func:`create_agent_folder` reaches it on the event loop, on the spawn and
-    admission path rather than a per-turn one, and that is the bound which makes
-    an unconditional acquire affordable there. Its write model is the one
-    :func:`update_state` records.
+    Unlike :func:`update_state`, the per-agent lock is held unconditionally,
+    across the admission checks, the read and the write: session binding, mode
+    tightening and the pre-run write reach this from pool threads. The one
+    on-loop caller, :func:`create_agent_folder`, runs on the spawn path, not per
+    turn, so the blocking acquire is affordable there.
 
     A non-persistent owner keeps this turn's body out of the durable file: only
-    retained identity and mode metadata are tightened on disk, and the live record
-    carries the merged state.
+    identity and mode metadata are tightened on disk, and the live record carries
+    the merged state.
 
-    Raises ValueError with a ``memory_unavailable:`` reason when the run changed
-    during admission, when the run's memory store would change (a run's store is
-    immutable), or when its state record cannot be read.
+    Raises ValueError (``memory_unavailable:``) when the run changed during
+    admission, its memory store would change (a run's store is immutable), or its
+    state record cannot be read.
     """
     holder = _lock_for_agent(agent_id)
     with holder.lock:
@@ -321,59 +322,34 @@ def read_tombstone(agent_id: str) -> dict | None:
 
 # ── per-agent write serialization ────────────────────────────────────
 
-#: ``update_state`` is a read / merge / rewrite, and its two halves are split by
-#: a blocking ``_atomic_write`` (fsync + rename). Two writers on one ``agent_id``
-#: therefore interleave: the second one's read predates the first one's write, so
-#: its rewrite restores a stale WHOLE-FILE snapshot and silently rolls back every
-#: field the first writer had just landed. Losing the other writer's fields is
-#: the visible half; rolling back fields NEITHER writer touched is the damaging
-#: half.
+#: ``update_state`` is a read / merge / rewrite split by a blocking
+#: ``_atomic_write`` (fsync + rename). Two writers on one ``agent_id`` interleave:
+#: the second one's read predates the first one's write, so its rewrite restores
+#: a stale WHOLE-FILE snapshot and rolls back fields neither writer touched.
 #:
-#: The overlap is structural, not hypothetical. A run writes state from the event
-#: loop (PID, session id, provider, retention ``keep``) AND from the thread pool
-#: (model provenance, CC-path model refinement, per-turn diagnostics -- each via
-#: ``asyncio.to_thread``), so two pool writers overlap during a run and a
-#: loop-side write executes while the run's coroutine is suspended inside a
-#: pool-side one. Cancellation widens it: cancelling a ``to_thread``
-#: await DETACHES the worker rather than stopping it, so it finishes carrying a
-#: read that is already stale.
+#: The overlap is real: a run writes state from the event loop (PID, session id,
+#: provider, retention ``keep``) AND from the thread pool via ``asyncio.to_thread``
+#: (model provenance, CC-path model refinement, per-turn diagnostics). Cancelling
+#: a ``to_thread`` await DETACHES the worker, which finishes with a stale read.
 #:
-#: SCOPE -- ordinary ``update_state`` callers take the lock OFF-LOOP only.
-#: Serializing every loop-side write by waiting would block the event loop behind
-#: a pool thread's fsync, which the no-blocking anchor forbids. Retention promotion
-#: instead probes the same per-agent lock non-blocking and returns RETRYABLE when
-#: busy; once acquired, its existing on-loop keep write cannot be overwritten by
-#: an older pool writer. Other on-loop callers keep their pre-existing unlocked
-#: behavior -- see :func:`update_state` for the remaining limitation.
+#: SCOPE -- ordinary ``update_state`` callers take the lock OFF-LOOP only: waiting
+#: on a pool thread's fsync would block the event loop. Retention promotion probes
+#: the same lock non-blocking and returns RETRYABLE when busy, so no older pool
+#: writer can overwrite its ``keep`` write. See :func:`update_state` for the
+#: remaining on-loop limitation. The ordinary acquire is unbounded because its
+#: only on-loop caller, ``create_agent_folder``, runs on the spawn path, not per
+#: turn.
 #:
-#: The ordinary acquire is UNBOUNDED, and can be, because the only on-loop caller
-#: that reaches it is ``create_agent_folder``, on the spawn and admission path
-#: rather than a per-turn one. Otherwise only pool workers block there, and their
-#: own read + fsync + rename already exposes them to a wedged filesystem.
-#: Promotion may hold the same lock around its
-#: existing loop-side write, but its acquire is always non-blocking and never parks
-#: the event loop.
-#:
-#: In-process only, mirroring the per-key ``threading.Lock`` registry this repo
-#: already uses to serialize file read-modify-write (``learn._lock_for``,
-#: ``artifacts._lock_for_root``, ``history.ConversationLog._file_locks``). A
-#: filesystem lock is the tool for cross-process contention and there is none
-#: here: every ``update_state`` caller lives in the gateway process that owns the
-#: run. Keyed by agent id so unrelated runs never queue behind one agent's fsync,
-#: SELF-CLEANING, with no explicit eviction anywhere. The values are held
-#: WEAKLY and every caller keeps a strong reference for the length of its
-#: critical section, so an entry lives exactly as long as some writer is using
-#: it and then disappears on its own. That is a correctness property, not a
-#: tidiness one: removing an entry explicitly while another writer still holds
-#: or is queued on it SPLITS the lock's identity -- the next caller mints a
-#: fresh lock and enters ``state.json`` alongside the writer still inside it,
-#: which is the very loss this lock exists to prevent. Any hook that evicts
-#: without holding the lock (a folder delete, the tombstone pruner) can do
-#: exactly that, and the pruner's case is not even hypothetical: ``_atomic_write``
-#: re-creates the parent directory, so a writer already inside its critical
-#: section resurrects the folder the pruner just removed. Weak values make that
-#: unrepresentable -- an entry cannot be dropped while anyone can still reach
-#: it -- and agent ids are per-run uuids, so nothing accumulates either.
+#: In-process only, like ``learn._lock_for``, ``artifacts._lock_for_root`` and
+#: ``history.ConversationLog._file_locks``: every ``update_state`` caller lives in
+#: the gateway process that owns the run. Keyed by agent id so unrelated runs never
+#: queue behind one agent's fsync. Values are held WEAKLY and every caller keeps a
+#: strong reference for its critical section, so an entry lives exactly as long as
+#: a writer uses it. Never evict explicitly: dropping an entry while a writer holds
+#: or waits on it SPLITS the lock -- the next caller mints a fresh lock and enters
+#: ``state.json`` beside it (and ``_atomic_write`` re-creates a folder the
+#: tombstone pruner just removed). Agent ids are per-run uuids, so nothing
+#: accumulates.
 _STATE_LOCKS: "weakref.WeakValueDictionary[str, _AgentLock]" = weakref.WeakValueDictionary()
 _STATE_LOCKS_GUARD = threading.Lock()
 _RETENTION_LOCKS: "weakref.WeakValueDictionary[str, _AgentLock]" = weakref.WeakValueDictionary()
@@ -399,12 +375,10 @@ class _AgentLock:
 def _on_event_loop() -> bool:
     """True when the calling thread is running an asyncio event loop.
 
-    The seam that keeps the lock off the loop. A thread ``asyncio.to_thread`` /
-    ``run_in_executor`` dispatched to has no running loop, so pool writers
-    serialize; a synchronous call made from a coroutine does, so it does not
-    wait. Chosen over an explicit caller flag because ``update_state`` takes
-    ``**fields``: any keyword flag would be indistinguishable from a state field
-    a caller means to persist.
+    A pool thread (``asyncio.to_thread`` / ``run_in_executor``) has no running
+    loop, so pool writers serialize; a synchronous call from a coroutine does not
+    wait. Not a caller flag, because ``update_state`` takes ``**fields`` and a
+    keyword flag would look like a state field to persist.
     """
     try:
         asyncio.get_running_loop()
@@ -474,52 +448,37 @@ def update_state(agent_id: str, **fields: object) -> bool:
     """Merge *fields* into state.json (atomic rewrite).
 
     Returns True when the merge was written, False when it was SKIPPED because
-    the current state could not be read (missing/corrupt/unreadable). The skip
-    is deliberate -- fabricating a fresh state here would resurrect a record
-    the reaper deleted -- but callers with a durability contract (the pre-spawn
-    provenance write) need to see the skip to retry rather than mistake
-    a silent no-op for success.
+    the current state could not be read (missing/corrupt/unreadable). Fabricating
+    a fresh state would resurrect a record the reaper deleted; callers with a
+    durability contract (the pre-spawn provenance write) retry on False.
 
-    The read / merge / rewrite is serialized per agent for OFF-LOOP callers (see
-    :data:`_STATE_LOCKS`), so two pool writers cannot rewrite a snapshot
-    that predates the other's write.
+    OFF-LOOP callers are serialized per agent (see :data:`_STATE_LOCKS`).
 
-    WRITE MODEL: the whole-file rewrite is the recorded choice for this file, not a
-    way station toward a revision counter or a compare-and-swap retry loop.
-    ``state.json`` is a run's artifact and evidence record, while scheduling's
-    source of truth is the durable task queue with its own generation fencing, so a
-    second coordination protocol here would order writes this file does not need at
-    the price of a format every reader must agree on. The invariant that keeps the
-    rewrite safe instead: every whole-file write happens at a KNOWN site, and each
-    site reachable from the event loop carries its own fence.
+    WRITE MODEL: the whole-file rewrite is deliberate, not a step toward a
+    revision counter or compare-and-swap. ``state.json`` is a run's evidence
+    record; scheduling's source of truth is the durable task queue with its own
+    generation fencing. Every whole-file write happens at a KNOWN site, and each
+    site reachable from the event loop carries its own fence;
     ``test_subagent_state_write_model`` holds that census and fails a new site.
-    The asymmetry below therefore closes by moving a site OFF the loop, where it
-    inherits the lock -- never by changing the on-disk format.
+    Close the on-loop gap by moving a site OFF the loop, never by changing the
+    on-disk format.
 
-    KNOWN LIMITATION: ordinary ON-LOOP callers do not take the lock, because waiting
-    on a pool thread's fsync from the event loop is exactly the blocking call the
-    repo's anchor forbids. Every writer inside a run goes off-loop through
-    ``_write_state_off_loop`` and is drained on cancellation; an abandoned writer
-    holds the conversation until it settles, so the
-    on-loop retention writes are deferred past it. Retention promotion adds a
-    second defense: on the event loop it probes the same per-agent lock
-    non-blocking and returns RETRYABLE on contention, while off-loop promotion
-    lets ``update_state`` acquire the lock normally. Thus no stale writer can
-    roll back ``keep=True`` and no loop-side caller waits for a pool writer's
-    fsync. Release runs its demote off-loop (``release_conversation_async``) while
-    its ``SessionMap`` mutation stays on the loop. The one remaining on-loop
-    caller is retention promotion, which stays there by design: its busy check,
-    promotion and spawn admission must commit with no await between them, and its
-    non-blocking probe already keeps a stale writer from rolling it back.
+    KNOWN LIMITATION: ON-LOOP callers do not take the lock, since waiting on a pool
+    thread's fsync would block the event loop. Every writer inside a run goes
+    through ``_write_state_off_loop`` and is drained on cancellation; an abandoned
+    writer holds the conversation until it settles, so on-loop retention writes
+    run after it. Release demotes off-loop (``release_conversation_async``). The
+    one on-loop caller left is retention promotion: its busy check, promotion and
+    spawn admission must commit with no await between them, and its non-blocking
+    lock probe keeps a stale writer from rolling back ``keep=True``.
     """
     if _live_run_key(agent_id) in _LIVE_RUN_STATES:
         _LIVE_RUN_STATES[_live_run_key(agent_id)].update(fields)
         return True
     p = _agent_dir(agent_id) / "state.json"
-    # Off-loop callers serialize; on-loop callers keep pre-existing behaviour.
-    # ``holder`` stays referenced for the whole critical section -- that strong
-    # reference is what keeps every concurrent writer on one lock (see
-    # :data:`_STATE_LOCKS`), so it must not be narrowed to ``holder.lock``.
+    # Off-loop callers serialize. Keep ``holder`` (not just ``holder.lock``)
+    # referenced for the whole critical section: that strong reference keeps every
+    # concurrent writer on one lock (see :data:`_STATE_LOCKS`).
     holder = None if _on_event_loop() else _lock_for_agent(agent_id)
     if holder is not None:
         holder.lock.acquire()
@@ -550,12 +509,11 @@ def promote_retention(
 ) -> RetentionPromotionResult:
     """Atomically promote *agent_id* against concurrent in-process prune.
 
-    Promotion acquires per-agent retention arbitration and, on the event loop,
-    probes the state-writer lock non-blocking. Contention returns ``RETRYABLE``
-    without parking the loop. Off-loop callers let ``update_state`` acquire its
-    normal non-reentrant state lock. Thus promotion either writes ``keep=True``
-    before prune's locked re-read or waits for a later retry; a process crash
-    leaves no half-committed claim format, and the next prune re-evaluates state.
+    Takes the per-agent retention lock and, on the event loop, probes the state
+    lock non-blocking; contention returns ``RETRYABLE`` without parking the loop.
+    Off-loop, ``update_state`` takes its normal state lock. So ``keep=True`` lands
+    before prune's locked re-read or waits for a retry; a crash leaves no
+    half-committed claim, and the next prune re-evaluates state.
     """
     retention_holder = _try_acquire_retention_lock(agent_id)
     if retention_holder is None:

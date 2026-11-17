@@ -21,14 +21,13 @@ sweeps" or "never called with preserve_existing=False".
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 import time
 import unittest
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, ledger_index
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import LedgerEntry
@@ -68,8 +67,13 @@ class _FakeStore:
 class _Env(unittest.TestCase):
     """Isolated data home: the cursor and ledger are real files."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
 
@@ -78,7 +82,6 @@ class _Env(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _seed(n: int, *, prefix: str = "lesson") -> None:
@@ -468,8 +471,8 @@ class TestSemanticRecallWiring(_Env):
         store = VectorMemoryStore(db_path=self.tmp / "memory.db", embedding_dim=2)
         store.init()
         # A failed write raises before the store is returned, so dispatch never runs its
-        # own close(); on Windows the still-open memory.db then makes tearDown's rmtree
-        # leak self.tmp.
+        # own close(); on Windows the still-open memory.db then cannot be removed with
+        # self.tmp.
         try:
             self.assertTrue(
                 store.write_episodic(

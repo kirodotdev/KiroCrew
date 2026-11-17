@@ -160,3 +160,53 @@ def test_verdict_trailing_period_does_not_invent_a_key():
     assert parse_dedupe_verdict(
         "DUP auto/deploy.timeout", ["auto/deploy"]
     ) == (VERDICT_NEW, None)
+
+
+# --- The reply is read in order -----------------------------------------------
+
+_DEPLOY_KEYS = ["auto/deploy", "auto/deploy-timeout"]
+
+
+def test_a_later_update_word_does_not_override_the_dup_verdict():
+    assert parse_dedupe_verdict(
+        "DUP auto/deploy-timeout - nothing new to update.", _DEPLOY_KEYS
+    ) == (VERDICT_DUP, "auto/deploy-timeout")
+
+
+def test_the_key_is_the_one_named_after_the_verdict_not_the_first_listed():
+    assert parse_dedupe_verdict(
+        "UPDATE auto/deploy-timeout (closest to auto/deploy)", _DEPLOY_KEYS
+    ) == (VERDICT_UPDATE, "auto/deploy-timeout")
+
+
+def test_a_none_verdict_is_new_even_when_prose_names_a_key():
+    assert parse_dedupe_verdict(
+        "None of these match; auto/deploy is unrelated", _DEPLOY_KEYS
+    ) == (VERDICT_NEW, None)
+
+
+def test_a_capitalised_verdict_wins_over_lowercase_prose():
+    assert parse_dedupe_verdict(
+        "Not a dup of anything as written. UPDATE auto/deploy", _DEPLOY_KEYS
+    ) == (VERDICT_UPDATE, "auto/deploy")
+
+
+def test_a_key_before_the_verdict_word_still_counts():
+    assert parse_dedupe_verdict(
+        "auto/deploy-timeout: DUP", _DEPLOY_KEYS
+    ) == (VERDICT_DUP, "auto/deploy-timeout")
+
+
+def test_the_prompts_own_new_wording_is_not_read_as_the_verdict():
+    assert parse_dedupe_verdict(
+        "The NEW candidate is a DUP of auto/deploy", _DEPLOY_KEYS
+    ) == (VERDICT_DUP, "auto/deploy")
+    assert parse_dedupe_verdict(
+        "The NEW candidate adds steps: UPDATE auto/deploy", _DEPLOY_KEYS
+    ) == (VERDICT_UPDATE, "auto/deploy")
+
+
+def test_the_key_after_the_verdict_wins_over_one_before_it():
+    assert parse_dedupe_verdict(
+        "auto/deploy is close, but UPDATE auto/deploy-timeout", _DEPLOY_KEYS
+    ) == (VERDICT_UPDATE, "auto/deploy-timeout")

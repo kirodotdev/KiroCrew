@@ -38,6 +38,7 @@ from test_telegram import _dispatcher  # noqa: E402
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.messaging import spawn_approval_delivery as seam
+from kiro_crew.subagent import HostSpawnDecision
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
 from kiro_crew.testing.wait import async_wait_until
 
@@ -45,6 +46,8 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 _RID = "spawn:abc"
 _TASK = "spawn_run(build the widget)"
+#: What an unpressed wait on a still-permitted channel answers: the host's decline.
+_HOST_TIMEOUT = HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
 
 
 @pytest.fixture(autouse=True)
@@ -290,17 +293,17 @@ class TestAMidWaitDenyFallsThrough:
         # No second consult: a press is never re-read against the ceiling.
         assert _ceiling.calls == ["telegram"]
 
-    def test_a_timeout_on_a_still_permitted_channel_still_answers_false(self, _ceiling) -> None:
+    def test_a_timeout_on_a_still_permitted_channel_is_a_host_decline(self, _ceiling) -> None:
         # An unpressed wait on a channel the operator never denied is a real
-        # deny-by-default.
+        # deny-by-default, and the host's: nobody pressed anything.
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
 
         result = asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, session_key))
 
-        assert result is False
-        assert result is not None
+        assert result == _HOST_TIMEOUT
+        assert not result
         assert len(cli.sent) == 1
         assert _ceiling.calls == ["telegram", "telegram"]
 
@@ -342,9 +345,11 @@ class TestAMidWaitDenyFallsThrough:
 class TestTheSeamOwnsTheReading:
     """The hook reports an unpressed wait; the seam decides what it means."""
 
-    def test_the_helper_answers_false_while_permitted_and_none_once_denied(self, _ceiling) -> None:
+    def test_the_helper_declines_while_permitted_and_answers_none_once_denied(
+        self, _ceiling
+    ) -> None:
         # Both directions in isolation, so a regression names which half broke.
-        assert asyncio.run(seam.unpressed_wait_answer("telegram", _RID)) is False
+        assert asyncio.run(seam.unpressed_wait_answer("telegram", _RID)) == _HOST_TIMEOUT
 
         _ceiling.state["permitted"] = False
         assert asyncio.run(seam.unpressed_wait_answer("telegram", _RID)) is None
@@ -437,9 +442,9 @@ class TestTheConversationAuthorityAlsoEndsAnswerability:
         assert _ceiling.state["permitted"] is True
 
     def test_that_withdrawal_is_invisible_to_the_channels_ceiling(self, _ceiling) -> None:
-        # The seam's answer for a permitted channel is False, so asking only the
+        # The seam's answer for a permitted channel is a decline, so asking only the
         # ceiling would refuse this spawn.
-        assert asyncio.run(seam.unpressed_wait_answer("telegram", _RID)) is False
+        assert asyncio.run(seam.unpressed_wait_answer("telegram", _RID)) == _HOST_TIMEOUT
 
     def test_a_press_before_the_withdrawal_still_reports_its_decision(self, _ceiling) -> None:
         # The withdrawal lands AFTER the operator rejected. That is a real decision
@@ -463,7 +468,7 @@ class TestTheConversationAuthorityAlsoEndsAnswerability:
         session_key = d._session_key(("direct", "7"))
         seam.register_channel_delivery("telegram", d.deliver_spawn_approval)
 
-        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, session_key)) is False
+        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, session_key)) == _HOST_TIMEOUT
 
     def test_an_egress_revocation_mid_wait_also_falls_through(self, _ceiling) -> None:
         # The transport's own revocation-at-egress decision is part of the same
@@ -543,7 +548,7 @@ class TestTheTopicRouteReadsTheRosterToo:
         # to answer.
         _d, cli, _sess, session_key = self._forum_dispatcher()
 
-        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, session_key)) is False
+        assert asyncio.run(seam.deliver_spawn_approval(_RID, _TASK, session_key)) == _HOST_TIMEOUT
         assert len(cli.sent) == 1
 
     def test_a_reject_press_in_a_topic_still_reports_its_decision(self, _ceiling) -> None:

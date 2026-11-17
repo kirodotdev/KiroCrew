@@ -34,6 +34,7 @@ import itertools
 import json
 import logging
 import threading
+import time
 import weakref
 from datetime import datetime, timezone
 from typing import Any
@@ -42,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 #: How long a burst of log growth is coalesced before the list is read again.
 _SETTLE_SECONDS = 0.4
+
+#: How long the feed waits before reading a thread's list again when a card is past
+#: its expiry but still open, or the append that dropped the last one has not committed.
+_EXPIRY_RETRY_SECONDS = 60.0
 
 _state_ref: "weakref.ReferenceType[Any] | None" = None
 _registered = False
@@ -64,6 +69,9 @@ _held_goals: dict[str, dict[str, Any]] = {}
 #: Per thread slot key, the session it last logged into, so a growth that lands
 #: after the turn's teardown cleared the live client still finds its thread.
 _sessions: dict[str, str] = {}
+#: Per thread slot key, the timer that reads its waiting list again when its soonest
+#: open change card expires (:func:`_arm_card_expiry`).
+_expiry_timers: "dict[str, asyncio.TimerHandle]" = {}
 
 
 def _digest(data: Any) -> str:
@@ -236,7 +244,61 @@ def record_waiting(state: Any, slot: Any, *, cards: bool = True) -> bool:
     from kiro_crew.dashboard import member_waiting
 
     items, total = member_waiting.waiting_list(state, slot.key, cards=cards)
-    return _record(slot.key, "waiting", _sid(slot), {"items": items, "total": total})
+    data = {"items": items, "total": total}
+    sid = _sid(slot)
+    appended = _record(slot.key, "waiting", sid, data)
+    if cards:
+        _arm_card_expiry(state, slot.key, data if sid else None)
+    return appended
+
+
+def _arm_card_expiry(state: Any, slot_key: str, recorded: "dict[str, Any] | None") -> None:
+    """Read *slot_key*'s waiting list again once its soonest open change card expires.
+
+    A card expires by the clock alone, which writes nothing to the thread's log, so
+    neither the growth signal nor :func:`question_retired` would ever take it off the
+    list. One timer per thread, replaced on every record; none without a serving loop.
+    A card already past its expiry (a step still in flight holds it open), or a list
+    whose last card just left and whose snapshot *recorded* has not committed, is
+    read again after :data:`_EXPIRY_RETRY_SECONDS`: a rejected append grows no log,
+    so nothing else would retry it. *recorded* is None for a thread with no session,
+    which records afresh on its first growth.
+    shortcut: a timer does not outlive the gateway, so a card that expires after a
+    restart, on a thread idle since, stays listed until the thread next grows; arm
+    these at start-up if that case shows up.
+    """
+    from kiro_crew.dashboard import change_cards
+
+    loop = getattr(state, "serving_loop", None)
+    if loop is None:
+        return
+    try:
+        cards = change_cards.card_store_for(state).pending(slot_key)
+    except Exception:
+        logger.debug("Bot feed: card expiry not armed for %s", slot_key, exc_info=True)
+        return
+    ends = [
+        float(card["expires_at"])
+        for card in cards
+        if card.get("status") in (change_cards.STATUS_PENDING, change_cards.STATUS_FAILED)
+        and isinstance(card.get("expires_at"), (int, float))
+    ]
+    old = _expiry_timers.pop(slot_key, None)
+    if old is not None:
+        old.cancel()
+    now = time.time()
+    key = (slot_key, "waiting")
+    with _lock:
+        unsettled = recorded is not None and (
+            key in _inflight or _last.get(key) != _digest(recorded)
+        )
+    if ends and min(ends) > now:
+        delay = min(ends) - now + _SETTLE_SECONDS
+    elif ends or (old is not None and unsettled):
+        delay = _EXPIRY_RETRY_SECONDS
+    else:
+        return
+    _expiry_timers[slot_key] = loop.call_later(delay, _retired, slot_key)
 
 
 async def _warm_cards(state: Any) -> bool:
@@ -325,6 +387,8 @@ def _retired(slot_key: str) -> None:
         return
     slot = (getattr(state, "_slots", None) or {}).get(slot_key)
     if slot is None or getattr(slot, "mode", "") != members_mod.DM_SLOT_MODE:
+        # A closed thread has no list to read again; its expiry timer goes with it.
+        _expiry_timers.pop(slot_key, None)
         return
     sid = _sid(slot)
     if not sid:

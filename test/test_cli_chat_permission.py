@@ -22,8 +22,12 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
     _doctor_reads_the_warm_probe_cache,
     _TestChatPermissionRequestHarness,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.testing.wait import async_wait_until, default_timeout
+
+#: A credential the plan redacts: a GitHub classic token with a valid checksum.
+_SECRET = github_classic(seed=61)
 
 
 class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
@@ -116,7 +120,7 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
             ),
             # No canonical name: the title is all there is, so scrub it -- SEL
             # does not redact for its callers.
-            (dict(title="deploy with AKIAIOSFODNN7EXAMPLE"), None, "AKIAIOSFODNN7EXAMPLE"),
+            (dict(title=f"deploy with {_SECRET}"), None, _SECRET),
         ],
     )
     async def test_the_audited_identity_is_not_model_authored(
@@ -270,7 +274,7 @@ class TestChatPermissionRequest(_TestChatPermissionRequestHarness):
             # Capped, with the cut made explicit.
             ("echo " + "x" * 400, "... [truncated]", "x" * 400),
             # Redacted on the way to the screen.
-            ("deploy --key AKIAIOSFODNN7EXAMPLE", None, "AKIAIOSFODNN7EXAMPLE"),
+            (f"deploy --key {_SECRET}", None, _SECRET),
             # Nothing to show for a non-shell call.
             (None, None, "Command:"),
         ],
@@ -830,7 +834,9 @@ class TestChatProviderShutdown:
         # A real gate, as production always builds one: _chat hands its hooks
         # to the context builder before the backend starts.
         monkeypatch.setattr(
-            cli_chat, "_build_tool_gate", lambda agent: cli_chat._ToolGate(hooks=HookManager())
+            cli_chat,
+            "_build_tool_gate",
+            lambda agent, kiro_agent="": cli_chat._ToolGate(hooks=HookManager()),
         )
 
     @pytest.mark.asyncio

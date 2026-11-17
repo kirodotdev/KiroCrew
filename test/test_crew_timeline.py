@@ -17,8 +17,18 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import crew_mode, crew_timeline
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 T0 = datetime(2026, 10, 21, 3, 0, 0, tzinfo=timezone.utc)
+
+
+def _yielding(serialize):
+    """The state's ``serialize_slots_yielding`` over a stub's synchronous rows."""
+
+    async def serialize_slots_yielding(**kwargs):
+        return serialize(**kwargs)
+
+    return serialize_slots_yielding
 
 
 def _at(seconds: float) -> str:
@@ -375,7 +385,10 @@ def _state(
 
     slots = {key: SimpleNamespace(key=key, messages=msgs) for key, msgs in windows.items()}
     return SimpleNamespace(
-        serialize_slots=serialize_slots, get_slot=slots.get, conversation_log=log
+        serialize_slots=serialize_slots,
+        serialize_slots_yielding=_yielding(serialize_slots),
+        get_slot=slots.get,
+        conversation_log=log,
     )
 
 
@@ -513,7 +526,7 @@ async def test_the_route_pairs_hand_offs_off_the_event_loop(_route, monkeypatch)
 @pytest.mark.asyncio
 async def test_the_route_redacts_what_the_rows_carry(_route):
     """G4: a permission row with a key in it reaches the browser redacted."""
-    key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    key = github_classic(seed=313)  # a synthetic token; a bare 40-character run stays visible
     rows = [_slot_row("root", agent="kirocrew-conductor")]
     windows = {
         "root": [
@@ -644,7 +657,7 @@ def test_a_hand_off_pairs_a_send_named_by_stem_or_unique_title():
 
 def test_a_secret_crossing_the_label_cut_is_redacted_whole():
     """The cut comes after the redaction, so no prefix of a token survives it."""
-    secret = "ghp_" + "A" * 36
+    secret = github_classic(seed=306)
     text = "🔧 " + "x" * 100 + secret
     lane = _lane([_row("tool", 1, text, tool_call_id="t1"), _row("user", 5)])
     raw = lane["segments"][0]["label"]

@@ -126,6 +126,11 @@ export function isBareModifier(b: PttBinding): boolean {
   return !!MODIFIER_FAMILY[b.code] && !b.alt && !b.ctrl && !b.meta && !b.shift
 }
 
+/** Which modifier a bare-modifier binding is, or null for a chord binding. */
+export function bareModifierFamily(b: PttBinding): 'alt' | 'ctrl' | 'meta' | 'shift' | null {
+  return isBareModifier(b) ? MODIFIER_FAMILY[b.code] : null
+}
+
 type KeyLike = Pick<KeyboardEvent, 'code' | 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'>
 
 /**

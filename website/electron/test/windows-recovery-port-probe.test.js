@@ -71,12 +71,29 @@ test("Windows recovery retries a netstat that timed out once, then sees the port
   assert.ok(!result.probeFailed, "a probe that succeeded on retry is not a failed probe");
 });
 
-test("Windows recovery still fails closed when netstat never answers", async () => {
+test("Windows recovery still fails closed when netstat never answers and a bind is refused", async () => {
   const { calls, execFileFn } = scriptedNetstat([timedOut()]);
-  const result = await windowsHolders(execFileFn).forceStopGatewayPort(5476);
+  const result = await windowsHolders(execFileFn, {
+    isPortBindable: async () => false,
+  }).forceStopGatewayPort(5476);
   assert.strictEqual(calls.length, 3, "bounded: three attempts, then give up");
   assert.strictEqual(result.freed, false);
   assert.strictEqual(result.probeFailed, true);
+});
+
+// A Windows user's gateway never started: netstat timed out three times on a
+// free port and recovery stopped at "can't verify what's using port 5476".
+test("Windows recovery starts the gateway when netstat never answers but the port binds", async () => {
+  const { calls, execFileFn } = scriptedNetstat([timedOut()]);
+  const checks = [];
+  const result = await windowsHolders(execFileFn, {
+    isPortBindable: async (port) => { checks.push(port); return true; },
+  }).forceStopGatewayPort(5476);
+  assert.strictEqual(calls.length, 3);
+  assert.deepStrictEqual(checks, [5476]);
+  assert.strictEqual(result.freed, true);
+  assert.strictEqual(result.killed, 0);
+  assert.ok(!result.probeFailed);
 });
 
 test("windowsListenPidsRetrying bounds each attempt and says how the last one failed", async () => {
@@ -126,7 +143,7 @@ test("windowsListenPidsRetrying returns the first successful answer", async () =
 // "no owner". Recovery must not read that as "free" while a bind is refused.
 
 const net = require("node:net");
-const { WINDOWS_LOCAL_GATEWAY_WAIT_MS } = require("../gateway-wait");
+const { LOCAL_GATEWAY_WAIT_MS } = require("../gateway-wait");
 
 function listenOn(host) {
   return new Promise((resolve, reject) => {
@@ -173,7 +190,7 @@ for (const [shape, row] of Object.entries(UNLISTED_SHAPES)) {
       assert.strictEqual(result.freed, false);
       assert.strictEqual(result.ownerUnknown, true);
       assert.strictEqual(result.killed, 0);
-      assert.strictEqual(sleeps.reduce((a, b) => a + b, 0), WINDOWS_LOCAL_GATEWAY_WAIT_MS, "the refusal is waited out first");
+      assert.strictEqual(sleeps.reduce((a, b) => a + b, 0), LOCAL_GATEWAY_WAIT_MS, "the refusal is waited out first");
       assert.ok(logs.some((l) => l.includes(`no LISTEN owner found on :${port} but a bind is refused`)), logs.join("\n"));
     } finally {
       await closeServer(held);
@@ -341,7 +358,7 @@ test("Windows recovery waits the Windows gateway start budget and tells the call
     sleep: async (ms) => { sleeps.push(ms); },
   }).forceStopGatewayPort(5476, { onBindWait: () => { waits += 1; } });
   assert.strictEqual(result.ownerUnknown, true);
-  assert.strictEqual(sleeps.reduce((a, b) => a + b, 0), WINDOWS_LOCAL_GATEWAY_WAIT_MS);
+  assert.strictEqual(sleeps.reduce((a, b) => a + b, 0), LOCAL_GATEWAY_WAIT_MS);
   assert.strictEqual(waits, 1);
 });
 

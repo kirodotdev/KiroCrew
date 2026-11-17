@@ -69,8 +69,8 @@ class TestVendoredClaudeAcp:
         assert _resolve_vendored_claude_acp(pkg_dir=pkg_dir) is None
 
     def test_skips_incomplete_copy_missing_deps(self, tmp_path, monkeypatch):
-        # Regression: an entry script whose dependency Node could not import must
-        # be rejected (it would crash with ERR_MODULE_NOT_FOUND @agentclientprotocol/sdk),
+        # An entry script whose dependency Node cannot import must be
+        # rejected (it would crash with ERR_MODULE_NOT_FOUND @agentclientprotocol/sdk),
         # falling through to a complete copy under KIROCREW_PROJECT_DIR.
         pkg_dir = tmp_path / "site-packages" / "kiro_crew"
         pkg_dir.mkdir(parents=True)
@@ -574,6 +574,7 @@ class TestResolveKiroBinEnvOverride:
 
     @pytest.mark.asyncio
     async def test_spawn_launches_self_updated_override(self, tmp_path):
+        from kiro_crew import kiro_cli as kiro_cli_module
         from kiro_crew import sandbox as sandbox_module
         from kiro_crew.acp import client as client_module
         from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
@@ -599,6 +600,9 @@ class TestResolveKiroBinEnvOverride:
                 "resolve_kiro_cli",
                 return_value=str(fake),
             ),
+            # The engine probe runs through the sandboxed runner, which would
+            # meet the mocked create_subprocess_exec below; it lists no v2 here.
+            patch.object(kiro_cli_module, "kas_relay_help", return_value=None),
             patch(
                 "asyncio.create_subprocess_exec",
                 mock_exec,

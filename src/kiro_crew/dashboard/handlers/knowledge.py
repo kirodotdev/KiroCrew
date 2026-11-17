@@ -91,6 +91,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_INGEST_ARCHIVE_UNCOMPRESSED,
     )
     from kiro_crew.dashboard.handlers.knowledge_library import _DATE_ORDER  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_library import _HELD_BY_SOURCE  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _NO_SOURCE  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _SCOPED_SEARCH_MAX  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _SCOPED_SEARCH_START  # noqa: F401
@@ -104,6 +105,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_library import _item_detail  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _items_page  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _load_items_by_id  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_library import _located_item_ids  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _matches_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _namespace_rows  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _related_items  # noqa: F401
@@ -137,6 +139,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.knowledge_sources import _ADD_SOURCE_TEXT_FIELDS  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _FOLDER_DIALOG_TIMEOUT  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sources import _MAX_IGNORE_PATTERN_LEN  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sources import _MAX_IGNORE_PATTERNS  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _MAX_SOURCE_NAME_LEN  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _REMOTE_URI_PREFIXES  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _add_source_path_checks  # noqa: F401
@@ -145,6 +149,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sources import _create_source_audited  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _file_path_restricted  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _folder_file_rows  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_sources import _folder_spellings  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _insert_bedrock_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _LocalUriProbe  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_sources import _pause_source_row  # noqa: F401
@@ -168,6 +173,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_sources import (  # noqa: F401
         _bedrock_registration_identity,
         _folder_picker_available,
+        _ignore_patterns_limit_error,
         _mark_bedrock_searchable,
         _reclaim_rowless_attestations,
         _set_ignore_patterns_row,
@@ -202,6 +208,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew._sqlite_compat import sqlite3  # noqa: F401
     from kiro_crew.artifacts import get_default_store  # noqa: F401
     from kiro_crew.config import live  # noqa: F401
+    from kiro_crew.config.fields import _coerce_bool  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.config.loader import coerce_config_field  # noqa: F401
     from kiro_crew.config.loader import config_dir  # noqa: F401
@@ -242,6 +249,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.knowledge.folder_watcher import folder_chunk_budget  # noqa: F401
     from kiro_crew.knowledge.folder_watcher import max_files_prop  # noqa: F401
     from kiro_crew.knowledge.folder_watcher import walk_filters  # noqa: F401
+    from kiro_crew.knowledge.ingestion import FileTooLargeError  # noqa: F401
     from kiro_crew.knowledge.ingestion import ImportChunkBudgetError  # noqa: F401
     from kiro_crew.knowledge.ingestion import IngestionPipeline  # noqa: F401
     from kiro_crew.knowledge.ingestion import _redact  # noqa: F401
@@ -249,6 +257,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.knowledge.ingestion import rebuild_embeddings  # noqa: F401
     from kiro_crew.knowledge.ingestion import reclaim_interrupted_ingest_jobs  # noqa: F401
     from kiro_crew.knowledge.ingestion import start_rebuild_job  # noqa: F401
+    from kiro_crew.knowledge.kiroignore import MAX_RULES  # noqa: F401
     from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT  # noqa: F401
     from kiro_crew.knowledge.llm_pool import LLMPool  # noqa: F401
     from kiro_crew.knowledge.readers import FileReader  # noqa: F401

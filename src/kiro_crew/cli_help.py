@@ -47,6 +47,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("open", "Open the desktop app on a session (kirocrew:// deep link)"),
             ("logout", "Revoke all active dashboard sessions"),
             ("ledger-sweep", "List finished session/work ledgers; --purge deletes them"),
+            ("tmp", "Remove your idle, unused leftovers from /tmp and /var/tmp"),
             ("update", "Update Kiro Crew to the latest version"),
         ),
     ),
@@ -67,7 +68,9 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("run", "Run an autonomous task from a spec file"),
             ("cron", "Manage scheduled jobs"),
             ("spawn", "Manage background subagents"),
+            ("models", "List the model names --model accepts"),
             ("computer", "Computer-use (desktop automation) diagnostics"),
+            ("trace", "Show one traced turn as a waterfall from the local span files"),
         ),
     ),
     (
@@ -95,7 +98,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("secrets", "Encrypted secret vault: import .env credentials, authorize origins"),
             ("security", "Security audit and deny list"),
             ("policy", "Inspect the governance security policy + profiles"),
-            ("telemetry", "Inspect or disable anonymous usage telemetry"),
+            ("telemetry", "Inspect or turn off usage data (local metrics and the beacon)"),
         ),
     ),
     (
@@ -103,6 +106,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("cloud", "Run Kiro Crew on your own AWS EC2 instance"),
             ("tailnet", "Publish this dashboard on your tailnet (Tailscale)"),
+            ("remote-control", "Turn personal Remote Control on or off, or see whether it is on"),
             ("snapshot", "Create a portable backup of Kiro Crew state"),
             ("restore", "Restore Kiro Crew state from a snapshot"),
         ),

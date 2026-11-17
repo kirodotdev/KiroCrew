@@ -426,16 +426,13 @@ class TestChainedRepairPaths:
         # credential already held survives -- a stale token yields a 403 the client
         # recovers from, where a delivered one is a disclosure that is not undone.
         #
-        # It ALSO asks for the forward to go, which this case originally asserted it
-        # must not. That was wrong, and the mechanism is the one GPT named: the parent
-        # moved this crew to a new port and can hand the old one to ANOTHER crew, so the
-        # forward still dialling the old number reaches that crew, and the token already
-        # in `_tokens` keeps travelling over it. Discarding the new mint corrected
-        # neither, and each refresh cycle re-discarded and retried, so the stale pair
-        # survived for as long as the crew was connected. The reason the original
-        # assertion gave -- that a forward being BUILT also names a hop it does not yet
-        # dial -- is real, and it is what `binds_forward` is for; it is not a reason to
-        # leave this case alone.
+        # It ALSO asks for the forward to go: the parent moved this crew to a new port
+        # and can hand the old one to ANOTHER crew, so a forward still dialling the old
+        # number reaches that crew, and the token already in `_tokens` keeps travelling
+        # over it. Discarding the new mint fixes neither, and each refresh cycle would
+        # re-discard and retry, so the stale pair survives for as long as the crew is
+        # connected. A forward being BUILT also names a hop it does not yet dial; that
+        # case is what `binds_forward` is for.
         asked: list[str] = []
         monkeypatch.setattr(
             mgr, "_schedule_chained_retirement", lambda _id, reason: asked.append(reason)
@@ -453,7 +450,7 @@ class TestChainedRepairPaths:
         # And NOT while this store is the one defining the pairing: a forward being
         # built names a hop it does not dial yet, and retiring there would tear down
         # the tunnel being set up. The mint is still DISCARDED -- only the retirement
-        # is gated, which is the whole of this change.
+        # is gated.
         asked.clear()
         assert (
             mgr._store_token(

@@ -32,7 +32,9 @@ other Settings > Security writes, and the POSTs sit behind the dashboard's CSRF
 barrier (they are not in ``token_auth.CSRF_EXEMPT_EXACT_METHODS``). An app token or
 an ``X-Internal-Secret`` caller (an agent's MCP tools) is not the owner, and no
 agent or MCP tool names these routes, so a sandboxed process cannot approve its own
-edit.
+edit. Where there is no dashboard, the owner's terminal runs the same writer
+(:func:`resolve_pending`) through ``kirocrew config pending`` (``cli_config_pending.py``),
+which refuses inside a Kiro Crew sandbox.
 
 :func:`sync_pending_notes` rides the event-loop heartbeat: a leaf that goes pending
 raises one bell notification per on-disk version (re-notified only for a new edit) on
@@ -77,6 +79,9 @@ _SYNC_TIMEOUT_SECS = 2.0
 _NEXT_SYNC_ATTR = "_config_pending_next_sync"
 _SYNC_TASK_ATTR = "_config_pending_sync_task"
 _PUBLISHED_ATTR = "_config_pending_published"
+#: Set while a ``resolved`` mark is only in memory: its log rewrite failed, so the
+#: next sync writes again rather than leave a restart to read the old record.
+_RESOLVED_UNSAVED_ATTR = "_config_pending_resolved_unsaved"
 
 
 def _snapshot() -> dict:
@@ -139,7 +144,7 @@ async def _write_config(leaf: str, apply: bool, signature: str) -> None:
     await run_config_write(_config_writer(leaf, apply, signature))
 
 
-async def _write_denied(request: web.Request, apply: bool, signature: str) -> None:
+async def _write_denied(request: web.Request | None, apply: bool, signature: str) -> None:
     from kiro_crew.config.loader import ConfigWriteRefused
     from kiro_crew.dashboard.handlers import security
 
@@ -156,10 +161,12 @@ async def _write_denied(request: web.Request, apply: bool, signature: str) -> No
         endorsed.update(disk)
 
     state = await security._write_denied_state(_mutate, resolving_pending=True)
-    security._reload_live_hooks(request, state)
+    if request is not None:
+        security._reload_live_hooks(request, state)
 
 
-async def _write_computer_use(request: web.Request, apply: bool, signature: str) -> None:
+async def _write_computer_use(request: web.Request | None, apply: bool, signature: str) -> bool:
+    """Write the resolution; True when it turned computer use on or off."""
     from kiro_crew.computer_use import enable_state
     from kiro_crew.config.loader import ConfigWriteRefused
     from kiro_crew.dashboard.handlers import computer_use as cu
@@ -191,10 +198,34 @@ async def _write_computer_use(request: web.Request, apply: bool, signature: str)
         enabled_before = await asyncio.to_thread(enable_state.is_enabled)
         await asyncio.to_thread(_write)
         enabled_after = await asyncio.to_thread(enable_state.is_enabled)
-    if enabled_after != enabled_before:
+    if enabled_after != enabled_before and request is not None:
         # The same spec rebuild and session reset as the computer-use PUT, after
         # the lock is released (it takes the lock again).
         await cu.apply_enable_change(request)
+    return enabled_after != enabled_before
+
+
+async def resolve_pending(
+    request: web.Request | None, leaf: str, apply: bool, signature: str
+) -> bool:
+    """Apply or Discard pending *leaf* at version *signature* through the leaf's own writer.
+
+    The one writer the Settings routes and ``kirocrew config pending`` share. Raises what
+    :func:`_resolve` maps: ``lp.PendingChanged`` / ``PendingInvalid`` / ``PendingRemoved``,
+    ``ConfigWriteRefused``, or a read or write error. With the dashboard's *request* the
+    running gateway adopts the result here (the command gate reloads; a computer-use
+    on/off flip rebuilds the spec and resets sessions). Returns True when a gateway that
+    did not run this write must restart to adopt it: an Apply of ``denied_commands.json``,
+    or a flip. A ``config.json`` or ``config.local.json`` Apply reaches the config
+    watcher, which adopts every key but a restart-marked one, as after ``config set``.
+    """
+    if leaf == lp.LEAF_DENIED_COMMANDS:
+        await _write_denied(request, apply, signature)
+        return apply
+    if leaf == lp.LEAF_COMPUTER_USE:
+        return await _write_computer_use(request, apply, signature)
+    await _write_config(leaf, apply, signature)
+    return False
 
 
 async def _resolve(request: web.Request, op: str, apply: bool) -> web.Response:
@@ -221,12 +252,7 @@ async def _resolve(request: web.Request, op: str, apply: bool) -> web.Response:
     from kiro_crew.dashboard.handlers.security import ConfigCorruptError
 
     try:
-        if leaf == lp.LEAF_DENIED_COMMANDS:
-            await _write_denied(request, apply, signature)
-        elif leaf == lp.LEAF_COMPUTER_USE:
-            await _write_computer_use(request, apply, signature)
-        else:
-            await _write_config(leaf, apply, signature)
+        await resolve_pending(request, leaf, apply, signature)
     except lp.PendingChanged:
         _audit(request, op, "denied", f"{leaf}=changed")
         return web.json_response(
@@ -288,7 +314,10 @@ async def _publish(state: Any, pending: list[dict]) -> None:
 
     current = {p["leaf"]: p["signature"] for p in pending}
     notes = _notes(state)
-    seen = {(r.get("leaf"), r.get("signature")) for _, r in notes}
+    # A resolved note (applied, discarded or put back by hand) answers for a version
+    # that STOPPED being pending: the same bytes going pending again later -- a file
+    # removed twice, a script re-applying one edit -- is a new event and is notified.
+    seen = {(r.get("leaf"), r.get("signature")) for _, r in notes if not r.get("resolved")}
     # Versions this process already announced: the owner can delete a note and the log
     # cap can drop one, and neither may bring the same version's note back.
     published = getattr(state, _PUBLISHED_ATTR, None) or {}
@@ -317,12 +346,23 @@ async def _publish(state: Any, pending: list[dict]) -> None:
         # The delivery already queued its row; persist the record so a restart
         # does not notify the same version again.
         await state._rewrite_notifications_async()
+    resolved = False
     for note, record in notes:
-        if note.get("acked") or current.get(record.get("leaf")) == record.get("signature"):
+        if current.get(record.get("leaf")) == record.get("signature"):
+            continue
+        if not record.get("resolved"):
+            # Marked even on a note the owner already read, so its version can be
+            # notified again if it goes pending again.
+            record["resolved"] = True
+            resolved = True
+        if note.get("acked"):
             continue
         ts = note.get("ts")
         if isinstance(ts, str):
             await state.ack_notification(ts)
+    if resolved or getattr(state, _RESOLVED_UNSAVED_ATTR, False):
+        saved = await state._rewrite_notifications_async()
+        setattr(state, _RESOLVED_UNSAVED_ATTR, saved is False)
     if getattr(state, _PUBLISHED_ATTR, None) != current:
         setattr(state, _PUBLISHED_ATTR, current)
         state.broadcast_ws_owners(WS_EVENT, {"count": len(current)})

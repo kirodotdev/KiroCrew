@@ -31,6 +31,8 @@ class MockSocket {
 
   readyState = 1
   binaryType = ''
+  /** A live socket takes the audio as it is sent; a test sets this to model one that does not. */
+  bufferedAmount = 0
   readonly url: string
   sent: Sent[] = []
   onopen: (() => void) | null = null
@@ -304,6 +306,19 @@ describe('useMeetingTranscription — starting up', () => {
 
     expect(sockets).toHaveLength(1)
     expect(getUserMedia).toHaveBeenCalledTimes(1)
+  })
+
+  it('records the microphone saved in Settings, as dictation does', async () => {
+    localStorage.setItem('mc-mic-device-id', 'usb-mic')
+    try {
+      const h = await mount()
+      await startCapture(h)
+
+      expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'usb-mic' } } })
+      expect(sockets).toHaveLength(1)
+    } finally {
+      localStorage.removeItem('mc-mic-device-id')
+    }
   })
 
   it('collapses two starts that race inside the await window', async () => {
@@ -585,6 +600,66 @@ describe('useMeetingTranscription — watchdog and stop', () => {
     expect(sockets).toHaveLength(2)
     await act(async () => { lastSocket().becomeReady() })
     expect(h.hook.result.current.active).toBe(true)
+  })
+
+  /** A quiet room: the worklet keeps sending PCM every 100 ms and the server says nothing. */
+  async function quietRoom(ms: number) {
+    for (let t = 0; t < ms; t += 1_000) {
+      await act(async () => { lastNode().speak(3_200) })
+      await flush(1_000)
+    }
+  }
+
+  it('keeps one socket and one microphone grant through a silent minute after ready', async () => {
+    const h = await mount()
+    const ws = await startCapture(h)
+    await act(async () => { ws.becomeReady() })
+
+    await quietRoom(60_000)
+
+    expect(sockets).toHaveLength(1)
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(stoppedTracks).toEqual([])
+    expect(h.hook.result.current.active).toBe(true)
+  })
+
+  it('reconnects a ready socket whose audio has stopped leaving', async () => {
+    const h = await mount()
+    const ws = await startCapture(h)
+    await act(async () => { ws.becomeReady() })
+    ws.bufferedAmount = 64 * 1024
+
+    await quietRoom(25_000)
+
+    expect(sockets).toHaveLength(2)
+  })
+
+  it('reconnects a ready socket once its audio stops coming', async () => {
+    const h = await mount()
+    const ws = await startCapture(h)
+    await act(async () => { ws.becomeReady() })
+    await quietRoom(5_000)
+
+    // The microphone went away: the worklet has nothing to send.
+    await flush(25_000)
+
+    expect(sockets).toHaveLength(2)
+  })
+
+  it('reconnects a ready socket whose microphone track ended', async () => {
+    const h = await mount()
+    const ws = await startCapture(h)
+    await act(async () => { ws.becomeReady() })
+    await quietRoom(5_000)
+
+    // The device was unplugged: its track ends, and the worklet keeps sending
+    // the silence an ended source still produces.
+    const stream = (await getUserMedia.mock.results[0].value) as MediaStream
+    ;(stream.getAudioTracks()[0] as { readyState: string }).readyState = 'ended'
+    await quietRoom(25_000)
+
+    expect(sockets).toHaveLength(2)
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
   })
 
   it('leaves a socket alone while frames keep arriving', async () => {

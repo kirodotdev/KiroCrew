@@ -6,7 +6,16 @@
    React owns. `::highlight()` honors background-color and color everywhere the
    API exists, while text-decoration is not painted by every engine, so the
    current match is told apart by its stronger fill alone rather than the
-   outline the <mark> variant carries. */
+   outline the <mark> variant carries.
+
+   Every `::highlight()` rule below is limited to `[data-hl-scope]`, the
+   attribute on each element whose text a highlight can be registered over: a
+   chat bubble and a rendered preview. A bare `::highlight(name)` matches every
+   element of the page, so each style recalc builds a highlight style for the
+   sidebar, the menus and the rest of the chrome, where nothing is ever
+   highlighted. Each rule names the scope element and its descendants, not the
+   scope element alone: Firefox and Safari do not pass a highlight style down
+   to descendants. */
 .search-match {
   background-color: var(--search-highlight);
   border-radius: 2px;
@@ -19,20 +28,24 @@
   outline: 2px solid var(--search-highlight-current-border);
   outline-offset: 1px;
 }
-::highlight(mc-chat-match) {
+[data-hl-scope]::highlight(mc-chat-match),
+[data-hl-scope] ::highlight(mc-chat-match) {
   background-color: var(--search-highlight);
 }
-::highlight(mc-chat-current) {
+[data-hl-scope]::highlight(mc-chat-current),
+[data-hl-scope] ::highlight(mc-chat-current) {
   background-color: var(--search-highlight-current);
 }
 
 /* Preview find (MarkdownPanel) uses the CSS Custom Highlight API — paints over
    Range objects without mutating the react-markdown DOM. Only color and
    background-color are used; box properties such as border-radius are ignored. */
-::highlight(mc-find) {
+[data-hl-scope]::highlight(mc-find),
+[data-hl-scope] ::highlight(mc-find) {
   background-color: var(--search-highlight);
 }
-::highlight(mc-find-current) {
+[data-hl-scope]::highlight(mc-find-current),
+[data-hl-scope] ::highlight(mc-find-current) {
   background-color: var(--search-highlight-current);
 }
 /* Pierre colours each syntax token inline, so the current match in a code or
@@ -44,8 +57,21 @@
 }
 
 /* The passage a comment composer is open over (MarkdownPanel annotation). */
-::highlight(mc-annotate) {
+[data-hl-scope]::highlight(mc-annotate),
+[data-hl-scope] ::highlight(mc-annotate) {
   background-color: var(--accent-subtle, rgba(99, 102, 241, 0.15));
+}
+
+/* The passage a saved comment is anchored to in the preview (MarkdownPanel):
+   a fill plus an accent underline. */
+[data-hl-scope]::highlight(mc-comment),
+[data-hl-scope] ::highlight(mc-comment) {
+  background-color: var(--accent-subtle, rgba(99, 102, 241, 0.18));
+  text-decoration-line: underline;
+  text-decoration-color: var(--accent, #6366f1);
+  text-decoration-thickness: 2px;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
 }
 
 /* The comment shown beside the pointer over a highlighted passage or a box on

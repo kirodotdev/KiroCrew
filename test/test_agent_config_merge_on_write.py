@@ -1540,7 +1540,7 @@ async def test_a_stale_snapshot_reverts_a_live_http_bridge_to_a_dead_url(tmp_pat
     assert response.status == 200
     assert written["mcpServers"]["demo:notes"]["url"] == illustrative, (
         "the live url survived a stale snapshot: the content axis now decides from "
-        "on-disk state, which is the reversal #7470 is waiting on a ruling for -- "
+        "on-disk state, which reverses the recorded decision -- "
         "update this test and the decision table in "
         "docs/system-specs/modules/app-kit-platform.md together with it"
     )

@@ -149,6 +149,10 @@ _ANSWERS: dict[str, str] = {
         "ctx.crew_log_append: the record's data, when it landed, which job wrote it, "
         "when it goes stale and whether that job's run has failed since"
     ),
+    "objects": (
+        "What gateway code last read about each object outside the session, such as "
+        "a pull request: per producer, its facts and when they were read"
+    ),
     "workers": (
         "The worker sessions this Bot created: each one's task, whether it is "
         "running, between turns, done, blocked, failed or closed, and what it last said"

@@ -1,0 +1,142 @@
+[
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model_config",
+        "currentValue": "off",
+        "description": "Faster responses on supported models",
+        "id": "fast",
+        "name": "Fast mode",
+        "options": [
+          {
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "claude-session-fast"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model_config",
+        "currentValue": "on",
+        "description": "Faster responses on supported models",
+        "id": "fast",
+        "name": "Fast mode",
+        "options": [
+          {
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Done."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Done.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "harness_notice": {
+      "description": "Not available on the free plan.",
+      "kind": "adapter",
+      "mode_id": "",
+      "mode_name": "",
+      "severity": "warning",
+      "title": "Fast mode turned off",
+      "transcript": "\n\n> **Fast mode turned off:** Not available on the free plan.\n\n"
+    },
+    "session_update": "notice"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  }
+]

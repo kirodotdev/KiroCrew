@@ -251,6 +251,9 @@ class FakeListingLog(FakeConvLog):
     def list_sessions(self) -> list[dict]:
         return list(self._rows)
 
+    def list_sessions_indexed(self) -> list[dict]:
+        return self.list_sessions()
+
 
 class TestSessionsCommand:
     @staticmethod
@@ -351,7 +354,7 @@ class TestSessionsCommand:
     @pytest.mark.asyncio
     async def test_a_listing_failure_is_reported_rather_than_raised(self) -> None:
         class Boom(FakeConvLog):
-            def list_sessions(self):
+            def list_sessions_indexed(self):
                 raise OSError("disk")
 
         d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient())

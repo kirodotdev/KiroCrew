@@ -600,7 +600,7 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
                 raise StopAsyncIteration
 
         fake = FakeWS()
-        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake)
+        monkeypatch.setattr(dashboard_ws, "LagTolerantWebSocketResponse", lambda **kwargs: fake)
 
         class Request(dict):
             def __init__(self) -> None:

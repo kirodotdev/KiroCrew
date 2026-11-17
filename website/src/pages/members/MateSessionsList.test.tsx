@@ -131,6 +131,24 @@ describe('MateSessionsList', () => {
     await waitFor(() => expect(screen.queryByTestId('mate-recap')).toBeNull())
     pushState.mockRestore()
   })
+
+  it('shows the open recap as plain text behind a left rule, apart from its hovered header', async () => {
+    crewWorkers.mockResolvedValue({ root: MATE, workers: [worker('m1', { title: 'Release notes' })] })
+    crewWorkerRecap.mockResolvedValue(RECAP)
+    mount()
+    const toggle = await screen.findByTestId('mate-session-toggle')
+    fireEvent.click(toggle)
+    const recap = await screen.findByTestId('mate-recap')
+    // The recap sits under the toggle, which fills on hover: a fill or box of
+    // its own would make the two read as one block, so it paints neither, and a
+    // left rule marks it as this row's recap instead.
+    expect(toggle.className.split(/\s+/).some(c => c.startsWith('hover:bg-'))).toBe(true)
+    const recapClasses = recap.className.split(/\s+/)
+    expect(recapClasses.filter(c => /^(bg-|rounded)/.test(c))).toEqual([])
+    expect(recapClasses).toContain('border-l-2')
+    // And a top gap, so the hovered header's edge never touches the text.
+    expect(screen.getByRole('region', { name: 'Release notes' }).className.split(/\s+/)).toContain('pt-2')
+  })
 })
 
 describe('MateSessionsList polling', () => {

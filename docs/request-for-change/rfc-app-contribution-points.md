@@ -108,7 +108,8 @@ network as the user. A frame does not make that app safe; it makes sure the
 ### 2.2 The frame
 
 **Shipped in #26479** (`website/src/linkPreview/linkPreviewFrames.ts`,
-`src/kiro_crew/apps/link_preview_frame.py`):
+`src/kiro_crew/apps/link_preview_frame.py`, renamed to
+`src/kiro_crew/apps/app_frame.py` by #26875):
 
 - **Element.** `sandbox="allow-scripts"` and nothing else, so the origin is
   opaque; `credentialless`, `referrerpolicy="no-referrer"`, and an empty `allow`
@@ -634,6 +635,11 @@ MCP gateway, so tool discovery, approval and audit stay in the core.
   allowed it.
 
 A separate RFC will specify this section in full before any of it is built.
+For the owner grant of third-party agent tools, that RFC is
+[rfc-app-agent-tools-third-party-grant.md](rfc-app-agent-tools-third-party-grant.md)
+(`accepted`). It specifies only the owner grant part. The `outputSchema`
+validation, the `effect` label and the schema drift rule of this section still
+need an RFC before they are built.
 
 ## 8. Roadmap
 

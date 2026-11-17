@@ -25,6 +25,7 @@ from meetings_helpers import (  # noqa: F401
     root_fixture,
 )
 from meetings_routes_helpers import BASE
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -76,8 +77,9 @@ class TestTaskRoutes:
     async def test_agent_written_tasks_are_normalized_and_redacted(self, app, root: Path):
         """``tasks.json`` is written by an LLM agent, so the file's shape is
         untrusted even though the app owns the path."""
+        secret = github_classic(seed=47)
         hostile: list[Any] = [
-            {"description": "rotate AKIAIOSFODNN7EXAMPLE", "priority": "critical"},
+            {"description": f"rotate {secret}", "priority": "critical"},
             {"text": "legacy field name"},
             "not a dict",
             {"assignee": "no description"},
@@ -86,7 +88,7 @@ class TestTaskRoutes:
         async with client_for(app) as client:
             tasks = (await (await client.get(f"{BASE}/meetings/standup/tasks")).json())["tasks"]
         assert len(tasks) == 2
-        assert "AKIAIOSFODNN7EXAMPLE" not in tasks[0]["description"]
+        assert secret not in tasks[0]["description"]
         assert tasks[0]["priority"] == k.DEFAULT_TASK_PRIORITY
         assert tasks[1]["description"] == "legacy field name"
 

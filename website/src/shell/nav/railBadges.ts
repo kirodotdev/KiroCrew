@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import { cronJobsQuery } from '../../api/cronJobsQuery'
 import { appNotificationBadges, mergeAppBadges } from '../../appNotificationBadges'
 import { appRunStates, nextSuccessExpiryMs } from '../../appRunState'
+import { useMcpShareRefusedCount } from '../../pages/overview/mcpShareRefusedQuery'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
 // needs `registryQueryFn` (its own fetch boundary — a badge that only lights
 // after a store-page visit does not do its job), and importing it pulls the
@@ -53,9 +54,18 @@ export function useRailBadges(approvalCount: number) {
   useEffect(() => {
     setAppBadges(prev => prev.projects === approvalCount ? prev : { ...prev, projects: approvalCount })
   }, [approvalCount])
+  // Servers set to share that wait for an approval, on the Customize row: MCP
+  // Servers, where they are approved, is a Customize tab (the tab carries the
+  // same count). Same channel as the Projects count above (the `capabilities`
+  // surface declares no slotMode/unreadSelector), so the wait also counts in
+  // the tab title's attention sum, once.
+  const mcpShareRefusedCount = useMcpShareRefusedCount()
+  useEffect(() => {
+    setAppBadges(prev => prev.capabilities === mcpShareRefusedCount ? prev : { ...prev, capabilities: mcpShareRefusedCount })
+  }, [mcpShareRefusedCount])
 
-  // Pending app-update count for the sidebar Discover badge — the SAME count
-  // the Discover Updates sub-tab shows, via the shared `countUpdatables`
+  // Pending app-update count for the sidebar Discover badge — the enabled
+  // rows of the Discover Updates list, via the shared `countUpdatables`
   // derivation. The registry read is an ACTIVE query on the shared
   // `registryQueryFn` boundary (one normalize path, so either observer may
   // fetch and both see the same shape): a passive cache read only ever fires

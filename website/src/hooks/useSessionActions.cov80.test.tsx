@@ -462,17 +462,25 @@ describe('togglePin', () => {
     await waitFor(() => expect(slot()?.pinned).toBe(true))
   })
 describe('copyLink', () => {
-  it('copies the link with the slot title and the caller mode', () => {
+  it('copies the link with the slot title and the caller mode', async () => {
     slots({ title: 'zzq title' })
+    copySessionLink.mockResolvedValueOnce(true)
     const { result } = harness('zzq-mode')
-    act(() => result.current.copyLink(KEY))
+    await expect(result.current.copyLink(KEY)).resolves.toBe(true)
     expect(copySessionLink).toHaveBeenCalledWith(KEY, 'zzq title', undefined, 'zzq-mode')
   })
 
-  it('copies a link for an unknown slot with no title', () => {
+  it('copies a link for an unknown slot with no title', async () => {
+    copySessionLink.mockResolvedValueOnce(true)
     const { result } = harness()
-    act(() => result.current.copyLink('zzq-missing'))
+    await expect(result.current.copyLink('zzq-missing')).resolves.toBe(true)
     expect(copySessionLink).toHaveBeenCalledWith('zzq-missing', undefined, undefined, undefined)
+  })
+
+  it('resolves the refused copy as false, so the caller can say it failed', async () => {
+    copySessionLink.mockResolvedValueOnce(false)
+    const { result } = harness()
+    await expect(result.current.copyLink(KEY)).resolves.toBe(false)
   })
 })
 

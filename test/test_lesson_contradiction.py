@@ -26,6 +26,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.vector_memory import (
     _LESSON_NEGATIVE_SEP,
     LessonWriteOutcome,
@@ -35,6 +36,9 @@ from kiro_crew.vector_memory import (
     _lesson_slug,
     _split_stored,
 )
+
+#: A GitHub token: a bare 40-character run is no credential by itself.
+_TOKEN = github_classic(seed=61)
 
 #: These tests start background helper turns, which are skipped while the host's
 #: memory posture is critical (see ``ample_host_free_memory``).
@@ -381,10 +385,13 @@ class TestResolveAndSupersede:
             # replaced while the verdict ran is not tombstoned by key alone.
             seen_body = (await asyncio.to_thread(vs.get_lessons))[0]["value_json"]
             candidates = [{"key": "lesson.old", "rule": "Use X", "similarity": 0.6}]
-            with patch(
-                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-                new=AsyncMock(return_value=[("lesson.old", seen_body)]),
-            ), patch("kiro_crew.dashboard.handlers.cron._sel"):
+            with (
+                patch(
+                    "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                    new=AsyncMock(return_value=[("lesson.old", seen_body)]),
+                ),
+                patch("kiro_crew.dashboard.handlers.cron._sel"),
+            ):
                 await _resolve_and_supersede(
                     MagicMock(), "dashboard:ui", "Do NOT use X", candidates, vs
                 )
@@ -399,10 +406,13 @@ class TestResolveAndSupersede:
         state = MagicMock()
         vs = MagicMock()
         candidates = [{"key": "lesson.x", "rule": "r", "similarity": 0.5}]
-        with patch(
-            "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-            new=AsyncMock(side_effect=RuntimeError("boom")),
-        ), caplog.at_level(logging.WARNING, logger=_CRON_LOGGER):
+        with (
+            patch(
+                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            caplog.at_level(logging.WARNING, logger=_CRON_LOGGER),
+        ):
             # Must not raise.
             await _resolve_and_supersede(state, "dashboard:ui", "new", candidates, vs)
         vs.delete_semantic.assert_not_called()
@@ -432,11 +442,18 @@ class TestResolveAndSupersede:
 
             monkeypatch.setattr(vs, "delete_semantic", _delete)
             candidates = [{"key": "lesson.a", "rule": "r", "similarity": 0.6}]
-            with patch(
-                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-                new=AsyncMock(return_value=[("lesson.a", None), ("lesson.b", None)]),
-            ), patch("kiro_crew.dashboard.handlers.cron._sel"):
-                await _resolve_and_supersede(MagicMock(), "dashboard:ui", "new", candidates, vs)
+            with (
+                patch(
+                    "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                    new=AsyncMock(
+                        return_value=[("lesson.a", None), ("lesson.b", None)]
+                    ),
+                ),
+                patch("kiro_crew.dashboard.handlers.cron._sel"),
+            ):
+                await _resolve_and_supersede(
+                    MagicMock(), "dashboard:ui", "new", candidates, vs
+                )
             # The second key is still retired despite the first raising.
             assert await asyncio.to_thread(vs.get_semantic, "lesson.b") is None
             assert await asyncio.to_thread(vs.get_semantic, "lesson.a") is not None
@@ -473,11 +490,16 @@ class TestResolveAndSupersede:
                 "user_explicit",
             )
 
-            with patch(
-                "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
-                new=AsyncMock(return_value=[(key, seen_body)]),
-            ), patch("kiro_crew.dashboard.handlers.cron._sel"):
-                await _resolve_and_supersede(MagicMock(), "dashboard:ui", "new rule", [], vs)
+            with (
+                patch(
+                    "kiro_crew.dashboard.handlers.cron._resolve_contradictions",
+                    new=AsyncMock(return_value=[(key, seen_body)]),
+                ),
+                patch("kiro_crew.dashboard.handlers.cron._sel"),
+            ):
+                await _resolve_and_supersede(
+                    MagicMock(), "dashboard:ui", "new rule", [], vs
+                )
 
             survivor = await asyncio.to_thread(vs.get_semantic, key)
             assert survivor is not None, "the re-authored standing rule was tombstoned"
@@ -526,10 +548,12 @@ class TestApiLessonsCreateSchedulesSweep:
             else LessonWriteResult(LessonWriteOutcome.REFUSED, "injection_blocked")
         )
         sweep = AsyncMock()
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
-             patch.object(cron, "_is_restricted_session", return_value=False), \
-             patch.object(cron, "_sel"), \
-             patch.object(cron, "_resolve_and_supersede", new=sweep):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+            patch.object(cron, "_resolve_and_supersede", new=sweep),
+        ):
             resp = await cron.api_lessons_create(
                 self._request(state, submitted_applies=submitted_applies)
             )
@@ -677,10 +701,14 @@ class TestApiLessonsCreateSaturatedEmbedQueue:
             request.headers = {"X-Session-Key": "dashboard:ui"}
             attach_body(request, {"rule": self._RULE, "category": "knowledge"})
 
-            with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
-                 patch.object(cron, "_is_restricted_session", return_value=False), \
-                 patch.object(cron, "_sel"), \
-                 patch.object(cron, "_resolve_and_supersede", new=AsyncMock()):
+            with (
+                patch.object(
+                    cron, "_get_memory", return_value=MagicMock(vector_store=vs)
+                ),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+                patch.object(cron, "_resolve_and_supersede", new=AsyncMock()),
+            ):
                 resp = await cron.api_lessons_create(request)
 
             assert resp.status == 200
@@ -720,10 +748,14 @@ class TestApiLessonsCreateForwardsNegative:
     async def _post(self, state, vector_store):
         from kiro_crew.dashboard.handlers import cron
 
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vector_store)), \
-             patch.object(cron, "_is_restricted_session", return_value=False), \
-             patch.object(cron, "_sel"), \
-             patch.object(cron, "_resolve_and_supersede", new=AsyncMock()):
+        with (
+            patch.object(
+                cron, "_get_memory", return_value=MagicMock(vector_store=vector_store)
+            ),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+            patch.object(cron, "_resolve_and_supersede", new=AsyncMock()),
+        ):
             resp = await cron.api_lessons_create(self._request(state))
         for t in list(state._background_tasks):
             await t
@@ -796,9 +828,13 @@ class TestApiLessonsDeleteOffloadsRemove:
         body = {"rule": "pin the port"}
         attach_body(request, body)
 
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
-             patch.object(cron, "_is_restricted_session", return_value=False), \
-             patch.object(cron, "_sel"):
+        with (
+            patch.object(
+                cron, "_get_memory", return_value=MagicMock(vector_store=None)
+            ),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+        ):
             resp = await cron.api_lessons_delete(request)
 
         assert resp.status == 200
@@ -883,13 +919,19 @@ class TestSplitStored:
         return f"lesson.{_lesson_slug(rule)}"
 
     def test_bare_rule_same_case(self):
-        assert _split_stored("Pin the port", "pin the port", self._key("Pin the port")) == (
-            "Pin the port", False
+        assert _split_stored(
+            "Pin the port", "pin the port", self._key("Pin the port")
+        ) == (
+            "Pin the port",
+            False,
         )
 
     def test_bare_rule_case_variant(self):
-        assert _split_stored("PIN THE PORT", "pin the port", self._key("PIN THE PORT")) == (
-            "PIN THE PORT", False
+        assert _split_stored(
+            "PIN THE PORT", "pin the port", self._key("PIN THE PORT")
+        ) == (
+            "PIN THE PORT",
+            False,
         )
 
     def test_rule_with_clause(self):
@@ -944,8 +986,11 @@ class TestSplitStored:
 
     def test_an_ascii_case_variant_still_matches(self):
         """The trade only costs the ß case: ordinary case variation is unaffected."""
-        assert _split_stored("PIN THE PORT", "pin the port", self._key("PIN THE PORT")) == (
-            "PIN THE PORT", False
+        assert _split_stored(
+            "PIN THE PORT", "pin the port", self._key("PIN THE PORT")
+        ) == (
+            "PIN THE PORT",
+            False,
         )
 
     def test_case_folding_that_changes_length_is_not_sliced_by_normalised_length(self):
@@ -1306,8 +1351,10 @@ class TestApiLessonsSanitizesStoredFields:
         # The route sizes the body from the store's count; a MagicMock here would
         # not be a number.
         vs.count_lessons.return_value = len(rows)
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
-             patch.object(cron, "_blocks_reads_session", return_value=False):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)),
+            patch.object(cron, "_blocks_reads_session", return_value=False),
+        ):
             resp = await cron.api_lessons(self._request(state))
         assert resp.status == 200
         return json.loads(resp.text)["lessons"]
@@ -1332,7 +1379,7 @@ class TestApiLessonsSanitizesStoredFields:
                 "key": "lesson.y",
                 "value_json": json.dumps(
                     {
-                        "rule": "use key AKIAIOSFODNN7EXAMPLE for the bucket",
+                        "rule": f"use key {_TOKEN} for the bucket",
                         "category": "tool",
                         "negative": None,
                     }
@@ -1341,7 +1388,7 @@ class TestApiLessonsSanitizesStoredFields:
             }
         ]
         lessons = await self._get(rows)
-        assert "AKIAIOSFODNN7EXAMPLE" not in lessons[0]["rule"]
+        assert _TOKEN not in lessons[0]["rule"]
         assert lessons[0]["category"] == "tool"
 
     async def test_credential_bearing_category_is_redacted(self):
@@ -1353,7 +1400,7 @@ class TestApiLessonsSanitizesStoredFields:
                 "value_json": json.dumps(
                     {
                         "rule": "a rule",
-                        "category": "token AKIAIOSFODNN7EXAMPLE",
+                        "category": f"token {_TOKEN}",
                         "negative": None,
                     }
                 ),
@@ -1361,7 +1408,7 @@ class TestApiLessonsSanitizesStoredFields:
             }
         ]
         lessons = await self._get(rows)
-        assert "AKIAIOSFODNN7EXAMPLE" not in lessons[0]["category"]
+        assert _TOKEN not in lessons[0]["category"]
 
     async def test_non_string_jsonl_rule_does_not_crash(self):
         """The JSONL fallback branch: ``load_all`` builds Lesson rows without
@@ -1376,9 +1423,13 @@ class TestApiLessonsSanitizesStoredFields:
         bad.category = "knowledge"
         bad.ts = "t"
         state.lessons.load_all.return_value = [bad]
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
-             patch.object(cron, "_get_active_workspace", return_value="default"), \
-             patch.object(cron, "_blocks_reads_session", return_value=False):
+        with (
+            patch.object(
+                cron, "_get_memory", return_value=MagicMock(vector_store=None)
+            ),
+            patch.object(cron, "_get_active_workspace", return_value="default"),
+            patch.object(cron, "_blocks_reads_session", return_value=False),
+        ):
             resp = await cron.api_lessons(self._request(state))
         assert resp.status == 200
         lessons = json.loads(resp.text)["lessons"]
@@ -1435,8 +1486,10 @@ class TestApiLessonsReturnsTheNewest:
 
         state = MagicMock()
         vs = self._vector_store(rows)
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
-             patch.object(cron, "_blocks_reads_session", return_value=False):
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)),
+            patch.object(cron, "_blocks_reads_session", return_value=False),
+        ):
             resp = await cron.api_lessons(self._request(state))
         assert resp.status == 200
         return json.loads(resp.text)["lessons"], vs
@@ -1451,9 +1504,13 @@ class TestApiLessonsReturnsTheNewest:
             SimpleNamespace(rule=r, category="tool", ts=f"t{i}", negative=None, repo_scope=None)
             for i, r in enumerate(rules)
         ]
-        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
-             patch.object(cron, "_get_active_workspace", return_value="default"), \
-             patch.object(cron, "_blocks_reads_session", return_value=False):
+        with (
+            patch.object(
+                cron, "_get_memory", return_value=MagicMock(vector_store=None)
+            ),
+            patch.object(cron, "_get_active_workspace", return_value="default"),
+            patch.object(cron, "_blocks_reads_session", return_value=False),
+        ):
             resp = await cron.api_lessons(self._request(state))
         assert resp.status == 200
         return json.loads(resp.text)["lessons"]

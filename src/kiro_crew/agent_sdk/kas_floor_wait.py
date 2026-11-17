@@ -11,12 +11,22 @@ Each async spawn path awaits :func:`await_kas_floor_verdict` for its role before
 calls the provider factory. The factory reads whatever the verdict decided.
 
 An explicit KAS choice waits only for the declaration read, never for the probe.
-The wait is bounded by the probe's own timeout, counted from when the gate was
-armed, so a hung check costs at most one probe's worth of delay in total. After
+The wait is bounded by the help probe's own timeout, counted from when the gate
+was armed, so a hung check costs at most one probe's worth of delay in total. After
 the deadline, or when the spawn's role is not armed, the spawn goes ahead at once.
+A stored Kiro CLI pick's floor also starts kiro-cli's v3 engine once per kiro-cli
+install (``kas_engine_start_verdict``, capped longer than this wait). When that
+start outlasts the wait, the pick's first sessions start on the v2 Kiro CLI launch
+as configured, and the reload the verdict forces moves later ones onto KAS.
 
 A caller that builds its provider on its own thread and event loop calls
 :func:`wait_kas_floor_verdict_blocking` instead, off the gateway loop.
+
+The warm pool's other kiro-cli gate lives here too, so the pool reaches the ACP
+layer through this boundary: :func:`kas_extract_held` holds a KAS relay pool while
+kiro-cli's unpacked engine is recorded broken (:mod:`kiro_crew.acp.kas_extract_repair`),
+and :func:`warm_pool_start_held` adds the hold a signed-out start records
+(:mod:`kiro_crew.acp.kiro_signin_hold`).
 """
 
 from __future__ import annotations
@@ -123,3 +133,42 @@ def wait_kas_floor_verdict_blocking() -> None:
         waiter.result(timeout=KAS_FLOOR_WAIT_SECS)
     except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
         waiter.cancel()
+
+
+async def kas_extract_held(provider: object) -> bool:
+    """Whether the warm pool should not start *provider* on a recorded broken KAS extract.
+
+    No filesystem call unless one was recorded (``kas_extract_repair.warm_pool_held``).
+    """
+    from kiro_crew.acp.kas_extract_repair import warm_pool_held
+
+    return await warm_pool_held(provider)
+
+
+async def warm_pool_start_held(provider: object) -> bool:
+    """Whether the warm pool should not start *provider* now, for any recorded cause.
+
+    The causes are a broken KAS extract (:func:`kas_extract_held`) and a kiro-cli
+    sign-in that failed a start (:mod:`kiro_crew.acp.kiro_signin_hold`).
+    """
+    from kiro_crew.acp import kiro_signin_hold
+
+    backend = _pool_backend(provider)
+    held = backend is not None and kiro_signin_hold.held(backend)
+    return held or await kas_extract_held(provider)
+
+
+def _pool_backend(provider: object) -> str | None:
+    """The harness id *provider* starts, or None when it names none."""
+    backend = getattr(getattr(provider, "_client", None), "backend", None)
+    return backend if isinstance(backend, str) else None
+
+
+def note_warm_pool_start_failed(exc: BaseException, provider: object) -> None:
+    """Record a pool start failure that every retry would repeat until sign-in returns."""
+    from kiro_crew.acp import kiro_signin_hold
+    from kiro_crew.acp.transport_errors import AcpAuthRequired
+
+    backend = _pool_backend(provider)
+    if isinstance(exc, AcpAuthRequired) and backend is not None:
+        kiro_signin_hold.note_signed_out(backend)

@@ -35,6 +35,10 @@ from mcp_gateway_backend_coverage_helpers import _line, _make_backend, _settle
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import backend as backend_mod
 from kiro_crew.mcp_gateway.backend import _log_safe_identifier, _tool_call_error_text
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A synthetic GitHub token the redactor removes; a bare 40-character run stays visible.
+_AWS_SECRET = github_classic(seed=147)
 
 
 class TestToolCallFailureLogging:
@@ -96,11 +100,9 @@ class TestToolCallFailureLogging:
     def test_credential_in_error_is_redacted(self) -> None:
         # A secret in the untrusted server error must not survive into the
         # breadcrumb (credentials and exfil URLs are redacted before logging).
-        text = _tool_call_error_text(
-            {"error": {"message": "auth failed with key AKIAIOSFODNN7EXAMPLE"}}
-        )
+        text = _tool_call_error_text({"error": {"message": "auth failed with key " + _AWS_SECRET}})
         assert text is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert _AWS_SECRET not in text
 
     @pytest.mark.asyncio
     async def test_iserror_result_scored_not_ok_and_warned(
@@ -308,8 +310,8 @@ class TestToolCallFailureLogging:
         and capped (a long name cannot push structured fields off the line);
         control characters are collapsed."""
         # Credential-shaped identifier is redacted.
-        redacted = _log_safe_identifier("tool-AKIAIOSFODNN7EXAMPLE")
-        assert "AKIAIOSFODNN7EXAMPLE" not in redacted
+        redacted = _log_safe_identifier("tool-" + _AWS_SECRET)
+        assert _AWS_SECRET not in redacted
         # Over-long identifier is capped with an ellipsis.
         capped = _log_safe_identifier("x" * 500)
         assert len(capped) <= backend_mod._MCP_IDENT_LOG_MAX

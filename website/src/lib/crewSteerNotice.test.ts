@@ -25,12 +25,12 @@ describe('crewSteerNotice', () => {
     expect(result.current).toBe('')
   })
 
-  it('a steer still owed to the ledger clears the note too', () => {
+  it('a failure frame that beats its own pending receipt keeps the note', () => {
     const { result } = renderHook(() => useCrewSteerNotice('w1'))
-    act(() => noteCrewSteerReceipt('w1', { ledger_error: 'boom' }))
-    expect(result.current).toBe('boom')
-    act(() => noteCrewSteerReceipt('w1', { ledger_pending: true }))
-    expect(result.current).toBe('')
+    // The WS failure frame for this send lands first, then its HTTP receipt.
+    act(() => noteCrewSteerReceipt('w1', { ledger_error: 'crew_log_off' }))
+    act(() => noteCrewSteerReceipt('w1', { ok: true, ledger_event: null, ledger_error: null, ledger_pending: true }))
+    expect(result.current).toBe('crew_log_off')
   })
 
   it('a plain send receipt, with neither field, leaves the note alone', () => {

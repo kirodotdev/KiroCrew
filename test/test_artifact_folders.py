@@ -271,6 +271,15 @@ class TestResolvePath:
         assert folders.resolve_path(long_seg[:100], create_missing=True) == first
         assert len(folders.list()) == 1
 
+    def test_mkdir_p_idempotent_when_the_cut_lands_on_a_space(
+        self, folders: ArtifactFolderStore
+    ) -> None:
+        # The 100-character cut ends on the space before "tail".
+        long_seg = "a" * 99 + " tail"
+        first = folders.resolve_path(long_seg, create_missing=True)
+        assert folders.resolve_path(long_seg, create_missing=True) == first
+        assert [f["name"] for f in folders.list()] == ["a" * 99]
+
     def test_breadcrumb(self, folders: ArtifactFolderStore) -> None:
         leaf = folders.resolve_path("X/Y", create_missing=True)
         assert folders.breadcrumb(leaf) == "X/Y"

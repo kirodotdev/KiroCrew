@@ -1059,7 +1059,7 @@ async def test_claim_revalidation_outage_retains_generation_and_slot_until_retry
         # While the claim is retained the row is in neither _queue nor _agents,
         # but it is still pending work: is_queued must report it so the serial
         # done-probe keeps the caller's guard rather than reading it as done
-        # (the gap GPT F1 named -- the outer drain-pass cleanup must not erase
+        # (the outer drain-pass cleanup must not erase
         # _dispatch_window_ids for a still-retained claim).
         assert waiting.id in mgr._dispatch_window_ids
         assert mgr.is_queued(waiting.id) is True

@@ -193,6 +193,9 @@ async def _stop_artifact_ingest(app: web.Application) -> None:
         get_default_store().set_change_listener(None)
     except Exception:
         logger.warning("artifact auto-ingest: listener detach failed", exc_info=True)
+    # The start-time reconcile pass runs as its own task; it ends at its next
+    # artifact boundary once asked.
+    sync.stop()
 
 
 async def _apply_knowledge_config(app: web.Application, change: object) -> None:
@@ -410,6 +413,10 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/search-for-context", search_for_context)
     app.router.add_post("/api/knowledge/remote-search", remote_search)
 
+    # Ask the artifact reconcile to stop before the pools it extracts through
+    # shut down, so it starts no further artifact; aiohttp runs on_cleanup in
+    # registration order. It does not wait: exit has a 10 s graceful budget.
+    app.on_cleanup.append(_stop_artifact_ingest)
     # Pool lifecycle: lazy start on first request, shutdown on app exit
     app.on_cleanup.append(_shutdown_knowledge_pools)
 

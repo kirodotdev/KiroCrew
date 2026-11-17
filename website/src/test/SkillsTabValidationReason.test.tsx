@@ -161,12 +161,40 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         screen.getByText('Validation findings'),
       ).toBeInTheDocument(),
     )
-    expect(screen.getByText(/Fix the scripts, then approve/)).toBeInTheDocument()
+    expect(screen.getByText(/Resolve the validation findings, then approve/)).toBeInTheDocument()
     // The findings themselves are inside the <details> body.
     expect(screen.getByText("dynamic exec/import: eval()")).toBeInTheDocument()
     // Approve stays clickable — the server is the authority.
     const approve = screen.getByText('Approve').closest('button')
     await waitFor(() => expect(approve).not.toBeDisabled())
+  })
+
+  it('does not blame scripts when only the candidate layout fails (issue #33869)', async () => {
+    // A prose-only candidate refused for an extra top-level folder: the server
+    // keys that finding to the candidate, and there is no script to fix.
+    const layoutReport = { '<candidate>': ["invalid layout: unexpected candidate entry 'references'"] }
+    mockApi.skillsPending.mockResolvedValue({
+      pending: [{ ...FLAGGED_ROW, has_scripts: false, script_validation: { ok: false, report: layoutReport } }],
+    })
+    mockApi.skillPendingDetail.mockResolvedValue({
+      ...FLAGGED_DETAIL,
+      scripts: [],
+      script_validation: { ok: false, report: layoutReport },
+    })
+    renderWithQuery()
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    expect(
+      screen.getByText('Resolve the validation findings, then approve — approval will be refused until then.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Fix the scripts/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }))
+    // The finding that names the offending entry is what the hint points at.
+    await waitFor(
+      () => expect(screen.getByText("invalid layout: unexpected candidate entry 'references'")).toBeInTheDocument(),
+      { timeout: CHAINED_QUERY_TIMEOUT_MS },
+    )
   })
 
   it('renders the refusal reason and findings after a failed approve', async () => {

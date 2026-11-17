@@ -105,6 +105,7 @@ class _Harness:
         jobs: str | None = None,
         group: str | None = None,
         cancel_fails: bool = False,
+        rate_limit_reset: str | None = None,
     ) -> None:
         self._dir = tmp_path
         # Each line of this file is one poll's `gh api ...` stdout, consumed in
@@ -128,6 +129,11 @@ class _Harness:
             group_file.write_text(group, encoding="utf-8")
         if cancel_fails:
             cancel_fail.write_text("", encoding="utf-8")
+        # `gh api rate_limit --jq ...` is answered with the value its jq would
+        # print: the spent REST bucket's reset epoch (absent = the read fails).
+        rate_limit_file = tmp_path / "gh-rate-limit"
+        if rate_limit_reset is not None:
+            rate_limit_file.write_text(rate_limit_reset, encoding="utf-8")
 
         # A `gh` that pops the next scripted response for a poll's listing. The
         # last line is reused once the list is exhausted, so a poll past the
@@ -155,6 +161,7 @@ class _Harness:
                     exit 0
                     ;;
                   *"/jobs"*) fixed {jobs_file} jobs ;;
+                  *"rate_limit"*) fixed {rate_limit_file} rate_limit ;;
                   *"head_sha="*) ;;
                   *"fast-gate.yml/runs"*) fixed {group_file} listing ;;
                   *) echo "gh: unexpected call" >&2; exit 1 ;;
@@ -166,6 +173,10 @@ class _Harness:
                 if [ "$next" -lt "$total" ]; then echo "$next" > {self._cursor}; fi
                 if [ "$line" = "__FAIL__" ]; then
                   echo "gh: simulated API failure" >&2
+                  exit 1
+                fi
+                if [ "$line" = "__RATE_LIMIT__" ]; then
+                  echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2
                   exit 1
                 fi
                 printf '%s' "$line"
@@ -199,6 +210,7 @@ class _Harness:
         *,
         appear_budget: int = 180,
         total_budget: int = 720,
+        stall_budget: int = 720,
         event: str = "pull_request",
         branch: str = _BRANCH,
         script: Path = _SCRIPT,
@@ -217,6 +229,7 @@ class _Harness:
             RUN_ID=_RUN_ID,
             APPEAR_BUDGET=str(appear_budget),
             TOTAL_BUDGET=str(total_budget),
+            STALL_BUDGET=str(stall_budget),
             AWAIT_FG_NOW=str(self._now),
             AWAIT_FG_SLEEP=":",
             TMPDIR=str(self._dir),
@@ -333,6 +346,52 @@ class TestTheBarrierPollClassifiesEveryOutcome:
         assert proc.returncode == 0, proc.stdout
         assert "Fast Gate passed" in proc.stdout
         assert "No Fast Gate run found" not in proc.stdout
+
+    def _listing_reads(self, h: _Harness) -> int:
+        return sum("head_sha=" in c for c in h.calls)
+
+    def test_a_spent_rate_limit_waits_once_for_a_reset_inside_the_budget(
+        self, tmp_path: Path
+    ) -> None:
+        # A spent primary limit cannot clear in 10s. With the reset inside the
+        # budget, the barrier waits for it once and reads again, instead of
+        # retrying every 10s until TOTAL_BUDGET and failing a green gate.
+        h = _Harness(
+            tmp_path,
+            ["__RATE_LIMIT__", _page(_run(16, "completed", "success"))],
+            tick=30,
+            rate_limit_reset="300",
+        )
+        proc = h.run(appear_budget=180, total_budget=720)
+        assert proc.returncode == 0, proc.stdout
+        assert "waiting" in proc.stdout and "for the reset" in proc.stdout
+        assert "Fast Gate passed" in proc.stdout
+        assert self._listing_reads(h) == 2
+        assert h.writes() == []
+
+    def test_a_spent_rate_limit_past_the_budget_fails_at_once_naming_the_reset(
+        self, tmp_path: Path
+    ) -> None:
+        h = _Harness(tmp_path, ["__RATE_LIMIT__"], tick=30, rate_limit_reset="100000")
+        proc = h.run(appear_budget=180, total_budget=720)
+        assert proc.returncode == 1, proc.stdout
+        assert "rate limit is spent and resets in" in proc.stdout
+        assert "re-run this job after the reset" in proc.stdout
+        assert self._listing_reads(h) == 1
+
+    def test_a_rate_limit_with_no_spent_bucket_keeps_the_short_retry(self, tmp_path: Path) -> None:
+        # A secondary limit leaves every bucket with quota, so the jq prints
+        # nothing: no reset to wait for, and the 10s retry is kept.
+        h = _Harness(
+            tmp_path,
+            ["__RATE_LIMIT__", "__RATE_LIMIT__", _page(_run(17, "completed", "success"))],
+            tick=10,
+            rate_limit_reset="",
+        )
+        proc = h.run(appear_budget=180, total_budget=720)
+        assert proc.returncode == 0, proc.stdout
+        assert "for the reset" not in proc.stdout
+        assert self._listing_reads(h) == 3
 
     def test_a_pending_fork_approval_keeps_polling_until_the_total_budget(
         self, tmp_path: Path
@@ -885,15 +944,116 @@ class TestTheCancelJobCancelsOnlyAProvenSupersession:
 @needs_bash
 class TestTheProductionDefaultsAreIntact:
     def test_the_budgets_default_to_the_committed_values(self) -> None:
-        # The seams must not have changed the production numbers: 180 / 720 are
-        # what the inline body carried, and test_fast_gate_barrier pins them in
-        # the workflow's env-free call, so re-pin them at the script's source.
+        # The seams must not change the production numbers a real runner uses:
+        # the workflow calls the script with none of them set, and
+        # test_fast_gate_barrier sizes the job's timeout from TOTAL_BUDGET.
         text = _SCRIPT.read_text(encoding="utf-8")
         assert 'APPEAR_BUDGET="${APPEAR_BUDGET:-180}"' in text
-        assert 'TOTAL_BUDGET="${TOTAL_BUDGET:-720}"' in text
+        assert 'STALL_BUDGET="${STALL_BUDGET:-720}"' in text
+        assert 'TOTAL_BUDGET="${TOTAL_BUDGET:-2100}"' in text
         assert "POLL_INTERVAL=30\n" in text
+        assert "READ_RETRY_CAP=60\n" in text
 
     def test_the_clock_and_sleep_default_to_the_real_tools(self) -> None:
         text = _SCRIPT.read_text(encoding="utf-8")
         assert "${AWAIT_FG_NOW:-date +%s}" in text
         assert "${AWAIT_FG_SLEEP:-sleep}" in text
+
+
+@needs_bash
+class TestTheTwoBudgets:
+    """A wait the barrier can see moving gets TOTAL_BUDGET; a wait with no news gets
+    STALL_BUDGET. Either one running out is reported as CI infrastructure."""
+
+    def _listing_reads(self, h: _Harness) -> int:
+        return sum("head_sha=" in c for c in h.calls)
+
+    def test_a_gate_still_pending_past_the_stall_budget_is_waited_out(self, tmp_path: Path) -> None:
+        # A push's gate run sits `pending` behind the one before it in its
+        # concurrency group, here for 900s, then passes. Failing at the short
+        # budget would report this green commit red.
+        h = _Harness(
+            tmp_path,
+            [_page(_run(20, "pending", None))] * 30 + [_page(_run(20, "completed", "success"))],
+            tick=30,
+        )
+        proc = h.run(stall_budget=720, total_budget=2100, event="push")
+        assert proc.returncode == 0, proc.stdout
+        assert "Fast Gate passed" in proc.stdout
+        assert "::error::" not in proc.stdout
+        assert self._listing_reads(h) == 31
+
+    def test_a_gate_that_never_finishes_fails_at_the_total_budget_as_infrastructure(
+        self, tmp_path: Path
+    ) -> None:
+        h = _Harness(tmp_path, [_page(_run(21, "queued", None))], tick=200)
+        proc = h.run(stall_budget=300, total_budget=1000)
+        assert proc.returncode == 1, proc.stdout
+        assert "CI infrastructure, not a test failure" in proc.stdout
+        assert "Fast Gate still 'queued' after 1000s" in proc.stdout
+
+    def test_a_fork_approval_still_ends_at_the_stall_budget(self, tmp_path: Path) -> None:
+        # Approval moves only when a person acts, so it does not get the long wait.
+        h = _Harness(tmp_path, [_page(_run(22, "completed", "action_required"))], tick=200)
+        proc = h.run(stall_budget=300, total_budget=2100)
+        assert proc.returncode == 1, proc.stdout
+        assert "awaiting maintainer approval" in proc.stdout
+        assert self._listing_reads(h) == 2
+
+    def test_a_rate_limit_reset_past_the_stall_budget_is_waited_out(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            ["__RATE_LIMIT__", _page(_run(23, "completed", "success"))],
+            tick=30,
+            rate_limit_reset="1500",
+        )
+        proc = h.run(stall_budget=720, total_budget=2100)
+        assert proc.returncode == 0, proc.stdout
+        assert "for the reset" in proc.stdout
+        assert "Fast Gate passed" in proc.stdout
+
+    def test_a_failed_read_after_a_long_reset_wait_is_retried(self, tmp_path: Path) -> None:
+        # The STALL budget counts from the last thing the barrier learned, here
+        # the end of the reset wait, not from the job's start.
+        h = _Harness(
+            tmp_path,
+            ["__RATE_LIMIT__", "__FAIL__", _page(_run(24, "completed", "success"))],
+            tick=30,
+            rate_limit_reset="1500",
+        )
+        proc = h.run(stall_budget=720, total_budget=2100)
+        assert proc.returncode == 0, proc.stdout
+        assert "listing unreadable" not in proc.stdout
+        assert self._listing_reads(h) == 3
+
+    def test_failed_reads_in_a_row_end_at_the_stall_budget(self, tmp_path: Path) -> None:
+        h = _Harness(tmp_path, ["__FAIL__"], tick=60)
+        proc = h.run(stall_budget=300, total_budget=2100)
+        assert proc.returncode == 1, proc.stdout
+        assert "CI infrastructure, not a test failure" in proc.stdout
+        assert "Fast Gate listing unreadable" in proc.stdout
+        assert self._listing_reads(h) < 10
+
+    def test_failed_reads_back_off_to_the_cap(self, tmp_path: Path) -> None:
+        rec, log = _sleep_recorder(tmp_path)
+        h = _Harness(
+            tmp_path,
+            ["__FAIL__"] * 6 + [_page(_run(25, "completed", "success"))],
+            tick=1,
+        )
+        proc = h.run(extra_env={"AWAIT_FG_SLEEP": str(rec)})
+        assert proc.returncode == 0, proc.stdout
+        assert log.read_text(encoding="utf-8").split() == ["10", "20", "40", "60", "60", "60"]
+
+    def test_a_lagging_rollup_is_released_at_the_stall_budget(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_run(26, "in_progress", None))],
+            tick=200,
+            jobs=_jobs(("completed", "success", _LONG_DONE)),
+        )
+        (tmp_path / "clock").write_text(str(_CLOCK_LATER), encoding="utf-8")
+        proc = h.run(stall_budget=300, total_budget=2100)
+        assert proc.returncode == 0, proc.stdout
+        assert "has not rolled them up into the run yet" in proc.stdout
+        assert self._listing_reads(h) == 2

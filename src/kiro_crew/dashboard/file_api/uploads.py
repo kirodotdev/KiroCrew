@@ -809,7 +809,11 @@ async def api_directory_upload(request: web.Request) -> web.Response:
             "invalid_directory", "invalid or forbidden directory", 400, resources=raw_dir
         )
 
-    reader = await request.multipart()
+    from kiro_crew.dashboard.handlers._shared import open_multipart
+
+    reader, not_multipart = await open_multipart(request)
+    if reader is None:
+        return not_multipart  # type: ignore[return-value]
     part = await reader.next()
     if part is None or not isinstance(part, BodyPartReader) or part.name != "file":
         return _denied("missing_required_fields", "file is required", 400)

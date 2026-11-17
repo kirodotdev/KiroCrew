@@ -54,6 +54,15 @@ def _names() -> set[str]:
     return {a.name for a in agent_discovery.list_agents()}
 
 
+def _configure_default_agent(name: str) -> None:
+    """Write ``agent.default_agent`` into this test's own data home config."""
+    from kiro_crew.config import config_path
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"agent": {"default_agent": name}}), encoding="utf-8")
+
+
 class TestThePredicate:
     def test_the_published_spec_is_internal_and_its_base_is_not(self, registry: Path) -> None:
         rows = {a.name: a for a in agent_discovery.list_agents()}
@@ -185,6 +194,43 @@ class TestTheModeRefusalExplanation:
         cause, remedy = srs.unavailable_mode_explanation("ops")
         assert cause == "its ~/.kiro/agents/ops.json is likely missing."
         assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
+
+    def test_a_missing_configured_default_names_the_setting_not_setup(self, registry: Path) -> None:
+        """Every plain session starts from ``agent.default_agent``. Setup writes only
+        Kiro Crew's own specs and never edits the setting, so telling the user to run
+        it leaves every plain session refused; the remedy is the setting."""
+        _configure_default_agent("default")
+        cause, remedy = srs.unavailable_mode_explanation("default")
+        shown = srs._home_relative(registry / "default.json")
+        assert cause == (
+            f"agent.default_agent names 'default', which has no spec at {shown}, "
+            "and setup writes only Kiro Crew's own agents."
+        )
+        assert remedy == (
+            "Run `kirocrew config set agent.default_agent kirocrew`, or pick another "
+            "default in the chat agent picker, then start a new session."
+        )
+        assert "kirocrew setup" not in cause + remedy
+
+    def test_a_missing_managed_default_keeps_the_setup_remedy(self, registry: Path) -> None:
+        """``kirocrew.json`` is a spec setup does write, so setup stays the answer."""
+        _configure_default_agent("kirocrew")
+        cause, remedy = srs.unavailable_mode_explanation("kirocrew")
+        assert cause == "its ~/.kiro/agents/kirocrew.json is likely missing."
+        assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
+
+    def test_an_agent_other_than_the_configured_default_keeps_its_answer(
+        self, registry: Path
+    ) -> None:
+        _configure_default_agent("default")
+        _, remedy = srs.unavailable_mode_explanation("ops")
+        assert remedy == "Run `kirocrew setup --agent-only` to materialize the agent config."
+        (registry / "default.json").write_text(json.dumps({"name": "default"}), encoding="utf-8")
+        # A default whose file IS present was refused by kiro-cli's parser: the
+        # setting is not what is wrong, so it gets the parse check.
+        cause, remedy = srs.unavailable_mode_explanation("default")
+        assert "agent.default_agent" not in cause + remedy
+        assert "kiro-cli agent validate" in remedy
 
     def test_a_published_spec_is_explained_and_names_its_base(self, registry: Path) -> None:
         cause, remedy = srs.unavailable_mode_explanation("scout--readonly")

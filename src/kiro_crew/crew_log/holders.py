@@ -1084,7 +1084,8 @@ def _object(blob: bytes) -> dict[str, Any] | None:
     """
     try:
         parsed = json.loads(blob.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError: deep nesting is damage too, and it is not a ValueError.
         return None
     return parsed if isinstance(parsed, dict) else None
 

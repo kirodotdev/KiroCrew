@@ -371,9 +371,11 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
 /**
  * Structural provenance stamped on an `inject` row's `meta` by the gateway.
  *
- * Kept in sync with the `injectKind` values written at the append sites in
- * `src/kiro_crew/dashboard/chat_runner.py`, `dashboard/handlers/messaging.py`
- * and `slack/gateway.py`.
+ * Kept in sync with the `injectKind` values the gateway writes: the queue
+ * drain's `_inject_meta` in `src/kiro_crew/dashboard/chat_turn/queue_drain.py`,
+ * `_run_pending_synthesis` in `dashboard/chat_turn/queue_cycle.py`,
+ * `enqueue_or_run_prompt` in `dashboard/state_parts/chat_slot.py`, and the row
+ * builders in `dashboard/chat_utils_injected_rows.py` and `dashboard/session_deliver.py`.
  *
  * Why this exists rather than more prefix matching: `meta` is persisted and
  * restored, whereas an `inject` row's `cls` is NOT (chat_persistence keeps `cls`
@@ -381,7 +383,15 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
  * emit time — vanishes after a flush + rehydrate. Anything keyed on its absence
  * therefore mis-renders every restored row.
  */
-export type InjectKind = 'cron' | 'mcp_app' | 'recovery' | 'synthesis' | 'user_replay' | 'automation_notice' | 'workflow'
+export type InjectKind =
+  | 'cron'
+  | 'mcp_app'
+  | 'recovery'
+  | 'synthesis'
+  | 'user_replay'
+  | 'automation_notice'
+  | 'workflow'
+  | 'heartbeat'
 
 /**
  * Whether each gateway-stamped inject kind OPENS a turn of its own, or
@@ -422,6 +432,9 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   // The gateway's follow-up after a workflow result lands, asking the agent to
   // answer the request that started the run: a dispatch of its own.
   workflow: true,
+  // A heartbeat task's prompt delivered to this chat
+  // (`deliver:prompt:dashboard:<slot>`): a dispatch of its own.
+  heartbeat: true,
 }
 
 /**
@@ -499,7 +512,7 @@ export function resolveInjectCard(m: { content: string; meta?: Record<string, un
   // the Sessions page (transcriptRenderers `automation_notice_inject`) because
   // the refusal's `notice` bar already shows it, and hidden in the crewmate DM
   // by MACHINERY_ROLES — so it never needs a card.
-  if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow') return null
+  if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow' && kind !== 'heartbeat') return null
 
   return {
     kind: 'generic',

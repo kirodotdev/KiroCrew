@@ -1532,10 +1532,10 @@ def verdict(checks: dict) -> tuple[str, str, dict]:
         if prose.get("closure_requested"):
             # NOT CLOSE. A prose reading is the weakest evidence this script
             # collects and closing is the strongest thing it could do with it,
-            # aimed at work somebody else may still be doing. Nine false-CLOSE
-            # paths in one review made the case that the pairing was the defect
-            # rather than the patterns, so the reading survives and the response
-            # is withheld: the item leaves the dispatch queue, nothing is
+            # aimed at work somebody else may still be doing. The pairing, not
+            # any one pattern, is what produces false closes, so the reading
+            # survives and the response is withheld: the item leaves the
+            # dispatch queue, nothing is
             # written, and a human or the conductor decides. Rule 1 above still
             # closes, on a merge commit that is an ancestor of the base.
             return (

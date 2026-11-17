@@ -28,6 +28,7 @@ from kiro_crew.mcp_discovery import (
     MCP_REDACTED_HEADER_VALUE,
     McpServerInfo,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 def _request(state) -> object:
@@ -563,14 +564,14 @@ class TestMcpHeaderRedaction:
         """The generic scanners run on every error, not only configured values.
 
         A remote server can reflect a credential the config never mentions
-        (an access-key id, a connection string); the site-wide scrubbers must
+        (an AWS secret key, a connection string); the site-wide scrubbers must
         catch it before serialization.
         """
         import kiro_crew.mcp_discovery as disc
 
-        fake_key = "AKIA" + "IOSFODNN7EXAMPLE"
+        fake_key = SAMPLE_AWS_SECRET
         redacted = disc.redact_mcp_error(
-            f"remote rejected key {fake_key} during handshake",
+            f"remote rejected aws_secret_access_key={fake_key} during handshake",
             {"Authorization": "Bearer unrelated-configured-value"},
         )
 

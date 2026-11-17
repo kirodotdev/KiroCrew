@@ -153,6 +153,60 @@ describe('useIsMobile', () => {
     })
   })
 
+  // A display:none iframe (an inactive remote pane) reports a 0x0 viewport and
+  // matches the narrow query. Chromium measured: 0 wide and narrow while hidden,
+  // then `resize` plus the query's `change` once shown.
+  describe('a frame with no viewport', () => {
+    const real = { w: window.innerWidth, h: window.innerHeight }
+    const setViewport = (w: number, h: number) => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: w })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: h })
+    }
+    let transitions: number
+    beforeEach(() => {
+      transitions = 0
+      ;(document as unknown as { startViewTransition: unknown }).startViewTransition = vi.fn((update: () => void) => {
+        transitions++
+        update()
+        return { finished: Promise.resolve() }
+      })
+    })
+    afterEach(() => {
+      setViewport(real.w, real.h)
+      delete (document as unknown as { startViewTransition?: unknown }).startViewTransition
+    })
+
+    it('keeps the desktop form while hidden, and shows without a morph', () => {
+      currentMatches = false
+      setViewport(1400, 900)
+      const { result } = renderHook(() => useIsMobile())
+      act(() => { setViewport(0, 0); currentMatches = true; listener?.(); window.dispatchEvent(new Event('resize')) })
+      expect(result.current).toBe(false)
+      act(() => { setViewport(1400, 900); currentMatches = false; window.dispatchEvent(new Event('resize')); listener?.() })
+      expect(result.current).toBe(false)
+      expect(transitions).toBe(0)
+    })
+
+    it('starts on desktop when first loaded hidden, and swaps instantly when shown narrow', () => {
+      setViewport(0, 0)
+      currentMatches = true
+      const { result } = renderHook(() => useIsMobile())
+      expect(result.current).toBe(false)
+      act(() => { setViewport(600, 900); window.dispatchEvent(new Event('resize')); listener?.() })
+      expect(result.current).toBe(true)
+      expect(transitions).toBe(0)
+    })
+
+    it('still morphs a real resize across the breakpoint once shown', () => {
+      setViewport(1400, 900)
+      currentMatches = false
+      const { result } = renderHook(() => useIsMobile())
+      act(() => { setViewport(600, 900); currentMatches = true; window.dispatchEvent(new Event('resize')) })
+      expect(result.current).toBe(true)
+      expect(transitions).toBe(1)
+    })
+  })
+
   it('negative control: an unsubscribed event does not refresh the value', () => {
     // `focus` is unsubscribed, so this proves the two passes above come from the
     // subscription rather than an incidental renderHook re-render.

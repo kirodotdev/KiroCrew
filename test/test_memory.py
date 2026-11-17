@@ -6,6 +6,7 @@ import ast
 import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from source_corpus import iter_source_texts
@@ -263,6 +264,17 @@ class TestRecentHistoryCache:
         count = store.rebuild_index()
         # preferences + projects + at least 1 history file
         assert count >= 3
+
+    def test_rebuild_index_reports_zero_when_the_index_cannot_open(self, tmp_path):
+        """A failed rebuild must not report every source file as indexed."""
+        unopenable = tmp_path / "index-is-a-directory"
+        unopenable.mkdir()
+        store = MemoryStore(workspace=tmp_path, index_db=unopenable)
+        store.init()
+        store.append_history("entry one")
+        count = store.rebuild_index()
+        assert store.index_row_count() is None
+        assert count == 0, f"rebuild_index reported {count} files indexed, none were"
 
     def test_write_projects_no_double_header(self, tmp_path):
         """write_projects does not double-wrap the header."""
@@ -543,6 +555,87 @@ class TestNonUtf8Tolerance:
         assert "CLEAN_ENTRY" in out
         assert "proj" not in out  # the corrupt projects section is skipped
         assert "good line" not in out  # the corrupt preferences file is skipped
+
+
+def _index_titles(index: str) -> list[str]:
+    """The title of every ``- <label>: <title>`` slot, in index order."""
+    return [line.split(": ", 1)[1] for line in index.splitlines() if line.startswith("- ")]
+
+
+class TestActivityIndexHistoryStamps:
+    """History slots name entries, never the writer's day header or time stamp."""
+
+    # The real writer's %Z under an abbreviation, a mixed-case one ("ChST"), a
+    # numeric offset ("+14") and a half-hour zone.
+    @pytest.mark.parametrize(
+        "zone", ["UTC", "Pacific/Guam", "Pacific/Kiritimati", "America/St_Johns"]
+    )
+    def test_appended_entries_are_the_only_history_slots(self, tmp_path, local_tz, zone):
+        local_tz(zone)
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        for name in ("Alphaquartz", "Betaquartz", "Gammaquartz"):
+            store.append_history(f"{name} entry")
+        assert _index_titles(store.activity_index()) == [
+            "Gammaquartz entry",
+            "Betaquartz entry",
+            "Alphaquartz entry",
+        ]
+
+    # Stamp tails written under other configurations: an empty %Z and English
+    # Windows names, including the "UTC-11" style ones that do not end in "Time".
+    @pytest.mark.parametrize(
+        "zone_name",
+        ["", "Pacific Standard Time", "W. Europe Standard Time", "UTC-11", "UTC+13"],
+    )
+    def test_stamp_tails_are_not_slots_but_titled_headings_are(self, tmp_path, zone_name):
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        day = store._today_history_file()
+        day.write_text(
+            f"# {day.stem}\n\n#### 21:43 {zone_name}\nDeltaquartz entry\n"
+            "\n#### 10:00 deploy chat\nAgreed to review the checklist.\n",
+            encoding="utf-8",
+        )
+        assert _index_titles(store.activity_index()) == [
+            "Agreed to review the checklist.",
+            "#### 10:00 deploy chat",
+            "Deltaquartz entry",
+        ]
+
+    # Localized Windows zone names, which %Z prints from the host's time.tzname.
+    @pytest.mark.parametrize(
+        "host_zones",
+        [
+            ("Mitteleuropäische Zeit", "Mitteleuropäische Sommerzeit"),
+            ("RTZ 2 (зима)", "RTZ 2 (лето)"),
+            ("中国标准时间", "中国夏令时"),
+            ("東京 (標準時)", "東京 (夏時間)"),
+        ],
+        ids=["german", "russian", "chinese", "japanese"],
+    )
+    def test_host_zone_name_stamps_are_not_slots(self, tmp_path, monkeypatch, host_zones):
+        # Rebinds the recognizer module's own `time` name, so nothing else in the
+        # worker sees the fake zones.
+        monkeypatch.setattr(
+            "kiro_crew.memory_history_stamps.time", SimpleNamespace(tzname=host_zones)
+        )
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        day = store._today_history_file()
+        standard, daylight = host_zones
+        day.write_text(
+            f"# {day.stem}\n\n#### 09:15 {standard}\nEpsilonquartz entry\n"
+            f"\n#### 21:43 {daylight}\nZetaquartz entry\n"
+            "\n#### 10:00 deploy chat\nAgreed to review the checklist.\n",
+            encoding="utf-8",
+        )
+        assert _index_titles(store.activity_index()) == [
+            "Agreed to review the checklist.",
+            "#### 10:00 deploy chat",
+            "Zetaquartz entry",
+            "Epsilonquartz entry",
+        ]
 
 
 class TestUnreadableActivityTolerance:

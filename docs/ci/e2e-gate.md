@@ -21,7 +21,8 @@ must succeed before scenarios run, and the model backend remains the packaged fa
 executable.
 
 The real private-workflow MCP test runs separately in the
-`e2e-private-namespace` job on `ubuntu-latest`. That job enables unprivileged user
+`e2e-private-namespace` job on a hosted Linux runner (`kirocrew-linux-4-core` in
+this repository, `ubuntu-latest` in a fork). That job enables unprivileged user
 namespaces, requires `unshare --mount --map-root-user true` to succeed, and fails
 if either the precondition or the test fails.
 
@@ -528,8 +529,10 @@ so the file on disk still says `KiroCrew` while the artifact says otherwise.
 
 There is no `PATH` edit to assert. The `nsis` block in
 `website/electron/package.json` declares no PATH handling and
-`website/electron/build/installer.nsh` touches only shortcuts and the
-electron-updater cache, so a desktop install puts no `kirocrew` on `PATH`. The
+`website/electron/build/installer.nsh` touches only shortcuts, the
+electron-updater cache and installed files too deep for the previous
+uninstaller to move (`KiroClearUnmovableFiles`), so a desktop install puts no
+`kirocrew` on `PATH`. The
 bundled CLI is exercised at its packaged path
 (`resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd`) as its own new
 process instead, which is the path
@@ -547,6 +550,10 @@ installs it silently, and runs
 The script starts the just-installed bundled interpreter against an isolated data
 home and requires `/api/ready` within 50 seconds, so an artifact that installs
 but cannot boot fails at review time.
+It also plants an over-budget bytecode cache and an over-budget ordinary file in
+the installed tree and re-runs the installer over each: the cache must be deleted
+and the update go through, and the other file must stop the installer with exit
+code 2 before any file is moved.
 
 Its backend payload is a real python-build-standalone runtime carrying the wheel
 `build-wheel` produced (the job `needs` it, so the bundled bytes are the ones
@@ -843,7 +850,8 @@ any run made under it.
   `pytest` exits 0 on a fully skipped module, so the exit code cannot tell seven
   booted gateways from a module that was never collected. Raise the number when
   you add a test to that file.
-- **`shell: bash` on every leg**, so one command text serves all three; the
+- **bash on every leg** (`shell: bash` on macOS and Windows, the
+  `/usr/local/bin/ci-shell` bash wrapper on Ubuntu), so one command text serves all three; the
   Windows default is pwsh, where `tee` and `grep` are not these tools.
 
 `pr-readiness.yml` needs no entry: it resolves lanes by WORKFLOW FILE
@@ -1023,7 +1031,7 @@ session can reach, and the pod's `require_backend()` probes it by creating a tas
 
 ### The canary
 
-Copied from `ci.yml`'s macOS peer-identity step: run by path with `-v -n0`, tee
+Copied from `platform-tests.yml`'s macOS peer-identity step: run by path with `-v -n0`, tee
 to `pod-scenarios.log`, then `grep -qE '(^|[^0-9])55 passed'` and fail the step
 otherwise. 55 is six user-flow scenarios plus the 49 fixture-isolation checks in
 `test/e2e/scenarios/test_conftest.py`, which run in the same invocation. An exit

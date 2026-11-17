@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew.deploy import handlers
 from kiro_crew.deploy import profiles as profiles_mod
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +28,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class _FakeReq:
+class _FakeReq(dict):
     def __init__(self, body=None, name=""):
         self._body = body or {}
         self.match_info = {"name": name}
@@ -277,11 +278,17 @@ def test_capacity_check_before_create_side_effect(monkeypatch):
 def test_profile_create_error_redacted_in_response(monkeypatch):
     """Raw aws-CLI stderr from create_aws_profile must be redacted before it
     reaches the dashboard response (the SEL audit keeps the raw text)."""
-    fake_key = "AKIAIOSFODNN7EXAMPLE"
-    monkeypatch.setattr(handlers.profiles_mod, "create_aws_profile",
-                        lambda *a, **k: f"aws configure failed: key {fake_key} rejected")
-    resp = _run(handlers._handle_profiles_post(
-        _FakeReq({"name": "newprof", "region": "us-west-2", "create": True})))
+    fake_key = github_classic(seed=311)  # a bare 40-character run stays visible
+    monkeypatch.setattr(
+        handlers.profiles_mod,
+        "create_aws_profile",
+        lambda *a, **k: f"aws configure failed: key {fake_key} rejected",
+    )
+    resp = _run(
+        handlers._handle_profiles_post(
+            _FakeReq({"name": "newprof", "region": "us-west-2", "create": True})
+        )
+    )
     assert resp.status == 400
     assert fake_key not in resp.text
     assert "error" in resp.text
@@ -318,22 +325,27 @@ def test_locked_registry_concurrent_writes_survive():
 # --- profile redaction in GET response (item 1 R18) --------------------------
 
 def test_profiles_get_redacts_credentials_in_note(monkeypatch):
-    """A note containing a fake AKIA key is redacted in the GET /profiles response."""
+    """A note containing a fake AWS secret key is redacted in the GET /profiles response."""
     # GET also discovers CLI profiles via subprocess — mock it out (sandbox-free env).
     monkeypatch.setattr(profiles_mod, "discover_aws_profiles", lambda: [])
     # Register a profile with a credential-like value in the note field
-    fake_akia = "AKIAIOSFODNN7EXAMPLE"
-    profiles_mod.save_registry({
-        "version": 2,
-        "profiles": [
-            {**profiles_mod.make_entry("cred-test", "us-west-2"), "note": f"key: {fake_akia}"},
-        ],
-        "default": "cred-test",
-    })
+    fake_akia = github_classic(seed=312)  # a bare 40-character run stays visible
+    profiles_mod.save_registry(
+        {
+            "version": 2,
+            "profiles": [
+                {
+                    **profiles_mod.make_entry("cred-test", "us-west-2"),
+                    "note": f"key: {fake_akia}",
+                },
+            ],
+            "default": "cred-test",
+        }
+    )
     resp = _run(handlers._handle_profiles_get(_FakeReq()))
     import json as _json
     body = _json.loads(resp.text)
-    # The raw AKIA key must NOT appear in the response
+    # The raw secret key must NOT appear in the response
     assert fake_akia not in resp.text
     # But the profile entry should still be there
     assert len(body["profiles"]) == 1

@@ -410,6 +410,29 @@ describe('TelemetryPanel — latency distribution order', () => {
     expect(heights.every(h => parseFloat(h) > 0)).toBe(true)
   })
 
+  it('labels a trend day with no cold start as a dash, not as an instant start', async () => {
+    // A day with no cold start reports 0 and its column is drawn empty; its label
+    // must say the same absence instead of "cold 0 ms".
+    await mount(
+      only({
+        startup: {
+          overall: stat({ count: 3 }), cold: stat(), warm: stat(),
+          outcome: { ready: 3 },
+          daily: [
+            { date: '2026-07-02', count: 2, cold_p50_ms: 6000, warm_p50_ms: 2000 },
+            { date: '2026-07-03', count: 3, cold_p50_ms: 0, warm_p50_ms: 2500 },
+          ],
+          distribution: { buckets: [], bounds: [] },
+          phases: [],
+          by_channel: [],
+        },
+      }),
+    )
+    const day = await screen.findByRole('img', { name: /2026-07-03/ })
+    expect(day.getAttribute('aria-label')).toContain('cold —')
+    expect(day.getAttribute('title')).toBe(day.getAttribute('aria-label'))
+  })
+
   it('renders buckets in bound order, not by sample count', async () => {
     // The one thing a distribution exists to show is its shape, so the bars must
     // follow the bounds. This was a sortable table whose label column sorted by

@@ -47,6 +47,7 @@ async def reset(
     clear_conversation: bool = False,
     ends_conversation: bool = False,
     stop_shared_children: bool = False,
+    forget_unused_start: bool = False,
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
@@ -71,6 +72,7 @@ async def reset(
             clear_conversation=clear_conversation,
             ends_conversation=ends_conversation,
             stop_shared_children=stop_shared_children,
+            forget_unused_start=forget_unused_start,
             scope=opened,
         )
 
@@ -209,6 +211,7 @@ async def discard_conversation(
     skip_if_busy: bool = False,
     refuse_only_on_active_turn: bool = False,
     refuse_if: Callable[[], bool] | None = None,
+    teardown_reason: str = "",
 ) -> bool:
     """Drop native conversation state while retaining channel linkage.
 
@@ -216,7 +219,7 @@ async def discard_conversation(
     ``skip_if_busy`` refused because a turn was in flight, or ``refuse_if``
     answered true. See
     :meth:`SessionLifecycleService.discard_conversation` for the guard's
-    atomicity contract.
+    atomicity contract and ``teardown_reason``.
     """
     return await self._lifecycle_boundary().discard_conversation(
         key,
@@ -224,7 +227,17 @@ async def discard_conversation(
         skip_if_busy=skip_if_busy,
         refuse_only_on_active_turn=refuse_only_on_active_turn,
         refuse_if=refuse_if,
+        teardown_reason=teardown_reason,
     )
+
+
+async def swap_conversation(self: SessionManager, key: str) -> str:
+    """Start a fresh native conversation for *key* on its live process.
+
+    Keeps the key's sub-agent runs; answers ``"swapped"``, ``"busy"`` or
+    ``"unavailable"``. See :meth:`SessionLifecycleService.swap_conversation`.
+    """
+    return await self._lifecycle_boundary().swap_conversation(key)
 
 
 async def drain_active_turns(self: SessionManager, timeout: float | None = None) -> int:
@@ -329,6 +342,11 @@ def open_replay_gap(self: SessionManager, key: str) -> None:
     self._lifecycle_boundary().open_replay_gap(key)
 
 
+def has_open_replay_gap(self: SessionManager, key: str) -> bool:
+    """Whether *key* is in a reset-to-reacquire window (session popped)."""
+    return self._lifecycle_boundary().has_open_replay_gap(key)
+
+
 def close_replay_gap(self: SessionManager, key: str) -> None:
     """End the window :meth:`open_replay_gap` opened."""
     self._lifecycle_boundary().close_replay_gap(key)
@@ -349,6 +367,6 @@ async def _eager_respawn(self: SessionManager, key: str) -> None:
     await self._lifecycle_boundary()._eager_respawn(key)
 
 
-async def drain_all_providers(self: SessionManager) -> list:
-    """Pop all registered sessions and return their providers."""
-    return await self._lifecycle_boundary().drain_all_providers()
+async def drain_all_providers(self: SessionManager, *, keep_busy: bool = False) -> list:
+    """Pop registered sessions and return their providers (``keep_busy`` skips a held one)."""
+    return await self._lifecycle_boundary().drain_all_providers(keep_busy=keep_busy)

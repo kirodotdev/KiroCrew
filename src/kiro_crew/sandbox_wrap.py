@@ -58,6 +58,7 @@ from kiro_crew.sandbox_tiers import (
     _governance_sandbox_floor,
     _mode_to_level,
     enterprise_policy_cache_view,
+    warn_readonly_layer_unenforced,
 )
 from kiro_crew.sandbox_unavailable import (
     UNSANDBOXED_BY_OPERATOR,
@@ -624,6 +625,9 @@ def wrap_argv(
     # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    if sys.platform == "win32":
+        # No OS backend exists here, so the operator's read-only layer cannot hold.
+        warn_readonly_layer_unenforced("Windows has no OS sandbox backend")
     # The caller resolved the SSH forward against its own floor read. Re-judge
     # it against the tier this wrap applies, so a floor raised in between can
     # only drop the socket. Never turns a False into True.
@@ -934,8 +938,9 @@ def wrap_argv(
 
     backend = detect_backend(config_mode=mode)
 
-    # An LTS build's sandboxed processes resolve the ceiling from the governance
-    # cache, so it is shown to them READ-ONLY (the plan seals a lifted cache). After the
+    # An LTS build's sandboxed processes, and the cache-only MCP children of a host
+    # whose ceiling came from central distribution, resolve the ceiling from the
+    # governance cache, so it is shown to them READ-ONLY (the plan seals a lifted cache). After the
     # delegation branch on purpose: a delegated sandbox applies none of Kiro Crew's masks,
     # and adding a path here would cost the delegation.
     cache_view = tuple(
@@ -1105,7 +1110,9 @@ def wrap_argv(
                     "the credential directories, so this keeps isolation rather "
                     "than weakening it), then restart the gateway. Other outer "
                     "sandboxes (e.g. an operator-wrapped gateway) hit the same "
-                    "nesting limit — see docs/system-specs/modules/security.md "
+                    "nesting limit — see "
+                    "https://github.com/kirodotdev/KiroCrew/blob/main/"
+                    "docs/system-specs/modules/security.md "
                     '("macOS marker site and the kernel cross-check"). '
                 )
             elif is_docker_container():
@@ -1124,6 +1131,16 @@ def wrap_argv(
                 # a seccomp profile cannot fix that, so prescribing one would
                 # send the operator through a change that leaves the probe
                 # failing exactly as before.
+                # The unsandboxed-consent options (b) and (c) are a separate tail
+                # so a governance floor can drop exactly them while keeping the
+                # container-policy fix (a), which still works under the floor.
+                container_optin_options = (
+                    "  (b) Restart with explicit unsandboxed consent "
+                    "(the container is then the only isolation boundary):\n"
+                    "        docker run -e KIROCREW_ALLOW_UNSANDBOXED=1 ...\n"
+                    "  (c) Manually set agent.sandbox_allow_unsandboxed_exec=true "
+                    "in ~/.kiro/crew/config.json inside the container.\n"
+                )
                 if probe_remedy == REMEDY_MOUNT_DENIED:
                     guidance = (
                         "Running inside a Docker/OCI container whose runtime "
@@ -1141,12 +1158,9 @@ def wrap_argv(
                         "        # earlier Kubernetes: annotation "
                         "container.apparmor.security.beta.kubernetes.io/<container>: "
                         "unconfined\n"
-                        "  (b) Restart with explicit unsandboxed consent "
-                        "(the container is then the only isolation boundary):\n"
-                        "        docker run -e KIROCREW_ALLOW_UNSANDBOXED=1 ...\n"
-                        "  (c) Manually set agent.sandbox_allow_unsandboxed_exec=true "
-                        "in ~/.kiro/crew/config.json inside the container.\n"
-                        "See docs/guides/docker.md for the full sandbox troubleshooting guide."
+                        + container_optin_options
+                        + "Full sandbox troubleshooting guide: "
+                        "https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/docker.md"
                     )
                 else:
                     guidance = (
@@ -1166,42 +1180,58 @@ def wrap_argv(
                         "kirodotdev/KiroCrew/main/docker/seccomp/kirocrew-seccomp.json"
                         " -o kirocrew-seccomp.json\n"
                         "        docker run --security-opt seccomp=kirocrew-seccomp.json ...\n"
-                        "  (b) Restart with explicit unsandboxed consent "
-                        "(the container is then the only isolation boundary):\n"
-                        "        docker run -e KIROCREW_ALLOW_UNSANDBOXED=1 ...\n"
-                        "  (c) Manually set agent.sandbox_allow_unsandboxed_exec=true "
-                        "in ~/.kiro/crew/config.json inside the container.\n"
-                        "See docs/guides/docker.md for the full sandbox troubleshooting guide."
+                        + container_optin_options
+                        + "Full sandbox troubleshooting guide: "
+                        "https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/docker.md"
                     )
+                # Under a mandating floor, the two unsandboxed-consent options are
+                # powerless; drop them and keep only the container-policy fix.
+                if floor_mandates_sandbox:
+                    guidance = guidance.replace(container_optin_options, "")
             else:
-                guidance = _no_backend_guidance()
-            # When the policy floor is what refused, every guidance above points
-            # at the wrong lever: the operator HAS set the opt-in and the flag is
-            # deliberately powerless here, so naming it would send them down a
-            # dead end.  Replace the remedy rather than appending to it.
-            policy_overrode_opt_in = floor_mandates_sandbox and opted_in
-            if policy_overrode_opt_in:
-                guidance = (
-                    "This host is GOVERNED: an enterprise policy pins "
-                    f"sandbox.min_level={governance_floor!r}, which forbids "
-                    "unsandboxed execution regardless of "
-                    "agent.sandbox_allow_unsandboxed_exec — that flag is set on "
-                    "this host and is deliberately powerless against the policy, "
-                    "so editing config.json cannot resolve this. A governed host "
-                    "also withholds the first-party carve-out, so Kiro Crew's own "
-                    "built-in spawns are refused here too: this host runs no "
-                    "agent subprocess until it has a working sandbox backend "
-                    "(see docs/system-specs/modules/security.md) or the policy "
-                    "owner relaxes sandbox.min_level."
-                )
+                # Under a mandating floor, drop the opt-out sentence but keep the
+                # host-specific remedy (the AppArmor profile install on stock
+                # Ubuntu, or the generic "install a backend" step) -- the floor
+                # forbids unsandboxed exec, not a working sandbox.
+                guidance = _no_backend_guidance(include_optout=not floor_mandates_sandbox)
+            # When a mandating floor is what refused, the guidance above may point
+            # at a lever the floor makes powerless: agent.sandbox_allow_unsandboxed_exec
+            # cannot relax the floor whatever its value, so the config-key options
+            # are not offered here (dropped from the container guidance above and
+            # from _no_backend_guidance via include_optout).  But the floor only
+            # forbids UNSANDBOXED execution -- it does not break the host-level
+            # fixes that produce a WORKING sandbox (the AppArmor profile install, a
+            # transient retry, the kiro-cli Seatbelt setting, a container
+            # seccomp/AppArmor profile), which are the real remedy.  So NEVER
+            # replace the guidance under the floor: keep the class-specific remedy and
+            # append a note naming the floor and the policy owner.
+            if floor_mandates_sandbox:
                 sel_reason = (
                     "No sandbox backend available and a governance "
                     f"sandbox.min_level={governance_floor!r} floor forbids "
-                    "unsandboxed exec (the config opt-in is set but overridden)"
+                    "unsandboxed exec (the config opt-in is powerless here)"
                 )
+                # The short prefix names the floor so it survives the probe-error
+                # cap (_PROBE_ERROR_MAX_CHARS) even when the remedy is long.
                 refusal = (
-                    "Sandbox backend unavailable and a governance policy forbids "
+                    "Sandbox backend unavailable and a governance "
+                    f"sandbox.min_level={governance_floor!r} floor forbids "
                     "unsandboxed execution. "
+                )
+                # The note follows the remedy. Worded so it reads correctly after
+                # the foreign-Seatbelt guidance too (which says the sandbox is
+                # NOT broken): it does not claim this host lacks a working sandbox,
+                # only that the opt-in cannot lift the floor.
+                # The note goes AFTER the remedy: the probe error is truncated at
+                # _PROBE_ERROR_MAX_CHARS, and a prefix would push a long repair
+                # command (the AppImage install-profile step) past the cut.
+                guidance = guidance + (
+                    "\nThis host is GOVERNED: sandbox.min_level="
+                    f"{governance_floor!r} forbids unsandboxed execution, and "
+                    "agent.sandbox_allow_unsandboxed_exec cannot lift it. A governed "
+                    "host withholds the first-party carve-out, so built-in spawns "
+                    "are refused here too. The policy owner can relax "
+                    "sandbox.min_level."
                 )
             elif _unsandboxed_exec_key_declared():
                 # The operator DID decide, and decided to keep this host

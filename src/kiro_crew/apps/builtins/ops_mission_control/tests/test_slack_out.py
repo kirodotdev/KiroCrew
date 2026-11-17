@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import threading
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import policy_store, slack_out, store
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
@@ -29,6 +30,10 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     Incident,
     Signal,
 )
+from kiro_crew.testing.synthetic_credentials import synth
+
+#: A GitLab personal access token in its published form (``glpat-`` and 20 characters).
+_GITLAB_TOKEN = "glpat-" + synth(20, seed=7)
 
 
 class _FakeSlack:
@@ -85,17 +90,20 @@ class _HomeIsolated(unittest.IsolatedAsyncioTestCase):
     alone. Same convention the other async tests here already document.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
         self._prev = os.environ.get("KIROCREW_HOME")
-        os.environ["KIROCREW_HOME"] = self._tmp.name
+        os.environ["KIROCREW_HOME"] = str(self._tmp_path)
 
     def tearDown(self) -> None:
         if self._prev is None:
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        self._tmp.cleanup()
 
 
 class TestConfiguration(_HomeIsolated):
@@ -124,7 +132,7 @@ class TestConfiguration(_HomeIsolated):
     def test_channel_id_is_not_written_to_the_secret_store(self) -> None:
         """A channel ID is not a credential; it belongs in plain config."""
         slack_out.set_settings(enabled=True, channel_id="C0123456789")
-        secrets = Path(self._tmp.name) / "ops_mission_control_secrets.json"
+        secrets = self._tmp_path / "ops_mission_control_secrets.json"
         self.assertFalse(secrets.exists(), "Slack output must add no secret material")
 
 
@@ -310,10 +318,10 @@ class TestRedaction(_HomeIsolated):
     def test_credential_in_title_is_not_republished(self) -> None:
         """Provider text reaches a wider audience in Slack than in the dashboard."""
         slack_out.set_settings(enabled=True, channel_id="C1")
-        leaky = _signal(id="sig-leak", title="auth failed for glpat-IOSFODNN7EXAMPLE")
+        leaky = _signal(id="sig-leak", title=f"auth failed for {_GITLAB_TOKEN}")
         incident = store.claim(leaky, operating_mode="observe")
         assert incident is not None
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", slack_out.summary_line(incident))
+        self.assertNotIn(_GITLAB_TOKEN, slack_out.summary_line(incident))
 
     async def test_thread_detail_is_redacted(self) -> None:
         slack_out.set_settings(enabled=True, channel_id="C1")
@@ -323,9 +331,11 @@ class TestRedaction(_HomeIsolated):
         with_ts = store.get_incident(incident.incident_id)
         assert with_ts is not None
         fake = _FakeSlack()
-        await slack_out.post_detail(with_ts, "root cause: key glpat-IOSFODNN7EXAMPLE expired", fake)
+        await slack_out.post_detail(
+            with_ts, f"root cause: key {_GITLAB_TOKEN} expired", fake
+        )
         self.assertEqual(len(fake.threads), 1)
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", fake.threads[0]["text"])
+        self.assertNotIn(_GITLAB_TOKEN, fake.threads[0]["text"])
 
     def test_a_provider_token_in_the_title_is_masked_too(self) -> None:
         """The gap the token cases above could not catch.
@@ -583,7 +593,7 @@ class TestSlackMrkdwnInjection(unittest.TestCase):
         """Escaping is additional to the credential floor, not a replacement."""
         from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out
 
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", slack_out._safe("key glpat-IOSFODNN7EXAMPLE"))
+        self.assertNotIn(_GITLAB_TOKEN, slack_out._safe(f"key {_GITLAB_TOKEN}"))
 
 
 class TestSlackLinkTargetIsValidated(unittest.TestCase):
@@ -618,8 +628,8 @@ class TestSlackLinkTargetIsValidated(unittest.TestCase):
     def test_a_token_in_the_query_string_is_redacted(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out
 
-        out = slack_out._safe_link_target("https://example.com/x?key=glpat-IOSFODNN7EXAMPLE")
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", out)
+        out = slack_out._safe_link_target(f"https://example.com/x?key={_GITLAB_TOKEN}")
+        self.assertNotIn(_GITLAB_TOKEN, out)
 
     def test_the_block_omits_the_link_rather_than_rendering_it_broken(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import models, slack_out

@@ -249,6 +249,7 @@ async def cancel_for_teardown(
     *,
     parent_session_key: str,
     verb: str = "",
+    reason: str = "",
 ) -> int:
     """Stop the snapshotted runs without reporting them to a retired parent.
 
@@ -266,6 +267,7 @@ async def cancel_for_teardown(
             agent_ids,
             parent_session_key=parent_session_key,
             verb=verb,
+            reason=reason,
             accepted_since=fence,
         )
     finally:

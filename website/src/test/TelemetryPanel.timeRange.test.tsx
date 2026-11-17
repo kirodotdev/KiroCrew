@@ -302,3 +302,20 @@ describe('TelemetryPanel — the window control', () => {
     expect(control().getByLabelText('End date')).toHaveValue(day(0))
   })
 })
+
+// A first fetch that fails rendered the error alone. When the remembered window
+// is what the gateway refuses, every reload repeated it and nothing on screen
+// could pick another window.
+describe('TelemetryPanel — the window control when the first fetch fails', () => {
+  it('keeps the picker beside the error, and a new pick refetches', async () => {
+    localStorage.setItem('telemetry:range', '90d')
+    const { api } = await import('../api/client')
+    vi.mocked(api.telemetryStartup).mockRejectedValueOnce(new Error('window out of range'))
+    vi.mocked(api.telemetryStartup).mockResolvedValue(payload() as never)
+    render(<TelemetryPanel />, { wrapper: Wrapper })
+    expect(await screen.findByTestId('telemetry-startup-error')).toBeInTheDocument()
+    fireEvent.click(control().getByRole('radio', { name: '7d' }))
+    await waitFor(() => expect(vi.mocked(api.telemetryStartup)).toHaveBeenCalledWith('days=7'))
+    await waitFor(() => expect(screen.queryByTestId('telemetry-startup-error')).toBeNull())
+  })
+})

@@ -80,3 +80,77 @@ test("launchdJobPids is null when the user id cannot be read", async () => {
   assert.strictEqual(await launchdJobPids(), null);
   assert.strictEqual(runs, 0);
 });
+
+// `launchctl print` output listing `jobs` as running services, the shape every
+// domain answers with in these tests.
+const listing = (jobs) => `\tservices = {\n${jobs.map((pid) => `\t\t ${pid} - \tjob.${pid}\n`).join("")}\t}\n`;
+
+test("isLaunchdJob answers true for a job, false for any other pid, null when unreadable", async () => {
+  const listed = holders((_file, _args, _options, callback) => callback(null, listing([8108]), ""));
+  assert.strictEqual(await listed.isLaunchdJob(8108), true);
+  assert.strictEqual(await listed.isLaunchdJob("8108"), true, "a pid read from ps compares as a number");
+  assert.strictEqual(await listed.isLaunchdJob(4242), false);
+  const unreadable = holders((_file, _args, _options, callback) => callback(new Error("boom"), "", ""));
+  assert.strictEqual(await unreadable.isLaunchdJob(8108), null);
+});
+
+// The force-stop recovery runs: lsof names `pid` until it is signalled, ps
+// reports a Kiro Crew gateway with launchd (PID 1) as its parent, and launchctl
+// lists `jobs`.
+function forceStopHolders({ platform = "darwin", jobs = [] } = {}) {
+  const signals = [];
+  const launchctl = [];
+  let held = true;
+  const owner = createPortHolders({
+    fs: {},
+    os,
+    path,
+    execFile(file, args, _options, callback) {
+      if (file === "/bin/launchctl") {
+        launchctl.push(args[1]);
+        callback(null, listing(jobs), "");
+      } else if (file === "/bin/ps") {
+        callback(null, args.includes("ppid=") ? "1\n" : "python -m kiro_crew gateway --port 5476\n", "");
+      } else {
+        callback(null, held ? "4242\n" : "", "");
+      }
+    },
+    processObj: {
+      platform,
+      getuid: () => 501,
+      kill(pid, signal) {
+        signals.push([pid, signal]);
+        held = false;
+      },
+    },
+    dirname: "/virtual",
+    isWindows: false,
+    log: () => {},
+    getSpawnedExecutablePaths: () => [],
+  });
+  return { owner, signals, launchctl };
+}
+
+test("macOS force-stop evicts an orphan launchd runs no job for", async () => {
+  const { owner, signals } = forceStopHolders({ jobs: [8108] });
+  const result = await owner.forceStopGatewayPort(5476);
+  assert.deepStrictEqual(signals, [[4242, "SIGKILL"]]);
+  assert.strictEqual(result.freed, true);
+  assert.strictEqual(result.serviceHolder, false);
+});
+
+test("macOS force-stop leaves a gateway launchd runs as a job alone", async () => {
+  const { owner, signals } = forceStopHolders({ jobs: [8108, 4242] });
+  const result = await owner.forceStopGatewayPort(5476);
+  assert.deepStrictEqual(signals, []);
+  assert.strictEqual(result.serviceHolder, true);
+  assert.strictEqual(result.freed, false);
+});
+
+test("off macOS a PID-1 gateway stays service-managed and launchctl is never run", async () => {
+  const { owner, signals, launchctl } = forceStopHolders({ platform: "linux" });
+  const result = await owner.forceStopGatewayPort(5476);
+  assert.deepStrictEqual(signals, []);
+  assert.strictEqual(result.serviceHolder, true);
+  assert.deepStrictEqual(launchctl, []);
+});

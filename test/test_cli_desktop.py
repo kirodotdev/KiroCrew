@@ -312,6 +312,51 @@ class TestNonNumericValues:
         assert cli_desktop._num(float("nan")) == 0.0
         assert cli_desktop._fmt_pct(float("nan")) == "-"
 
+    def test_an_integer_past_float_range_is_junk_not_a_crash(self, monkeypatch, capsys, tmp_path):
+        """JSON integers are unbounded; one float cannot hold reads as junk, like a string."""
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+        huge = 10**400
+        doc = _doc(intervalMs=huge)
+        doc["samples"][0]["totalCpuPercent"] = huge
+        doc["samples"][1]["totalWorkingSetKb"] = huge
+        art = tmp_path / "desktop-metrics.json"
+        art.write_text(json.dumps(doc), encoding="utf-8")
+        try:
+            outcome: object = cli_desktop.desktop_cmd(_args(art))
+        except OverflowError:
+            outcome = "escaped as OverflowError"
+        assert outcome == 0
+        out = capsys.readouterr().out
+        assert "latest total: cpu=1.0% rss=-" in out
+        assert " at " not in out.splitlines()[1]
+
+    def test_json_nested_past_the_parser_limit_is_reported_not_raised(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+        art = tmp_path / "desktop-metrics.json"
+        art.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+        try:
+            outcome: object = cli_desktop.desktop_cmd(_args(art))
+        except RecursionError:
+            outcome = "escaped as RecursionError"
+        assert outcome == 5
+        assert "not valid JSON" in capsys.readouterr().err
+
+    def test_json_mode_nested_past_the_encoder_limit_is_reported_not_raised(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """The parser takes deeper nesting than ``--json`` can print back."""
+        monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
+        art = tmp_path / "desktop-metrics.json"
+        art.write_text('{"version": 1, "x": ' + "[" * 3000 + "]" * 3000 + "}", encoding="utf-8")
+        try:
+            outcome: object = cli_desktop.desktop_cmd(_args(art, json=True))
+        except RecursionError:
+            outcome = "escaped as RecursionError"
+        assert outcome == 5
+        assert "not valid JSON" in capsys.readouterr().err
+
 
 class TestNightlyProductDirectory:
     """Nightly installs under its own names and so its own log directory.
@@ -329,6 +374,7 @@ class TestNightlyProductDirectory:
         dirs = [d.as_posix() for d in cli_desktop.desktop_log_dirs({})]
         assert any(d.endswith("Library/Logs/KiroCrew") for d in dirs)
         assert any(d.endswith("Library/Logs/KiroCrew Nightly") for d in dirs)
+        assert any(d.endswith("Library/Logs/KiroCrew LTS") for d in dirs)  # brand-ok
 
     def test_both_package_directories_are_probed_on_linux(self, monkeypatch):
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
@@ -336,6 +382,7 @@ class TestNightlyProductDirectory:
         dirs = [d.as_posix() for d in cli_desktop.desktop_log_dirs({"XDG_CONFIG_HOME": "/cfg"})]
         assert "/cfg/kirocrew-desktop/logs" in dirs
         assert "/cfg/kirocrew-desktop-nightly/logs" in dirs
+        assert "/cfg/kirocrew-desktop-lts/logs" in dirs
 
     def test_both_package_directories_are_probed_on_windows(self, monkeypatch):
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
@@ -343,6 +390,7 @@ class TestNightlyProductDirectory:
         dirs = [d.as_posix() for d in cli_desktop.desktop_log_dirs({"APPDATA": "/roam"})]
         assert "/roam/kirocrew-desktop/logs" in dirs
         assert "/roam/kirocrew-desktop-nightly/logs" in dirs
+        assert "/roam/kirocrew-desktop-lts/logs" in dirs
 
     def test_the_newest_artifact_wins_when_both_exist(self, monkeypatch, tmp_path):
         """With both installed, the run just reproduced is the one written last."""
@@ -385,10 +433,13 @@ class TestNightlyProductDirectory:
         """The Windows and Linux log directory follows the npm package name."""
         root = Path(__file__).resolve().parents[1]
         package_json = root / "website" / "electron" / "package.json"
-        release, nightly = cli_desktop.PACKAGE_NAMES
+        release, *overrides = cli_desktop.PACKAGE_NAMES
         assert json.loads(package_json.read_text(encoding="utf-8"))["name"] == release
         sh = (root / "packaging" / "build-desktop.sh").read_text(encoding="utf-8")
-        assert f"-c.extraMetadata.name={nightly}" in sh
+        for name in overrides:  # nightly, then LTS
+            assert f"-c.extraMetadata.name={name}" in sh
+        for product in cli_desktop.PRODUCT_NAMES[1:]:
+            assert f"-c.productName={product}" in sh
 
 
 class TestSensitivePathGate:

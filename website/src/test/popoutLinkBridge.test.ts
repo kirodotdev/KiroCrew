@@ -9,10 +9,11 @@ import { popoutLinkBridgeScript } from '../lib/widgetSrcdoc'
 
 const OPEN = 'kirocrew-dashboard:open'
 const LINK = 'https://code.example.test/reviews/CR-1'
+const DASHBOARD = 'https://crew.example.test'
 
 type Listener = (e: { source?: unknown; data?: unknown; target?: unknown }) => void
 
-function setup({ active = true } = {}) {
+function setup({ active = true, base = '' } = {}) {
   const frame = document.createElement('iframe')
   frame.tabIndex = 0
   frame.setAttribute('data-popout-test', '')
@@ -27,7 +28,7 @@ function setup({ active = true } = {}) {
   }
   const state = { active }
   const nav = { userActivation: { get isActive() { return state.active } } }
-  new Function('window', 'document', 'navigator', popoutLinkBridgeScript('Open %HOST%'))(win, document, nav)
+  new Function('window', 'document', 'navigator', popoutLinkBridgeScript('Open %HOST%', DASHBOARD, base))(win, document, nav)
   const fire = (type: string, e: Parameters<Listener>[0] = {}) => listeners[type]?.forEach((fn) => fn(e))
   const send = (data: unknown, source: unknown = frameWindow) => fire('message', { source, data })
   /** Focus moving from the tab into the frame: the tab's window blurs. */
@@ -79,7 +80,6 @@ describe('popped-out widget link bridge', () => {
     'data:text/html,x',
     'file:///etc/hosts',
     'mailto:a@example.test',
-    '/relative',
     'https://user:pass@example.test/',
   ])('refuses %s', (url) => {
     const { send, enter, open, chip } = setup()
@@ -87,6 +87,20 @@ describe('popped-out widget link bridge', () => {
     send({ type: OPEN, url })
     expect(open).not.toHaveBeenCalled()
     expect(chip()).toBeNull()
+  })
+
+  // A dashboard path is a page of the dashboard, as in chat: its origin, and its
+  // base the way the dashboard's own window.open adds one. Another host keeps its URL.
+  it.each([
+    ['', '/schedule', `${DASHBOARD}/schedule`],
+    ['/proxy/crew', '/chat?sid=a#b', `${DASHBOARD}/proxy/crew/chat?sid=a#b`],
+    ['/proxy/crew', '/proxy/crew/schedule', `${DASHBOARD}/proxy/crew/schedule`],
+    ['/proxy/crew', LINK, LINK],
+  ])('with base %j opens %s as %s', (base, url, href) => {
+    const { send, enter, open } = setup({ base })
+    enter()
+    send({ type: OPEN, url })
+    expect(open).toHaveBeenCalledWith(href, '_blank', 'noopener,noreferrer')
   })
 
   it('ignores another window and another message type', () => {

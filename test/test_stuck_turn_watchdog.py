@@ -61,6 +61,8 @@ def _make_handle(watchdog: WatchdogSettings = _FAST_WD) -> AcpSessionHandle:
     rt.send_request = AsyncMock(return_value=99)
     rt.send_response = AsyncMock()
     rt.supports_image_prompt = False
+    # A cut turn's WARNING formats this as seconds; no frame went through the fake.
+    rt.session_activity_at = MagicMock(return_value=None)
     return AcpSessionHandle("sA", asyncio.Queue(), rt, watchdog=watchdog)
 
 
@@ -159,7 +161,7 @@ async def test_park_finally_survives_none_parked_since():
     handle._parked_total = 0.0
 
     # aclose() triggers GeneratorExit inside the yield -> finally fires.
-    # Before the fix this raised TypeError; now it must be a no-op.
+    # Must be a no-op, never a TypeError.
     await agen.aclose()
 
     # No crash, park total unchanged (the abandoned park is silently discarded).

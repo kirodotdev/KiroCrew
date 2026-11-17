@@ -63,11 +63,36 @@ def test_a_binding_without_its_own_file_has_no_worker_kit(home):
     assert caught.value.code == "not_a_mate_file"
 
 
-def test_the_view_reports_only_the_member_and_revision(home):
+def test_the_view_reports_only_the_member_revision_and_unchecked_denies(home):
     """There is no recorded template and no 'additions since' — the file is the sum."""
     view = mate_worker_kit.view("pixel")
-    assert set(view) == {"member", "revision"}
+    assert set(view) == {"member", "revision", "unenforced_denies", "conditional_denies"}
+    assert view["unenforced_denies"] == []
+    assert view["conditional_denies"] == []
     assert view["member"] == "pixel"
+
+
+def test_a_deny_only_the_gate_reads_is_named_apart_from_the_unchecked_ones(home, monkeypatch):
+    """KAS does not carry ``docker\\s+push.*`` and the gate checks it only in a simple
+    command, so the worker holds other shapes of command for it: it is named, but
+    not among the denies nothing checks."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+
+    monkeypatch.setattr(mate_worker_kit, "_crewmate_backend", lambda member, held: ACP_BACKEND_KAS)
+    user, mates = home
+    base = {"name": "kirocrew-mate-worker", "prompt": "w", "tools": ["*"], "mcpServers": {}}
+    (mates / "kirocrew-mate-worker.json").write_text(json.dumps(base), encoding="utf-8")
+    settings = {"shell": {"deniedCommands": [r"docker\s+push.*"]}}
+    (user / "release-bot.json").write_text(
+        json.dumps({**TEMPLATE, "toolsSettings": settings}), encoding="utf-8"
+    )
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert preview["conditional_denies"] == [r"docker\s+push.*"]
+    assert preview["unenforced_denies"] == []
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    view = mate_worker_kit.view("pixel")
+    assert view["conditional_denies"] == [r"docker\s+push.*"]
+    assert view["unenforced_denies"] == []
 
 
 def test_the_preview_names_every_added_item_and_writes_nothing(home):

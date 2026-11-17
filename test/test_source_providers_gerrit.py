@@ -924,6 +924,7 @@ async def test_a_failed_secondary_read_marks_its_section_partial(
     # Robot threads, messages and verdicts still render; the human threads are gone.
     assert [row["id"] for row in payload["comments"] if row["kind"] == "inline"] == ["r-1"]
     assert payload["partialSections"] == ["review discussions"]
+    assert payload["failedSections"] == ["review discussions"]
     # An unknown merge state is a banner, never a partial section.
     assert (payload["mergeable"], payload["mergeStateStatus"]) == ("unknown", "blocked")
 

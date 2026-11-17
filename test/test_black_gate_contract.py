@@ -185,12 +185,18 @@ def test_the_lint_job_fetches_enough_history_to_scope_the_diff() -> None:
         f"backend-lint checkout fetch-depth is {depth!r}; the black gate needs "
         "either full history (0) or depth 2 plus a fetch of the base branch"
     )
-    assert "--depth=50 origin main" in runs, (
+    assert '--depth=50 origin "$BASE_BRANCH"' in runs, (
         "backend-lint checks out at depth 2, so it must deepen the base branch "
-        "before the gates run; without origin/main the scope falls back to the "
+        "before the gates run; without it the scope falls back to the "
         "whole tree and the gate reports files the base branch merged"
     )
-    assert "--unshallow origin main" in runs, (
+    # The base branch is the PR's own base (main or a release branch), the
+    # branch a push landed on, or main for a merge group.
+    step = next(s for s in job["steps"] if "--depth=50" in str(s.get("run") or ""))
+    assert step["env"]["BASE_BRANCH"] == (
+        "${{ github.base_ref || github.event_name == 'push' && github.ref_name || 'main' }}"
+    )
+    assert '--unshallow origin "$BASE_BRANCH"' in runs, (
         "the bounded deepening must unshallow when the base moved past its "
         "window, so a stale PR is never scoped worse than under full history"
     )

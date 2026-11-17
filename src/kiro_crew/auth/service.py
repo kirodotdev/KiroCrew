@@ -20,7 +20,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import aiohttp
 
@@ -29,8 +29,10 @@ from kiro_crew.auth.login.endpoints import (
     BUILDER_ID_REGION,
     BUILDER_ID_START_URL,
     USER_AGENT,
+    oidc_scopes,
     social_service_url,
 )
+from kiro_crew.auth.refresh import HTTP_TIMEOUT
 from kiro_crew.auth.shape import Transport, select_transport
 from kiro_crew.auth.store import (
     KNOWN_IDENTITIES,
@@ -40,16 +42,11 @@ from kiro_crew.auth.store import (
     TokenStoreError,
 )
 from kiro_crew.auth.whoami import START_URL_EXTRA_KEY
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
 _HEADERS = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
-
-# Every auth request on the shared session is bounded. aiohttp's own default is five
-# minutes, which on a black-holed route leaves a poll hanging many times longer than
-# the dashboard's poll cadence; 30s is longer than any healthy auth call and short
-# enough that a dead route is visible inside one login.
-_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
 # How many CONSECUTIVE connection-level poll failures one pending login absorbs before
 # a poll reports the auth service unreachable. The poll is the longest-lived request in
@@ -58,6 +55,53 @@ _HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 # the expected case, not evidence the login failed. Any poll that gets an answer clears
 # the count, so only a sustained outage crosses it.
 MAX_POLL_TRANSPORT_FAILURES = 3
+
+
+def _load_relay_viewer_cps_url() -> str:
+    """``tunnel.relay_viewer_cps_url`` while ``tunnel.relay_viewer_enabled`` is on, else "".
+
+    The config build has already dropped a URL that is not https:// (or loopback
+    http://), so a non-empty value here is one the viewer itself would call. An
+    unreadable config answers "", which keeps the prod-only lookup.
+    """
+    tunnel = _load_tunnel()
+    if getattr(tunnel, "relay_viewer_enabled", False) is not True:
+        return ""
+    url = getattr(tunnel, "relay_viewer_cps_url", "")
+    return url.strip() if isinstance(url, str) else ""
+
+
+def _load_oidc_scope_prefix() -> str:
+    """``tunnel.relay_viewer_oidc_scope_prefix`` (already validated), else ""."""
+    prefix = getattr(_load_tunnel(), "relay_viewer_oidc_scope_prefix", "")
+    return prefix if isinstance(prefix, str) else ""
+
+
+def _load_tunnel() -> Any:
+    """The ``tunnel`` config section, or None when the config cannot be read."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        return KiroCrewConfig.load().tunnel
+    except Exception as exc:  # noqa: BLE001 - any failure keeps the defaults
+        logger.debug("tunnel settings unreadable for sign-in (%s)", type(exc).__name__)
+        return None
+
+
+async def _relay_viewer_cps_url() -> str:
+    """:func:`_load_relay_viewer_cps_url`, off the event loop (the config read is file I/O)."""
+    return await _off_loop(_load_relay_viewer_cps_url)
+
+
+async def _oidc_scope_prefix() -> str:
+    """:func:`_load_oidc_scope_prefix`, off the event loop."""
+    return await _off_loop(_load_oidc_scope_prefix)
+
+
+async def _off_loop(func: Callable[[], str]) -> str:
+    from kiro_crew.executors import relay_viewer_executor
+
+    return await asyncio.get_running_loop().run_in_executor(relay_viewer_executor(), func)
 
 
 class UnknownLoginError(Exception):
@@ -175,6 +219,18 @@ class _PendingOidcLogin:
     transport_failures: int = 0
 
 
+def _idc_lookup_context(pending: _PendingOidcLogin) -> str:
+    """The start URL, region and control planes behind one IdC profile lookup, for logs.
+
+    All three are configuration, not credentials; the token never appears here.
+    """
+    hosts = ", ".join(control_plane.control_plane_urls(pending.region))
+    return (
+        f"start URL {pending.start_url or '(none)'}, region {pending.region}, "
+        f"control planes asked: {hosts}"
+    )
+
+
 # How long the loopback listener waits for the portal to redirect back. Long enough
 # for a full Google/GitHub sign-in with 2FA; short enough that a browser that can
 # never reach this machine's loopback (tunnel, tailnet, phone) degrades to the
@@ -289,7 +345,7 @@ class KasLoginService:
         # Lazy: constructing the session at gateway boot would bind it to a loop the
         # service may never run on; first use always happens on the serving loop.
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=_HTTP_TIMEOUT)
+            self._session = aiohttp.ClientSession(timeout=HTTP_TIMEOUT)
         return self._session
 
     async def close(self) -> None:
@@ -418,12 +474,35 @@ class KasLoginService:
         epoch: int,
         signout_gen: str = "",
     ) -> dict[str, Any]:
-        """Register a fresh SSO-OIDC client and start its device authorization."""
+        """Start an SSO-OIDC device authorization for the ``identity`` slot.
+
+        The client registration the slot's stored sign-in carries is reused while
+        it is in date (:func:`builder_id.stored_client`), as kiro-cli does. A new
+        client is registered otherwise, and also when StartDeviceAuthorization
+        answers the stored one with any error but a start-URL refusal, so a
+        registration AWS refuses can never stop the user signing in again.
+        """
         session = await self._http()
-        client = await builder_id.register_client(region, session=session)
-        auth = await builder_id.start_device_authorization(
-            client, region=region, start_url=start_url, session=session
-        )
+        # Only an explicit scope prefix changes the scopes (kiro-cli's
+        # api.oidc.scopePrefix); unset keeps the public ones for every sign-in.
+        scopes = oidc_scopes(await _oidc_scope_prefix())
+        stored = await asyncio.to_thread(self._store.load, identity)
+        client = builder_id.stored_client(stored, region, scopes)
+        auth = None
+        if client is not None:
+            try:
+                auth = await builder_id.start_device_authorization(
+                    client, region=region, start_url=start_url, session=session
+                )
+            except builder_id.StartUrlRejectedError:
+                raise
+            except builder_id.BuilderIdAuthError as err:
+                logger.info("stored SSO-OIDC client refused, registering a new one: %s", err)
+        if client is None or auth is None:
+            client = await builder_id.register_client(region, session=session, scopes=scopes)
+            auth = await builder_id.start_device_authorization(
+                client, region=region, start_url=start_url, session=session
+            )
         return await self._register_pending(
             _PendingOidcLogin(
                 client=client,
@@ -509,7 +588,9 @@ class KasLoginService:
         payload = {"deviceCode": pending.auth.device_code, "clientId": USER_AGENT}
         answered = False
         try:
-            async with session.post(url, json=payload, headers=_HEADERS) as resp:
+            async with session.post(
+                url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)
+            ) as resp:
                 # The issuer answered, so whatever went wrong on earlier polls of this
                 # login was transient: the budget starts over.
                 answered = True
@@ -639,18 +720,35 @@ class KasLoginService:
             # This leg deliberately gets no transport budget: the device code is
             # already redeemed, so a later poll cannot re-obtain the token, and
             # answering "pending" would only loop the dashboard until expiry.
+            # The code tells the two apart, so the card can say "no Kiro profile"
+            # only when the lookup answered and the list was empty.
             try:
-                profiles = await control_plane.list_available_profiles(
-                    token.access_token, region=pending.region, session=session
+                listing = await control_plane.list_available_profiles(
+                    token.access_token,
+                    region=pending.region,
+                    session=session,
+                    viewer_cps_url=await _relay_viewer_cps_url(),
                 )
             except control_plane.ControlPlaneError as err:
-                logger.warning("could not resolve IdC profile ARN: %s", err)
+                logger.warning(
+                    "could not resolve IdC profile ARN (%s): %s", _idc_lookup_context(pending), err
+                )
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "profile_lookup_failed"}
+            profiles = listing.profiles
             if not profiles:
-                logger.warning("IdC login has no available Kiro profiles")
+                # Everything needed to tell a wrong host or region from a real
+                # provisioning gap. None of it is a credential.
+                logger.warning(
+                    "IdC login has no available Kiro profiles "
+                    "(IdC region %s, control plane %s, %d page(s) read, start URL %s)",
+                    pending.region,
+                    listing.url,
+                    listing.pages,
+                    pending.start_url,
+                )
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "no_kiro_profile"}
             if len(profiles) > 1:
                 # Multi-profile selection UX is a documented follow-up; until then
                 # the first profile wins, and the choice is visible in the log.

@@ -10,7 +10,8 @@ Importing this module is cheap by design. ``kirocrew``'s argument parser imports
 ``cli_kas`` while it is built, and the dashboard's route registrar imports the
 handler, both before the gateway is ready and whether or not ``agent.kas_bundle``
 is on. Only the pin (its constants, an env lookup and the engine's spec
-``permissions`` gate) is imported eagerly; the installer -- tarfile, zipfile, subprocess, urllib and the data-home resolver --
+``permissions`` gate) and the stdlib-only ``host_auth`` sign-in wording are imported
+eagerly; the installer -- tarfile, zipfile, subprocess, urllib and the data-home resolver --
 is imported on the first attribute that needs it, through :func:`__getattr__`
 (:pep:`562`), so a disabled bundle route costs the boot path nothing
 (``no-new-work-on-gateway-boot-path`` item 5).
@@ -33,6 +34,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_pin as _pin
+from kiro_crew.agent_sdk.host_auth import KAS_TERMINAL_SIGN_IN
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,6 +61,7 @@ if TYPE_CHECKING:
         installed_versions,
         kas_engines_root,
         parse_manifest,
+        sweep_stale_staging,
     )
 
 KAS_PIN_VERSION = _pin.KAS_PIN_VERSION
@@ -88,6 +91,7 @@ _OWNED: dict[str, str] = {
         "installed_bundle",
         "installed_versions",
         "kas_engines_root",
+        "sweep_stale_staging",
     )
 }
 
@@ -113,12 +117,10 @@ __all__ = [
     *sorted(_OWNED),
 ]
 
-#: How a bundle-route host signs in. kiro-cli is never the owner there, so the
-#: remedy names only Crew's own sign-in; the relay route's remedy
-#: (``host_auth._KAS_REMEDY``) names both because that spawn can draw on either.
+#: How a bundle-route host signs in, as ``kirocrew doctor`` prints it. kiro-cli is
+#: never the owner there, so the remedy names only Crew's own sign-in.
 KAS_BUNDLE_SIGN_IN_REMEDY = (
-    "Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again. "
-    "kiro-cli is not used on this route."
+    f"{KAS_TERMINAL_SIGN_IN}, then send your message again. kiro-cli is not used on this route."
 )
 
 
@@ -169,12 +171,17 @@ def sha256_file(path: Path) -> str:
 
 
 def require_loadable_host() -> None:
-    """Raise ``KasHostUnsupported`` when this host's glibc is too old for the engine.
+    """Raise ``KasHostUnsupported`` when the engine cannot run on this host.
 
-    The same check :func:`install_bundle` runs, for a caller that prints progress
-    before calling it and must refuse first.
+    The local checks :func:`install_bundle` runs before any transfer: the glibc
+    floor, then a published build for this OS and architecture. For a caller that
+    prints progress before calling it and must refuse first, and for ``doctor``,
+    which names the cause instead of a download that is refused every time.
     """
-    _owner("install_bundle")._require_loadable_glibc(None, None)
+    owner = _owner("install_bundle")
+    owner._require_loadable_glibc(None, None)
+    owner.host_platform_key()
+    owner.host_node_key()
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -231,27 +238,69 @@ def kas_bundle_route() -> bool:
         return False
 
 
-def kas_spawn_takes_bundle(agent: Any) -> bool:
+def kas_spawn_takes_bundle(agent: Any, pin: str = "") -> bool:
     """The route half of :func:`kas_bundle_route`, over a loaded ``agent`` section.
 
     ``agent.kas_bundle`` on, or the automatic switch (:func:`kas_route`). No backend
     half, for readers that ask about KAS whatever ``agent.acp_backend`` is. The flag
     is read off the caller's section first, so a switch that is on answers without
-    resolving kiro-cli. Blocking, as :func:`kas_route` is.
+    resolving kiro-cli. *pin* is the session's own Bot pin, as :func:`kas_route`
+    takes it. Blocking, as :func:`kas_route` is.
     """
-    return bool(getattr(agent, "kas_bundle", False)) or bool(kas_route().bundle)
+    return bool(getattr(agent, "kas_bundle", False)) or bool(kas_route(pin).bundle)
 
 
-def kas_route() -> Any:
+def kas_route(
+    pin: str = "",
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Any:
     """The route the next KAS spawn takes, computed fresh (``acp.kas_route.KasRoute``).
 
     The bundle route is taken when ``agent.kas_bundle`` is on, or automatically
-    when kiro-cli's relay cannot run on this host. Blocking (reads config, resolves
-    kiro-cli, reads the sign-in stores); never raises.
+    when kiro-cli's relay cannot run on this host. ``environ`` and ``home`` default
+    to the process's own. Blocking (reads config, resolves kiro-cli, reads the
+    sign-in stores); never raises.
     """
     from kiro_crew.acp.kas_route import resolve_kas_route
 
-    return resolve_kas_route()
+    return resolve_kas_route(environ=environ, home=home, pin=pin)
+
+
+def route_chosen_by_sharing_preview(route: Any) -> bool:
+    """Whether *route* (a :func:`kas_route` answer) is the ACP runtime sharing
+    preview's pick of the bundle, with ``agent.kas_bundle`` off. No IO."""
+    from kiro_crew.acp.kas_route import REASON_SHARING_PREVIEW
+
+    return bool(getattr(route, "bundle", False)) and (
+        getattr(route, "reason", "") == REASON_SHARING_PREVIEW
+    )
+
+
+def crew_sign_in_starts_spawn() -> bool:
+    """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
+
+    ``acp.kas_route.crew_sign_in_starts_spawn``, for the dashboard. Blocking
+    (vault, config and kiro-cli reads); never raises.
+    """
+    from kiro_crew.acp.kas_route import crew_sign_in_starts_spawn as starts
+
+    return starts()
+
+
+def relay_runs_on_kiro_cli_sign_in() -> bool:
+    """Whether a KAS session with no Kiro Crew sign-in would run on kiro-cli's own.
+
+    ``acp.kas_route.relay_runs_on_kiro_cli_sign_in`` on this process's environment,
+    for the dashboard. Blocking (config and kiro-cli reads); never raises.
+    """
+    import os
+    from pathlib import Path
+
+    from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
+
+    return runs(environ=os.environ, home=Path.home())
 
 
 def last_kas_route() -> dict[str, Any] | None:

@@ -16,6 +16,7 @@ that cannot import it.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 
@@ -31,7 +32,25 @@ def user_bin_dirs(home: pathlib.Path) -> list[pathlib.Path]:
 
 
 def which_any(binary: str, extra_dirs: list[pathlib.Path]) -> str | None:
-    """PATH first, then each directory in *extra_dirs*, in order."""
+    """PATH first, then each directory in *extra_dirs*, in order.
+
+    On Windows ``shutil.which`` searches the current directory first, even with
+    ``path=``, so there each directory is asked by full path and only PATH's
+    absolute entries count. PATHEXT is applied here, not by ``shutil.which``:
+    before Python 3.12 it skips PATHEXT for a name with a directory part, and
+    this script may run on an older system Python.
+    """
+    if os.name == "nt":
+        exts = [e for e in (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(";") if e]
+        names = [binary] if binary.upper().endswith(tuple(e.upper() for e in exts)) else []
+        names += [binary + e for e in exts]
+        dirs = [e for e in os.environ.get("PATH", "").split(os.pathsep) if os.path.isabs(e)]
+        for entry in dirs + [str(x) for x in extra_dirs]:
+            for name in names:
+                candidate = os.path.join(entry, name)
+                if os.path.isfile(candidate):
+                    return candidate
+        return None
     found = shutil.which(binary)
     if found:
         return found

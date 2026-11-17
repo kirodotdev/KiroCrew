@@ -543,9 +543,10 @@ def _repo_root() -> Path:
 FATAL_OUTCOMES = ("refused", "stale")
 
 #: The outcomes a spawn continues past, each for a stated reason. ``recorded`` is
-#: success. ``unwritable`` leaves the tree UNOWNED, which the sweep never touches:
-#: a leak, not a deletion. ``garbled`` (``adopt_owner`` only: a marker this module
-#: did not write over an INHERITED tree) is the same shape -- the sweep reads the
+#: success. ``unwritable`` leaves the tree UNOWNED, which the sweep never deletes
+#: in place: it is kept, and moved into the quarantine only after a week with no
+#: write. ``garbled`` (``adopt_owner`` only: a marker this module did not write
+#: over an INHERITED tree) is a leak too -- the sweep reads the
 #: same ``ValueError`` and skips the tree for good, nothing is written over the
 #: marker, and a fatal answer would let any agent process the tree is mounted
 #: into veto every later spawn on it by scribbling over the marker. Only a

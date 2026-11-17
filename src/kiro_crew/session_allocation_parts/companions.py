@@ -171,7 +171,16 @@ async def get_subagent_runtime(
                 selected_agent or self._owner._get_session_agent(parent_session_key) or "kirocrew"
             )
             kwargs = self._owner._parent_runtime_kwargs(parent_session_key)
-            runtime = runtime_type(agent=selected_agent, **kwargs)
+            # Background work by role: it hosts the parent's sub-agents and task
+            # runs, never the parent's own chat. Not when a person opened the
+            # task run that starts it (FOREGROUND). shortcut: a person's task run
+            # that reuses a runtime a sub-agent started stays marked; a per-turn
+            # switch would fix that, if measurement shows it matters.
+            runtime = runtime_type(
+                agent=selected_agent,
+                background_qos=start_priority is StartPriority.BACKGROUND,
+                **kwargs,
+            )
             # Bracket the spawn with identity reads so this runtime carries
             # a spawn stamp: every subagent session demuxed onto it
             # inherits its credential, and the registry pass in
@@ -184,7 +193,12 @@ async def get_subagent_runtime(
             try:
                 await runtime.spawn(**spawn_kwargs)
             except runtime_dead:
-                if attempt >= max_retries:
+                from kiro_crew.agent_sdk import kas_start_was_refused
+
+                # kiro-cli refusing its v3 engine is the host's answer, and the
+                # runtime already recorded it: a respawn on the parent's KAS posture
+                # would only be refused again.
+                if attempt >= max_retries or kas_start_was_refused(runtime):
                     raise
                 attempt += 1
                 self._deps.logger.warning(
@@ -328,6 +342,8 @@ async def _get_or_bootstrap_run_runtime(
                 )
         provider = owner._provider_factory(parent_session_key, agent=agent, cwd=cwd)
         provider.start_priority = start_priority
+        # A task run's own process: background unless a person opened the run.
+        provider.background_qos = start_priority is StartPriority.BACKGROUND
         pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
         await provider.start()
         # The stamp read below suspends before this provider's runtime is

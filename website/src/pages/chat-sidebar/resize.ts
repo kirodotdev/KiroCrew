@@ -5,7 +5,7 @@ import { CHAT_PANE_MIN_W } from '../chat/SidePanel'
 import { useRailWidth } from '../../hooks/useRailWidth'
 import { useWindowWidth } from '../../hooks/useWindowWidth'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { SIDEBAR_LS_KEY, SIDEBAR_PRE_BOARD_LS_KEY } from './persistence'
 
 /** The drag ceiling: the width the root can paint at (sidebarRoomWidth), so a
@@ -50,7 +50,7 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
   // parseStoredSidebarWidth); the paint below holds it to this view and this
   // window, so going back to board view or widening the window restores it.
   const [sidebarWidth, setSidebarWidth] = useState(() =>
-    parseStoredSidebarWidth(localStorage.getItem(SIDEBAR_LS_KEY)) ?? 260)
+    parseStoredSidebarWidth(safeGetItem(SIDEBAR_LS_KEY)) ?? 260)
   // The list views paint a wider saved width at SIDEBAR_MAX, leaving the
   // saved width itself for board view.
   const seatWidth = boardActive ? sidebarWidth : Math.min(sidebarWidth, SIDEBAR_MAX)
@@ -145,7 +145,7 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
   /** Leaving board view: give back the width the user chose before the lanes were
    *  auto-widened, rather than stranding a ~900px sidebar in list view. */
   const restorePreBoardWidth = useCallback(() => {
-    const prior = parseStoredSidebarWidth(localStorage.getItem(SIDEBAR_PRE_BOARD_LS_KEY))
+    const prior = parseStoredSidebarWidth(safeGetItem(SIDEBAR_PRE_BOARD_LS_KEY))
     if (prior !== null) {
       setSidebarWidth(prior)
       safeSetItem(SIDEBAR_LS_KEY, String(prior))

@@ -545,23 +545,27 @@ def refresh_own_kirocrew_link() -> str | None:
     an agent's ``kirocrew`` must run the version its gateway runs. The running
     tree stays alive under its liveness lock while this process runs.
 
+    On Windows the entry is a ``kirocrew.cmd`` forwarder instead of a link
+    (:func:`_refresh_windows_forwarder`).
+
     Returns the link path when it was written, else ``None``. Best-effort:
     never raises.
     """
-    if platform_compat.IS_WINDOWS:
-        return None
     from kiro_crew.config.paths import data_home  # noqa: PLC0415  import cycle
     from kiro_crew.env_own_kirocrew import OWN_KIROCREW_DIR  # noqa: PLC0415  import cycle
 
     target = _resolve_kirocrew_bin()
-    if not (os.path.isabs(target) and os.path.isfile(target) and os.access(target, os.X_OK)):
-        return None
+    resolved = os.path.isabs(target) and os.path.isfile(target) and os.access(target, os.X_OK)
     try:
         directory = data_home() / OWN_KIROCREW_DIR
-        if directory.is_symlink():
+        if platform_compat.is_link_or_junction(directory):
             logger.warning(
-                "Not linking kirocrew: %s is a symlink, not the sealed directory", directory
+                "Not linking kirocrew: %s is a link, not the sealed directory", directory
             )
+            return None
+        if platform_compat.IS_WINDOWS:
+            return _refresh_windows_forwarder(directory, target if resolved else None)
+        if not resolved:
             return None
         mkdirs_owner_only(directory)
         link = directory / "kirocrew"
@@ -576,6 +580,64 @@ def refresh_own_kirocrew_link() -> str | None:
         return None
     logger.info("Linked this install's kirocrew for agent shells: %s -> %s", link, target)
     return str(link)
+
+
+def _refresh_windows_forwarder(directory: Path, target: str | None) -> str | None:
+    """Write ``<directory>\\kirocrew.cmd`` forwarding to *target*, the running launcher.
+
+    A forwarder, not a link: a symlink needs a privilege an ordinary Windows
+    session lacks, and a copy of the launcher would break any launcher that
+    finds its interpreter relative to itself. Rewritten only when its bytes
+    differ, through :func:`atomic_write`, so a concurrent lookup reads the old
+    forwarder or the new one.
+
+    Unlike a POSIX link to a removed tree, which every lookup skips, a forwarder
+    is found whether or not its target still exists. So when no forwarder can be
+    written for this install (*target* is ``None``, cannot be quoted, or lies in
+    *directory* itself, which would make the forwarder call itself), an existing
+    one is removed and the lookup falls through to the rest of PATH. A target
+    under a non-ASCII directory (a user profile such as ``C:\\Users\\José``) is
+    written by its 8.3 short name, which names the same file in ASCII; a volume
+    without short names gets no forwarder. Raises ``OSError`` for the caller to
+    log.
+    """
+    from kiro_crew.atomic_write import atomic_write  # noqa: PLC0415  kept with the call
+    from kiro_crew.env_own_kirocrew import (  # noqa: PLC0415  import cycle
+        WINDOWS_FORWARDER_NAME,
+        windows_forwarder,
+    )
+
+    forwarder = directory / WINDOWS_FORWARDER_NAME
+    body = None
+    if target is not None:
+        inside = os.path.normcase(os.path.dirname(os.path.abspath(target))) == os.path.normcase(
+            os.path.abspath(directory)
+        )
+        if not inside:
+            body = windows_forwarder(target)
+            if body is None and not target.isascii():
+                short = platform_compat.short_path_name(target)
+                body = windows_forwarder(short) if short else None
+    if body is None:
+        if forwarder.is_file():
+            logger.warning(
+                "Removing %s: no forwarder can be written for this install's kirocrew (%s)",
+                forwarder,
+                target,
+            )
+            forwarder.unlink()
+        return None
+    mkdirs_owner_only(directory)
+    try:
+        if forwarder.read_bytes() == body:
+            return None
+    except FileNotFoundError:
+        pass
+    atomic_write(forwarder, body)
+    logger.info(
+        "Wrote this install's kirocrew forwarder for agent shells: %s -> %s", forwarder, target
+    )
+    return str(forwarder)
 
 
 # One-time migrations performed automatically on gateway first-run (so the

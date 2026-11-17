@@ -103,10 +103,11 @@ describe('kiro-light shell hooks', () => {
     // tones (#17839: the crewmate chat's accent fill and the default) keep the
     // hook leading, so the kiro-light tint rule still selects the default one
     // and the accent rules (keyed on `.user-bubble.user-bubble-accent`) win
-    // over it on the other.
+    // over it on the other. A Shared Crew teammate's outlined bubble keeps the
+    // hook too, and `.user-bubble.user-bubble-other` clears the tint.
     const src = read('pages', 'chat', 'UserMessage.tsx')
     expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'UserMessage.tsx'])).toMatch(
-      /isSteer \? 'bg-accent-subtle text-text' : tone === 'accent' \? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'/,
+      /isSteer \? 'bg-accent-subtle text-text' : other \? 'user-bubble user-bubble-other [^']*' : tone === 'accent' \? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'/,
     )
   })
 

@@ -20,6 +20,7 @@ import pytest
 from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew import pdf_extract, pdf_extract_child, sandbox
+from kiro_crew.testing.clock import ManualClock
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX rlimits")
 
@@ -35,6 +36,29 @@ def bomb() -> bytes:
     return flate_bomb_pdf()
 
 
+#: A test-only address-space ceiling for the extractor child: well above the
+#: ~270 MiB the child needs to import pdfplumber, well below the bomb's 1.2 GiB
+#: inflate buffer. Production runs the child at 1 GiB (RLIMIT_AS), where the
+#: child carries the maximum oom_score_adj; on a memory-pressured runner the
+#: kernel OOM killer can take it before RLIMIT_AS refuses the oversized
+#: ``zlib.decompress`` buffer, so the parent reports ``killed`` rather than
+#: ``memory``. RLIMIT_AS refuses the virtual reservation at allocation time,
+#: before the pages are resident, so a tight ceiling keeps the child too small
+#: to be worth killing and the in-child ``MemoryError`` wins every run.
+_TIGHT_EXTRACTOR_AS_BYTES = 400 * 1024 * 1024
+
+
+@pytest.fixture
+def tight_extractor_ceiling(monkeypatch):
+    from kiro_crew import sandbox_rlimit
+
+    monkeypatch.setattr(sandbox_rlimit, "_EXTRACTOR_MAX_AS_BYTES", _TIGHT_EXTRACTOR_AS_BYTES)
+    # The shim argv prefix is cached per profile; drop the cached 1 GiB prefix so
+    # the next spawn rebuilds it with the tight ceiling. monkeypatch restores the
+    # original cache after the test.
+    monkeypatch.setattr(sandbox_rlimit, "_SHIM_ARGV_CACHE", {})
+
+
 class TestBound:
     """The reason the module exists: one page past the ceiling is not fatal."""
 
@@ -47,29 +71,33 @@ class TestBound:
         )
         assert not outcome.resource_failure
 
-    def test_a_flate_bomb_fails_in_the_child_as_a_memory_failure(self, bomb):
+    def test_a_flate_bomb_fails_in_the_child_as_a_memory_failure(
+        self, bomb, tight_extractor_ceiling
+    ):
         """The allocation happens in the child and is refused THERE.
 
         A refused ``zlib.decompress`` buffer is a ``MemoryError`` inside the child,
         which reports it and exits; nothing was allocated in this process. The
         ``memory`` kind (not ``timeout``) is what separates the ceiling firing
-        from the deadline giving up on a child that was still inflating.
+        from the deadline giving up on a child that was still inflating. The
+        ``tight_extractor_ceiling`` fixture holds RLIMIT_AS low enough that the
+        reservation is refused before the OOM killer can reach the child.
         """
-        started = time.monotonic()
         outcome = pdf_extract.extract_pdf_segments(bomb, max_chars=400_001, deadline=_soon())
         assert outcome == pdf_extract.PdfExtraction((), True, "memory", 0)
         assert outcome.resource_failure
-        # Well inside the deadline: the refusal is the first allocation, not the
-        # end of a parse.
-        assert time.monotonic() - started < _FAR / 2
 
-    def test_the_child_itself_exits_with_the_memory_report_under_the_profile(self, bomb):
+    def test_the_child_itself_exits_with_the_memory_report_under_the_profile(
+        self, bomb, tight_extractor_ceiling
+    ):
         """Same fact one layer down, with no parent-side interpretation.
 
         Spawns the child exactly as the parent does and reads its raw protocol: an
         ``error: memory`` line and :data:`EXIT_FAILED`, not a kill and not a
         traceback -- the child survived its own refused allocation long enough to
-        say what happened.
+        say what happened. The ``tight_extractor_ceiling`` fixture holds RLIMIT_AS
+        low enough that the reservation is refused before the OOM killer can reach
+        the child.
         """
         proc = sandbox.popen_limited(
             pdf_extract._child_argv(400_001, 10),
@@ -118,17 +146,52 @@ class TestCallerBudgets:
         assert outcome == pdf_extract.PdfExtraction((), True, "timeout", 0)
 
     def test_a_child_past_the_deadline_is_killed_and_reported(self, monkeypatch):
+        # Asserted as what the call does to the child: it waits on it only for the
+        # time left to the deadline, then kills and reaps it while it would still
+        # sleep, and reports the timeout.
         monkeypatch.setattr(
             pdf_extract,
             "_child_argv",
             lambda *_a: [sys.executable, "-c", "import time; time.sleep(30)"],
         )
-        started = time.monotonic()
-        outcome = pdf_extract.extract_pdf_segments(
-            text_pdf("x"), max_chars=10, deadline=time.monotonic() + 0.5
-        )
+        events: list[tuple[str, float | None]] = []
+        real_popen = pdf_extract.popen_limited
+
+        def recording_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            real_communicate, real_kill = proc.communicate, proc.kill
+
+            def communicate(input=None, timeout=None):
+                events.append(("communicate", timeout))
+                if timeout is None:
+                    # An unbounded wait here outlives the child's 30 s sleep; refuse it.
+                    real_kill()
+                    real_communicate()
+                    raise AssertionError("the caller waited on the child unbounded")
+                return real_communicate(input, timeout)
+
+            def kill():
+                events.append(("kill", None))
+                real_kill()
+
+            proc.communicate, proc.kill = communicate, kill
+            return proc
+
+        monkeypatch.setattr(pdf_extract, "popen_limited", recording_popen)
+        pdf = text_pdf("x")
+        # The deadline is read off a frozen clock on `pdf_extract`, so however long
+        # this host takes to reach the spawn, the call still has 0.5 s left and the
+        # child is always the one that runs out of time.
+        clock = ManualClock()
+        clock.install(monkeypatch, pdf_extract)
+        deadline = clock.monotonic() + 0.5
+        outcome = pdf_extract.extract_pdf_segments(pdf, max_chars=10, deadline=deadline)
         assert outcome == pdf_extract.PdfExtraction((), True, "timeout", 0)
-        assert time.monotonic() - started < 5
+        # The first wait is the time left to the deadline, then the kill, then a
+        # bounded reap.
+        assert [name for name, _ in events] == ["communicate", "kill", "communicate"], events
+        assert events[0][1] == pytest.approx(0.5), events
+        assert events[2][1] == pdf_extract._KILL_WAIT_SECS, events
 
     def test_non_pdf_bytes_are_refused_before_a_spawn(self, monkeypatch):
         def refuse(*_a, **_k):
@@ -703,6 +766,7 @@ class TestParentReadsNothingOnFaith:
 
 def test_helpers_build_a_parseable_pdf_without_the_child():
     """The fixture is what the tests say it is: a real one-page PDF."""
-    pdfplumber = pytest.importorskip("pdfplumber")
+    import pdfplumber
+
     with pdfplumber.open(io.BytesIO(text_pdf("fixture check"))) as pdf:
         assert [p.extract_text() for p in pdf.pages] == ["fixture check"]

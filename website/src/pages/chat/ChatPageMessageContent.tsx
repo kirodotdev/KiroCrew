@@ -121,6 +121,10 @@ export type UserContentRenderOpts = {
   meta?: Record<string, unknown>
   onFileOpen?: (path: string) => void
   onFolderOpen?: (path: string) => void
+  /** The chat's side Artifacts panel opener, the same one assistant and note
+   *  rows pass, so an `/artifacts/<slug>` link in a USER message opens the
+   *  panel instead of a new tab. Absent, the link stays a new-tab link. */
+  onArtifactOpen?: (slug: string) => void
   linkPreviews?: boolean
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
@@ -485,7 +489,7 @@ function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string;
  *  Files referenced inline stay inline chips; the rest become block cards.
  *  Images keep their inline `![image](path)` markdown and are excluded here. */
 function renderFileSegment(opts: FileSegmentOpts) {
-  const { content, meta, onFileOpen, keyBase = 'seg', dirMap, onFolderOpen, linkPreviews, onSessionOpen, sessions, activeSession, messageTs } = opts
+  const { content, meta, onFileOpen, keyBase = 'seg', dirMap, onFolderOpen, onArtifactOpen, linkPreviews, onSessionOpen, sessions, activeSession, messageTs } = opts
   const parsedFiles = parseFiles(content, meta)
   const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
 
@@ -505,7 +509,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // inline-widget seam; a folder-referencing prompt with block markdown is
   // the uncommon combination.
   if (!parsedFiles.length && !dirKeys.length) {
-    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
+    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
   }
 
   // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
@@ -569,7 +573,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // then the cards.
   if (!mentionMap.size && !dirKeys.length) {
     const caption = display.trim()
-    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
   }
 
   // Inline-mention path: render the split computed above.

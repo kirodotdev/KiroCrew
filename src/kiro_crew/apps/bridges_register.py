@@ -28,6 +28,7 @@ from kiro_crew.apps.bridges_mcp import (
 from kiro_crew.apps.bridges_mcp_config import (
     _mcp_lock,
     _read_mcp_json_unlocked,
+    _sync_app_tool_refs,
     _write_mcp_json_unlocked,
 )
 from kiro_crew.apps.bridges_skills import _deregister_skills, _register_skills
@@ -170,6 +171,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
             for k in stale:
                 del servers[k]
             if stale:
+                _sync_app_tool_refs(data, app_name)
                 _write_mcp_json_unlocked(data)
                 logger.info("Pruned %d stale app MCP server(s) for %s", len(stale), app_name)
 
@@ -229,8 +231,8 @@ def register_app(
     # prune — a prune here (a directory walk over every agent file + lock
     # acquisition, scaling with agent count) would run redundantly on each of
     # those calls — or re-registers over kept agent specs and prunes itself, off
-    # the loop: the boot reconcile (reconcile_enabled_app_resources) and a
-    # registry update (routes_lifecycle._reinstall_from_registry).
+    # the loop: the boot reconcile (reconcile_enabled_app_resources) and an
+    # update (routes_lifecycle._prune_dropped_resources).
 
     # MCP servers BEFORE agents: _register_agents copies the app's own registered
     # server specs into each agent config, so registering them afterwards leaves
@@ -382,13 +384,12 @@ def reconcile_enabled_app_resources() -> dict[str, int]:
         counts["skills"] += len(result.skills)
         counts["errors"] += len(result.errors)
         # Finish the shared-file migration for apps that are ALREADY enabled.
-        # Registration now targets the agent config, but an older build wrote
-        # this app's servers into the shared ``~/.kiro/settings/mcp.json``, and
-        # re-registering does not remove what is already there. Scrubbing only
-        # on deregister meant the leak this change exists to fix (one app's
-        # private tools visible to Kiro IDE and every other kiro-cli agent, plus
-        # dead-port entries that break unrelated sessions) survived until the
-        # user happened to disable the app. Best-effort and idempotent.
+        # Registration targets the agent config, but an install may still have
+        # this app's servers in the shared ``~/.kiro/settings/mcp.json``, and
+        # re-registering does not remove them. Scrubbing only on deregister would
+        # leave one app's private tools visible to Kiro IDE and every other
+        # kiro-cli agent, plus dead-port entries that break unrelated sessions,
+        # until the user disables the app. Best-effort and idempotent.
         scrubbed = _scrub_legacy_shared_mcp(name)
         if scrubbed:
             logger.info(
@@ -565,9 +566,9 @@ def deregister_app(app_name: str, *, keep_agents: bool = False) -> RegistrationR
 
     Removes symlinks and cron manifests.  Does not remove the app directory.
 
-    ``keep_agents`` leaves the agent specs for a registry update that registers the
-    app again: registration rewrites each in place, so one it cannot rewrite keeps
-    its last good copy and the user's edits (app-kit-platform §3).
+    ``keep_agents`` leaves the agent specs for an update that registers the app
+    again: registration rewrites each in place, so one it cannot rewrite keeps its
+    last good copy and the user's edits (app-kit-platform §3).
 
     Does NOT touch session resume pointers — see
     :func:`discard_app_session_pointers` for why that belongs to uninstall alone.

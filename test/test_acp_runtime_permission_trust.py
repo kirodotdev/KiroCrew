@@ -22,10 +22,15 @@ from acp_runtime_helpers import (
     _start_reader,
     _stop_reader,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.testing.wait import await_until
+
+# A GitHub token with a valid checksum, which the plan redacts (AWS key IDs
+# are kept visible as identifiers).
+_SECRET = github_classic(seed=15)
 
 
 async def _drain_answers(rt) -> None:
@@ -562,7 +567,7 @@ def test_shared_permission_event_carries_redaction_provenance_without_secret():
             "toolCallId": "tc-secret",
             "title": "Run Command",
             "kind": "execute",
-            "rawInput": {"command": "echo AKIAIOSFODNN7EXAMPLE"},
+            "rawInput": {"command": f"echo {_SECRET}"},
         },
         input_cache,
         shell_cache=shell_cache,
@@ -588,7 +593,7 @@ def test_shared_permission_event_carries_redaction_provenance_without_secret():
     )
 
     assert event.tool_input_redacted is True
-    assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_input
+    assert _SECRET not in event.tool_input
     assert "[REDACTED: credential]" in event.tool_input
     assert redacted_cache["tc-secret"] is True
     repeated, _ = build_permission_event(
@@ -719,14 +724,18 @@ async def test_fidelity_unaware_consumer_gate_rejects_and_audits():
         kinds = [ev.kind for ev in events]
         assert EVENT_PERMISSION_REQUEST not in kinds  # never yielded
         assert audited and audited[0][2] == "child_low_fidelity_unaware_consumer"
-        # The reject was actually SENT (answered, not dropped).
-        answer = None
-        for call in proc.stdin.write.call_args_list:
-            frame = json.loads(call.args[0].decode())
-            if frame.get("id") == 77 and "result" in frame:
-                answer = frame
-        assert answer is not None
+        # The reject was actually SENT (answered, not dropped), after a host
+        # notice steered into the turn: the reject alone reads as a user's no.
+        frames = [json.loads(call.args[0].decode()) for call in proc.stdin.write.call_args_list]
+        answers = [i for i, f in enumerate(frames) if f.get("id") == 77 and "result" in f]
+        assert len(answers) == 1
+        answer = frames[answers[0]]
         assert answer["result"]["outcome"]["outcome"] in ("selected", "cancelled")
+        steers = [i for i, f in enumerate(frames) if f.get("method") == "_session/steer"]
+        assert len(steers) == 1 and steers[0] < answers[0], frames
+        notice = frames[steers[0]]["params"]["message"]
+        assert "[Kiro Crew host notice]" in notice and "NOT a user action" in notice
+        assert "verifiable security context" in notice
     finally:
         await _drain_audits(rt)
         await _stop_reader(task)

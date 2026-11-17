@@ -223,7 +223,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         # Every field read below is a membership test followed by a subscript, and
         # a JSON array satisfies `"model" in body` while `body["model"]` raises
         # TypeError — a 500 out of a partial-update endpoint, and out of the
@@ -347,6 +347,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section["polish"] = body["polish"]
             if "dictation_panel" in body and isinstance(body["dictation_panel"], bool):
                 stt_section["dictation_panel"] = body["dictation_panel"]
+            if "dictation_note" in body and isinstance(body["dictation_note"], bool):
+                stt_section["dictation_note"] = body["dictation_note"]
             # Every bound comes from kiro_crew.stt.limits, which is what the
             # recogniser itself reads, and the endpoint accepts exactly the range
             # the config loader will keep. Refusing here rather than storing a
@@ -479,6 +481,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "submit_on_release": cfg.stt.submit_on_release,
             "slide_to_send": cfg.stt.slide_to_send,
             "dictation_panel": cfg.stt.dictation_panel,
+            "dictation_note": cfg.stt.dictation_note,
             "polish": cfg.stt.polish,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,

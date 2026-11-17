@@ -1,7 +1,7 @@
 """A person's steer is judged by the lineage the slot frame reads, and recorded once
 for a message that reached the crew member.
 
-The composer send (``chat_send._person_crew_worker_root``) reads the session tree's
+The composer send (``crew_steer._person_crew_worker_root``) reads the session tree's
 edges over the birth stamp, so a released session is a plain session again. A
 stopped send records nothing, a steer queued behind an earlier entry is recorded
 when it is delivered, and the item a steer lands on is the member's open one, on a
@@ -62,7 +62,7 @@ class _Req(dict):
 
 
 def test_a_released_session_typed_into_is_a_plain_send(monkeypatch):
-    from kiro_crew.dashboard.chat_api import chat_send
+    from kiro_crew.dashboard import chat_handlers
     from kiro_crew.dashboard.handlers import source_providers
     from kiro_crew.dashboard.session_control_parts import crew_filing
 
@@ -73,19 +73,19 @@ def test_a_released_session_typed_into_is_a_plain_send(monkeypatch):
     # Born under the conductor: a steer while the edge stands.
     monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: False)
     monkeypatch.setattr(crew_filing, "_frame_parents", lambda s: None)
-    assert chat_send._person_crew_worker_root(object(), state, worker, "") == "r"  # type: ignore[arg-type]
+    assert chat_handlers._person_crew_worker_root(object(), state, worker, "") == "r"  # type: ignore[arg-type]
     # Released: the settled tree has no edge, so the birth stamp does not count.
     monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: True)
     monkeypatch.setattr(crew_mode, "persisted_tree_slots", lambda: frozenset({"r", "w"}))
     monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
     monkeypatch.setattr(crew_filing, "_frame_parents", lambda s: {"r": None, "w": None})
-    assert chat_send._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
+    assert chat_handlers._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
 
 
 def test_with_the_routing_off_a_crew_members_composer_is_a_plain_send(monkeypatch):
     """On main the flag is off: typing into a crew member's own chat records no
     steer and refuses nothing, as it does today."""
-    from kiro_crew.dashboard.chat_api import chat_send
+    from kiro_crew.dashboard import chat_handlers
     from kiro_crew.dashboard.handlers import source_providers
     from kiro_crew.dashboard.session_control_parts import crew_filing
 
@@ -96,7 +96,7 @@ def test_with_the_routing_off_a_crew_members_composer_is_a_plain_send(monkeypatc
     root = _live("r", "kirocrew-conductor")
     worker = _live("w", "kirocrew-worker", created_by="r")
     state = SimpleNamespace(_slots={"r": root, "w": worker})
-    assert chat_send._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
+    assert chat_handlers._person_crew_worker_root(object(), state, worker, "") == ""  # type: ignore[arg-type]
 
 
 # ── a send that never reached the member records nothing ─────────────────────
@@ -107,11 +107,10 @@ async def test_a_stopped_composer_send_records_no_steer(monkeypatch):
     from aiohttp import web
 
     from kiro_crew.dashboard import chat_handlers
-    from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import crew_workers
 
     async def fake_send(request):
-        request[chat_send._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "x")
+        request[chat_handlers._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "x")
         return web.json_response({"ok": True, "slot": WORKER, "stopped": True})
 
     async def boom(*_a, **_k):
@@ -190,6 +189,7 @@ def test_an_open_item_wins_over_a_closed_one_for_the_same_member():
         )["item"].item_id
         ids.append(item_id)
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=ids[1], worker_session_key=WORKER)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=ids[1], verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[1], state="accepted")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=ids[0], worker_session_key=WORKER)
     items = crew_workers._ledger_items(CONDUCTOR)
@@ -206,6 +206,7 @@ def test_a_grandchilds_item_is_read_from_the_sub_conductor_that_bound_it():
         sub, "create", title="nested", acceptance={"kind": "human_approval"}
     )["item"].item_id
     wl.apply_conductor_action(sub, "bind", item_id=item_id, worker_session_key=grandchild)
+    wl.apply_conductor_action(sub, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(sub, "close", item_id=item_id, state="accepted")
     # The root's own ledger never names the grandchild.
     assert grandchild not in crew_workers._ledger_items(CONDUCTOR)
@@ -221,7 +222,7 @@ def test_a_grandchilds_item_is_read_from_the_sub_conductor_that_bound_it():
 
 @pytest.fixture
 def _held(monkeypatch):
-    from kiro_crew.dashboard.chat_api import chat_send
+    from kiro_crew.dashboard import chat_handlers
     from kiro_crew.dashboard.handlers import crew_workers
 
     calls: list[tuple[str, str, str]] = []
@@ -231,8 +232,8 @@ def _held(monkeypatch):
         return {"ledger_event": "it_1", "ledger_error": None}
 
     monkeypatch.setattr(crew_workers, "person_steer", fake_steer)
-    monkeypatch.setattr(chat_send, "_HELD_CREW_STEERS", {})
-    return SimpleNamespace(cs=chat_send, calls=calls)
+    monkeypatch.setattr(chat_handlers, "_HELD_CREW_STEERS", {})
+    return SimpleNamespace(cs=chat_handlers, calls=calls)
 
 
 @pytest.mark.asyncio
@@ -260,7 +261,7 @@ def test_a_taken_back_steer_is_never_recorded(_held):
 
 
 def test_a_requeued_steer_moves_onto_its_queue_entry(_held):
-    from kiro_crew.dashboard.chat_api.chat_send import CREW_STEER_QUEUE_KEY
+    from kiro_crew.dashboard.chat_handlers import CREW_STEER_QUEUE_KEY
 
     slot = SimpleNamespace(key=WORKER)
     entry: dict[str, Any] = {"id": "q1", "content": "later"}
@@ -315,11 +316,10 @@ async def test_a_composer_steer_into_a_running_turn_reports_pending(monkeypatch)
     from aiohttp import web
 
     from kiro_crew.dashboard import chat_handlers
-    from kiro_crew.dashboard.chat_api import chat_send
     from kiro_crew.dashboard.handlers import crew_workers
 
     async def fake_send(request):
-        request[chat_send._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "x")
+        request[chat_handlers._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, "x")
         return web.json_response({"ok": True, "steered": True})
 
     async def boom(*_a, **_k):

@@ -64,14 +64,19 @@ class TestAllocate:
 
         assert path.parent == scratch_root
         assert path.is_dir()
-        assert path.name.startswith("chat-31-")
         if sys.platform != "win32":
             assert stat.S_IMODE(os.stat(path).st_mode) == 0o700
 
-    def test_label_is_sanitized_and_bounded(self, scratch_root: Path) -> None:
-        path = sc.allocate_scratch("weird/label with spaces!" + "x" * 100)
-        assert "/" not in path.name and " " not in path.name
-        assert len(path.name) <= 40 + 1 + 8  # label cap + dash + token
+    @pytest.mark.parametrize("label", ["runtime", "agent:main:dashboard:" + "x" * 40])
+    def test_name_leaves_room_for_a_unix_socket(self, scratch_root: Path, label: str) -> None:
+        # The MCP servers an agent starts inherit this dir as their temp dir. The MATLAB server
+        # binds a socket 53 bytes below it and refuses a socket path over 105 bytes; that must
+        # hold on a default Linux or Windows home, measured as the bytes added below the home.
+        path = sc.allocate_scratch(label)
+        added = len(str(path)) - len(str(scratch_root.parent))
+        socket = "/matlab-mcp-server-622647615/watchdog-3481020487.sock"
+        for home in ("/home/someuser/.kiro/crew", "C:\\Users\\someuser\\.kiro\\crew"):
+            assert len(home) + added + len(socket) <= 105, home
 
     def test_two_allocations_are_distinct(self, scratch_root: Path) -> None:
         assert sc.allocate_scratch("a") != sc.allocate_scratch("a")
@@ -829,10 +834,10 @@ class TestLivenessSweep:
         path = sc.allocate_scratch("prov")
         assert (path / sc.OWNER_FILENAME).read_text() == str(os.getpid())
 
-    def test_unowned_dir_is_never_deleted(self, scratch_root: Path) -> None:
-        # Allocation writes a provisional owner atomically-with-creation, so
-        # an ownerless dir indicates a state this code did not produce --
-        # deleting on absence of evidence is how live work gets lost.
+    def test_unowned_dir_is_kept_in_place_within_the_week(self, scratch_root: Path) -> None:
+        # An ownerless dir has no liveness to read, and a failed owner update
+        # leaves a live process's tree that way (adopt_owner), so ten idle hours
+        # are not enough: deleting on absence of evidence loses live work.
         path = sc.allocate_scratch("unowned")
         (path / sc.OWNER_FILENAME).unlink()
         self._age(path, 10 * sc._UNOWNED_GRACE_SECONDS)
@@ -848,6 +853,101 @@ class TestLivenessSweep:
         removed = sc.sweep_dead_scratch()
 
         assert path.exists() and removed == 0
+
+    def test_an_ownerless_tree_is_quarantined_after_a_week_unwritten(
+        self, scratch_root: Path, caplog
+    ) -> None:
+        # No owner means no liveness to read, so only a week with no write ends
+        # the tree, and into the quarantine rather than deleted.
+        caplog.set_level("INFO", logger=sc.__name__)
+        path = sc.allocate_scratch("unowned")
+        (path / sc.OWNER_FILENAME).unlink()
+        start = time.time()
+        week, hour = sc._UNOWNED_IDLE_SECONDS, sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=start + week - hour) == 0
+        assert path.exists()
+
+        assert sc.sweep_dead_scratch(now=start + week + hour) == 0
+        assert not os.path.lexists(path)
+        [moved] = [p for p in sc.quarantine_dir().iterdir() if p.name.endswith(f"-{path.name}")]
+        [line] = [r.getMessage() for r in caplog.records if str(moved) in r.getMessage()]
+        assert f"moved {path.name} to {moved} instead of deleting it" in line
+        assert "it has no owner record" in line
+
+    def test_an_ownerless_dir_without_an_allocator_name_is_never_moved(
+        self, scratch_root: Path
+    ) -> None:
+        # Only a name allocate_scratch gives is the sweep's: a folder made by
+        # hand or a clone under any other name is someone's work.
+        hand_made = scratch_root / "pr15-repair2"
+        dated = scratch_root / "report-20241105"  # all hex digits, but no letter
+        clone = scratch_root / "ew-bump-0131"
+        leaked = scratch_root / "runtime-0123abcd"  # an older release's allocator name
+        for path in (hand_made, dated, clone, leaked):
+            path.mkdir(parents=True)
+            (path / "notes.txt").write_text("mine\n")
+        (clone / ".git").mkdir()
+        now = time.time() + sc._UNOWNED_IDLE_SECONDS + sc.QUARANTINE_TTL_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 0
+        assert (hand_made / "notes.txt").is_file() and (dated / "notes.txt").is_file()
+        assert (clone / ".git").is_dir() and (clone / "notes.txt").is_file()
+        assert not os.path.lexists(leaked)
+        [moved] = [p for p in sc.quarantine_dir().iterdir() if p.name.endswith(f"-{leaked.name}")]
+        assert (moved / "notes.txt").is_file()
+
+    def test_an_ownerless_dir_under_a_relocated_root_is_never_moved(
+        self, scratch_root: Path, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A KIROCREW_SCRATCH_ROOT override can hold the operator's own folders,
+        # whatever their names, so an ownerless one there is never this sweep's.
+        relocated = tmp_path / "data-drive" / "scratch"
+        theirs = relocated / "report-20241105"
+        theirs.mkdir(parents=True)
+        (theirs / "notes.txt").write_text("mine\n")
+        monkeypatch.setattr(sc, "scratch_root", lambda: relocated)
+
+        assert sc.sweep_dead_scratch(now=time.time() + 2 * sc._UNOWNED_IDLE_SECONDS) == 0
+        assert (theirs / "notes.txt").is_file()
+
+    def test_an_ownerless_tree_a_live_process_uses_is_kept(
+        self, scratch_root: Path, monkeypatch, caplog
+    ) -> None:
+        # An "unwritable" adoption leaves a live successor's tree unowned on
+        # purpose; a process still using it keeps it however long it is quiet.
+        path = sc.allocate_scratch("unowned-in-use")
+        (path / sc.OWNER_FILENAME).unlink()
+        monkeypatch.setattr(
+            sc.agent_scratch_users, "scratch_users", lambda root, keys: {path.name: os.getpid()}
+        )
+
+        assert sc.sweep_dead_scratch(now=time.time() + 2 * sc._UNOWNED_IDLE_SECONDS) == 0
+        assert path.is_dir()
+        assert f"it has no owner record, but live pid {os.getpid()} still uses it" in caplog.text
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows has no change time, so a far-future date stands there",
+    )
+    def test_a_far_future_mtime_is_not_a_write_but_clock_skew_is(self, scratch_root: Path) -> None:
+        # A write stamps the current clock, so a file utime() dated years ahead
+        # (a test fixture's) must not keep a dead tree until that date; a few
+        # minutes ahead is ordinary clock skew and still reads as fresh.
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+        far = sc.allocate_scratch("far")
+        skewed = sc.allocate_scratch("skewed")
+        for path, ahead in ((far, 10 * 365 * 86400.0), (skewed, 600.0)):
+            sc.record_owner(path, 2**22 - 1)  # almost surely dead
+            fixture = path / "pytest-of-user" / "data.csv"
+            fixture.parent.mkdir()
+            fixture.write_text("x\n")
+            os.utime(fixture, (now + ahead, now + ahead))
+            os.utime(path, (now + ahead, now + ahead))
+
+        assert sc.sweep_dead_scratch(now=now) == 1
+        assert not far.exists()
+        assert skewed.exists()
 
     def test_out_of_range_owner_is_kept_without_blocking_later_cleanup(
         self, scratch_root: Path, monkeypatch
@@ -867,7 +967,9 @@ class TestLivenessSweep:
             ordered.setattr(
                 os,
                 "scandir",
-                lambda path: sorted(real_scandir(path), key=lambda entry: entry.name),
+                lambda path: sorted(
+                    real_scandir(path), key=lambda entry: (entry.name != corrupt.name, entry.name)
+                ),
             )
 
             # The sweep reaps through ``platform_compat.rmtree_force`` and only
@@ -1629,13 +1731,17 @@ class TestGitTreesAreQuarantined:
     def test_a_stamped_name_outside_the_quarantine_is_not_expired(self, scratch_root: Path) -> None:
         # The move time is read only from entries in the quarantine; a
         # directory in the root with the same kind of name is judged like any
-        # other scratch directory, and one with no owner record is kept.
+        # other scratch directory, and one with no owner record is moved into
+        # the quarantine under the time of this move, its files intact.
         stray = scratch_root / "20200101T000000Z-gitwork-deadbeef"
         stray.mkdir(parents=True)
         (stray / "work.txt").write_text("no owner record\n")
+        now = time.time() + 10 * sc.QUARANTINE_TTL_SECONDS
 
-        assert sc.sweep_dead_scratch(now=time.time() + 10 * sc.QUARANTINE_TTL_SECONDS) == 0
-        assert (stray / "work.txt").is_file()
+        assert sc.sweep_dead_scratch(now=now) == 0
+        moved = self._moved(stray)
+        assert sc._quarantined_at(moved.name) == float(int(now))
+        assert (moved / "work.txt").is_file()
 
 
 posix_only = pytest.mark.skipif(

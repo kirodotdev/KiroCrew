@@ -26,7 +26,7 @@ vi.mock('../api/client', () => ({
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     ackNotification: vi.fn().mockResolvedValue({}),
     deleteNotification: (...args: unknown[]) => mockDeleteNotification(...args),
-    resolveApproval: (...args: unknown[]) => mockResolveApproval(...args),
+    decideApproval: (...args: unknown[]) => mockResolveApproval(...args),
     updateNotificationChannelSettings: vi.fn().mockResolvedValue({}),
   },
 }))
@@ -39,7 +39,7 @@ vi.mock('../lib/disintegrate', async importOriginal => ({
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 const approval: Notification = {
-  kind: 'approval', ts: '1', title: 'Tool approval: shell', body: 'ls', approval_id: 'apr-1', acked: false, _local: true,
+  kind: 'approval', ts: '1', title: 'Tool approval: shell', body: 'ls', approval_id: 'apr-1', approval_instance: 'inst-1', acked: false, _local: true,
 }
 const notFound = () => Object.assign(new Error('not found or expired'), { status: 404 })
 const DISMISS = () => i18nT('components.notifications.notificationFeed.dismiss_notification')
@@ -118,7 +118,7 @@ describe('NotificationFeed retired approvals', () => {
         const view = views[name]
         fireEvent.click(view.getByRole('button', { name: /^Approve$/ }))
         const notice = await view.findByTestId('notif-approval-notice')
-        expect(notice).toHaveTextContent(i18nT('components.approvalCard.decision_failed'))
+        expect(notice).toHaveTextContent(i18nT('components.notifications.notificationFeed.decision_failed_retry'))
         await waitFor(() => { expect(scrolled).toContain(notice) })
         views.unmount()
       }
@@ -151,35 +151,10 @@ describe('NotificationFeed retired approvals', () => {
     const notice = await page.findByTestId('notif-approval-notice')
     expect(notice.closest('[data-notif-row]')?.getAttribute('data-ts')).toBe('1')
     // A 5xx is the layer between, in its own words: the row says it plainly.
-    expect(notice).toHaveTextContent(i18nT('components.approvalCard.decision_failed'))
+    expect(notice).toHaveTextContent(i18nT('components.notifications.notificationFeed.decision_failed_retry'))
     expect(notice.textContent).not.toContain('boom')
     expect(page.getByRole('button', { name: /^Approve$/ })).toBeEnabled()
     expect(store.getState().notifications.retiredApprovals ?? {}).toEqual({})
-  })
-
-  it('a retryable failure on a row that names its request says pressing again is safe; a row decided by id keeps the plain hedge', async () => {
-    const targeted: Notification = { ...approval, approval_instance: 'inst-1', slot: 'dashboard:s1' }
-    for (const [row, key] of [
-      [targeted, 'components.notifications.notificationFeed.decision_failed_retry'],
-      [approval, 'components.approvalCard.decision_failed'],
-    ] as const) {
-      mockResolveApproval.mockRejectedValueOnce(new ApiError(503, 'gateway busy, try again'))
-      const views = renderBoth([row])
-      fireEvent.click(views.page.getByRole('button', { name: /^Approve$/ }))
-      expect(await views.page.findByTestId('notif-approval-notice')).toHaveTextContent(i18nT(key))
-      // The safe-retry copy rides only on a decide that named its request.
-      const sent = mockResolveApproval.mock.calls.at(-1) ?? []
-      if (row === targeted) {
-        expect(sent.slice(0, 3)).toEqual(['apr-1', 'approve', { origin: 'coordinator', slot: 'dashboard:s1', instance: 'inst-1' }])
-      } else {
-        expect(sent[2]).toBeUndefined()
-      }
-      const other = key === 'components.approvalCard.decision_failed'
-        ? 'components.notifications.notificationFeed.decision_failed_retry'
-        : 'components.approvalCard.decision_failed'
-      expect(views.page.queryByText(i18nT(other))).toBeNull()
-      views.unmount()
-    }
   })
 
   it('a retryable failure renders below the still-live Approve/Reject in both variants', async () => {
@@ -196,15 +171,15 @@ describe('NotificationFeed retired approvals', () => {
     }
   })
 
-  it('a 404 on decide says "no longer pending" through the error notice, in both views', async () => {
+  it('a 404 on decide says "no longer pending" as status, in both views', async () => {
     mockResolveApproval.mockRejectedValueOnce(notFound())
     const { page, popover } = renderBoth([approval])
     fireEvent.click(page.getByRole('button', { name: /^Approve$/ }))
     await page.findByTestId('notif-approval-retired')
     for (const view of [page, popover]) {
       const notice = view.getByTestId('notif-approval-retired')
-      // The request failed, so it is an error (role=alert), not muted status.
-      expect(notice).toHaveAttribute('role', 'alert')
+      // The approval is gone, so it is status, not an error (#18203).
+      expect(notice).toHaveAttribute('role', 'status')
       // The same sentence the chat card, tool group, Subagents panel and
       // command center show for a refused press.
       expect(notice).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
@@ -212,26 +187,10 @@ describe('NotificationFeed retired approvals', () => {
     }
   })
 
-  it('a row that names its request decides with that target, a slotless one with an empty slot', async () => {
-    const bound: Notification = { ...approval, slot: 'slot-a', approval_instance: 'inst-a' }
-    const slotless: Notification = { ...approval, ts: '2', approval_id: 'apr-2', approval_instance: 'inst-2' }
-    const { page } = renderBoth([bound, slotless])
-    const rowOf = (ts: string) => page.getAllByRole('button', { name: /^Approve$/ })
-      .find(b => b.closest('[data-notif-row]')?.getAttribute('data-ts') === ts) as HTMLElement
-    fireEvent.click(rowOf('1'))
-    await waitFor(() => expect(mockResolveApproval).toHaveBeenCalledWith('apr-1', 'approve', { origin: 'coordinator', slot: 'slot-a', instance: 'inst-a' }))
-    fireEvent.click(rowOf('2'))
-    // A cron, autonudge or task-runner approval has no owning slot: it still
-    // names its instance, so the server refuses it once another request holds
-    // the id.
-    await waitFor(() => expect(mockResolveApproval).toHaveBeenCalledWith('apr-2', 'approve', { origin: 'coordinator', slot: '', instance: 'inst-2' }))
-  })
-
   it('a decision that lands removes the row from both views, retiring nothing', async () => {
     const { store, page, popover } = renderBoth([approval])
     fireEvent.click(page.getByRole('button', { name: /^Approve$/ }))
     await waitFor(() => { expect(store.getState().notifications.items).toEqual([]) })
-    expect(mockResolveApproval).toHaveBeenCalledWith('apr-1', 'approve')
     expect(mockDeleteNotification).not.toHaveBeenCalled()
     expect(store.getState().notifications.retiredApprovals ?? {}).toEqual({})
     for (const view of [page, popover]) expect(view.queryByText(approval.title)).toBeNull()
@@ -277,6 +236,18 @@ describe('NotificationFeed retired approvals', () => {
     expect(api.ackNotification).not.toHaveBeenCalled()
   })
 
+  it("the reader's own refused press reads the row: they are looking at the outcome", async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.ackNotification).mockClear()
+    mockResolveApproval.mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    const { store, page } = renderBoth([approval])
+    fireEvent.click(page.getByRole('button', { name: /^Approve$/ }))
+    await waitFor(() => expect(store.getState().notifications.items[0].acked).toBe(true))
+    // Read in this tab only: the server holds no approval note to ack.
+    expect(api.ackNotification).not.toHaveBeenCalled()
+    expect(mockDeleteNotification).not.toHaveBeenCalled()
+  })
+
   it('a retired critical approval drops the red border and the unread dot in both views', () => {
     // The mark alone must be enough, even on a row whose read flag is clear.
     // An unread broadcast leaves a settled row read, so the store is seeded
@@ -319,7 +290,7 @@ describe('NotificationFeed retired approvals', () => {
     await act(async () => { d.reject(notFound()) })
     await waitFor(() => { expect(store.getState().notifications.retiredApprovals).toEqual({ '1': true }) })
     expect(popover.getByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
-    expect(page.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'alert')
+    expect(page.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'status')
     expect(store.getState().notifications.approvalDecisions).toEqual({})
   })
   it('an expiry frame on an idle row removes it at once', () => {
@@ -382,7 +353,7 @@ describe('NotificationFeed retired approvals', () => {
       i18nT('components.approvalCard.decision_not_recorded_error', { error: 'this approval needs an owner' }))
   })
   it('a decision that lands on a stored approval note whose DELETE fails withdraws the buttons and says the decision was recorded, in neutral styling', async () => {
-    const note: Notification = { kind: 'approval', ts: '8', title: 'App approval note', body: 'x', approval_id: 'apr-8', acked: false }
+    const note: Notification = { kind: 'approval', ts: '8', title: 'App approval note', body: 'x', approval_id: 'apr-8', approval_instance: 'inst-8', acked: false }
     mockDeleteNotification.mockRejectedValueOnce(new Error('offline'))
     const store = createTestStore({ notifications: { items: [note] } as RootState['notifications'] })
     renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} variant="panel" />, { store })
@@ -473,7 +444,28 @@ describe('NotificationFeed retired approvals', () => {
     }
   })
 
-  it('a decide on the live row of a recurring id removes that row and leaves the retired one', async () => {
+  it('the bell popover decides the request its row names', async () => {
+    const row: Notification = { ...approval, approval_instance: 'inst-pop', slot: 'chat-2' }
+    const store = createTestStore({ notifications: { items: [row] } as RootState['notifications'] })
+    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} variant="mac" />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }))
+    expect(mockResolveApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'apr-1', slot: 'chat-2', instance: 'inst-pop' }, 'reject')
+    await waitFor(() => { expect(store.getState().notifications.items).toEqual([]) })
+  })
+
+  it.each(['panel', 'mac'] as const)('a row that names no request sends nothing and retires as refused (%s)', async variant => {
+    // Written by an older build without the instance: no request can be named,
+    // so no id is sent in its place.
+    const { approval_instance: _none, ...row } = approval
+    const store = createTestStore({ notifications: { items: [row] } as RootState['notifications'] })
+    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} variant={variant} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    expect(mockResolveApproval).not.toHaveBeenCalled()
+    await waitFor(() => { expect(store.getState().notifications.retiredApprovals).toEqual({ '1': true }) })
+    expect(await screen.findByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+  })
+
+  it('a decide on the live row of a recurring id is bound to that row\'s own instance', async () => {
     // A press retired request A; the caller reused its id for request B.
     const rowA: Notification = { ...approval, approval_instance: 'inst-a' }
     const rowB: Notification = { ...approval, ts: '3', title: 'Tool approval: shell again', approval_instance: 'inst-b', slot: 'chat-1' }
@@ -483,8 +475,7 @@ describe('NotificationFeed retired approvals', () => {
     renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} variant="panel" />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
     expect(mockResolveApproval).toHaveBeenCalledTimes(1)
-    // Row B names its request, so the decide carries B's target.
-    expect(mockResolveApproval).toHaveBeenCalledWith('apr-1', 'approve', { origin: 'coordinator', slot: 'chat-1', instance: 'inst-b' })
+    expect(mockResolveApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'apr-1', slot: 'chat-1', instance: 'inst-b' }, 'approve')
     await waitFor(() => { expect(store.getState().notifications.items.map(n => n.ts)).toEqual(['1']) })
     expect(store.getState().notifications.retiredApprovals).toEqual({ '1': true })
   })
@@ -545,12 +536,12 @@ describe('NotificationFeed retired approvals', () => {
     ['lands and its DELETE fails', 'notif-decision-recorded', () => { mockDeleteNotification.mockRejectedValueOnce(new Error('offline')) }],
     ['is refused as no longer pending', 'notif-approval-retired', () => { mockResolveApproval.mockRejectedValueOnce(notFound()) }],
   ])('a retry from outside the feed that %s hides the feed\'s retryable failure', async (_label, shown, arrange) => {
-    const note: Notification = { kind: 'approval', ts: '8', title: 'App approval note', body: 'x', approval_id: 'apr-8', acked: false }
+    const note: Notification = { kind: 'approval', ts: '8', title: 'App approval note', body: 'x', approval_id: 'apr-8', approval_instance: 'inst-8', acked: false }
     mockResolveApproval.mockRejectedValueOnce(new ApiError(503, 'gateway busy, try again'))
     const store = createTestStore({ notifications: { items: [note] } as RootState['notifications'] })
     renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} variant="panel" />, { store })
     fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
-    const failed = i18nT('components.approvalCard.decision_failed')
+    const failed = i18nT('components.notifications.notificationFeed.decision_failed_retry')
     expect(await screen.findByTestId('notif-approval-notice')).toHaveTextContent(failed)
     arrange()
     // The detail panel decides through this same thunk.

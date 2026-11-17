@@ -16,6 +16,7 @@ builders they share.
 
 from __future__ import annotations
 
+import codecs
 import json
 import re
 from pathlib import Path
@@ -37,6 +38,7 @@ from kiro_crew.apps.plugin_import import (
     convert_plugin_package,
     find_plugin_manifest,
     normalize_app_name,
+    read_manifest_name,
     resolve_declared_path,
 )
 
@@ -96,6 +98,19 @@ class TestManifestDiscovery:
         path, fmt = find_plugin_manifest(root)
         assert path == root / ".codex-plugin" / "plugin.json"
         assert fmt == FORMAT_VENDOR_DIRECTORY
+
+    def test_a_manifest_saved_with_a_byte_order_mark_reads_like_one_without(self, tmp_path):
+        # Windows editors save UTF-8 "with BOM"; one leading mark is not content.
+        root = _package(tmp_path)
+        manifest = root / "plugin.json"
+        manifest.write_bytes(
+            codecs.BOM_UTF8
+            + json.dumps(
+                {"$schema": f"{SCHEMA_NAMESPACE_PREFIX}1.0.0/plugin.schema.json", "name": "bom"}
+            ).encode("utf-8")
+        )
+        assert find_plugin_manifest(root) == (manifest, FORMAT_SCHEMA_QUALIFIED)
+        assert read_manifest_name(manifest) == "bom"
 
     def test_several_vendor_directories_resolve_deterministically(self, tmp_path):
         root = _package(tmp_path, vendor=".zzz-plugin")

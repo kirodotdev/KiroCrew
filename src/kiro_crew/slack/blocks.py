@@ -8,7 +8,18 @@ from __future__ import annotations
 
 import json
 
-from kiro_crew.slack.format import build_link_dashboard_button
+from kiro_crew.messaging.cards import (
+    Actions,
+    Button,
+    Card,
+    Context,
+    Fit,
+    Platform,
+    Section,
+    Text,
+    render,
+)
+from kiro_crew.slack.format import LINK_DASHBOARD_ACTION
 
 _MAX_MSG_CHARS = 4000
 _MAX_MESSAGES = 5
@@ -483,42 +494,56 @@ REVIEW_ACTION_REVISE = "mc_review_revise"
 REVIEW_ACTION_CANCEL = "mc_review_cancel"
 
 
+def _slack_blocks(card: Card) -> list[dict]:
+    return render(card, Platform.SLACK).blocks
+
+
+# The four Stop and working cards hold constant text, declared Fit.REFUSE: it is
+# far under every Slack cap. Their only variable input is the session key, in the
+# ids and the button value. A session key has no length bound, so those declare
+# Fit.KEEP: an over-cap key goes out unchanged, as the hand-built payload did, and
+# Slack answers it the same way. A builder never raises where it returned blocks.
+
+
 def build_stopping_blocks(session_key: str) -> list[dict]:
     """Ephemeral 'Stopping…' message with a Kill Now escalation button."""
-    return [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "⏹  *Stopping…*\nCooperative cancel in progress."},
-        },
-        {
-            "type": "actions",
-            "block_id": f"stop-actions-{session_key}",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": "stop_kill_now",
-                    "style": "danger",
-                    "text": {"type": "plain_text", "text": "Kill Now"},
-                    "value": session_key,
-                }
-            ],
-        },
-    ]
+    return _slack_blocks(
+        Card(
+            body=(
+                Section(
+                    text=Text(
+                        ("⏹  **Stopping…**\nCooperative cancel in progress.",),
+                        fit=Fit.REFUSE,
+                    )
+                ),
+                Actions(
+                    buttons=(
+                        Button(
+                            label="Kill Now",
+                            action_id="stop_kill_now",
+                            value=session_key,
+                            style="danger",
+                            fit=Fit.KEEP,
+                        ),
+                    ),
+                    id=f"stop-actions-{session_key}",
+                    fit=Fit.KEEP,
+                ),
+            )
+        )
+    )
 
 
 def build_stopped_blocks() -> list[dict]:
     """Resolved ephemeral: cooperative cancel succeeded."""
-    return [{"type": "section", "text": {"type": "mrkdwn", "text": "⏹  *[Stopped]*"}}]
+    return _slack_blocks(Card(body=(Section(text=Text(("⏹  **[Stopped]**",), fit=Fit.REFUSE)),)))
 
 
 def build_stop_failed_blocks() -> list[dict]:
     """Resolved ephemeral: cooperative cancel failed, session was hard-killed."""
-    return [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "⛔  *[Stop Failed, Session Reset]*"},
-        }
-    ]
+    return _slack_blocks(
+        Card(body=(Section(text=Text(("⛔  **[Stop Failed, Session Reset]**",), fit=Fit.REFUSE)),))
+    )
 
 
 def build_working_blocks(session_key: str, *, include_dashboard_link: bool = False) -> list[dict]:
@@ -528,29 +553,30 @@ def build_working_blocks(session_key: str, *, include_dashboard_link: bool = Fal
     long turn can be linked to a dashboard session the moment it starts instead
     of only from the timing footer at turn end. The caller applies the same gate
     the footer uses (threaded, not already linked, dashboard present); this
-    builder just renders what it is told.
+    builder just renders what it is told. That button is the one
+    ``format.build_link_dashboard_button`` builds: constant, with no value.
     """
-    elements: list[dict] = [
-        {
-            "type": "button",
-            "action_id": f"mc_inline_stop_{session_key}",
-            "text": {"type": "plain_text", "text": "⏹ Stop"},
-            "value": session_key,
-            "style": "danger",
-        }
+    buttons = [
+        Button(
+            label="⏹ Stop",
+            action_id=f"mc_inline_stop_{session_key}",
+            value=session_key,
+            style="danger",
+            fit=Fit.KEEP,
+        )
     ]
     if include_dashboard_link:
-        elements.append(build_link_dashboard_button())
-    return [
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": "⏳ _Working…_"}],
-        },
-        {
-            "type": "actions",
-            "elements": elements,
-        },
-    ]
+        buttons.append(
+            Button(label="Link to Dashboard", action_id=LINK_DASHBOARD_ACTION, fit=Fit.REFUSE)
+        )
+    return _slack_blocks(
+        Card(
+            body=(
+                Context(items=(Text(("⏳ _Working…_",), fit=Fit.REFUSE),)),
+                Actions(buttons=tuple(buttons)),
+            )
+        )
+    )
 
 
 def review_draft_blocks(draft_text: str, draft_key: str) -> list[dict]:

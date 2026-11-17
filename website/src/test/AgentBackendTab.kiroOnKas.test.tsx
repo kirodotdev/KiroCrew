@@ -83,6 +83,39 @@ describe('a Kiro CLI pick that runs on KAS', () => {
     expect(screen.queryByTestId('kiro-row-your-setting')).toBeNull()
   })
 
+  it('offers no switch on the Kiro CLI row, and says where Kiro CLI runs', async () => {
+    acpBackendsMock.mockResolvedValue({ backends: rows, kiro_selection_runs_on_kas: true })
+    wrap()
+    await screen.findByTestId('kiro-runs-on-kas')
+    fireEvent.click(screen.getByRole('radio', { name: 'Kiro CLI' }))
+    expect((await screen.findByTestId('kiro-row-runs-on-kas')).textContent).toBe(
+      'Kiro CLI now runs on Kiro Agent. New sessions already use Kiro Agent, so there is nothing to switch here.',
+    )
+    // The setting already is Kiro CLI: a button here would save the saved value.
+    expect(screen.queryByRole('button', { name: 'Use Kiro CLI' })).toBeNull()
+    expect(screen.queryByText('New sessions switch from Kiro Agent to Kiro CLI.')).toBeNull()
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the switch on every other row', async () => {
+    acpBackendsMock.mockResolvedValue({ backends: rows, kiro_selection_runs_on_kas: true })
+    wrap()
+    await screen.findByTestId('kiro-runs-on-kas')
+    fireEvent.click(screen.getByRole('radio', { name: 'Claude Code' }))
+    expect(await screen.findByRole('button', { name: 'Use Claude Code' })).toBeTruthy()
+    expect(screen.getByText('New sessions switch from Kiro Agent to Claude Code.')).toBeTruthy()
+    expect(screen.queryByTestId('kiro-row-runs-on-kas')).toBeNull()
+  })
+
+  it('keeps the switch on the Kiro CLI row when Kiro CLI does not run on Kiro Agent', async () => {
+    acpBackendsMock.mockResolvedValue({ backends: rows, kiro_selection_runs_on_kas: false })
+    wrap()
+    fireEvent.click(await screen.findByRole('radio', { name: 'Kiro CLI' }))
+    expect(await screen.findByRole('button', { name: 'Use Kiro CLI' })).toBeTruthy()
+    expect(screen.getByText('New sessions switch from Kiro Agent to Kiro CLI.')).toBeTruthy()
+    expect(screen.queryByTestId('kiro-row-runs-on-kas')).toBeNull()
+  })
+
   it('brings the callout back when Kiro CLI is picked again after saving Kiro Agent', async () => {
     acpBackendsMock.mockResolvedValue({ backends: rows, kiro_selection_runs_on_kas: true })
     wrap()

@@ -89,7 +89,7 @@ def test_cli_import_does_not_load_heavy_modules(tmp_path: Path) -> None:
     assert present == [], (
         f"module-scope import of kiro_crew.cli loaded deferred modules: {present}. "
         "A new (or moved-back) module-scope import reaches them — defer it into "
-        "the main() dispatch branch that uses it (see issue #3504)."
+        "the main() dispatch branch that uses it."
     )
 
 

@@ -13,8 +13,9 @@ import {
   type McpManagedServer,
 } from '../../api/client'
 
+/** The user guide section that explains this page in its own labels. */
 export const DOCS_URL =
-  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/design-notes/mcp-stub-decoupling.md'
+  'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/connections.md#sharing-mcp-servers-across-chats'
 
 export type GatewayStatus = {
   enabled: boolean
@@ -82,9 +83,55 @@ function errorCode(error: unknown): unknown {
   }
 }
 
+/**
+ * The launch a server resolves to now, which the gateway sent back when an
+ * approve pinned a refusal the launch had moved past, beside the stored
+ * refusal's `expected_launch` it stands in for.
+ */
+export type CurrentLaunch = { refused: string; launch: LaunchPreview }
+
+/**
+ * The launch a `launch_display_stale` refusal carries, else undefined.
+ *
+ * Only a gateway start rewrites a stored refusal, so the page cannot read the
+ * moved launch from the status route: it shows and pins this one instead.
+ */
+export function staleDisplayLaunch(error: unknown): LaunchPreview | undefined {
+  if (!(error instanceof ApiError)) return undefined
+  try {
+    const body = JSON.parse(error.body)
+    const launch = body?.code === 'launch_display_stale' ? body.launch : undefined
+    return launch && Array.isArray(launch.commands) && Array.isArray(launch.envs) ? (launch as LaunchPreview) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * *refusal* as the page shows and approves it: with the launch the gateway
+ * sent back in place of its own, while that launch still stands in for this
+ * refusal (a gateway start that rewrote the refusal makes it moot). Only an
+ * own entry of *currentLaunches* counts, so a server named after an
+ * `Object.prototype` member reads no inherited value.
+ */
+export function withCurrentLaunch(
+  refusal: LaunchRefusal,
+  currentLaunches: Readonly<Record<string, CurrentLaunch>>,
+  name: string,
+): LaunchRefusal {
+  const current = Object.hasOwn(currentLaunches, name) ? currentLaunches[name] : undefined
+  if (!current || current.refused !== refusal.expected_launch) return refusal
+  const { commands, envs, complete, expected_launch } = current.launch
+  return { ...refusal, commands, envs, complete, expected_launch }
+}
+
 export function stubErrorKey(error: unknown): string {
   const code = errorCode(error)
   if (code === 'launch_changed_since_display') return 'pages.mcpManagement.stub_error_launch_changed'
+  // The refusal shown is older than the launch now. With the launch it sent
+  // back the page says the next step instead; without one there is nothing
+  // newer to show, so it reads as a launch that changed.
+  if (code === 'launch_display_stale') return 'pages.mcpManagement.stub_error_launch_changed'
   // Sending stub=true without the identity of a launch that was read.
   if (code === 'expected_launch_required') return 'pages.mcpManagement.stub_error_expected_launch_required'
   if (code === 'launch_display_incomplete') return 'pages.mcpManagement.stub_error_launch_display_incomplete'
@@ -95,28 +142,72 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'launch_unresolved') return 'pages.mcpManagement.stub_error_launch_unresolved'
   if (code === 'launch_over_cap') return 'pages.mcpManagement.stub_error_launch_over_cap'
   if (code === 'approval_write_failed') return 'pages.mcpManagement.stub_error_approval_write_failed'
+  if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
   return 'pages.mcpManagement.stub_failed'
 }
 
 /**
- * What kind of change paused a shared server, as its hint key: its command
- * (which carries its version) or only its settings. Read from the refusal's own
- * before and after, which the row's Details also shows; with no recorded
- * before, the general line.
+ * What kind of change paused a shared server, as its hint key: a launch added
+ * beside the approved ones, its command (which carries its version) or only its
+ * settings. Read from the refusal's own before and after, which the row's
+ * Details also shows; with no recorded before, the general line.
  */
 const CHANGED_HINT_KEY = {
   any: 'pages.mcpManagement.command_changed_hint',
   command: 'pages.mcpManagement.command_changed_hint_command',
   settings: 'pages.mcpManagement.command_changed_hint_settings',
+  newLaunch: 'pages.mcpManagement.new_launch_hint',
 } as const
 
 export function changedHintKey(refusal?: LaunchRefusal): string {
   const keys = CHANGED_HINT_KEY
   const same = (a?: string[][], b?: string[][]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? [])
   if (refusal?.approved_commands === undefined) return keys.any
-  if (!same(refusal.commands, refusal.approved_commands)) return keys.command
-  if (!same(refusal.envs, refusal.approved_envs)) return keys.settings
+  if (refusalOnlyAddsLaunches(refusal)) return keys.newLaunch
+  // One command line is drawn per launch, and two launches of one program differ
+  // only in their env. So when the lists differ, the lines are compared as a set:
+  // the same program listed twice before and three times after is not a changed
+  // command. A redaction tag stands for any value, so lines carrying one never
+  // prove the program is the same: a differing list keeps the command wording,
+  // and an equal one gets the general line instead of the env line's claim.
+  const lines = (commands?: string[][]) => new Set((commands ?? []).map(c => JSON.stringify(c)))
+  const before = lines(refusal.approved_commands)
+  const after = lines(refusal.commands)
+  const redacted = [...before, ...after].some(line => line.includes('[REDACTED'))
+  const sameList = same(refusal.commands, refusal.approved_commands)
+  const sameSet = before.size === after.size && [...before].every(line => after.has(line))
+  if (!sameList && (!sameSet || redacted)) return keys.command
+  if (!same(refusal.envs, refusal.approved_envs)) return redacted ? keys.any : keys.settings
   return keys.any
+}
+
+/**
+ * True when a changed-launch refusal only ADDED a launch: every approved
+ * command/env pair is still among the live ones, and at least one live pair is
+ * not approved, as when a second agent declares the same server its own way. A
+ * refusal whose approved launch changed keeps "command changed".
+ *
+ * Read from the refusal's own displays, which the gateway bounded and redacted
+ * (a hidden env value compares by its short hash). A refusal that is not
+ * complete, that lacks either side's pairs, or whose approved launch shows a
+ * redaction tag reads as a change: two different values read as the same tag.
+ * The doctor applies the same rule to the same record (`doctor_checks/mcp.py`).
+ */
+export function refusalOnlyAddsLaunches(refusal?: LaunchRefusal): boolean {
+  if (refusal?.reason !== 'changed_needs_reapproval' || !launchIsApprovable(refusal)) return false
+  const pairs = (commands?: string[][], envs?: string[][]) =>
+    commands && envs && commands.length > 0 && commands.length === envs.length
+      ? commands.map((command, i) => JSON.stringify([command, envs[i]]))
+      : null
+  const live = pairs(refusal.commands, refusal.envs)
+  const approved = pairs(refusal.approved_commands, refusal.approved_envs)
+  // `[REDACTED` heads every tag the gateway's display redaction writes in place of
+  // a value (a credential or an encoded credential). It is matched
+  // inside a pair's JSON, where the tag text needs no escaping.
+  if (!live || !approved || approved.some(pair => pair.includes('[REDACTED'))) return false
+  const liveSet = new Set(live)
+  const approvedSet = new Set(approved)
+  return approved.every(pair => liveSet.has(pair)) && live.some(pair => !approvedSet.has(pair))
 }
 
 /**
@@ -247,7 +338,9 @@ export function rowState(
 
 /**
  * The state chip's label. A refused launch has two causes, and the chip names
- * which one: a server never approved here is not a changed command.
+ * which one: a server never approved here is not a changed command. Under the
+ * second cause, a launch added beside approved ones that all still run is not a
+ * changed command either.
  */
 export function stateLabelKey(state: McpRowState, refusal?: LaunchRefusal): string {
   // A refusal with no approvable identity has no way back to sharing here, so
@@ -257,6 +350,9 @@ export function stateLabelKey(state: McpRowState, refusal?: LaunchRefusal): stri
   }
   if (state === 'needs_reapproval' && refusal?.reason === 'added_outside_dashboard') {
     return 'pages.mcpManagement.state_not_approved_yet'
+  }
+  if (state === 'needs_reapproval' && refusalOnlyAddsLaunches(refusal)) {
+    return 'pages.mcpManagement.state_new_launch'
   }
   return STATE_LABEL_KEY[state]
 }
@@ -314,8 +410,19 @@ export function autoShareCandidates(
       !s.stub &&
       s.declined !== true &&
       s.pooling_blocked_by_env !== true &&
+      !needsCwdAnswer(s) &&
       !refused?.[s.name],
   )
+}
+
+/**
+ * Whether sharing this server first needs the operator to say it does not work
+ * on the project's files. Kiro Crew's own servers are never asked. A row from a
+ * gateway that sends no answer field at all reads as not needing one, since that
+ * gateway does not ask.
+ */
+export function needsCwdAnswer(s: McpManagedServer): boolean {
+  return s.cwd_proven !== true && s.cwd_use !== undefined && s.cwd_use !== 'not_used'
 }
 
 /** Marked servers whose launch waits for the operator's OK, and can get it here. */

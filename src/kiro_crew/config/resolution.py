@@ -150,7 +150,7 @@ _SECTION_KEYS_RENAMED: dict = {
     # older spellings would leave two of them in the file at once, so a user who
     # turns the canonical grant OFF could still have an old `yolo: true` sitting
     # beside it — a contradiction in the one key that controls standing,
-    # unattended auto-approval. See sections._read_dangerously_skip_permissions.
+    # unattended auto-approval. See sections_agent._read_skip_permissions.
     "agent": frozenset({"dangerouslySkipPermissions", "yolo"}),
     # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
     # sections._read_auto_add_documents still reads the old spelling.
@@ -161,7 +161,10 @@ _SECTION_KEYS_RETIRED: dict = {
     # `conductor/SKILL.md` delegation guide (the dashboard "Orchestrator Mode"
     # switch). Crew routing goes through the `select_crew` / `route_crew` MCP
     # tools, so the flag has nothing behind it and is dropped on save.
-    "agent": frozenset({"conductor_skill"}),
+    # RETIRED: agent.subagent_cpu_cost_cores priced a subagent start in CPU
+    # cores. CPU never sizes subagent concurrency (memory does), so nothing read
+    # it, and every saved config carried its 1.0 default.
+    "agent": frozenset({"conductor_skill", "subagent_cpu_cost_cores"}),
     # RETIRED: auto_discover_folder, auto_discover_dirname,
     # auto_ingest_chunk_budget, auto_register_project_docs and max_sources all
     # configured the automatic folder-registration paths, which are gone, so
@@ -190,6 +193,15 @@ _SECTION_KEYS_RETIRED: dict = {
     # so it is dropped on save without a load-time warning.
     "browser": frozenset({"first_run_dismissed"}),
 }
+#: Retired ENTRIES of a map-valued section key, as ``{(section, key): names}``.
+#: The loader already reads only the names it knows, so ``save()`` drops these;
+#: a raw write keeps the rest of the map as stored, so it drops these here
+#: (``drop_retired_section_keys``).
+_MAP_ENTRIES_RETIRED: dict = {
+    # RETIRED: the layout_harness preview switch gated nothing;
+    # /developer/layout-editor opens with no switch.
+    ("dashboard", "feature_previews"): frozenset({"layout_harness"}),
+}
 _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     section: _SECTION_KEYS_RENAMED.get(section, frozenset())
     | _SECTION_KEYS_RETIRED.get(section, frozenset())
@@ -197,9 +209,11 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
 }
 
 #: The subset of ``_SECTION_KEYS_RETIRED`` worth ONE load-time warning: keys an
-#: operator set by hand whose feature is gone.
+#: operator set by hand whose feature is gone. Each maps to the default the last
+#: build that modelled it wrote into every config it saved, so a key still at
+#: that value is Kiro Crew's own and is dropped without a notice.
 _RETIRED_SECTION_KEYS_WARNED: dict = {
-    "dashboard": frozenset({"use_builtin_browser", "browser_view_port"}),
+    "dashboard": {"use_builtin_browser": True, "browser_view_port": 0},
 }
 
 
@@ -303,18 +317,23 @@ def warn_misspelled_section_keys(data: dict, cfg: object) -> None:
 
 
 def warn_retired_section_keys(data: dict) -> None:
-    """One WARNING naming retired keys still present in the loaded document.
+    """One WARNING naming retired keys the operator changed from their old default.
 
     The keys are inert (nothing reads them) and the next ``save()`` drops them
     (:data:`_SECTION_KEYS_DELIBERATELY_DROPPED`); this line is the only notice
-    an operator who set one gets. Silent when none is present.
+    an operator who set one gets. Silent when none is present, and for a key
+    still at the default an older build wrote into every config it saved.
     """
     found: list[str] = []
-    for section, keys in sorted(_RETIRED_SECTION_KEYS_WARNED.items()):
+    for section, defaults in sorted(_RETIRED_SECTION_KEYS_WARNED.items()):
         raw = data.get(section)
         if not isinstance(raw, dict):
             continue
-        found.extend(f"{section}.{key}" for key in sorted(keys) if key in raw)
+        found.extend(
+            f"{section}.{key}"
+            for key, written_default in sorted(defaults.items())
+            if key in raw and raw[key] != written_default
+        )
     if found:
         logger.warning(
             "Config: %s no longer exist and are ignored; they are dropped from "
@@ -329,7 +348,8 @@ def drop_retired_section_keys(data: dict) -> bool:
     ``save()`` drops them because it rebuilds the document from the model; a
     write that edits the raw dict under ``update_config_locked`` (a dashboard
     save, ``kirocrew config set``) does not, so without this the keys outlived
-    every such save. Only :data:`_SECTION_KEYS_RETIRED` is touched: a RENAMED
+    every such save. Only :data:`_SECTION_KEYS_RETIRED` and
+    :data:`_MAP_ENTRIES_RETIRED` are touched: a RENAMED
     spelling is still read as the live value when the canonical key is absent,
     so a raw write must keep it. Returns whether anything was removed.
     """
@@ -341,6 +361,15 @@ def drop_retired_section_keys(data: dict) -> bool:
         for key in keys:
             if key in raw:
                 del raw[key]
+                removed = True
+    for (section, key), names in _MAP_ENTRIES_RETIRED.items():
+        raw = data.get(section)
+        entries = raw.get(key) if isinstance(raw, dict) else None
+        if not isinstance(entries, dict):
+            continue
+        for name in names:
+            if name in entries:
+                del entries[name]
                 removed = True
     return removed
 
@@ -462,7 +491,7 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
 
 #: Renamed keys a reader still accepts, per section: each canonical key and its
 #: older spellings, in the order the reader tries them
-#: (``sections_agent._read_dangerously_skip_permissions``,
+#: (``sections_agent._read_skip_permissions``,
 #: ``memory_sections._read_auto_add_documents``).
 _RENAMED_KEY_SPELLINGS: dict[str, dict[str, tuple[str, ...]]] = {
     "agent": {"dangerously_skip_permissions": ("dangerouslySkipPermissions", "yolo")},
@@ -657,6 +686,16 @@ def tailnet_effective_allowed_logins(
 #: The operator's fix is to correct the file and restart the gateway, which is
 #: the same ceremony every other boot-time config decision already requires.
 _OBSERVED_DEGRADED_SECTIONS: set[str] = set()
+
+
+def observed_degraded_sections() -> frozenset[str]:
+    """Every degradation this process has observed, read-only (see above).
+
+    For a gate whose config snapshot can come from a path that does not carry
+    ``degraded_sections`` along (a live reload that copies fields onto a cached
+    config): the sticky record is the one answer every path agrees on.
+    """
+    return frozenset(_OBSERVED_DEGRADED_SECTIONS)
 
 
 def reset_degraded_observations() -> None:

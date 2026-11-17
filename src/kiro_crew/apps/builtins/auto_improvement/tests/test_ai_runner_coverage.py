@@ -736,6 +736,28 @@ class TestBuildDriver:
         assert _no_real_checkout[-1][1] == "main"
         assert FakeSpineDriver.instances[-1].kwargs["branch"] == "main"
 
+    def test_the_admission_command_reaches_the_driver_and_a_malformed_one_refuses(
+        self,
+        sup: Any,
+        tmp_path: Path,
+        _no_real_checkout: list[tuple[Path, str]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew.apps.builtins.auto_improvement.backend.routes import _CONFIG_WRITABLE
+        from kiro_crew.apps.builtins.auto_improvement.spine import candidate_admission
+
+        monkeypatch.setattr(candidate_admission, "SUPPORTED", True)
+        admit = str(tmp_path / "admit")
+        config = self._config(tmp_path, candidateAdmissionCommand=[admit, "-q"])
+        driver = self._locked(sup, config, _profile(tmp_path / "clone"))
+        assert driver.kwargs["candidate_admission"] == (admit, "-q")
+        malformed = self._config(tmp_path, candidateAdmissionCommand=admit)
+        _no_real_checkout.clear()
+        with pytest.raises(ValueError, match="candidateAdmissionCommand"):
+            self._locked(sup, malformed, _profile(tmp_path / "clone"))
+        assert _no_real_checkout == []
+        assert "candidateAdmissionCommand" not in _CONFIG_WRITABLE
+
     def test_failed_checkout_refuses_the_run(
         self, sup: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

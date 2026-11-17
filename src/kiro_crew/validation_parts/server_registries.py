@@ -12,9 +12,6 @@ module never imports that facade.
 
 from __future__ import annotations
 
-from kiro_crew.validation_parts.app_schemas import (
-    OPS_MISSION_CONTROL_API_SCHEMA,
-)
 from kiro_crew.validation_parts.artifact_schemas import (
     ARTIFACT_DELETE_COMMENT_SCHEMA,
     ARTIFACT_DELETE_SCHEMA,
@@ -75,6 +72,7 @@ from kiro_crew.validation_parts.core_agent_schemas import (
     TASK_RUN_SCHEMA,
 )
 from kiro_crew.validation_parts.core_turn_schemas import (
+    CHAT_RENAME_SCHEMA,
     CHAT_TAG_SCHEMA,
     DELETE_MESSAGE_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
@@ -94,6 +92,7 @@ from kiro_crew.validation_parts.core_turn_schemas import (
 )
 from kiro_crew.validation_parts.field_engine import ToolSchema
 from kiro_crew.validation_parts.messaging_session_schemas import (
+    CREW_LIST_SCHEMA,
     DISMISS_NOTIFICATION_SCHEMA,
     GET_CHAT_SESSION_SCHEMA,
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
@@ -101,6 +100,7 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     KNOWLEDGE_LIST_SOURCES_SCHEMA,
     LIST_SESSIONS_SCHEMA,
     LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
+    MCP_SERVER_WAIT_SCHEMA,
     READ_SLACK_HISTORY_SCHEMA,
     READ_SLACK_PROFILE_SCHEMA,
     REGISTER_HOOK_SCHEMA,
@@ -118,6 +118,7 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     SESSION_GENERATE_TITLE_SCHEMA,
     SESSION_HANDOFF_SCHEMA,
     SESSION_HISTORY_LIST_SCHEMA,
+    SESSION_QUEUE_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
     SESSION_RELOAD_SCHEMA,
@@ -127,6 +128,7 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     SESSION_SEND_SCHEMA,
     SESSION_SET_COLOR_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
+    SESSION_SET_NOTE_SCHEMA,
     SESSION_STATUS_SCHEMA,
     SESSION_STOP_SCHEMA,
     SESSION_SUMMARY_SCHEMA,
@@ -159,6 +161,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "read_slack_profile": READ_SLACK_PROFILE_SCHEMA,
     "read_slack_history": READ_SLACK_HISTORY_SCHEMA,
     "wait": WAIT_SCHEMA,
+    "mcp_server_wait": MCP_SERVER_WAIT_SCHEMA,
     "register_hook": REGISTER_HOOK_SCHEMA,
     "file_send": FILE_SEND_SCHEMA,
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
@@ -181,6 +184,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "set_project": SET_PROJECT_SCHEMA,
     "reset_conversation": RESET_CONVERSATION_SCHEMA,
     "chat_tag": CHAT_TAG_SCHEMA,
+    "chat_rename": CHAT_RENAME_SCHEMA,
     "request_server": REQUEST_SERVER_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
@@ -215,7 +219,6 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "workflow_rerun_subtree": WORKFLOW_RERUN_SCHEMA,
     "workflow_library_list": WORKFLOW_LIBRARY_LIST_SCHEMA,
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
-    "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
 }
 
 
@@ -237,6 +240,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
     "session_set_color": SESSION_SET_COLOR_SCHEMA,
+    "session_set_note": SESSION_SET_NOTE_SCHEMA,
     "session_rename": SESSION_RENAME_SCHEMA,
     "session_generate_title": SESSION_GENERATE_TITLE_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
@@ -251,6 +255,8 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_read_message": SESSION_READ_MESSAGE_SCHEMA,
     "session_summary": SESSION_SUMMARY_SCHEMA,
     "work_dispatch": WORK_DISPATCH_SCHEMA,
+    "session_queue": SESSION_QUEUE_SCHEMA,
+    "crew_list": CREW_LIST_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,

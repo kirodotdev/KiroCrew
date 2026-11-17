@@ -33,6 +33,7 @@ import kiro_crew.executors as ex
 from kiro_crew import security
 from kiro_crew.subprocess_pool import SubprocessPoolUnavailable
 from kiro_crew.subprocess_pool.executor import proc_syscall
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 @contextlib.contextmanager
@@ -491,9 +492,10 @@ def test_resolution_completes_inside_the_budget_while_a_sibling_thread_hogs_the_
 
     In-process this workload expired the budget (measured 1.7 s for the rebuild alone
     beside one hog, 3.5 s for one six-component path beside 48); the child pays one GIL
-    handoff for the whole answer.  The bound is coarse on purpose -- a loaded CI host
-    must not red it -- and the real assertions are the two that cannot flake: a healthy
-    file is not refused, and no prefix is charged.
+    handoff for the whole answer.  So the test asserts the SHAPE that makes that true,
+    which no host speed changes: every ``realpath`` went to the child in a round trip
+    made on the calling thread, and none ran in this interpreter or on a pool thread.
+    Then the outcome: a healthy file is not refused, and no prefix is charged.
     """
     # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that drops the autouse fixture's scaled-down budgets so the reproduction runs on the shipped ones, moved verbatim
     monkeypatch.undo()
@@ -504,6 +506,28 @@ def test_resolution_completes_inside_the_budget_while_a_sibling_thread_hogs_the_
     target.write_text("x")
     with _armed():
         assert security._resolved_spellings("/")  # the one-time child spawn is not the workload
+    caller = threading.get_ident()
+    round_trips: list[tuple[int, int]] = []
+    in_process: list[str] = []
+    real_child_request = security.paths._child_request
+
+    def _recording_child_request(op: int, payload: bytes) -> bytes | None:
+        round_trips.append((threading.get_ident(), op))
+        return real_child_request(op, payload)
+
+    def _record_in_process(name: str, real):
+        def _recorded(*args, **kwargs):
+            if threading.get_ident() == caller:
+                in_process.append(name)
+            return real(*args, **kwargs)
+
+        return _recorded
+
+    monkeypatch.setattr(security.paths, "_child_request", _recording_child_request)
+    for name in ("_resolved_spellings_inline", "_realpath_inline", "_inline_bounded"):
+        monkeypatch.setattr(
+            security.paths, name, _record_in_process(name, getattr(security.paths, name))
+        )
     stop = threading.Event()
     hog = threading.Thread(target=_hog_the_gil, args=(stop,), daemon=True)
     hog.start()
@@ -511,18 +535,23 @@ def test_resolution_completes_inside_the_budget_while_a_sibling_thread_hogs_the_
         # flake-ok: pre-existing 50 ms head start for the GIL hog, moved verbatim; the assertions that cannot flake (no refusal, no charged prefix) do not depend on it
         # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing head start for the hog thread, moved verbatim; tracked for a de-flake pass
         time.sleep(0.05)
-        started = time.monotonic()
         refusal = security.sensitive_path_refusal(str(target))
-        elapsed = time.monotonic() - started
     finally:
         stop.set()
         # flake-ok: the hog's loop checks the stop event set on the line above on every pass, so the join returns
         hog.join()
         security._home_targets_cache.clear()
     assert refusal is None, f"a healthy project file must not be refused: {refusal!r}"
-    if os.name != "nt":  # ~0.05 s alone; headroom for a loaded CI host
-        # flake-ok: a coarse ceiling (about 30 times the unloaded time) the docstring explains, skipped on Windows; pre-existing, moved verbatim
-        assert elapsed < 1.5, f"resolution took {elapsed:.2f}s under one GIL hog"
+    # Every resolution went to the child in a round trip made on the thread that wants
+    # the answer (the anchors as batches), and nothing was resolved in this interpreter
+    # or handed to a pool thread.
+    from kiro_crew.subprocess_pool import OP_REALPATH_MANY, OP_REALPATH_SPELLINGS
+
+    assert {tid for tid, _ in round_trips} == {caller}, round_trips
+    ops = [op for _, op in round_trips]
+    assert OP_REALPATH_SPELLINGS in ops, f"the candidate never reached the child: {ops}"
+    assert set(ops) <= {OP_REALPATH_SPELLINGS, OP_REALPATH_MANY}, ops
+    assert in_process == [], f"resolved in-process beside the hog: {in_process!r}"
     assert security._path_resolve_degraded == {}, "no prefix may be charged for a healthy disk"
 
 
@@ -704,21 +733,39 @@ def test_outside_a_bounded_call_the_resolver_never_asks_the_pool(monkeypatch, tm
 def test_the_in_process_fallback_is_still_bounded(monkeypatch) -> None:
     """A host where the child cannot start does not get the original stall back: the
     in-process ``realpath`` runs on the pool's thread and the caller waits on it
-    with the shared deadline, refusing fail-closed (and uncharged) when it misses."""
+    with the shared deadline, refusing fail-closed (and uncharged) when it misses.
+
+    The bound is asserted as the wait itself: the caller waits on the pool's future
+    once, for at most the 0.2 s budget plus its grace, and refuses while the
+    wedged resolution is still running."""
     from concurrent.futures import ThreadPoolExecutor
 
     release = threading.Event()
     threads = ThreadPoolExecutor(max_workers=2)
+    waits: list[float | None] = []
+    futures: list[object] = []
+
+    class _RecordedFuture:
+        # The caller's only handle on the fallback: every wait on it is recorded.
+        def __init__(self, future) -> None:
+            self._future = future
+
+        def result(self, timeout: float | None = None):
+            waits.append(timeout)
+            assert timeout is not None, "the caller waited on the fallback unbounded"
+            return self._future.result(timeout=timeout)
 
     class _Unspawnable:
         def call_op(self, op: int, payload: bytes, timeout: float | None = None) -> bytes:
             raise FileNotFoundError("python")
 
         def submit(self, fn, /, *args, **kwargs):
-            return threads.submit(fn, *args, **kwargs)
+            future = threads.submit(fn, *args, **kwargs)
+            futures.append(future)
+            return _RecordedFuture(future)
 
     def _wedged(expanded: str) -> set[str]:
-        release.wait(30.0)
+        release.wait(FALLBACK_TIMEOUT_SECS)
         return {expanded}
 
     monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: _Unspawnable())
@@ -726,11 +773,21 @@ def test_the_in_process_fallback_is_still_bounded(monkeypatch) -> None:
     monkeypatch.setattr(security.paths, "_resolved_spellings_inline", _wedged)
     monkeypatch.setattr(security.paths, "_PATH_RESOLVE_TIMEOUT_SECS", 0.2)
     try:
-        started = time.monotonic()
-        with pytest.raises(security.PathResolutionStalled):
+        try:
             security.paths._resolved_forms_bounded("/home/someone/ws/file")
-        # flake-ok: a 5 s ceiling over a 0.2 s budget, checked after the refusal itself; pre-existing, moved verbatim
-        assert time.monotonic() - started < 5.0
+            refused = False
+        except security.PathResolutionStalled:
+            refused = True
+        # One wait, inside the budget plus its grace (one deadline). The wait is that
+        # deadline minus a clock read, so allow float error against the entitlement.
+        entitled = 0.2 + min(
+            0.2 * security.paths._PATH_RESOLVE_GRACE_FACTOR,
+            security.paths._PATH_RESOLVE_GRACE_MAX_SECS,
+        )
+        assert len(waits) == 1, f"waited on the fallback {waits!r}"
+        assert waits[0] is not None and 0.0 <= waits[0] <= entitled + 1e-6, (waits, entitled)
+        assert refused, "a missed fallback must refuse with PathResolutionStalled"
+        assert len(futures) == 1 and not futures[0].done(), "the fallback is still wedged"
         assert security._path_resolve_degraded == {}, "a wedged fallback thread is not classified"
     finally:
         release.set()

@@ -301,7 +301,9 @@ def _build_pending_context_entry(
     entry: dict[str, object] = {
         "content": content,
         "source": source,
-        "ephemeral": ephemeral,
+        # The restore drops an entry whose flag is not a bool, so a stray JSON
+        # value falls back to the documented default ``true`` here.
+        "ephemeral": ephemeral if isinstance(ephemeral, bool) else True,
         "injectedAt": time.time(),
     }
     if max_age is not None:

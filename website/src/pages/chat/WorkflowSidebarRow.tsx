@@ -11,9 +11,9 @@
 import { memo, useState } from 'react'
 import { CheckCircle, AlertCircle, Loader as LoaderIcon, Workflow, ChevronDown } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
-import WorkflowRunTree from '../../apps/workflows/WorkflowRunTree'
-import WorkflowSourcePanel from '../../apps/workflows/WorkflowSourcePanel'
-import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
+import WorkflowRunTree from '../../components/workflows/WorkflowRunTree'
+import WorkflowSourcePanel from '../../components/workflows/WorkflowSourcePanel'
+import { useRunSnapshot } from '../../components/workflows/useRunSnapshot'
 import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'

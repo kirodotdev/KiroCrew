@@ -111,7 +111,9 @@ class TestNestedReposInTheWholeListing:
 
     @pytest.mark.asyncio
     async def test_the_marker_takes_the_same_redaction_as_the_rows(self, tmp_path):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        from redaction_structured_cases import github_classic
+
+        secret = github_classic(seed=57)
         root = tmp_path / "proj"
         root.mkdir()
         _git(root, "init", "-q", "-b", "trunk")

@@ -14,20 +14,31 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from kiro_crew.acp.kas_settings_mcp import (
+    CREW_SETTINGS_MCP_KEY,
+    excluded_whole,
+    without_excluded_stubs,
+)
 from kiro_crew.agent_materialization import mcp_sources
 from kiro_crew.mcp_gateway import stub as stub_mod
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.mcp_gateway.rewriter import (
     _WRAPPER_MARKER,
+    _collect_target_env,
     _injectable_settings_servers,
     _rewrite_single_spec,
+    _wrapped_target,
 )
 from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
+from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled_session_servers
+from kiro_crew.testing.wait import default_timeout
 
 REF = "secret://ATLASSIAN_TOKEN"
 
@@ -548,6 +559,7 @@ def test_a_credential_reference_gets_a_private_backend_instead_of_none(tmp_path:
     backend receives the whole declared env, which is where the gateway resolves it."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"atl": {"command": sys.executable, "env": {"OAUTH_TOKEN": REF}}},
     }
     out, wrapped = _rewrite(
@@ -563,6 +575,7 @@ def test_a_withheld_plain_credential_still_runs_unwrapped(tmp_path: Path) -> Non
     """Unchanged for a literal credential: the session launches it with its env."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"atl": {"command": sys.executable, "env": {"OAUTH_TOKEN": "x"}}},
     }
     out, wrapped = _rewrite(
@@ -588,7 +601,7 @@ def test_a_settings_server_with_a_credential_reference_gets_a_private_backend(
     )
     assert set(inject) == {"atl"}
     out, wrapped = _rewrite(
-        {"name": "agent-a", "mcpServers": {}},
+        {"name": "agent-a", "mcpServers": {}, "tools": ["@atl"]},
         tmp_path,
         stub_servers=frozenset({"atl"}),
         pooling_enabled=True,
@@ -597,7 +610,10 @@ def test_a_settings_server_with_a_credential_reference_gets_a_private_backend(
     )
     assert wrapped == 1
     assert out["mcpServers"]["atl"].get(_WRAPPER_MARKER) is True
-    assert "--poolable" not in expand_stub_flags(out["mcpServers"]["atl"]["args"])
+    flags = expand_stub_flags(out["mcpServers"]["atl"]["args"])
+    assert "--poolable" not in flags
+    assert "--refuse" not in flags
+    assert _wrapped_target(out["mcpServers"]["atl"]) is not None
 
 
 def test_a_settings_server_with_a_plain_credential_is_still_left_to_kiro_cli() -> None:
@@ -614,6 +630,10 @@ def test_a_settings_server_with_a_plain_credential_is_still_left_to_kiro_cli() -
 class _RefuseAll:
     """A launch-approval store that approves nothing."""
 
+    def __init__(self) -> None:
+        # The real store's per-pass refusal reasons, read on each refusal.
+        self.refused: dict[str, str] = {}
+
     def admit(self, *_a: object, **_kw: object) -> bool:
         return False
 
@@ -621,6 +641,7 @@ class _RefuseAll:
 def _ref_spec(name: str = "atl", command: str = sys.executable, env: dict | None = None) -> dict:
     return {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {name: {"command": command, "env": env or {"API_KEY": REF}}},
     }
 
@@ -642,6 +663,7 @@ def test_the_routing_probe_lifts_the_rebuilds_withheld_mute(tmp_path: Path) -> N
     launch captured for approval), not passed through as the user's mute."""
     spec = _ref_spec()
     spec["mcpServers"]["atl"].update({"disabled": True, mcp_sources.WITHHELD_KEY: True})
+    spec["tools"] = []  # the rebuild strips a withheld server's refs
     out, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"atl"}))
     assert wrapped == 1
     assert out["mcpServers"]["atl"].get(_WRAPPER_MARKER) is True
@@ -716,7 +738,7 @@ def test_a_settings_server_with_a_reference_is_injected_when_unresolvable(
     inject = _injectable_settings_servers({"mcpServers": {"atl": entry}}, frozenset({"atl"}))
     assert set(inject) == {"atl"}
     out, wrapped = _rewrite(
-        {"name": "agent-a", "mcpServers": {}},
+        {"name": "agent-a", "mcpServers": {}, "tools": ["@atl"]},
         tmp_path,
         stub_servers=frozenset({"atl"}),
         inject_servers=inject,
@@ -724,6 +746,152 @@ def test_a_settings_server_with_a_reference_is_injected_when_unresolvable(
     )
     assert wrapped == 1
     assert out["mcpServers"]["atl"].get(_WRAPPER_MARKER) is True
+    assert "--refuse" not in expand_stub_flags(out["mcpServers"]["atl"]["args"])
+
+
+_ABSENT = object()
+
+
+def _refusing_settings_rewrite(tmp_path: Path, command: str, **spec_keys: object) -> dict:
+    """The overlay ``agent-a`` gets for a routed settings server ``atl`` carrying a
+    reference, with every launch approved (``approvals`` of ``None``)."""
+    entry = {"command": command, "env": {"API_KEY": REF}}
+    inject = _injectable_settings_servers({"mcpServers": {"atl": entry}}, frozenset({"atl"}))
+    assert set(inject) == {"atl"}
+    out, _ = _rewrite(
+        {"name": "agent-a", "mcpServers": {}, **spec_keys},
+        tmp_path,
+        stub_servers=frozenset({"atl"}),
+        inject_servers=inject,
+    )
+    return out
+
+
+@pytest.mark.parametrize("command", [sys.executable, "no-such-mcp-binary-16189"])
+@pytest.mark.parametrize("tools", [_ABSENT, [], ["@other"]], ids=["absent", "empty", "other"])
+def test_a_settings_server_with_a_reference_gets_a_refusing_stub_when_tools_omits_it(
+    tmp_path: Path, command: str, tools: object
+) -> None:
+    """An agent that may read ``mcp.json`` but whose ``tools`` does not name ``atl``
+    still gets an overlay entry for it: with none, the host's own merge of the real
+    settings file starts ``atl`` with the literal reference. The entry refuses on its
+    own: it names no target, so the gateway is handed none for it, and the launch
+    being approved (as here) cannot serve this agent the server."""
+    out = _refusing_settings_rewrite(
+        tmp_path, command, **({} if tools is _ABSENT else {"tools": tools})
+    )
+    stub = out["mcpServers"]["atl"]
+    assert stub[_WRAPPER_MARKER] is True
+    assert "--refuse" in expand_stub_flags(stub["args"])
+    assert _wrapped_target(stub) is None
+    assert stub["env"] == {}
+    target_env: dict[str, str] = {}
+    _collect_target_env(out["mcpServers"], target_env)
+    assert target_env == {}
+    assert REF not in json.dumps(out)
+
+
+@pytest.mark.parametrize("flag", ["includeMcpJson", "useLegacyMcpJson"])
+def test_an_agent_that_excludes_mcp_json_gets_no_refusing_stub(tmp_path: Path, flag: str) -> None:
+    """The host merges nothing from ``mcp.json`` into such an agent, so there is no
+    entry to outrank, and a stub sent at ``session/new`` would mount the server."""
+    out = _refusing_settings_rewrite(tmp_path, sys.executable, **{flag: False})
+    assert "atl" not in out.get("mcpServers", {})
+
+
+def _published(out: dict, tmp_path: Path) -> Path:
+    """The overlay directory a gateway pass would leave *out* in, as ``agent-a``."""
+    overlay = tmp_path / "agents"
+    overlay.mkdir()
+    (overlay / "agent-a.json").write_text(json.dumps(out), encoding="utf-8")
+    return overlay
+
+
+def test_a_refusing_stub_is_what_the_session_is_handed(tmp_path: Path) -> None:
+    """``session/new`` carries it, on kiro-cli and KAS alike, and the mirrors withhold
+    the same name, so the merge's own ``atl`` is outranked rather than started."""
+    out = _refusing_settings_rewrite(tmp_path, sys.executable, tools=["@other"])
+    overlay = _published(out, tmp_path)
+    (element,) = pooled_session_servers(overlay, "agent-a")
+    assert element["name"] == "atl"
+    assert "--refuse" in expand_stub_flags(element["args"])
+    assert injection_server_names(overlay, "agent-a") == frozenset({"atl"})
+
+
+@pytest.mark.parametrize(
+    ("opted_in", "legacy"),
+    [(False, False), (True, False), (False, True)],
+    ids=["not-opted-in", "opted-in", "legacy"],
+)
+def test_on_kas_the_files_atl_is_excluded_or_outranked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opted_in: bool, legacy: bool
+) -> None:
+    """KAS reads ``mcp.json`` itself. For an agent that did not opt in, ``atl`` is
+    excluded whole, so KAS starts none and the stub is not sent; for one that opted in,
+    or keeps the earlier behaviour, nothing is excluded and the refusing stub is sent,
+    outranking the file's ``atl``. Neither leaves KAS a raw ``atl`` to start."""
+    monkeypatch.delenv("ASBX_KIRO_MANDATORY_MCPS", raising=False)
+    out = _refusing_settings_rewrite(tmp_path, sys.executable, tools=["@other"])
+    session = pooled_session_servers(_published(out, tmp_path), "agent-a")
+    stamp = {
+        "timeout": 120_000,
+        "fileServers": {"atl": []},
+        "declared": [],
+        "legacy": legacy,
+        "optedIn": opted_in,
+    }
+    agent = {"id": "agent-a", "mcpServers": {}, CREW_SETTINGS_MCP_KEY: stamp}
+    sent = without_excluded_stubs(session, [agent])
+    if opted_in or legacy:
+        assert excluded_whole(agent) == set()
+        assert [e["name"] for e in sent] == ["atl"]
+        assert "--refuse" in expand_stub_flags(sent[0]["args"])
+    else:
+        assert excluded_whole(agent) == {"atl"}
+        assert sent == []
+
+
+def test_a_refusing_stub_answers_as_a_server_with_no_tools(tmp_path: Path) -> None:
+    """Run through the stub's own entry point, as kiro-cli launches the overlay entry:
+    it answers ``initialize`` with no capabilities, lists nothing, refuses a call, and
+    exits when its stdin closes. The socket it is pointed at has no listener, so a stub
+    that tried the gateway (and then its direct-exec fallback) would answer nothing."""
+    out = _refusing_settings_rewrite(tmp_path, sys.executable, tools=["@other"])
+    stub = out["mcpServers"]["atl"]
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "x"}},
+    ]
+    # The child imports THIS checkout's package by absolute path, as the stub
+    # session-token tests pin it, not whatever the interpreter has installed.
+    src_root = Path(stub_mod.__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(src_root), *filter(None, [os.environ.get("PYTHONPATH", "")])]
+    )
+    env["KIROCREW_MCP_SOCKET"] = str(tmp_path / "no-gateway.sock")
+    proc = subprocess.run(
+        [stub["command"], *stub["args"]],
+        input="".join(json.dumps(r) + "\n" for r in requests),
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=default_timeout(),
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    replies = {r["id"]: r for r in map(json.loads, proc.stdout.splitlines())}
+    assert set(replies) == {1, 2, 3, 4}
+    assert replies[1]["result"]["capabilities"] == {}
+    assert replies[1]["result"]["serverInfo"]["name"] == "atl"
+    assert replies[2]["result"] == {"tools": []}
+    assert replies[3]["result"] == {}
+    assert replies[4]["error"]["code"] == -32601
 
 
 # --- one routed decision for the rebuild and the rewriter ---------------------
@@ -751,7 +919,7 @@ def test_the_rebuild_and_the_rewriter_agree_on_routed(
     entry = {"command": sys.executable, "env": {"API_KEY": REF}}
     withheld = mcp_sources._unrouted_secret_reference(name, entry, lambda: frozenset(routed), dict)
     _, wrapped = _rewrite(
-        {"name": "agent-a", "mcpServers": {name: dict(entry)}},
+        {"name": "agent-a", "tools": ["*"], "mcpServers": {name: dict(entry)}},
         tmp_path,
         stub_servers=frozenset(routed),
     )
@@ -985,7 +1153,7 @@ def test_a_routed_rewrite_honours_a_source_mute_on_a_formerly_withheld_server(
     )
     mcp_sources.sync_shared_server_refs(config, sources, {"atl": "atl"})
     out, wrapped = _rewrite(
-        {"name": "agent-a", "mcpServers": config["mcpServers"]},
+        {"name": "agent-a", "tools": ["*"], "mcpServers": config["mcpServers"]},
         tmp_path,
         stub_servers=frozenset({"atl"}),
     )

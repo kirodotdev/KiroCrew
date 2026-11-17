@@ -19,6 +19,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from kiro_crew import security
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
@@ -167,8 +169,11 @@ def _url_payload_command(n: int) -> str:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
-#: written above. The guards that detect a monolith growing back are the per-file cap
-#: and the facade's share below, and both must stay untouched.
+#: written down. A new raise leaves this number as it is: each one is a row of its own
+#: in ``test/security_line_budget/`` (see ``_BUDGET_ROWS_DIR`` below), so concurrent
+#: pull requests do not conflict on it. The guards that detect a monolith growing
+#: back are the per-file cap and the facade's share below, and both must stay
+#: untouched.
 #:
 #: Raised for the ``registry_trust.json`` leaf added to ``_CREW_SECRET_LEAVES`` in
 #: ``paths.py``: the operator's grants of ``owner`` trust to a hand-configured app
@@ -461,8 +466,8 @@ def _url_payload_command(n: int) -> str:
 #: and nothing glued after. One regex of three fixed-width alternatives, a helper that
 #: returns the digest spans, their comment, and the one clause beside the document-link
 #: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
-#: Six more for its ``keep_sri_digests=False`` switch: a streamed segment whose delta
-#: boundary split an SRI value saves main's verdict on the digest, not the notice.
+#: Six more for its ``judged_sri_values`` input: a streamed segment's save judges a
+#: digest holding a value a delta boundary cut, so that delta's verdict is kept.
 #:
 #: Raised again, from 32,188, for the ``self-protection-skills-authority-retire`` floor,
 #: which denies the operator-only ``kirocrew skills authority-retire`` recovery
@@ -728,7 +733,129 @@ def _url_payload_command(n: int) -> str:
 #: ``-`` is an operand, every word after the first operand is one, and a glob in
 #: any word prompts) and the ``git blame --output`` write flag. Nothing is
 #: relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_074
+#: Raised by 20, from 35,074, for the per-decision payload-walk memo in
+#: ``shell_normalizer._shell_payload_walk`` (one walk of each distinct text per
+#: ``is_denied``) and the paren walk's skip of its second, ``${...}``-aware
+#: pass when the span holds no ``{``. Same verdicts, less work. Re-measured.
+#: Raised by 49, from 35,094, for the ssh floor's glob-verb read: ``match_globs`` on
+#: ``_operand_targets_self`` and ``_host_is_self``, the ``_ssh_verb_basename`` helper
+#: and its facade row, so a glob operand after a bare glob verb (the ``* * * *`` of a
+#: cron schedule) is not read as this host; and ``helpers``' RLIMIT_AS key, now
+#: ``max_address_space_mb``. Re-measured.
+#: Raised by 3, from 35,143, for the ``crew-oauth-bridge`` leaf on the read-gate floor
+#: in ``paths_lists`` (Connection bridge snapshots, fenced from file tools). Re-measured.
+#: Raised by 14, from 35,146, for ``DeniedCommandRule.note``: the optional field and its
+#: docstring, and ``edition_denied_rules`` carrying an edition rule's note through. It
+#: changes only the refusal text; no rule, pattern or match changed. Re-measured.
+#: Raised by 67, from 35,160, for the Outlook ``webLink`` route
+#: (``/owa/?ItemID=<id>&exvsurl=1&...``) in ``redaction_entropy``, its use by
+#: the exfil gate and its five names in the ``redaction`` facade manifest, so
+#: Graph's own message and event links are not masked or blocked. Re-measured.
+#: Raised by 84, from 35,227, for the self-protection-kill refusal diagnostic: the
+#: ``self-protection-kill`` floor reports the matched kill TARGET's offsets instead of
+#: the whole command. ``_is_self_kill`` is a boolean wrapper over a span-returning
+#: ``_self_kill_span`` (one walk, so verdict and span cannot disagree) with a local
+#: ``_locate`` closure that anchors the span on the product NAME inside the matched
+#: token -- best-effort location, so it points at the name only in an unquoted,
+#: single-occurrence, at/after-verb command and returns the whole command otherwise;
+#: ``deny_gate`` forwards it behind a length-preserving guard. No matcher, rule,
+#: threshold or verdict moved -- the decision is byte-identical and the change is
+#: diagnostics-only. Re-measured.
+#: Raised by 62, from 35,311, for ``_quoted_assignment_scripts`` and ``_self_frames``:
+#: the self-protection floor, its ssh self-target floor included, walks a carrier's
+#: quoted script that opens with an assignment whole, so the assignment resolves
+#: inside it. Deny-only. Re-measured.
+#: Raised by 38, from 35,373, for ``shell_commands.pipelines`` and the rm floor reading
+#: each pipeline's ``echo`` / ``printf`` stages and shells in ``_command_tokens``. It only
+#: adds refusals. Re-measured.
+#: Raised by 122, from 35,411, to the package's measured size with the structured
+#: credential detectors' seam: ``redaction`` splits pass 1 from passes 2-4 so the
+#: detectors' hits can run in front of them, carries pass 4's prefix snapshot
+#: across that split, routes the plan by the internal switch, and names the
+#: whole-text fail-closed placeholder; ``text_redaction`` asks the detectors where
+#: to hold a stream buffer, lets only a unit they are still deciding lower the
+#: holdback floor, and drops a unit decided while still running, which does
+#: nothing while the switch is off. The detectors live in a subpackage this
+#: budget does not count. Re-measured.
+#: Raised by one, from 35,533, for the ``update_next_start.json`` entry on the
+#: file-tool write fence: the update armed for the next start, which the sandbox
+#: seals read-only too.
+#: Raised by 5, from 35,534, for the ``update-staging`` entry in the home fence: the
+#: self-update engine's wheel staging directory moved out of ``trust/`` to its own
+#: top-level masked leaf, and the file-tool gate covers it as it covered ``trust/``.
+#: Raised by 98, from 35,539, to 35,637, for the target-set build reading each folder
+#: once: ``_child_realpath.realpaths_sharing_folders`` (the batch walk the resolver
+#: child and the in-process build share), the build's shared path spellings in
+#: ``paths_targets._anchor_targets``, and the comment above the expiry saying what one
+#: build observes. Same set, less work. Re-measured.
+#: Raised by 75, from 35,637, to 35,712, for ``call_views``: the per-call memo
+#: ``is_denied`` opens, in a leaf module with ``once_per_call`` on the pure readers one
+#: judgement repeats (shell tokens, program basename, operand, self-program test, line
+#: fold, Python lexer, quoted scripts). Same verdicts, less work. Re-measured.
+#: Raised by 92 more, from 35,712, in ``paths_resolver``: the test that confines the
+#: cumulative wait allowance to a thread running an event loop, and
+#: ``bounded_judgment``, one shared budget of resolver wait that every off-loop
+#: request checks before it is sent and that clamps only candidate waits; and the
+#: three lines the ``paths`` facade's manifest lists for them. No check was relaxed.
+#: Raised by 20, from 35,804, to 35,824, for ``StreamRedactor.release_sentence_end`` in
+#: ``text_redaction``: a withheld run that is one plain word ending a sentence can be
+#: committed before the next chunk arrives. No pattern, pass or commit boundary moved.
+#: Raised by 77, from 35,824, to 35,901, for ``paths_targets._app_readonly_dir_rows``
+#: and its facade manifest rows: the write gate's listing of the apps'
+#: ``agentReadOnlyDirs`` rows runs on the ``mc-pathres`` threads within the anchor
+#: rebuild's budget for every caller and is reused for a second on the event loop, so
+#: no gate scans ``apps/`` on its own thread. A miss refuses, and refuses later callers
+#: at once while that listing is still in flight. Re-measured.
+#: Raised by 96, from 35,901, to 35,997, for the ``local-destructive-rm-rf-root``
+#: row's scratch view (``rm_floor.scratch_rm_view``): the words of a plain ``rm``
+#: whose every operand is a direct ``/tmp/<name>`` entry are blanked for the shipped
+#: row only, and ``is_denied`` judges that row on the view while its events keep the
+#: command as submitted. Every other row, an operator's copy, and the rm floor for
+#: ``/`` and ``~`` read the full text. Re-measured.
+#: Raised by 3, from 35,997, to 36,000, for the ``chat_steering_off.json`` leaf on the read-gate
+#: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
+#: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
+#: artifact reads refuse the canonical index path even during replacement.
+#: Raised by 179, from 36,018, for ``s3_direction`` reading a SEQUENCE of statements
+#: instead of one command: the quote-aware statement split (reusing
+#: ``shell_commands.read_commands``), the plain single-assignment resolver, the
+#: per-statement transfer classification, the short list of inert programs a
+#: non-transfer statement may run (with no ``>`` or ``<`` redirect), and its
+#: structural gate (refusing a pipe, a
+#: background ``&``, a subshell, a command substitution and an unquoted
+#: here-document), the refusal of names bash sets itself (``_``, ``RANDOM``,
+#: ``BASH*``), plus their comments and the rewritten module docstring.
+#: The reader only ever NARROWS a row it fully read; an upload anywhere on the line,
+#: an unresolvable variable, a here-document body that holds an upload or an unclear
+#: split keeps the deny. Re-measured.
+#: Raised by 48, from 36,197, for ``s3_direction`` reading assignments and
+#: ``$NAME`` / ``${NAME}`` references with plain string code instead of regex
+#: (``_is_assignment_prefix``, ``_lone_assignment``, a one-pass ``_substitute``).
+#: Raised by 8, from 36,245, for ``_substitute``'s cap on how much text resolving adds.
+#: Raised by 541, from 36,253, to 36,794, for ``ssh_config_route``: the proof that a
+#: host name with no DNS answer routes elsewhere. It reads the ssh config inside the
+#: sandbox, runs ``ssh -G`` with the config on stdin, and accepts the three route forms
+#: (a ``HostName`` rewrite, one ``ProxyJump``, ``ProxyCommand ssh -W``), refusing
+#: ambiguous config characters while accepting LF and CRLF line endings, and refusing a
+#: final name or hop that is a known own name, with Host patterns matched case-sensitively,
+#: and refusing a final name whose DNS lookup fails for any reason but "no such name",
+#: or a config where a case or trailing-dot spelling of the name could route elsewhere.
+#: Re-measured.
+#: Raised by 46, from 36,794, to 36,840, for ``_KIRO_PERMISSION_RULE_LEAVES``
+#: in ``paths_lists`` and the degraded-config check in ``paths.py``: kiro-cli's
+#: permission rule files stay on the write fence while the owner opts in, including
+#: when the config read cannot establish that choice.
+#: Raised by 51, from 36,840, to 36,891, for one false-refusal fix and one
+#: diagnostic: ``exfil_bash._inert_line_allows`` (the ``-d @`` date carve-out across
+#: a chain, pipe, quoted ``$(…)`` or locale prefix; ``printf``, an escape, a ``#``
+#: or a long or deeply nested line keeps the deny) and
+#: ``exfil_bash.audit_bash_exfiltration`` (each exfil refusal names its rule and
+#: span); the ``exfil`` facade manifest lists the new name. No deny pattern or rule
+#: is removed. Re-measured.
+#: Raised by 6, from 36,891, to 36,897, for ``memory_provider_consent.json`` on the
+#: crew secret-leaf list, beside ``decisions_consent.json``: the record authorizes
+#: memory to leave the machine, so the file-tool gate fences it like that one.
+_PACKAGE_LINE_BUDGET = 36_897
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
@@ -737,6 +864,35 @@ _PACKAGE_LINE_BUDGET = 35_074
 #: does not trip it; a cluster that reaches it is asking to be split, and RAISING
 #: the number is not the fix.
 _MODULE_LINE_CAP = 4_500
+
+#: Raises since the number above, one file per change, so two pull requests that
+#: each grow the package add two different files and never edit the same line. The
+#: budget is ``_PACKAGE_LINE_BUDGET`` plus every row's delta: still the measured
+#: total with no spare room, and each row's delta counts only its own change, so
+#: two rows measured on the same base add up to the right total once both land.
+_BUDGET_ROWS_DIR = Path(__file__).parent / "security_line_budget"
+
+
+def _budget_rows(rows_dir: Path) -> dict[str, int]:
+    """Each row's line delta, by file name. A row is a ``.txt`` file: its first line
+    is the delta (``+8``, ``-3``), the lines after it say why. A row with no reason,
+    or a first line that is not a non-zero whole number, fails, so a raise cannot
+    land without the reason a reviewer reads."""
+    rows = {}
+    for path in sorted(rows_dir.glob("*.txt")):
+        first, _, reason = path.read_text(encoding="utf-8").partition("\n")
+        try:
+            delta = int(first.strip())
+        except ValueError:
+            delta = 0
+        assert delta, f"{path.name}: first line must be a non-zero delta like +8, got {first!r}"
+        assert reason.strip(), f"{path.name}: say why the package grows, below the delta"
+        rows[path.name] = delta
+    return rows
+
+
+def _package_line_budget(rows_dir: Path) -> int:
+    return _PACKAGE_LINE_BUDGET + sum(_budget_rows(rows_dir).values())
 
 
 def _package_line_counts() -> dict[str, int]:
@@ -752,7 +908,43 @@ def test_the_package_stays_within_its_line_budget() -> None:
     counts = _package_line_counts()
     assert counts, "no package sources found"
     total = sum(counts.values())
-    assert total <= _PACKAGE_LINE_BUDGET, f"package grew to {total} lines: {counts}"
+    budget = _package_line_budget(_BUDGET_ROWS_DIR)
+    assert total <= budget, (
+        f"package grew to {total} lines, over its budget of {budget}: {counts}. If the "
+        f"growth is meant, add test/security_line_budget/<change>.txt: first line your "
+        f"diff's OWN net line change under src/kiro_crew/security/*.py (lines added minus "
+        f"lines removed, e.g. from `git diff --numstat origin/main...HEAD -- "
+        f"src/kiro_crew/security/`), then the "
+        f"reason (see README.md there). Not the {total - budget} over: that is your growth "
+        f"minus whatever headroom this base had, and two rows written that way under-count "
+        f"once both merge."
+    )
+
+
+def test_budget_rows_add_up_and_each_carries_its_reason(tmp_path: Path) -> None:
+    (tmp_path / "s3-reader.txt").write_text("+179\nreads a sequence of statements\n")
+    (tmp_path / "drop-spelling.txt").write_text("-12\n\nremoves the second spelling\n")
+    (tmp_path / "README.md").write_text("not a row\n")
+    assert _budget_rows(tmp_path) == {"drop-spelling.txt": -12, "s3-reader.txt": 179}
+    assert _package_line_budget(tmp_path) == _PACKAGE_LINE_BUDGET + 167
+
+
+def test_a_budget_row_without_a_reason_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "bare.txt").write_text("+8\n  \n")
+    with pytest.raises(AssertionError, match="bare.txt"):
+        _budget_rows(tmp_path)
+
+
+def test_a_budget_row_with_no_number_or_zero_is_refused(tmp_path: Path) -> None:
+    for text in ("eight\nwhy\n", "0\nwhy\n", "+8 lines\nwhy\n", ""):
+        (tmp_path / "row.txt").write_text(text)
+        with pytest.raises(AssertionError, match="row.txt"):
+            _budget_rows(tmp_path)
+
+
+def test_the_shipped_budget_rows_all_parse() -> None:
+    assert _BUDGET_ROWS_DIR.is_dir()
+    _budget_rows(_BUDGET_ROWS_DIR)
 
 
 def test_no_single_module_grows_back_into_a_monolith() -> None:

@@ -754,8 +754,8 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                 # visible for two minutes as the shell and for milliseconds as
                 # ``curl`` -- so exempting that wrapper would drop the only sample the
                 # probe was ever going to get. A custom rule therefore reports the
-                # wrapper, which is the pre-fix behaviour and the fail-closed
-                # direction for a monitoring control.
+                # wrapper, the fail-closed direction for a monitoring control.
+                #
                 # A built-in pattern selects a CANDIDATE out of the joined cmdline;
                 # for the vitest rule the argv then decides whether the candidate is
                 # an invocation, because the joined text cannot tell a phrase inside

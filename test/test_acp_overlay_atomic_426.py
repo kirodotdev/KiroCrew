@@ -10,6 +10,9 @@ Search settings. The overlay writers route through ``atomic_write``
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from kiro_crew.providers import acp as acp_mod
 from kiro_crew.providers.acp import _write_cli_overlay, _write_tool_search_overlay
@@ -45,3 +48,35 @@ def test_overlay_routes_through_atomic_write(tmp_path, monkeypatch):
     )
     _write_cli_overlay(tmp_path, "gpt-5.6-sol", "medium")
     assert calls, "overlay write must go through atomic_write"
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda work_dir: _write_cli_overlay(work_dir, "claude-opus-5", "low"),
+        lambda work_dir: _write_tool_search_overlay(work_dir, False),
+    ],
+    ids=["effort", "tool_search"],
+)
+def test_overlay_that_fails_to_read_is_left_whole(tmp_path, write):
+    # A cli.json that exists but raises on read is not an absent one: rewriting
+    # it from {} would drop the other writer's keys and the person's own.
+    _write_cli_overlay(tmp_path, "claude-opus-5", "high")
+    _write_tool_search_overlay(tmp_path, True)
+    cli = _cli_json(tmp_path)
+    data = json.loads(cli.read_text(encoding="utf-8"))
+    data["chat.defaultModel"] = "claude-opus-5"
+    cli.write_text(json.dumps(data), encoding="utf-8")
+    before = cli.read_bytes()
+    real_open = Path.open
+
+    def _unreadable(self, *args, **kwargs):
+        if self.name == "cli.json":
+            raise PermissionError("cli.json is unreadable")
+        return real_open(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Path, "open", _unreadable)
+        with pytest.raises(PermissionError):
+            write(tmp_path)
+    assert cli.read_bytes() == before

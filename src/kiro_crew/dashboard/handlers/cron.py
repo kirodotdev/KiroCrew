@@ -63,18 +63,25 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _recognize_session,
     )
     from kiro_crew.dashboard.handlers.cron_jobs import (  # noqa: F401
+        _APP_AUTO_RESETTING_FIELDS,
+        _COERCED_BOOL_FLAGS,
+        _ENABLED_IGNORED_WARNING,
         _MAX_BATCH_DELETE,
         _MAX_CRON_BODY_BYTES,
         _T,
         _ChatFolderGone,
+        _coerce_bool_flag,
         _invalid_new_chat_per_run,
         _member_store,
         _persist_holding_folder,
+        _refuse_app_auto_approval,
         _refuse_mate_home_chat_folder,
+        _removal_actor,
         _resolve_chat_folder_id,
         _resolve_one_shot_at,
         _schema_field,
         _unknown_chat_folder_response,
+        _warn_only_bool_flag,
         _with_schedule_warnings,
         api_cron_batch_delete,
         api_cron_delete,
@@ -98,10 +105,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_operator_browser,
         _lesson_jsonl_store,
         _lesson_list_page,
+        _lesson_replace_refusal,
         _lesson_scope_selector,
         _load_workspace_lessons,
+        _parse_lesson_replaces,
         _prepare_member_lesson_store,
         _surface_lesson_saved,
+        _vector_tier_populated,
         api_lessons,
         api_lessons_create,
         api_lessons_delete,
@@ -149,6 +159,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
         model_registry,
     )
+    from kiro_crew.config.fields import _coerce_bool  # noqa: F401
     from kiro_crew.config.loader import (  # noqa: F401
         KiroCrewConfig,
         config_dir,
@@ -279,6 +290,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.security import (  # noqa: F401
         redact_credentials,
         redact_exfiltration_urls,
+        refuses,
     )
     from kiro_crew.validation import (  # noqa: F401
         _MODEL_NAME_RE,

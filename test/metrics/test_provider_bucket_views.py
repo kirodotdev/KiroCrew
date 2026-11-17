@@ -539,7 +539,6 @@ class TestViewWiring:
     """Drive the real SDK to prove the Views behave as intended."""
 
     def _provider(self):
-        pytest.importorskip("opentelemetry.sdk.metrics")
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.metrics.export import InMemoryMetricReader
         from opentelemetry.sdk.metrics.view import (

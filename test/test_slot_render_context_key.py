@@ -1,4 +1,4 @@
-"""A row cache shares the string cache's context and keeps link restoration distinct."""
+"""A row cache shares the string cache's context, and never memoizes an OAuth row."""
 
 import json
 
@@ -6,7 +6,6 @@ import pytest
 
 from kiro_crew.dashboard import chat_utils as cu
 from kiro_crew.dashboard import mcp_oauth_provenance, wire_render
-from kiro_crew.security import exfil
 
 
 @pytest.fixture(autouse=True)
@@ -42,31 +41,32 @@ def test_row_context_follows_the_string_cache_context(monkeypatch):
     assert calls == [0, 1]
 
 
-def test_policy_exemption_does_not_hide_workspace_restore_change(monkeypatch):
-    """The union of policy and workspace hosts does not identify restoration scope."""
+def test_a_policy_exemption_does_not_hide_a_workspace_allowance(monkeypatch):
+    """The platform's exempt hosts and the workspace's allowed hosts are keyed apart.
+
+    The same host moving from one to the other draws no card either way, yet the
+    second render must miss the memo: only an allowance's use is audited.
+    """
+    from kiro_crew.security import blocked_links, exfil
+
     host = "tenant.example.com"
-    scoped = {"hosts": frozenset()}
-    monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda: frozenset({host}))
-    monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: frozenset({host}))
-    monkeypatch.setattr(cu, "allowed_hosts_for", lambda _: scoped["hosts"])
-    url = f"https://{host}/view?q=hello"
-    rows = [{"role": "assistant", "content": "blocked", "meta": {"marker": 1}}]
-    original = cu.with_allowed_links_restored
-
-    def restored(row):
-        if row.get("meta", {}).get("marker") and host in cu.current_scoped_exempt_hosts():
-            return {**row, "content": url}
-        return original(row)
-
-    # Isolate the documented restoration dependency from blocked-link record parsing.
-    monkeypatch.setattr(cu, "with_allowed_links_restored", restored)
-    first = wire_render.prepare_messages_json(rows, False, live_child="", workspace="/ws")
-    scoped["hosts"] = frozenset({host})
-    expected = json.dumps(cu._prepare_messages(rows, False, live_child="", workspace="/ws"))
-    assert expected != first
-    assert (
-        wire_render.prepare_messages_json(rows, False, live_child="", workspace="/ws") == expected
+    url = f"https://{host}/c?d=" + "x" * 260
+    policy = {"hosts": frozenset({host})}
+    allowed = {"hosts": frozenset()}
+    monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: policy["hosts"])
+    monkeypatch.setattr(cu, "allowed_hosts_for", lambda _ws: allowed["hosts"])
+    audited: list[str] = []
+    monkeypatch.setattr(
+        blocked_links, "_emit_allowed_host_used_event", lambda h, _rules: audited.append(h)
     )
+    rows = [{"role": "assistant", "content": url, "ts": "1"}]
+    first = wire_render.prepare_messages_json(rows, False, live_child="", workspace="/ws")
+    policy["hosts"] = frozenset()
+    allowed["hosts"] = frozenset({host})
+    second = wire_render.prepare_messages_json(rows, False, live_child="", workspace="/ws")
+    assert first == second
+    assert cu.BLOCKED_LINKS_KEY not in second
+    assert audited == [host]
 
 
 def test_oauth_endpoint_revocation_is_checked_on_every_read(monkeypatch):
@@ -83,33 +83,3 @@ def test_oauth_endpoint_revocation_is_checked_on_every_read(monkeypatch):
     assert url not in expected
     assert wire_render.prepare_messages_json(rows, False, live_child="c") == expected
     assert wire_render.render_memo_info()[0] == 0
-
-
-def test_a_re_allow_after_a_revoke_misses_the_memo_and_audits_again(monkeypatch):
-    """A memo hit skips the restore, so a revoke must make the next render miss."""
-    logged = []
-
-    class _Log:
-        def log(self, event) -> None:
-            logged.append(event)
-
-    host = "wiki.example.org"
-    url = f"https://{host}/page?state=" + "a" * 260
-    saved, _, records = exfil.redact_exfiltration_urls_with_records(url)
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
-    monkeypatch.setattr(exfil, "_ALLOWED_HOST_AUDITED", set())
-    monkeypatch.setattr(cu, "allowed_hosts_for", lambda _: frozenset({host}))
-    rows = [{"role": "assistant", "content": saved, "meta": {"blocked_links": records}}]
-
-    def render(ws: str = "ws1") -> str:
-        return wire_render.prepare_messages_json(rows, False, live_child="", workspace=ws)
-
-    assert url in render() and url in render()
-    assert [e.metadata["workspace"] for e in logged] == ["ws1"]
-    # Another workspace's allowance of the same host is its own audit.
-    render("ws2")
-    assert [e.metadata["workspace"] for e in logged] == ["ws1", "ws2"]
-    # The revoke's bookkeeping alone, without touching the store.
-    exfil.forget_allowed_host_use(host)
-    assert url in render()
-    assert [e.metadata["workspace"] for e in logged] == ["ws1", "ws2", "ws1"]

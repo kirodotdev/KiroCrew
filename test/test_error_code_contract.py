@@ -251,9 +251,10 @@ def tally(findings: Sequence[_Finding]) -> dict[str, dict[str, int]]:
 
 
 def build_baseline() -> dict:
-    findings = scan()
-    files = tally(findings)
-    totals = {b: sum(c.get(b, 0) for c in files.values()) for b in _BUCKETS}
+    # Only per-file entries are stored. A whole-tree total or a compliant count is
+    # one shared line that two PRs changing different files re-pin to the same
+    # number, which git merges into a wrong record; the totals are printed instead
+    # (see testing-conventions.md, "Merge-safe ratchets and counts").
     return {
         "_comment": (
             "Error responses without a machine-readable `code`, per file. Generated - "
@@ -263,10 +264,12 @@ def build_baseline() -> dict:
             "number to make CI pass. See test/test_error_code_contract.py for what each bucket "
             "means and which false negatives it accepts."
         ),
-        "_totals": totals,
-        "_compliant": sum(1 for f in findings if f.bucket == "compliant"),
-        "files": files,
+        "files": tally(scan()),
     }
+
+
+def _totals(files: dict) -> dict:
+    return {b: sum(c.get(b, 0) for c in files.values()) for b in _BUCKETS}
 
 
 def _load_baseline() -> dict:
@@ -281,8 +284,11 @@ def _load_baseline() -> dict:
 
 def test_baseline_file_is_parseable_and_shaped() -> None:
     baseline = _load_baseline()
-    assert set(baseline["_totals"]) == set(_BUCKETS)
-    assert isinstance(baseline["files"], dict)
+    assert set(baseline) == {"_comment", "files"}, (
+        f"only per-file entries are stored, found keys {sorted(baseline)}. "
+        "Run: python test/test_error_code_contract.py --update"
+    )
+    assert isinstance(baseline["files"], dict) and baseline["files"]
     for path, counts in baseline["files"].items():
         assert not path.startswith("/"), f"baseline paths are relative to src/kiro_crew: {path}"
         assert set(counts) <= set(_BUCKETS), f"unknown bucket in {path}: {sorted(counts)}"
@@ -333,15 +339,6 @@ def test_baseline_is_not_stale() -> None:
         "ratchet is now looser than the code:\n"
         + "\n".join(sorted(stale))
         + "\n\nRun: python test/test_error_code_contract.py --update"
-    )
-
-
-def test_baseline_totals_match_the_per_file_map() -> None:
-    baseline = _load_baseline()
-    recomputed = {b: sum(c.get(b, 0) for c in baseline["files"].values()) for b in _BUCKETS}
-    assert baseline["_totals"] == recomputed, (
-        "`_totals` disagrees with `files` - the baseline was hand-edited. "
-        "Run: python test/test_error_code_contract.py --update"
     )
 
 
@@ -406,8 +403,8 @@ if __name__ == "__main__":  # pragma: no cover - developer entry point
             json.dump(payload, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
         print(f"wrote {_BASELINE_PATH}")
-        print(f"  totals:    {payload['_totals']}")
-        print(f"  compliant: {payload['_compliant']}")
+        print(f"  totals:    {_totals(payload['files'])}")
+        print(f"  compliant: {sum(1 for f in scan() if f.bucket == 'compliant')}")
         print(f"  files:     {len(payload['files'])}")
     else:
-        print(json.dumps(build_baseline()["_totals"], indent=2))
+        print(json.dumps(_totals(build_baseline()["files"]), indent=2))

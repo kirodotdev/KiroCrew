@@ -1163,6 +1163,11 @@ def ensure_agent_materialized(agent: str | None) -> bool:
     owned by their own subsystems, so a missing one is reported (``False``) and
     left to the caller's graceful set_mode fallback rather than being guessed at.
 
+    A present file is rebuilt too when a server the last rebuild dropped because
+    its program was not found (``mcp_dropped_servers``) has that program back.
+    Nothing else re-runs the rebuild between gateway starts and config changes,
+    so the server would stay out of every session until a restart.
+
     Returns ``True`` when the managed default file is present (already, or after
     a regenerate); ``False`` when *agent* is non-managed or regeneration failed.
     Best-effort — never raises, so it can sit on the spawn hot path.
@@ -1173,12 +1178,31 @@ def ensure_agent_materialized(agent: str | None) -> bool:
             return False
         agent_file = kiro_agents_dir_path() / AGENT_FILENAME
         if agent_file.exists():
-            return True
-        logger.warning(
-            "Managed agent config %s missing — regenerating before spawn "
-            "(self-heal for kiro-cli 'Mode not found')",
-            agent_file,
-        )
+            from kiro_crew import mcp_dropped_servers
+            from kiro_crew.env import expand_spec_args
+
+            # The rebuild resolver's own expansion and search path, minus a
+            # server's ``env.PATH``: a program found here the rebuild finds too,
+            # so it mounts the server and clears the record, and this stops firing.
+            found = [
+                name
+                for name, rec in mcp_dropped_servers.load_dropped().items()
+                if shutil.which(expand_spec_args([rec["command"]])[0], path=mcp_search_path(""))
+            ]
+            if not found:
+                return True
+            logger.info(
+                "MCP server(s) %r dropped at the last rebuild now have their program; "
+                "rebuilding %s before spawn",
+                found,
+                agent_file,
+            )
+        else:
+            logger.warning(
+                "Managed agent config %s missing — regenerating before spawn "
+                "(self-heal for kiro-cli 'Mode not found')",
+                agent_file,
+            )
         rebuild_agent_config()
         return agent_file.exists()
     except Exception:

@@ -44,8 +44,8 @@ class _NonRestrictedState:
     _slots: dict = {}
 
 
-class _Req:
-    """Non-restricted dashboard request."""
+class _Req(dict):
+    """Non-restricted dashboard request (a mapping, like ``web.Request``)."""
 
     def __init__(self, body=None, *, match_info=None, headers=None):
         self._body = body or {}

@@ -786,7 +786,7 @@ class TestMintRefusalNamesTheGateThatRefused:
         body = json.dumps({"error": "no", "code": "member_owner_token_refused"}).encode()
         message = self._mint(tmp_path, monkeypatch, body)
 
-        assert "kirocrew pod down demo && kirocrew pod up demo" not in message
+        assert "`kirocrew pod down demo`, then `kirocrew pod up demo`" not in message
         assert self._recreate_cost_is_stated(message)
 
     def test_transport_refusal_names_the_peer_verdict_not_a_stale_worktree(
@@ -806,7 +806,7 @@ class TestMintRefusalNamesTheGateThatRefused:
         # The impossible cause is not offered, and neither is its remedy.
         assert "predates unix-socket admission" not in message
         assert "Update the pod's worktree" not in message
-        assert "kirocrew pod down demo && kirocrew pod up demo" not in message
+        assert "`kirocrew pod down demo`, then `kirocrew pod up demo`" not in message
         assert self._recreate_cost_is_stated(message)
 
     def test_secret_refusal_names_both_causes_and_offers_no_recreate(

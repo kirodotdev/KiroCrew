@@ -19,8 +19,10 @@ import { i18nT } from '../../i18n/t'
 import { recordEvent } from '../../rum'
 import { isSessionApprovalConsentRequiredError, useTrustGate } from '../../components/appstore/TrustAppModal'
 import type { TrustAppTarget } from '../../components/appstore/TrustAppModal'
+import { desktopRequestOf } from '../../components/appstore/desktopRequest'
 import { consentTierFor } from '../../components/appstore/registryTier'
-import { backendRefusedNotice } from '../../components/appstore/backendRefused'
+import { appActionNotice } from '../../components/appstore/backendRefused'
+import { trustGrants } from '../../components/appstore/trustGrants'
 import type { AppsData } from './useAppsData'
 
 type AppActionsInput = Pick<
@@ -66,9 +68,8 @@ export function useAppActions({
       trustRepository: installed.trustRepository,
       origin: installed.origin,
       _registry: row?._registry,
-      sessionApproval: installed.manifest.permissions?.sessionApproval === true,
-      memberThreads: installed.manifest.permissions?.memberThreads === true,
-      workerAutoApprove: installed.manifest.permissions?.workerAutoApprove === true,
+      ...trustGrants(installed.manifest.permissions),
+      desktop: desktopRequestOf(installed.manifest),
     }
     if (row) return {
       name: row.name,
@@ -76,9 +77,8 @@ export function useAppActions({
       trustRepository: row.trustRepository,
       origin: row.origin,
       _registry: row._registry,
-      sessionApproval: row.manifest?.permissions?.sessionApproval === true,
-      memberThreads: row.manifest?.permissions?.memberThreads === true,
-      workerAutoApprove: row.manifest?.permissions?.workerAutoApprove === true,
+      ...trustGrants(row.manifest?.permissions),
+      desktop: desktopRequestOf(row.manifest),
     }
     return { name }
   }
@@ -97,8 +97,8 @@ export function useAppActions({
     }
     recordEvent('app_enable', { app: name })
     announceAppsChanged()
-    // Enabled, but the host refused its backend: say so in the page's notice.
-    const refused = backendRefusedNotice(apps.find(a => a.name === name)?.displayName || name, result)
+    // Enabled, but the host refused its backend or a hook failed: say so.
+    const refused = appActionNotice(apps.find(a => a.name === name)?.displayName || name, result, 'enable')
     if (refused) setError(refused)
   }
 

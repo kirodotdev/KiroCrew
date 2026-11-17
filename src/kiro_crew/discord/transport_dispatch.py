@@ -127,6 +127,7 @@ from kiro_crew.messaging.dispatch import (  # noqa: F401
     TurnRecord,
     Verdict,
     admit_inbound_callback,
+    inbound_permitted,
 )
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
@@ -507,23 +508,6 @@ class DiscordDispatcher:
             MonitorDispatchResult.UNAVAILABLE if monitor_completion is not None else None
         )
         channel_id = msg.conversation_id
-        self._routing_checks[channel_id] = self._routing_checks.get(channel_id, 0) + 1
-        # Inbound channels-governance gate (off-loop). The startup gate only stops
-        # a transport from CONNECTING; a host-profile deny added after it connected
-        # would otherwise keep dispatching inbound messages until restart. Recheck
-        # per message so a runtime deny takes effect immediately — silently drop
-        # (no reply) on deny, matching how an unauthorized user is ignored.
-        try:
-            permitted = await channel_inbound_permitted("discord")
-        finally:
-            remaining = self._routing_checks[channel_id] - 1
-            if remaining:
-                self._routing_checks[channel_id] = remaining
-            else:
-                self._routing_checks.pop(channel_id)
-        if not permitted:
-            logger.info("discord inbound dropped: denied by channels governance policy")
-            return monitor_result
         user_id = msg.user_id
         thread_id = msg.thread_id or ""
         scope_id = self._scope_id(user_id, thread_id)
@@ -580,6 +564,45 @@ class DiscordDispatcher:
 
         # ── Command intercept (no LLM session needed) ──
         cmd = parse_command(text) if interpret_as_command and override_mode is None else None
+        self._routing_checks[channel_id] = self._routing_checks.get(channel_id, 0) + 1
+        # Inbound channels-governance gate (off-loop). The startup gate only stops
+        # a transport from CONNECTING; a host-profile deny added after it connected
+        # would otherwise keep dispatching inbound messages until restart. Recheck
+        # per message so a runtime deny takes effect immediately — silently drop
+        # (no reply) on deny, matching how an unauthorized user is ignored. Only a
+        # message this dispatcher acts on as a stop claims the pure-cancel
+        # exemption, so a halt stays reachable on a denied channel.
+        try:
+            permitted = await inbound_permitted("discord", text=text if cmd == "stop" else "")
+        finally:
+            remaining = self._routing_checks[channel_id] - 1
+            if remaining:
+                self._routing_checks[channel_id] = remaining
+            else:
+                self._routing_checks.pop(channel_id)
+        if not permitted:
+            return monitor_result
+        # A reply answering a bridged approval note is decided here and starts no
+        # turn; a re-entered drain was checked already, a stop is never an answer, and
+        # a message carrying a file is content for a turn, not an answer.
+        from kiro_crew.discord.bridge_reply import consume_bridged_reply
+
+        client = self.client
+        # The gateway wires the state on the session-resume controller; a
+        # register_channel_transport attachment comes first when there is one.
+        state = getattr(self, "dashboard_state", None) or getattr(
+            self._session_resume, "dashboard_state", None
+        )
+        if (
+            interpret_as_command
+            and cmd != "stop"
+            and await consume_bridged_reply(
+                state,
+                msg,
+                lambda note: client.send_message(channel_id, note),
+            )
+        ):
+            return monitor_result
         # `!compact` and `!stop` act on the resolved session, so after a binding was
         # destroyed they would compact or cancel the NATIVE DM session while the user
         # believes they drive the resumed one; deciding here makes that structural.

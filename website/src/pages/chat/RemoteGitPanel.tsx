@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Cloud, GitBranch, RefreshCw } from 'lucide-r
 import { api, type RemoteGitResult } from '../../api/client'
 import AskAgentButton from '../../components/AskAgentButton'
 import ErrorNotice from '../../components/ErrorNotice'
+import TruncatedText from '../../components/TruncatedText'
 import { relativeTime, statusColor } from '../../components/GitPanel'
 import { Btn, IconButton, PanelSectionHeader } from '../../components/ui'
 import { fmtList } from '../../i18n/format'
@@ -347,7 +348,7 @@ function RemoteGitView({ slot, name }: { slot: string; name: string }) {
             {commits.map((c) => (
               <div key={c.hash} className="flex items-baseline gap-2 text-[12.5px] min-w-0">
                 <span className="font-mono text-[11.5px] text-muted shrink-0">{c.hash}</span>
-                <span className="truncate flex-1 text-text" title={c.subject}>{c.subject}</span>
+                <TruncatedText full={c.subject} className="flex-1 text-text" />
                 <span className="text-[11.5px] text-muted shrink-0">{commitWhen(c.when)}</span>
               </div>
             ))}

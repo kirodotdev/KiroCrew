@@ -8,7 +8,7 @@ import './pinnedViews.css'
 /** Summary, pinned ahead of the permanent block by Pin Summary. A module
  *  constant, so the reconcile effect sees the same array on every render. */
 const SUMMARY_FIRST: readonly ViewKind[] = ['summary']
-/** an Ultra Mode chat pins its Crew tab first. */
+/** a conductor mode chat pins its Crew tab first. */
 const CREW_FIRST: readonly ViewKind[] = ['workers']
 const CREW_AND_SUMMARY_FIRST: readonly ViewKind[] = ['workers', 'summary']
 const NONE_FIRST: readonly ViewKind[] = []
@@ -42,7 +42,7 @@ export function usePinnedViews({ tabsCtl, slot, panelHidden, pinSummary, summary
   /** Session summaries are on for this chat; `undefined` until the read answers. */
   summaryOn: boolean | undefined
   summaryWithheld: boolean
-  /** an Ultra Mode chat (root or crew member): Crew pinned first. */
+  /** a conductor mode chat (root or crew member): Crew pinned first. */
   crewFirst?: boolean
 }): { pinnedViews: readonly ViewKind[]; summaryPinned: boolean } {
   const { tabs, syncPinned, openView } = tabsCtl

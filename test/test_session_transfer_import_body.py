@@ -1129,7 +1129,8 @@ async def test_a_full_cgroup_waits_rather_than_failing_open(monkeypatch):
 
 def test_the_cgroup_limit_is_the_tightest_on_the_process_ancestry(tmp_path, monkeypatch):
     """The walk reads every level from the process's cgroup up to the mount and
-    keeps the smallest finite limit; ``max`` at a level does not constrain."""
+    keeps the smallest finite limit; ``max`` at a level does not constrain. The
+    headroom is the tightest one under those limits, from the same walk."""
     from kiro_crew import subagent
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1138,12 +1139,29 @@ def test_the_cgroup_limit_is_the_tightest_on_the_process_ancestry(tmp_path, monk
     leaf.mkdir(parents=True)
     (mount / "memory.max").write_bytes(b"max\n")
     (mount / "system.slice" / "memory.max").write_bytes(b"%d\n" % (8 << 30))
+    (mount / "system.slice" / "memory.current").write_bytes(b"%d\n" % (3 << 30))
     (leaf / "memory.max").write_bytes(b"%d\n" % (4 << 30))
+    (leaf / "memory.current").write_bytes(b"%d\n" % int(2.5 * 1024**3))
     monkeypatch.setattr(st.platform_compat, "IS_LINUX", True)
     monkeypatch.setattr(subagent, "_cgroup_memory_roots", lambda: [(leaf, mount, True)])
-    monkeypatch.setattr(subagent, "_container_cgroup_available_gb", lambda: 1.5)
 
     assert st._cgroup_memory_bounds() == (4 << 30, int(1.5 * 1024**3))
+
+
+def test_unreadable_usage_is_no_headroom_unless_only_measured_is_asked(tmp_path, monkeypatch):
+    """Import admission waits on a limit whose usage it cannot read; the dashboard
+    asks for the measured reading and keeps the limit with no headroom figure."""
+    from kiro_crew import subagent
+    from kiro_crew.dashboard import session_transfer as st
+
+    leaf = tmp_path / "cg"
+    leaf.mkdir()
+    (leaf / "memory.max").write_bytes(b"%d\n" % (4 << 30))
+    monkeypatch.setattr(st.platform_compat, "IS_LINUX", True)
+    monkeypatch.setattr(subagent, "_cgroup_memory_roots", lambda: [(leaf, leaf, True)])
+
+    assert st._cgroup_memory_bounds() == (4 << 30, 0)
+    assert st._cgroup_memory_bounds(measured_only=True) == (4 << 30, None)
 
 
 def _adversarial_documents():

@@ -21,10 +21,13 @@ as the tool takes them.
 
 ## Steps
 
-0. **Stop immediately if the app is not set up.** `GET /state`; if no entry in
-   `providers` has `configured: true`, produce NO output and stop. There is
-   nothing to arm, and this job runs every 5 minutes — on a fresh install it
-   must cost nothing at all.
+0. **Do not stop early when the app looks unconfigured.** Go straight to step 1.
+   `POST /rotation/arm` is the only thing that pauses `dispatch` and `reconcile`,
+   and it keeps them paused while no signal source is configured. A step that
+   stopped here when `/state` showed no signal source would leave jobs armed
+   earlier still running, a model turn every 2 minutes with nothing to watch.
+   Do not read `configured: true` in `/state` as setup either: the built-in
+   rotation and action fallbacks always report it.
 
    This job ships enabled because it is the only thing that resumes the `on_shift`
    tier: `dispatch` and `reconcile` both ship paused, and the tier is armed here. Ship

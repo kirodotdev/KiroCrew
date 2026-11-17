@@ -1392,8 +1392,11 @@ class TestResolveExplicitSubnet:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        with pytest.raises(aws.AWSError, match="egress"):
+        with pytest.raises(aws.AWSError, match="egress") as ei:
             ec2.resolve_explicit_subnet("subnet-iso", "dev", "us-east-1")
+        # It offers the in-place recoveries, not only a network change outside Kiro Crew.
+        assert "leave the subnet unset to let Kiro Crew pick one automatically" in str(ei.value)
+        assert "choose a subnet with a NAT or internet-gateway route" in str(ei.value)
 
     def test_az_not_offering_type_raises(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
@@ -1526,8 +1529,12 @@ class TestStatusAndList:
                 "AccessDenied: not authorized to perform: " "cloudformation:DescribeStacks",
             ),
         )
-        with pytest.raises(aws.AWSError):
+        with pytest.raises(aws.AWSError) as ei:
             ec2.find_stack("t1", "dev", "us-east-1")
+        assert str(ei.value).startswith(
+            "could not query stack kirocrew-t1: grant `cloudformation:DescribeStacks` "
+            "(see `kirocrew cloud iam-policy`) and retry — AccessDenied"
+        )
 
     def test_find_stack_raises_on_throttle(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", "Throttling: Rate exceeded"))
@@ -1591,6 +1598,31 @@ class TestStatusAndList:
         rows = ec2.list_instances("dev", "us-east-1")
         assert rows == [{"tag": "t1", "instance_id": "i-live", "instance_state": "running"}]
 
+    def test_list_instances_skips_an_instance_ec2_no_longer_has(self, monkeypatch):
+        # The tagging API still returns the deleted crew's instance, and describe-instances
+        # answers the query with the text `None`: the row is gone, not a crew in state None.
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            return {
+                "ResourceTagMappingList": [
+                    {
+                        "ResourceARN": "arn:aws:ec2:us-east-1:1:instance/i-gone",
+                        "Tags": [{"Key": "kirocrew:instance", "Value": "kc-gone"}],
+                    },
+                ]
+            }
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (0, "None\n", ""))
+        assert ec2.list_instances("dev", "us-east-1") == []
+
+    @pytest.mark.parametrize(
+        ("answer", "state"),
+        [((0, "running\n", ""), "running"), ((0, "None\n", ""), ""), ((0, "", ""), "unknown")],
+    )
+    def test_instance_state_reads_only_none_as_gone(self, monkeypatch, answer, state):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: answer)
+        assert ec2._instance_state("i-0abc", "dev", "us-east-1") == state
+
     def test_list_stacks_filters_kirocrew_prefix(self, monkeypatch):
         captured = {}
 
@@ -1613,6 +1645,32 @@ class TestStatusAndList:
         ]
         assert captured["action"] == "cloudformation:ListStacks"
         assert "list-stacks" in captured["args"]
+
+    def test_live_instance_tags_reads_one_filtered_describe(self, monkeypatch):
+        captured = {}
+
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            captured["args"] = args
+            captured["action"] = action
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"Tags": [{"Key": "kirocrew:instance", "Value": "kc-a"}]},
+                            {"Tags": [{"Key": "Name", "Value": "kc-untagged"}]},
+                        ]
+                    },
+                    {"Instances": [{"Tags": [{"Key": "kirocrew:instance", "Value": "kc-b"}]}]},
+                ]
+            }
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        assert ec2.live_instance_tags("dev", "us-east-1") == {"kc-a", "kc-b"}
+        assert captured["action"] == "ec2:DescribeInstances"
+        assert "Name=tag:kirocrew:managed,Values=true" in captured["args"]
+        assert "Name=instance-state-name,Values=pending,running,stopping,stopped" in (
+            captured["args"]
+        )
 
 
 class TestLifecycle:
@@ -1804,6 +1862,56 @@ class TestStackEventsAndFailures:
         )
         with pytest.raises(aws.AWSError, match="root cause"):
             ec2.deploy(tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1")
+
+    # The CLI's real generic error: 201 characters once stripped, so a 200-char cut
+    # splits the stack name in the events command it prints.
+    _GENERIC_DEPLOY_ERR = (
+        "\naws: [ERROR]: Failed to create/update the stack. Run the following command\n"
+        "to fetch the list of events leading up to the failure\n"
+        "aws cloudformation describe-stack-events --stack-name kirocrew-kc-22d3b9\n"
+    )
+
+    @pytest.mark.parametrize(
+        ("resource", "expected_missing", "expected_start"),
+        [
+            (
+                "Instance",
+                "iam:PassRole",
+                "cloudformation deploy failed: grant `iam:PassRole` "
+                "(see `kirocrew cloud iam-policy`) and retry — aws: [ERROR]:",
+            ),
+            ("WaitCondition", None, "cloudformation deploy failed: aws: [ERROR]:"),
+        ],
+    )
+    def test_deploy_maps_a_denial_only_the_stack_events_carry(
+        self, monkeypatch, resource, expected_missing, expected_start
+    ):
+        # A resource's denial is the launcher's to grant; the WaitCondition's reason is
+        # the instance's own setup log, whose denial no launcher grant fixes.
+        import kiro_crew.cloud.source as source_mod
+
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
+        monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
+        monkeypatch.setattr(source_mod, "upload_source", lambda *a, **k: ("b", "k"))
+        monkeypatch.setattr(ec2, "discover_network", lambda *a, **k: ("vpc-1", "subnet-1", "igw"))
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (1, "", self._GENERIC_DEPLOY_ERR))
+        reason = (
+            "User: arn:aws:sts::123456789012:assumed-role/launcher/s is not authorized to "
+            "perform: iam:PassRole on resource: arn:aws:iam::123456789012:role/kirocrew-ec2"
+        )
+        monkeypatch.setattr(
+            ec2,
+            "get_stack_failures",
+            lambda *a, **k: [{"resource": resource, "status": "CREATE_FAILED", "reason": reason}],
+        )
+        with pytest.raises(aws.AWSError) as caught:
+            ec2.deploy(
+                tag="kc-22d3b9", tier=sizes.default_tier(), profile="dev", region="us-east-1"
+            )
+        message = str(caught.value)
+        assert caught.value.missing_action == expected_missing
+        assert message.startswith(expected_start)
+        assert "--stack-name kirocrew-kc-22d3b9 — root cause:" in message
 
 
 class TestHumanActionGuard:

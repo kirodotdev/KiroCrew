@@ -105,6 +105,7 @@ from kiro_crew.config.sections_agent import (  # noqa: F401
     _CREW_MODE_AGENT_DEFAULT,
     _YOLO_DURATION_DEFAULT,
     AgentConfig,
+    _chat_runtime_sharing_harness_defaults,
     _read_skip_permissions,
     coerce_fallback_model,
     yolo_duration_to_secs,
@@ -157,6 +158,7 @@ from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     JAIL_MODE_OFF,
     JAIL_MODE_ON,
     KAS_BUNDLE_DEFAULT_URL,
+    KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
     KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     MEMBER_APPROVAL_MODES,
@@ -307,6 +309,7 @@ from kiro_crew.config.sections_defaults import (  # noqa: F401
     CONTEXT_WARN_MARGIN_PCT,
     DEFAULT_AUTOCOMPACT_PCT,
     DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
+    DEFAULT_MAX_PER_CREATOR,
     DEFAULT_MODEL,
     DEFAULT_POOL_SIZE,
     DEFAULT_RECONCILE_MAX_KILLS,
@@ -346,12 +349,15 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     IMPORT_CHUNK_BUDGET_MAX,
     KAS_DELETE_DELAY_SECS_MAX,
     KAS_DELETE_DELAY_SECS_MIN,
+    MAX_PER_CREATOR_MAX,
+    MAX_PER_CREATOR_MIN,
     MAX_SUBAGENTS_FIXED_FLOOR,
     MCP_PROBE_TIMEOUT_MAX,
     MCP_PROBE_TIMEOUT_MIN,
     POOL_SIZE_MAX,
     POOL_TTL_SECS_MAX,
     POOL_TTL_SECS_MIN,
+    PRIVACY_ACK_VERSION_MAX,
     RECENT_TINT_COUNT_MAX,
     RECENT_TINT_COUNT_MIN,
     RECONCILE_MAX_KILLS_MAX,
@@ -377,9 +383,13 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     AutocompactPctError,
     ResourceLimitsConfig,
     _limit_int,
+    crew_autocompact_pct_refusal,
     parse_autocompact_pct,
 )
 from kiro_crew.config.sections_session import (  # noqa: F401
+    BOT_MAX_WORKERS_DEFAULT,
+    BOT_MAX_WORKERS_MAX,
+    BOT_MAX_WORKERS_MIN,
     DEFAULT_KIRO_TEMPLATE,
     STAR_ORDER_MAX,
     KiroCrewAgentConfig,
@@ -423,6 +433,8 @@ from kiro_crew.config.sections_slack import (  # noqa: F401
     ACTIVATION_OBSERVE,
     ACTIVATION_OFF,
     ACTIVATION_REVIEW,
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
     CODE_CHANNEL_DEFAULT_MAX,
     ChannelConfig,
     CodeChannelDefaultsConfig,
@@ -478,6 +490,8 @@ from kiro_crew.config.sections_telegram import (  # noqa: F401
 )
 from kiro_crew.config.sections_telemetry import (  # noqa: F401
     _DEFAULT_BEACON_ENDPOINT,
+    DEFAULT_METRICS_MAX_TOTAL_MB,
+    DEFAULT_METRICS_RETENTION_DAYS,
     TelemetryConfig,
     WakaTimeConfig,
 )
@@ -503,6 +517,7 @@ from kiro_crew.constants import (
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
+from kiro_crew.crewmate_worktree import BRANCH_PREFIX as _BRANCH_PREFIX
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
 from kiro_crew.stt.limits import DEFAULT_IDLE_EVICT_SECS as _STT_DEFAULT_IDLE_EVICT_SECS

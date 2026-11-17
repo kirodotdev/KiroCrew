@@ -361,3 +361,34 @@ class TestTimedGrantEndpoint:
         assert slot._trusted_patterns == set()
         assert not fut.done()
         state.sessions.set_approval_policy.assert_not_called()
+
+
+class TestApproveRequestIdShape:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", [["req-7"], {"a": 1}], ids=repr)
+    async def test_an_unhashable_request_id_is_refused_and_settles_nothing(self, tmp_path, bad):
+        state = _make_state(tmp_path)
+        _slot, fut = _pending(state, "slot-1", "req-7", "ls /tmp", "ls")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve", json={"action": "approved", "request_id": bad}
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_approval_target"
+
+        assert not fut.done()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty", [[], {}], ids=repr)
+    async def test_an_empty_container_is_still_the_implicit_pick(self, tmp_path, empty):
+        state = _make_state(tmp_path)
+        _slot, fut = _pending(state, "slot-1", "req-7", "ls /tmp", "ls")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/slot-1/approve", json={"action": "approved", "request_id": empty}
+            )
+            assert resp.status == 200
+
+        assert fut.result() == "approved"

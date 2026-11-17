@@ -241,6 +241,30 @@ jobs:
               - "src/kiro_crew/session_cleanup.py"
               - "src/kiro_crew/session_pool.py"
               - "test/test_darwin_native_provider_reap.py"
+              # The POSIX installers run on macOS against the BSD userland
+              # (its `mktemp` with a template ignores TMPDIR), and their tests
+              # drive the real scripts, so a GNU-only assumption passes on
+              # Linux alone.
+              - "cli.sh"
+              - "install.sh"
+              - "cloud-install.sh"
+              - "ensure-node.sh"
+              - "ensure-python.sh"
+              - "scripts/lib/pinned-mise.sh"
+              - "scripts/lib/acp-adapter-pin.sh"
+              - "test/installer_test_helpers.py"
+              - "test/test_installer_*.py"
+              - "test/test_ensure_python_*.py"
+              - "test/test_cli_manifest_signature.py"
+              # Tests that run a Linux-runner script on the host, where a
+              # GNU-only flag (`date -d`, `grep -P`, `sha256sum -c`) is in reach.
+              - "test/test_ship_report_*.py"
+              - ".github/workflows/ship-report.yml"
+              - ".github/scripts/code-review-history.sh"
+              - "test/test_code_review_history_fetch.py"
+              - "src/kiro_crew/cloud/ssm.py"
+              - "test/test_cloud_ssm.py"
+              - "test/test_cloud_ssm_cov80.py"
               # The two darwin gap lists a change here can silently widen.
               - "test/macos-expected-failures.txt"
               - "test/macos-collect-ignore.txt"
@@ -430,7 +454,7 @@ jobs:
           fi
 
   # The nightly's own workflow, called against this pull request's head. Same
-  # six shards, same 40-minute cap per shard, same contracts -- and the same
+  # shards, same per-shard time limit, same contracts -- and the same
   # runner queue, which is why it is behind `decide` and outside readiness.
   platform-tests:
     name: macOS Tests

@@ -339,6 +339,16 @@ class TestCliListFolder:
         line = next(line for line in _job_lines(out) if "  tricky  " in line)
         assert "[folder: Bad\\x0aX]" in line
 
+    def test_name_and_message_stay_on_the_job_line(self, home, no_create, capsys):
+        svc = CronService(base_dir=config_dir())
+        svc.add_job("ok\r\n  ✅ fake  forged", "hi\r\n  ✅ fake2", every_secs=300)
+        cli_commands._cron_dispatch(_list())
+        out = capsys.readouterr().out
+        assert "\r" not in out
+        assert not any(line.startswith("  ✅ fake") for line in out.splitlines())
+        line = next(line for line in _job_lines(out) if "  ok" in line)
+        assert "ok\\x0a  ✅ fake  forged" in line and line.endswith("hi\\x0a  ✅ fake2")
+
     def test_filter_by_name_lists_only_that_folder(self, home, no_create, capsys):
         _seed_job("in-veille", "aaaa1111")
         _seed_job("in-apps", "bbbb2222")

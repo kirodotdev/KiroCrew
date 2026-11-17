@@ -16,7 +16,7 @@ import { Btn } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { i18nT } from '../../i18n/t'
-import { fmtRelative } from '../../i18n/format'
+import { fmtRelative, joinSentences } from '../../i18n/format'
 import {
   BROADCAST_STATES, PRESET_STATES, broadcastTargets, deliveryFor, sendSteers,
   type BroadcastContext, type BroadcastCriteria, type BroadcastPreset, type BroadcastSlot, type BroadcastState, type CrewmateMode,
@@ -222,7 +222,7 @@ export default function BroadcastPanel({ slots: rowSlots, folders, tags, agents,
     const parts: string[] = []
     if (failed > 0) parts.push(i18nT('pages.chatSidebar.broadcast_failed_some', { n: failed }))
     if (unknown > 0) parts.push(i18nT('pages.chatSidebar.broadcast_unknown_some', { n: unknown }))
-    setError(parts.join(' '))
+    setError(joinSentences(parts))
   }
 
   return (

@@ -1129,9 +1129,11 @@
   //: OPEN items only, the rule the fold's own `needs_you` keeps. A worker's last word
   //: outlives the conductor's close, so a closed task can still read `question` or
   //: `blocked`; drawing it here would also raise the count, since `needsYou` lifts
-  //: the fold's number to the rows it draws.
+  //: the fold's number to the rows it draws. The fold's `awaits_person`, when sent, is
+  //: that rule per row: a report naming a person that no decide or steer answered.
   function needsMe(t) {
     if (txt(t.state) !== 'open') return false;
+    if (typeof t.awaits_person === 'boolean') return t.awaits_person;
     var st = txt(t.status);
     return st === 'question' || st === 'blocked';
   }
@@ -2090,6 +2092,14 @@
     try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: text }, '*'); }
     catch (e) { /* no host: the choice simply does nothing */ }
   }
+  //: A FINISHED choice asks the host to send it in one click. The host sends only when
+  //: the person turned "Send replies in one click" on; otherwise, or on any refusal,
+  //: it fills the composer exactly as `act` does. The "own words" choice stays `act`:
+  //: its text is a starter the person finishes.
+  function send(text) {
+    try { parent.postMessage({ type: 'kirocrew-dashboard:send', text: text }, '*'); }
+    catch (e) { /* no host: the choice simply does nothing */ }
+  }
 
   //: A MESSAGE IN THE CHAT FOLDS THE CREWMATE'S CARDS WRITTEN BEFORE IT. Typing in the
   //: chat, clicking an option there and steering a running turn all reach the crewmate
@@ -2372,7 +2382,7 @@
           b.type = 'button';
           b.title = c.say;
           b.addEventListener('click', function () {
-            act(c.say);
+            if (c.own) act(c.say); else send(c.say);
             deskPicked[row.key] = c.own ? W('own') : c.label;
             it.classList.add('pr-going');
             //: Redraw, so the other cards close the gap this one leaves; the picked

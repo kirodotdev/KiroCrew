@@ -347,8 +347,26 @@ def test_config_toggles_reports_zero_and_one():
     with patch.object(KiroCrewConfig, "load", return_value=cfg):
         toggles = ig.read_config_toggles()
     assert toggles
-    assert set(toggles) == {key for key, _, _ in ig.CONFIG_TOGGLES}
+    assert set(toggles) == {key for key, _, _ in ig.CONFIG_TOGGLES} | {
+        ig.PREVIEW_CHAT_RUNTIME_SHARING_KEY
+    }
     assert set(toggles.values()) <= {0, 1}
+
+
+def test_preview_toggle_reports_the_chat_runtime_sharing_preview():
+    """Adoption of the preview reads 1 only when stored True, and 0 in an LTS build."""
+    from kiro_crew.acp.chat_runtime_sharing import CHAT_RUNTIME_SHARING_PREVIEW
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    key = ig.PREVIEW_CHAT_RUNTIME_SHARING_KEY
+    cfg = KiroCrewConfig()
+    with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        assert ig.read_config_toggles()[key] == 0
+    cfg.dashboard.feature_previews = {CHAT_RUNTIME_SHARING_PREVIEW: True}
+    with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        assert ig.read_config_toggles()[key] == 1
+        with patch("kiro_crew.edition_locks.local_enable_locked", return_value=True):
+            assert ig.read_config_toggles()[key] == 0
 
 
 def test_config_toggles_omits_an_unresolvable_key():
@@ -357,7 +375,7 @@ def test_config_toggles_omits_an_unresolvable_key():
     cfg = KiroCrewConfig()
     with patch.object(ig, "CONFIG_TOGGLES", (("ghost", "telemetry", "no_such_field"),)):
         with patch.object(KiroCrewConfig, "load", return_value=cfg):
-            assert ig.read_config_toggles() is None
+            assert "ghost" not in ig.read_config_toggles()
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +857,9 @@ def test_lifetime_totals_are_declared_for_the_consumer_that_must_know():
 
 
 def test_collection_yields_every_instrument_with_the_expected_shape():
+    # The probe-failure counter is a process-lifetime module global; a probe that
+    # failed in an earlier test on this worker would otherwise publish here.
+    ig.reset_for_testing()
     with (
         patch.object(ig, "read_active_crons", return_value=3),
         patch.object(ig, "read_active_monitor_loops", return_value=1),
@@ -1180,3 +1201,59 @@ def test_inventory_failure_does_not_cost_the_process_gauges(monkeypatch):
                 process.assert_called_once()
     finally:
         provider_mod.reset_for_testing()
+
+
+# ── voice provider ───────────────────────────────────────────────────────────
+
+
+def _write_voice_config(data: dict) -> None:
+    import json
+
+    from kiro_crew.config.loader import _invalidate_config_cache, config_path
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    _invalidate_config_cache()
+
+
+def test_voice_providers_read_the_stored_choice() -> None:
+    _write_voice_config({"stt": {"provider": "transcribe"}, "voice_reply": {"provider": "polly"}})
+    assert ig.read_voice_providers() == {"stt": "transcribe", "tts": "polly"}
+
+
+def test_voice_providers_default_to_the_providers_in_use() -> None:
+    _write_voice_config({})
+    assert ig.read_voice_providers() == {"stt": "local", "tts": "system"}
+
+
+def test_voice_provider_labels_are_closed() -> None:
+    from kiro_crew.metrics import voice as voice_metrics
+
+    _write_voice_config({"stt": {"provider": "apple"}, "voice_reply": {"provider": "ploly"}})
+    values = ig.read_voice_providers()
+    assert values is not None
+    allowed_stt = set(voice_metrics.STT_PROVIDER_VALUES) | {"registered", "other"}
+    allowed_tts = set(voice_metrics.TTS_PROVIDER_VALUES) | {"registered", "other"}
+    assert values["stt"] in allowed_stt
+    # A typo resolves to the built-in default, as every reader resolves it.
+    assert values["tts"] in allowed_tts
+
+
+def test_an_invalid_reply_provider_reads_quietly(caplog) -> None:
+    """A collection must not repeat the resolver's invalid-value warning each interval."""
+    _write_voice_config({"voice_reply": {"provider": "ploly"}})
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+        first = ig.read_voice_providers()
+        second = ig.read_voice_providers()
+    assert first == second
+    assert first is not None and first["tts"] == "system"
+    assert not [r for r in caplog.records if r.name == "kiro_crew.voice_reply"]
+
+
+def test_the_voice_provider_gauge_is_registered_and_exportable() -> None:
+    from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
+
+    assert ig.GAUGE_VOICE_PROVIDER in ig.ALL_METRIC_NAMES
+    assert ig.PROBE_VOICE_PROVIDER in ig.ALL_PROBES
+    assert ig.GAUGE_VOICE_PROVIDER in PRODUCT_METRICS

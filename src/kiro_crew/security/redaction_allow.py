@@ -1,38 +1,35 @@
 """Hosts a reader allowed long queries for, one workspace at a time.
 
 The dashboard's *Allow for this host* writes here after the reader confirms.
-An allowed host skips ONLY the query-length and base64 heuristics of the
-exfiltration check (the same relaxation the platform's exact-host exemption
-gives); every credential check still runs, so an allowed host never lets a
-secret through. The list is read only when a reply is SHOWN: every saved
-reply keeps each blocked link as a placeholder with its record, and the
-display puts an allowed host's address back. So what is saved never depends
-on this list, a list that has not loaded yet only shows links blocked a
-little longer, and revoking a host re-blocks every link on it.
+An allowed host lets its links that only the query-length and base64 heuristics
+flagged render as live links again (``security.blocked_links``; the same
+relaxation the platform's exact-host exemption gives); a link flagged for a
+credential stays blocked, so an allowed host never lets a secret through. The
+list is read only when a reply is SHOWN, and it decides only how a link renders:
+no text is ever changed for it, so what is saved never depends on this list, a
+list that has not loaded yet only shows links blocked a little longer, and
+revoking a host blocks every such link on it again.
 
 An agent able to edit this list could allow the host it wants to send
 conversation data to, so the file lives in the ``redaction-allow`` directory,
 which the sandbox seals read-only (``sandbox._CREW_READONLY_LEAVES``): only the
 gateway's own routes write it. Every failure to read degrades to "no host
-allowed", which means more redaction, the safe direction.
+allowed", which means more links blocked, the safe direction.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
-from kiro_crew.security.exfil import (
-    _OAUTH_EXTENSION_HOST_RE,
-    _log_operator_list_use,
-    forget_allowed_host_use,
-)
+from kiro_crew.security.blocked_links import forget_allowed_host_use
+from kiro_crew.security.exfil import _OAUTH_EXTENSION_HOST_RE, _log_operator_list_use
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +94,8 @@ def valid_host(host: object) -> bool:
 # The gateway is the list's only writer, so it holds the list in memory: the
 # render paths read this snapshot and never touch the disk on the event loop.
 # Nothing loads it at boot: the first read starts a background thread and
-# answers "no host allowed" until that thread lands -- more redaction, never
-# less. A write reads the file itself under the lock and replaces the snapshot
+# answers "no host allowed" until that thread lands -- more links blocked, never
+# fewer. A write reads the file itself under the lock and replaces the snapshot
 # whole. The snapshot is keyed by the file it was read from, so a different
 # config home reads afresh.
 _snapshot: tuple[Path, dict[str, list[str]]] | None = None
@@ -218,7 +215,7 @@ def _write(data: dict[str, list[str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    os.chmod(tmp, 0o600)
+    platform_compat.restrict_to_owner(tmp)  # fail-loud owner-only, Windows too
     replace_with_retry(tmp, path)
     global _snapshot
     _snapshot = (path, {ws: list(hosts) for ws, hosts in data.items()})

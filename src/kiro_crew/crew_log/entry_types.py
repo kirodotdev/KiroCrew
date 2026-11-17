@@ -83,7 +83,9 @@ from kiro_crew.crew_log.entry_types_fields import (  # noqa: F401
 )
 from kiro_crew.crew_log.entry_types_ledgers import (  # noqa: F401
     OBJECT_PRODUCER_PROBE,
+    OBJECT_PRODUCER_WARM_BRIEF,
     OBJECT_PRODUCERS,
+    OBJECTS_FOLD_NAME,
     RADAR_CI_BOUNDS,
     RADAR_CI_KEYS,
     RADAR_CLEARABLE_FIELDS,
@@ -128,6 +130,7 @@ from kiro_crew.crew_log.entry_types_surfaces import (  # noqa: F401
     DASHBOARD_INSTANCE_ENTRY_TYPE,
     DASHBOARD_REASON_LIMIT,
     DASHBOARD_REFUSED_ENTRY_TYPE,
+    DASHBOARD_STALE_WAKE_ENTRY_TYPE,
     DASHBOARD_TYPE_LIMIT,
     DASHBOARD_VALUE_BYTES,
     DASHBOARD_VALUE_LIMIT,

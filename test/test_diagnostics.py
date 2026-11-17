@@ -31,13 +31,16 @@ from kiro_crew import agent_scratch, beacon, diagnostics, release_channel
 from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 _GATEWAY = (
     "09:00 boot ok\n"
     "Authorization: Bearer sk-ant-SECRETtoken1234567890abcXYZ\n"
     "Set-Cookie: mc_token_5476=supersecretcookievalueABCDEF123456\n"
     "Set-Cookie: mc_refresh_5476=REFRESHsecretVALUE9876543210\n"
-    "aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n"
+    "aws_secret_access_key="
+    "Qh4Tm2Vx9KpRcZ8Nw3Hd"
+    "Jf1Lb5Gs0Ye9Ua2WkEQ2\n"
     "a perfectly normal log line\n"
 )
 
@@ -45,7 +48,7 @@ _SECRETS = (
     "sk-ant-SECRETtoken1234567890abcXYZ",
     "supersecretcookievalueABCDEF123456",
     "REFRESHsecretVALUE9876543210",
-    "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+    "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2",
 )
 
 
@@ -443,6 +446,31 @@ def test_windows_json_escaped_and_case_insensitive(monkeypatch):
     # Case-insensitive drive and user segment.
     out, n = diagnostics._collapse_home_prefixes(base.lower() + back + "kiro-chat.log")
     assert out == r"~\kiro-chat.log" and n == 1
+    # Escaped twice or more, mixed separators, and a JSON-escaped forward slash.
+    for sep in (back * 4, back * 8, back + "/", "/" + back * 2):
+        out, n = diagnostics._collapse_home_prefixes(base.replace(back, sep) + sep + "x.log")
+        assert seg not in out and n == 1, (sep, out)
+    # Separators before the home are left alone.
+    out, n = diagnostics._collapse_home_prefixes("file:" + back * 2 + base + back + "x.log")
+    assert out == "file:" + back * 2 + "~" + back + "x.log" and n == 1, out
+    # A sibling login still survives at any escaping depth.
+    out, n = diagnostics._collapse_home_prefixes((base + "2").replace(back, back * 4))
+    assert seg + "2" in out and n == 0, out
+
+
+def test_a_posix_home_keeps_the_separators_before_it(monkeypatch):
+    """The root separator of a POSIX home is one character, not a run.
+
+    A run there would swallow the ``//`` of a ``file://`` URI, and would be
+    retried from every position of a long separator run in a note or log.
+    """
+    home = "/" + "home" + "/a1"  # assembled so no literal home path is on a line
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(home)))
+    monkeypatch.setattr(diagnostics, "config_dir", lambda: Path(home + "/.kiro/crew"))
+    out, n = diagnostics._collapse_home_prefixes("file://" + home + "/.kiro/crew/x.log")
+    assert out == "file://~/.kiro/crew/x.log" and n == 1, out
+    out, n = diagnostics._collapse_home_prefixes("/" * 20000 + "x")
+    assert n == 0 and out == "/" * 20000 + "x"
 
 
 def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
@@ -455,9 +483,9 @@ def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
     home = tmp_path / "home"
     _isolate(monkeypatch, home)
     # One real secret + a couple of home-path frames (no secret in them).
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = SAMPLE_AWS_SECRET
     (home / "gateway.log").write_text(
-        f"AWS key {secret}\n"
+        f"AWS key aws_secret_access_key={secret}\n"
         f'  File "{home}{os.sep}gateway.log", line 1, in a\n'
         f'  File "{home}{os.sep}app{os.sep}x.py", line 2, in b\n'
     )

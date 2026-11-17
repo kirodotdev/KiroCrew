@@ -3,6 +3,9 @@ import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { updateSlotFolder } from '../store/dashboardSlice'
+import { setAgentSwitchNotice } from '../store/chatSlice'
+import { errMessage } from '../utils/thunkError'
+import { i18nT } from '../i18n/t'
 
 /* The session the user last moved here, in memory only: it marks a move, so a
  * session created into a folder, or seen after a reload, is never marked. */
@@ -26,6 +29,10 @@ export type MoveSlotOptions = {
    * fact: a caller that treats the store as proof (the drag-move undo bar) would
    * offer an undo before the original move is durable, and the two writes can
    * then race and cancel each other.
+   *
+   * Runs from the mutation's own success handler, so it still fires after the
+   * calling component unmounted or fired another move: a per-call `mutate`
+   * callback is dropped in both cases.
    */
   onCommitted?: () => void
 }
@@ -52,15 +59,10 @@ export function useMoveSlotToFolder(): (
   folderId: string | null,
   opts?: MoveSlotOptions,
 ) => void {
-  const { mutate } = useMoveSlotMutation()
+  const { mutate } = useMoveSlotMutation({ reportRollback: true })
   // `mutate` is referentially stable across renders, so the returned callback is too.
   return useCallback((slotKey: string, folderId: string | null, opts?: MoveSlotOptions) => {
-    mutate({ slotKey, folderId }, {
-      // Per-call callback, running in addition to the hook's own rollback
-      // handler: the caller learns the server ACKNOWLEDGED the write without
-      // taking over the rollback.
-      onSuccess: () => { opts?.onCommitted?.() },
-    })
+    mutate({ slotKey, folderId, onCommitted: opts?.onCommitted })
   }, [mutate])
 }
 
@@ -80,7 +82,7 @@ export function useMoveSlotToFolderAsync(): (slotKey: string, folderId: string |
   // a caller awaits (and any dismissal it holds while waiting) would not settle
   // until the browser came back online. Running it lets the request reach the
   // gateway, or fail fast through the usual rollback.
-  const { mutateAsync } = useMoveSlotMutation('always')
+  const { mutateAsync } = useMoveSlotMutation({ networkMode: 'always' })
   return useCallback(
     async (slotKey: string, folderId: string | null) => { await mutateAsync({ slotKey, folderId }) },
     [mutateAsync],
@@ -88,12 +90,14 @@ export function useMoveSlotToFolderAsync(): (slotKey: string, folderId: string |
 }
 
 /** The optimistic move with its guarded rollback, shared by both hooks above.
- *  `networkMode` left unset keeps React Query's default for the existing hook. */
-function useMoveSlotMutation(networkMode?: 'always') {
+ *  `networkMode` left unset keeps React Query's default for the existing hook.
+ *  `reportRollback` puts a rolled-back move on the shell banner, for the callers
+ *  that fire and forget; the async hook's callers show the failure themselves. */
+function useMoveSlotMutation({ networkMode, reportRollback = false }: { networkMode?: 'always'; reportRollback?: boolean } = {}) {
   const dispatch = useAppDispatch()
   return useMutation({
     networkMode,
-    mutationFn: ({ slotKey, folderId }: { slotKey: string; folderId: string | null }) =>
+    mutationFn: ({ slotKey, folderId }: { slotKey: string; folderId: string | null; onCommitted?: () => void }) =>
       api.setSlotFolder(slotKey, folderId),
     onMutate: ({ slotKey, folderId }) => {
       const prev = store.getState().dashboard.slots.find(s => s.key === slotKey)?.folder_id ?? ''
@@ -101,14 +105,22 @@ function useMoveSlotMutation(networkMode?: 'always') {
       dispatch(updateSlotFolder({ key: slotKey, folderId: target }))
       return { slotKey, prev, target }
     },
-    onSuccess: (_data, { slotKey }) => { setMovedSlot(slotKey) },
-    onError: (_err, _vars, ctx) => {
+    onSuccess: (_data, { slotKey, onCommitted }) => { setMovedSlot(slotKey); onCommitted?.() },
+    onError: (err, _vars, ctx) => {
       if (!ctx) return
       // Guarded rollback: only revert if a later move hasn't already changed
       // this slot's folder. Without this, a rapid move A→B where the A call
       // fails would clobber B's optimistic update even though B succeeded.
       const current = store.getState().dashboard.slots.find(s => s.key === ctx.slotKey)?.folder_id ?? ''
-      if (current === ctx.target) dispatch(updateSlotFolder({ key: ctx.slotKey, folderId: ctx.prev }))
+      if (current !== ctx.target) return
+      dispatch(updateSlotFolder({ key: ctx.slotKey, folderId: ctx.prev }))
+      // The session just jumped back to where it was: say so, with the
+      // gateway's reason (a Bot's folder, a folder that changed owner), or the
+      // rollback reads as the move never having been asked for.
+      if (!reportRollback) return
+      const title = i18nT('hooks.useMoveSlotToFolder.move_refused')
+      const reason = errMessage(err)
+      dispatch(setAgentSwitchNotice(reason ? { title, message: reason, error: true } : { message: title, error: true }))
     },
   })
 }

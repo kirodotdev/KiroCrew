@@ -19,7 +19,7 @@ def _conductor_line(
 ) -> "tuple[frozenset[str], frozenset[str]] | None":
     """``(members, live)`` when live slot *key* is a conductor, else ``None``.
 
-    A conductor is an Ultra Mode root or an un-nested Bot thread, by the same stamps
+    A conductor is a conductor mode root or an un-nested Bot thread, by the same stamps
     the slot list writes, so a plain chat that opened a session of its own is not one
     and keeps that session on close. *members* are the live keys whose stamped row
     names *key* as its ``crew_root`` or ``mate_root``: a session released from the

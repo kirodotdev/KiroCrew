@@ -114,6 +114,7 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("api",),  # can PATCH/POST anything the token reaches
         ("secret",),
         ("workflow", "run"),
+        ("alias",),  # `alias set m 'pr merge'` would hide a verb from this list
     ),
     # The GitLab watcher reads outsider-written MR comments (`glab mr view <url> --comments`),
     # so `glab` gets exactly the limit `gh` has: each entry is the `glab` twin of one above.
@@ -127,19 +128,31 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("mr", "approve"),  # `pr review`
         ("mr", "create"),
         ("mr", "new"),  # glab's alias of `mr create`
+        ("mr", "for"),  # creates an MR for an issue: `mr create` by another name
+        ("mr", "new-for"),  # glab's aliases of `mr for`
+        ("mr", "create-for"),
+        ("mr", "for-issue"),
         ("issue", "note"),
         ("issue", "comment"),  # glab's alias of `issue note`
         ("issue", "create"),
         ("issue", "new"),  # glab's alias of `issue create`
         ("issue", "update"),
         ("issue", "close"),
+        # An incident is an issue; these are its `issue note` / `issue close`.
+        ("incident", "note"),
+        ("incident", "comment"),
+        ("incident", "close"),
+        ("incident", "resolve"),
         ("release",),
         ("auth",),
         ("api",),
         ("variable",),  # `secret`
         ("ci", "run"),  # `workflow run`
         ("ci", "create"),  # glab's alias of `ci run`
-        ("ci", "push"),  # glab's alias of `ci run`
+        ("ci", "push"),  # glab's alias of `ci artifact`; refused as before
+        ("ci", "run-trig"),  # runs a pipeline with a trigger token
+        ("schedule", "run"),  # runs a scheduled pipeline now
+        ("alias",),  # `alias set m 'mr merge'` would hide a verb from this list
     ),
     "git": (
         ("push",),
@@ -150,6 +163,27 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
 #: Binaries a loop/watcher agent must never invoke at all — network fetch and remote shell.
 #: No subcommand analysis needed: the binary itself is the capability.
 _FORBIDDEN_BINARIES = ("curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "telnet")
+
+#: glab's top-level commands, from ``internal/commands/root.go`` (gitlab-org/cli
+#: d8d1e57), with cobra's ``help``/``completion``. glab runs a word outside this set
+#: as a user alias, which can name any verb, so an unknown verb is refused.
+_GLAB_COMMANDS = frozenset(
+    "alias api ar artifact-registry attestation auth autoflow changelog check-update ci "
+    "cluster completion conf config container-registry cr deploy-key deploy-token "
+    "dependency-firewall df duo govern gpg-key help incident issue iteration job label mcp "
+    "milestone minder mr opentofu orbit packages pipe pipeline project rc release repo "
+    "runner runner-controller sched schedule search securefile security service-account "
+    "skd skills snippet ssh-key stack stacks terraform tf timelog todo token update user "
+    "v var variable version whatsnew work-items".split()
+)
+#: glab's own aliases of a top-level command the denylist names.
+_GLAB_ALIASES = {
+    "pipe": "ci",
+    "pipeline": "ci",
+    "var": "variable",
+    "sched": "schedule",
+    "skd": "schedule",
+}
 
 
 def _segments(text: str) -> list[list[str]]:
@@ -276,8 +310,64 @@ def _refusal(text: str, *, depth: int) -> str:
         # denylist, so exhausting the budget must not become a way through it.
         return "command nests shells too deeply to analyze"
 
-    # Each shell-separated segment is its own command; check them all.
-    for words in _segments(text):
+    # Each shell-separated command is checked on its own. A walk over the characters with
+    # quote state marks only UNQUOTED separators (`\x01`) and substitution openers outside
+    # single quotes (`\x00`; backtick and `$(` run inside double quotes too), so quoted
+    # text such as `';'` or `'$(curl'` stays data while `sh -c 'a; b'` still yields `b`.
+    seps, out, quote, i = "\x00\x01", [], "", 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and quote != "'":  # an escaped character is never a quote or separator
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        if quote != "'" and (c == "`" or text.startswith("$(", i)):
+            out.append("\x00")
+            i += 1 if c == "`" else 2
+            continue
+        if quote:
+            quote = "" if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c in "();|&\n":
+            c = "\x01"
+        elif c == "$" and text[i + 1 : i + 2] in ("'", '"'):
+            # bash reads `$'...'` / `$"..."` as quoting: drop the `$` so the quote opens
+            # here and the script inside is re-analyzed like any quoted word.
+            i += 1
+            continue
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\r\n;|&()"):
+            # An unquoted word-initial `#` starts a comment to the newline, as in bash, so
+            # quotes inside it never pair up with quotes elsewhere.
+            i = text.find("\n", i) if "\n" in text[i:] else len(text)
+            continue
+        out.append(c)
+        i += 1
+    lex = shlex.shlex("".join(out), posix=True, punctuation_chars=seps)
+    lex.whitespace, lex.whitespace_split, lex.commenters = " \t\r", True, ""
+    try:
+        tokens: list[str] | None = list(lex)
+    except ValueError:
+        # Unclosed quotes, or an apostrophe in a heredoc body: only the quote-blind split
+        # below runs, as on main.
+        tokens = None
+    segments: list[list[str]] = [[]]
+    for tok in tokens or []:
+        if tok and set(tok) <= set(seps):
+            segments.append([])
+            continue
+        if "\x00" in tok:  # a quoted word holding a substitution: check what it runs
+            reason = _refusal(tok, depth=depth + 1)
+            if reason:
+                return reason
+        segments[-1].append(tok)
+    # shlex and bash read some quotes differently (comments, heredocs, `${x:-"'"}`), so
+    # the quote-aware split above only ADDS commands to check. The quote-blind split is
+    # always run too, so whatever it finds stays refused.
+    segments += _segments(text)
+    # Both splits usually find the same commands; check each distinct one once, so the
+    # cost of nested wrappers does not multiply per level.
+    for words in map(list, dict.fromkeys(map(tuple, segments))):
         # Drop leading VAR=value assignments (`GH_TOKEN=x gh api …`).
         while words and "=" in words[0] and not words[0].startswith("-"):
             words = words[1:]
@@ -298,6 +388,26 @@ def _refusal(text: str, *, depth: int) -> str:
                     break
             # Fall through: a shell invoked WITHOUT -c still gets its own args checked below.
 
+        # `eval` joins its arguments and runs them as a script. Re-check that script
+        # whole, before any option or VAR=value stripping: the wrapper path would drop
+        # a quoted script word that holds `=` (`eval 'GH_TOKEN=x gh pr merge'`).
+        if binary == "eval":
+            script = words[1:]
+            if script[:1] == ["--"]:
+                script = script[1:]
+            reason = _refusal(" ".join(script), depth=depth + 1)
+            if reason:
+                return reason
+            continue
+
+        # `script -c CMD` / `--command[=]CMD` runs CMD in a shell; the skip below eats it.
+        if binary == "script":
+            for i, w in enumerate(words[1:], start=1):
+                short_c = w.startswith("-") and not w.startswith("--") and w.endswith("c")
+                nxt = words[i + 1] if i + 1 < len(words) and (short_c or w == "--command") else None
+                cmd = w[10:] if w.startswith("--command=") else nxt
+                if cmd is not None and (reason := _refusal(cmd, depth=depth + 1)):
+                    return reason
         # A wrapper runs the command that follows it, so check that command instead.
         if binary in _COMMAND_WRAPPERS:
             wrapped = list(words[1:])
@@ -339,9 +449,11 @@ def _refusal(text: str, *, depth: int) -> str:
             while wrapped and "=" in wrapped[0] and not wrapped[0].startswith("-"):
                 wrapped = wrapped[1:]
             if wrapped:
-                reason = _refusal(" ".join(wrapped), depth=depth + 1)
-                if reason:
-                    return reason
+                # Some wrappers pass their words on unparsed (re-quoted), some hand them
+                # joined to a shell, and an option may swallow the real binary; check both.
+                for joined in dict.fromkeys((" ".join(wrapped), shlex.join(wrapped))):
+                    if reason := _refusal(joined, depth=depth + 1):
+                        return reason
             continue
         if binary in _FORBIDDEN_BINARIES:
             return f"{binary!r} cannot be run here"
@@ -370,6 +482,10 @@ def _refusal(text: str, *, depth: int) -> str:
                 skip_next = "=" not in word and word.split("=", 1)[0] in value_taking
                 continue
             rest.append(word.lower())
+        if binary == "glab" and rest:
+            if rest[0] not in _GLAB_COMMANDS:
+                return f"glab {rest[0]!r} is not a glab command this gate knows"
+            rest[0] = _GLAB_ALIASES.get(rest[0], rest[0])
         for path in forbidden:
             if tuple(rest[: len(path)]) == path:
                 return f"{binary} {' '.join(path)} cannot mutate state here"

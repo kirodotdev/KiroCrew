@@ -28,7 +28,7 @@ describe('counts on Worlds, knowledge sources, MCP tools and the deny list', () 
     expect(i18nT('pages.overview.mcpTab.tools_count', at(12))).toBe('12 tools')
     expect(i18nT(`${SEC}.rules_matched`, { matched: fmtNumber(2), ...at(1) })).toBe('2 / 1 rule')
     expect(i18nT(`${SEC}.rules_matched`, { matched: fmtNumber(1), ...at(2) })).toBe('1 / 2 rules')
-    expect(i18nT(`${SEC}.categories_count`, at(1))).toBe('1 category ·')
+    expect(i18nT(`${SEC}.categories_count`, at(1))).toBe('1 category')
     expect(i18nT(`${SEC}.rules_count`, at(30))).toBe('30 rules')
   })
 
@@ -36,7 +36,7 @@ describe('counts on Worlds, knowledge sources, MCP tools and the deny list', () 
     await i18next.changeLanguage('de')
     expect(i18nT('pages.knowledge.sourcesList.items_count', at(1))).toBe('1 Element')
     expect(i18nT('pages.overview.mcpTab.tools_count', at(3))).toBe('3 Werkzeuge')
-    expect(i18nT(`${SEC}.categories_count`, at(1))).toBe('1 Kategorie ·')
+    expect(i18nT(`${SEC}.categories_count`, at(1))).toBe('1 Kategorie')
   })
 
   it('uses every Russian plural form', async () => {

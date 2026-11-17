@@ -341,15 +341,12 @@ _REMOVED_DIRECTIVES: tuple[str, ...] = ("ExecStopPost=",)
 
 # The mirror of the above, for directives an older unit LACKS. ``_REMOVED_``
 # catches an upgrade that must drop something; this catches one that must gain
-# something, which the removal check alone silently missed.
+# something, which a removal-only check would report as "current".
 #
-# ``RestartPreventExitStatus`` is what makes a fail-closed boot refusal actually
-# terminal instead of a 5s restart loop (see
-# ``pod/config.TERMINAL_BOOT_EXIT_CODES``). It was ADDED, so on every machine that
-# already had a pod unit the removal-only test reported "current", the refresh was
-# skipped, and the directive would never have landed -- the refusal would still
-# loop. Found in live pod acceptance, not by the unit tests: a rendered-template
-# assertion passes while the INSTALLED unit is what systemd executes.
+# ``RestartPreventExitStatus`` makes a fail-closed boot refusal terminal instead
+# of a 5s restart loop (see ``pod/config.TERMINAL_BOOT_EXIT_CODES``). An installed
+# unit without it must be refreshed: systemd runs the INSTALLED unit, so a test
+# of the rendered template alone cannot catch this.
 #
 # ``LimitCORE`` is the same case: without it a crashed pod waits on its core.
 # ``TimeoutStopSec`` too: without it systemd's default stop timeout outlasts the

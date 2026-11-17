@@ -24,6 +24,7 @@ from kiro_crew.knowledge.connectors.bedrock_kb import (
     search_remote_sources,
     search_remote_sources_bounded,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 # Recorded from a live Retrieve against a MANAGED-type knowledge base
 # (botocore 1.43.89), so the fallback test matches the real rejection.
@@ -301,11 +302,11 @@ def test_search_redacts_complete_result_values_before_clipping(monkeypatch):
     """A bound must never cut a credential into an unrecognizable fragment.
 
     Each value is one character longer than its connector ceiling and leaves
-    39 of the canonical 40-character AWS example secret under the old
+    39 of a 40-character AWS secret under the old
     slice-first order. The connector now applies the shared platform redactor
     to the complete value before taking the bound.
     """
-    secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    secret = github_classic(seed=104)
 
     def crossing(bound: int, prefix: str = "") -> str:
         return prefix + "x" * (bound - len(prefix) - len(secret)) + " " + secret
@@ -386,20 +387,16 @@ def test_search_drops_hits_below_the_relevance_floor(monkeypatch):
 def test_search_redacts_credential_shaped_queries_before_egress(monkeypatch):
     client = FakeClient(results_by_kb={"KBTEST0001": [_hit("ok", 0.5)]})
     monkeypatch.setattr(bedrock_kb, "_get_client", lambda region, profile: (client, None))
-    secret = "AKIAIOSFODNN7EXAMPLE"  # AWS access key id shape
+    secret = github_classic(seed=105)
     BedrockKBConnector().search(_source("KBTEST0001"), f"why does {secret} fail auth", 3)
     sent = client.calls[0]["retrievalQuery"]["text"]
     assert secret not in sent
     assert "why does" in sent  # ordinary text survives
 
 
-def test_search_redacts_a_credential_bearing_url_whole_before_egress(monkeypatch):
-    """A credential inside a URL's query string is the case the pass order
-    decides: blanked ahead of the URL pass it leaves a placeholder the URL
-    matcher does not recognise, and the host and the rest of the query go out
-    with the request. The client must receive the URL as its tag, with the
-    token, the host and the payload parameters all gone, and the ordinary
-    text around it intact."""
+def test_search_masks_the_credential_in_a_url_before_egress(monkeypatch):
+    """A URL is never replaced whole: the client receives it with the token's
+    value masked and every other part, and the ordinary text around it, intact."""
     client = FakeClient(results_by_kb={"KBTEST0001": [_hit("ok", 0.5)]})
     monkeypatch.setattr(bedrock_kb, "_get_client", lambda region, profile: (client, None))
     token = "aB3" * 70
@@ -411,9 +408,7 @@ def test_search_redacts_a_credential_bearing_url_whole_before_egress(monkeypatch
     BedrockKBConnector().search(_source("KBTEST0001"), query, 3)
     sent = client.calls[0]["retrievalQuery"]["text"]
     assert token not in sent
-    assert "corp-laptop" not in sent and ".aws/credentials" not in sent
-    assert "collect.attacker.example/" not in sent  # no fetchable URL left
-    assert "[REDACTED: suspicious URL to collect.attacker.example]" in sent
+    assert "collect.attacker.example/?token=[REDACTED: credential]&host=corp-laptop" in sent
     assert sent.startswith("why does ") and sent.endswith(" fail auth")
 
 
@@ -564,6 +559,27 @@ def test_parse_kb_ids_bounds_count_length_and_shape():
             bedrock_kb._parse_kb_ids(bad, strict=True)
 
 
+def test_kb_ids_count_cap_counts_distinct_ids_not_raw_pieces(monkeypatch):
+    """The cap is on knowledge bases (one Retrieve each), so a blank piece
+    from a trailing comma and a repeated id do not count toward it: exactly
+    ``_MAX_KB_IDS`` distinct ids validate and are all probed, and the lenient
+    parse keeps a real id that sits after a blank or a repeat."""
+    ten = [f"KBTEST{i:04d}" for i in range(bedrock_kb._MAX_KB_IDS)]
+    client = FakeClient(results_by_kb={})
+    monkeypatch.setattr(bedrock_kb, "_consent_allows", lambda p, r, timeout=None: True)
+    monkeypatch.setattr(bedrock_kb, "_get_client", lambda region, profile: (client, None))
+    for kb_ids in (",".join(ten) + ",", ",".join(ten + [ten[0]]), ", ,".join(ten)):
+        client.calls.clear()
+        ok, err = BedrockKBConnector().validate_config({"kb_ids": kb_ids, "region": "us-east-1"})
+        assert ok, err
+        assert [c["knowledgeBaseId"] for c in client.calls] == ten
+        assert bedrock_kb._parse_kb_ids(kb_ids) == ten
+        assert bedrock_kb._parse_kb_ids(kb_ids, strict=True) == ten
+    assert bedrock_kb._parse_kb_ids(",".join([""] + ten + ["KBTEST9999"])) == ten
+    with pytest.raises(ValueError, match=f"more than {bedrock_kb._MAX_KB_IDS}"):
+        bedrock_kb._parse_kb_ids(",".join(ten + ["", "KBTEST9999"]), strict=True)
+
+
 def test_canonical_source_uri_keys_on_the_sorted_full_id_set():
     """The row handle is the UNIQUE dedup key, so it must name the SET of
     knowledge bases: the same ids in another order dedupe to one row (one
@@ -705,9 +721,11 @@ def test_conflicting_second_bedrock_target_detection(tmp_path):
 # the handler's validation never saw it. The value stays below the SQL name
 # ceiling so this case exercises complete-name redaction; oversized names use
 # the KB-id fallback in the dedicated tests below.
-_PLANTED_TOKEN = "AKIAIOSFODNN7EXAMPLE"
+_PLANTED_TOKEN = github_classic(seed=106)
 _PLANTED_NAME = (
-    "Team KB AKIAIOSFODNN7EXAMPLE https://collect.attacker.example/?token="
+    "Team KB "
+    + _PLANTED_TOKEN
+    + " https://collect.attacker.example/?token="
     + _PLANTED_TOKEN
     + "&host=corp-laptop&path=/home/alice/.aws/credentials"
 )
@@ -748,9 +766,9 @@ def _plant_bedrock_row(
 def test_conflict_rendering_redacts_a_planted_source_name(tmp_path):
     """The held-target rendering is operator-facing text built from an
     agent-writable column (the attestation pins a registered row's target,
-    not its name), so it is redacted at the compare: the raw key, the
-    whole exfil URL and its query payload are gone, the target stays
-    readable, and the same target still reads as no conflict."""
+    not its name), so it is redacted at the compare: the raw key and the
+    URL's token value are gone, the target stays readable, and the same
+    target still reads as no conflict."""
     from kiro_crew.knowledge.connectors.bedrock_kb import registered_target_mismatch
     from kiro_crew.knowledge.store import KnowledgeStore
 
@@ -760,11 +778,9 @@ def test_conflict_rendering_redacts_a_planted_source_name(tmp_path):
     held = registered_target_mismatch(store, "team-b", "eu-west-1")
 
     assert held is not None
-    assert "AKIAIOSFODNN7EXAMPLE" not in held
     assert _PLANTED_TOKEN not in held
-    assert "corp-laptop" not in held and ".aws/credentials" not in held
     assert "[REDACTED: credential]" in held
-    assert "[REDACTED: suspicious URL to collect.attacker.example]" in held
+    assert "?token=[REDACTED: credential]&host=corp-laptop" in held
     assert held.endswith("(team-a, us-east-1)")
     assert registered_target_mismatch(store, "team-a", "us-east-1") is None
 
@@ -813,7 +829,7 @@ def test_both_egress_sites_redact_through_the_platform_shim(monkeypatch, tmp_pat
     )
 
     companion_shape = "SSO-COOKIE-ONLY-THE-COMPANION-KNOWS"
-    baseline_shape = "AKIAIOSFODNN7EXAMPLE"
+    baseline_shape = github_classic(seed=107)
 
     class _CompanionPolicy:
         def redact(self, text: str) -> str:

@@ -17,6 +17,11 @@ from kiro_crew import member_goals as _goals
 from kiro_crew.constants import MAX_SHORT_STRING
 from kiro_crew.validation_parts.field_engine import FieldSpec, ToolSchema, ValidationError
 from kiro_crew.work_vocab import (
+    WORK_ASK_LABEL_CHARS,
+    WORK_ASK_MAX_OPTIONS,
+    WORK_ASK_OUTCOME_CHARS,
+    WORK_ASK_WHAT_CHARS,
+    WORK_ASK_WHY_CHARS,
     WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
     WORK_REASON_STATUSES,
@@ -210,7 +215,10 @@ _WORK_VERDICTS = frozenset(WORK_VERDICTS)
 _WORK_ITEM_STATES = frozenset(WORK_ITEM_STATES)
 #: A superset of the store's six conductor actions: ``accept`` promotes a worker's
 #: claimed ``pr`` into ``acceptance`` and is served by its own store function.
-_WORK_RECORD_ACTIONS = frozenset({"create", "bind", "decide", "verdict", "close", "goal", "accept"})
+#: ``ask`` records what an item needs from the person, why, and the options.
+_WORK_RECORD_ACTIONS = frozenset(
+    {"create", "bind", "decide", "verdict", "close", "goal", "accept", "ask"}
+)
 
 WORK_BRIEF_SCHEMA = ToolSchema(tool_name="work_brief")
 
@@ -235,6 +243,12 @@ WORK_REPORT_SCHEMA = ToolSchema(
         # wait on a person (which holds it) from one on a build (which does not);
         # the pairing with ``status`` is ``_validate_work_report``'s check.
         FieldSpec("reason", str, allowed=frozenset(WORK_BLOCKED_REASONS)),
+        # When a ``progress`` report's worker will resume. Whether it parses, is in the
+        # future and pairs with ``progress`` is the store's check (``_require_wake_at``).
+        FieldSpec("wake_at", str, max_len=40),
+        # Where a hosted discussion stands. Its parts and their caps are the store's
+        # check (``_require_discussion``), which names the part that failed.
+        FieldSpec("discussion", dict),
     ],
     custom_validator=lambda cleaned: _validate_work_report(cleaned),
 )
@@ -284,10 +298,28 @@ WORK_LEDGER_RECORD_SCHEMA: ToolSchema = ToolSchema(
         FieldSpec("goal", str, max_len=2000),
         FieldSpec("round", int, min_val=0, max_val=1_000_000),
         FieldSpec("fails", int, min_val=0, max_val=1_000_000),
-        # The store re-checks the same ranges; refusing here names the field early.
-        FieldSpec("item_cap", int, min_val=1, max_val=256),
+        # The store re-checks the same range; refusing here names the field early.
         FieldSpec("concurrency_cap", int, min_val=1, max_val=32),
         FieldSpec("new_goal", bool),
+        # ``ask``: the store re-checks every cap and that ``pick`` is one of the labels.
+        FieldSpec("what", str, max_len=WORK_ASK_WHAT_CHARS),
+        FieldSpec("why", str, max_len=WORK_ASK_WHY_CHARS),
+        FieldSpec(
+            "options",
+            list,
+            item_type=dict,
+            max_items=WORK_ASK_MAX_OPTIONS,
+            # One option: a label and what choosing it leads to.
+            item_schema=ToolSchema(
+                tool_name="work_ledger_record.options",
+                fields=[
+                    FieldSpec("label", str, required=True, max_len=WORK_ASK_LABEL_CHARS),
+                    FieldSpec("outcome", str, max_len=WORK_ASK_OUTCOME_CHARS),
+                ],
+            ),
+        ),
+        FieldSpec("pick", str, max_len=WORK_ASK_LABEL_CHARS),
+        FieldSpec("pick_why", str, max_len=WORK_ASK_OUTCOME_CHARS),
     ],
 )
 
@@ -332,33 +364,28 @@ MCP_WORK_SCHEMAS: dict[str, ToolSchema] = {
     "work_report": WORK_REPORT_SCHEMA,
     "work_ledger_read": WORK_LEDGER_READ_SCHEMA,
     "work_ledger_record": WORK_LEDGER_RECORD_SCHEMA,
+    # The record route's ``ask`` write as its own tool, inline so the facade
+    # gains no name: the record schema's own specs; the tool adds ``action=ask``.
+    "work_ask_record": ToolSchema(
+        tool_name="work_ask_record",
+        fields=[
+            f
+            for f in WORK_LEDGER_RECORD_SCHEMA.fields
+            if f.name in ("item_id", "what", "why", "options", "pick", "pick_why")
+        ],
+    ),
     "work_ledger_rebuild": WORK_LEDGER_REBUILD_SCHEMA,
-    # The two conductor checks (``mcp_work.CHECK_TOOLS``), inline so the facade
-    # gains no name. ``accept_eval``: the ``accept_batch`` document; each item's
-    # fields are the evaluator's to judge (one bad item is a verdict, not a
-    # refusal), so only shape and count are checked; 256 is the store's
-    # ``item_cap`` ceiling. ``patrol_budget``: typed fields only; which fields a
-    # mode needs is ``mcp_work._patrol_budget``'s check.
+    # The conductor check (``mcp_work.CHECK_TOOLS``), inline so the facade gains
+    # no name. ``accept_eval``: the ``accept_batch`` document; each item's fields
+    # are the evaluator's to judge (one bad item is a verdict, not a refusal), so
+    # only shape and count are checked; 256 is the store's stored-item bound.
+    # With no document the tool evaluates the caller's own ``done`` items, and
+    # ``item_id`` (the record schema's own rule) narrows that to one of them.
     "accept_eval": ToolSchema(
         tool_name="accept_eval",
-        fields=[FieldSpec("items", list, required=True, max_items=256)],
-    ),
-    "patrol_budget": ToolSchema(
-        tool_name="patrol_budget",
         fields=[
-            FieldSpec("mode", str, required=True, allowed=frozenset({"check", "renew"})),
-            *(
-                FieldSpec(name, int, min_val=-1_000_000_000, max_val=1_000_000_000)
-                for name in (
-                    "interval_secs",
-                    "max_cycles",
-                    "max_runtime_secs",
-                    "base_cycles",
-                    "base_runtime_secs",
-                    "open_items",
-                )
-            ),
-            FieldSpec("line", str, max_len=500),
+            FieldSpec("items", list, max_items=256),
+            next(f for f in WORK_LEDGER_RECORD_SCHEMA.fields if f.name == "item_id"),
         ],
     ),
 }

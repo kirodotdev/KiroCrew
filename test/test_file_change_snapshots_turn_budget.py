@@ -469,9 +469,10 @@ class TestTurnSnapshotAccumulator:
 
 # ── the per-side bound after redaction ──────────────────────────────────────
 
-# One redaction unit: a short credential that the ``?token=`` pass rewrites to a
-# 22-character tag, so a side made of these grows about threefold on redaction.
-_CREDENTIAL_UNIT = "x ?token=a "
+# One redaction unit: a short credential in a link that the table's ``token`` parameter
+# row rewrites to a 22-character tag, so a side made of these grows about twofold on
+# redaction.
+_CREDENTIAL_UNIT = "x h://h?token=a "
 _SIDE_BOUND = len(_SIDE_AT_THE_CAP)
 
 
@@ -489,9 +490,9 @@ _SNAPSHOT_MARKER = _SIDE_AT_THE_CAP[_MAX_SNAPSHOT:]
 
 
 class TestRedactedSideBound:
-    # The post-redaction cut lands between two tags at offset 1 and inside a
-    # tag at offset 15.
-    @pytest.mark.parametrize("offset", [1, 15])
+    # The post-redaction cut lands between two tags at offset 12 and inside a
+    # tag at offset 17.
+    @pytest.mark.parametrize("offset", [12, 17])
     def test_the_protected_entry_stays_within_the_per_side_bound(
         self, short_tmp_dir: Path, offset: int
     ) -> None:
@@ -524,8 +525,8 @@ class TestRedactedSideBound:
         slot._file_changes = [{"path": str(target), "content": "before " + _CREDENTIAL_UNIT}]
         _flush_file_changes(slot)
         [stored] = slot.messages[-1]["meta"]["file_changes"]
-        assert stored["before"] == "before x ?token=[REDACTED: credential] "
-        assert stored["after"] == "after x ?token=[REDACTED: credential] "
+        assert stored["before"] == "before x h://h?token=[REDACTED: credential] "
+        assert stored["after"] == "after x h://h?token=[REDACTED: credential] "
         assert "truncated" not in stored
 
     def test_a_side_truncated_before_redaction_keeps_its_one_marker(
@@ -540,7 +541,8 @@ class TestRedactedSideBound:
         assert stored["after"] == _truncate_snapshot("y" * (_MAX_SNAPSHOT + 10)).content
 
     def test_a_redacted_path_stays_within_the_path_bound(self) -> None:
-        path = ("/q ?token=a" * (_MAX_SNAPSHOT_PATH_CHARS // 11 + 1))[:_MAX_SNAPSHOT_PATH_CHARS]
+        unit = "/q h://h?token=a"
+        path = (unit * (_MAX_SNAPSHOT_PATH_CHARS // len(unit) + 1))[:_MAX_SNAPSHOT_PATH_CHARS]
         slot = _make_slot_with_assistant_message()
         slot._file_changes = [{"path": path, "content": "before"}]
         _flush_file_changes(slot)
@@ -812,3 +814,29 @@ class TestOmittedSnapshotFiles:
             f"the total character bound is therefore {_MAX_TURN_SNAPSHOT_CHARS:,} plus that "
             "entry's two snapshot sides, truncation markers and path."
         ) in snapshots
+
+
+def test_settled_pending_str_replace_counts_its_real_change(short_tmp_dir: Path) -> None:
+    """An undecidable strReplace counts its real change, not the whole file.
+
+    Its stored ``content`` is the content block's fragment; diffed against the full
+    file it would count every line as added. The line count settles the pending
+    entry the way the chip's flush does.
+    """
+    target = short_tmp_dir / "mod.py"
+    before = "a\nb\n" + "".join(f"line{i}\n" for i in range(50))
+    target.write_text(before)
+    snapshot = _snapshot_write_target(
+        {"command": "strReplace", "path": str(target), "oldStr": "a\nb\n", "newStr": "a\n"},
+        diff_old_text="a\nb\n",
+    )
+    assert snapshot is not None and "pending_str_replace" in snapshot
+    slot = _make_slot_with_assistant_message()
+    _record_turn_snapshot(slot, snapshot, "call-1")
+    target.write_text(before.replace("a\nb\n", "a\n", 1))
+
+    assert _turn_line_changes(slot._file_changes) == 1
+
+    _flush_file_changes(slot)
+    (chip,) = slot.messages[-1]["meta"]["file_changes"]
+    assert chip["before"] == before

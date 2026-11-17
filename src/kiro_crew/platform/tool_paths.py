@@ -12,7 +12,9 @@ cycle and no heavy transitive dependency.
 The two callers apply DIFFERENT fail semantics to the ``truncated`` flag (the
 keystone hard-denies an unverifiable scan; governance denies only the scopes the
 tool kind implies, per its permit-by-default contract), but the extraction
-itself is identical and must not drift between them.
+itself is identical and must not drift between them. A plane that also judges
+one tool's own argument shape walks that shape with the same bounded walk
+(:func:`target_paths` *keys*).
 """
 
 from __future__ import annotations
@@ -100,9 +102,11 @@ class TargetPaths(list):
     unanchored: bool = False
 
 
-def target_paths(raw_params: Mapping | None) -> TargetPaths:
-    """Every non-empty string path in *raw_params*, under any accepted spelling,
-    at ANY nesting depth.
+def target_paths(
+    raw_params: Mapping | None, keys: tuple[str, ...] = TARGET_PATH_KEYS
+) -> TargetPaths:
+    """Every non-empty string path in *raw_params*, under any accepted spelling
+    (*keys*), at ANY nesting depth.
 
     Returns ALL of them rather than the first match, and callers deny if ANY is
     forbidden. That is deliberately different from "normalize the aliases onto one
@@ -120,7 +124,7 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
     would have denied. The walk is ITERATIVE and EXHAUSTIVE — there is no depth
     bound that a sufficiently nested path could hide beyond, and no
     ``RecursionError`` can escape into the gate — visits every dict/list value,
-    collects strings under ``TARGET_PATH_KEYS`` wherever they appear (including
+    collects strings under *keys* wherever they appear (including
     a list of strings directly under such a key), and stays extract-only: no
     sensitivity decision is made here, order of first appearance is preserved,
     and duplicates collapse (set-backed, so collection is linear). The only
@@ -137,7 +141,7 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
     nodes = 0
     # Explicit LIFO stack, entries pushed in reverse so traversal matches
     # document order: at each mapping the accepted spellings are collected in
-    # ``TARGET_PATH_KEYS`` order first (preserving the flat extraction's
+    # *keys* order first (preserving the flat extraction's
     # historical ordering), then every value is walked in insertion order.
     stack: list[object] = [raw_params]
     while stack:
@@ -147,7 +151,7 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
         node = stack.pop()
         nodes += 1
         if isinstance(node, Mapping):
-            for key in TARGET_PATH_KEYS:
+            for key in keys:
                 _collect_path_strings(node.get(key), found, seen)
             stack.extend(reversed(list(node.values())))
         elif isinstance(node, (list, tuple)):
@@ -587,6 +591,19 @@ _EACH_ITEM = "[]"
 _MCP_QUALIFIER_SEPARATOR_RE = re.compile(r"_{2,}")
 
 
+def strip_server_qualifier(tool_name: str, mcp_server_name: str) -> str | None:
+    """*tool_name* without a qualifier that names *mcp_server_name*, else ``None``.
+
+    ``<server>___<tool>`` and ``mcp__<server>__<tool>`` resolve to ``<tool>`` only
+    when the qualifier is that same server; a bare name, or a qualifier naming
+    another server, gives ``None``.
+    """
+    parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
+    if len(parts) >= 2 and parts[-2] == mcp_server_name:
+        return parts[-1]
+    return None
+
+
 def mcp_document_body_keys(
     tool_name: str | None,
     mcp_server_name: str | None,
@@ -611,9 +628,9 @@ def mcp_document_body_keys(
     bare = tool_name
     keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, tool_name))
     if keys is None:
-        parts = _MCP_QUALIFIER_SEPARATOR_RE.split(tool_name)
-        if len(parts) >= 2 and parts[-2] == mcp_server_name:
-            bare = parts[-1]
+        stripped = strip_server_qualifier(tool_name, mcp_server_name)
+        if stripped is not None:
+            bare = stripped
             keys = MCP_DOCUMENT_BODY_FIELDS.get((mcp_server_name, bare))
     if not keys:
         return frozenset()

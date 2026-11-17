@@ -21,7 +21,8 @@ Behaviour:
 - opaque files are preserved byte-for-byte with path and metadata, but are not
   automatically parsed or executed
 - text and documents are redacted, then truncated, then wrapped in
-  ``[File: …]`` / ``[Document: …]`` markers
+  ``[File: …]`` / ``[Document: …]`` markers; a cut one also lands its whole
+  redacted text in a temp ``.txt`` the caller must delete
 - size is re-checked AFTER download, so an absent or dishonest Slack ``size``
   (which defaults to 0) cannot bypass the cap
 - image bytes must match the declared mimetype's signature
@@ -49,6 +50,7 @@ import tempfile
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from kiro_crew import redaction_seams
 from kiro_crew.messaging.attachments import (
     Attachment,
     IngestLimits,
@@ -64,7 +66,7 @@ from kiro_crew.messaging.outbound_files import (
     extract_local_refs_off_loop,
 )
 from kiro_crew.platform_compat import restrict_dir_to_owner
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls, refuses
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -199,6 +201,7 @@ def _redact(text: str) -> str:
 _MAX_REJECTION_LINES = 3
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def _display_safe(text: str) -> str:
     """Redact against what Slack RENDERS, not only the literal bytes.
 
@@ -338,11 +341,16 @@ def upload_filename(file: OutboundFile, index: int) -> str:
     stem = _UNSAFE_FILENAME_RE.sub("_", os.path.basename(file.path))
     stem = os.path.splitext(stem)[0].strip("._")[:_STEM_CHARS]
     name = f"{stem or f'image_{index}'}{ext}"
-    return name if _redact(name) == name else f"image_{index}{ext}"
+    return f"image_{index}{ext}" if refuses(name, _redact) else name
 
 
+@redaction_seams.in_seam(redaction_seams.CHANNELS)
 def upload_title(file: OutboundFile, filename: str) -> str:
-    """The title Slack shows above the file: the alt text, redacted and capped."""
+    """The title Slack shows above the file: the alt text, redacted and capped.
+
+    Every channel member sees it, so it is redacted whatever seam the upload is
+    called from (the dashboard's linked-thread mirror runs inside CHAT).
+    """
     alt = _redact(file.alt or "").strip()
     return alt[:_TITLE_CHARS] or filename
 
@@ -452,17 +460,24 @@ def _to_attachment(f: dict) -> Attachment:
 async def process_slack_files(
     orch: GatewayOrchestrator,
     files: list[dict],
+    *,
+    slack: SlackClientOps | None = None,
 ) -> tuple[list[str], list[str]]:
     """Process non-audio file attachments from a Slack message.
 
-    Returns:
-        (attachment_paths, text_blocks) — local paths for images and opaque
-        files (caller must clean up), plus prompt-ready text and metadata.
-    """
-    if not orch.slack:
-        return [], []
+    *slack* is the client the route read before ingestion, so a reconnect
+    clearing ``orch.slack`` mid-message cannot drop the attachments. Omitted,
+    ``orch.slack`` is read once.
 
-    client = orch.slack
+    Returns:
+        (attachment_paths, text_blocks) — local paths for images, opaque
+        files and the whole text of a cut text file or document (caller must
+        clean up), plus prompt-ready text and metadata.
+    """
+    resolved = slack if slack is not None else orch.slack
+    if not resolved:
+        return [], []
+    client: SlackClientOps = resolved
 
     async def _download(url: str, dest: str) -> None:
         # Slack's downloader attaches the bot bearer token; only Slack knows

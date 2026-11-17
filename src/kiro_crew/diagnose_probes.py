@@ -394,10 +394,10 @@ def probe_deprecated_agent_spec(ctx: ProbeContext) -> dict[str, Any]:
     pid = "deprecated_agent_spec"
     from kiro_crew.agent import DEPRECATED_AGENT_SPECS
     from kiro_crew.cron import job_agent_names_from_disk
-    from kiro_crew.doctor_checks.agents import _open_slot_agent_names
+    from kiro_crew.doctor_checks.agents import _open_slot_agent_names, is_shipped_alias_entry
 
     cfg = ctx.cfg
-    crews = set(cfg.agents)
+    crews = {n for n, c in cfg.agents.items() if not is_shipped_alias_entry(n, c)}
     found: list[dict[str, str]] = []
 
     def _add(holder: str, name: object, *, skip_crews: bool = True) -> None:
@@ -408,6 +408,8 @@ def probe_deprecated_agent_spec(ctx: ProbeContext) -> dict[str, Any]:
             found.append({"holder": holder, "name": name, "replacement": replacement})
 
     for crew_name, crew in cfg.agents.items():
+        if is_shipped_alias_entry(crew_name, crew):
+            continue
         _add(f"crew {crew_name}", crew.kiro_agent, skip_crews=False)
     _add("agent.default_agent", cfg.agent.default_agent)
     _add("session.pool_agent", cfg.session.pool_agent)
@@ -434,7 +436,7 @@ def probe_deprecated_agent_spec(ctx: ProbeContext) -> dict[str, Any]:
 def probe_cron_failing(ctx: ProbeContext) -> dict[str, Any]:
     pid = "cron_failing"
     from kiro_crew.config.loader import config_dir
-    from kiro_crew.cron_service.store import _CRONS_FILE, _read_job_records
+    from kiro_crew.cron_service.store import _CRONS_FILE, _read_job_records, _record_parked_by_run
 
     records, loadable = _read_job_records(config_dir() / _CRONS_FILE)
     if not records and not loadable:
@@ -447,7 +449,10 @@ def probe_cron_failing(ctx: ProbeContext) -> dict[str, Any]:
         )
     failing: list[dict[str, Any]] = []
     for job in records:
-        if not isinstance(job, dict) or job.get("user_paused"):
+        if not isinstance(job, dict):
+            continue
+        # A fired one-shot's park carries the user-pause flag but is not a pause.
+        if job.get("user_paused") and not _record_parked_by_run(job):
             continue
         if job.get("last_status") != "error" and not job.get("auto_paused"):
             continue

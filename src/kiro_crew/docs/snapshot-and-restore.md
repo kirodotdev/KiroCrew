@@ -274,7 +274,11 @@ component was being replaced.
   copied
 - **Crew teams**: `teams.json` is installed only where the destination has none.
   A replace from a bundle with no `crew-teams/` tree removes the live team
-  document (saved to the pre-restore backup first)
+  document (saved to the pre-restore backup first), unless the bundle's
+  `MANIFEST.json` lists `crew-teams` or `crew-teams/teams.json` as skipped, as a
+  scheduled snapshot's does (see [Scheduling your own backups](#scheduling-your-own-backups)):
+  that bundle never read the team list, so the live one is kept, whichever
+  system made the bundle
 
 So a merge never destroys anything on the receiving machine. If you want the
 snapshot to win, use `--mode replace`.
@@ -294,6 +298,28 @@ Replace installs all four files, saving the ones it replaces to
 usable is named in the result and never installed, in either mode.
 Memory, crons, workspace files and skills follow the never-overwrite rules
 above in both tools.
+
+The dashboard export also carries your chat folders (`folders.json`). The
+import adds every folder this install does not have, matched by its id, and
+leaves the ones it has as they are, in Merge and Replace alike, so imported
+chats sit in their folders again. A folder's project is not carried: it names
+a folder on the old computer, so the folder's chats open in the default
+workspace until you set its project again. An imported folder keeps what you
+can set when you create one (name, parent, colour, icon, default agent, crew
+and prompt). Its tags, steering folders, and any app, crew member or channel
+it belonged to stay behind. A folder is not added where its parent already
+holds one of the same name, and one that would land inside a crew member's
+home goes to the top level. At most 500 folders are kept, and the import warns
+with how many folders it did not add. Installed apps and their data are not
+carried yet.
+
+The dashboard export leaves out folders that tools rebuild inside your
+workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as
+`.pytest_cache`), and the import skips them in an older archive. A backup that
+unpacks to more than 2 GiB is accepted when no single file is over 2 GiB, the
+total stays under 64 GiB and at most 100 times the archive's own size, and the
+disk has room for it twice plus 1 GiB. When one is refused, the message names
+its biggest folders.
 
 #### Known limitation: the knowledge database is not row-merged
 
@@ -427,3 +453,13 @@ by the AWS Control app, which drives a nightly run of its own. For a LOCAL-only
 schedule, add a cron job that runs the command -- for example by asking the agent to
 schedule `kirocrew snapshot --keep 7` daily. Verify it afterwards with
 `kirocrew snapshot --list`: an unverified backup job is the same as no backup.
+
+A cron job runs its command inside Kiro Crew's sandbox, which hides the team
+list (`crew-teams/`) from every sandboxed process. A scheduled snapshot therefore
+cannot carry your Bot teams: it prints `Not carrying .../crew-teams`, and its
+`MANIFEST.json` lists `crew-teams` as skipped (`masked_by_sandbox`). `--keep`
+still prunes the scheduled bundles, because none of them holds the team list, but
+it keeps an older bundle that does hold it, such as one you made from your own
+terminal. To back up your teams, run `kirocrew snapshot` from a terminal now and
+then, for example after you change a team. A replace restore of a scheduled
+bundle keeps the team list you have instead of removing it.

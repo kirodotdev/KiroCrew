@@ -29,6 +29,14 @@ can list the versions, read an older one, or revert the live state to any of the
 A revert is itself recorded as a new version tagged as a rollback, so the timeline
 shows what happened rather than quietly rewinding.
 
+To see what changed between two versions, open the artifact and pick **Compare with**
+next to the version picker. The older state sits on the left, the newer on the right
+(Live counts as the newest), each column is named, and the changed lines are marked. On a
+narrow screen, or when the diff layout in Display settings is set to unified, the two states
+are drawn in one column instead. Choose **Stop comparing**
+to go back to the document. Comparison works for text artifacts and is not offered for
+images, web apps or while you are editing.
+
 ## Organizing
 
 Artifacts can be filed into folders, which nest. Moving an artifact or renaming a

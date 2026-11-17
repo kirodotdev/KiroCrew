@@ -11,7 +11,6 @@ import { createTestStore } from '../../../test/helpers'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 import type { ChatSlot } from '../../../types'
 import { useCrewModeSwitch } from './crewModeSwitch'
-import { crewModePreviewOn, turnOnCrewModePreview } from '../../../test/crewModePreview'
 import { __resetPanelTabs, dropPanelViews, openPanelView, type ViewKind } from '../../../hooks/usePanelTabs'
 import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 
@@ -72,11 +71,11 @@ describe('useCrewModeSwitch pending switches', () => {
   })
 })
 
-describe('useCrewModeSwitch turning Ultra Mode off', () => {
+describe('useCrewModeSwitch turning conductor mode off', () => {
   beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear() })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
-  // Ultra Mode turned on in a closed panel, so turning it off again closes the panel.
+  // Conductor mode turned on in a closed panel, so turning it off again closes the panel.
   const turnedOn = async () => {
     const s = setup(vi.fn<(kind: ViewKind) => void>())
     act(() => { s.hook.result.current.turnOnCrewMode() })
@@ -127,7 +126,7 @@ describe('useCrewModeSwitch turning Ultra Mode off', () => {
   it("keeps chat B's closed panel to restore when chat A's switch back lands meanwhile", async () => {
     const { hook, pending, store } = await turnedOn()
     act(() => { hook.result.current.turnOffCrewMode?.() })
-    // On chat B, with its panel closed, turn Ultra Mode on before A's switch lands.
+    // On chat B, with its panel closed, turn conductor mode on before A's switch lands.
     hook.rerender({ slot: plain('b') })
     act(() => { store.dispatch(closeActivityPanel()) })
     act(() => { hook.result.current.turnOnCrewMode() })
@@ -140,8 +139,8 @@ describe('useCrewModeSwitch turning Ultra Mode off', () => {
   })
 })
 
-describe('useCrewModeSwitch turning Ultra Mode on fails', () => {
-  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear(); localStorage.clear(); turnOnCrewModePreview(); __resetPanelTabs() })
+describe('useCrewModeSwitch turning conductor mode on fails', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear(); localStorage.clear(); __resetPanelTabs() })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
   it('closes the panel it opened and drops the Crew and Dashboard tabs', async () => {
@@ -183,8 +182,8 @@ describe('useCrewModeSwitch turning Ultra Mode on fails', () => {
   })
 })
 
-describe('useCrewModeSwitch entering an Ultra Mode root', () => {
-  beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
+describe('useCrewModeSwitch entering a conductor mode root', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear() })
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
 
   const enter = () => {
@@ -207,9 +206,22 @@ describe('useCrewModeSwitch entering an Ultra Mode root', () => {
     expect(store.getState().chat.activityOpen).toBe(false)
     expect(openView).not.toHaveBeenCalled()
   })
+
+  it('keeps a panel the person closed in this chat closed on a return', () => {
+    localStorage.setItem('mc-activity-open:root', 'false')
+    const { store, openView } = enter()
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(openView).not.toHaveBeenCalled()
+  })
+
+  it('leaves the tab the person picked in front on a return', () => {
+    localStorage.setItem('mc-activity-open:root', 'true')
+    const { openView } = enter()
+    expect(openView).not.toHaveBeenCalled()
+  })
 })
 
-describe('useCrewModeSwitch a new chat created in Ultra Mode', () => {
+describe('useCrewModeSwitch a new chat created in conductor mode', () => {
   beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear() })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
@@ -235,7 +247,7 @@ describe('useCrewModeSwitch a new chat created in Ultra Mode', () => {
   })
 })
 
-describe('useCrewModeSwitch turning Ultra Mode on', () => {
+describe('useCrewModeSwitch turning conductor mode on', () => {
   beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
 
@@ -292,6 +304,3 @@ describe("useCrewModeSwitch the welcome page's Board button", () => {
     expect(openView).toHaveBeenCalledWith('workers')
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

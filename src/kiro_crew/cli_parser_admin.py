@@ -171,6 +171,9 @@ Examples:
   kirocrew eval                         # smoke test (~30s)
   kirocrew eval memory_recall_basic     # specific scenario
   kirocrew eval --all                   # all scenarios (slow)
+  kirocrew eval --dir ./evals           # your own scenario files (.json, .yaml, .yml)
+  kirocrew eval --file ./evals/a.yaml --agent reviewer --model my-model-id --repeat 3
+  kirocrew eval --dir ./evals --baseline eval_results/main.json --max-drop 0.05 --junit eval.xml
 """,
         formatter_class=_fmt,
         parents=[_jail_opts],
@@ -185,6 +188,45 @@ Examples:
         "--all", action="store_true", dest="all_scenarios", help="Run all scenarios"
     )
     eval_parser.add_argument("--judge", action="store_true", help="Enable LLM judge scoring")
+    eval_parser.add_argument(
+        "--dir",
+        dest="eval_dir",
+        metavar="PATH",
+        help="Run every scenario file (.json, .yaml, .yml) in this folder instead of the bundled ones",
+    )
+    eval_parser.add_argument(
+        "--file",
+        dest="eval_file",
+        metavar="PATH",
+        help="Run one scenario file instead of the bundled ones",
+    )
+    eval_parser.add_argument(
+        "--agent", metavar="NAME", help="Crew member or agent that answers (default: from config)"
+    )
+    eval_parser.add_argument(
+        "--model", metavar="ID", help="Model that answers (default: the agent's or the config's)"
+    )
+    eval_parser.add_argument(
+        "--repeat",
+        type=positive_int,
+        default=1,
+        metavar="N",
+        help="Run the scenarios N times; a scenario passes only when all N runs pass (pass^k)",
+    )
+    eval_parser.add_argument(
+        "--baseline",
+        metavar="PATH",
+        help="A saved eval_<timestamp>.json to compare with; exit 1 when a scenario's score drops",
+    )
+    eval_parser.add_argument(
+        "--max-drop",
+        dest="max_drop",
+        metavar="FRACTION",
+        help="With --baseline, how far (0 to 1) a scenario's score may fall before it is named a regression (default 0)",
+    )
+    eval_parser.add_argument(
+        "--junit", metavar="PATH", help="Also write the results as a JUnit XML file at PATH"
+    )
 
 
 def register_tailnet_parser(sub: _Commands) -> None:
@@ -214,10 +256,15 @@ def register_telemetry_parser(sub: _Commands) -> None:
     tel_parser = cli_help.add_command(sub, "telemetry")
     tel_sub = tel_parser.add_subparsers(dest="telemetry_action")
     tel_sub.add_parser(
-        "status", help="Show exactly what the anonymous beacon sends (and whether it will)"
+        "status",
+        help="Show whether local metric recording is on and exactly what the anonymous beacon sends",
     )
-    tel_sub.add_parser("disable", help="Turn the anonymous beacon off permanently")
-    tel_sub.add_parser("enable", help="Turn the anonymous beacon back on")
+    tel_sub.add_parser(
+        "disable", help="Turn local metric recording and the anonymous beacon off permanently"
+    )
+    tel_sub.add_parser(
+        "enable", help="Turn local metric recording and the anonymous beacon back on"
+    )
 
 
 def register_policy_parser(sub: _Commands) -> None:
@@ -242,13 +289,24 @@ def register_policy_parser(sub: _Commands) -> None:
     explain_parser = policy_sub.add_parser(
         "explain", help="Explain a tool/scope decision for a surface"
     )
-    explain_parser.add_argument("scope", help="Governed scope, e.g. 'commands' or 'mcp'")
-    explain_parser.add_argument("item", help="The item to evaluate, e.g. 'git push origin'")
+    explain_parser.add_argument("scope", nargs="?", help="Governed scope, e.g. 'commands' or 'mcp'")
+    explain_parser.add_argument(
+        "item", nargs="?", help="The item to evaluate, e.g. 'git push origin'"
+    )
     explain_parser.add_argument(
         "--session-key", default="cli_chat", help="Surface session key (default: cli_chat)"
     )
     explain_parser.add_argument("--agent", default="", help="Agent name (optional)")
     explain_parser.add_argument("--app", default="", help="App slug (optional)")
+    explain_parser.add_argument(
+        "--json", action="store_true", help="Print the answer as one JSON object"
+    )
+    explain_parser.add_argument(
+        "--batch",
+        metavar="FILE",
+        help="Explain each JSON Lines request in FILE ('-' for stdin): "
+        "scope, item, and optional session_key, agent, app; one JSON answer per line",
+    )
     profile_show = policy_sub.add_parser("profile", help="Show a profile by name")
     profile_show.add_argument("name", help="Profile file stem (without .json)")
     policy_sub.add_parser(
@@ -440,6 +498,20 @@ def register_pod_parser(sub: _Commands) -> None:
             "per pod as EMBEDDINGS='0' in its env file (hand-edit that line to flip "
             "a kept pod); applies at boot. The switch is subsystem-wide, so the pod "
             "skips its speech-to-text (whisper) model download too."
+        ),
+    )
+    pod_up.add_argument(
+        "--env",
+        dest="env",
+        action="append",
+        metavar="KEY=VALUE",
+        default=None,
+        help=(
+            "Set an environment variable in the pod's gateway, to point it at a "
+            "test double. Repeatable. Only KIROCREW_KIRO_BIN is accepted (an "
+            "absolute path to an executable, such as a fake kiro-cli); other keys "
+            "are refused. Every `pod up` replaces the pod's overrides with the ones "
+            "it names, so an up without --env clears them. Applies at boot."
         ),
     )
     pod_up.add_argument(
@@ -801,7 +873,14 @@ Examples:
     )
 
     _c_iam = cloud_sub.add_parser(
-        "iam-policy", help="Print the least-privilege IAM policy to apply"
+        "iam-policy",
+        help="Print the least-privilege IAM policy to apply",
+        description="Print the launcher's least-privilege IAM policy as one JSON document. "
+        "It is too big for an inline user policy: create it as a customer-managed policy "
+        "(aws iam create-policy --policy-document file://launcher-policy.json) and attach "
+        "it to the IAM user, group or role behind the launch profile, or reference it from "
+        "an Identity Center permission set. See 'Applying the launcher policy' in "
+        "docs/guides/cloud-instance-ssm-vs-ssh.md, which also lists what it denies.",
     )
     _cloud_creds_opts(_c_iam)
     _c_iam.add_argument(

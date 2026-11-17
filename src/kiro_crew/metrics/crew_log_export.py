@@ -631,7 +631,7 @@ def install_otel_crew_log_subscriber() -> bool:
     :data:`~kiro_crew.crew_log.bus.SCOPE_SESSION`.
 
     Returns ``False`` and subscribes nothing when telemetry is disabled
-    (``telemetry.enabled``, default ``False``) -- read ONCE here, through
+    (``telemetry.enabled`` false; the default is ``True``) -- read ONCE here, through
     :func:`~kiro_crew.metrics.provider.get_recorder`'s own ``.enabled``, the same
     gate :mod:`kiro_crew.metrics.sessions` already uses for its own consent check.
     This mirrors ``install_crew_log_publisher``'s own posture toward

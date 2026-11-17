@@ -28,7 +28,20 @@ vi.mock('../pages/LogsPage', () => ({ default: () => null }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
-vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
+// The real hook marks the gateway connected when its socket opens; this stub's
+// socket opens on mount, since a status reply alone never reads as online.
+vi.mock('../hooks/useWebSocket', async () => {
+  const { useEffect } = await import('react')
+  const { useDispatch } = await import('react-redux')
+  const { sseConnected } = await import('../store/dashboardSlice')
+  return {
+    useWebSocket: () => {
+      const dispatch = useDispatch()
+      useEffect(() => { dispatch(sseConnected()) }, [dispatch])
+      return { subscribeLogs: () => {} }
+    },
+  }
+})
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))

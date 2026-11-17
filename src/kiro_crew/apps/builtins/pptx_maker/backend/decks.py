@@ -51,8 +51,8 @@ BRIEF_PREVIEW_CHARS = 2000
 MAX_DECKS = 500
 
 # Deck-directory filename grammar (the engine's, matched not built).
-_EPOCH_RE = re.compile(r"_(\d+)\.json$")
-_SLUG_EPOCH_RE = re.compile(r"^(.+)_(\d+)\.json$")
+_EPOCH_RE = re.compile(r"_(\d+)\.json\Z")
+_SLUG_EPOCH_RE = re.compile(r"^(.+)_(\d+)\.json\Z")
 _PAGE_RE = re.compile(r"^page(\d+)[-.]")
 _OUTLINE_SLUG_RE = re.compile(r"^-\s*\[([a-z0-9-]+)\]")
 

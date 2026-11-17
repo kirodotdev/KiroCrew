@@ -56,6 +56,8 @@ function createFeedLane({
   dialog,
   Notification,
   getAutoDownloadPreference,
+  // The policy channel ("lts" on an LTS build), "" when none. Read fresh.
+  getRequiredChannel = () => "",
   notifyUpdateFound,
   stopGateway,
   onInstallDispatched,
@@ -90,6 +92,10 @@ function createFeedLane({
   let updateReady = false;
   let downloading = false;
   let stagedVersion = null; // version electron-updater has downloaded + staged
+  // The channel whose feed served the staged build. The freshness gate refuses a
+  // stage from a channel the install no longer follows, so it has to know where
+  // the bytes came from, not just where the latest check was sent.
+  let stagedChannel = null;
   let stagedNotes = "";
   // Was the staged build fetched by the auto-download policy rather than asked
   // for? It decides whether turning the preference OFF also disarms the
@@ -97,6 +103,10 @@ function createFeedLane({
   // who has just declined auto-updates, while a stage they explicitly
   // downloaded stays armed because the preference is not what put it there.
   let stagedWasAutomatic = false;
+  // The user clicked Install on the staged build: it installs on their quit.
+  let stagedArmed = false;
+  // A user-asked Restart now is in flight, so the quit-time install relaunches.
+  let relaunchAfterInstall = false;
   // The window the session-end notice is registered on. Kept so the disarm
   // removes the listener from that same window even if getMainWindow() later
   // returns a recreated one.
@@ -105,6 +115,7 @@ function createFeedLane({
   // the update-downloaded handler -- the event carries no provenance of its own.
   let downloadWasAutomatic = false;
   let foundVersion = null; // last version surfaced to the user, awaiting consent
+  let foundChannel = null; // the channel whose feed offered foundVersion
   let installing = false;
   // The install claiming `installing` was dispatched from the quit handler, not
   // from a click. Read only on the failure path, where the two want opposite
@@ -150,7 +161,7 @@ function createFeedLane({
     log,
     currentChannel,
     feedChannel: () => feedChannel,
-    stage: () => ({ ready: updateReady, version: stagedVersion }),
+    stage: () => ({ ready: updateReady, version: stagedVersion, channel: stagedChannel }),
     configureFeed,
     safeCheck,
     emit,
@@ -355,7 +366,7 @@ function createFeedLane({
     // the version the click is in the middle of replacing.
     if (gate.preparingDownload) return;
     if (updateReady && stagedVersion) {
-      emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+      emit("downloaded", downloadedPayload());
       return;
     }
     if (!foundVersion) {
@@ -437,37 +448,23 @@ function createFeedLane({
       if (gate.checking && gate.checkInFlight !== ownCheck) {
         // A NEWER check now owns the feed: the new-lane re-check an earlier
         // click queued behind the check this one joined, or one the user
-        // started. It has re-pointed `feedChannel`, so the channel guard below
-        // would pass while `foundVersion` still holds the old check's answer,
-        // and electron-updater would download that check's build. Its handlers
+        // started. `foundVersion` still holds the old check's answer, and
+        // electron-updater would download that check's build. Its handlers
         // report what it finds; `checking` replaces the interim `downloading`,
         // since the gate kept that check's own `checking` off the renderer.
         log.info("[update] a newer check owns the feed — letting it answer instead of downloading");
         if (!gate.ownsCheck()) emit("checking");
         return;
       }
-      if (feedChannel !== currentChannel()) {
-        // The preference moved during the wait: what the card offers came from a
-        // lane this install no longer follows. Ask the new lane instead of
-        // spending the transfer on the old one's build.
-        log.info(`[update] channel changed before the download (${feedChannel} -> ${currentChannel()}) — re-checking instead`);
-        // Behind the check that still holds `checking` (an abandoned one, past the
-        // bound), or safeCheck would stand down and the new lane go unasked.
-        // `checkInFlight` resolves only from the check's owner, after
-        // electron-updater has released its own in-flight promise, so the
-        // re-check issues a new request instead of being handed the old one.
-        // `checking` now, while it waits: the old check can hold its socket for a
-        // minute, and the interim `downloading` must not stand for that long.
-        if (gate.checkInFlight) {
-          emit("checking");
-          void gate.checkInFlight.then(() => safeCheck());
-        } else {
-          void safeCheck();
-        }
-        return;
-      }
+      // The offer came from a channel this install no longer follows, or the
+      // check that judged it was sent to one (a switch before the click or during
+      // the wait, whose new-lane check failed or has not answered): ask the new
+      // lane instead of spending the transfer on the old one's build. The guard
+      // emits `checking` while it waits, so the interim `downloading` does not
+      // stand.
+      if (gate.refuseFromChangedChannel(foundVersion ? foundChannel : null)) return;
       if (updateReady && stagedVersion) {
-        emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+        emit("downloaded", downloadedPayload());
         return;
       }
       if (!foundVersion) {
@@ -681,195 +678,79 @@ function createFeedLane({
       new Notification({
         title: "Installing Kiro Crew update",
         // Timing and automatic relaunch stay on the installer window that they
-        // explain. The toast carries only the unique recovery instruction.
-        body: "If Kiro Crew doesn’t reopen after the installer finishes, open it from the Start menu.",
+        // explain. A quit the user made leaves them the recovery instruction; a
+        // Restart now brings the app back itself, so it says that instead of
+        // telling them to open a second copy.
+        body: relaunchAfterInstall
+          ? "Kiro Crew will reopen after installing."
+          : "Open Kiro Crew from the Start menu when the installer finishes.",
       }).show();
     } catch { /* notifications optional */ }
   }
 
+  // The user's own quit is the only point an install runs, and the app is not
+  // brought back by it: isForceRunAfter is false, so the next start is the
+  // user's. (Squirrel.Mac relaunches after its swap whatever this says; that is
+  // the platform's behavior, not ours.)
+  // The one exception is a restart the user asked for (relaunch below): that is
+  // their restart, so the app comes back after the install.
   function quitAndInstall() {
     notifyWindowsInstallHandoff();
-    autoUpdater.quitAndInstall(false, true);
+    autoUpdater.quitAndInstall(false, relaunchAfterInstall);
   }
 
-  async function applyUpdateAndRestart() {
-    // `verifyingStage` as well as `installing`: the freshness gate below awaits
-    // the feed before `installing` is set, so it is what makes a second click
-    // during that window a no-op instead of a second dispatch.
-    //
-    // `quitHandled` is the SYMMETRIC half, and it is the same hazard read from the
-    // other side. The quit-time install claims only `quitHandled` and then spends
-    // its own multi-second await on the freshness gate and stopGateway before it
-    // sets `installing` -- so during that window `installing` and `verifyingStage`
-    // are both false, and a click arriving here would dispatch a SECOND
-    // quitAndInstall() against the same install directory, mid-bundle-swap, which
-    // is the half-replaced app this whole ordering exists to prevent. Standing down
-    // loses nothing: that path is already installing this stage and is quitting.
-    if (installing || gate.verifyingStage || quitHandled) {
-      log.info("[update] install click ignored: an install already owns this stage");
+  /**
+   * Restart now (D-d): a plain quit and relaunch. An armed stage is installed by
+   * the quit this triggers, and the installer then relaunches the app (the one
+   * quit-time install that does); with nothing armed it is app.relaunch().
+   */
+  function relaunch() {
+    if (updateReady && stagedArmed) {
+      relaunchAfterInstall = true;
+      app.quit();
       return;
     }
-    // REQUIRE a staged update. Without this guard an install() dispatched
-    // before the download finished reaches MacUpdater.quitAndInstall()'s
-    // squirrelDownloadedUpdate === false branch, which does NOT install --
-    // it registers a listener and waits for Squirrel to fetch the update from
-    // the loopback proxy. forceExitFailsafe would then kill the process 5s
-    // later, mid-fetch, and the app dies without swapping or relaunching.
-    // Once a stage exists, Squirrel has already consumed the zip and
-    // quitAndInstall proceeds immediately, so the failsafe is safe to arm.
+    app.relaunch();
+    app.quit();
+  }
+
+  /**
+   * The Install click. It ARMS; it does not install. An update is applied only
+   * on the user's own quit, never while the app runs, so this does not stop the
+   * gateway, does not call quitAndInstall and does not quit anything. It makes
+   * the staged build the user's choice: the quit-time install then runs even if
+   * the auto-download preference is off, and the renderer is told the update is
+   * armed so it can say "installs when you quit".
+   */
+  async function armInstallOnQuit() {
+    // A quit-time install already owns this stage (or is verifying it).
+    if (installing || gate.verifyingStage || quitHandled) {
+      log.info("[update] arm click ignored: an install already owns this stage");
+      return;
+    }
     if (!updateReady) {
-      log.info("[update] install requested with nothing staged — ignoring");
+      log.info("[update] arm requested with nothing staged - ignoring");
       emit(foundVersion ? "found" : "not-available", foundVersion ? { version: foundVersion } : {});
       return;
     }
-    // From the freshness gate on, this call OWNS the dispatch, so every exit that
-    // does not hand off to the installer replays a quit held while it ran (see
-    // honorDeferredQuit). The finally states that once; the returns above it
-    // are stand-downs, where another dispatch owns the stage and the parked quit.
-    // The replay runs after each exit's own renderer emit, so the card is up
-    // before the window goes.
-    let dispatched = false;
-    try {
-      // FRESHNESS GATE — always install the NEWEST, never a stage the feed has
-      // moved past (see verifyStageIsLatest). A "ready to install" card can sit
-      // unclicked for days; installing it blind lands a superseded build and the
-      // next check immediately re-downloads the newer one. Bounded, because this
-      // runs inside the click: a feed that never answers must fall through to the
-      // install the user asked for, not leave the button doing nothing.
-      if (await gate.verifyStageIsLatest() === "superseded") {
-        // Deliberately no state emit: the check's own handlers have ALREADY told
-        // the renderer what replaced this stage — "found"/"downloading" for a
-        // newer release, "not-available" for a retraction — and an error card
-        // stacked over a running download would contradict them.
-        log.info("[update] install refused: the stage is no longer the newest build — pursuing the newest instead");
-        return;
-      }
-      // Re-check governance after the async freshness verify: policy may have
-      // arrived while the check was in flight (the IPC handler called updater.check()
-      // but safeCheck() returned early because a check was already running, so the
-      // new governance signal did not abort the verify). Abort here rather than
-      // calling quitAndInstall() on a governed install.
-      if (isPolicyGoverned()) {
-        log.info("[update] policy governed (post-verify): aborting manual install dispatch");
-        emit("not-available");
-        return;
-      }
-      installing = true;
-      // Tell the renderer the install is UNDERWAY before anything goes silent:
-      // the gateway is about to be stopped on purpose, and without this state
-      // the dashboard renders the stoppage as an outage (offline pill, failed
-      // requests) while the swap is still staging. On a failed handoff the
-      // 'error' emit (phase "install") replaces this state, which is what
-      // clears the renderer's installing overlay.
-      emit("installing", { version: stagedVersion });
-      // BEFORE stopGateway, or the watchdog can win the race and respawn the
-      // gateway into the middle of the bundle swap.
-      try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
-      // STRICT ORDER: stop the gateway and await its exit, THEN quitAndInstall.
-      // A live gateway child during the bundle swap can leave a half-replaced app.
-      log.info("[update] stopping gateway before install");
-      let stillRunning = null;
-      try {
-        await stopGateway();
-      } catch (err) {
-        stillRunning = gatewayStillRunning(err) ? err : null;
-        log.error(
-          stillRunning
-            ? "[update] a gateway from this app's bundle is still running after the stop"
-            : "[update] gateway stop errored (continuing to install)",
-          err,
-        );
-      }
-      // An install-phase failure can land while the gateway stops: the error
-      // handler classifies it (installing outranks checking there), resets
-      // `installing`, and runs the host recovery. This dispatch is already
-      // dead — proceeding would install on a failure the user was just told
-      // about, and aborting would run the recovery a second time.
-      if (!installing) {
-        log.info("[update] install failed while the gateway stopped — dispatch abandoned");
-        return;
-      }
-      // A gateway from this app's bundle that is still running would go on
-      // importing from the files the installer replaces. Refuse the swap the way
-      // an invalidated stage does: the install did not proceed, and the host
-      // restores the gateway it disarmed. (The finally replays a parked quit,
-      // the same as every other stand-down that did not hand off.)
-      if (stillRunning) {
-        log.info("[update] not installing while a gateway from this app's bundle is running — restoring");
-        installing = false;
-        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
-        emit("error", {
-          phase: "install",
-          code: GATEWAY_STILL_RUNNING,
-          message: "a gateway from this app's bundle was still running when the install was ready to run",
-          ...(stillRunning.stopCommand ? { stopCommand: stillRunning.stopCommand } : {}),
-          ...(foundVersion ? { version: foundVersion } : {}),
-        });
-        return;
-      }
-      // Re-check the stage AFTER the await: a feed response already in flight
-      // when the user clicked install can report a retraction or a newer build
-      // while the gateway stops, and the update-available / update-not-available
-      // handlers then discard the stage. Installing those bytes anyway would
-      // ship a build the feed has withdrawn or superseded. A check STILL in
-      // flight is the same hazard one step earlier: its response can invalidate
-      // the stage the moment after this dispatch commits, and an error event it
-      // produces during the bundle swap would be misattributed to the install
-      // (see the phase derivation in the error handler). Aborting on `checking`
-      // makes the dispatch itself the serialization point between checks and
-      // installs: no check outcome — result or failure — can land past
-      // quitAndInstall.
-      //
-      // An ABANDONED check is the one exception, and it is not a hole: the
-      // freshness gate stopped waiting for it and promised this install would
-      // proceed anyway, so aborting here would defeat the fail-open contract that
-      // sent us past the gate. The gate abandons every check it waits out, so a
-      // live check reaches this guard only when the gate did not wait at all (a
-      // stage with no version to compare). Its outcome is neutralized at the handlers instead
-      // (see abandonedCheck), which is what keeps the guarantee above true.
-      if (!updateReady || (gate.checking && !gate.abandonedCheck)) {
-        log.info(
-          !updateReady
-            ? "[update] stage invalidated while the gateway stopped — aborting install and restoring"
-            : "[update] check still in flight after the gateway stopped — aborting install and restoring",
-        );
-        installing = false;
-        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
-        // Use the install-error renderer contract, NOT a bare found/not-available:
-        // the user just clicked Install Update & Restart App and is watching an install
-        // surface -- a silent state swap reads as an unexplained cancel. The
-        // error/install shape has an existing renderer contract (the About
-        // card, and the in-place overlay failure state) that says the install
-        // did not proceed and offers the way forward.
-        emit("error", {
-          phase: "install",
-          code: !updateReady ? "stage-invalidated" : "check-in-flight",
-          message: !updateReady
-            ? "the staged update was withdrawn or superseded before the install could run"
-            : "a feed check was still in flight when the install was ready to run",
-          ...(foundVersion ? { version: foundVersion } : {}),
-        });
-        return;
-      }
-      app.removeListener("before-quit", deferredInstallOnQuit);
-      disarmSessionEndNotice();
-      // Re-check governance after the gateway stopped: policy may have arrived
-      // during the shutdown await (the IPC-triggered check exits because
-      // `installing` is set, so the latch is active with no further guard).
-      if (isPolicyGoverned()) {
-        log.info("[update] policy governed (post-gateway-stop): canceling manual install");
-        installing = false;
-        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
-        emit("not-available");
-        return;
-      }
-      log.info("[update] gateway down — quitAndInstall");
-      quitAndInstall();
-      dispatched = true;
-      forceExitFailsafe("manual install");
-    } finally {
-      if (!dispatched) honorDeferredQuit();
-    }
+    stagedArmed = true;
+    // The user took ownership of the stage, so turning the auto-download
+    // preference off no longer disarms the install on quit.
+    stagedWasAutomatic = false;
+    app.removeListener("before-quit", deferredInstallOnQuit);
+    app.once("before-quit", deferredInstallOnQuit);
+    armSessionEndNotice();
+    log.info(`[update] armed ${stagedVersion}: it installs when you quit, not before`);
+    emit("downloaded", downloadedPayload());
+  }
+
+  /** The `downloaded` payload, carrying the armed flag once the user armed this stage. */
+  function downloadedPayload(fallbackVersion = null) {
+    return {
+      version: stagedVersion || fallbackVersion,
+      notes: stagedNotes,
+      ...(stagedArmed ? { armed: true } : {}),
+    };
   }
 
   // If the user chose "Later", install on the natural quit. This is OUR
@@ -895,6 +776,23 @@ function createFeedLane({
     // quit-time install, so an abort would end in the very dispatch it just refused.
     app.removeListener("before-quit", deferredInstallOnQuit);
     log.info("[update] the manual install path finished — honoring the quit it deferred");
+    quitWithoutInstalling();
+  }
+
+  /**
+   * A Restart now whose quit-time install did not go ahead must still come back:
+   * only quitAndInstall() honors relaunchAfterInstall, so every other end of the
+   * quit has to ask for the relaunch itself. Clears the flag, so it is spent once.
+   */
+  function relaunchIfAsked() {
+    if (!relaunchAfterInstall) return;
+    relaunchAfterInstall = false;
+    app.relaunch();
+  }
+
+  /** Quit without installing, relaunching first when the quit was a Restart now. */
+  function quitWithoutInstalling() {
+    relaunchIfAsked();
     app.quit();
   }
 
@@ -913,6 +811,7 @@ function createFeedLane({
     // skip the install. The provider will handle it.
     if (isPolicyGoverned()) {
       log.info("[update] policy stand-down: skipping deferred install on quit");
+      relaunchIfAsked();
       return;
     }
     // `installing` and `verifyingStage` stand for "the manual path already owns this
@@ -970,6 +869,7 @@ function createFeedLane({
       if (!stillAuto) {
         log.info(`[update] auto-download off — leaving ${stagedVersion} staged instead of `
           + "installing on quit");
+        relaunchIfAsked();
         return;
       }
     }
@@ -1002,7 +902,13 @@ function createFeedLane({
         // The user was told the update would finish on quit; explain why it did
         // not, or the still-old version at next launch reads as a failure.
         notifyInstallCanceled();
-        app.quit();
+        quitWithoutInstalling();
+        return;
+      }
+      if (freshness === "channel-changed") {
+        log.info("[update] staged build came from a channel this install no longer follows — quitting without installing");
+        notifyInstallLeftForChannel();
+        quitWithoutInstalling();
         return;
       }
       // Re-check governance after the async freshness verify (same race as the
@@ -1010,7 +916,7 @@ function createFeedLane({
       if (isPolicyGoverned()) {
         log.info("[update] policy governed (post-verify on quit): quitting without installing");
         notifyInstallCanceled();
-        app.quit();
+        quitWithoutInstalling();
         return;
       }
       // No onInstallDispatched here: this handler only runs from before-quit,
@@ -1019,9 +925,17 @@ function createFeedLane({
       // recovering (see reportUpdaterFailure), so there is no gateway to restore.
       log.info("[update] deferred install on quit");
       let stillRunning = null;
+      // The stop takes seconds, and a second quit during it would find no
+      // listener (this one was registered with app.once) and exit before the
+      // install. Hold it for the stop, as the freshness gate above does.
+      quitPathVerifying = true;
+      app.once("before-quit", deferredInstallOnQuit);
       try { await stopGateway(); } catch (err) {
         stillRunning = gatewayStillRunning(err) ? err : null;
         log.error("[update] stop on quit errored", err);
+      } finally {
+        quitPathVerifying = false;
+        app.removeListener("before-quit", deferredInstallOnQuit);
       }
       // The user asked to QUIT: with a gateway from this app's bundle still
       // running, quit without installing rather than replace its files. The
@@ -1037,7 +951,7 @@ function createFeedLane({
             body: gatewayStillRunningNotificationBody(stillRunning.stopCommand),
           }).show();
         } catch { /* notifications optional */ }
-        app.quit();
+        quitWithoutInstalling();
         return;
       }
       // Same stage re-check as the manual path: a feed response in flight at
@@ -1072,7 +986,7 @@ function createFeedLane({
           log.info("[update] a check straddles the quit — quitting without installing");
           notifyInstallDeferredForCheck();
         }
-        app.quit();
+        quitWithoutInstalling();
         return;
       }
       // Claim the install BEFORE dispatching it, so a genuine installer failure
@@ -1098,7 +1012,7 @@ function createFeedLane({
       if (isPolicyGoverned()) {
         log.info("[update] policy governed (post-gateway-stop on quit): quitting without installing");
         notifyInstallCanceled();
-        app.quit();
+        quitWithoutInstalling();
         return;
       }
       installing = true;
@@ -1118,6 +1032,15 @@ function createFeedLane({
    */
   function notifyInstallCanceled() {
     showNotice(Notification, "Update canceled", "The staged update was withdrawn or superseded, so it was not installed. You\u2019ll be offered the latest version next launch.");
+  }
+
+  /**
+   * "The quit did not install a build from the channel the user left." Separate
+   * copy again: nothing was withdrawn or superseded, the bytes came from the
+   * channel the user moved away from, and the next launch asks the one they chose.
+   */
+  function notifyInstallLeftForChannel() {
+    showNotice(Notification, "Update not installed", "You changed the update channel, so the update downloaded from the previous channel was not installed. You\u2019ll be offered your channel\u2019s version next launch.");
   }
 
   /**
@@ -1204,11 +1127,11 @@ function createFeedLane({
 
   async function promptInstall(versionName, notes) {
     const handoffDetail = osPlatform === "win32"
-      ? "Installing can take several minutes. Kiro Crew will close, show Windows installation progress, and reopen automatically."
-      : "Installing can take several minutes. Kiro Crew will close and reopen automatically when the update is complete.";
+      ? "Kiro Crew installs it when you quit. On Windows the installer shows its progress, and you open Kiro Crew again yourself afterward."
+      : "Kiro Crew installs it when you quit, and you open it again yourself afterward.";
     const { response } = await dialog.showMessageBox({
       type: "info",
-      buttons: ["Install Update & Restart App", "Later"],
+      buttons: ["Install When I Quit", "Later"],
       defaultId: 0,
       cancelId: 1,
       title: "Kiro Crew update ready",
@@ -1218,7 +1141,7 @@ function createFeedLane({
         `\n\n${handoffDetail}`,
     });
     if (response === 0) {
-      await applyUpdateAndRestart();
+      await armInstallOnQuit();
     } else {
       app.once("before-quit", deferredInstallOnQuit);
       armSessionEndNotice();
@@ -1283,7 +1206,7 @@ function createFeedLane({
         log.error("[update] deferred install on quit failed — quitting without installing", err);
         notifyDeferredInstallFailed();
         emitError(phase, err);
-        app.quit();
+        quitWithoutInstalling();
         return;
       }
       // Tell the host to bring the gateway back. Observed live in the OTA lane: a
@@ -1484,6 +1407,7 @@ function createFeedLane({
       return;
     }
     foundVersion = (info && info.version) || null;
+    foundChannel = feedChannel;
     // What the followed lane publishes, recorded BEFORE the direction gate
     // below can null `foundVersion` out. The suppressed case is precisely the
     // one the display layer needs it for: an insider build whose preference was
@@ -1515,8 +1439,9 @@ function createFeedLane({
         // The lane this build follows with NO preference. Folds a promoted
         // stable build's insider-stamped bytes back to stable, so only an
         // explicit preference that MOVES the install off its default lane reads
-        // as a deliberate channel switch (see shouldAutoOffer).
-        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), ""),
+        // as a deliberate channel switch (see shouldAutoOffer). A required
+        // channel is the default lane too, so an LTS build on lts is no switch.
+        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), "", getRequiredChannel()),
       })
     ) {
       log.info(
@@ -1544,12 +1469,15 @@ function createFeedLane({
     if (updateReady && stagedVersion) {
       if (foundVersion === stagedVersion) {
         log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
+        // This lane serves the very build that is staged (a promoted release is
+        // the same bytes on both channels), so the stage now belongs to it.
+        stagedChannel = feedChannel;
         // Not for an install gate's own re-check: the renderer is already on
         // this stage, the manual path emits `installing` next, and the quit
         // path has emitted it already. A `downloaded` here would replace the
         // installing overlay with the "Update ready" dialog while the gateway
         // stops.
-        if (!gate.verifyingStage) emit("downloaded", { version: stagedVersion, notes: stagedNotes });
+        if (!gate.verifyingStage) emit("downloaded", downloadedPayload());
         return;
       }
       // Superseded: drop the stale stage so the next download takes the NEWEST
@@ -1589,6 +1517,9 @@ function createFeedLane({
         version: foundVersion,
         notes: notesFrom(info),
         pubDate: (info && info.releaseDate) || "",
+        // The decision above, so a renderer waiting for a click's download
+        // reads this one instead of a cached preference that may have changed.
+        autoDownload,
       });
     }
     // AFTER the "found" emit: the renderer must see the version it is about to
@@ -1636,10 +1567,16 @@ function createFeedLane({
     updateReady = true;
     downloading = false;
     stagedVersion = (info && info.version) || null;
+    // electron-updater downloads what the last successful check offered, so the
+    // bytes come from the channel that offered `foundVersion`. No check runs
+    // while a download is in flight (safeCheck stands down on `downloading`), so
+    // that record still describes this download.
+    stagedChannel = foundChannel || feedChannel;
     stagedNotes = notesFrom(info);
     stagedWasAutomatic = downloadWasAutomatic;
+    stagedArmed = false;
     log.info(`[update] downloaded ${stagedVersion} — ${uiDriven ? "notifying UI" : "prompting"}`);
-    emit("downloaded", { version: stagedVersion || app.getVersion(), notes: stagedNotes });
+    emit("downloaded", downloadedPayload(app.getVersion()));
     if (uiDriven) {
       // In-app UI owns the prompt. Still install on a natural quit if the user
       // dismisses the modal with "Later" (mirrors the native dialog's deferral).
@@ -1683,10 +1620,11 @@ function createFeedLane({
   return {
     check: () => safeCheck(),
     download: () => startDownload(),
-    install: () => applyUpdateAndRestart(),
+    install: () => armInstallOnQuit(),
+    relaunch: () => relaunch(),
     getInfo,
     isReady: () => updateReady,
   };
 }
 
-module.exports = { createFeedLane };
+module.exports = { createFeedLane, gatewayStillRunningNotificationBody };

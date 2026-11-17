@@ -241,7 +241,7 @@ class TestPtyChildEnvStripsPythonStartupVars:
             patch.object(terminal.fcntl, "ioctl", lambda *a: None),
             patch.object(terminal.asyncio, "create_subprocess_exec", spawn),
             patch.object(terminal, "_get_config", return_value=cfg),
-            patch.object(terminal.web, "WebSocketResponse", return_value=ws),
+            patch.object(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", return_value=ws),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
@@ -303,16 +303,12 @@ class TestPtyChildEnvStripsPythonStartupVars:
 
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/win-pyenv") as ws:
-                # Wait for the SPAWN, not for a frame. ``captured["env"]`` is
-                # filled synchronously inside _FakeWinPty.__init__, so the
-                # assertion's input exists the moment the handler reaches the
-                # ConPTY branch. Waiting on ``ws.receive(timeout=3)`` instead
-                # ties this contract test to how fast the host delivers the
-                # first PTY frame, and a receive whose timeout is cancelled
-                # from outside raises CancelledError straight out of both
-                # ``async with`` blocks rather than a TimeoutError this test
-                # could report. Polling the spawn is deterministic and needs no
-                # wall-clock margin.
+                # Wait for the SPAWN, not a frame: ``captured["env"]`` is set
+                # inside _FakeWinPty.__init__, so it exists as soon as the
+                # handler reaches the ConPTY branch. A ``ws.receive(timeout=)``
+                # would tie the test to frame timing, and a cancelled receive
+                # raises CancelledError out of the ``async with`` blocks
+                # instead of a TimeoutError the test could report.
                 await async_wait_until(
                     lambda: "env" in captured,
                     describe=lambda: "the ConPTY branch never spawned",

@@ -9,6 +9,7 @@ every identity or admission rejection takes. The module-wide autouse fixtures co
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import os
 from unittest.mock import AsyncMock, MagicMock
@@ -404,6 +405,35 @@ async def test_identity_gate_runs_before_the_build(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_bom_manifest_passes_the_pre_build_identity_gate(monkeypatch, tmp_path):
+    """An app.json saved with a UTF-8 byte-order mark names its app like the same file
+    without one, so the clone reaches the admission gate instead of an identity refusal."""
+    src = tmp_path / "app-sources" / "demoapp"
+    monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+    monkeypatch.setattr(registry, "sel", lambda: MagicMock())
+
+    async def _fake_clone(git_url, branch, dest, log_lines, **kwargs):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "app.json").write_bytes(
+            codecs.BOM_UTF8 + json.dumps({"name": "demoapp"}).encode("utf-8")
+        )
+        return None
+
+    monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
+    admitted: list[object] = []
+
+    def _record_and_deny(name, *, manifest=None, action=""):
+        admitted.append(manifest)
+        return "stop here"
+
+    monkeypatch.setattr(registry, "app_admission_denied", _record_and_deny)
+
+    await registry._clone_build_app("https://example.com/demo.git", "demoapp", [])
+
+    assert [getattr(m, "name", None) for m in admitted] == ["demoapp"]
+
+
+@pytest.mark.asyncio
 async def test_cloned_manifest_admission_is_revalidated_before_build(monkeypatch, tmp_path):
     """The repository can advance between the pre-clone prefetch and the clone:
     a signed preview resolving to an unsigned/banned manifest must be refused
@@ -528,6 +558,39 @@ async def test_install_script_rewriting_manifest_is_refused(monkeypatch, tmp_pat
 
     assert result["ok"] is False
     assert "refusing" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX,
+    reason="onInstall scripts run via /bin/bash, and the post-script pass needs one",
+)
+async def test_a_bom_manifest_passes_the_post_build_and_post_script_passes(monkeypatch, tmp_path):
+    """Both re-reads after the build name the app from a byte-order-marked app.json."""
+    src = tmp_path / "app-sources" / "demoapp"
+    _identity_harness(
+        monkeypatch, src, cloned_manifest={"name": "demoapp", "setup": {"onInstall": "true"}}
+    )
+    plain_build = registry._clone_build_app
+
+    async def _bom_build(*args, **kwargs):
+        built = await plain_build(*args, **kwargs)
+        manifest = src / "app.json"
+        manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+        return built
+
+    monkeypatch.setattr(registry, "_clone_build_app", _bom_build)
+    monkeypatch.setattr(registry, "set_app_provenance", lambda name, **kwargs: None)
+    monkeypatch.setattr(registry, "get_app", lambda n: None)
+    monkeypatch.setattr(
+        registry,
+        "install_app",
+        lambda path, **kwargs: MagicMock(ok=True, name="demoapp", message="done", error=""),
+    )
+
+    result = await registry.install_from_registry("demoapp")
+
+    assert result["ok"] is True, result
 
 
 @pytest.mark.asyncio

@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import unittest.mock
 from pathlib import Path
 
 import pytest
 from agent_helpers import _pinned_kiro_cli_version  # noqa: F401
+from redaction_structured_cases import github_classic
 
 from conftest import requires_symlinks
 
@@ -63,6 +65,35 @@ def test_ensure_agent_materialized_regenerates_when_missing(tmp_path, monkeypatc
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
 
     managed = Path(agent_mod.AGENT_FILENAME).stem
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_called_once()
+
+
+def test_ensure_agent_materialized_rebuilds_once_a_dropped_program_is_found(tmp_path, monkeypatch):
+    """A server the last rebuild dropped because its program was missing is
+    retried at the next session start once the program is found, not left out
+    until a gateway restart. While the program is still missing, nothing rebuilds."""
+    import kiro_crew.agent as agent_mod
+    from kiro_crew import mcp_dropped_servers
+
+    monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: tmp_path)
+    (tmp_path / agent_mod.AGENT_FILENAME).write_text("{}", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))
+    mcp_dropped_servers.record_rebuild_drops({"repo-manager": "kirocrew-test-returned-program"})
+    rebuild = unittest.mock.MagicMock()
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+    managed = Path(agent_mod.AGENT_FILENAME).stem
+
+    assert agent_mod.ensure_agent_materialized(managed) is True
+    rebuild.assert_not_called()
+
+    # .bat on Windows: shutil.which resolves a bare name only through PATHEXT.
+    program = bin_dir / ("kirocrew-test-returned-program" + (".bat" if os.name == "nt" else ""))
+    program.write_text("#!/bin/sh\nexit 0\n")
+    program.chmod(0o755)
+
     assert agent_mod.ensure_agent_materialized(managed) is True
     rebuild.assert_called_once()
 
@@ -480,13 +511,16 @@ class TestSelHookRejectedRedaction:
         from kiro_crew.agent import _sel_hook_rejected
 
         events = self._capture_sel(monkeypatch)
-        # fabricated AKIA-shaped literal, inlined (a ``secret``-named binding
-        # trips CodeQL's name-based sensitive-source heuristic); the 200-char
-        # cut lands 8 chars into the 20-char key
-        command = "x" * 192 + "AKIAIOSFODNN7EXAMPLE" + " --flag"
+        # fabricated GitHub-token-shaped value with a valid checksum, so the
+        # plan redacts it (an AWS key ID would stay visible); not bound to a
+        # ``secret``-named variable, which trips CodeQL's name-based
+        # sensitive-source heuristic. The 200-char cut lands 8 chars into the
+        # 40-char value.
+        sample = github_classic(seed=101)
+        command = "x" * 192 + sample + " --flag"
         _sel_hook_rejected("preToolUse", command, "denied")
         assert len(events) == 1
-        assert "AKIA" not in events[0].resources
+        assert sample[:8] not in events[0].resources
 
     def test_plain_command_truncation_unchanged(self, monkeypatch) -> None:
         """Ordinary path is result-preserving: no secret ⇒ the same 200-char slice."""

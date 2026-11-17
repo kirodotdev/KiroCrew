@@ -9,15 +9,17 @@ stand-in avoid it by overriding ``server_bind``.
 
 testing-conventions.md ("``http.server`` looks the host up between ``bind()``
 and ``listen()``") names the fix: subclass and call
-``socketserver.TCPServer.server_bind`` so no name is resolved. The count is
-exact, so a removed site records the new number in the same commit; a new
-site either subclasses or records the number with its reason in the PR.
+``socketserver.TCPServer.server_bind`` so no name is resolved. The record is
+exact per file, so a removed site records its file's new number in the same
+commit; a new site either subclasses or records its file's line with its reason
+in the PR.
 """
 
 from __future__ import annotations
 
 import io
 import tokenize
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -36,7 +38,12 @@ _SKIP = frozenset(
     {tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT}
 )
 
-_BASELINE_SITES = 1
+#: Bare constructions by file. Exact per file, one line per file rather than one
+#: total, so two changes to different files stay green merged
+#: (testing-conventions.md § Merge-safe ratchets and counts).
+_BASELINE_SITES: dict[str, int] = {
+    "src/kiro_crew/apps/builtins/design_tweak/backend/preview_files.py": 1,
+}
 
 
 def _lines_with_construction(text: str) -> list[int]:
@@ -69,7 +76,9 @@ def _sites() -> list[str]:
                 continue
             lines = text.splitlines()
             for number in _lines_with_construction(text):
-                found.append(f"{path.relative_to(_ROOT)}:{number}: {lines[number - 1].strip()}")
+                found.append(
+                    f"{path.relative_to(_ROOT).as_posix()}:{number}: {lines[number - 1].strip()}"
+                )
     return found
 
 
@@ -86,12 +95,26 @@ def test_the_needle_matches_the_shipped_shape() -> None:
     assert not _lines_with_construction("s = \"HTTPServer(('127.0.0.1', 8080), H)\"\n")
 
 
+def _drift(sites: list[str]) -> list[str]:
+    """The ``_BASELINE_SITES`` line to write for every file whose count moved."""
+    counts = Counter(site.split(":", 1)[0] for site in sites)
+    return [
+        f'    "{rel}": {counts.get(rel, 0)},  # was {_BASELINE_SITES.get(rel, 0)}'
+        for rel in sorted(set(counts) | set(_BASELINE_SITES))
+        if counts.get(rel, 0) != _BASELINE_SITES.get(rel, 0)
+    ]
+
+
 def test_bare_http_server_constructions_match_the_recorded_count() -> None:
     sites = _sites()
-    assert len(sites) == _BASELINE_SITES, (
-        f"{len(sites)} bare HTTPServer((host, port), ...) construction(s) "
-        f"(recorded: {_BASELINE_SITES}). Its server_bind resolves the host with "
-        "socket.getfqdn, which can stall on macOS while the socket refuses connects. "
-        "Subclass and call socketserver.TCPServer.server_bind (see plumb_cpu.py), or, "
-        "if you REMOVED a site, set _BASELINE_SITES to the new number.\n" + "\n".join(sites)
+    drift = _drift(sites)
+    assert not drift, (
+        "bare HTTPServer((host, port), ...) constructions moved. Its server_bind "
+        "resolves the host with socket.getfqdn, which can stall on macOS while the "
+        "socket refuses connects. Subclass and call socketserver.TCPServer.server_bind "
+        "(see plumb_cpu.py), or, if you REMOVED a site, write these _BASELINE_SITES "
+        "lines (a zero means delete the line):\n"
+        + "\n".join(drift)
+        + "\nsites:\n"
+        + "\n".join(sites)
     )

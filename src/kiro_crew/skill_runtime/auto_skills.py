@@ -75,7 +75,11 @@ def find_similar(
     for name, skill_file, _within in loader._iter():
         if exclude and name == exclude:
             continue
-        meta = loader._cached_frontmatter(skill_file, within=_within)
+        # A reader: one SKILL.md that is not UTF-8 is left out of the compare,
+        # never the whole dedupe (rationale on the helper).
+        meta = loader._readable_frontmatter(skill_file, within=_within)
+        if meta is None:
+            continue
         existing = meta.get("description", "")
         if not existing:
             continue
@@ -265,7 +269,12 @@ def update_auto_skill(
         _carry.append("inject_on_trigger: false")
     if _carry:
         content = content.replace("\n---\n", "\n" + "\n".join(_carry) + "\n---\n", 1)
-    skill_file.write_text(content, encoding="utf-8")
+    # Atomic replace through update_skill's pinned-directory write, which keeps
+    # the file's mode and ACL: a write that fails part way must leave the live
+    # skill as it was, not truncated.
+    if not loader.update_skill(name, content):
+        logger.warning("Refusing to refine %s: its skill file could not be replaced", name)
+        return False
     loader._invalidate_iter_cache()  # so the refined triggers/description apply now
     logger.info("Refined auto skill: %s", name)
     return True

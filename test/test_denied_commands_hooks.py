@@ -279,20 +279,20 @@ class TestHooksConfigDeniedCommands:
 class TestEffectiveDenied:
     def test_builtin_denied_by_default(self):
         mgr = HookManager(HooksConfig())
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_disabled_builtin_falls_through(self):
         cfg = HooksConfig(denied_commands_disabled_ids=["local-destructive-rm-rf-root"])
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         # Not denied — the built-in rule was individually opted out.
         assert result.action != TOOL_DENY
 
     def test_disable_all_falls_through(self):
         cfg = HooksConfig(denied_commands_disable_all=True)
         mgr = HookManager(cfg)
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action != TOOL_DENY
 
     def test_user_added_pattern_denies(self):
@@ -525,7 +525,7 @@ class TestGovernancePins:
         mgr = HookManager(cfg)
         # Governance pinned the rule — user opt-out (and disable-all) cannot
         # weaken it (tightest-wins).
-        result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
+        result = mgr.on_tool_call("rm -rf /srv/foo", command="rm -rf /srv/foo", is_shell=True)
         assert result.action == TOOL_DENY
 
     def test_governance_pinned_ids_helper_failsoft(self):
@@ -858,6 +858,38 @@ class TestSearchDenyTargetSynthesis:
         assert "\\" not in target
         assert target.endswith("path=/srv/app/sub")
 
+    @pytest.mark.parametrize(
+        ("spelling", "field"),
+        [
+            ("\\\\?\\C:\\data\\tree", "C:/data/tree"),
+            ("\\\\.\\C:\\data\\tree", "C:/data/tree"),
+            ("//?/C:/data/tree", "C:/data/tree"),
+            ("\\??\\C:\\data\\tree", "C:/data/tree"),
+            ("C:\\data\\tree::$INDEX_ALLOCATION", "C:/data/tree"),
+            ("\\\\?\\UNC\\host\\share", "//?/UNC/host/share"),  # a share stays a share
+        ],
+    )
+    def test_a_windows_namespace_alias_reaches_a_rule_as_its_plain_root(
+        self, monkeypatch, spelling, field
+    ):
+        # Windows opens `\\?\C:\x` as `C:\x`, so a rule naming the plain root must see it.
+        # Read the way a Windows gateway reads it, on any host.
+        import ntpath
+
+        from kiro_crew import hooks
+        from kiro_crew.security import paths_resolver
+
+        class _NtOs:
+            name, sep, altsep, path = "nt", "\\", "/", ntpath
+
+            def __getattr__(self, attr):
+                return getattr(os, attr)
+
+        monkeypatch.setattr(hooks, "os", _NtOs())
+        monkeypatch.setattr(paths_resolver, "_ON_WINDOWS", True)
+        target = hooks._search_deny_target({"path": spelling, "pattern": "*"})
+        assert target == f"file-search path={field}"
+
     def test_tilde_and_home_var_expand_to_the_real_root(self, monkeypatch, tmp_path):
         from kiro_crew.hooks import _search_deny_target
 
@@ -1110,10 +1142,10 @@ class TestSearchTargetSynthesizedTier:
     )
     def test_an_operator_authored_regex_denies(self, pattern):
         # Every participating pattern denies on a match, with no second judgement applied.
-        # The last case is the one an earlier revision got wrong: it classified the merged
-        # effective set by pattern TEXT, so an operator rule whose text coincided with a
-        # shipped one was read as shipped and dropped -- a silent fail-open on an explicit
-        # deny. Pattern text is not provenance.
+        # The last case is the trap: classifying the merged effective set by pattern TEXT
+        # reads an operator rule whose text coincides with a shipped one as shipped and
+        # drops it -- a silent fail-open on an explicit deny. Pattern text is not
+        # provenance.
         from kiro_crew.security import is_denied_synthesized_target
 
         assert (

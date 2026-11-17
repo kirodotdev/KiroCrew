@@ -47,10 +47,11 @@ from kiro_crew.dashboard.peer_redaction import redact_peer_text
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError
 from kiro_crew.mcp_session_crew import CREW_TOOLS, with_crew_schema
 from kiro_crew.remote_dispatch import REMOTE_DISPATCH_DISABLED
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-#: A GitHub-style personal access credential, built at runtime so no scanner
-#: reads this file as holding one.
-PLANTED = "ghp_" + "Ab3x9" * 7 + "Z"
+#: A GitHub personal access token with a valid checksum, built at runtime so no
+#: scanner reads this file as holding one.
+PLANTED = github_classic(seed=51)
 
 INSTANCE = "inst-lab"
 
@@ -120,8 +121,8 @@ class _Registry:
         return list(self._rows)
 
 
-def _ultra(slot):
-    """Make *slot* an Ultra Mode chat: a root on the configured conductor template."""
+def _conductor_mode(slot):
+    """Make *slot* a conductor mode chat: a root on the configured conductor template."""
     slot.agent = crew_mode.crew_mode_agent()
     slot.agent_kind = "template"
     return slot
@@ -137,7 +138,7 @@ def env(tmp_path, monkeypatch):
         [SimpleNamespace(id=INSTANCE, name="lab"), SimpleNamespace(id="inst-b", name="other")]
     )
     caller = _busy(_slot(state, "chat-1"))
-    _ultra(caller)
+    _conductor_mode(caller)
     monkeypatch.setattr(crew, "remote_dispatch_enabled", lambda: True)
     # The verb tests stand in an admitting owner check so the rest of the path
     # can be driven; the real one is pinned by the ``*_owner_*`` tests below.
@@ -200,13 +201,18 @@ def test_the_switch_defaults_off_and_reads_only_a_real_bool():
 
 def test_switch_off_advertises_exactly_todays_schemas(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: False)
-    assert mcp_dashboard._list_tools() == mcp_dashboard.TABLE.list()
+    # The session_harness preview filters `backend`; held on so only `crew` varies here.
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
+    # `crew_list` is the one row the switch hides outright.
+    base = [t for t in mcp_dashboard.TABLE.list() if t["name"] != "crew_list"]
+    assert mcp_dashboard._list_tools() == base
     for tool in mcp_dashboard._list_tools():
         assert "crew" not in tool["inputSchema"].get("properties", {})
 
 
 def test_switch_on_adds_crew_to_the_five_tools_only(monkeypatch):
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: True)
+    monkeypatch.setattr("kiro_crew.session_harness_preview.session_harness_enabled", lambda: True)
     listed = {t["name"]: t for t in mcp_dashboard._list_tools()}
     base = {t["name"]: t for t in mcp_dashboard.TABLE.list()}
     for name, tool in listed.items():
@@ -225,6 +231,7 @@ def test_switch_on_adds_crew_to_the_five_tools_only(monkeypatch):
     "verb, fields",
     [
         ("create", {"crew": "lab"}),
+        ("create", {"crew": "lab", "agent": "kirocrew-worker", "agent_kind": "template"}),
         ("send", {"crew": "lab", "target": "chat-77", "message": "hi"}),
         ("read", {"crew": "lab", "target": "chat-77"}),
         ("stop", {"crew": "lab", "target": "chat-77"}),
@@ -365,6 +372,60 @@ def test_a_crew_create_refuses_local_only_fields(env):
     assert env.peer.calls == []
 
 
+def test_a_template_kind_reaches_the_peer_create(env):
+    """D6: the peer resolves a same-named crew member first unless the create says
+    ``template``, so the kind rides the create; without it nothing changes."""
+    _create(env, agent="kirocrew-worker", agent_kind="template")
+    first = env.peer.calls[0]
+    assert first["body"]["agent"] == "kirocrew-worker"
+    assert first["body"]["agent_kind"] == "template"
+    env.peer.calls.clear()
+    _create(env, agent="kirocrew-worker")
+    assert "agent_kind" not in env.peer.calls[0]["body"]
+    env.peer.calls.clear()
+    _create(env, agent="kirocrew-worker", agent_kind="")
+    assert "agent_kind" not in env.peer.calls[0]["body"]
+
+
+def test_a_bound_create_carries_the_template_kind(env, monkeypatch):
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    seen: dict = {}
+
+    async def _bound(state, mgr, board, instance_id, item_id, create):
+        seen.update(create)
+        return "chat-77", {"key": "chat-77"}, SimpleNamespace(item_id=item_id, title="t")
+
+    monkeypatch.setattr(remote_ingest, "create_bound", _bound)
+    status, body = _call(
+        env,
+        "create",
+        crew="lab",
+        work_item="it_0000abcd",
+        agent="kirocrew-worker",
+        agent_kind="template",
+    )
+    assert status == 200, body
+    assert seen["agent_kind"] == "template" and seen["agent"] == "kirocrew-worker"
+
+
+@pytest.mark.parametrize(
+    "fields, code",
+    [
+        ({"agent": "kirocrew-worker", "agent_kind": "member"}, "invalid_agent_kind"),
+        ({"agent": "kirocrew-worker", "agent_kind": "Template"}, "invalid_agent_kind"),
+        ({"agent": "kirocrew-worker", "agent_kind": True}, "invalid_agent_kind"),
+        ({"agent": "kirocrew-worker", "agent_kind": ["template"]}, "invalid_agent_kind"),
+        ({"agent_kind": "template"}, "agent_kind_requires_agent"),
+        ({"agent": "  ", "agent_kind": "template"}, "agent_kind_requires_agent"),
+    ],
+)
+def test_a_bad_agent_kind_is_refused_before_any_peer_call(env, fields, code):
+    status, body = _call(env, "create", crew="lab", **fields)
+    assert (status, body["code"]) == (400, code)
+    assert env.peer.calls == []
+
+
 # ── the path fence ───────────────────────────────────────────────────────────
 
 
@@ -489,7 +550,7 @@ def test_a_peer_slot_this_caller_did_not_dispatch_is_refused(env, verb):
 
 def test_another_callers_dispatch_is_refused(env):
     target = _create(env)
-    other = _ultra(_busy(_slot(env.state, "chat-9")))
+    other = _conductor_mode(_busy(_slot(env.state, "chat-9")))
     env.peer.calls.clear()
     status, body = _call(env, "stop", key=_key(other), crew="lab", target=target)
     assert (status, body["code"]) == (403, "crew_target_not_dispatched")
@@ -627,7 +688,7 @@ def test_an_unbound_owner_tab_is_admitted(env):
     assert _create(env) == "chat-77"
 
 
-def test_an_ultra_mode_chat_is_admitted(env):
+def test_a_conductor_mode_chat_is_admitted(env):
     assert crew_mode.slot_is_crew_mode_root(env.caller)
     assert _create(env) == "chat-77"
 
@@ -643,12 +704,12 @@ def test_an_ultra_mode_chat_is_admitted(env):
         ("close", {"crew": "lab", "target": "chat-77"}),
     ],
 )
-def test_a_plain_owner_chat_is_refused_ultra_mode_only(env, verb, fields):
+def test_a_plain_owner_chat_is_refused_conductor_mode_only(env, verb, fields):
     env.caller.agent, env.caller.agent_kind = "kirocrew", "template"
     assert not crew_mode.slot_is_crew_mode_root(env.caller)
     status, body = _call(env, verb, **fields)
-    assert (status, body["code"]) == (403, crew.ULTRA_MODE_ONLY)
-    assert "Ultra Mode" in body["error"]
+    assert (status, body["code"]) == (403, crew.CONDUCTOR_MODE_ONLY)
+    assert "conductor mode" in body["error"]
     assert env.peer.calls == []
 
 

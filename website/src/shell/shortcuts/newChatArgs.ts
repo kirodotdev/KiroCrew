@@ -9,7 +9,7 @@ import { isMateManaged } from '../../utils/mateFolders'
  * (`useFolderChatCreate`). An unfiled active chat, no active chat, or a folder
  * that is gone keeps the plain New placement (the person's default folder),
  * and so does a folder a mate manages, which takes only that mate's chats.
- * Either way it is the person's own New chat, so it asks for their Ultra Mode
+ * Either way it is the person's own New chat, so it asks for their conductor mode
  * default (`crewModeDefault`).
  */
 export function newChatShortcutArgs(

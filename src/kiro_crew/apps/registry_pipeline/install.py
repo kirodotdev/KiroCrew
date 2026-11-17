@@ -105,6 +105,7 @@ from kiro_crew.sandbox import (
     wrap_argv_async,
 )
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE)
 
@@ -333,6 +334,26 @@ async def install_from_registry(
     adoption_refusal = await asyncio.to_thread(_adoption_pending, name)
     if adoption_refusal is not None:
         return {"ok": False, "name": name, "code": "adoption_pending", "error": adoption_refusal}
+
+    # A marketplace app is never replaced from the registry either: refuse it before
+    # any clone, and before ``before_replace`` takes the app down (``update_app`` only
+    # refuses after that, and the update would then be rolled back).
+    from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
+    installed = await asyncio.to_thread(get_app, name)
+    if installed is not None and is_market_source(installed.get("source")):
+        error = f"{name!r} cannot be updated from the registry. {MARKET_OVERWRITE_HINT}"
+        try:
+            sel().log_api_access(
+                caller="app_install_from_registry",
+                operation="provenance",
+                outcome="rejected",
+                resources=f"name={name!r}",
+                error=error,
+            )
+        except Exception as exc:  # an audit failure must never mask the refusal
+            logger.debug("SEL audit failed for %s market refusal: %s", name, exc)
+        return {"ok": False, "name": name, "code": "app_update_market_source", "error": error}
 
     entry: dict[str, Any] | None
     if resolved_entry is not None:
@@ -871,7 +892,7 @@ async def install_from_registry(
                 (app_source / "app.json").read_text,
                 "utf-8",
             )
-            parsed = json.loads(manifest_raw)
+            parsed = loads_user_json(manifest_raw)
             if isinstance(parsed, dict):
                 manifest_data = parsed
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
@@ -1147,7 +1168,7 @@ async def install_from_registry(
             # must pass the same fail-closed gates as the post-build read.
             manifest_data = None
             try:
-                parsed = json.loads(
+                parsed = loads_user_json(
                     await asyncio.to_thread((app_source / "app.json").read_text, "utf-8")
                 )
                 if isinstance(parsed, dict):

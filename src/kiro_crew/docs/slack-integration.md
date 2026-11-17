@@ -35,7 +35,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
 | `!channel agent <name/off>` | Set per-channel agent override |
-| `!voice on/off` | Speak this thread's answers as well as typing them (only with `messaging.use_transport` off; otherwise the bot says replies stay text) |
+| `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
@@ -189,6 +189,30 @@ session actions menu later.
 
 Off by default. Applies to the next new session with no restart.
 
+## Slack conversations in the session list
+
+Conversations that start in Slack (threads, DMs and channel mentions) appear in
+the dashboard's session list next to your other sessions, so you can read or
+continue one from either side. Turn off **Show Slack conversations in the session
+list** at `/settings/channels/slack` (`slack.show_in_session_list`) to keep them
+out of that list. This setting changes the list only:
+
+- The conversations keep working in Slack exactly as before.
+- They stay in History and search. Open one from there, from a notification or
+  from a link, and it shows in the main pane with its row while it is the open
+  session.
+- One waiting on your approval or answer keeps its row until you answer, and
+  hidden conversations add nothing to unread counts.
+- Nothing is closed, archived or deleted. Turn the setting back on and they are
+  listed again, including conversations that started while it was off.
+- Sessions you start in the dashboard and connect to Slack, and Slack code
+  channel sessions with their helper agents, are always listed.
+
+On by default. Applies when saved, with no restart. The separate
+`dashboard.surface_channel_sessions` setting stops every messaging channel's
+conversations from being added to the session list at the next restart; this
+one is for Slack only and takes effect at once.
+
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, each one is a button: one click sends that
@@ -266,9 +290,11 @@ things about it are worth knowing before you use it:
 - **A token is verified against Slack before it is stored.** A rejected token is not
   written. If the host is offline the save succeeds with a warning instead, and clearing
   a token takes an explicit clear action rather than an empty field.
-- **Some changes need a restart** — the tokens, the owner ID, the slash command and the
-  enterprise-org allowlist are read at boot. Reactions and thinking-indicator toggles
-  apply immediately.
+- **New tokens apply when you click Reconnect**, without a gateway restart. A changed
+  owner ID, or a token for a different workspace, is refused there and still needs a
+  restart. The slash
+  command and the enterprise-org allowlist are read at boot.
+  Reactions and thinking-indicator toggles apply immediately.
 
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
@@ -289,13 +315,26 @@ exactly as with the switch off, and the page says why under the switch.
   steps warn you there.
 - **Code channels** (`slack.code_channels`) lets the agent open a Slack code channel for
   coding work: one channel per task, with a context bar, a diff tab and channel commands.
+  When the channel's agent starts helper agents for pieces of the work (**Let code
+  channels start helper agents**), the channel also gets a pinned **work board**, kept
+  up to date in place: one line of counts ("2 working · 1 waiting on you · 1 of 4 done"),
+  then one task per helper agent with Slack's own status mark, what it is doing right
+  now (the command it is running or the file it is editing, with secrets and your
+  paths taken out), and how long it has been at it. A helper agent that needs you gets a threaded reply that mentions you, and the
+  channel's status shows it is waiting on you. **Stop** in the channel stops the
+  channel's own agent only: its helper agents keep going and keep the board up to
+  date, and you stop one from its chat (each board task links to it) with **Stop
+  generation**. A code channel adds no reactions to your
+  messages: its progress is the channel's status and the board. In the dashboard the helper agents sit under the channel's session, in
+  the channel's folder (a channel whose chat has conductor mode on keeps them out of folders, as conductor mode does everywhere).
   It adds the `code_channels:manage`, `chat:write.customize`, `canvases:write`,
-  `channels:write.invites` and `groups:write.invites` scopes. Your workspace must have
+  `channels:write.invites`, `groups:write.invites` and `pins:write` scopes (the last
+  lets the work board pin itself in its channel). Your workspace must have
   Slack code channels enabled.
 
 **Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
-restart): a folder, an agent, a model and a reasoning effort. Set any of them; anything
-empty falls through:
+restart): a folder, an agent, a model, a reasoning effort and an approval mode. Set any of
+them; anything empty falls through:
 
 - folder: the default folder here, else a top-level **Code channels** folder. That folder is
   created the first time a code channel needs it, with `kirocrew-conductor` as its default
@@ -307,10 +346,29 @@ empty falls through:
   except background-only ones (`kirocrew-lite`, `kirocrew-guest`, `kirocrew-heartbeat`);
 - project: the folder's project directory, then the project of the thread the channel was
   opened from;
-- model and effort: set here, else the agent's own.
+- model and effort: set here, else the agent's own;
+- approval mode (`approval_mode`): `ask` (the default: look-ups such as file reads, web
+  searches and read-only shell commands run on their own, everything else waits for
+  approval), `trust_reads` (also searches of memory, past chats, skills and the knowledge
+  library) or `trust` (every tool
+  runs without asking). The page labels them Normal, Reads and Trust, as the session's own
+  approval picker does.
 
 The page previews what a new code channel will run with. A folder or agent deleted after
 you saved it is flagged on the page and skipped; the other defaults still apply.
+
+**What the agent in a code channel can do.** While **Code channels** is on, the agent bound
+to a code channel gets these tools. Each one acts on that agent's own channel only; none
+can name, create or archive a channel.
+
+| Tool | What it does |
+|---|---|
+| `code_channel_rename` | Renames the channel and its session (1-200 characters). |
+| `code_channel_set_status` | Sets the session status: `processing`, `active` or `suspended`. `suspended` means the agent asked the people in the channel something and waits for the answer; it stays after the turn ends, and the next turn clears it. |
+| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
+| `code_channel_publish_plan_canvas` | Creates or replaces the channel's plan canvas from markdown and shows it as the **Plan** tab. Members can comment on it. |
+| `code_channel_set_context_bar` | Sets the agent's own items on the context bar, after the repo, branch, PR and CI items Kiro Crew keeps there (five items in all; the keys `repo`, `folder`, `branch`, `pr` and `ci` are taken). Each item has a key, a label, an optional icon and an optional `https` link. An empty list clears them. |
+| `code_channel_wrap_up` | Posts the wrap-up: the agent's summary (up to 2800 characters), the facts Kiro Crew knows (branch, PR, CI, changes) and an **Archive channel** button. `/wrap-up` asks for it. Only a person can press the button. |
 
 **Updating an existing Slack app.** A switch changes the manifest (scopes, events and
 feature blocks), and Slack grants scopes only when the app is (re)installed. The

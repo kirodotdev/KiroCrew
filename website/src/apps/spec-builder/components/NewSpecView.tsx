@@ -175,7 +175,9 @@ export default function NewSpecView({ onCancel, onCreated, setErr, onSettings }:
         </RadioChipGroup>
 
         <div className="flex gap-3 items-center">
-          <Btn label={busy ? i18nT('apps.specBuilder.components.newSpecView.starting') : i18nT('apps.specBuilder.components.newSpecView.start_the_conversation')} primary big disabled={busy || !ready} onClick={create} />
+          {/* `busy` keeps Start focusable while its create runs; the not-ready
+              guard stays native `disabled` -- structural, not a write. */}
+          <Btn label={busy ? i18nT('apps.specBuilder.components.newSpecView.starting') : i18nT('apps.specBuilder.components.newSpecView.start_the_conversation')} primary big busy={busy} disabled={!ready} onClick={create} />
           <Btn label={i18nT('apps.specBuilder.components.newSpecView.never_mind')} onClick={onCancel} />
         </div>
         <div className="text-[12px] text-muted mt-5 leading-relaxed">

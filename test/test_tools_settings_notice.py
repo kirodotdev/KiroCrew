@@ -22,6 +22,7 @@ import pytest
 import kiro_crew.config.paths as paths_mod
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -41,6 +42,7 @@ from kiro_crew.providers.mirrors.base import Concern, Disposition
 _SHELL_ALLOWLIST = {"shell": {"denyByDefault": True, "allowedCommands": ["git status"]}}
 _NOT_RECEIVED = "sets toolsSettings, which this backend does not receive"
 _APPLIED_NOWHERE = [
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,

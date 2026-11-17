@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { createRef } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
 import type { useChatPanePickerActions, useChatPanePickerModels } from './useChatPanePickers'
 import { settingsPath } from './settingsPath'
@@ -45,6 +46,7 @@ function setup(overrides: Partial<Record<string, unknown>> = {}) {
     modelDD,
     modelBtnRect: { left: 12, top: 400 } as DOMRect,
     hiddenModelsQ: { isError: true, refetch: vi.fn() },
+    selectionCapabilitiesQ: { data: undefined },
     attachModelList: vi.fn(),
     modelListEdges: { bottom: false },
     shownModel: 'model-one',
@@ -63,11 +65,12 @@ function setup(overrides: Partial<Record<string, unknown>> = {}) {
     modelDialogIme: { claimKey: vi.fn(() => true), bindComposition: () => ({}) },
   } as unknown as Actions
   const navigate = vi.fn()
+  // The session switches under the effort control write through react-query.
   render(
-    <>
+    <QueryClientProvider client={new QueryClient()}>
       <ChatPaneAgentMenu paneSlot={undefined} models={models} actions={actions} navigate={navigate} />
       <ChatPaneModelMenu slotKey="slot-1" paneSlot={undefined} models={models} actions={actions} navigate={navigate} />
-    </>,
+    </QueryClientProvider>,
   )
   const [agentMenu, modelMenu] = screen.getAllByRole('dialog')
   return { models, actions, navigate, agentDD, modelDD, agentMenu, modelMenu }
@@ -133,6 +136,25 @@ describe('ChatPaneModelMenu', () => {
     expect(modelDD.setOpen).toHaveBeenCalledWith(false)
     fireEvent.keyDown(within(modelMenu).getByLabelText(i18nT('components.chatPane.type_to_filter')), { key: 'Escape' })
     expect(actions.onModelListKeyDown).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    [{ known: true, fast: false }, true],
+    [{ known: true }, false],
+  ])('draws the Fast mode switch only while the selection-capabilities read carries it (%o)', (data, shown) => {
+    const { modelMenu } = setup({ selectionCapabilitiesQ: { data } })
+    const toggle = within(modelMenu).queryByRole('switch', { name: i18nT('components.fastModeToggle.label') })
+    expect(toggle !== null).toBe(shown)
+    if (toggle) expect(toggle.getAttribute('aria-disabled')).toBeNull()
+  })
+
+  it("draws a Fast mode switch the harness says cannot be turned on disabled, with the harness's reason", () => {
+    const reason = 'not available on this API provider'
+    const { modelMenu } = setup({ selectionCapabilitiesQ: { data: { known: true, fast: false, fast_unavailable: reason } } })
+    const toggle = within(modelMenu).getByRole('switch', { name: i18nT('components.fastModeToggle.label') })
+    expect(toggle.getAttribute('aria-disabled')).toBe('true')
+    expect(document.getElementById(toggle.getAttribute('aria-describedby') ?? '')?.textContent)
+      .toBe(i18nT('components.fastModeToggle.unavailable', { reason }))
   })
 
   it('draws nothing while closed', () => {

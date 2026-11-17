@@ -777,16 +777,15 @@ describe('ErrorNotice', () => {
     expect(screen.getByRole('button', { name: 'Dismiss' })).toHaveAttribute('title', 'Dismiss')
   })
 
-  it('is always the alert in the danger tone: there is no muted or status register for an error', () => {
-    // `errors-use-error-notice`: a failure toned down to a polite status is
-    // still a failure. Whatever a caller passes, the notice renders as
-    // `role="alert"` in the danger tone; a caller that does not want it seen
-    // does not render it.
+  it('without an impact is the alert in the danger tone: a missing prop never quiets a failure', () => {
+    // `errors-use-error-notice`: a calmer look goes through `impact` only. A
+    // caller that passes none gets the loud default, `role="alert"` in the
+    // danger tone, so forgetting the prop never hides a real failure.
     for (const variant of ['block', 'inline'] as const) {
       const { unmount } = render(<ErrorNotice message="disk is full" askAgent onDismiss={() => {}} variant={variant} />)
       expect(screen.queryByRole('status')).not.toBeInTheDocument()
       const alert = screen.getByRole('alert')
-      expect(alert.className).toContain('text-danger')
+      expect(alert.className).toMatch(variant === 'block' ? /\bbg-danger-subtle\b/ : /\btext-danger-ink\b/)
       expect(alert.className).not.toContain('text-muted')
       expect(alert).not.toHaveAttribute('data-tone')
       unmount()
@@ -918,18 +917,13 @@ describe('ErrorNotice', () => {
     expect(labelled).toHaveAttribute('aria-label', 'Dismiss notice and re-enable Install')
     expect(labelled).toHaveAttribute('title', 'Dismiss notice and re-enable Install')
     expect(screen.queryByRole('button', { name: /^dismiss$/i })).not.toBeInTheDocument()
-    // A labelled control is wide, and shares the row with the message and the
-    // agent hand-off: at 320px the three cannot stand side by side, so the row
-    // wraps and the label takes a full-width line of its own below the message
-    // (rejoining the row at `md`) -- one node for the action at every width.
-    const alert = screen.getByRole('alert')
-    expect(alert.className).toContain('flex-wrap')
-    expect(alert.className).toContain('md:flex-nowrap')
+    // A labelled control is wide, so it ends the action row, after the
+    // hand-off, instead of squeezing the message -- one node at every width.
     const line = labelled.parentElement!
-    expect(line.className).toContain('basis-full')
-    expect(line.className).toContain('md:basis-auto')
-    expect(line.className).toContain('justify-end')
-    expect(alert.lastElementChild).toBe(line)  // below the message and the hand-off
+    const row = line.parentElement!
+    expect(row).toHaveAttribute('data-notice-actions')
+    expect(line.className).toContain('ml-auto')
+    expect(row.lastElementChild).toBe(line)
     expect(screen.getAllByRole('button', { name: 'Dismiss notice and re-enable Install' })).toHaveLength(1)
     await userEvent.click(labelled)
     expect(onDismiss).toHaveBeenCalledOnce()

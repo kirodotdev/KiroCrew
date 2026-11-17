@@ -36,7 +36,7 @@ vi.mock('../api/client', async () => ({
 
 vi.mock('../providers/adapters/acp', () => ({ clearCachedModels: vi.fn() }))
 
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { probe, status } from './KiroPrerequisiteGateTestUtils'
 
 const locked = { lts_login_required: true, installed: true }
@@ -336,6 +336,23 @@ describe('KiroPrerequisiteGate LTS login gate', () => {
     expect(screen.queryByTestId('lts-relock-notice')).not.toBeInTheDocument()
     expect(screen.queryByText(/Run this in a terminal/)).not.toBeInTheDocument()
     expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+  })
+
+  it('keeps an app a returning user opened after a failed status read, with the notice', async () => {
+    // The remembered-setup path opens the app with no status data; a later
+    // relock is still a relock of an app in use.
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite)
+      .mockRejectedValueOnce(new ApiError(500, 'Probe failed'))
+      .mockResolvedValue(relockedStatus)
+    const view = renderWithProviders(<KiroPrerequisiteGate><Draft /></KiroPrerequisiteGate>)
+    await waitFor(() => expect(view.queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('error'))
+    fireEvent.change(await screen.findByLabelText('draft'), { target: { value: 'unsaved json' } })
+    await act(async () => { await view.queryClient.refetchQueries({ queryKey: ['kiro-prerequisite'] }) })
+    await waitFor(() => expect(view.queryClient.getQueryData(['kiro-prerequisite'])).toEqual(relockedStatus))
+    expect(await screen.findByTestId('lts-relock-notice')).toBeInTheDocument()
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+    expect(screen.queryByRole('button', { name: 'Check sign-in again' })).not.toBeInTheDocument()
   })
 
   // The gate reads Crew's vault sign-in: the gateway serves its command, and no

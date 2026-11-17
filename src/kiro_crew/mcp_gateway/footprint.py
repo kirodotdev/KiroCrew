@@ -32,8 +32,11 @@ pool reports.
 copy by the one shared backend already running (or, with none running, by one
 copy of the mean measured size), plus one stub per session that had a copy, at
 the mean PSS of the stubs running now. With copies to replace and no stub
-running to measure, there is no reading of a stub, so ``with_sharing`` is
-``None``.
+running to measure (sharing off runs none), the stub price is the reading the
+caller's ``stub_reading`` takes of one idle stub
+(:func:`kiro_crew.mcp_gateway.footprint_probe.idle_stub_bytes`): still a
+reading of this host, never a constant. With no such reading ``with_sharing``
+is ``None``, and ``using_now`` is still reported on its own.
 
 Linux only. BLOCKING (one ``/proc`` pass plus one ``smaps_rollup`` read per
 counted process), so call it off the event loop.
@@ -42,7 +45,7 @@ counted process), so call it off the event loop.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -176,6 +179,7 @@ def measure(
     backends: Iterable[tuple[str, int]] | None = (),
     *,
     proc_root: Path | None = None,
+    stub_reading: Callable[[], int | None] | None = None,
 ) -> Footprint | None:
     """Measure the MCP processes of *sessions* (``(session_key, runtime_pid)``).
 
@@ -183,8 +187,10 @@ def measure(
     walked once and every key on it is marked stale together. *backends* is
     ``(server, pid)`` per shared backend the pool reports, or ``None`` when the
     pool could not be asked: the shared backends are then unread, so both byte
-    figures are ``None``. Returns ``None`` when the process table cannot be
-    read at all (off Linux, ``/proc`` unlistable).
+    figures are ``None``. *stub_reading* is asked for the bytes of one idle stub
+    only when shareable copies need a stub price and no stub runs to read.
+    Returns ``None`` when the process table cannot be read at all (off Linux,
+    ``/proc`` unlistable).
     """
     children = platform_compat.proc_child_map(proc_root=proc_root)
     if children is None:
@@ -291,6 +297,20 @@ def measure(
     using_now = copies_now + stubs_now + backends_now
 
     mean_stub = stubs_now // len(stub_bytes) if stub_bytes else None
+    if (
+        mean_stub is None
+        and stub_reading is not None
+        and any(
+            (spec := specs.get(server)) is not None
+            and spec.shareable
+            and len(spec.launches) <= 1
+            and spec.one_identity
+            for server in copies
+        )
+    ):
+        # No stub runs to read (sharing off runs none), and a forecast needs a
+        # stub price: read one idle stub instead.
+        mean_stub = stub_reading()
     with_sharing = stubs_now + backends_now
     for server, rows in copies.items():
         spec = specs.get(server)

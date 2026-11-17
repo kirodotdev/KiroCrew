@@ -74,7 +74,8 @@ _close_registrations = itertools.count()
 
 @contextlib.contextmanager
 def close_in_flight(state: Any, name: str, slot: Any) -> Iterator[None]:
-    """Publish *slot* under *name* for the span of its close, pop included.
+    """Publish *slot* under *name* for the span of its close, pop included, or of any
+    other frame that holds it out of ``state._slots`` and may put it back.
 
     A vocabulary delete captures the slots it must sweep by reading ``state._slots``.
     A close that pops its slot BEFORE that capture is therefore in no view the sweep

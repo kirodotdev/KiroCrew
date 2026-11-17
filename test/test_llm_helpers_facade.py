@@ -73,6 +73,7 @@ _KNOWN_SEAMS = frozenset(
 #: Where each name of the agent SDK's turn vocabulary is defined: the facade's owners
 #: read these by value, so each must be that very object.
 _VOCABULARY_HOMES = {
+    "AcpAuthRequired": "kiro_crew.acp.client",
     "AcpError": "kiro_crew.acp.client",
     "AcpPromptBusy": "kiro_crew.acp.client",
     "advertised_model_ids": "kiro_crew.acp.client",

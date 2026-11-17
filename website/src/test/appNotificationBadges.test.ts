@@ -278,10 +278,10 @@ describe('isAppNavId agrees with the id appNav actually builds', () => {
     // A native builtin keeps its bare name as its id, which is exactly the
     // class that must NOT receive a derived count.
     const target = appNavTarget({
-      name: 'projects',
+      name: 'dev-fleet',
       enabled: true,
       origin: 'builtin',
-      manifest: { ui: { pages: [{ route: '/projects' }] } },
+      manifest: { ui: { pages: [{ route: '/fleet' }] } },
     })
 
     expect(target).not.toBeNull()

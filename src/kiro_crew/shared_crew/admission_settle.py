@@ -41,16 +41,19 @@ def mark_unpersisted(
     """Record that *live* must still reach *target* in the store.
 
     ``live.work`` becomes the in-memory terminal record; the last durable record
-    is kept for the retry. A second failure keeps the first durable record.
+    is kept for the retry. A second failure keeps the first durable record. The
+    in-memory state is the end the retry will write (``_reachable``), so memory
+    and store never report two different ends for one item.
     """
     if live.unpersisted is None:
-        live.unpersisted = (live.work, target, reason, dict(extra or {}))
+        durable = live.work
+        live.unpersisted = (durable, target, reason, dict(extra or {}))
     else:
         durable, _old_target, _old_reason, old_extra = live.unpersisted
         live.unpersisted = (durable, target, reason, {**old_extra, **dict(extra or {})})
     live.work = replace(
         live.work,
-        state=target,
+        state=_reachable(durable.state, target),
         reason=reason,
         extra={**live.work.extra, **dict(extra or {})},
     )
@@ -97,6 +100,7 @@ async def persist_pending(service: AdmissionService) -> int:
             if current is None or current.state not in TERMINAL:
                 if current is not None:
                     live.unpersisted = (current, target, reason, extra)
+                    live.work = replace(live.work, state=_reachable(current.state, target))
                 continue
             written = current
         except Exception:

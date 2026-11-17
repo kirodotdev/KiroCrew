@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from body_stream_helpers import attach_body
+from dashboard_owner_helpers import owner_claims
 
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers import api_crons, api_crons_create
@@ -32,6 +33,9 @@ class TestCronCreateApprovalMode:
         request = self._make_request(
             {"name": "t", "message": "m", "every": 300, "approval_mode": "auto"}
         )
+        # Only the owner may set ``auto``; an app token is refused.
+        owner_claims(request)
+        request.app["state"].owner_id = ""
         resp = await api_crons_create(request)
         assert resp.status == 200
         _, kwargs = request.app["state"].crons.add_job_async.call_args

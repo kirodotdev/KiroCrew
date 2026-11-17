@@ -33,6 +33,11 @@ from kiro_crew.members import (
     members_root,
     write_dm_binding,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A synthetic GitHub token with a valid checksum, which the redactor removes. A
+#: bare 40-character run with no label or key ID beside it stays visible by design.
+_TOKEN = github_classic(seed=54)
 
 
 class TestMemberActivityRoute:
@@ -237,7 +242,7 @@ class TestMemberActivityRoute:
             CREW,
             "dashboard_chat-1",
             "persistent",
-            project="/repos/AKIAIOSFODNN7EXAMPLE/app",
+            project="/repos/" + _TOKEN + "/app",
             via="chat",
         )
         with _patched_config([CREW]):
@@ -248,7 +253,7 @@ class TestMemberActivityRoute:
                 assert resp.status == 200
                 data = await resp.json()
         assert len(data["entries"]) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["project"]
+        assert _TOKEN not in data["entries"][0]["project"]
 
     @pytest.mark.asyncio
     async def test_display_cap_reports_capped_and_keeps_newest(self, tmp_path):
@@ -480,7 +485,7 @@ class TestMemberBriefingEndpoint:
     @pytest.mark.asyncio
     async def test_the_upkeep_text_crosses_the_redaction_chain(self, tmp_path):
         """Field names come from the crewmate's editable copy of the manifest."""
-        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        token = github_classic(seed=55)
         state = _make_state(tmp_path)
         fake = {
             "pointer": "p",
@@ -679,7 +684,7 @@ class TestMemberBriefingEndpoint:
         """The briefing is an AGENT-written file; a token the crewmate pasted
         into its own notes must not reach the browser verbatim."""
         state = _make_state(tmp_path)
-        self._write_briefing("Deploy key for staging: AKIAIOSFODNN7EXAMPLE — rotate monthly.")
+        self._write_briefing(f"Deploy key for staging: {_TOKEN} — rotate monthly.")
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:
                 resp = await client.get(
@@ -687,7 +692,7 @@ class TestMemberBriefingEndpoint:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["text"]
+        assert _TOKEN not in data["text"]
         assert "rotate monthly" in data["text"]
         # The flag is what lets the panel withhold Edit: the viewer's Save would
         # otherwise write this redacted text over the original.
@@ -702,7 +707,7 @@ class TestMemberBriefingEndpoint:
         drops the trailing split word so nothing ends mid-token."""
         state = _make_state(tmp_path)
         lead = "word " * ((MEMBER_BRIEFING_MAX_CHARS - 10) // 5)  # ends 10 chars short
-        self._write_briefing(lead + "AKIAIOSFODNN7EXAMPLE rest of the line\n" + "tail\n" * 40)
+        self._write_briefing(lead + _TOKEN + " rest of the line\n" + "tail\n" * 40)
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:
                 resp = await client.get(
@@ -710,7 +715,7 @@ class TestMemberBriefingEndpoint:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-        assert "AKIA" not in data["text"]
+        assert _TOKEN[:8] not in data["text"]
         assert "briefing truncated" in data["text"]
         assert data["redacted"] is True
         assert data["truncated"] is True
@@ -749,9 +754,9 @@ class TestMemberBriefingEndpoint:
         marker, no word dropped, ``truncated`` false."""
         state = _make_state(tmp_path)
         lead = "word " * ((MEMBER_BRIEFING_MAX_CHARS - 400) // 5)
-        # Ten 60-char keys (~610 chars) push the raw text past the cap; each
+        # Ten 40-char tokens (~410 chars) push the raw text past the cap; each
         # collapses to a 22-char placeholder, so the redacted text fits.
-        keys = " ".join("ghp_" + ("A" * 56) for _ in range(10))
+        keys = " ".join(github_classic(seed=60 + n) for n in range(10))
         self._write_briefing(lead + keys + " last\n")
         with _patched_config([CREW]):
             async with TestClient(TestServer(_make_members_app(state))) as client:
@@ -894,5 +899,5 @@ class TestDenialAuditOffload:
         assert not wrapped, (
             f"to_thread-wrapped _sel().log_api_access at lines {wrapped}; SEL is "
             "warmed at startup (sel.warm_sel_singleton), so a non-critical audit "
-            "is a direct enqueue (#8608)"
+            "is a direct enqueue"
         )

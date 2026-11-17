@@ -1,5 +1,6 @@
-"""What the KAS projection sends when the engine announces ``mcpServerOAuth`` or
-``mcpRegistryPointers`` in ``initialize``, and that it sends nothing new otherwise.
+"""What the KAS projection sends for a remote server's ``oauth`` block (always,
+whatever the engine announces), and for ``mcpRegistryPointers`` (only when the
+engine announces it in ``initialize``).
 
 The initialize answers here are stubs shaped like the engine's; no engine runs.
 """
@@ -47,7 +48,6 @@ def _not_registry_governed(_floor_monkeypatch):
 def _remote(**oauth_extra: object) -> dict:
     oauth = {
         "clientId": _CLIENT_ID,
-        "clientSecret": _SECRET,
         "redirectUri": "http://localhost:8080/callback",
         "oauthScopes": ["channels:history"],
     }
@@ -102,13 +102,12 @@ class TestAdvertised:
 
 
 class TestOAuth:
-    def test_without_the_flag_the_block_is_withheld_as_before(self):
-        out = to_client_custom_agent("a", _remote(), "p")
-        assert "oauth" not in out["mcpServers"]["remote"]
-        assert "oauthScopes" not in out["mcpServers"]["remote"]
+    """Sent on every engine: 0.66.104 reads it, older ones drop it and still start
+    the server and the agent (measured on 0.66.33 and 0.66.91)."""
 
-    def test_with_the_flag_the_accepted_keys_are_sent(self):
-        out = to_client_custom_agent("a", _remote(), "p", engine_features=OAUTH)
+    @pytest.mark.parametrize("flags", [frozenset(), OAUTH, POINTERS])
+    def test_the_accepted_keys_are_sent_whatever_the_engine_announces(self, flags):
+        out = to_client_custom_agent("a", _remote(), "p", engine_features=flags)
         entry = out["mcpServers"]["remote"]
         assert entry["oauth"] == {
             "clientId": _CLIENT_ID,
@@ -116,28 +115,83 @@ class TestOAuth:
         }
         assert entry["oauthScopes"] == ["channels:history"]
 
-    def test_client_metadata_url_is_sent_and_unknown_keys_are_not(self):
+    def test_client_metadata_url_and_unknown_keys_are_not_sent(self):
+        """A metadata url without a client id would re-key the engine's grant."""
         out = to_client_custom_agent(
-            "a",
-            _remote(clientMetadataUrl="https://app.example/client.json", extra="x"),
-            "p",
-            engine_features=OAUTH,
+            "a", _remote(clientMetadataUrl="https://app.example/client.json", extra="x"), "p"
         )
         oauth = out["mcpServers"]["remote"]["oauth"]
-        assert oauth["clientMetadataUrl"] == "https://app.example/client.json"
+        assert "clientMetadataUrl" not in oauth
         assert "extra" not in oauth
 
-    def test_the_client_secret_never_reaches_the_wire_or_the_log(self, caplog):
-        with caplog.at_level(logging.DEBUG):
-            out = to_client_custom_agent("a", _remote(), "p", engine_features=OAUTH)
-        assert _SECRET not in repr(out)
-        assert "clientSecret" not in out["mcpServers"]["remote"]["oauth"]
-        assert _SECRET not in caplog.text
-        assert "clientSecret is not sent" in caplog.text
+    def test_a_metadata_url_only_block_is_not_sent(self):
+        spec = _spec(
+            mcpServers={
+                "s": {
+                    "url": "https://mcp.example.com",
+                    "oauth": {"clientMetadataUrl": "https://app.example/client.json"},
+                }
+            }
+        )
+        out = to_client_custom_agent("a", spec, "p")
+        assert "oauth" not in out["mcpServers"]["s"]
 
-    def test_the_registry_flag_alone_does_not_send_oauth(self):
-        out = to_client_custom_agent("a", _remote(), "p", engine_features=POINTERS)
-        assert "oauth" not in out["mcpServers"]["remote"]
+    def test_a_relay_session_names_what_the_projection_does_not_send(self):
+        """The notice and the projection read one rule: a server is named exactly
+        when its projected entry carries no ``oauth`` and no nested scopes."""
+        spec = _spec(
+            mcpServers={
+                "metadata-only": {
+                    "url": "https://mcp.example.com",
+                    "oauth": {"clientMetadataUrl": "https://app.example/client.json"},
+                },
+                "confidential": {
+                    "url": "https://mcp2.example.com",
+                    "oauth": {"clientId": _CLIENT_ID, "clientSecret": _SECRET},
+                },
+                "public": {"url": "https://mcp3.example.com", "oauth": {"clientId": _CLIENT_ID}},
+            }
+        )
+        out = to_client_custom_agent("a", spec, "p")["mcpServers"]
+        assert "oauth" not in out["metadata-only"]
+        assert "oauth" not in out["confidential"]
+        assert out["public"]["oauth"] == {"clientId": _CLIENT_ID}
+        lost = kas_agents.spec_keys_without_carrier(
+            spec, discards_mcp_oauth=False, withholds_oauth_secret=True
+        )
+        assert lost == ["mcpServers.confidential.oauth", "mcpServers.metadata-only.oauth"]
+
+    @pytest.mark.parametrize("flags", [frozenset(), OAUTH])
+    def test_a_confidential_client_is_withheld_whole_and_its_secret_never_logged(
+        self, caplog, flags
+    ):
+        with caplog.at_level(logging.DEBUG):
+            out = to_client_custom_agent(
+                "a", _remote(clientSecret=_SECRET), "p", engine_features=flags
+            )
+        entry = out["mcpServers"]["remote"]
+        assert "oauth" not in entry
+        assert _SECRET not in repr(out)
+        assert _SECRET not in caplog.text and _CLIENT_ID not in caplog.text
+        assert "names a clientSecret" in caplog.text
+
+    def test_a_secret_only_block_is_not_sent(self):
+        spec = _spec(
+            mcpServers={"s": {"url": "https://x.example", "oauth": {"clientSecret": _SECRET}}}
+        )
+        out = to_client_custom_agent("a", spec, "p")
+        assert "oauth" not in out["mcpServers"]["s"]
+        assert _SECRET not in repr(out)
+
+
+class TestEngineDiscardsOAuth:
+    @pytest.mark.parametrize("version", ["0.66.33", "0.66.91", "0.66.103", "0.66.103-next.9"])
+    def test_a_known_older_engine_drops_it(self, version):
+        assert features.engine_discards_oauth(version) is True
+
+    @pytest.mark.parametrize("version", ["0.66.104", "0.66.104-next.4", "0.67.0", "", None, "x"])
+    def test_a_newer_or_unknown_engine_is_not_claimed_to_drop_it(self, version):
+        assert features.engine_discards_oauth(version) is False
 
 
 class TestRegistryPointers:
@@ -263,10 +317,12 @@ class TestRuntimeSeam:
 
 
 class TestOAuthNotice:
-    """The "sign-in will not work here" notice follows what this engine announced."""
+    """The "sign-in will not work here" notice shows only where Crew KNOWS the
+    engine drops the block: its own bundle below 0.66.104. The relay names no
+    engine version, so it shows nothing there."""
 
     @staticmethod
-    def _discards(monkeypatch, initialize_result: dict) -> bool:
+    def _discards(monkeypatch, bundle_engine_version: str) -> bool:
         import asyncio
         from types import SimpleNamespace
 
@@ -281,24 +337,47 @@ class TestOAuthNotice:
             seen.update(kw)
             return []
 
-        monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a: ({}, "user"))
+        monkeypatch.setattr(spec_hooks, "_agent_spec_with_origin", lambda *_a, **_k: ({}, "user"))
         monkeypatch.setattr(kas_agents, "spec_keys_without_carrier", lost)
-        # Shaped like the provider a dashboard turn hands in: the handshake is on
-        # its ``client``, not on the provider itself.
+        # Shaped like the provider a dashboard turn hands in: the session's facts
+        # are on its ``client``, not on the provider itself.
         client = SimpleNamespace(
             capabilities=capabilities_for(ACP_BACKEND_KAS),
             cwd="",
-            client=SimpleNamespace(initialize_result=initialize_result),
+            client=SimpleNamespace(
+                initialize_result=_initialize(),
+                kas_bundle_engine_version=bundle_engine_version,
+            ),
         )
         asyncio.run(
             chat_runner._prepare_spec_hooks(
                 SimpleNamespace(), SimpleNamespace(), client, "a", is_new=False
             )
         )
+        assert seen["withholds_oauth_secret"] is True
         return seen["discards_mcp_oauth"]
 
-    def test_an_engine_without_the_flag_still_gets_the_notice(self, monkeypatch):
-        assert self._discards(monkeypatch, _initialize()) is True
+    def test_an_older_bundled_engine_gets_the_notice(self, monkeypatch):
+        assert self._discards(monkeypatch, "0.66.33") is True
 
-    def test_an_engine_that_keeps_oauth_gets_no_notice(self, monkeypatch):
-        assert self._discards(monkeypatch, _initialize(mcpServerOAuth=True)) is False
+    def test_the_relay_gets_no_notice(self, monkeypatch):
+        assert self._discards(monkeypatch, "") is False
+
+    def test_a_bundled_engine_that_keeps_oauth_gets_no_notice(self, monkeypatch):
+        assert self._discards(monkeypatch, "0.66.104") is False
+
+
+class TestBundleEngineVersionReachesTheHandle:
+    """The harness records its bundle's version on each session handle."""
+
+    def test_the_bundle_version_is_recorded_and_the_relay_leaves_it_empty(self):
+        from types import SimpleNamespace
+
+        harness = KasHarness()
+        handle = SimpleNamespace()
+        harness.bundle_engine_version = "0.66.33"
+        harness.record_session_projection(handle, [], "")
+        assert handle.kas_bundle_engine_version == "0.66.33"
+        harness.bundle_engine_version = ""
+        harness.record_session_projection(handle, [], "")
+        assert handle.kas_bundle_engine_version == ""

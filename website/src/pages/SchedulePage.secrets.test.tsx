@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api/client'
@@ -181,7 +181,12 @@ describe('JobSecretsPanel', () => {
         onSaved={vi.fn()}
       />,
     )
-    await userEvent.click(screen.getByText('Deny'))
+    // The stock transparent Btn has no edge on the pending note's warn tint until hovered.
+    const deny = screen.getByRole('button', { name: 'Deny' })
+    expect(deny).toHaveClass('bg-bg-elevated', 'border-border-strong', 'text-danger')
+    expect(deny).not.toHaveClass('bg-transparent')
+    expect(deny).not.toHaveClass('border-border')
+    await userEvent.click(deny)
     await waitFor(() =>
       expect(api.cronSecretsGrant).toHaveBeenCalledWith('abc12345', {
         deny_pending: true,
@@ -211,6 +216,37 @@ describe('JobSecretsPanel', () => {
     await waitFor(() =>
       expect(api.cronSecretsGrant).toHaveBeenCalledWith('abc12345', { secret_env: {} }),
     )
+  })
+
+  it('keeps focus on a confirmed revoke while it runs and ignores a second press', async () => {
+    let refuse: (e: Error) => void = () => {}
+    vi.mocked(api.cronSecretsGrant).mockReturnValue(new Promise((_, reject) => { refuse = reject }))
+    renderWithProviders(
+      <JobSecretsPanel job={{ ...BASE_JOB, secret_env: { OLD_TOKEN: 'jira-token' } }} onSaved={vi.fn()} />,
+    )
+    await userEvent.click(screen.getByText('Vault secrets'))
+    const button = screen.getByRole('button', { name: 'Revoke all secrets' })
+
+    button.focus()
+    await userEvent.keyboard('{Enter}')
+    await userEvent.keyboard('{Enter}')
+    expect(api.cronSecretsGrant).toHaveBeenCalledTimes(1)
+    // `aria-disabled`, not `disabled`, which would drop focus to <body>; the
+    // translated name, not "...".
+    expect(button).toHaveAccessibleName('Revoke all secrets')
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    expect(button).not.toBeDisabled()
+    expect(document.activeElement).toBe(button)
+
+    await userEvent.keyboard('{Enter}')
+    expect(api.cronSecretsGrant).toHaveBeenCalledTimes(1)
+    expect(button).toHaveAccessibleName('Revoke all secrets')
+
+    await act(async () => { refuse(new Error('vault is sealed')) })
+    expect(await screen.findByText('vault is sealed')).toBeInTheDocument()
+    expect(button).not.toHaveAttribute('aria-busy')
+    expect(document.activeElement).toBe(button)
   })
 
   it('tells a first-time user where a grant comes from when none exists', async () => {

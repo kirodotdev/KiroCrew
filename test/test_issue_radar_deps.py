@@ -16,11 +16,8 @@ Every test patches the ``gh`` layer or scopes the store to ``tmp_path``.
 import asyncio
 import json
 import os
-import shutil
-import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -42,9 +39,11 @@ OWNER, REPO = "o", "r"
 
 
 class DepsCacheStoreTest(unittest.TestCase):
-    def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root, True)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
 
     def test_round_trips(self):
         edges = [{"blocked": 10, "blocker": 5, "source": "native"}]
@@ -148,9 +147,11 @@ class DepsCacheCompareAndSetTest(unittest.TestCase):
     NEW = [{"blocked": 2, "blocker": 1, "source": "native"}]
     OLD = [{"blocked": 4, "blocker": 3, "source": "native"}]
 
-    def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root, True)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
 
     def test_an_older_write_is_refused_and_the_stored_graph_unchanged(self):
         now = time.time()
@@ -563,13 +564,6 @@ class FetchDependencyEdgesTest(unittest.TestCase):
         ):
             edges, _ = gh.fetch_dependency_edges(OWNER, REPO, open_issues, {})
         self.assertEqual(edges, [])
-
-    def test_absent_dependencies_endpoint_yields_zero_native_edges(self):
-        # A 404/410 from the young dependencies API is tolerated as "no native
-        # edges" so the inferred graph still builds.
-        proc = mock.Mock(returncode=1, stdout="", stderr="HTTP 404: Not Found")
-        with mock.patch.object(gh, "_gh_run", return_value=proc):
-            self.assertEqual(gh.list_issue_blocked_by(OWNER, REPO, 10), [])
 
     def test_a_missing_node_falls_back_to_one_ref_summary(self):
         open_issues = [{"number": 10, "title": "d", "state": "open"}]
@@ -1742,9 +1736,11 @@ class SlowRebuildInterleaveTest(unittest.TestCase):
     sweep's write completes LAST. Driven by controlled captured timestamps
     against the real store — no sleeps."""
 
-    def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root, True)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
 
     def test_a_slow_rebuild_cannot_overwrite_a_newer_graph(self):
         # Older graph: #11 still reads as blocking. Newer graph: it was
@@ -1925,6 +1921,8 @@ class DepsAuthFailureTest(unittest.TestCase):
                 gh.list_issue_blocked_by(OWNER, REPO, 10)
 
     def test_a_404_still_reads_as_feature_absent(self):
+        # A 404/410 from the young dependencies API is tolerated as "no native
+        # edges" so the inferred graph still builds.
         proc = mock.Mock(returncode=1, stdout="", stderr="HTTP 404: Not Found")
         with mock.patch.object(gh, "_gh_run", return_value=proc):
             self.assertEqual(gh.list_issue_blocked_by(OWNER, REPO, 10), [])

@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.acp.claude_settings_sources import (
+    family_entry_covers,
     other_sources_define_available_models,
     read_claude_settings_bytes,
+    user_models_a_family_entry_covers,
 )
 
 
@@ -262,3 +264,102 @@ def test_oversized_settings_file_is_false(tmp_path):
         '{"availableModels": ["' + "a" * (1 << 20) + '"]}', encoding="utf-8"
     )
     assert _check(tmp_path / "work", user, _managed(tmp_path)) is False
+
+
+@pytest.mark.parametrize(
+    ("entry", "model_id", "covered"),
+    [
+        # The SDK's own example: a version prefix allows the id that extends it.
+        ("claude-opus-5", "claude-opus-5-5", True),
+        ("claude-opus-5[1m]", "claude-opus-5-5[1m]", True),
+        ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929", True),
+        # The same id is listed already, not covered.
+        ("claude-opus-5", "claude-opus-5", False),
+        # A longer number is another model, not an extension.
+        ("claude-opus-5", "claude-opus-55", False),
+        ("claude-opus-5-5", "claude-opus-5", False),
+        ("claude-opus-5", "claude-sonnet-5-5", False),
+        # A family alias has no version: naming an id beside it changes what it runs.
+        ("opus", "opus-5-5", False),
+        # The window marker must agree.
+        ("claude-opus-5", "claude-opus-5-5[1m]", False),
+        ("claude-opus-5[1m]", "claude-opus-5-5", False),
+        ("", "claude-opus-5-5", False),
+    ],
+)
+def test_family_entry_covers(entry, model_id, covered):
+    assert family_entry_covers(entry, model_id) is covered
+
+
+def _covered(tmp_path: Path, settings: object, managed: Path | None = None) -> list[str]:
+    user = tmp_path / "user"
+    _write(user / "settings.json", settings)
+    return user_models_a_family_entry_covers(
+        config_dir=user, managed_dir=managed or _managed(tmp_path)
+    )
+
+
+_FAMILY_SETTINGS = {
+    "availableModels": ["claude-opus-4-8", "claude-opus-5[1m]", "claude-opus-5"],
+    "modelOverrides": {
+        "claude-opus-5": "provider-opus-5",
+        "claude-sonnet-5-5": "provider-sonnet-5-5",
+        "claude-opus-5-5[1m]": "provider-opus-5-5[1m]",
+        "claude-opus-5-5": "provider-opus-5-5",
+    },
+}
+
+
+def test_covered_models_are_the_override_keys_a_listed_prefix_allows(tmp_path):
+    # In modelOverrides order; the listed key and the uncovered family are left out.
+    assert _covered(tmp_path, _FAMILY_SETTINGS) == ["claude-opus-5-5[1m]", "claude-opus-5-5"]
+
+
+def test_covered_models_never_name_an_id_the_settings_do_not_hold(tmp_path):
+    settings = {"availableModels": ["claude-opus-5"], "modelOverrides": {}}
+    assert _covered(tmp_path, settings) == []
+
+
+def test_covered_models_need_both_keys(tmp_path):
+    assert _covered(tmp_path, {"availableModels": ["claude-opus-5"]}) == []
+    assert _covered(tmp_path, {"modelOverrides": {"claude-opus-5-5": "x"}}) == []
+    assert _covered(tmp_path, {"availableModels": "claude-opus-5", "modelOverrides": []}) == []
+
+
+def test_covered_models_are_empty_without_a_user_file(tmp_path):
+    assert (
+        user_models_a_family_entry_covers(
+            config_dir=tmp_path / "user", managed_dir=_managed(tmp_path)
+        )
+        == []
+    )
+
+
+def test_exact_matching_in_managed_settings_covers_nothing(tmp_path):
+    """Under ``availableModelsMatch: "exact"`` an entry allows only its own version."""
+    managed = _managed(tmp_path)
+    _write(managed / "managed-settings.json", {"availableModelsMatch": "exact"})
+    assert _covered(tmp_path, _FAMILY_SETTINGS, managed) == []
+    _write(managed / "managed-settings.json", {"availableModelsMatch": "prefix"})
+    assert _covered(tmp_path, _FAMILY_SETTINGS, managed) == [
+        "claude-opus-5-5[1m]",
+        "claude-opus-5-5",
+    ]
+
+
+def test_a_family_alias_entry_adds_no_model(tmp_path):
+    """Naming a specific id beside ``opus`` changes which model the alias runs."""
+    settings = {
+        "availableModels": ["opus", "sonnet"],
+        "modelOverrides": {"opus-5-5": "provider-opus-5-5", "claude-opus-5-5": "x"},
+    }
+    assert _covered(tmp_path, settings) == []
+
+
+def test_an_entry_adds_no_model_with_another_window_marker(tmp_path):
+    """The SDK text does not say that ``claude-opus-5`` covers ``claude-opus-5-5[1m]``."""
+    settings = {
+        "availableModels": ["claude-opus-5"],
+        "modelOverrides": {"claude-opus-5-5[1m]": "provider-opus-5-5[1m]"},
+    }
+    assert _covered(tmp_path, settings) == []

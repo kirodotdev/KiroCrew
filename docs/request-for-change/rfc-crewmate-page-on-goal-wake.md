@@ -1,10 +1,10 @@
 ---
 title: Crewmate page on a goal wake -- the goal-loop wakes build a crewmate's first Dashboard page, and offer once on a card before replacing a template
-status: accepted
+status: implemented
 author: rayrayxu, with kirocrew-worker
 created: 2026-10-21
-last-audited: 2026-10-21
-audited-at: c428ea050d
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [22533, 22560]
 tracking-issues: []
@@ -14,11 +14,12 @@ superseded-by: []
 
 # RFC: Crewmate page on a goal wake
 
-- Status: accepted. This is the product owner's decision, given 2026-10-21 by
-  rayrayxu. Nothing of it is on main: the first build is in
-  [#22533](https://github.com/kirodotdev/KiroCrew/pull/22533) and the
-  ask-once offer in [#22560](https://github.com/kirodotdev/KiroCrew/pull/22560),
-  both open. This document lands on its own first, because both add a job to
+- Status: implemented. This is the product owner's decision, given 2026-10-21 by
+  rayrayxu. Both parts are on main: the first build merged in
+  [#22533](https://github.com/kirodotdev/KiroCrew/pull/22533)
+  (`dashboard_line` / `DASHBOARD_BUILD_LINE` in `dashboard/goal_reminder.py`) and the
+  ask-once offer in [#22560](https://github.com/kirodotdev/KiroCrew/pull/22560)
+  (`dashboard/page_offer.py`, the `crewmate.dashboard_page` card). This document landed on its own first, because both add a job to
   goal-loop turns, and the First Principles lane reads that decision off the base.
 - Amends, in this document so the accepted and partial documents are not edited:
   [rfc-crewmate-goals.md](rfc-crewmate-goals.md) §3.5 (each cadence has one job)
@@ -83,7 +84,6 @@ The Weekly report and Monthly review never carry it.
 | Case | Line |
 |---|---|
 | No goal, or no confirmed milestones (`knows_its_page`) | none |
-| Layout locked (`template_instance.is_locked`) | none |
 | A package of the crewmate's own is bound (`dashboard_agentic.bound_package`) | none |
 | Tab shows a template page (not `tab_shows_suggestions`) | the offer line (§4.3), once |
 | Tab shows the suggestions page | the build line (§4.2) |
@@ -126,15 +126,14 @@ the template it would replace. Raising it writes nothing to the page.
 - **Yes.** Its one apply step, `POST /api/members/{slug}/dashboard/page-offer`,
   owner-only and refused unless the card set it, writes nothing and wakes the
   crewmate once to write, save and apply its page, then post the same one message.
-  A locked layout refuses the apply. One `dashboard_rollback` brings the template
-  back.
+  One `dashboard_rollback` brings the template back.
 - **No, or expiry.** Nothing changes, and no later wake offers again.
 
-### 4.4 The lock
+### 4.4 The lock (removed, amendment 2026-10-31)
 
-`Lock dashboard layout` on Profile already makes apply and rollback answer
-`dashboard_locked`. Under it no wake carries either line (§4.1), so a crewmate is
-never told to do something the lock refuses.
+The dashboard structure lock this section relied on was removed: a crewmate no
+longer changes its page on its own, and `dashboard_rollback` undoes a change. No
+wake checks a lock any more, and a lock file left on disk is not read.
 
 ## 5. Migration plan
 

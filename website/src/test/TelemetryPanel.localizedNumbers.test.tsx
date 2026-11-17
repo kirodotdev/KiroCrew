@@ -76,6 +76,14 @@ describe('telemetry numbers in the active language', () => {
     expect(row.textContent).not.toContain('1.5s')
   })
 
+  it('groups the partial-window sample counts in the active language', async () => {
+    await i18next.changeLanguage('de')
+    const turn = { ...stat({ count: 1134, other_generations: 1, total_count: 2837 }), outcome: { ok: 1134 }, fault_rate: 0 }
+    vi.mocked(api.telemetryStartup).mockResolvedValue(resp({ turn }) as never)
+    render(<TelemetryPanel />, { wrapper: Wrapper })
+    expect(await screen.findByText(/Zeigt 1\.134 von 2\.837 Messwerten/)).toBeInTheDocument()
+  })
+
   it('says one shard, not shard(s)', async () => {
     vi.mocked(api.telemetryStartup).mockResolvedValue(resp() as never)
     render(<TelemetryPanel />, { wrapper: Wrapper })

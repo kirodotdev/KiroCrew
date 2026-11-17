@@ -27,6 +27,7 @@ from cron_secret_env_helpers import (  # noqa: F401 -- the autouse fixtures regi
     _grant_script,
     cron_home_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.cron import CronService
 from kiro_crew.cron_script import compute_secret_env_pin, delivery_fingerprint
@@ -175,7 +176,7 @@ class TestGrantEndpointPendingFlow:
     @pytest.mark.asyncio
     async def test_unknown_secret_error_does_not_echo_a_credential_shaped_name(self, cron_home):
         """The vault-name half of a grant is agent-authored and the slug grammar
-        admits a bare access-key id, so the "unknown name" error must scrub it
+        admits a bare token, so the "unknown name" error must scrub it
         like every other agent string the dashboard echoes."""
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -184,7 +185,7 @@ class TestGrantEndpointPendingFlow:
         job = svc.add_job(
             "j", "args", every_secs=3600, script=spec, session_key="dashboard:conftest-slot"
         )
-        shaped = "AKIAIOSFODNN7EXAMPLE"  # credential-shaped, slug-valid, not in the vault
+        shaped = github_classic(seed=7)  # credential-shaped, slug-valid, not in the vault
         pin = compute_secret_env_pin(
             spec,
             "",
@@ -585,10 +586,12 @@ class TestGrantEndpointPendingFlow:
         exfil-URL-shaped content must not reach the dashboard raw."""
         from kiro_crew.dashboard.handlers.cron import _redacted_grant_map
 
-        out = _redacted_grant_map({"AWS_KEY": "https://evil.example/exfil?d=AKIAIOSFODNN7EXAMPLE"})
+        # A credential parameter in the URL: an AWS key ID alone is an identifier.
+        value = "q8Z3kLm0Vx7Rt2Yp9Wn4Bc6Hd1Fg5Js"
+        out = _redacted_grant_map({"AWS_KEY": f"https://evil.example/exfil?access_token={value}"})
         assert out is not None
         serialized = str(out)
-        assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+        assert value not in serialized
         assert _redacted_grant_map({}) is None
         # A benign product-written mapping passes through unchanged.
         assert _redacted_grant_map({"MY_TOKEN": "slack-sandbox"}) == {"MY_TOKEN": "slack-sandbox"}
@@ -727,6 +730,56 @@ class TestGrantEndpointPendingFlow:
         assert job is not None
         assert job.secret_env_pending == {}
         assert job.secret_env == {}
+
+    @pytest.mark.asyncio
+    async def test_deny_with_a_bool_expected_ts_is_a_400_not_a_silent_or_stale_deny(
+        self, cron_home
+    ):
+        """A JSON bool ``expected_ts`` is not a timestamp. Without the guard it
+        is compared as ``float(True)==1.0`` / ``float(False)==0.0``, which misses
+        a real timestamp (a misleading 409) or matches it by accident (a silent
+        deny). It is refused 400 ``invalid_secret_env`` like the approve path,
+        and the pending request is left intact."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app, svc = self._app_and_svc()
+        jid = self._request_pending(svc, cron_home)
+        with patch("kiro_crew.dashboard.handlers.cron._sel"):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(
+                    f"/api/crons/{jid}/secrets",
+                    json={"deny_pending": True, "expected_ts": True},
+                )
+                body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "invalid_secret_env"
+        job = CronService(base_dir=svc._dir).get_job(jid)
+        assert job is not None and job.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
+
+    @pytest.mark.asyncio
+    async def test_deny_warns_job_not_found_when_the_job_vanished(self, cron_home):
+        """The job is removed between the pending read and the deny write, so
+        ``update_job_async`` returns ``None``. Main answered ``ok`` here, so the
+        route keeps the 200 (a 404 would newly fail a call that succeeds today)
+        and names the no-op in a ``warnings`` entry."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        app, svc = self._app_and_svc()
+        jid = self._request_pending(svc, cron_home)
+
+        async def _gone(*args: object, **kwargs: object):
+            return None
+
+        with (
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch.object(svc, "update_job_async", _gone),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(f"/api/crons/{jid}/secrets", json={"deny_pending": True})
+                body = await resp.json()
+        assert resp.status == 200
+        assert body["ok"] is True
+        assert any("job_not_found" in w for w in body.get("warnings", []))
 
     @pytest.mark.asyncio
     async def test_compensation_never_resurrects_concurrent_revoke(self, cron_home):
@@ -874,7 +927,7 @@ class TestGrantEndpointPendingFlow:
 
         app, svc = self._app_and_svc()
         SecretVault(loader_config_dir()).set_sync("slack-sandbox", "xoxb-1")
-        body = 'KEY = "AKIAIOSFODNN7EXAMPLE"\ndef run(ctx): pass\n'
+        body = f'KEY = "{github_classic(seed=8)}"\ndef run(ctx): pass\n'
         spec = _grant_script(cron_home, body=body)
         job = svc.add_job(
             "j",

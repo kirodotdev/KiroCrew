@@ -4,7 +4,7 @@
  * suites split from it; shared fixtures are in src/test/DrivePageTestUtils.tsx.
  */
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
@@ -435,6 +435,37 @@ describe('DrivePage sections: drag and drop', () => {
     })
     const strip = await screen.findByTestId('drive-upload-error')
     expect(strip.textContent).toContain('doomed.md')
+  })
+
+  it('keeps focus on the rename Save while the move runs and refuses a second press', async () => {
+    // Native `disabled` on the rename Save while the move is out drops a
+    // keyboard user's focus to the page body. The button announces unavailable
+    // with `aria-disabled`, stays in the tab order, keeps focus, and the commit
+    // guard refuses a second press (one move, not two).
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    let finish: (v: { moved: boolean }) => void = () => {}
+    vi.mocked(awsControlApi.driveMove).mockReturnValue(
+      new Promise((resolve) => { finish = resolve }) as ReturnType<typeof awsControlApi.driveMove>,
+    )
+    await renderDrive('drive')
+
+    await chooseFromMenu(await screen.findByTestId('drive-more'), 'drive-rename')
+    const input = await screen.findByTestId('drive-rename-input')
+    fireEvent.change(input, { target: { value: 'renamed.pdf' } })
+
+    const save = screen.getByTestId('drive-rename-save')
+    save.focus()
+    fireEvent.click(save)
+    fireEvent.click(save)
+    await waitFor(() => expect(save).toHaveAttribute('aria-disabled', 'true'))
+    expect(save).not.toBeDisabled()
+    expect(save).toHaveFocus()
+
+    await act(async () => finish({ moved: true }))
+    await waitFor(() =>
+      expect(screen.queryByTestId('drive-rename-input')).not.toBeInTheDocument(),
+    )
+    expect(awsControlApi.driveMove).toHaveBeenCalledTimes(1)
   })
 })
 

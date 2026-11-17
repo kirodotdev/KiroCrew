@@ -25,13 +25,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew import autonudge_authz as authz
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
 from kiro_crew.platform import PlatformCompositionError
 
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic GitHub classic token (valid checksum) the redactor removes.
+SECRET = github_classic(seed=101)
 _SAVE_REFUSAL = (
     "Safety checks are temporarily unavailable, so this goal cannot be saved. "
     "If this keeps happening, restart Kiro Crew."

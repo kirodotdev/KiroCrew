@@ -40,14 +40,12 @@ export type TopbarSide = 'left' | 'right'
  *  - Actions group (`tbr`): 1 metrics numbers -> waveform icon, 2 feedback
  *    labels -> icons, 3 credits counter -> coin icon, 4 the feedback pill,
  *    5 readout capsule -> connection dot and the metrics notice -> its icons,
- *    6 the update pill's label, so the pill cannot push the bell out.
+ *    6 the update pill's label, so the pill cannot push the bell out, and the
+ *    offline notice's text beside the connection dot.
  *  A group that still does not fit at its last level holds content no rung can
  *  hide (the open Windows menu, an extension widget), and clips its own tail
  *  inside its track. */
 export const TOPBAR_LEVELS: Record<TopbarSide, number> = { left: 3, right: 6 }
-
-/** A capsule child that is not one of its Liquid Glass effect layers. */
-const capsuleSegment = ':not([data-liquid-glass-layer])'
 
 /** What each group's `@container` rungs in index.css hide, keyed by the measured
  *  step that hides the same items. Steps 2 and 6 of the actions group have no
@@ -62,7 +60,7 @@ export const TOPBAR_CONTAINER_FOLDS: Record<TopbarSide, Readonly<Partial<Record<
     3: '.tb-drop-usage',
     4: '.tb-drop-feedback',
     // Joined from tokens so the i18n gate does not read the selector as copy.
-    5: ['.tb-capsule', '>', capsuleSegment, '~', capsuleSegment].join(' '),
+    5: ['.tb-capsule', '>', '.tb-capsule-keep', '~', '*'].join(' '),
   },
 }
 

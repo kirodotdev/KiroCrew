@@ -33,10 +33,11 @@
 #      rewrite it, only print guidance. "First run" means config.json is
 #      absent (an EMPTY mounted volume is still a first run).
 #
-#   3. Print how to mint a dashboard login link. Fresh links are minted via
-#      docker exec rather than parsed out of logs: the gateway's own startup
-#      link (printed once at boot, same as every platform) expires minutes
-#      after minting, so anything found in `docker logs` later is dead.
+#   3. Print how to mint a dashboard login link. Links are minted via
+#      docker exec, never read out of logs: a gateway whose stdout is not a
+#      terminal (`docker run -d`, compose) prints its startup URL without the
+#      link and names `kirocrew token`, and a link a terminal got expires
+#      minutes after minting.
 #
 # Contract: `docker run <image>` starts the gateway; any explicit args are
 # passed through to the kirocrew CLI instead (e.g. `docker run <image>

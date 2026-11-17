@@ -315,9 +315,10 @@ def _probe_identity(server: McpServerInfo) -> str:
 
     Local and remote are decided by ``McpServerInfo.is_remote`` — the same
     property ``probe_server`` dispatches on. A spec carrying BOTH a url and a
-    command is probed as local, so fingerprinting it as remote would leave an
-    edit to its command invisible to this cache: the original bug, surviving
-    for exactly the shape that looks most like a misconfiguration.
+    real command is probed as local unless its ``type`` is ``http`` or ``sse``,
+    so fingerprinting it as remote would leave an edit to its command invisible
+    to this cache: the original bug, surviving for exactly the shape that looks
+    most like a misconfiguration.
 
     Every input is coerced before hashing. ``_server_from_spec`` passes
     on-disk JSON through unvalidated, so ``env`` can be null, ``args`` can hold

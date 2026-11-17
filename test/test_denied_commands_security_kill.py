@@ -272,6 +272,15 @@ class TestSelfProtectionKillTargetScoping:
                 (f"X={_NAME}; $X>/tmp/x {_TOK}", _RULE_MINT),
                 (f"P={_PK}; $P -f {_NAME}", _RULE_KILL),
             ),
+            # A carrier's quoted script that assigns the name and then uses it is read
+            # as a script of its own, so the assignment resolves inside it.
+            *_named(
+                "test_quoted_script_assignment_resolves_in_its_own_frame",
+                (f"bash -c 'X={_NAME}; $X {_TOK}'", _RULE_MINT),
+                (f"zsh -Cc 'X={_NAME}; $X {_TOK}'", _RULE_MINT),
+                (f"bash -c '{'A' * 78}={_NAME}; ${'A' * 78} {_TOK}'", _RULE_MINT),
+                (f"bash -c 'P={_PK}; $P -f {_NAME}'", _RULE_KILL),
+            ),
             # `$'...'` and `$"..."` are quoting forms, so the `$` left behind once the
             # quotes come off is not part of the program name.
             *_named(
@@ -438,6 +447,10 @@ class TestSelfProtectionKillTargetScoping:
                 "kiro[x]few {v}",
                 "ls ./bin/kiro*rew",
                 "echo kiro[c]rew {v}",
+            ),
+            *_named(
+                "test_quoted_script_assignment_without_the_cli_allowed",
+                "bash -c 'X=log.txt; grep -c {v} $X'",
             ),
             *_named(
                 "test_ordinary_text_processing_still_allowed",

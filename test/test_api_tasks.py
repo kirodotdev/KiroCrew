@@ -19,6 +19,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from overload_fakes import Clock, open_task_store
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import session_health
 from kiro_crew.dashboard.handlers import spawn_resume
@@ -289,9 +290,13 @@ async def test_detail_404_for_unknown_id(store: TaskStore) -> None:
 #: A credential the redaction table matches, and an exfiltration URL whose
 #: payload is that same credential. Real shapes, not placeholders: a pin over
 #: a string the redactor does not match would pass on an unredacted surface.
-_CRED = "AKIAIOSFODNN7EXAMPLE"
+#: An AWS key ID is an Identifier with the structured detectors on, so the
+#: credential is a GitHub token.
+_CRED = github_classic(seed=20)
 _EXFIL_HOST = "collector.example.invalid"
 _EXFIL_URL = f"https://{_EXFIL_HOST}/ingest?token={_CRED}"
+#: The same URL as a route serves it: everything kept but the credential value.
+_EXFIL_URL_SHOWN = f"https://{_EXFIL_HOST}/ingest?token=[REDACTED: credential]"
 
 
 def _leaky_row(store: TaskStore, clock: Clock) -> None:
@@ -331,17 +336,14 @@ def _leaky_row(store: TaskStore, clock: Clock) -> None:
 
 
 def _assert_scrubbed(raw: str | None) -> None:
-    """No credential and no live exfiltration URL anywhere in the wire body.
+    """No credential anywhere in the wire body, a credential inside a URL included.
 
-    The URL rewriter's substitution NAMES the domain it removed
-    (``[REDACTED: suspicious URL to <domain>]``, by design -- the operator has
-    to see where the agent was posting), so the host alone is not the leak. The
-    leak is the URL: its scheme, path and the credential-bearing query.
+    The URL rewriter masks only the credential value and keeps the link, so the
+    operator still sees where the agent was posting; the leak is the value.
     """
     assert raw is not None
     assert _CRED not in raw, "a credential reached the wire"
-    assert _EXFIL_URL not in raw, "a live exfiltration URL reached the wire"
-    assert f"https://{_EXFIL_HOST}" not in raw, "a fetchable exfiltration URL reached the wire"
+    assert _EXFIL_URL not in raw, "a URL still carrying its credential reached the wire"
 
 
 @pytest.mark.asyncio
@@ -381,35 +383,14 @@ async def test_task_routes_redact_store_prose(
     # for absence would pass on a route that stopped serving events at all.
     events = {e["kind"]: e for e in _body(detail)["events"]}
     nested = events["progress"]["data"]
-    assert nested["signal"]["detail"][0].startswith("[REDACTED: suspicious URL to ")
+    assert nested["signal"]["detail"][0] == _EXFIL_URL_SHOWN
     assert nested["signal"]["attempts"] == 2, "a non-string leaf survives unchanged"
     assert "[REDACTED: credential]" in nested["note"]
     assert _body(failed)["events"][-1]["data"]["error"].startswith("boom: [REDACTED: credential]")
     reason = _body(detail)["task"]["wait_reason"]
-    assert reason.startswith("http_error from gh: POST [REDACTED: suspicious URL to ")
+    assert reason.startswith(f"http_error from gh: POST {_EXFIL_URL_SHOWN} ")
     assert "[REDACTED: credential]" in reason
     assert _body(detail)["task"]["wait"]["reason"] == reason
-
-
-def test_redaction_runs_exfil_before_credentials() -> None:
-    """The composition order, pinned on the case that separates the two.
-
-    A URL whose query IS a credential is what the exfiltration rewriter exists
-    for: it replaces the whole URL, DESTINATION included. Redacting the
-    credential first leaves ``?token=[REDACTED: credential]`` -- a URL with
-    nothing suspicious left in it, so the host the agent was posting to
-    survives on the wire. ``subagent_parts/run_output.py``'s ``_redact`` and
-    ``security.redact_and_truncate`` both order it this way.
-    """
-    scrubbed = tasks_mod._scrub_prose(_EXFIL_URL)
-    assert scrubbed == f"[REDACTED: suspicious URL to {_EXFIL_HOST}]"
-    # Credentials-first would have produced this instead: the credential gone,
-    # the destination and the whole fetchable URL still on the wire.
-    from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-
-    creds_first, _ = redact_credentials(_EXFIL_URL)
-    assert redact_exfiltration_urls(creds_first)[0] == creds_first
-    assert f"https://{_EXFIL_HOST}" in creds_first
 
 
 # ── POST /api/tasks/{id}/cancel ──────────────────────────────────────────────
@@ -1050,3 +1031,28 @@ def test_routes_are_registered_in_order() -> None:
     assert paths.index("/api/tasks/summary") < paths.index("/api/tasks/{task_id}")
     assert "/api/tasks/{task_id}/cancel" in paths
     assert "/api/tasks" in paths
+
+
+def test_the_task_route_table_is_exactly_these_routes() -> None:
+    """Every ``/api/tasks`` route by method and path, so adding or dropping one is a
+    deliberate edit here: a new route, a mutating one above all, also needs its gate
+    reviewed."""
+    from kiro_crew.dashboard.routes import system as system_routes
+
+    app = web.Application()
+    system_routes.register(app)
+    routes = {
+        (r.method, r.resource.canonical)
+        for r in app.router.routes()
+        if r.resource is not None
+        and r.resource.canonical.startswith("/api/tasks")
+        and r.method != "HEAD"  # aiohttp adds a HEAD twin to every add_get
+    }
+    assert routes == {
+        ("GET", "/api/tasks"),
+        ("GET", "/api/tasks/summary"),
+        ("GET", "/api/tasks/{task_id}"),
+        ("POST", "/api/tasks/{task_id}"),
+        ("POST", "/api/tasks/{task_id}/cancel"),
+        ("GET", "/api/tasks/{task_id}/timeline"),
+    }

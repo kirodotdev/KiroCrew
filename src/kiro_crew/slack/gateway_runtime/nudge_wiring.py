@@ -473,6 +473,7 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
             # exactly what is retained turns that loss into a later page: the
             # collector reads again from ``next_since`` while it is short of
             # ``total``, which is why ``total`` is returned too.
+            await _sc.prewarm_app_reach(state)
             payload = await asyncio.to_thread(
                 _sc.read_messages,
                 state,
@@ -868,7 +869,7 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
         # runtime budget each came to preempt it in turn.
         #
         # An OWED terminal turn is terminal news too, and it is the third way this
-        # same precedence has been lost. A CHANNEL-bound loop deliberately does not
+        # same precedence has been lost. A gated pull-request loop deliberately does not
         # settle on observation -- it learns its watch finished from a delivered turn,
         # so the probe records the owed turn in ``terminal_pending`` and leaves the
         # loop active with no ``outcome`` and no ``MONITOR_TERMINAL_REASON``. If that

@@ -6,6 +6,7 @@ import { NavBackBar } from './NavBackBar'
 import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { useBottomTerminalOpen, useTerminalPosition } from '../hooks/useBottomTerminal'
@@ -43,10 +44,9 @@ export interface SidePanelTab {
   /** Contain THIS tab's pane to the viewport instead of letting the page grow:
    *  the tab's own header stays put and the pane's `overflow-y-auto` children
    *  do the scrolling. Per-tab because a page can legitimately mix the two —
-   *  Settings is one long scrolling form on sixteen tabs and a two-column
-   *  archive with its own rail on one, and a page-wide switch would have to
-   *  break one of them. The page-level `fixedContent` prop still forces it for
-   *  every tab. */
+   *  long scrolling forms beside a two-column pane with its own rail — and a
+   *  page-wide switch would have to break one of them. The page-level
+   *  `fixedContent` prop still forces it for every tab. */
   fixedContent?: boolean
   /** THIS tab's pane hosts a SettingsSubNav, so a second-level selection param
    *  (?sub= or a legacy alias) means a deeper level is showing its own back
@@ -218,9 +218,10 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
   const isMobile = useIsMobile()
   // "More below" cue under the desktop tab list. Settings has twenty rows, so
-  // on a laptop-height window the last few (Developer, Releases, About) sit
+  // on a laptop-height window the last few (Developer, About) sit
   // below the fold, and the overlay scrollbar stays hidden until hovered: the
   // list read as complete and a first-time user could not find Developer. The
   // cue says so while rows are hidden below, in its own strip outside every
@@ -475,9 +476,11 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   // Deliberately a passive effect, NOT useLayoutEffect: react-router 7 drops
   // navigations fired from a layout effect during the initial mount (its ready
   // flag is set in a passive effect) — see the same note on SettingsPage's
-  // legacy tab remap.
+  // legacy tab remap. The write is skipped while a newer navigation is still
+  // pending, so it never replaces the entry that navigation created.
   React.useEffect(() => {
     if (isMobile || !rememberKey || rawTab || !tab || tab === first) return
+    if (!renderedLocationIsCurrent()) return
     if (basePath) {
       const seg = toPathSegment(tab)
       if (seg != null) navigate({ pathname: `${basePath}/${seg}`, search: location.search }, { replace: true })
@@ -488,7 +491,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
       next.set('tab', tab)
       return next
     }, { replace: true })
-  }, [isMobile, rememberKey, rawTab, tab, first, setParams, basePath, navigate, location.search])
+  }, [isMobile, rememberKey, rawTab, tab, first, setParams, basePath, navigate, location.search, renderedLocationIsCurrent])
 
   // Remember the tab that is effectively shown — in component state, so an
   // in-place param drop has something to fall back to, and in sessionStorage,
@@ -657,7 +660,9 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
         {isMobile && !subDrilled && <NavBackBar label={title} onBack={backToRoot} />}
         {!subDrilled && <div data-testid={isMobile ? 'mobile-detail-header' : 'side-panel-header'} className={`flex items-end justify-between gap-4 shrink-0 ${isMobile ? 'px-4 pb-2' : 'px-6 pt-2 pb-3'}`}>
           <div>
-            <div className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</div>
+            {/* A heading, so the tab's title is the page's first heading for a
+                screen reader rather than plain text above its cards. */}
+            <h2 className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</h2>
             {meta?.description && <div className="text-muted text-sm mt-1">{meta.description}</div>}
           </div>
           {/* Only the 'header' dock renders here. 'bottom-float' lives in the

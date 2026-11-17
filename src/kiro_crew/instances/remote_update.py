@@ -42,7 +42,8 @@ STATE_SUCCEEDED = "succeeded"
 #: version it had: its updater installed nothing (already on its channel's
 #: newest build, or an install it does not update itself).
 STATE_UNCHANGED = "unchanged"
-#: Both commands exited 0, but the crew did not answer with a version in time.
+#: Both commands exited 0, but the crew did not answer with a version in time,
+#: or its version from before the update could not be read to compare with.
 STATE_UNVERIFIED = "unverified"
 STATE_FAILED = "failed"
 
@@ -55,9 +56,7 @@ PHASE_VERIFYING = "verifying"
 PHASE_DONE = "done"
 
 #: How long a job waits for the crew to go idle before it gives up without
-#: restarting: the ceiling the crew's own gateway gives a mandatory update it
-#: holds back for in-flight work (``_MANDATORY_UPDATE_MAX_DEFER_SECS``). A test
-#: pins the two equal.
+#: restarting. A test pins it equal to the CLI's own ``--when-idle`` default.
 REMOTE_UPDATE_IDLE_WAIT_SECS = 600.0
 #: How often a busy crew is asked again. Each ask is one remote command.
 REMOTE_UPDATE_IDLE_POLL_SECS = 15.0

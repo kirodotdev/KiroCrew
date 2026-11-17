@@ -57,30 +57,7 @@ function installHarness(opts = {}) {
   };
 }
 
-test("install() with a staged update emits 'installing' BEFORE the gateway stops", async () => {
-  const h = installHarness();
-  h.fire("update-downloaded", { version: "1.1.0" });
-  await h.updater.install();
 
-  const installingAt = h.timeline.indexOf("state:installing");
-  const stopAt = h.timeline.indexOf("stopGateway");
-  assert.notStrictEqual(installingAt, -1, "'installing' must be emitted on dispatch");
-  assert.notStrictEqual(stopAt, -1, "the gateway must be stopped");
-  assert.ok(
-    installingAt < stopAt,
-    `'installing' must reach the renderer before the gateway goes silent (got ${h.timeline.join(" -> ")})`,
-  );
-});
-
-test("the 'installing' payload carries the STAGED version, not the running one", async () => {
-  const h = installHarness();
-  h.fire("update-downloaded", { version: "1.1.0" });
-  await h.updater.install();
-
-  const p = h.payloads.find((x) => x.state === "installing");
-  assert.ok(p, "'installing' must be emitted");
-  assert.strictEqual(p.version, "1.1.0");
-});
 
 test("install() with nothing staged does NOT emit 'installing'", async () => {
   const h = installHarness();

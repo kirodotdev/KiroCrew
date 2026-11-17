@@ -183,6 +183,13 @@ function endAgentTurn(store: ReturnType<typeof createTestStore>) {
 
 const compileBtn = () => screen.getByRole('button', { name: /^Compile$/ })
 
+async function submitTextPrompt(user: ReturnType<typeof userEvent.setup>, value: string, label: string) {
+  const dialog = await screen.findByRole('dialog')
+  const input = within(dialog).getByRole('textbox')
+  if (value) await user.type(input, value)
+  await user.click(within(dialog).getByRole('button', { name: label }))
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
@@ -195,6 +202,10 @@ beforeEach(() => {
   api.readFile.mockImplementation((_name: string, path: string) =>
     Promise.resolve({ path, content: BODY }))
   api.saveFile.mockResolvedValue({ ok: true, path: MAIN })
+  api.createFile.mockResolvedValue({ ok: true, path: 'methods.tex' })
+  api.deleteFile.mockResolvedValue({ ok: true, path: CHAPTER })
+  api.gitCommit.mockResolvedValue({ ok: true, output: 'committed' })
+  api.gitPush.mockResolvedValue({ ok: true, output: 'pushed' })
   api.gitStatus.mockResolvedValue({ is_git: false })
   api.compile.mockResolvedValue({ ok: true, log: '', errors: [], duration_ms: 1234 })
   // `fetchSlots` writes the payload straight into `state.slots`, so it is the bare
@@ -431,8 +442,6 @@ describe('Papyrus file tree mutations', () => {
   it('deletes the open file after confirmation and falls back to the main document', async () => {
     // The main document has no delete control, so the open-file case is reached by
     // deleting a chapter the user is currently editing.
-    api.deleteFile.mockResolvedValue({ ok: true, path: CHAPTER })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { user } = openWorkspace()
     await workspaceReady()
     await user.click(screen.getByRole('button', { name: CHAPTER }))
@@ -442,6 +451,7 @@ describe('Papyrus file tree mutations', () => {
       ))
 
     await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete file' }))
 
     await waitFor(() => expect(api.deleteFile).toHaveBeenCalledWith(PROJECT, CHAPTER))
     await waitFor(() =>
@@ -451,33 +461,33 @@ describe('Papyrus file tree mutations', () => {
   })
 
   it('does not delete when the confirmation is declined', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
 
     expect(api.deleteFile).not.toHaveBeenCalled()
   })
 
   it('reports a failed delete', async () => {
     api.deleteFile.mockRejectedValue(new Error('file is locked'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete file' }))
 
     expect(await screen.findByText('file is locked')).toBeInTheDocument()
   })
 
   it('reports a failed create without inventing a flush error', async () => {
     api.createFile.mockRejectedValue(new Error('name already taken'))
-    vi.spyOn(window, 'prompt').mockReturnValue('methods.tex')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(screen.getByRole('button', { name: 'New file' }))
+    await submitTextPrompt(user, 'methods.tex', 'New file')
 
     expect(await screen.findByText('name already taken')).toBeInTheDocument()
   })
@@ -491,6 +501,71 @@ describe('Papyrus file tree mutations', () => {
     await user.click(await screen.findByRole('option', { name: CHAPTER }))
 
     await waitFor(() => expect(api.setMainFile).toHaveBeenCalledWith(PROJECT, CHAPTER))
+  })
+
+  it('keeps the new-file question open for a blank name', async () => {
+    const { user } = openWorkspace()
+    await workspaceReady()
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'New file' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Enter a file name.')
+    expect(api.createFile).not.toHaveBeenCalled()
+  })
+
+  it('does not create a file after Cancel', async () => {
+    const { user } = openWorkspace()
+    await workspaceReady()
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    expect(api.createFile).not.toHaveBeenCalled()
+  })
+
+  it('deletes the captured file when selection changes during the question', async () => {
+    const { user } = openWorkspace()
+    await workspaceReady()
+    await user.click(screen.getByRole('button', { name: `Delete ${CHAPTER}` }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(`Delete “${CHAPTER}”?`)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: CHAPTER }))
+    await waitFor(() => expect(screen.getByRole('button', { name: CHAPTER })).toHaveAttribute('aria-current', 'true'))
+    await user.click(within(dialog).getByRole('button', { name: 'Delete file' }))
+    await waitFor(() => expect(api.deleteFile).toHaveBeenCalledWith(PROJECT, CHAPTER))
+  })
+
+  it('keeps the first delete question when its trigger is pressed twice', async () => {
+    const { user } = openWorkspace()
+    await workspaceReady()
+    const trigger = screen.getByRole('button', { name: `Delete ${CHAPTER}` })
+    await user.click(trigger)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    await user.click(within(dialog).getByRole('button', { name: 'Delete file' }))
+    await waitFor(() => expect(api.deleteFile).toHaveBeenCalledOnce())
+  })
+
+  it.each(['question', 'request'])('opens the created file after selecting another file during the %s', async phase => {
+    const request = deferred<{ ok: boolean; path: string }>()
+    api.createFile.mockReturnValue(request.promise)
+    const { user, queryClient } = openWorkspace()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await workspaceReady()
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    await screen.findByRole('dialog')
+    if (phase === 'request') {
+      await submitTextPrompt(user, 'methods.tex', 'New file')
+      await waitFor(() => expect(api.createFile).toHaveBeenCalled())
+    }
+    fireEvent.click(screen.getByRole('button', { name: CHAPTER }))
+    await waitFor(() => expect(screen.getByRole('button', { name: CHAPTER })).toHaveAttribute('aria-current', 'true'))
+    if (phase === 'question') {
+      await submitTextPrompt(user, 'methods.tex', 'New file')
+      await waitFor(() => expect(api.createFile).toHaveBeenCalled())
+    }
+    await act(async () => { request.resolve({ ok: true, path: 'methods.tex' }) })
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['papyrus', 'project', PROJECT] }))
+    await waitFor(() => expect(api.readFile).toHaveBeenCalledWith(PROJECT, 'methods.tex'))
   })
 
   it('reports a failed main-document change', async () => {
@@ -511,8 +586,6 @@ describe('Papyrus git row', () => {
       is_git: true, branch: 'legacy-default', has_remote: true, ahead: 2, behind: 1,
     })
     api.gitPull.mockResolvedValue({ ok: true, output: 'up to date', stashed: false })
-    api.gitCommit.mockResolvedValue({ ok: true, output: 'committed' })
-    api.gitPush.mockResolvedValue({ ok: true, output: 'pushed' })
   })
 
   it('shows the branch with its ahead and behind counts', async () => {
@@ -559,11 +632,11 @@ describe('Papyrus git row', () => {
   it('commits with the typed message before pushing', async () => {
     // The button stages every change in the paper, so the message has to be the
     // user's, not a canned one.
-    vi.spyOn(window, 'prompt').mockReturnValue('  Tighten the abstract  ')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, '  Tighten the abstract  ', 'Commit & Push')
 
     await waitFor(() =>
       expect(api.gitCommit).toHaveBeenCalledWith(PROJECT, 'Tighten the abstract'))
@@ -571,21 +644,38 @@ describe('Papyrus git row', () => {
   })
 
   it('forwards an empty message so the backend picks the default', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, '', 'Commit & Push')
 
     await waitFor(() => expect(api.gitCommit).toHaveBeenCalledWith(PROJECT, ''))
   })
 
+  it('ignores the disabled commit trigger while a push is pending', async () => {
+    const request = deferred<{ ok: boolean; output: string }>()
+    api.gitPush.mockReturnValue(request.promise)
+    const { user } = openWorkspace()
+    await workspaceReady()
+    const trigger = await screen.findByRole('button', { name: 'Commit & Push' })
+    await user.click(trigger)
+    await submitTextPrompt(user, 'wip', 'Commit & Push')
+    await waitFor(() => expect(api.gitPush).toHaveBeenCalled())
+    expect(trigger).toBeDisabled()
+    await user.click(trigger)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(api.gitCommit).toHaveBeenCalledOnce()
+    await act(async () => { request.resolve({ ok: true, output: 'pushed' }) })
+    await waitFor(() => expect(trigger).toBeEnabled())
+  })
+
   it('aborts the push when the prompt is cancelled', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue(null)
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
 
     expect(api.gitCommit).not.toHaveBeenCalled()
     expect(api.gitPush).not.toHaveBeenCalled()
@@ -593,11 +683,11 @@ describe('Papyrus git row', () => {
 
   it('reports a failed push', async () => {
     api.gitPush.mockRejectedValue(new Error('remote rejected'))
-    vi.spyOn(window, 'prompt').mockReturnValue('wip')
     const { user } = openWorkspace()
     await workspaceReady()
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, 'wip', 'Commit & Push')
 
     expect(await screen.findByText('remote rejected')).toBeInTheDocument()
   })
@@ -606,17 +696,155 @@ describe('Papyrus git row', () => {
     // The flush sentinel is internal plumbing: the save error is what the user
     // needs, so the abort must not overwrite it.
     api.saveFile.mockRejectedValue(new Error('disk full'))
-    vi.spyOn(window, 'prompt').mockReturnValue('wip')
     const { user } = openWorkspace()
     await workspaceReady()
     makeDirty(`${BODY}\n% unsaved`)
 
     await user.click(await screen.findByRole('button', { name: /Commit & Push/ }))
+    await submitTextPrompt(user, 'wip', 'Commit & Push')
 
     await waitFor(() => expect(api.saveFile).toHaveBeenCalled())
     expect(api.gitCommit).not.toHaveBeenCalled()
     expect(await screen.findByText('disk full')).toBeInTheDocument()
     expect(screen.queryByText(/buffer flush failed/)).not.toBeInTheDocument()
+  })
+})
+
+describe('Papyrus prompt target lifetime', () => {
+  beforeEach(() => {
+    api.gitStatus.mockResolvedValue({ is_git: true, branch: 'main', has_remote: true })
+    api.listProjects.mockResolvedValue({
+      projects: [
+        { name: PROJECT, modified: 0, has_pdf: false },
+        { name: 'other-paper', modified: 0, has_pdf: false },
+      ],
+    })
+    api.getProject.mockImplementation(async name => ({
+      name, main_file: MAIN, files: [MAIN, CHAPTER], has_pdf: false,
+    }))
+  })
+
+  it.each(['New file', 'Commit & Push', 'Delete file'])('keeps the %s dialog open after returning to the project list', async action => {
+    const { user } = openWorkspace()
+    await workspaceReady()
+    const trigger = action === 'Delete file' ? `Delete ${CHAPTER}` : action
+    await user.click(await screen.findByRole('button', { name: trigger }))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Papers' }))
+    await waitFor(() => expect(screen.queryByTestId('papyrus-workspace')).toBeNull())
+    const dialog = await screen.findByRole('dialog', { name: action })
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(api.createFile).not.toHaveBeenCalled()
+    expect(api.deleteFile).not.toHaveBeenCalled()
+    expect(api.gitCommit).not.toHaveBeenCalled()
+  })
+
+  it('leaves a deleted chapter after the same paper is reopened while the delete is pending', async () => {
+    const request = deferred<{ ok: boolean; path: string; output: string }>()
+    api.deleteFile.mockReturnValue(request.promise as never)
+    const { user } = openWorkspace()
+    await workspaceReady()
+    await user.click(screen.getByRole('button', { name: CHAPTER }))
+    await waitFor(() => expect(screen.getByRole('button', { name: CHAPTER })).toHaveAttribute('aria-current', 'true'))
+    await user.click(await screen.findByRole('button', { name: `Delete ${CHAPTER}` }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete file' }))
+    await waitFor(() => expect(api.deleteFile).toHaveBeenCalledWith(PROJECT, CHAPTER))
+    await user.click(screen.getByRole('button', { name: 'Papers' }))
+    await waitFor(() => expect(screen.queryByTestId('papyrus-workspace')).toBeNull())
+    await user.click(await screen.findByText(PROJECT))
+    await user.click(await screen.findByRole('button', { name: CHAPTER }))
+    await waitFor(() => expect(screen.getByRole('button', { name: CHAPTER })).toHaveAttribute('aria-current', 'true'))
+    await act(async () => { request.resolve({ ok: true, path: CHAPTER, output: '' }) })
+    await waitFor(() => expect(screen.getByRole('button', { name: `${MAIN} Main` })).toHaveAttribute('aria-current', 'true'))
+  })
+
+  it.each(['New file', 'Commit & Push', 'Delete file'])('keeps %s bound to the original paper after switching papers', async action => {
+    const { user, queryClient } = openWorkspace()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await workspaceReady()
+    const trigger = action === 'Delete file' ? `Delete ${CHAPTER}` : action
+    await user.click(await screen.findByRole('button', { name: trigger }))
+    await screen.findByRole('dialog')
+    fireEvent.click(screen.getByRole('button', { name: 'Papers' }))
+    await waitFor(() => expect(screen.queryByTestId('papyrus-workspace')).toBeNull())
+    fireEvent.click(await screen.findByText('other-paper'))
+    await waitFor(() => expect(api.readFile).toHaveBeenCalledWith('other-paper', MAIN))
+    const dialog = await screen.findByRole('dialog', { name: action })
+    if (action === 'Delete file') {
+      await user.click(within(dialog).getByRole('button', { name: action }))
+      await waitFor(() => expect(api.deleteFile).toHaveBeenCalledWith(PROJECT, CHAPTER))
+    } else {
+      await submitTextPrompt(user, action === 'New file' ? 'methods.tex' : 'original paper', action)
+      if (action === 'New file') {
+        await waitFor(() => expect(api.createFile).toHaveBeenCalledWith(PROJECT, 'methods.tex'))
+      } else {
+        await waitFor(() => expect(api.gitCommit).toHaveBeenCalledWith(PROJECT, 'original paper'))
+        await waitFor(() => expect(api.gitPush).toHaveBeenCalledWith(PROJECT))
+      }
+    }
+    const key = action === 'Commit & Push'
+      ? ['papyrus', 'git', PROJECT] : ['papyrus', 'project', PROJECT]
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: key }))
+    await waitFor(() => expect(queryClient.getMutationCache().getAll().some(
+      mutation => mutation.state.status === 'success',
+    )).toBe(true))
+    expect(screen.getByRole('button', { name: `${MAIN} Main` })).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByLabelText('editor')).toHaveValue(BODY)
+  })
+
+  it.each([
+    ['New file', 'success'], ['New file', 'failure'],
+    ['Delete file', 'success'], ['Delete file', 'failure'],
+    ['Commit & Push', 'success'], ['Commit & Push', 'failure'],
+  ])('reports a late %s %s without applying it to the paper opened after switching', async (action, outcome) => {
+    const request = deferred<{ ok: boolean; path: string; output: string }>()
+    const mutation = action === 'New file' ? api.createFile
+      : action === 'Delete file' ? api.deleteFile : api.gitPush
+    mutation.mockReturnValue(request.promise as never)
+    const { user, queryClient } = openWorkspace()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await workspaceReady()
+    if (action === 'Delete file') {
+      await user.click(screen.getByRole('button', { name: CHAPTER }))
+      await waitFor(() => expect(screen.getByRole('button', { name: CHAPTER })).toHaveAttribute('aria-current', 'true'))
+    }
+    const trigger = action === 'Delete file' ? `Delete ${CHAPTER}` : action
+    await user.click(await screen.findByRole('button', { name: trigger }))
+    if (action === 'Delete file') {
+      await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: action }))
+    } else {
+      await submitTextPrompt(user, action === 'New file' ? 'methods.tex' : 'wip', action)
+    }
+    await waitFor(() => expect(mutation).toHaveBeenCalled())
+    await user.click(screen.getByRole('button', { name: 'Papers' }))
+    await waitFor(() => expect(screen.queryByTestId('papyrus-workspace')).toBeNull())
+    await user.click(await screen.findByText('other-paper'))
+    await waitFor(() => expect(api.readFile).toHaveBeenCalledWith('other-paper', MAIN))
+    if (action === 'Delete file') {
+      await user.click(screen.getByRole('button', { name: CHAPTER }))
+      await waitFor(() => expect(screen.getByRole('button', { name: CHAPTER })).toHaveAttribute('aria-current', 'true'))
+    }
+    await act(async () => {
+      if (outcome === 'success') request.resolve({ ok: true, path: 'methods.tex', output: 'pushed' })
+      else request.reject(new Error('old paper request failed'))
+    })
+    const cacheKey = action === 'Commit & Push'
+      ? ['papyrus', 'git', PROJECT] : ['papyrus', 'project', PROJECT]
+    if (outcome === 'success') {
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: cacheKey }))
+      await waitFor(() => expect(queryClient.getMutationCache().getAll().some(
+        mutation => mutation.state.status === 'success',
+      )).toBe(true))
+    } else {
+      await waitFor(() => expect(queryClient.getMutationCache().getAll().some(
+        mutation => mutation.state.status === 'error',
+      )).toBe(true))
+    }
+    const selected = action === 'Delete file' ? CHAPTER : `${MAIN} Main`
+    expect(screen.getByRole('button', { name: selected })).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByLabelText('editor')).toHaveValue(BODY)
+    if (outcome === 'failure') expect(await screen.findByText(`${PROJECT}: old paper request failed`)).toBeInTheDocument()
+    else expect(screen.queryByText(/old paper request failed/)).toBeNull()
   })
 })
 

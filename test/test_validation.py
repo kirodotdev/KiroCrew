@@ -849,7 +849,7 @@ class TestWebappMetadataBoundedValidation:
         with pytest.raises(ValidationError, match="invalid slug"):
             validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
 
-    # --- item 4 R18: empty string public_url for drafts ---
+    # --- empty string public_url for drafts ---
 
     def test_empty_public_url_accepted_for_drafts(self):
         """deploy_target.public_url="" is valid (documented draft state)."""
@@ -873,7 +873,7 @@ class TestWebappMetadataBoundedValidation:
             validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
 
 
-# --- deploy_artifact schema tests (item 6 R18) ---
+# --- deploy_artifact schema tests ---
 
 class TestDeployArtifactSchema:
     """Test the deploy_artifact MCP tool schema validation."""
@@ -881,8 +881,8 @@ class TestDeployArtifactSchema:
     def test_schema_accepts_valid_artifact_slug(self):
         from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
 
-        # confirm/override_scan were REMOVED from the schema (round-19: the MCP
-        # tool is preview-only; human confirmation happens in the dashboard).
+        # confirm/override_scan are NOT in the schema: the MCP tool is
+        # preview-only; human confirmation happens in the dashboard.
         args = {"site_id": "my-app", "artifact_slug": "my-demo"}
         result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
         assert result["site_id"] == "my-app"
@@ -1056,6 +1056,8 @@ class TestValidateMcpToolArguments:
                                  "default": "x", "examples": ["y"]}},
         }
         self._v({"a": "anything"}, schema)
+        # Ignored means not obeyed: the annotations never switch off the type check.
+        self._raises({"a": 1}, schema, "expected str")
 
     def test_const_and_pattern(self):
         schema = {
@@ -1069,18 +1071,46 @@ class TestValidateMcpToolArguments:
         self._raises({"mode": "other"}, schema, "does not equal const")
         self._raises({"path": "/etc/passwd"}, schema, "does not match pattern")
 
-    def test_pattern_redos_is_bounded_fail_closed(self):
+    def test_pattern_redos_is_bounded_fail_closed(self, monkeypatch):
         """A pathological server-controlled pattern + app-controlled
         near-match must not spin the validator: the bounded matcher times
-        out (or size-caps) and the call fails closed."""
-        import time as _time
+        out (or size-caps) and the call fails closed.
+
+        Bounded is asserted as the wait the validator hands the match child: its
+        own timeout, and the child's timeout is what failed the call closed."""
+        import subprocess
+        import threading
+
+        from kiro_crew.validation import _PATTERN_TIMEOUT_SECS
+
+        caller = threading.get_ident()
+        runs: list[tuple[float | None, str]] = []
+        real_run = subprocess.run
+
+        def recording_run(*args, **kwargs):
+            if threading.get_ident() != caller:
+                return real_run(*args, **kwargs)
+            timeout = kwargs.get("timeout")
+            assert timeout == _PATTERN_TIMEOUT_SECS, (
+                f"the match child was given {timeout!r}s, not the validator's "
+                f"{_PATTERN_TIMEOUT_SECS}s bound"
+            )
+            try:
+                done = real_run(*args, **kwargs)
+            except subprocess.TimeoutExpired:
+                runs.append((timeout, "killed on timeout"))
+                raise
+            runs.append((timeout, f"exited {done.returncode}"))
+            return done
 
         evil = {"type": "object",
                 "properties": {"s": {"type": "string", "pattern": r"(a+)+$"}}}
-        start = _time.monotonic()
-        self._raises({"s": "a" * 3000 + "b"}, evil,
-                     "could not be safely evaluated")
-        assert _time.monotonic() - start < 5.0  # bounded, not exponential
+        with monkeypatch.context() as m:
+            m.setattr(subprocess, "run", recording_run)
+            self._raises({"s": "a" * 3000 + "b"}, evil,
+                         "could not be safely evaluated")
+        # bounded, not exponential: the child ran under the bound and was killed by it
+        assert runs == [(_PATTERN_TIMEOUT_SECS, "killed on timeout")], runs
         # Oversized inputs are also refused without running the regex.
         self._raises({"s": "x" * 5000},
                      {"type": "object",
@@ -1125,6 +1155,12 @@ def test_boolean_true_subschema_accepts_anything():
     validate_mcp_tool_arguments(
         {"x": {"any": [1, 2, 3]}}, {"type": "object", "properties": {"x": True}}
     )
+    # `true` accepts only its own key: a sibling property is still checked.
+    with pytest.raises(ValidationError, match="expected str"):
+        validate_mcp_tool_arguments(
+            {"x": {"any": [1]}, "y": 1},
+            {"type": "object", "properties": {"x": True, "y": {"type": "string"}}},
+        )
 
 
 def test_enum_rejects_bool_for_number():
@@ -1150,7 +1186,7 @@ def test_malformed_type_keyword_rejected():
 
 
 def test_malformed_property_subschema_rejected_fail_closed():
-    # GPT 5.6 finding: a property VALUE that is neither a subschema (object)
+    # A property VALUE that is neither a subschema (object)
     # nor a boolean (e.g. the string "false") must NOT recurse to the
     # "no subschema → return" branch and admit the field unvalidated. The
     # whole schema is rejected fail-closed.

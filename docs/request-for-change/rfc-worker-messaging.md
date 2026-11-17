@@ -236,7 +236,7 @@ real runs that use debates or worker-to-worker asks.
   4. The owner asks for typed routing.
 - **T-b, write a new RFC section on code-checked rounds:** a real debate in
   which the Conductor miscounts a round, misses a critic, or goes past
-  `max_rounds`, and no critic or note keeper catches it.
+  `hard_rounds`, and no critic or note keeper catches it.
 
 ## How the three rules are met
 
@@ -348,10 +348,11 @@ field leaves the fold unchanged. The work-ledger RFC's Phase 5 is dropped, and i
 2. **T-b.** Code-checked rounds stay parked until a measured miss.
 3. **L4.** Under G-min, should `reply` be ungated so answers wake the Conductor?
    Matters only once G-min is built.
-4. **Round check-ins.** The owner's note: the 3-round cap is only approximate;
-   the core rule is that the Conductor must check every N rounds whether the
-   discussion is still worth continuing. A separate study in progress will design
-   this; this RFC does not.
+4. **Round check-ins.** Answered by
+   [#26932](https://github.com/kirodotdev/KiroCrew/pull/26932): the fixed cap
+   became a checkpoint every `check_every` rounds with `soft_rounds` and
+   `hard_rounds` (worker-debate.md §Checkpoint). The debate's own design is
+   recorded in [`rfc-worker-debate.md`](rfc-worker-debate.md).
 5. **Numbers.** The line and test counts are estimates, and nothing was built.
    The trusted-chat cost row needs the Conductor's own prompt count from
    debate-2.

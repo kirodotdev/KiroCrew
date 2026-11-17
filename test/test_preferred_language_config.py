@@ -157,6 +157,58 @@ class TestUiLanguageBlockDefers:
         assert self._FOLLOW not in ctx
 
 
+class TestFollowUpTurnsRepeatTheLanguage:
+    """A nudge, wake or worker-report turn is a follow-up whose text is all
+    English; without its own reply-language line the model drifts to English."""
+
+    _WAKE = "[auto-nudge cycle 3]\n[work-ledger wake] item it_1 reported done."
+
+    @staticmethod
+    def _follow_up(tmp_path, dashboard: dict, **kw) -> str:
+        p = config_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"dashboard": dashboard}), encoding="utf-8")
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        msg, _ = builder.build_message(
+            TestFollowUpTurnsRepeatTheLanguage._WAKE,
+            is_new_session=kw.pop("is_new_session", False),
+            session_key=kw.pop("session_key", "dashboard:chat-1"),
+            **kw,
+        )
+        return msg
+
+    def test_a_wake_turn_carries_the_language_when_set(self, tmp_path, close_skills_loaders):
+        msg = self._follow_up(tmp_path, {"preferred_language": "zh-CN", "verbosity": "concise"})
+        folded = " ".join(msg.split())
+        assert "reply in Simplified Chinese" in folded
+        assert "only when the user asks" in folded  # a mid-chat switch still wins
+        assert msg.count("## Reply language") == 1
+        assert "## Reply style" not in msg  # only the language rule, not the whole block
+
+    def test_a_new_session_turn_carries_the_frame_once(self, tmp_path, close_skills_loaders):
+        msg = self._follow_up(tmp_path, {"preferred_language": "zh-CN"}, is_new_session=True)
+        assert msg.count("## Reply language") == 1
+
+    def test_a_wake_turn_carries_nothing_when_unset(self, tmp_path, close_skills_loaders):
+        msg = self._follow_up(tmp_path, {"verbosity": "concise"})
+        assert "## Reply language" not in msg
+        assert "[RESPONSE PREFERENCES" not in msg
+
+    def test_a_subagent_turn_carries_nothing(self, tmp_path, close_skills_loaders):
+        msg = self._follow_up(
+            tmp_path, {"preferred_language": "zh-CN"}, session_key="subagent:abc123"
+        )
+        assert "## Reply language" not in msg
+
+    def test_post_compaction_sends_the_full_frame_once(self, tmp_path, close_skills_loaders):
+        msg = self._follow_up(tmp_path, {"preferred_language": "zh-CN"}, needs_reinjection=True)
+        assert msg.count("## Reply language") == 1
+
+
 class TestCodeListsAgree:
     """Three places spell the same code list; each one drifting is a silent gap."""
 

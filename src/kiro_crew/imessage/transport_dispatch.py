@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.imessage.client import redact_handle
 from kiro_crew.imessage.commands import HELP_TEXT, ConversationState, parse_command
 from kiro_crew.imessage.renderer import IMessageRenderer
@@ -38,6 +38,7 @@ from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
+    arm_cancelled_turn,
     compact_refusal_plain_text,
     compact_unsupported_backend,
     context_recycle_warning,
@@ -416,6 +417,7 @@ class IMessageDispatcher:
                 else:
                     if outcome in ("acked", "timeout"):
                         ack = _STOPPING
+                        arm_cancelled_turn(self.sessions, session_key, outcome)
                     elif outcome == "no_turn":
                         ack = _NOTHING_RUNNING
                     else:
@@ -472,7 +474,10 @@ class IMessageDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "iMessage"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "iMessage"
             self.conv_log.set_title(session_key, title)
 
     async def _maybe_notice(

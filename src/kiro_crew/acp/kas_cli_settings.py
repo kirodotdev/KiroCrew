@@ -1,4 +1,4 @@
-"""kiro-cli's telemetry opt-out, carried to a KAS session, and its ``chat.defaultModel``, named.
+"""kiro-cli's telemetry opt-out and ``chat.defaultModel``, read for a KAS session.
 
 kiro-cli honours its own ``cli.json`` ``telemetry.enabled`` opt-out and the
 ``KIRO_DISABLE_TELEMETRY`` / ``Q_DISABLE_TELEMETRY`` environment switches. KAS reads no
@@ -171,19 +171,18 @@ def kiro_cli_default_model(work_dir: Path | str | None = None) -> str:
     return "" if model.lower() == "auto" else model
 
 
-def default_model_notice(work_dir: Path | str | None = None) -> str:
-    """The session-start notice when kiro-cli names a ``chat.defaultModel`` KAS ignores.
+def default_model_notice(model: str) -> str:
+    """The session-start notice when kiro-cli's ``chat.defaultModel`` *model* did not land.
 
-    shortcut: KAS reads no ``cli.json`` and Crew does not apply the setting itself
-    (the model-pin seam), so an unpinned KAS chat starts on KAS's default.
-    Upgrade to carrying it once the pin mark lives with the session handle.
+    Crew applies the setting to an unpinned KAS session itself; this names it
+    when the session could not start on it (the account does not serve it, or
+    KAS refused it), so the chat runs on KAS's own default instead.
     """
-    model = kiro_cli_default_model(work_dir)
     if not model:
         return ""
     return (
         f"ℹ Your kiro-cli settings choose {model} as the default model "
-        "(chat.defaultModel), but the KAS engine does not read that setting, so this "
-        f"chat started on KAS's own default model. To use {model}, pick it in the "
+        "(chat.defaultModel), but this chat could not start on it, so it "
+        f"started on KAS's own default model. To use {model}, pick it in the "
         "model picker, or set it as Kiro Crew's default model in Settings."
     )

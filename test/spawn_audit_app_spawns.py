@@ -30,6 +30,10 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_red_base_staging_does_not_dereference_a_credential_symlink",
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_refuses_a_symlink_and_fails_closed",
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_survives_a_normal_repo",
+        # Fixed `git` argv (init, add, commit) in a repo under `tmp_path`; the planted host
+        # hook is the fixture, so sandboxing the spawn would test the sandbox instead.
+        "apps/builtins/auto_improvement/tests/test_git_config_isolation.py"
+        "::test_a_host_hook_that_refuses_commits_does_not_reach_a_fixture_commit",
         # Ops Mission Control ledger-sync tests: fixed `git` argv (init --bare / ls-files)
         # against a per-test tempdir. Nothing here is agent-influenced — the repo path is
         # `tempfile.mkdtemp()` and every argument is a literal in the test file. These are
@@ -55,7 +59,8 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # worktree of a push-disabled clone, which is where its blast radius is
         # contained; these calls are the harness around it, not the agent's hands.
         "apps/builtins/auto_improvement/backend/clone_setup.py::_disable_push",
-        "apps/builtins/auto_improvement/backend/clone_setup.py::_origin_urls",
+        "apps/builtins/auto_improvement/backend/clone_setup.py::_local_config_values",
+        "apps/builtins/auto_improvement/backend/clone_setup.py::_record_clone_identity",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_repository_is_safe",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_gh_prefers_ssh",
         "apps/builtins/auto_improvement/profiles/gitlab_repo/glab_cli.py::glab_prefers_ssh",
@@ -81,6 +86,8 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         "::test_extra_origin_value_refuses_reuse",
         "apps/builtins/auto_improvement/tests/test_clone_setup_idempotent.py"
         "::test_disable_push_replaces_every_url_value",
+        "apps/builtins/auto_improvement/tests/test_clone_setup_idempotent.py"
+        "::test_a_clone_made_before_identities_were_recorded_is_adopted",
         # A FIXED argv of `[sys.executable, "-c", <literal>]` — the interpreter running the
         # test plus a constant source string with no interpolation, so neither the command
         # nor its args are agent-influenced. The child only imports a module and prints

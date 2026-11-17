@@ -221,8 +221,11 @@ class _PackageTable:
     def rebuild(self) -> None:
         modules = sys.modules
         self.root = modules.get("kiro_crew")
+        # Copy the items in one C-level call before filtering: a thread a test left
+        # running can import a submodule, which binds a new attribute on the package
+        # while a Python-level loop over the live dict is still walking it.
         self.root_items = (
-            [(k, v) for k, v in vars(self.root).items() if not k.startswith("__")]
+            [(k, v) for k, v in list(vars(self.root).items()) if not k.startswith("__")]
             if self.root is not None
             else []
         )
@@ -307,7 +310,16 @@ def _bind_unbound_kiro_crew_modules() -> list[str]:
 # child), and it never raises unless a strict switch asks it to: an exception from an
 # audit hook aborts the audited call.
 class _AuditState:
-    __slots__ = ("active", "nodeid", "pid", "parent_pid", "network_ok", "strict_net", "seen")
+    __slots__ = (
+        "active",
+        "nodeid",
+        "pid",
+        "parent_pid",
+        "network_ok",
+        "strict_net",
+        "seen",
+        "thread",
+    )
 
     def __init__(self) -> None:
         self.active = False
@@ -318,6 +330,11 @@ class _AuditState:
         self.network_ok = False
         self.strict_net = False
         self.seen: dict[tuple[str, str], int] = {}
+        # ``None`` records every thread, as the floor must: a thread one test left
+        # running is still that run's traffic. A thread ident records that thread
+        # alone, for a test of the hook itself, whose expected findings are exactly
+        # the events it raises.
+        self.thread: int | None = None
 
 
 _AUDITED_EVENTS = frozenset(

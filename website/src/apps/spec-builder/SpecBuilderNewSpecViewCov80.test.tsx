@@ -197,7 +197,14 @@ describe('NewSpecView creation', () => {
     create.mockReturnValue(new Promise(() => {}))
     renderView()
     fillForm()
-    fireEvent.click(submit())
-    expect(await screen.findByRole('button', { name: /Starting/i })).toBeDisabled()
+    const btn = submit()
+    btn.focus()
+    fireEvent.click(btn)
+    // Busy, not native disabled: aria-disabled and inert, but it keeps keyboard
+    // focus so the press does not drop the user to the page body (#32999).
+    const starting = await screen.findByRole('button', { name: /Starting/i })
+    expect(starting).toHaveAttribute('aria-disabled', 'true')
+    expect(starting).not.toBeDisabled()
+    expect(starting).toHaveFocus()
   })
 })

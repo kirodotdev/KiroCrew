@@ -10,6 +10,7 @@ is baked into the world-readable unit or plist.
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import shlex
 import subprocess
@@ -391,3 +392,117 @@ class TestDoctorReportsDroppedHostEnv:
         from kiro_crew import cli_doctor
 
         assert "_doctor_dropped_host_env(issues)" in inspect.getsource(cli_doctor._doctor)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX service PATH")
+class TestServicePathCarriesNoVersionedTree:
+    """The baked service PATH names no dir a later update replaces."""
+
+    def test_toolbox_version_dirs_become_toolbox_bin_and_venv_dirs_go_through_the_link(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew.platform import tree_liveness, wheel_engine
+
+        home = str(tmp_path)
+        tree = tmp_path / "crew-venv-1.0"
+        (tree / "bin").mkdir(parents=True)
+        (tree / tree_liveness.TREE_MARKER).write_text("layout\n", encoding="utf-8")
+        stable = str(tmp_path / "crew-venv-current" / "bin")
+        monkeypatch.setattr(wheel_engine, "stable_launch_path", lambda _p: stable)
+        toolbox = f"{home}/.toolbox/tools/kirocrew/1.2.3/bin"
+        monkeypatch.setenv("PATH", f"{toolbox}:{tree / 'bin'}:/opt/x")
+
+        entries = common.service_path(home).split(":")
+
+        assert toolbox not in entries
+        assert str(tree / "bin") not in entries
+        assert stable in entries
+        assert f"{home}/.toolbox/bin" in entries and "/opt/x" in entries
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX service PATH")
+class TestMissingLauncherDirsNote:
+    """`service install` names configured MCP launcher dirs the service PATH lacks."""
+
+    @pytest.fixture
+    def launcher_dir(self, monkeypatch, tmp_path):
+        from kiro_crew import env as crew_env
+        from kiro_crew.config import KiroCrewConfig
+
+        target = tmp_path / "launchers"
+        target.mkdir()
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: None))
+        monkeypatch.setattr(crew_env, "_extra_mcp_path_dirs", lambda: [str(target)])
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        return str(target)
+
+    @pytest.mark.parametrize("plat", [Platform.SYSTEMD, Platform.LAUNCHD])
+    def test_a_non_login_install_names_the_dir_and_the_fix(
+        self, plat, launcher_dir, dotenv, capsys
+    ):
+        assert _install(plat) == 0
+        out = capsys.readouterr().out
+        assert "MCP launcher directories" in out
+        assert launcher_dir in out and str(dotenv) in out
+
+    def test_silent_once_the_dotenv_path_line_adds_it(self, launcher_dir, dotenv):
+        dotenv.write_text(f"PATH={launcher_dir}\n", encoding="utf-8")
+        assert _inherited_env().missing_launcher_dirs_warning({}, Platform.SYSTEMD) == ""
+
+    def test_silent_when_the_overrides_file_path_carries_it(self, launcher_dir, dotenv, overrides):
+        overrides.parent.mkdir(parents=True)
+        overrides.write_text(f"PATH=/usr/bin:{launcher_dir}\n", encoding="utf-8")
+        assert _inherited_env().missing_launcher_dirs_warning({}, Platform.SYSTEMD) == ""
+
+    def test_silent_when_the_installer_path_has_it(self, launcher_dir, dotenv, monkeypatch):
+        monkeypatch.setenv("PATH", f"/usr/bin:{launcher_dir}")
+        assert _inherited_env().missing_launcher_dirs_warning({}, Platform.LAUNCHD) == ""
+
+    def test_the_fix_keeps_what_an_existing_dotenv_path_line_adds(
+        self, launcher_dir, dotenv, tmp_path
+    ):
+        kept = tmp_path / "kept"
+        kept.mkdir()
+        dotenv.write_text(f"PATH={kept}\n", encoding="utf-8")
+        note = _inherited_env().missing_launcher_dirs_warning({}, Platform.LAUNCHD)
+        assert f"PATH={kept}:{launcher_dir}" in note
+
+    def test_a_crew_home_override_carries_its_caveat(self, launcher_dir, dotenv):
+        note = _inherited_env().missing_launcher_dirs_warning(
+            {"KIROCREW_HOME": "/x"}, Platform.LAUNCHD
+        )
+        assert "KIROCREW_HOME is set here" in note
+
+    def test_quoted_overrides_file_path_is_read_as_systemd_does(
+        self, launcher_dir, dotenv, overrides
+    ):
+        overrides.parent.mkdir(parents=True)
+        overrides.write_text(f'PATH="/usr/bin:{launcher_dir}"\n', encoding="utf-8")
+        assert _inherited_env().missing_launcher_dirs_warning({}, Platform.SYSTEMD) == ""
+
+    def test_a_sudo_install_reads_the_service_accounts_config(self, monkeypatch, tmp_path):
+        from kiro_crew import env as crew_env
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.service import linux
+
+        mod = _inherited_env()
+        target = tmp_path / "svc" / "launchers"
+        target.mkdir(parents=True)
+        (tmp_path / "svc" / "bin").mkdir()
+        crew = tmp_path / "svc" / ".kiro" / "crew"
+        crew.mkdir(parents=True)
+        (crew / "config.json").write_text(
+            json.dumps({"mcp": {"extra_path_dirs": ["~/stale"]}}), encoding="utf-8"
+        )
+        (crew / "config.local.json").write_text(
+            json.dumps({"mcp": {"extra_path_dirs": ["~/launchers"]}}), encoding="utf-8"
+        )
+        (crew / ".env").write_text("PATH=~/bin\n", encoding="utf-8")
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: None))
+        monkeypatch.setattr(crew_env, "_extra_mcp_path_dirs", lambda: [])
+        monkeypatch.setattr(common, "service_dotenv", lambda *_a: (crew / ".env", "svc"))
+        monkeypatch.setattr(linux, "_home_for_user", lambda _u: str(tmp_path / "svc"))
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        note = mod.missing_launcher_dirs_warning({}, Platform.SYSTEMD)
+        assert f"PATH=~/bin:{target}" in note, "~ kept as written, local overlay wins"
+        assert "write the file as svc" in note, "names the account to write it as"

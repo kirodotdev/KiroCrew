@@ -204,7 +204,7 @@ class TestTerminalReservationOwnership:
         monkeypatch.setattr(
             terminal, "_resolve_shell_with_fence_shells", lambda _: ("/bin/sh", None, {})
         )
-        monkeypatch.setattr(terminal.web, "WebSocketResponse", constructor)
+        monkeypatch.setattr(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", constructor)
         monkeypatch.setattr(terminal, "_TerminalSession", make_session)
         monkeypatch.setattr(terminal, "_pty", pty)
         monkeypatch.setattr(terminal, "fcntl", MagicMock())
@@ -743,8 +743,8 @@ class TestTerminalReservationOwnership:
                     assert not task.done()
                 assert (await terminal.api_terminal_delete(o.request)).status == 409
                 expire.set()
-                # Observation must not cancel-and-wait for the old unbounded
-                # implementation: a regression should fail, not hang the worker.
+                # Bound the wait so a delete that waits without limit fails
+                # here instead of hanging the worker.
                 (result,) = await await_until(
                     asyncio.gather(task, return_exceptions=True),
                     what="setup finishing at the close deadline",

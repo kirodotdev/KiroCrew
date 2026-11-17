@@ -62,6 +62,8 @@ def _consolidator(log: ConversationLog) -> HistoryConsolidator:
 async def _settle(c: HistoryConsolidator) -> None:
     while c._tasks:
         await asyncio.gather(*list(c._tasks))
+        # A gather of done tasks does not yield; let their _tasks.discard run.
+        await asyncio.sleep(0)
 
 
 async def _until(predicate, what: str) -> None:
@@ -425,8 +427,9 @@ async def test_a_turn_inside_the_retry_deadline_counts_nothing(tmp_path, monkeyp
     """After a restart ``_prefs_offset`` is 0, so only the deadline stops a count per turn."""
     log = _log(tmp_path)
     await _append(log, THRESHOLD + 5)
-    with history_mod.allow_on_loop_persist():
-        log.update_metadata(KEY, {"consolidation_attempts": 1, "consolidation_retry_at": 4e9})
+    await asyncio.to_thread(
+        log.update_metadata, KEY, {"consolidation_attempts": 1, "consolidation_retry_at": 4e9}
+    )
     c = _consolidator(log)
     counts = _Spy(monkeypatch, "_count_messages")
 
@@ -525,8 +528,7 @@ async def test_a_fully_consolidated_idle_key_runs_no_pass_and_is_stamped_clean(
 ):
     log = _log(tmp_path)
     await _append(log, 40)
-    with history_mod.allow_on_loop_persist():
-        log.mark_consolidated(KEY, 40)
+    await asyncio.to_thread(log.mark_consolidated, KEY, 40)
     c = _consolidator(log)
     counts = _Spy(monkeypatch, "_count_messages")
     _idle(c)
@@ -545,8 +547,9 @@ async def test_a_key_inside_its_retry_deadline_schedules_no_count(tmp_path):
     log = _log(tmp_path)
     await _append(log, 3)
     c = _consolidator(log)
-    with history_mod.allow_on_loop_persist():
-        log.update_metadata(KEY, {"consolidation_attempts": 1, "consolidation_retry_at": 4e9})
+    await asyncio.to_thread(
+        log.update_metadata, KEY, {"consolidation_attempts": 1, "consolidation_retry_at": 4e9}
+    )
     _idle(c)
 
     c.check_idle_sessions()

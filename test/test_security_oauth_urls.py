@@ -31,6 +31,17 @@ from kiro_crew.security import (
     sanitized_oauth_endpoint_display,
     scan_exfiltration_urls,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, github_classic
+
+
+def _assert_link_kept_around_the_segment(url: str, head: str, tail: str) -> None:
+    """The URL redactor keeps *url* or masks only the segment between *head* and *tail*."""
+    cleaned, warnings = redact_exfiltration_urls(url)
+    if cleaned == url:
+        assert warnings == []
+        return
+    assert cleaned == f"{head}[REDACTED: encoded credential]{tail}"
+    assert warnings
 
 
 class TestOAuthAuthorizationUrlRedaction:
@@ -38,9 +49,9 @@ class TestOAuthAuthorizationUrlRedaction:
 
     STATE = "opaque-state-123"
     CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-    BARE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-    BARE_AWS_SECRET_ALNUM = "wJalrXUtnFEMIxK7MDEN" "GybPxRfiCYEXAMPLEKEY"
-    GITHUB_TOKEN = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+    BARE_AWS_SECRET = SAMPLE_AWS_SECRET
+    BARE_AWS_SECRET_ALNUM = "Qh4Tm2Vx9KpRcxZ8Nw" "3HdyJf1Lb5Gs0Ye9Ua2WkE"
+    GITHUB_TOKEN = github_classic(seed=125)
     NOTION_URL = (
         "https://api.notion.com/v1/oauth/authorize"
         "?client_id=client123&response_type=code"
@@ -60,11 +71,9 @@ class TestOAuthAuthorizationUrlRedaction:
         assert len(self.CHALLENGE) == 43
         assert oauth_url_contains_credential(self.NOTION_URL) is False
 
-        # The generic URL redactor handles arbitrary model/agent text and does
-        # not inherit the banner-only OAuth entropy carve-out.
-        cleaned, warnings = redact_exfiltration_urls(self.NOTION_URL)
-        assert cleaned != self.NOTION_URL
-        assert warnings
+        # The generic URL redactor masks only credential values, and a state and
+        # a PKCE challenge are none, so it keeps the link whole.
+        assert redact_exfiltration_urls(self.NOTION_URL) == (self.NOTION_URL, [])
 
     def test_diagnostic_identifies_long_query_parameter_shape(self) -> None:
         opaque_state = "Ab9_" * 64
@@ -480,9 +489,9 @@ class TestOAuthAuthorizationUrlRedaction:
     def test_duplicate_value_in_standard_and_unknown_param_fails_closed(self) -> None:
         url = self.NOTION_URL + f"&session_blob={self.CHALLENGE}"
         assert oauth_url_contains_credential(url) is True
-        cleaned, warnings = redact_exfiltration_urls(url)
-        assert cleaned != url
-        assert warnings
+        # The challenge is a public value, so the general redactor keeps the link;
+        # the gate above is what refuses it.
+        assert redact_exfiltration_urls(url) == (url, [])
 
     @pytest.mark.parametrize("parameter", ["state", "code_challenge"])
     @pytest.mark.parametrize(
@@ -499,6 +508,13 @@ class TestOAuthAuthorizationUrlRedaction:
         original = self.STATE if parameter == "state" else self.CHALLENGE
         url = self.NOTION_URL.replace(original, f"prefix{credential}suffix", 1)
         assert oauth_url_contains_credential(url) is True
+        if credential.startswith("AKIA"):
+            # An AWS key ID is an identifier, so the general redactors keep the link;
+            # the gate above is what refuses it.
+            text = f"Model output: {url}"
+            for redactor in (redact_credentials, redact_exfiltration_urls):
+                assert redactor(text)[0] == text
+            return
         self._assert_general_redactors_remove_secret(url, credential)
 
     def test_once_percent_decoded_fixed_credential_fails_closed(self) -> None:
@@ -520,7 +536,11 @@ class TestOAuthAuthorizationUrlRedaction:
         assert "/" in self.BARE_AWS_SECRET
         url = self.NOTION_URL.replace(self.STATE, self.BARE_AWS_SECRET, 1)
         assert oauth_url_contains_credential(url) is True
-        self._assert_general_redactors_remove_secret(url, self.BARE_AWS_SECRET)
+        # The general redactors keep a bare 40-character run with no key ID nearby
+        # and no label; the gate above is what refuses the link.
+        text = f"Model output: {url}"
+        for redactor in (redact_credentials, redact_exfiltration_urls):
+            assert redactor(text)[0] == text
 
     def test_percent_encoded_secret_alphabet_cannot_buy_the_exemption(self) -> None:
         # The markerless scan runs on the raw and decoded URL, so the shape test
@@ -550,7 +570,7 @@ class TestOAuthAuthorizationUrlRedaction:
         assert security._oauth_entropy_value_is_protocol_shaped("state", value) is False
 
     @pytest.mark.parametrize("parameter", ["state", "code_challenge"])
-    def test_markerless_secret_shape_is_banner_exempt_but_generically_redacted(
+    def test_markerless_secret_shape_is_banner_exempt_and_generically_kept(
         self, parameter: str
     ) -> None:
         if parameter == "state":
@@ -563,10 +583,12 @@ class TestOAuthAuthorizationUrlRedaction:
 
         # A markerless value that IS base64url-shaped (and, for the challenge,
         # the right length) is indistinguishable from normal OAuth entropy at
-        # this approved parameter boundary. General output redactors keep the
-        # heuristic because they do not inherit the banner-only exemption.
+        # this approved parameter boundary. The general output redactors have no
+        # shape heuristic at all: a bare run with no label stays with them too.
         assert oauth_url_contains_credential(url) is False
-        self._assert_general_redactors_remove_secret(url, value)
+        text = f"Model output: {url}"
+        for redactor in (redact_credentials, redact_exfiltration_urls):
+            assert redactor(text)[0] == text
 
     def test_bare_aws_secret_in_path_without_query_fails_closed(self) -> None:
         url = f"https://attacker.example/-{self.BARE_AWS_SECRET}"
@@ -585,12 +607,10 @@ class TestOAuthAuthorizationUrlRedaction:
         url = f"https://attacker.example/upload/{encoded_header}/c2hvcnQ"
         assert oauth_url_contains_credential(url) is True
 
-        scan_warnings = scan_exfiltration_urls(url)
-        assert scan_warnings
-
-        cleaned, redact_warnings = redact_exfiltration_urls(url)
-        assert url not in cleaned
-        assert redact_warnings == scan_warnings
+        assert scan_exfiltration_urls(url)
+        # The gate and the scan are what refuse it. The redactor may mask the
+        # header it decodes, as it does in plain text, but never the whole link.
+        _assert_link_kept_around_the_segment(url, "https://attacker.example/upload/", "/c2hvcnQ")
 
     def test_multiply_percent_encoded_credential_in_path_fails_closed(
         self,
@@ -603,13 +623,9 @@ class TestOAuthAuthorizationUrlRedaction:
         for encoded in (once, quote(once, safe="-"), quote(quote(once, safe="-"), safe="-")):
             url = f"https://attacker.example/upload/{encoded}/x"
             assert oauth_url_contains_credential(url) is True
-
-            scan_warnings = scan_exfiltration_urls(url)
-            assert scan_warnings
-
-            cleaned, redact_warnings = redact_exfiltration_urls(url)
-            assert url not in cleaned
-            assert redact_warnings == scan_warnings
+            assert scan_exfiltration_urls(url)
+            # The redactor may mask the header it decodes, but never the whole link.
+            _assert_link_kept_around_the_segment(url, "https://attacker.example/upload/", "/x")
 
     def test_credential_surviving_the_decode_budget_fails_closed(self) -> None:
         """A payload still decodable when the decode budget runs out is refused.
@@ -635,12 +651,9 @@ class TestOAuthAuthorizationUrlRedaction:
             encoded = quote(encoded, safe="-")
         url = f"https://attacker.example/upload/{encoded}/x"
 
-        scan_warnings = scan_exfiltration_urls(url)
-        assert scan_warnings
-
-        cleaned, redact_warnings = redact_exfiltration_urls(url)
-        assert url not in cleaned
-        assert redact_warnings == scan_warnings
+        assert scan_exfiltration_urls(url)
+        # No credential value in it, so the redactor keeps the link.
+        assert redact_exfiltration_urls(url) == (url, [])
 
     def test_a_benign_singly_encoded_url_is_left_alone(self) -> None:
         """The saturation guard must not redact ordinary encoded URLs.
@@ -660,9 +673,8 @@ class TestOAuthAuthorizationUrlRedaction:
     def test_heavy_percent_encoding_in_standard_param_fails_closed(self) -> None:
         url = self.NOTION_URL.replace(self.STATE, "%41" * 25, 1)
         assert oauth_url_contains_credential(url) is True
-        cleaned, warnings = redact_exfiltration_urls(url)
-        assert cleaned != url
-        assert warnings
+        # No credential value in it, so the general redactor keeps the link.
+        assert redact_exfiltration_urls(url) == (url, [])
 
     def test_miro_mcp_authorize_endpoint_is_approved(self) -> None:
         """mcp.miro.com/authorize is a reporter-verified RFC 8414 endpoint
@@ -1424,17 +1436,111 @@ class TestOperatorOAuthEndpointExtension:
         leaked = url + "&session_blob=" + ("AKIA" "IOSFODNN7EXAMPLE")
         assert oauth_url_contains_credential(leaked) is True
 
-    def test_40_character_client_id_rejected_at_operator_listed_salesforce_endpoint(
+    # A dynamically registered client_id the bare-secret scan flags: 40 letters
+    # and digits.
+    DCR_CLIENT_ID = TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM
+    DCR_HOST = "auth.example.com"
+    DCR_PATH = "/oauth"
+
+    def _dcr_url(self, client_id: str) -> str:
+        return f"https://{self.DCR_HOST}{self.DCR_PATH}?client_id={client_id}&response_type=code"
+
+    def test_40_character_client_id_passes_at_operator_listed_endpoint(
         self, ext_home: Path
     ) -> None:
-        host = "acme.my.salesforce.com"
-        path = "/services/oauth2/authorize"
-        client_id = TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM
-        url = f"https://{host}{path}?client_id={client_id}&response_type=code"
+        url = self._dcr_url(self.DCR_CLIENT_ID)
+        assert len(self.DCR_CLIENT_ID) == 40
+        assert security._text_contains_bare_secret(self.DCR_CLIENT_ID)
 
-        assert len(client_id) == 40
-        assert security._text_contains_bare_secret(client_id)
+        assert oauth_url_contains_credential(url) is True
+        # The rejection names the operator file as the remedy...
+        assert security.oauth_rejection_is_endpoint_exemptible(url, operator_listed=True)
+        # ...and listing the endpoint clears it.
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        assert oauth_url_contains_credential(url) is False
+
+    def test_40_character_client_id_rejected_where_endpoint_is_not_listed(
+        self, ext_home: Path
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": "/other"}])
+        assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID)) is True
+        # A discovered (not operator-listed) endpoint keeps the full scan too.
+        try:
+            assert record_discovered_oauth_endpoint(
+                self.DCR_HOST, self.DCR_PATH, mcp_url="https://mcp.example.com/mcp"
+            )
+            assert oauth_url_contains_credential(self._dcr_url(self.DCR_CLIENT_ID)) is True
+        finally:
+            exfil._OAUTH_DISCOVERED_ENDPOINTS.clear()
+
+    def test_40_character_client_id_passes_at_listed_builtin_endpoint(self, ext_home: Path) -> None:
+        """Listing a builtin endpoint clears the rejection the remedy text names."""
+        host, path = "mcp.notion.com", "/authorize"
+        url = f"https://{host}{path}?client_id={self.DCR_CLIENT_ID}&response_type=code"
+        assert oauth_url_contains_credential(url) is True
         self._write_extension(ext_home, [{"host": host, "path": path}])
+        assert oauth_url_contains_credential(url) is False
+
+    @pytest.mark.parametrize(
+        "client_id",
+        [
+            "AKIA" "IOSFODNN7EXAMPLE",
+            "%41KIA" "IOSFODNN7EXAMPLE",
+            "Bearer%20" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM,
+            "Bearer+" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM,
+            TestOAuthAuthorizationUrlRedaction.GITHUB_TOKEN,
+        ],
+        ids=["aws-key-id", "aws-key-id-encoded", "bearer", "bearer-plus", "github-token"],
+    )
+    def test_credential_client_id_rejected_at_operator_listed_endpoint(
+        self, ext_home: Path, client_id: str
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        assert oauth_url_contains_credential(self._dcr_url(client_id)) is True
+
+    @pytest.mark.parametrize(
+        "client_id",
+        [
+            "wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY",
+            "wJalrXUtnFEMI%2BK7MDENG%2BbPxRfiCYEXAMPLEKEY",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "%77" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM[1:],
+            "%2577" + TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM[1:],
+            TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM + "~",
+            TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM + "A" * 89,
+        ],
+        ids=[
+            "encoded-slash",
+            "encoded-plus",
+            "raw-slash",
+            "encoded-letter",
+            "double-encoded-letter",
+            "tilde",
+            "129-characters",
+        ],
+    )
+    def test_client_id_outside_token_safe_shape_is_scanned_at_listed_endpoint(
+        self, ext_home: Path, client_id: str
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        assert exfil._operator_client_id_shaped(client_id) is False
+        assert oauth_url_contains_credential(self._dcr_url(client_id)) is True
+
+    def test_double_encoded_client_id_is_never_blanked_at_listed_endpoint(self) -> None:
+        # The operator shape never blanks a still-encoded value, so the scan
+        # judges it as at any approved endpoint.
+        value = "wJalrXUtnFEMI%252FK7MDENG%252FbPxRfiCYEXAMPLEKEY"
+        url = self._dcr_url(value)
+        target = security._oauth_credential_scan_target(
+            url, url.split("?", 1)[1], approved_endpoint=True, operator_listed=True
+        )
+        assert f"client_id={value}" in target
+
+    def test_second_client_id_is_scanned_when_the_first_is_token_safe(self, ext_home: Path) -> None:
+        self._write_extension(ext_home, [{"host": self.DCR_HOST, "path": self.DCR_PATH}])
+        url = self._dcr_url("abcdefghijklmnop1234") + (
+            "&client_id=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY"
+        )
         assert oauth_url_contains_credential(url) is True
 
     # ── Salesforce client ids: accepted unscanned only at operator-listed endpoints ──
@@ -1525,16 +1631,6 @@ class TestOperatorOAuthEndpointExtension:
         self._list_sf_endpoint(ext_home)
         assert oauth_url_contains_credential(url) is True
 
-    @pytest.mark.parametrize("body_length", [69, 101], ids=["below-minimum", "above-maximum"])
-    def test_wrong_length_salesforce_prefix_is_scanned_at_listed_endpoint(
-        self, ext_home: Path, body_length: int
-    ) -> None:
-        secret = TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM
-        client_id = "3MVG9" + secret + "A" * (body_length - len(secret))
-        assert len(client_id.removeprefix("3MVG9")) == body_length
-        self._list_sf_endpoint(ext_home)
-        assert oauth_url_contains_credential(self._sf_url(f"client_id={client_id}")) is True
-
     def test_extended_endpoint_passes_previously_rejected_consent_url(self, ext_home: Path) -> None:
         # Fails closed with no file (the pre-extension behavior) …
         assert oauth_url_contains_credential(self.CONSENT_URL) is True
@@ -1570,12 +1666,11 @@ class TestOperatorOAuthEndpointExtension:
         assert oauth_url_contains_credential(mutate(self.CONSENT_URL)) is True
 
     def test_general_redactors_ignore_the_extension(self, ext_home: Path) -> None:
-        # The carve-out stays banner-only: arbitrary model/agent text keeps the
-        # full heuristics even for an operator-approved endpoint.
+        # The carve-out stays banner-only: the scan keeps the full heuristics even
+        # for an operator-approved endpoint. The redactor masks only credential
+        # values, and this link holds none.
         self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
-        cleaned, warnings = redact_exfiltration_urls(self.CONSENT_URL)
-        assert cleaned != self.CONSENT_URL
-        assert warnings
+        assert redact_exfiltration_urls(self.CONSENT_URL) == (self.CONSENT_URL, [])
         assert scan_exfiltration_urls(self.CONSENT_URL)
 
     # ── SEL audit ──
@@ -1651,7 +1746,7 @@ class TestOperatorOAuthEndpointExtension:
         ],
         ids=["ordinary", "base64url", "salesforce", "forty-character", "fixed-signature"],
     )
-    def test_builtin_client_id_never_loads_operator_file(
+    def test_unlisted_builtin_client_id_keeps_its_verdict(
         self,
         monkeypatch: pytest.MonkeyPatch,
         endpoint: tuple[str, str],
@@ -1659,32 +1754,35 @@ class TestOperatorOAuthEndpointExtension:
         rejected: bool,
     ) -> None:
         host, path = endpoint
-        loader = Mock(return_value=frozenset({endpoint}))
+        loader = Mock(return_value=frozenset())
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
         assert (
             oauth_url_contains_credential(f"https://{host}{path}?client_id={client_id}") is rejected
         )
-        loader.assert_not_called()
+        # Only a token-safe client_id that reaches the scan asks the operator file.
+        assert loader.called is (
+            exfil._operator_client_id_shaped(client_id)
+            and not security._contains_fixed_credential(client_id)
+        )
 
     @pytest.mark.parametrize(
         "query,rejected",
         [
             ("response_type=code", False),
             ("client_id=client123", False),
-            (f"client_id={TestOAuthAuthorizationUrlRedaction.CHALLENGE}", False),
-            (f"client_id={TestOAuthAuthorizationUrlRedaction.BARE_AWS_SECRET_ALNUM}", True),
+            ("client_id=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY", True),
             (f"state={TestOAuthAuthorizationUrlRedaction.SALESFORCE_KEY_WITH_LONG_PIECE}", False),
         ],
-        ids=["no-client-id", "ordinary", "base64url", "forty-character", "salesforce-state"],
+        ids=["no-client-id", "short", "not-token-safe", "salesforce-state"],
     )
-    def test_discovered_query_without_salesforce_client_id_never_loads_operator_file(
+    def test_discovered_query_without_token_safe_client_id_never_loads_operator_file(
         self, monkeypatch: pytest.MonkeyPatch, query: str, rejected: bool
     ) -> None:
         endpoint = (self.HOST, self.PATH)
         monkeypatch.setattr(exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {endpoint: float("inf")})
         loader = Mock(return_value=frozenset({endpoint}))
         monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", loader)
-        # Discovery supplies approval, isolating the Salesforce-specific lookup.
+        # Discovery supplies approval, isolating the client_id lookup.
         assert security._approved_oauth_authorization_endpoint(*endpoint)
         assert oauth_url_contains_credential(f"https://{self.HOST}{self.PATH}?{query}") is rejected
         loader.assert_not_called()

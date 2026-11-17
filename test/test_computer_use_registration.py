@@ -1415,9 +1415,8 @@ class TestDataHomePin:
     def test_a_default_install_emits_no_env_at_all(self, tmp_path, monkeypatch):
         """The emitted spec must be byte-for-byte unchanged where there is no override.
 
-        An empty ``env`` is a launch-behaviour no-op but a real diff in the file, and
-        ``_prune_empty`` treats present-but-empty as equivalent — so emitting one
-        would churn every existing user's ``kirocrew.json`` for nothing.
+        An empty ``env`` is a launch-behaviour no-op but a real diff in the file, so
+        emitting one would churn every existing user's ``kirocrew.json`` for nothing.
         """
         servers = self._entries(monkeypatch, None, tmp_path)
         for name in _MANAGED:

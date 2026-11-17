@@ -28,6 +28,7 @@ that hands back a ``str``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -40,6 +41,17 @@ from fake_child_helpers import read_child_records, reap_recorded_children, write
 from kiro_crew import sandbox
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
 from kiro_crew.testing.wait import default_timeout
+
+
+def _verified_tree(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """What a verified install leaves: the source marker and the pinned lock."""
+    lock = b"version = 1\n"
+    (root / "mcp-local").mkdir(parents=True)
+    (root / "mcp-local" / "uv.lock").write_bytes(lock)
+    monkeypatch.setattr(
+        engine_source, "ENGINE_LOCK_SHA256", hashlib.sha256(lock).hexdigest(), raising=False
+    )
+    engine_source.write_source_marker(root)
 
 
 class TestEngineResult:
@@ -163,12 +175,13 @@ class TestEngineStatus:
         ):
             assert engine.engine_status() == {"ready": False, "clone": False, "venv": False}
 
-    def test_a_source_tree_without_a_venv_is_not_ready(self, tmp_path: Path):
+    def test_a_source_tree_without_a_venv_is_not_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """The exact half-installed state a provisioning run passes through: the
         banner must keep saying "not ready" instead of enabling the UI."""
         root = tmp_path / "engine"
-        root.mkdir(parents=True)
-        engine_source.write_source_marker(root)
+        _verified_tree(root, monkeypatch)
         with (
             mock.patch.object(engine.paths, "engine_root", return_value=root),
             mock.patch.object(engine.paths, "engine_python", return_value=tmp_path / "no-python"),
@@ -176,10 +189,11 @@ class TestEngineStatus:
             status = engine.engine_status()
         assert status == {"ready": False, "clone": True, "venv": False}
 
-    def test_ready_only_when_both_the_source_tree_and_the_venv_exist(self, tmp_path: Path):
+    def test_ready_only_when_both_the_source_tree_and_the_venv_exist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         root = tmp_path / "engine"
-        root.mkdir(parents=True)
-        engine_source.write_source_marker(root)
+        _verified_tree(root, monkeypatch)
         python = tmp_path / "python"
         python.write_text("#!/bin/sh", encoding="utf-8")
         with (
@@ -244,12 +258,13 @@ class TestEngineTag:
             assert engine.engine_tag() == "unknown"
         assert not spawn.called
 
-    def test_reports_the_verified_tag_without_spawning_anything(self, tmp_path: Path):
+    def test_reports_the_verified_tag_without_spawning_anything(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """A file read, so it is cheap enough for the status endpoints that call
         it on every poll — and it cannot report a tag nobody verified."""
         root = tmp_path / "engine"
-        root.mkdir(parents=True)
-        engine_source.write_source_marker(root)
+        _verified_tree(root, monkeypatch)
         with (
             mock.patch.object(engine.paths, "engine_root", return_value=root),
             mock.patch.object(engine, "_spawn") as spawn,

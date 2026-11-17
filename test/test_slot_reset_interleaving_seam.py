@@ -108,7 +108,9 @@ class TestInterleaveSeamContract:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(f"/api/chat/slots/{_SLOT}/reload")
         assert resp.status == 200
-        state.sessions.reset.assert_awaited_once_with(_SESSION_KEY, skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            _SESSION_KEY, skip_if_busy=True, forget_unused_start=True
+        )
 
     @pytest.mark.asyncio
     async def test_reload_reaches_its_points_in_order(self, state, slot, monkeypatch):
@@ -397,7 +399,9 @@ class TestReloadRacesSwitchCommitResetSpan:
         # rebind lands mid-reset, not before it) -- this guard's job is to
         # stop the response, not to have prevented the one reset already in
         # flight when the rebind arrived.
-        state.sessions.reset.assert_awaited_once_with(_SESSION_KEY, skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            _SESSION_KEY, skip_if_busy=True, forget_unused_start=True
+        )
         assert slot.linked_session_key == NEW_SESSION_KEY
 
     @pytest.mark.asyncio
@@ -433,7 +437,9 @@ class TestReloadRacesSwitchCommitResetSpan:
         # swap lands mid-reset, not before it) -- this guard's job is to stop
         # the response, not to have prevented the one reset already in
         # flight when the swap arrived.
-        state.sessions.reset.assert_awaited_once_with(_SESSION_KEY, skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            _SESSION_KEY, skip_if_busy=True, forget_unused_start=True
+        )
         # Neither slot's message history gained the reload notice: the guard
         # fires before the notice append, on either identity.
         assert slot.messages == []

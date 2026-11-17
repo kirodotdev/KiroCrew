@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 from functools import partial
@@ -53,6 +54,7 @@ from kiro_crew.knowledge.folder_watcher import (
     walk_filters,
 )
 from kiro_crew.knowledge.ingestion import _redact
+from kiro_crew.knowledge.kiroignore import MAX_RULES
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import AUTO_REGISTRATION_RETIRED_PROP
@@ -69,6 +71,22 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
 
 # Max length for a user-editable source display name (rename endpoint).
 _MAX_SOURCE_NAME_LEN = 200
+
+# Ceilings on a folder source's ``ignore_patterns`` at write time. Every scan
+# matches every pattern against every file, so an unbounded list costs each
+# sweep. The count matches ``.kiroignore``'s rule cap. A stored list over
+# either cap still loads; only new writes are refused.
+_MAX_IGNORE_PATTERNS = MAX_RULES
+_MAX_IGNORE_PATTERN_LEN = 1024
+
+
+def _ignore_patterns_limit_error(patterns: list[str]) -> str | None:
+    """The limit a list of ignore patterns breaks, else None."""
+    if len(patterns) > _MAX_IGNORE_PATTERNS:
+        return f"ignore_patterns can hold at most {_MAX_IGNORE_PATTERNS} patterns"
+    if any(len(p) > _MAX_IGNORE_PATTERN_LEN for p in patterns):
+        return f"each ignore pattern must be {_MAX_IGNORE_PATTERN_LEN} characters or fewer"
+    return None
 
 
 def _create_source_audited(store, source_type: str, **kwargs) -> tuple[str, bool]:
@@ -119,6 +137,25 @@ def _source_exists_response(source_type: str, source_id: str) -> web.Response:
             "it and add it again."
         )
     return web.json_response({"error": error, "id": source_id, "code": "source_exists"}, status=409)
+
+
+def _folder_spellings(plain: str, sep: str, altsep: str | None) -> list[str]:
+    """Spellings that name the folder ``plain`` (``str(Path(uri))``) lexically.
+
+    ``<dir>``, ``<dir><sep>`` and ``<dir><sep>.``, once with each separator the
+    platform accepts, so on Windows ``C:/x/`` matches a later ``C:\\x``. Shortcut:
+    a path mixing both separators in its body is not matched; it would need a
+    normalized-uri column to cover every mix. A bare Windows drive (``C:``) is a
+    drive-relative path, so it gets no separator: ``C:\\`` is the drive root.
+    """
+    if sep == "\\" and plain.endswith(":") and PureWindowsPath(plain).drive == plain:
+        return [plain]
+    out: list[str] = []
+    for s in (sep, altsep):
+        if s:
+            base = plain.replace(sep, s)
+            out += [base, base + s, base + s + "."]
+    return list(dict.fromkeys(out))
 
 
 def _set_file_state(store, source_id: str, file_path: str, status: str) -> None:
@@ -436,6 +473,11 @@ def _add_source_shape_error(body: dict) -> str | None:
         nested = properties.get("namespace")
         if nested is not None and not isinstance(nested, str):
             return "namespace must be a string"
+        patterns = properties.get("ignore_patterns")
+        if patterns is not None:
+            if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+                return "ignore_patterns must be a list of strings"
+            return _ignore_patterns_limit_error(patterns)
     return None
 
 
@@ -806,6 +848,37 @@ async def add_source(request: web.Request) -> web.Response:
     if existing:
         return _source_exists_response(source_type, existing["id"])
 
+    # A folder typed with a trailing separator or a "." segment names the same
+    # directory as its plain spelling, but the check above matches spellings
+    # exactly. When a row already holds one of those spellings, answer with that
+    # row instead of adding a second one that would ingest the folder again.
+    # The new row keeps the spelling it was given, as before. Lexical only: ".."
+    # is never collapsed, since that can change which directory a symlinked
+    # path names.
+    if source_type in ("local_folder", "obsidian_vault") and probe is not None and probe.is_dir:
+        for spelling in _folder_spellings(str(Path(uri)), os.sep, os.altsep):
+            if spelling == uri:
+                continue
+            same = await asyncio.to_thread(store.get_source_by_uri, spelling)
+            if same:
+                logger.warning(
+                    "Folder source %s is already registered as %s; not adding it again",
+                    uri,
+                    spelling,
+                )
+                # The row's id under "id" too, the key every caller reads: the
+                # md-notebook app confirms the id it gets back, as it does for a
+                # 409, and the Knowledge tab's follow-up sync is a no-op for a
+                # folder (its connector never reports changes; the watcher
+                # scans it).
+                return web.json_response(
+                    {
+                        "id": same["id"],
+                        "status": "exists",
+                        "warning": f"This folder is already a source ({spelling}).",
+                    }
+                )
+
     # The name every insert below stores, resolved once the uri is final; a
     # blank name falls back to the uri. Only a bedrock_kb name is cut, and it
     # is cut rather than refused: the search reads those rows through
@@ -823,6 +896,18 @@ async def add_source(request: web.Request) -> web.Response:
         from kiro_crew.platform import redact_via_context
 
         stored_name = redact_via_context(stored_name)[:bedrock_name_cap]
+    # JSON allows escaped lone surrogates; UTF-8, which SQLite binds the name
+    # as, does not. Every path below that answers 2xx inserts it.
+    try:
+        stored_name.encode("utf-8")
+    except UnicodeEncodeError:
+        return web.json_response(
+            {
+                "error": "name contains characters that cannot be encoded",
+                "code": "text_not_encodable",
+            },
+            status=400,
+        )
 
     # Folder sources: discovery walk + pending_confirmation (no auto-scan)
     if source_type in ("local_folder", "obsidian_vault"):
@@ -1027,6 +1112,18 @@ async def rename_source(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
             )
+        # JSON allows escaped lone surrogates; UTF-8, which SQLite binds the
+        # name as, does not.
+        try:
+            name.encode("utf-8")
+        except UnicodeEncodeError:
+            return web.json_response(
+                {
+                    "error": "name contains characters that cannot be encoded",
+                    "code": "text_not_encodable",
+                },
+                status=400,
+            )
     if patterns is not None:
         if row["source_type"] not in ("local_folder", "obsidian_vault"):
             return web.json_response(
@@ -1043,6 +1140,11 @@ async def rename_source(request: web.Request) -> web.Response:
                     "code": "ignore_patterns_invalid",
                 },
                 status=400,
+            )
+        limit_error = _ignore_patterns_limit_error(patterns)
+        if limit_error is not None:
+            return web.json_response(
+                {"error": limit_error, "code": "ignore_patterns_too_large"}, status=400
             )
         patterns = [p.strip() for p in patterns if p.strip()]
     result: dict = {"ok": True}
@@ -1251,9 +1353,10 @@ async def list_source_files(request: web.Request) -> web.Response:
         }
         for r in rows
     ]
-    # Also count totals
+    # Also count totals. A deduped file was read; its text lives in the copy it
+    # matched, so it is finished work and counts as done.
     total = len(files)
-    done = sum(1 for f in files if f["status"] == "done")
+    done = sum(1 for f in files if f["status"] in ("done", "deduped"))
     failed = sum(1 for f in files if f["status"] == "failed")
     skipped = sum(1 for f in files if f["status"] == "skipped")
     return web.json_response(

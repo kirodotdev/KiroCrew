@@ -181,7 +181,9 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         # user enables from the dashboard, which is the common case.
         keys = ("tools", "allowedTools") if may_skip_gate_now(tool_ref) else ("tools",)
         for key in keys:
-            lst = cfg.setdefault(key, [])
+            if cfg.get(key) is None:  # a hand-edited null reads as no list yet
+                cfg[key] = []
+            lst = cfg[key]
             if tool_ref not in lst:
                 lst.append(tool_ref)
                 changed = True
@@ -254,7 +256,10 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         # whatever autoApprove it carried. The caller turns it into a 409.
         raise
     except OSError as exc:
+        # Raised, not swallowed: the caller would answer ``applied`` while
+        # kiro-cli still loads the old spec. Same reason the read raises.
         logger.warning("Cannot write agent config %s: %s", path, exc)
+        raise
 
 
 def _mark_agent_entries_disabled(cfg: dict, keys: tuple[str, ...]) -> bool:
@@ -355,7 +360,9 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             else:
                 withheld_refs.append(tool_ref)
             for key in keys:
-                lst = cfg.setdefault(key, [])
+                if cfg.get(key) is None:  # a hand-edited null reads as no list yet
+                    cfg[key] = []
+                lst = cfg[key]
                 if tool_ref not in lst:
                     lst.append(tool_ref)
                     changed = True
@@ -417,7 +424,10 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         # so a swallowed refusal reports every name in it as applied.
         raise
     except OSError as exc:
+        # Raised, not swallowed: the caller would answer ``applied`` while
+        # kiro-cli still loads the old spec. Same reason the read raises.
         logger.warning("Cannot write agent config %s: %s", path, exc)
+        raise
 
 
 def _mcp_hot_reload_active(request: web.Request) -> bool:

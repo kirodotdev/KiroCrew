@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers.cron import (
@@ -232,14 +233,15 @@ class TestApiCronScriptSource:
     async def test_credentials_redacted(self, crons_home: Path) -> None:
         # Scripts are LLM-writeable, so their content is agent-influenced text:
         # raw credential patterns must not reach the dashboard verbatim.
+        token = github_classic(seed=91)
         script = crons_home / "crons" / "leaky.py"
-        script.write_text('KEY = "AKIAIOSFODNN7EXAMPLE"\n')
+        script.write_text(f'KEY = "{token}"\n')
         state = _make_state(_make_job(script=f"{script}:run"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/crons/j1/script")
             assert resp.status == 200
             data = await resp.json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["source"]
+        assert token not in data["source"]
         # The display does not equal the raw body, so the approval flow must
         # treat this script as unreviewable (the operator cannot read the span).
         assert data["reviewable"] is False
@@ -250,15 +252,16 @@ class TestApiCronScriptSource:
         # content, so a credential-shaped name must not ride out unredacted on
         # the metadata fields either. A credential pattern is a legal Python
         # identifier and a legal file name, so both fields are reachable.
-        script = crons_home / "crons" / "AKIAIOSFODNN7EXAMPLE.py"
+        token = github_classic(seed=92)
+        script = crons_home / "crons" / f"{token}.py"
         script.write_text(SCRIPT_BODY)
-        state = _make_state(_make_job(script=f"{script}:AKIAIOSFODNN7EXAMPLE"))
+        state = _make_state(_make_job(script=f"{script}:{token}"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/crons/j1/script")
             assert resp.status == 200
             data = await resp.json()
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["file"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["function"]
+        assert token not in data["file"]
+        assert token not in data["function"]
 
     @windows_only
     @pytest.mark.asyncio

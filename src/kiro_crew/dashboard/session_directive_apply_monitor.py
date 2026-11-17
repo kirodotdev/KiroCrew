@@ -540,15 +540,18 @@ async def _monitor_update(
             "monitor_update cannot apply structured fields to a legacy loop: "
             + ", ".join(structured_only)
         )
-    # A work-ledger patrol takes no model-chosen bound (rfc-permanent-patrol.md):
-    # adding the watch, or touching a bound on a loop that has it, sets no cycle cap
-    # and the operator's runtime ceiling (7 days as shipped) as the one backstop.
+    # A work-ledger patrol takes no model-chosen bound or cadence (rfc-permanent-patrol.md):
+    # adding the watch, or touching a bound or the interval on a loop that has it, sets
+    # the one patrol interval, no cycle cap, and the operator's runtime ceiling (7 days
+    # as shipped) as the one backstop.
     watches_ledger = getattr(getattr(loop, "monitor", None), "kind", "") == "work-ledger"
     if patch.get("watch") == "work-ledger" or (
-        {"max_cycles", "max_runtime_secs"} & set(patch) and watches_ledger
+        {"idle_secs", "max_cycles", "max_runtime_secs"} & set(patch) and watches_ledger
     ):
+        from kiro_crew.conductor_patrol import PATROL_INTERVAL_SECS
         from kiro_crew.monitoring.limits import runtime_ceiling_secs
 
+        patch["idle_secs"] = PATROL_INTERVAL_SECS
         patch["max_cycles"], patch["max_runtime_secs"] = 0, runtime_ceiling_secs()
     cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
     current_cap = int(getattr(loop, "max_cycles", 0) or 0)
@@ -600,7 +603,7 @@ async def _monitor_update(
         # as one -- the same precedence the expiry notice states, read from the same
         # two fields, so the agent-facing and user-facing endings cannot disagree.
         #
-        # A channel-bound loop does not settle on observation: the probe records the
+        # A gated pull-request loop does not settle on observation: the probe records the
         # owed final turn in ``monitor.terminal_pending`` and leaves the loop active
         # with no ``outcome``. If that turn is refused (a busy thread, the ordinary
         # case) and the retry finds a bound spent, the loop deactivates tagged with

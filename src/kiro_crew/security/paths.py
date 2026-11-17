@@ -142,6 +142,24 @@ def _path_in_home_dirs(
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
         sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved)
+        from kiro_crew.config.paths import scratch_root_override_path_hint
+
+        scratch_override = scratch_root_override_path_hint()
+        if scratch_override is not None:
+            from kiro_crew.agent_scratch_trees import TREE_INDEX_FILENAME
+
+            scratch_targets = (
+                {os.path.realpath(os.path.expanduser(scratch_override))}
+                if pre_resolved
+                else _candidate_forms(str(scratch_override))
+            )
+            scratch_parents = {target.casefold() for target in scratch_targets}
+            for cand in candidates:
+                cand_cf = cand.casefold()
+                if (
+                    os.path.basename(cand_cf) == TREE_INDEX_FILENAME or cand_cf.endswith(".tmp")
+                ) and os.path.dirname(cand_cf) in scratch_parents:
+                    return True
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a
@@ -389,6 +407,11 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
         matched = _path_in_home_dirs(
             path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir, strict=True
         ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+        matched = matched or _path_in_home_dirs(
+            path_str, _app_readonly_dir_rows(), base_dir, strict=True
+        )
+        if not matched and (rule_rows := _permission_rule_rows()):
+            matched = _path_in_home_dirs(path_str, rule_rows, base_dir, strict=True)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
     except PathResolutionStalled as exc:
@@ -510,9 +533,35 @@ def write_protected_home_paths() -> tuple[str, ...]:
     """Public, read-only view of the write-only-protected home-relative paths.
 
     Companion to :func:`sensitive_home_dirs` — these stay readable but must not
-    be written by an agent tool.
+    be written by an agent tool, the app-declared rows after the core ones.
     """
-    return tuple(_WRITE_PROTECTED_HOME_PATHS)
+    return (*_WRITE_PROTECTED_HOME_PATHS, *_permission_rule_rows(), *_app_readonly_dir_rows())
+
+
+def _permission_rule_rows() -> list[str]:
+    """kiro-cli's permission rule leaves while their write fence is on.
+
+    Off by default, so the agent may edit them as before; read live at each check, like
+    ``mcp.honour_auto_approve`` is. A degraded read that cannot establish the owner's
+    choice keeps the fence on.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        if cfg._base_unreadable or cfg._overlay_unreadable or "mcp" in cfg.degraded_sections:
+            logger.warning(
+                "could not establish mcp.protect_kiro_permission_rules from degraded config; "
+                "fencing"
+            )
+            on = True
+        else:
+            on = cfg.mcp.protect_kiro_permission_rules
+    except Exception:  # noqa: BLE001 (an unreadable config must not drop an opted-in fence)
+        logger.warning("could not read mcp.protect_kiro_permission_rules; fencing", exc_info=True)
+        on = True
+    return list(_KIRO_PERMISSION_RULE_LEAVES) if on is True else []
 
 
 def crew_home_prefixes() -> tuple[str, ...]:
@@ -704,6 +753,7 @@ from .paths_lists import (  # noqa: E402
     _CREW_HOME_PREFIXES,
     _KEYSTONE_ARTIFACT_PARENTS,
     _KEYSTONE_ARTIFACT_SUFFIXES,
+    _KIRO_PERMISSION_RULE_LEAVES,
     _SENSITIVE_HOME_DIRS,
     _WRITE_PROTECTED_HOME_PATHS,
     _leaf_segments,
@@ -718,6 +768,7 @@ from .paths_resolver import (  # noqa: E402
 )
 from .paths_targets import (  # noqa: E402
     _OVERRIDE_ANCHORED_LEAVES,
+    _app_readonly_dir_rows,
     _candidate_forms,
     _home_dir_targets,
     _resolve_root_anchors,
@@ -777,6 +828,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _extend_cooldown,
         _inline_bounded,
         _is_unc_path,
+        _judgment_budget,
         _load_arm_budget_spent,
         _mark_stalled,
         _outside_bounded_call,
@@ -792,10 +844,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolved_spellings_inline,
         _ResolvedT,
         _run_resolution_bounded,
+        _running_event_loop,
         _stall_prefix,
+        bounded_judgment,
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401
         _ADAPTER_ROOT_ENVS,
+        _APP_READONLY_ROWS_BUDGET_SECS,
+        _APP_READONLY_ROWS_TTL_SECS,
         _HOME_TARGETS_TTL_COST_RATIO,
         _HOME_TARGETS_TTL_MAX_SECS,
         _HOME_TARGETS_TTL_SECS,
@@ -809,6 +865,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TTL_MAX_SECS_MAX,
         _TTL_MAX_SECS_MIN,
         _anchor_targets,
+        _app_readonly_rows_cache,
+        _app_readonly_rows_clock,
+        _app_readonly_rows_lock,
+        _app_readonly_rows_pending,
         _BuiltTargets,
         _cached_home_dir_targets,
         _env_float,
@@ -820,6 +880,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _home_targets_tier,
         _home_targets_ttl,
         _lexical_root,
+        _list_app_readonly_dir_rows,
+        _on_event_loop,
         _rebuild_targets_bounded,
         _report_expiry_pin,
         _resolved_env_root,
@@ -831,6 +893,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         host_auth,
         native_allow_stores,
     )
+    from kiro_crew.apps import credential_masks  # noqa: F401
     from kiro_crew.executors import (  # noqa: F401
         path_resolve_executor,
     )

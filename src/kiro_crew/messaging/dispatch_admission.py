@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
+from kiro_crew.embeddings_shared import warm_embedder_for_person_soon
 from kiro_crew.messaging.dispatch_contract import ChannelTurn
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.inbound_spool import (
@@ -22,6 +23,7 @@ from kiro_crew.messaging.inbound_spool import (
     spool_refused_turn_sync,
 )
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
+from kiro_crew.quiescence import note_user_input
 
 logger = logging.getLogger("kiro_crew.messaging.dispatch")
 
@@ -32,6 +34,7 @@ async def admit_inbound_callback(
     channel_type: str,
     route: InboundRoute | None,
     restricted: bool | Callable[[], Awaitable[bool]] = False,
+    human_input: bool = True,
 ) -> bool:
     """Reserve one handler task or durably refuse it before pre-turn effects.
 
@@ -40,7 +43,17 @@ async def admit_inbound_callback(
     an awaited routing decision to determine. The upstream client handler task
     remains census-visible during that decision, while the happy path keeps the
     synchronous reserve-before-effects boundary and pays no routing lookup.
+
+    *human_input* is whether this admission is an authorized person's message.
+    A caller that admits a raw transport envelope before it knows the sender
+    (Slack's socket listener sees reactions, bot traffic and unauthorized users)
+    passes ``False``, so that traffic never refills the typing window of the
+    restart gate; the later admission of the routed message counts it.
     """
+    if human_input:
+        # Recorded before admission can refuse: a message that arrives while an
+        # update holds the gate is still a person at the keyboard.
+        note_user_input(sessions)
     reserve = getattr(sessions, "reserve_inbound_callback", None)
     if not callable(reserve):
         # Compatibility for focused embedders/test doubles that are not a
@@ -69,6 +82,8 @@ async def admit_inbound_callback(
         reservation.release()
         raise RuntimeError("inbound callback has no owning asyncio task")
     task.add_done_callback(lambda _done: reservation.release())
+    if human_input and route is not None:  # a person's routed message, never a monitor's
+        warm_embedder_for_person_soon()
     return True
 
 
@@ -90,11 +105,14 @@ class _InboundCallbackAdmission:
         self._reservation: Any = None
 
     async def __aenter__(self) -> bool:
+        note_user_input(self._sessions)
         reserve = getattr(self._sessions, "reserve_inbound_callback", None)
         if not callable(reserve):
             return True
         self._reservation = reserve()
         if self._reservation is not None:
+            if self._route is not None:  # a person's routed message
+                warm_embedder_for_person_soon()
             return True
         if not self._restricted:
             if getattr(self._sessions, "update_restart_fenced", False):

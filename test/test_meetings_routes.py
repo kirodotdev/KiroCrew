@@ -33,12 +33,15 @@ from meetings_helpers import (  # noqa: F401
     root_fixture,
 )
 from meetings_routes_helpers import BASE, _start, _start_and_get_session
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes import _common
 from kiro_crew.testing.wait import await_until
+
+_KEY = github_classic(seed=19)  # a token the credential plan redacts
 
 # Repo-root anchor for tests that read a checked-in source file. A relative
 # literal resolves against the process CWD, which no test owns: another test
@@ -443,6 +446,27 @@ class TestAgentRoutes:
             # Only the agent just enabled — the defaults are NOT re-added.
             assert (await resp.json())["agents_enabled"] == ["note-taker"]
 
+    @pytest.mark.asyncio
+    async def test_a_start_without_a_roster_runs_the_one_the_meeting_holds(
+        self, app, root, fake_sessions
+    ):
+        """An absent ``agents_enabled`` keeps the roster the meeting already holds in
+        its metadata, and the kickoff reads it from there. The outputs and the live
+        queues were built from the configured defaults instead, so a restart of a
+        meeting that had every optional agent switched off seeded their output files
+        and sent them transcript."""
+        async with client_for(app) as client:
+            await client.post(f"{BASE}/meetings/standup/init", json={})
+            first = await client.post(f"{BASE}/meetings/standup/start", json={"agents_enabled": []})
+            assert first.status == 200
+            again = await client.post(f"{BASE}/meetings/standup/start", json={"restart": True})
+            assert again.status == 200
+            live = _common.ACTIVE.get("standup")
+            assert live is not None and set(live.agents) == {k.TASK_EXTRACTOR_ID}
+        meta = store.read_meeting_meta("standup", root)
+        assert meta is not None and meta["agents_enabled"] == []
+        assert meta["outputs"] == {}
+
     def _default_output_names(self, root: Path) -> set[str]:
         """Output filenames the default roster would seed."""
         config = store.read_config(root)
@@ -566,14 +590,14 @@ class TestAgentRoutes:
             await _start(client)
             resp = await client.post(
                 f"{BASE}/meetings/standup/dispatch",
-                json={"text": "rotate AKIAIOSFODNN7EXAMPLE today"},
+                json={"text": f"rotate {_KEY} today"},
             )
             assert resp.status == 200
             body = await resp.json()
             assert body["dispatched"] == 3
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["text"]
+            assert _KEY not in body["text"]
             assert body["segment"]["source"] == k.TRANSCRIPT_SOURCE_SPEECH
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["segment"]["text"]
+            assert _KEY not in body["segment"]["text"]
 
             transcript = await client.get(f"{BASE}/meetings/standup/transcript")
             assert transcript.status == 200
@@ -775,23 +799,24 @@ class TestAgentRoutes:
                 await release_flush.wait()
 
             monkeypatch.setattr(session, "flush_all", slow_flush)
-            stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
-            await await_until(flush_entered)
+            # The app's cleanup hook flushes again, so a flush left parked hangs teardown.
+            try:
+                stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
+                await await_until(flush_entered)
 
-            dispatch = await await_until(
-                asyncio.ensure_future(
-                    client.post(
-                        f"{BASE}/meetings/standup/dispatch",
-                        json={"text": "too late"},
+                dispatch = await await_until(
+                    asyncio.ensure_future(
+                        client.post(
+                            f"{BASE}/meetings/standup/dispatch",
+                            json={"text": "too late"},
+                        )
                     )
-                ),
-                timeout=1,
-            )
-            assert dispatch.status == 409
-            assert (await dispatch.json())["code"] == "no_active_meeting"
-
-            release_flush.set()
-            assert (await stop_request).status == 200
+                )
+                assert dispatch.status == 409
+                assert (await dispatch.json())["code"] == "no_active_meeting"
+            finally:
+                release_flush.set()
+            assert (await await_until(stop_request)).status == 200
 
         assert _common.ACTIVE.get() is None
 
@@ -1139,15 +1164,15 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             body = await (
                 await client.post(
                     f"{BASE}/meetings/standup/dispatch",
-                    json={"text": "rotate AKIAIOSFODNN7EXAMPLE today"},
+                    json={"text": f"rotate {_KEY} today"},
                 )
             ).json()
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["text"]
-            assert "AKIAIOSFODNN7EXAMPLE" not in body["segment"]["text"]
+            assert _KEY not in body["text"]
+            assert _KEY not in body["segment"]["text"]
 
             session = _common.ACTIVE.get("standup")
             assert session is not None
-            assert not any("AKIAIOSFODNN7EXAMPLE" in line for line in _held_lines(session))
+            assert not any(_KEY in line for line in _held_lines(session))
 
             release.set()
             assert (await start).status == 200

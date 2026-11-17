@@ -107,6 +107,7 @@ from types import ModuleType
 
 from kiro_crew.agent_scratch import scratch_root as managed_scratch_root
 from kiro_crew.browser_snapshots import snapshot_dir
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.hooks import (
     FileTooLargeError,
     is_unc_shape,
@@ -122,6 +123,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
+    refuses,
 )
 from kiro_crew.widget_parse import mask_inline_code
 
@@ -794,7 +796,7 @@ def strip_url_syntax(raw_dest: str) -> str:
         return raw_dest
     clean = raw_dest.split("?", 1)[0].split("#", 1)[0]
     if clean.startswith("file://"):
-        clean = clean[len("file://") :]
+        clean = file_uri_path_text(clean)
     return clean
 
 
@@ -1323,9 +1325,10 @@ def upload_filename(file: "OutboundFile", index: int = 0) -> str:
     stem = stem[: -len(Path(stem).suffix)] if Path(stem).suffix else stem
     stem = stem.strip("._")[:64]
     name = f"{stem or f'image_{index}'}.{ext}"
-    redacted, _ = redact_exfiltration_urls(name)
-    redacted, _ = redact_credentials(redacted)
-    return name if redacted == name else f"image_{index}.{ext}"
+    # A safety decision: it judges in full whatever the owner's redaction setting.
+    if refuses(name, lambda text: redact_credentials(redact_exfiltration_urls(text)[0])[0]):
+        return f"image_{index}.{ext}"
+    return name
 
 
 def extract_local_refs(

@@ -53,16 +53,19 @@ REMOTE_EDITOR_HOST_PATTERN = (
 # test_feature_previews_config.py pins the two lists equal.
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
-    "crew_mode",
+    "bridge_approvals",
+    "chat_runtime_sharing",
     "crew_oauth",
     "dashboard_stale_fields",
+    "dashboard_stale_wake",
     "explore",
     "folder_conductor",
-    "layout_harness",
-    "mate_sessions",
     "remote_crew_chat",
+    "secrets_vault",
     "session_environments",
+    "session_harness",
     "webhooks",
+    "worker_grill",
 )
 
 
@@ -250,6 +253,18 @@ class DashboardConfig:
             "Use the background model to update session-owned HTML cards after activity. "
             "Off by default. One call at a time, at most one per session every two minutes "
             "and 60 per gateway hour. Live status and native decisions work without it.",
+        ),
+    )
+    audit_secret_reads: bool = field(
+        default=False,
+        metadata=_meta(
+            "Audit secret reads",
+            "Write a security log row when the gateway reads a vault secret: the secret's "
+            "name, the module that read it and the function that asked (unknown when the "
+            "read runs on a worker thread with no calling code of its own), never the value. "
+            "Repeat reads of one secret by one caller share a row per 10 minutes, which "
+            "counts them. Off by default. Takes effect on the next read; no restart (within "
+            "30 seconds in the MCP gateway process).",
         ),
     )
     crewmate_threads: bool = field(
@@ -455,7 +470,7 @@ class DashboardConfig:
             "Raise it on a host that does heavy subprocess work (long builds, "
             "test suites, many child reaps), which can wedge the loop briefly "
             "without being genuinely dead. Clamped to 10s..300s. The desktop app's "
-            "liveness probe kills at roughly 20s independently, so a value "
+            "liveness probe kills after about a minute independently, so a value "
             "above that only takes effect for a headless gateway — the desktop "
             "probe wins first and the stack dump is lost.",
             restart=True,
@@ -513,11 +528,10 @@ class DashboardConfig:
     new_chat_crew_mode: bool = field(
         default=False,
         metadata=_meta(
-            "Start new chats in Ultra Mode",
-            "Open each new dashboard chat with Ultra Mode already on. It can "
+            "Start new chats in conductor mode",
+            "Open each new dashboard chat with conductor mode already on. It can "
             "still be turned off before the first message. Applies only where "
-            "Ultra Mode is offered: a Persistent chat on the default agent, "
-            "with the Ultra Mode preview on.",
+            "conductor mode is offered: a Persistent chat on the default agent.",
         ),
     )
     widget_density: str = field(
@@ -990,6 +1004,25 @@ class DashboardConfig:
             "are not affected.",
         ),
     )
+    command_bar_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Command Bar Enabled",
+            "Open the Command Bar launcher on the quick-search shortcut (Cmd+K or "
+            "Ctrl+K). Off opens the search palette instead, which also searches "
+            "knowledge, skills and prompts.",
+        ),
+    )
+    channels_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Channels Enabled",
+            "Show Channels, where several agents work a problem together in one shared "
+            "room, in the sidebar and in Search Everywhere. Off by default; off only "
+            "hides the sidebar row and the search result, so the channels you made "
+            "and the Channels page itself are kept.",
+        ),
+    )
     # Literal enum rather than FOLDER_SORT_MODES: that constant lives in
     # sections_limits with the other write/load bounds, and this field spells the
     # same list. test_config_patch.py::TestFolderSortRoundTrip::
@@ -1033,13 +1066,29 @@ class DashboardConfig:
             ],
         ),
     )
+    # Default FALSE: unfiled sessions below the folders is the layout every
+    # install has drawn. A config that never mentions the key must render it.
+    unfiled_sessions_above_folders: bool = field(
+        default=False,
+        metadata=_meta(
+            "Unfiled sessions above folders",
+            "Where the chat sidebar draws sessions that are not filed in any folder: "
+            "above the folder list when on, below it when off. Applies to the list "
+            "view's folder tree and to each board column; flat view draws no folders "
+            "and is unaffected. In the list view, dropping a session on the unfiled "
+            "area removes it from its folder either way. New sessions start unfiled, "
+            "so with many folders turning this on keeps the ones still to sort on "
+            "screen instead of below the last folder.",
+        ),
+    )
     update_nudge: dict = field(
         default_factory=dict,
         metadata=_meta(
             "Update Nudge",
             "Per-version state for the proactive update popup. Written by the "
-            "dashboard when the user snoozes or skips a release; a record only "
-            "suppresses the popup for the version it names. Validated as one "
+            "dashboard when the user snoozes or skips a release; a snooze only "
+            "suppresses the popup for the version it names, and every skipped "
+            "version stays in skipped_versions. Validated as one "
             "atomic record by the PATCH allowlist (dashboard.update_nudge); "
             "no Settings control reads it, so it carries no schema properties.",
         ),
@@ -1083,6 +1132,29 @@ class DashboardConfig:
             "rather than browser-local because the gateway gates the very FIRST "
             "heartbeat on it: until this is true the user has not yet been shown the "
             "opt-out, and a ping sent before the offer makes the offer meaningless.",
+        ),
+    )
+    privacy_ack_version: int = field(
+        default=0,
+        metadata=_meta(
+            "Privacy Notice Version Acknowledged",
+            "The version of the Privacy chapter text, the one saying local metric "
+            "recording is on, that the user last acknowledged (0 = none). When the "
+            "dashboard's notice version is higher, the chapter is shown once more "
+            "at the next dashboard load, but only while local recording is on. "
+            "Written by the Privacy chapter and by kirocrew telemetry enable.",
+        ),
+    )
+    kiro_telemetry_ack_version: int = field(
+        default=0,
+        metadata=_meta(
+            "Kiro Telemetry Notice Version Acknowledged",
+            "The privacy notice version the user acknowledged while its text named "
+            "the built-in Kiro telemetry destination (0 = none). Product usage "
+            "metrics go to that destination only once this is at least the version "
+            "that names it, or a start with no dashboard printed the line naming it "
+            "on a terminal. Written by the Privacy chapter and by kirocrew telemetry "
+            "enable.",
         ),
     )
     crewmates_onboarded: bool = field(
@@ -1163,6 +1235,15 @@ class DashboardConfig:
         metadata=_meta(
             "Folder Suggestions Enabled",
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
+    project_tags_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Project Tags Enabled",
+            "Tag a new chat session with the last folder name of its project path, "
+            "such as my-app. Off creates and adds no project tag; tags already on a "
+            "session stay.",
         ),
     )
     topic_tags_enabled: bool = field(

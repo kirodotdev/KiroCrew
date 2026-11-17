@@ -7,6 +7,8 @@ import { renderWithProviders } from '../../test/helpers'
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The owner check behind Import from file (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn(() => Promise.resolve(true)),
     // The roster's team grouping reads the team list; "no teams" keeps the
     // list flat, which is the shape every case here was written against.
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })) },

@@ -210,6 +210,36 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
+#: Words a hand-edited ``state.json`` uses for "no turn cap".
+_NO_CAP_WORDS = frozenset({"unlimited", "infinite", "inf", "no limit", "none"})
+
+
+def _legacy_max_turns(raw: Any, agent_id: str) -> int:
+    """A legacy ``max_turns`` as the runner reads it, without ever raising.
+
+    ``0`` is "not set" to the runner (it falls back to the configured default),
+    so a "no cap" word maps to the largest cap the product allows instead.
+    shortcut: the runner has no uncapped value; map to it if one is added.
+    Anything else ``int()`` cannot read keeps the default, with a warning,
+    so one bad folder never costs the others their rows.
+    """
+    if not raw:
+        return 0
+    no_cap = isinstance(raw, str) and raw.strip().lower() in _NO_CAP_WORDS
+    # JSON ``Infinity`` loads as a float: the same "no cap", spelled as a number.
+    if no_cap or (isinstance(raw, float) and raw == float("inf")):
+        from kiro_crew.config.sections_limits import SUBAGENT_MAX_TURNS_CEILING
+
+        return SUBAGENT_MAX_TURNS_CEILING
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(
+            "taskq legacy import: %s has an unreadable max_turns, using the default", agent_id
+        )
+        return 0
+
+
 def legacy_subagent_records(subagents_dir: Path, *, now: float) -> list[TaskRecord]:
     """Rows for every non-tombstoned subagent folder under *subagents_dir*.
 
@@ -234,11 +264,12 @@ def legacy_subagent_records(subagents_dir: Path, *, now: float) -> list[TaskReco
         if agent_id != folder.name:
             continue  # a state file that names another run is not this run's
         parent_session = str(state.get("parent_session") or "")
+        max_turns = _legacy_max_turns(state.get("max_turns"), agent_id)
         params: dict[str, Any] = {
             "task": str(state.get("task") or ""),
             "parent_session_key": parent_session,
             "agent": str(state.get("agent") or ""),
-            "max_turns": int(state.get("max_turns") or 0),
+            "max_turns": max_turns,
             "memory_store": str(state.get("memory_store") or ""),
             "_preassigned_id": agent_id,
             "_legacy_import": True,

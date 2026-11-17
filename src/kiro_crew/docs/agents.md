@@ -13,7 +13,8 @@ The generated default configuration is `~/.kiro/agents/kirocrew.json`. Its shipp
 - A `postToolUse` audit hook for shell calls. It appends each command to
   `audit.log` under the data home (`~/.kiro/crew` or `KIROCREW_HOME`); the gateway
   (and a standalone `kirocrew chat`, at its start) rotates that file at 8 MiB,
-  keeping one previous generation as `audit.log.1`.
+  keeping one previous generation as `audit.log.1`. On Windows the hook runs the
+  gateway's Python directly instead of a POSIX shell command.
 
 ## Switching Agents
 
@@ -62,32 +63,33 @@ Cron jobs can specify an agent at creation time.
 
 Kiro Crew owns and rewrites a fixed set of specs; [agent-spec-fields.md](agent-spec-fields.md) lists every one of them with what refreshes it. The primary and lite specs are required; the others support goal conducting, pipeline fleet supervision, security conducting, knowledge extraction, research, and heartbeat features.
 
-`kirocrew-conductor` tracks its goal in the work ledger: it mounts `kirocrew-work`, binds each item to a session before seeding it, and settles every completion claim with the acceptance evaluator instead of by reading a transcript. **Crew Mode** is a chat that runs on a conductor: pick `kirocrew-conductor` in the agent picker and the chat keeps its memory and history and runs on it. From the first message on it is locked, so the chat stays on the conductor; start a new chat to work with another agent. Making the conductor the default agent starts every new chat on it the same way. `agent.crew_mode_agent` names the conductor Crew Mode runs (default `kirocrew-team-lead`); changing it, or an update that ships a new default, moves every Crew Mode chat, new and old, onto the new conductor (a busy chat at its next idle point), and the chat keeps its work ledger. Every conductor is Crew Mode: a chat you started on the team lead, the pipeline, security or ledger conductor, scheduled ones included, is a Crew Mode chat when the dashboard loads it, locked the same way. A chat that turned Crew Mode on (switched onto the conductor, or a new chat born on it) keeps the sessions it dispatches out of your folders; History still lists them. A conductor chat from before the switch existed keeps filing them as it always did. Nothing is deleted and no folder moves. The server enforces the lock: once the chat has a user message, switching a Crew Mode chat to another agent, from the picker, `/agent` or a session-control send, is refused with `409 crew_mode_locked`, and an agent switch the backend makes mid-turn is blocked the same way. Before the first message only a switch back to a template that is not a conductor passes. The pipeline and security conductors mount `kirocrew-work` too and record each item they dispatch as a work-ledger row, which is what their Dashboard tab reads; their own queue or findings ledger stays the detail behind that row. `kirocrew-ledger-conductor` is a deprecated alias of it — the same spec under the flow's old name, kept for one release so a session or cron that names the old string keeps resolving, and removed next release. `kirocrew-worker` is the agent a conductor names for a leaf item — the default agent's own resolved toolset plus the two reporting tools. In short, `kirocrew-worker` is `kirocrew` + `@kirocrew-work` − cron scheduling − the opt-in sets nobody assigned to it: a worker gets your default agent's own toolset so it can do any item's work, but it does not auto-approve scheduling a recurring job that would outlive the item. Which fields are mirrored, when the mirror is re-checked, and what happens when it cannot be re-derived are in [agent-spec-fields.md](agent-spec-fields.md).
+`kirocrew-conductor` tracks its goal in the work ledger: it mounts `kirocrew-work`, binds each item to a session before seeding it, and settles every completion claim with the acceptance evaluator instead of by reading a transcript. **Conductor mode** is a chat that runs on a conductor: pick `kirocrew-conductor` in the agent picker and the chat keeps its memory and history and runs on it. From the first message on it is locked, so the chat stays on the conductor; start a new chat to work with another agent. Making the conductor the default agent starts every new chat on it the same way. `agent.crew_mode_agent` names the conductor conductor mode runs (default `kirocrew-conductor`); changing it, or an update that ships a new default, moves every conductor mode chat, new and old, onto the new conductor (a busy chat at its next idle point), and the chat keeps its work ledger. Every conductor is conductor mode: a chat you started on the team lead, the pipeline, security or ledger conductor, scheduled ones included, is a conductor mode chat when the dashboard loads it, locked the same way. A chat that turned conductor mode on (switched onto the conductor, or a new chat born on it) keeps the sessions it dispatches out of your folders; History still lists them. A conductor chat from before the switch existed keeps filing them as it always did. Nothing is deleted and no folder moves. The server enforces the lock: once the chat has a user message, switching a conductor mode chat to another agent, from the picker, `/agent` or a session-control send, is refused with `409 crew_mode_locked`, and an agent switch the backend makes mid-turn is blocked the same way. Before the first message only a switch back to a template that is not a conductor passes. The pipeline and security conductors mount `kirocrew-work` too and record each item they dispatch as a work-ledger row, which is what their Dashboard tab reads; their own queue or findings ledger stays the detail behind that row. `kirocrew-ledger-conductor` is a deprecated alias of it — the same spec under the flow's old name, kept for one release so a session or cron that names the old string keeps resolving, and removed next release. `kirocrew-worker` is the agent a conductor names for a leaf item — the default agent's own resolved toolset plus the two reporting tools. In short, `kirocrew-worker` is `kirocrew` + `@kirocrew-work` − cron scheduling − the opt-in sets nobody assigned to it: a worker gets your default agent's own toolset so it can do any item's work, but it does not auto-approve scheduling a recurring job that would outlive the item. Which fields are mirrored, when the mirror is re-checked, and what happens when it cannot be re-derived are in [agent-spec-fields.md](agent-spec-fields.md).
 
-### Ultra Mode is a feature preview
+### Conductor mode in the dashboard
 
-The dashboard's Ultra Mode is off until you turn on **Settings → Developer →
-Feature Previews → Ultra Mode**. It is a per-device switch, kept in this browser.
-On, a new chat's composer offers the Ultra Mode switch, an ongoing plain chat
-offers it right of the permission button (it turns that chat into an Ultra Mode
-chat, one way), an Ultra Mode chat shows its
-welcome, its side panel's **Crew** tab lists its crew members, and the Sessions
-list draws it as a crew card with an **Ultra Mode** filter. Its crew members are
-listed there, not as rows of your list.
+Conductor mode is on in the dashboard, with nothing to turn on. A new chat's
+composer offers the conductor mode switch, and an ongoing plain chat offers it
+right of the permission button (that chat then stays in conductor mode). A
+conductor mode chat shows its welcome, its side panel's **Board** tab lists its
+crew members, and the Sessions list draws it as a crew card with a **Conductor
+mode** filter. Its crew members are listed there, not as rows of your list. To
+start every new chat in conductor mode, turn on **Settings → Chat → Sessions →
+Start New Chats in conductor mode** (off by default). Conductor mode used to be a
+Feature Preview; a switch for it saved from then is ignored.
 
-Off, the dashboard looks as it did before Ultra Mode:
+The LTS edition does not offer conductor mode:
 
-- no Ultra Mode switch, welcome, filter, Board tab or crew member breadcrumb;
-- the Ultra Mode agent templates are in the agent picker like any agent;
-- a chat already in Ultra Mode is an ordinary chat on its agent, and each of its
+- no conductor mode switch, welcome, filter, Board tab or crew member breadcrumb;
+- the conductor mode agent templates are in the agent picker like any agent;
+- a chat already in conductor mode is an ordinary chat on its agent, and each of its
   crew members is an ordinary row of your list, whose approvals and finished
   turns alert you like any chat's;
-- an Ultra Mode chat you started yourself that has a message offers no agent
+- a conductor mode chat you started yourself that has a message offers no agent
   switch, since the gateway keeps it on its agent.
 
-The gateway is the same either way: the switch changes only what this dashboard
-shows. An Ultra Mode chat stays locked to its agent (`409 crew_mode_locked`) and
-its crew members stay out of your folders while the preview is off.
+The gateway is the same in every build: only what the dashboard shows changes. A
+conductor mode chat stays locked to its agent (`409 crew_mode_locked`) and its crew
+members stay out of your folders.
 
 ## Custom Agents
 
@@ -194,8 +196,8 @@ global `~/.kiro/settings/mcp.json`, the dashboard's own server list
 copies those servers into the spec itself, so the spec pins `includeMcpJson`
 off.
 
-To add, turn on or turn off an MCP server, use **Customize → Connections → MCP
-Servers** (`/capabilities?tab=mcp&view=mcp-servers`). An agent asked to do it
+To add, turn on or turn off an MCP server, use **MCP Servers**
+(`/mcp`). An agent asked to do it
 opens that page with `find_ui` or a guide, or offers an MCP card through
 `propose_change`. It does not tell you to hand-edit `kirocrew.json` or run
 `jq`/`sed` on it.
@@ -203,7 +205,10 @@ opens that page with `find_ui` or a guide, or offers an MCP card through
 If a server's tools are missing from sessions, check that tab first. A server
 whose program is not found on this computer is dropped from the spec at the
 rebuild, and the gateway log names it (`Dropping MCP server ...: command not
-found`).
+found`). Once the program is installed where the gateway already searches, the
+next default-agent session start rebuilds the spec and the server is back. A
+program found only through the server's own `env.PATH`, or under a Node version
+installed after the gateway started, still needs a gateway restart.
 
 ## Reinstalling Agent Config
 

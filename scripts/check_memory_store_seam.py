@@ -931,6 +931,12 @@ def _deletion_anchor_probe() -> tuple[bool, str]:
     with tempfile.TemporaryDirectory() as tmp:
         repo = os.path.join(tmp, "r")
         os.makedirs(repo)
+        # The caller's global and system config (a host core.hooksPath) stay out.
+        probe_env = {
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
 
         def run(*args: str) -> str:
             return subprocess.run(
@@ -940,6 +946,7 @@ def _deletion_anchor_probe() -> tuple[bool, str]:
                 check=True,
                 encoding="utf-8",
                 errors="replace",
+                env=probe_env,
             ).stdout
 
         run("init", "-q")

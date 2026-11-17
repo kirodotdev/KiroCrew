@@ -127,13 +127,10 @@ export function buildWorld({ sessions = 222, longRows = 100, seed = 1018 } = {})
       total: rows.length, has_more: rows.length > page.length, next_before: rows.length - page.length,
     }
   }
-  // The command bar is a default-on builtin app. While it owns the quick-search
-  // slot the closed CommandPalette is not mounted, so leaving it out would bill
-  // every scenario for a palette a default install never renders.
-  const apps = [{
-    name: 'command-bar', enabled: true, origin: 'builtin',
-    manifest: { ui: { overlays: [{ id: 'command-bar', replaces: 'quick-search' }] } },
-  }]
+  // No app is installed. The Command Bar is on by default
+  // (`dashboard.command_bar_enabled`, absent from the stub config fixture), so the
+  // closed CommandPalette is not mounted, as on a default install.
+  const apps = []
   return { slots, folders, detail, apps }
 }
 

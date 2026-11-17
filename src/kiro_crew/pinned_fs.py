@@ -68,6 +68,7 @@ from kiro_crew.pinned_fs_files import (
 )
 from kiro_crew.pinned_fs_primitives import (
     SKIP_IDENTITY_CHANGED,
+    SKIP_MASKED_BY_SANDBOX,
     SKIP_NOT_REGULAR,
     SKIP_SYMLINK,
     SKIP_TOO_LARGE,

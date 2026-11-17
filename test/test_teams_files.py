@@ -24,6 +24,7 @@ import time
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.teams.attachments import TEAMS_FILE_DOWNLOAD_INFO
 from kiro_crew.teams.client import (
@@ -40,6 +41,9 @@ from kiro_crew.teams.transport import TEAMS_CAPABILITIES, TeamsTransport
 #: documentation range (192.0.2/198.51.100/203.0.113): Python classifies those as
 #: private, so using one would make every stubbed host refuse.
 _PUBLIC_ADDR = "93.184.216.34"
+
+#: A synthetic GitHub token the redaction plan removes by its structure.
+_KEY = github_classic(seed=1)
 
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
@@ -183,6 +187,34 @@ class TestInboundDownloadAuth:
             {"Authorization": "Bearer app-token"},
             {},
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_401_with_the_token_retires_the_cached_token(self, tmp_path) -> None:
+        """A 401 can mean the cached token went stale while the host slept, so the
+        next caller mints a fresh one instead of reusing it."""
+        client, _session = _client([_FakeResponse(status=401), _FakeResponse(chunks=[PNG_BYTES])])
+        await client.download_inbound_file(
+            "https://smba.trafficmanager.net/img", str(tmp_path / "a.png"), authenticated=True
+        )
+        assert client._token_expiry == 0.0
+
+    @pytest.mark.asyncio
+    async def test_a_401_does_not_retire_a_token_already_replaced(self, tmp_path) -> None:
+        """A request that carried an older token must not expire a newer one."""
+        client, _session = _client([_FakeResponse(status=401), _FakeResponse(chunks=[PNG_BYTES])])
+        real_get = _session.get
+
+        def _get_then_replace(url: str, **kwargs: Any) -> _FakeResponse:
+            resp = real_get(url, **kwargs)
+            client._token = "minted-meanwhile"
+            return resp
+
+        _session.get = _get_then_replace  # type: ignore[method-assign]
+        expiry = client._token_expiry
+        await client.download_inbound_file(
+            "https://smba.trafficmanager.net/img", str(tmp_path / "a.png"), authenticated=True
+        )
+        assert client._token_expiry == expiry
 
     @pytest.mark.asyncio
     async def test_a_redirect_off_a_trusted_host_drops_the_token(self, tmp_path) -> None:
@@ -556,9 +588,9 @@ class TestOutboundSeal:
         client = _RenderClient()
         await _seal(
             _renderer(client, str(tmp_path)),
-            f"![AKIAIOSFODNN7EXAMPLE]({chart})",
+            f"![{_KEY}]({chart})",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in client.images[0]["name"]
+        assert _KEY not in client.images[0]["name"]
 
     @pytest.mark.asyncio
     async def test_an_empty_alt_falls_back_to_the_path_and_STILL_redacts(self, tmp_path) -> None:
@@ -566,9 +598,9 @@ class TestOutboundSeal:
 
         Extraction has already cut the path out of the answer body, so the
         attachment name is the only surviving sink -- and ``_SAFE_NAME_RE`` keeps
-        every character a key id needs.
+        every character a token needs.
         """
-        chart = tmp_path / "AKIAIOSFODNN7EXAMPLE.png"
+        chart = tmp_path / f"{_KEY}.png"
         chart.write_bytes(PNG_BYTES)
         client = _RenderClient()
         await _seal(_renderer(client, str(tmp_path)), f"![]({chart})")
@@ -584,7 +616,7 @@ class TestOutboundSeal:
         from kiro_crew.messaging.outbound_files import OutboundFile
         from kiro_crew.teams.attachments import _MAX_INLINE_NAME_CHARS, inline_image_name
 
-        token = "ghp_" + "a1b2c3d4e5" * 4
+        token = _KEY
         stem = "q" * 40 + token
         assert len(stem) > _MAX_INLINE_NAME_CHARS, "the cap must actually bite"
         name = inline_image_name(

@@ -1,0 +1,629 @@
+[
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "probe/probe-model",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Probe/probe-model",
+            "value": "probe/probe-model"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          },
+          {
+            "description": "Compose mode (deprecated). Orchestrates workflows with built-in compose skills. For Fable/Sol-class models, use Build and run /compose-next instead.",
+            "name": "compose",
+            "value": "compose"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "build",
+      "ids": [
+        "build",
+        "plan",
+        "compose"
+      ]
+    },
+    "session_id": "mimo-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": "I'll call the crew"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I'll call the crew",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": "-probe echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-probe echo",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": " tool for"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " tool for",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-1",
+        "text": " you."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " you.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "crew-probe_crew_probe_echo",
+        "tool_call_id": "call-1",
+        "tool_kind": "other",
+        "wire_title": "crew-probe_crew_probe_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "shell_classified": true,
+        "title": "crew-probe_crew_probe_echo",
+        "tool_call_id": "call-1",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "title": "crew-probe_crew_probe_echo",
+        "tool_call_id": "call-1",
+        "tool_kind": "other",
+        "wire_title": "crew-probe_crew_probe_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "crew-stdio-mount-proved",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "9f9748c9e18a42034c91e3b56ef3086e820bc06bf97a0a2b536addd6bdd43922",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "tool_call_id": "call-1",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "The tool"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The tool",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": " returned:"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " returned:",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": " **"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " **",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\"",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "crew-stdio-mount-proved\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "crew-stdio-mount-proved\"",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-2",
+        "text": "**"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "**",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      28913,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      28913,
+      18,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "Based"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Based",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " on the tools"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " on the tools",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " available to me, I"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " available to me, I",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " can only"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " can only",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " see"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " see",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " one"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " one",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " crew-probe tool that I"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " crew-probe tool that I",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " can call:\n\n1"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " can call:\n\n1",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": ". **crew-probe_crew_"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": ". **crew-probe_crew_",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "probe_echo**"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "probe_echo**",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "\n\nThe"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n\nThe",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " tool **"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " tool **",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "crew"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "crew",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "_"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "_",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "probe_secret** is not available in"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "probe_secret** is not available in",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " my current tool"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " my current tool",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": " surface"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " surface",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "mimo-msg-3",
+        "text": "."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": ".",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      28966,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      28966,
+      58,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

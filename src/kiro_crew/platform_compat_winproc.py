@@ -680,8 +680,13 @@ _JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9  # JobObjectExtendedLimitInforma
 _adopt_job: Callable[[int, int], bool] | None = None
 
 
-def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool:
+def apply_job_limits(
+    pid: int, *, max_procs: int, max_memory_bytes: int, cpu_weight: int = 0
+) -> bool:
     """Bound *pid* and its descendants with a Windows Job object.
+
+    A positive *cpu_weight* (1-9) also gives the job a weight-based CPU share
+    (``windows_background_qos``); failing to set it leaves the ceilings in force.
 
     The Windows analogue of ``sandbox.cgroup_scope_argv``:
 
@@ -797,6 +802,10 @@ def apply_job_limits(pid: int, *, max_procs: int, max_memory_bytes: int) -> bool
                 pid,
             )
             return False
+        if cpu_weight > 0:
+            from kiro_crew.windows_background_qos import set_job_cpu_weight
+
+            set_job_cpu_weight(kernel32, job, cpu_weight)
 
         proc_handle = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
         if not proc_handle:

@@ -126,10 +126,9 @@ class TestRotateShellAuditLog:
     ) -> None:
         """A directory planted at ``audit.log.1`` makes the rename fail; the record survives.
 
-        The failure is not silent either: the primitive swallows it by contract,
-        so this is the one place a rotation that stopped working can surface,
-        and an over-cap file that cannot be moved aside must not read like a
-        file under the cap.
+        The failure is not silent either: an over-cap file that cannot be moved
+        aside must not read like a file under the cap, and this is the line that
+        carries the sizes (the primitive's own WARNING names the path and the error).
         """
         live = tmp_path / SHELL_AUDIT_LOG_NAME
         body = _fill(live, SHELL_AUDIT_LOG_MAX_BYTES)
@@ -140,7 +139,11 @@ class TestRotateShellAuditLog:
 
         assert live.read_bytes() == body
         assert (tmp_path / (SHELL_AUDIT_LOG_NAME + ".1")).is_dir()
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and r.name == "kiro_crew.shell_audit_log"
+        ]
         assert len(warnings) == 1, "a rotation that could not complete must warn once"
         assert "could not be rotated" in warnings[0].getMessage()
         assert f"{SHELL_AUDIT_LOG_MAX_BYTES} bytes" in warnings[0].getMessage()
@@ -166,7 +169,11 @@ class TestRotateShellAuditLog:
         (other / (SHELL_AUDIT_LOG_NAME + ".1")).mkdir()
 
         def _warnings() -> list[logging.LogRecord]:
-            return [r for r in caplog.records if r.levelno == logging.WARNING]
+            return [
+                r
+                for r in caplog.records
+                if r.levelno == logging.WARNING and r.name == "kiro_crew.shell_audit_log"
+            ]
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.shell_audit_log"):
             assert rotate_shell_audit_log(tmp_path) is False

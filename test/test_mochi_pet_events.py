@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.mochi import hooks
 from kiro_crew.apps.builtins.mochi.backend import routes
@@ -189,9 +190,9 @@ class TestNotifyMood:
         async with _live_runtime(tmp_path) as runtime:
             seen: list[tuple[str, dict]] = []
             runtime.publish = lambda ch, data: seen.append((ch, data))  # type: ignore[assignment]
-            # Fake AWS key, split to avoid a CodeQL clear-text-storage FP on a
-            # redaction-control test (runtime value is a full AKIA key).
-            planted = "AKIA" + "IOSFODNN7EXAMPLE"
+            # A synthetic token built at runtime, so no credential-shaped
+            # literal sits in the source of a redaction-control test.
+            planted = github_classic(seed=33)
             runtime.notify_user({"summary": f"use {planted} now"})
             notify = next(d for ch, d in seen if ch == "mochi:notify")
             assert planted not in notify["summary"]

@@ -19,6 +19,8 @@ import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, toggleActivity } from '../store/chatSlice'
 import { paneCovered } from '../hooks/paneVisibility'
+import { closeCrewWindow, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
+import { setRailWidth, __resetRailWidth } from '../hooks/useRailWidth'
 
 // --- Stub child components (same scaffold as ChatPage.embedded test) ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -35,14 +37,17 @@ vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 vi.mock('../pages/chat/CollapsibleToolGroup', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
+vi.mock('../pages/chat/crew-window/CrewChatWindow', () => ({ default: () => <div data-testid="crew-chat-window" /> }))
 vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '800px', input: '816px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
 // SidePanel: stub the component (pulls in xterm etc.) but keep the space
 // contract deterministic: threshold = 320 + 560 = 880, reopen at 920.
 vi.mock('../pages/chat/SidePanel', () => ({
-  default: ({ fillWidth }: { fillWidth?: number }) => (
-    <div data-testid="side-panel" data-fill-width={fillWidth ?? ''} />
+  default: ({ fillWidth, onPutPinInComposer }: { fillWidth?: number; onPutPinInComposer?: (ts: string) => void }) => (
+    <div data-testid="side-panel" data-fill-width={fillWidth ?? ''}>
+      {onPutPinInComposer && <button type="button" aria-label="Put in composer" data-testid="put-pin" onClick={() => onPutPinInComposer('pin-ts')} />}
+    </div>
   ),
   SIDE_PANEL_MIN_W: 320,
   SIDE_PANEL_RESERVED_W: 560,
@@ -93,6 +98,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import ChatPage from '../pages/ChatPage'
+import { api } from '../api/client'
 
 const setWindowWidth = (w: number) => {
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: w })
@@ -334,6 +340,62 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     expect(paneCovered(document)).toBe(false)
   })
 
+  it('Put in composer closes a panel that fills the chat column, and leaves one beside the chat open', async () => {
+    const { store } = renderWithSlot()
+    fireEvent.click(await screen.findByLabelText('Open activity panel'))
+    fireEvent.click(await screen.findByTestId('put-pin'))
+    expect(store.getState().chat.activityOpen).toBe(true)
+    resizeTo(800) // 800 - 236 - 260 = 304 < 640: the panel fills the chat column
+    fireEvent.click(await screen.findByTestId('put-pin'))
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('offers no Put in composer in Split View, whose pane composers are not the single-chat draft', async () => {
+    vi.mocked(api.dashboardConfig).mockResolvedValue({ session_grid: true })
+    try {
+      renderWithSlot()
+      fireEvent.click(await screen.findByLabelText('Open activity panel'))
+      expect(await screen.findByTestId('put-pin')).toBeInTheDocument()
+      fireEvent.click(await screen.findByLabelText('Enter split view'))
+      expect(screen.getByTestId('side-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('put-pin')).toBeNull()
+    } finally {
+      vi.mocked(api.dashboardConfig).mockResolvedValue({})
+    }
+  })
+
+  it('offers no Put in composer while a crew window covers the chat and its composer', async () => {
+    try {
+      renderWithSlot()
+      fireEvent.click(await screen.findByLabelText('Open activity panel'))
+      expect(await screen.findByTestId('put-pin')).toBeInTheDocument()
+      act(() => { openCrewWindow({ instanceId: 'i1', key: 'k1' }) })
+      // ChatPaneChrome mounts CrewChatWindow through lazyRetry(() => import(...)): wait out that chunk.
+      expect(await screen.findByTestId('crew-chat-window', {}, { timeout: 5000 })).toBeInTheDocument()
+      expect(screen.getByTestId('side-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('put-pin')).toBeNull()
+    } finally {
+      act(() => { closeCrewWindow() })
+    }
+  })
+
+  it('Put in composer leaves a bottom-docked panel open on a narrow window, where the composer stays on screen', async () => {
+    const slot = document.createElement('div') // the shell's panel column; bottom docking lives there
+    slot.id = 'activity-bar-slot'
+    document.body.appendChild(slot)
+    setSidePanelDock('bottom')
+    try {
+      const { store } = renderWithSlot()
+      resizeTo(800)
+      fireEvent.click(await screen.findByLabelText('Open activity panel'))
+      await waitFor(() => expect(slot.contains(screen.getByTestId('side-panel'))).toBe(true))
+      fireEvent.click(screen.getByTestId('put-pin'))
+      expect(store.getState().chat.activityOpen).toBe(true)
+    } finally {
+      act(() => { setSidePanelDock('right') })
+    }
+  })
+
   it('switches an already-open panel from beside to fill on resize, without remounting it', async () => {
     renderWithSlot()
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
@@ -489,5 +551,59 @@ describe('ChatPage — focus-mode caption reserve on the title row', () => {
     const group = reserved()
     expect(group, 'reserve survives an open bottom-docked panel').not.toBeNull()
     expect(group!.classList.contains('ml-auto')).toBe(true)
+  })
+})
+
+/**
+ * #37165: the embedded chat frame (`/embed/chat`) mounts no session sidebar,
+ * so the stored sidebar width must not come off the width its activity panel
+ * decides beside-or-fill from. A companion chat (`embedMode="chat"` inside the
+ * main window, beside the real chrome) keeps the main window's arithmetic.
+ */
+describe('ChatPage — activity panel in an embedded chat frame', () => {
+  beforeEach(() => { localStorage.clear(); __resetRailWidth() })
+  afterEach(() => { __resetRailWidth() })
+
+  function renderEmbedded(path: string, routePath: string) {
+    const store = createTestStore()
+    act(() => {
+      store.dispatch(switchSlot.pending('req-embed', 'slot-embed'))
+      store.dispatch(switchSlot.fulfilled({
+        key: 'slot-embed',
+        messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        running: false, hasMore: false, total: 1, queue: [],
+      }, 'req-embed', 'slot-embed'))
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={[path]}>
+              <Routes><Route path={routePath} element={<ChatPage embedded embedMode="chat" noUrlSync />} /></Routes>
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    act(() => { store.dispatch(toggleActivity()) })
+    return store
+  }
+
+  it('sits the panel beside the chat when the frame itself seats both', async () => {
+    // The embed document's shell publishes no rail. 800 >= 640, but 800 minus
+    // the default 260px sidebar it never draws would not.
+    setWindowWidth(800)
+    act(() => { setRailWidth(0) })
+    renderEmbedded('/embed/chat', '/embed/chat/:slug?')
+    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '')
+  })
+
+  it('keeps the sidebar in the arithmetic for a companion chat in the main window', async () => {
+    // 900 - rail 74 - sidebar 260 = 566 < 640: the narrow companion still fills.
+    setWindowWidth(900)
+    act(() => { setRailWidth(74) })
+    renderEmbedded('/apps/papyrus', '/apps/papyrus')
+    expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '566')
   })
 })

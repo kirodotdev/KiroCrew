@@ -15,6 +15,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import api_chat_slot_followup
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.validation import (
     MAX_FOLLOWUP_PROMPT,
     MAX_FOLLOWUP_TITLE,
@@ -371,7 +372,7 @@ class TestFollowupEndpoint:
     async def test_credentials_are_redacted_before_broadcast(self):
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_SLACK_BOT_TOKEN
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/test/followup",
@@ -394,7 +395,7 @@ class TestFollowupEndpoint:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/test/followup",
-                json={"items": [_item(branch="AKIAIOSFODNN7EXAMPLE")]},
+                json={"items": [_item(branch=SAMPLE_SLACK_BOT_TOKEN)]},
             )
             assert resp.status == 200
         payload = state.deliver_ws_owners.call_args[0][1]
@@ -442,6 +443,41 @@ class TestFollowupEndpoint:
             assert resp.status == 200
             assert (await resp.json())["delivered"] == 0
         state.deliver_ws_owners.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["plain", "broken_gitfile", "inside_a_repo"])
+    async def test_a_project_that_is_no_repository_root_gets_a_warning(self, tmp_path, shape):
+        """The card offers 'Start in new chat' instead of a worktree whenever the
+        project is not a git work-tree root, and the caller (through it, the model)
+        hears that from this response as it does for an unscoped slot."""
+        project = tmp_path / "project"
+        if shape == "inside_a_repo":
+            (tmp_path / ".git").mkdir()
+        project.mkdir()
+        if shape == "broken_gitfile":
+            (project / ".git").write_text(f"gitdir: {tmp_path / 'gone' / '.git'}\n")
+        slot = _ChatSlot("test")
+        slot.project = str(project)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/followup", json={"items": [_item()]})
+            assert resp.status == 200
+            body = await resp.json()
+        assert body["ok"] is True
+        assert "not a git repository root" in body["warning"]
+        assert "Start in new chat" in body["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_repository_root_project_gets_no_warning(self, tmp_path):
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+        slot = _ChatSlot("test")
+        slot.project = str(project)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/followup", json={"items": [_item()]})
+            body = await resp.json()
+        assert "warning" not in body
 
     @pytest.mark.asyncio
     async def test_json_array_body_rejected(self):

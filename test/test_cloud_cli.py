@@ -31,6 +31,16 @@ class TestDispatch:
         assert cli_cloud.handle_cloud(_args(cloud_action=None)) == 0
         assert "kirocrew cloud" in capsys.readouterr().out
 
+    def test_no_action_lists_each_dispatched_verb_once(self, capsys):
+        """`tunnel` and `connect` run the same handler, so the verb list names
+        that command once, with the other spelling as its alias."""
+        assert cli_cloud.handle_cloud(_args(cloud_action=None)) == 0
+        rows = [line.split() for line in capsys.readouterr().out.splitlines()]
+        verbs = [row[0] for row in rows if row and row[0].split("|")[0] in cli_cloud._DISPATCH]
+        assert len(verbs) == len(set(verbs))
+        tunnel_rows = [" ".join(row) for row in rows if "tunnel" in row or "connect" in row]
+        assert tunnel_rows == ["connect Open the dashboard over an SSM tunnel (alias: tunnel)"]
+
     def test_iam_policy(self, capsys):
         assert cli_cloud.handle_cloud(_args(cloud_action="iam-policy")) == 0
         out = capsys.readouterr().out
@@ -234,6 +244,21 @@ class TestListStatus:
         assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
         assert "instance: (id unknown)" in capsys.readouterr().out
 
+    @pytest.mark.parametrize(
+        ("instance", "line"),
+        [
+            ({"instance_id": ""}, "instance: (id unknown) [CREATE_IN_PROGRESS]"),
+            ({"instance_id": "i-0abc", "instance_state": ""}, "instance: i-0abc [gone]"),
+        ],
+    )
+    def test_status_shows_the_stack_status_or_gone_instead_of_a_question_mark(
+        self, monkeypatch, capsys, instance, line
+    ):
+        st = {"exists": True, "stack_status": "CREATE_IN_PROGRESS", **instance}
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: st)
+        assert cli_cloud._cloud_status(_args(profile="", region="", tag="kc-1")) == 0
+        assert line in capsys.readouterr().out
+
 
 class TestConnect:
     def test_connect_not_ready_returns_failure(self, monkeypatch, capsys):
@@ -396,6 +421,9 @@ class TestDestroy:
 
     def test_destroy_dry_run(self, monkeypatch, capsys):
         monkeypatch.setattr(
+            ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-0abc"}
+        )
+        monkeypatch.setattr(
             ec2,
             "destroy",
             lambda *a, **k: {
@@ -408,10 +436,12 @@ class TestDestroy:
         assert rc == 0
         assert "delete-stack" in capsys.readouterr().out
 
-    def test_destroy_absent_noop(self, monkeypatch, capsys):
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_destroy_absent_noop(self, monkeypatch, capsys, dry_run):
         monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": False})
+        monkeypatch.setattr(ec2, "destroy", lambda *a, **k: pytest.fail("destroy was called"))
         rc = cli_cloud._cloud_destroy(
-            _args(profile="", region="", tag="kc-1", dry_run=False, yes=True)
+            _args(profile="", region="", tag="kc-1", dry_run=dry_run, yes=True)
         )
         assert rc == 0
         assert "nothing to remove" in capsys.readouterr().out
@@ -746,7 +776,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert "aws CLI found" in out
         assert resolved in probed
@@ -771,7 +801,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert (
             "found at /usr/local/sessionmanagerplugin/bin/session-manager-plugin but refused" in out
@@ -817,7 +847,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": "Profile did not resolve"},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert "aws CLI found at /opt/homebrew/bin/aws but refused: the check's words" in out
         assert next_step in out
@@ -863,7 +893,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert next_step in out
         if code == "other_owner":

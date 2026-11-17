@@ -281,3 +281,67 @@ async def test_mcp_featured_hides_rows_of_an_unregistered_provider(monkeypatch):
     finally:
         await client.close()
     assert data["results"] == []
+
+
+class _FeaturingEditionManager:
+    """An edition ``CapabilityManager`` whose registry marks some rows ``featured``."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.queries: list[str | None] = []
+        self._fail = fail
+
+    def available(self):
+        return True
+
+    async def registry(self, query=None):
+        self.queries.append(query)
+        if self._fail:
+            raise RuntimeError("edition registry broke")
+        return [
+            {"id": "y", "title": "Y", "description": "", "installed": False, "featured": False},
+            {
+                "id": "x-mcp",
+                "title": "X",
+                "description": "x tools",
+                "installed": "yes",
+                "featured": True,
+            },
+            {"id": "z-mcp", "title": "Z", "description": "", "featured": "yes"},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_featured_lists_the_editions_own_featured_packages(monkeypatch):
+    # An edition that withholds the official registry admits only its own
+    # provider, so none of the bundled rows can show; its marked rows do.
+    from kiro_crew.mcp_providers.capability import CapabilityProvider
+
+    manager = _FeaturingEditionManager()
+    client = await _mcp_client(monkeypatch, CapabilityProvider(lambda: manager))
+    try:
+        data = await (await client.get("/api/mcp/discover", params={"featured": "1"})).json()
+    finally:
+        await client.close()
+    assert [r["id"] for r in data["results"]] == ["x-mcp"]
+    row = data["results"][0]
+    assert row["provider"] == "capability"
+    assert row["display_provider"] == "Packages"
+    assert row["methods"] == ["capability"]
+    assert row["installed"] is True
+    assert data["provider_outcomes"] == []
+    assert manager.queries == [None]
+
+
+@pytest.mark.asyncio
+async def test_mcp_featured_survives_an_edition_registry_that_fails(monkeypatch):
+    from kiro_crew.mcp_providers.capability import CapabilityProvider
+
+    manager = _FeaturingEditionManager(fail=True)
+    client = await _mcp_client(monkeypatch, CapabilityProvider(lambda: manager))
+    try:
+        resp = await client.get("/api/mcp/discover", params={"featured": "1"})
+        data = await resp.json()
+    finally:
+        await client.close()
+    assert resp.status == 200
+    assert data["results"] == []

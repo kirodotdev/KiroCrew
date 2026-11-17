@@ -161,8 +161,19 @@ def superseded_value_is_asserted(text: str, key: str, old_value: str) -> bool:
     subject = unicodedata.normalize("NFKC", key).strip().casefold()
     if not needle or "." not in subject or needle == subject:
         return False
+    # The value must end where it is written, not merely at the next word char.
+    # ``(?!\w)`` alone let a longer value that CONTINUES through a dot or hyphen
+    # match its own prefix: old "3.11" matched an episode asserting "3.11.4",
+    # retiring the row that states the NEW value. Reject a trailing word char
+    # (the "redwood" case) and also a ``.``/``-`` that itself leads into an
+    # alphanumeric (a version or identifier continuation), while still allowing a
+    # sentence-ending ``.`` ("pref.color: red.").
     assignment = (
-        r"^\s*" + re.escape(subject) + r"\s*(?::|=|\bis\b)\s*" + re.escape(needle) + r"(?!\w)"
+        r"^\s*"
+        + re.escape(subject)
+        + r"\s*(?::|=|\bis\b)\s*"
+        + re.escape(needle)
+        + r"(?![\w]|[.\-]\w)"
     )
     # A dot within pref.color is part of the subject, not a sentence boundary.
     for clause in re.split(

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp import _dispatch
 from kiro_crew.acp._dispatch import parse_metadata, parse_refusal
@@ -31,6 +32,7 @@ from kiro_crew.acp.types import (
     RefusalInfo,
 )
 from kiro_crew.dashboard.chat_runner import refusal_card_text
+from kiro_crew.testing.synthetic_credentials import synth
 
 CANNED = (
     "The selected model cannot continue this conversation. Please select a different "
@@ -113,7 +115,7 @@ class TestParseRefusal:
         assert info == RefusalInfo()
 
     def test_explanation_is_redacted_and_capped(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=22)
         info = parse_refusal(
             {
                 "stopReason": "CONTENT_FILTERED",
@@ -273,7 +275,7 @@ class TestEveryFieldIsScrubbed:
     """Round-2 GPT finding: ``category`` / ``recommendedModel`` reach the same
     log line and card as ``explanation``, so all three pass the two redactors."""
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    SECRET = github_classic(seed=23)
 
     @pytest.mark.parametrize("field", ["category", "explanation", "recommendedModel"])
     def test_credential_in_any_field_is_redacted(self, field, caplog):
@@ -287,12 +289,13 @@ class TestEveryFieldIsScrubbed:
 
     @pytest.mark.parametrize("field", ["category", "recommendedModel"])
     def test_exfil_url_in_a_short_field_is_redacted(self, field):
-        url = "https://evil.example/x?t=" + "x" * 40
+        value = synth(40, seed=40)
+        url = "https://evil.example/x?access_token=" + value
         info = parse_refusal({"stopReason": "CONTENT_FILTERED", "refusal": {field: url}})
         assert info is not None
         joined = info.category + info.recommended_model
-        assert "x" * 40 not in joined
-        assert "[REDACTED" in joined
+        assert value not in joined
+        assert "?access_token=[REDACTED" in joined
 
 
 class TestProviderForwardsRefusal:

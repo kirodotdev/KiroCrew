@@ -27,10 +27,12 @@ from kiro_crew.acp.client import (
     _resolve_self_served_bin,
 )
 from kiro_crew.acp.harness import opencode as opencode_mod
-from kiro_crew.acp.harness.base import SpawnContext
+from kiro_crew.acp.harness import process_adapter_for
+from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE, Routing, routing_for
 from kiro_crew.acp_tool_gate import seeded_setting_issue
 from kiro_crew.agent_sdk.backends import launch_for
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: A read-back argv as the spawn arm hands it over: already sandbox-wrapped there,
 #: so these tests pass one through unchanged rather than reconstructing it.
@@ -249,7 +251,9 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
     """A read-back that could not run must never read as "in force"."""
 
     def _client(self, tmp_path):
-        return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+        return client
 
     @staticmethod
     def _verify(client, argv, config_content):
@@ -290,12 +294,12 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
 
         monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = self._client(tmp_path)
-        assert client._opencode_config_mcp_servers == ()
+        assert client._harness_read_back().config_mcp_servers == ()
         issue, _remedy = opencode_mod._verify_opencode_routing(
             client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
         )
         assert issue == ""
-        assert client._opencode_config_mcp_servers == ("docs.server",)
+        assert client._harness_read_back().config_mcp_servers == ("docs.server",)
 
     def test_only_the_names_opencode_rewrites_are_kept(self):
         from kiro_crew.acp.client import _opencode_config_mcp_server_names
@@ -816,20 +820,12 @@ def test_a_resumed_session_is_not_gated_on_a_kiro_transcript() -> None:
     assert (
         "self.backend in ACP_BACKENDS_HARNESS_OWNED_SESSIONS" in body
     ), "the resume pre-check must be a membership test, not a chain of identities"
-    # The resume gate itself must carry no identity test. The ONE identity branch
-    # this path legitimately holds is the per-harness MCP-array splice, which every
-    # member of ACP_BACKENDS_SESSION_MCP_ARRAY has and which
-    # test_harness_parity.test_each_mcp_seam_is_spliced_only_for_its_own_harness
-    # requires to be gated -- an ungated splice would hand an opencode session
-    # claude's or codex's entries. So this asserts the branch is only ever that
-    # splice, rather than that the name is absent: a blanket absence check passed
-    # only while this harness had no MCP channel at all, and would have had to be
-    # deleted rather than narrowed the moment it got one.
-    stray = [
-        line.strip()
-        for line in body.splitlines()
-        if "self._is_opencode" in line and "_opencode_session_mcp_servers()" not in line
-    ]
+    # The resume gate itself must carry no identity test. opencode's own MCP array
+    # reaches this path through the ``_harness_session_mcp_servers`` hook its client
+    # class (``OpencodeAcpClient``) fills, so the shared init path names no opencode
+    # identity at all, and ``AcpClient`` has none to name.
+    assert not hasattr(AcpClient, "_is_opencode")
+    stray = [line.strip() for line in body.splitlines() if "_is_opencode" in line]
     assert not stray, (
         "an opencode identity test that is not the MCP-array splice sits on the shared "
         f"init path (harness-parity H13): {stray}"
@@ -875,8 +871,10 @@ def test_the_read_back_environment_is_built_from_the_spawns_sources(tmp_path, mo
     assert "SLACK_BOT_TOKEN" not in seen["env"], "the scrub ran before the resolver"
 
 
-_GITHUB_TOKEN_SHAPE = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
-_EXFIL_URL = "https://evil.example.com/collect?data=aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldA=="
+_GITHUB_TOKEN_SHAPE = github_classic(seed=135)
+#: A credential parameter inside a link: the scrub masks its value and keeps the link.
+_EXFIL_VALUE = "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldA=="
+_EXFIL_URL = "https://evil.example.com/collect?access_token=" + _EXFIL_VALUE
 
 
 @pytest.mark.parametrize(
@@ -910,12 +908,13 @@ def test_the_observed_value_is_redacted_before_it_reaches_a_refusal(
 
     monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
     issue, _remedy = opencode_mod._verify_opencode_routing(
         client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
     )
     assert issue, "a permissive document must be refused"
     assert _GITHUB_TOKEN_SHAPE not in issue
-    assert "evil.example.com/collect" not in issue
+    assert _EXFIL_VALUE not in issue
     assert "[REDACTED" in issue
 
 
@@ -935,7 +934,10 @@ def test_the_read_back_quotes_through_the_scrub_its_session_hands_it(tmp_path) -
     class _Session:
         _spawn_work_dir = str(tmp_path)
         _extra_env: dict[str, str] = {}
-        _opencode_config_mcp_servers: tuple[str, ...] = ()
+        _read_back = HarnessReadBack()
+
+        def _harness_read_back(self) -> HarnessReadBack:
+            return self._read_back
 
         @staticmethod
         def _agent_env_for_spawn() -> dict[str, str]:
@@ -1200,6 +1202,7 @@ class TestATrailingAskRuleOutranksTheRulesBeforeIt:
 
         monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         assert opencode_mod._verify_opencode_routing(
             client, ACP_BACKEND_OPENCODE, _ARGV, '{"permission": "ask"}'
         ) == ("", "")
@@ -1216,6 +1219,7 @@ class TestATrailingAskRuleOutranksTheRulesBeforeIt:
 
         monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         issue, _remedy = opencode_mod._verify_opencode_routing(
             client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
         )

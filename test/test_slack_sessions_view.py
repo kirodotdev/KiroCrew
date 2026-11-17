@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from source_corpus import parsed_candidates
 
 from conftest import MockSlackClient
@@ -36,6 +37,8 @@ from kiro_crew.slack.sessions_view import (
     sessions_include_ended,
 )
 from kiro_crew.testing.wait import await_until
+
+_KEY = github_classic(seed=17)  # a token the credential plan redacts
 
 
 def _write_jsonl(
@@ -712,10 +715,10 @@ class TestBuildSessionsBlocks:
         [
             # ASK-style credential pattern is redacted by redact_credentials
             pytest.param(
-                "AKIAIOSFODNN7EXAMPLE secret", "kirocrew", id="test_redacts_credentials_in_title"
+                f"{_KEY} secret", "kirocrew", id="test_redacts_credentials_in_title"
             ),
             # Parity with title: agent strings are redacted before reaching session_task_card.
-            pytest.param("ok", "AKIAIOSFODNN7EXAMPLE", id="test_redacts_credentials_in_agent"),
+            pytest.param("ok", _KEY, id="test_redacts_credentials_in_agent"),
         ],
     )
     def test_redacts_credentials(self, title, agent):
@@ -731,7 +734,7 @@ class TestBuildSessionsBlocks:
             }
         ]
         card = _build_sessions_blocks(rows)[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in card["title"]
+        assert _KEY not in card["title"]
 
     def test_redacts_credentials_in_message_content(self):
         """Content for each preview message is redacted via session_task_card → _msg_elements."""
@@ -744,15 +747,15 @@ class TestBuildSessionsBlocks:
                 "active": False,
                 "kind": _SESSION_KIND_DASHBOARD,
                 "msgs": [
-                    {"role": "user", "content": "leak AKIAIOSFODNN7EXAMPLE"},
-                    {"role": "assistant", "content": "another AKIAIOSFODNN7EXAMPLE"},
+                    {"role": "user", "content": f"leak {_KEY}"},
+                    {"role": "assistant", "content": f"another {_KEY}"},
                 ],
             }
         ]
         # task_card details payload contains the rich_text_list; serialize for substring search
         card = _build_sessions_blocks(rows)[0]
         rendered = json.dumps(card)
-        assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+        assert _KEY not in rendered
 
     def test_redacts_exfiltration_urls_in_message_content(self):
         """Message content is redacted before it is posted to Slack.
@@ -760,10 +763,10 @@ class TestBuildSessionsBlocks:
         Redaction runs through ``session_task_card()`` → ``blocks._msg_elements()`` →
         ``security.redact_and_truncate()``; this pins the exfiltration-URL half.
         """
-        # Long-query-string URL with a base64-like blob is the canonical
-        # exfiltration pattern detected by redact_exfiltration_urls.
+        # A long-query-string URL whose credential parameter carries a blob:
+        # redact_exfiltration_urls masks the value and keeps the link.
         blob = "A" * 50
-        url = f"https://evil.example.com/x?data={blob}&{'x' * 200}"
+        url = f"https://evil.example.com/x?access_token={blob}&{'x' * 200}"
         rows = [
             {
                 "key": "dashboard:k",
@@ -780,8 +783,9 @@ class TestBuildSessionsBlocks:
         card = _build_sessions_blocks(rows)[0]
         rendered = json.dumps(card)
         # The full URL must not appear verbatim — redact_exfiltration_urls
-        # will have replaced it with a sanitized form.
+        # will have masked the credential value inside it.
         assert url not in rendered
+        assert blob not in rendered
 
     def test_dual_redaction_in_home_tab_message_path(self):
         """Same dual-redaction guarantee for the Home Tab path (for_home_tab=True).
@@ -789,11 +793,11 @@ class TestBuildSessionsBlocks:
         The Home Tab row renders only title + agent, so this exercises the title path.
         """
         blob = "A" * 50
-        url = f"https://evil.example.com/x?data={blob}&{'x' * 200}"
+        url = f"https://evil.example.com/x?access_token={blob}&{'x' * 200}"
         rows = [
             {
                 "key": "dashboard:k",
-                "title": f"AKIAIOSFODNN7EXAMPLE {url}",
+                "title": f"{_KEY} {url}",
                 "agent": "kirocrew",
                 "mtime": 0.0,
                 "active": False,
@@ -803,8 +807,9 @@ class TestBuildSessionsBlocks:
         ]
         blocks = _build_sessions_blocks(rows, for_home_tab=True)
         rendered = json.dumps(blocks)
-        assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+        assert _KEY not in rendered
         assert url not in rendered
+        assert blob not in rendered
 
 
 # handler._handle_sessions_command — delegates to events.py helpers
@@ -967,7 +972,7 @@ class TestHandleSessionsCommandDelegation:
         in exception messages MUST be redacted before being written to SEL.
         """
         slack = MockSlackClient()
-        leaked_key = "AKIAIOSFODNN7EXAMPLE"
+        leaked_key = _KEY
         with (
             patch(
                 "kiro_crew.slack.sessions_view._collect_recent_sessions",
@@ -1234,7 +1239,7 @@ class TestSlashSessionsAudit:
         async def _arespond(*a, **kw):
             respond(*a, **kw)
 
-        leaked_key = "AKIAIOSFODNN7EXAMPLE"
+        leaked_key = _KEY
         with (
             patch("kiro_crew.slack.events.sel") as mock_sel,
             patch("kiro_crew.slack.events.is_owner", return_value=True),

@@ -29,7 +29,7 @@ from typing import Any, Optional
 from . import BudgetExceeded
 from .validate import SAFE_BUILTINS
 
-# Lifetime agent-call backstop per run (matches ``_MAX_AGENTS_PER_RUN`` in spec).
+# Lifetime agent-call backstop per run (the spec's ``DEFAULT_MAX_AGENTS_PER_RUN``).
 DEFAULT_MAX_AGENTS_PER_RUN = 1000
 
 

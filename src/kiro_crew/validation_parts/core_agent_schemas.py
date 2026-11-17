@@ -70,6 +70,8 @@ SPAWN_RUN_TASK_ITEM_SCHEMA = ToolSchema(
         FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
         # Display name for this task's row; see ``normalize_spawn_label``.
         FieldSpec("label", str, max_len=MAX_SHORT_STRING),
+        # This task is a helper job; see ``light`` on ``SPAWN_RUN_SCHEMA``.
+        FieldSpec("light", bool),
     ],
 )
 
@@ -125,10 +127,20 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # Display only: the task the sub-agent receives is unchanged, and the
         # value is normalized to one bounded line (``normalize_spawn_label``).
         FieldSpec("label", str, max_len=MAX_SHORT_STRING),
+        # light=True marks a helper job (search, lookup, run-and-report,
+        # summarize). While ``agent.subagent_light_tier`` is on, the gateway
+        # fills a model and effort the call left unset from the ``subagent_light``
+        # role pins. Batch-wide; a tasks[] object's own value wins for its task.
+        FieldSpec("light", bool),
         # keep=True makes the run a continuable conversation: its session
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # silent=True drops only the run's completion notifications (the bell
+        # note; under a cron also the channel post of the cron's reply) —
+        # docs/decisions/, "a silent parent's sub-agent completions never
+        # ring the bell".
+        FieldSpec("silent", bool),
         # Legacy solo-spawn fields: unadvertised and ignored, but accepted
         # so a skill or workflow that still sends them is not refused as
         # "unknown field".
@@ -202,6 +214,8 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
             item_type=dict,
         ),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # As on spawn_run: batch-wide completion-notification opt-out.
+        FieldSpec("silent", bool),
         # Context groups, as on spawn_run: batch-wide, all default True.
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
@@ -346,7 +360,21 @@ FILE_SEND_SCHEMA = ToolSchema(
     tool_name="file_send",
     fields=[
         FieldSpec("path", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("description", str, max_len=MAX_SHORT_STRING),
+        # The file's preamble. ONE field, served to every leg as the caption of
+        # the one chat item the upload makes. On the Slack leg it is the file's
+        # ``initial_comment``; on the non-Slack leg it is the ``send_document``
+        # caption the channel already accepted. Each leg redacts it like outbound
+        # text.
+        #
+        # The cap here is a generous FLOOR, not the per-leg ceiling: a caller may
+        # pass a real preamble (a paragraph, a signature, a request to review), so
+        # the boundary lets it through. The per-leg ceiling is enforced where the
+        # transport is known -- the Slack leg against its message limit, the
+        # channel leg against its transport's caption cap -- which answers 400
+        # ``too_long_for_channel`` naming the channel and the number, instead of
+        # silently slicing it on the leg that would. Each leg counts in its
+        # platform's unit: Telegram UTF-16 units, WeCom UTF-8 bytes.
+        FieldSpec("description", str, max_len=MAX_MEDIUM_STRING),
         FieldSpec("channel", str, max_len=MAX_SHORT_STRING),
     ],
 )

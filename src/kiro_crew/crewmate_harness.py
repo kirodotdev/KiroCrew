@@ -245,6 +245,44 @@ def bots_may_run_on_kas(config: Any) -> bool:
     return False
 
 
+def kas_runs_here(config: Any) -> bool:
+    """Whether a session here runs on KAS, and so signs in with the Kiro sign-in. In memory.
+
+    The main harness, the Bot harness as loaded once some Bot has no pin and so
+    inherits it (an inherited Kiro CLI and a stored ``kiro`` both load as KAS), a
+    Bot pin that runs on KAS (a KAS pin, or one to a
+    harness Bots cannot run on), or a Bot with no pin whose worker spec moves it
+    onto KAS (:func:`worker_spec_forces_kas`, the held answer on the event loop).
+    Unlike :func:`bots_may_run_on_kas`, an inherited Bot harness alone is not
+    enough: the dashboard shows the Kiro sign-in on this answer, and a gateway
+    where nothing runs on KAS has no use for it. A ``spawn_run(backend=...)``
+    override is a per-spawn choice, not config, so it is not read here.
+    """
+    kas = _backends.ACP_BACKEND_KAS
+    if kas not in _backends.selectable_backends():
+        # A Bot pinned to a harness Bots cannot run on lands on the floor instead.
+        return False
+    agent = getattr(config, "agent", None)
+    if getattr(agent, "acp_backend", "") == kas:
+        return True
+    # The Bot harness is only a harness something runs on once a Bot inherits it:
+    # it loads as KAS on a Kiro CLI gateway with no Bots at all.
+    bots_inherit_kas = getattr(agent, "member_acp_backend", "") == kas
+    for crew in list(getattr(config, "agents", {}) or {}):
+        pin = crewmate_pin_for(config, str(crew))
+        if pin is None:
+            if bots_inherit_kas or worker_spec_forces_kas(config, str(crew)):
+                return True
+            continue
+        try:
+            runtime = pin.resolve()
+        except CrewmateHarnessUnavailable:
+            continue
+        if runtime == kas or bots_cannot_run_on(runtime):
+            return True
+    return False
+
+
 def _note_pin_fallback(crew: str, pinned: str, landed: str) -> None:
     """Say once per process per Bot and harness where its pin runs instead (H3, H17)."""
     with _VERDICT_LOCK:
@@ -432,6 +470,15 @@ def _inherited_backend(config: Any) -> str:
 
 
 def worker_spec_kas_fields(config: Any, crew: str) -> tuple[str, ...]:
+    """The field kinds of :func:`worker_spec_kas_detail`."""
+    return worker_spec_kas_detail(config, crew)[0]
+
+
+#: ``(group, name)`` per exact entry to change; *name* is the Bot's file's own text.
+KasItems = tuple[tuple[str, str], ...]
+
+
+def worker_spec_kas_detail(config: Any, crew: str) -> tuple[tuple[str, ...], KasItems]:
     """What in crew *crew*'s worker spec only KAS carries, when that moves it to KAS.
 
     Non-empty when the Crew bot follows the Settings harness (no stored
@@ -445,6 +492,10 @@ def worker_spec_kas_fields(config: Any, crew: str) -> tuple[str, ...]:
     same backend, would be refused, so the Crew bot runs on KAS, chat and workers,
     and is rung in the bell (``crewmate_harness_notice``).
 
+    Returns those field kinds and, from the same read, each exact entry behind
+    them (``mate_worker.kas_only_worker_detail``; ``chat tool limits`` gives the
+    Capabilities spec's ``server/tool`` names), so the bell can say what to change.
+
     The answer about the Crew bot's file is held in memory (:func:`refresh_worker_spec_verdicts`).
     On the event loop this only reads that memory: a missing or outdated entry
     answers what is held (nothing at first) and refreshes in a background thread,
@@ -455,26 +506,27 @@ def worker_spec_kas_fields(config: Any, crew: str) -> tuple[str, ...]:
 
     agent = getattr(config, "agent", None)
     if not crew or not getattr(agent, MEMBER_BACKEND_INHERITED_ATTR, False):
-        return ()
+        return (), ()
     inherited = _inherited_backend(config)
     if inherited == _backends.ACP_BACKEND_KAS:
-        return ()
+        return (), ()
     if _backends.ACP_BACKEND_KAS not in _backends.selectable_backends():
-        return ()
+        return (), ()
     record = config.agents.get(crew) if hasattr(config, "agents") else None
     member_id = str(getattr(record, "member_id", "") or "")
     if not member_id:
-        return ()
+        return (), ()
     key = (crew, member_id, str(getattr(record, "kiro_agent", "") or ""), inherited)
     if _on_event_loop():
         return _held_verdict(key)
     return _fresh_verdict(key)
 
 
-#: ``(crew, member_id, kiro_agent, inherited backend) -> (stamp, fields)``; the stamp
+#: ``(crew, member_id, kiro_agent, inherited backend) -> (stamp, (fields, items))``; the stamp
 #: is ``(spec generation, Crew bot folder revision, agents folder revision)``.
 _VerdictKey = tuple[str, str, str, str]
-_VERDICTS: dict[_VerdictKey, tuple[tuple[int, object, object], tuple[str, ...]]] = {}
+_Verdict = tuple[tuple[str, ...], KasItems]
+_VERDICTS: dict[_VerdictKey, tuple[tuple[int, object, object], _Verdict]] = {}
 _VERDICT_LOCK = threading.Lock()
 _REFRESHING: set[_VerdictKey] = set()
 
@@ -489,7 +541,7 @@ def _on_event_loop() -> bool:
     return True
 
 
-def _held_verdict(key: _VerdictKey) -> tuple[str, ...]:
+def _held_verdict(key: _VerdictKey) -> _Verdict:
     """The held answer for *key*, refreshed in the background when outdated. In memory."""
     from kiro_crew.agent_discovery import spec_cache_generation
 
@@ -506,7 +558,7 @@ def _held_verdict(key: _VerdictKey) -> tuple[str, ...]:
             name="crewmate-worker-spec-verdict",
             daemon=True,
         ).start()
-    return hit[1] if hit is not None else ()
+    return hit[1] if hit is not None else ((), ())
 
 
 def _refresh_in_background(key: _VerdictKey) -> None:
@@ -519,11 +571,11 @@ def _refresh_in_background(key: _VerdictKey) -> None:
             _REFRESHING.discard(key)
 
 
-def _fresh_verdict(key: _VerdictKey) -> tuple[str, ...]:
+def _fresh_verdict(key: _VerdictKey) -> _Verdict:
     """Blocking: the answer for *key*, read from the file when the memory is outdated."""
     from kiro_crew.agent_discovery import agents_dir_revision, spec_cache_generation
     from kiro_crew.config import paths as paths_mod
-    from kiro_crew.mate_worker import kas_only_worker_fields
+    from kiro_crew.mate_worker import kas_only_worker_detail
 
     crew, member_id, _agent, inherited = key
     stamp = (
@@ -535,48 +587,55 @@ def _fresh_verdict(key: _VerdictKey) -> tuple[str, ...]:
         hit = _VERDICTS.get(key)
     if None not in stamp and hit is not None and hit[0] == stamp:
         return hit[1]
-    fields = kas_only_worker_fields(member_id, inherited)
-    if _chat_tool_limits(crew, inherited):
+    fields, items = kas_only_worker_detail(member_id, inherited)
+    chat = _chat_tool_limits(crew, inherited)
+    if chat:
         fields = ("chat tool limits", *fields)
+        items = (*(("turned off in Capabilities", name) for name in chat), *items)
+    verdict = (fields, items)
     with _VERDICT_LOCK:
         # An unprovable revision is still held for the loop, never trusted off it.
-        _VERDICTS[key] = (stamp, fields)
-    return fields
+        _VERDICTS[key] = (stamp, verdict)
+    return verdict
 
 
-def _chat_tool_limits(crew: str, inherited: str) -> bool:
-    """Whether crew *crew*'s saved Capabilities spec switches tools off its chat can't.
+def _chat_tool_limits(crew: str, inherited: str) -> tuple[str, ...]:
+    """The tools crew *crew*'s saved Capabilities spec switches off that its chat can't.
+
+    ``server/tool`` each (``agent_capabilities.disabled_tool_names``); empty when none.
 
     ``agent_capabilities.prepare_member_capabilities`` is the read the chat start
     refuses on (``capability_tool_limits_unsupported``). It is asked with no project,
     so a spec saved under a project, which it refuses here, is read directly: the
     private copy's ``tool_limited_servers``. A spec neither read finds answers
-    ``False``: the start judges it and says why. Blocking.
+    nothing: the start judges it and says why. Blocking.
     """
     if inherited in _backends.ACP_BACKENDS_MEMBER_TOOL_LIMITS:
-        return False
+        return ()
     from kiro_crew import agent_capabilities
 
     try:
         prepared = agent_capabilities.prepare_member_capabilities(crew)
     except Exception:  # noqa: BLE001 - read the private copy directly instead
         return _private_copy_tool_limits(crew)
-    return bool(prepared.get("tool_limited_servers"))
+    if not prepared.get("tool_limited_servers"):
+        return ()
+    return tuple(prepared.get("disabled_tools") or prepared["tool_limited_servers"])
 
 
-def _private_copy_tool_limits(crew: str) -> bool:
-    """Whether crew *crew*'s saved private copy switches single tools off. Blocking."""
+def _private_copy_tool_limits(crew: str) -> tuple[str, ...]:
+    """The tools crew *crew*'s saved private copy switches off, ``server/tool`` each. Blocking."""
     from kiro_crew import agent_capabilities, agent_state
     from kiro_crew.config.loader import KiroCrewConfig
 
     try:
         binding = KiroCrewConfig.load().agents.get(crew)
         if binding is None or agent_state.get_capabilities(binding.kiro_agent) is None:
-            return False
+            return ()
         _path, spec, _own = agent_capabilities._source(binding.kiro_agent, "", allow_private=True)
     except Exception:  # noqa: BLE001 - the chat start judges an unreadable spec
-        return False
-    return bool(agent_capabilities.tool_limited_servers(spec))
+        return ()
+    return agent_capabilities.disabled_tool_names(spec)
 
 
 async def refresh_crew_verdict(crew: str) -> None:

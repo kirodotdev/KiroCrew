@@ -15,7 +15,6 @@ import json
 import os
 import random
 import re
-import time
 from pathlib import Path
 
 import pytest
@@ -56,7 +55,7 @@ def _distinct_png(tmp_path, name, width):
 
 
 def _image_bytes(fmt="PNG", size=(2, 2)):
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     buf = io.BytesIO()
     pil.new("RGB", size, (127, 127, 127)).save(buf, format=fmt)
     return buf.getvalue()
@@ -130,7 +129,7 @@ class TestBuildPromptBlocks:
         # Fixtures are format-faithful (real bytes per format, not one PNG
         # renamed): the emitted mimeType tracks the header-DETECTED format,
         # because the backend validates the bytes, not the file extension.
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         fmt = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG",
                ".gif": "GIF", ".webp": "WEBP", ".bmp": "BMP"}[suffix]
         p = tmp_path / f"img{suffix}"
@@ -288,17 +287,20 @@ class TestOnePromptImageRules:
     def test_a_long_message_of_path_fragments_scans_in_linear_time(self):
         # Space is both a delimiter and a legal path character, so every "/" here
         # opens a path body that would walk to the suffix: the bounded body is
-        # what keeps this linear.
-        text = (" /a" * 20000) + ".png~"
+        # what keeps this linear. The scan is a regex search, which no work
+        # counter sees, so the shared ramped thread-CPU guard measures it.
+        from conftest import assert_rejected_without_backtracking
 
-        # Thread CPU time, not wall time: a loaded runner that parks this thread
-        # does not count against the budget, a quadratic scan still does.
-        started = time.thread_time()
-        blocks = build_prompt_blocks(text)
-        elapsed = time.thread_time() - started
+        def reject(text: str) -> None:
+            assert build_prompt_blocks(text) == [{"type": "text", "text": text}]
 
-        assert blocks == [{"type": "text", "text": text}]
-        assert elapsed < 5.0, f"image-path scan took {elapsed:.3f}s"
+        # The long pumps carry a quarter of the fragments (the one-unit ramp keeps
+        # every unit): a linear scan of 20 000 fragments costs about a third of the
+        # budget on an idle host, too close to it on a slow one, and the 10x step
+        # between long pumps that the growth check reads is unchanged.
+        assert_rejected_without_backtracking(
+            reject, lambda n: (" /a" * (n if n < 200 else n // 4)) + ".png~"
+        )
 
     def test_a_path_component_after_an_image_suffix_belongs_to_the_longer_path(self, tmp_path):
         _png(tmp_path, "a.png")
@@ -636,7 +638,7 @@ class TestSensitivePathGate:
 
     def test_encoded_bytes_come_from_the_gate(self, tmp_path, monkeypatch):
         """The wire payload is the gate's output, not a second unguarded read."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         p = _png(tmp_path)  # on-disk content is the 1x1 _PNG
         # The gate returns DIFFERENT (valid, within-cap) bytes; prove the wire
         # carries THOSE, not a re-read of the file. A non-image sentinel would be
@@ -1190,7 +1192,7 @@ def _sized_image(tmp_path, w, h, fmt="PNG", name=None):
     Solid colour keeps PNG/JPEG/WEBP encodings tiny so they clear the byte gate
     and the downscale (not the byte cap) is what the test exercises.
     """
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     ext = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp", "BMP": "bmp", "GIF": "gif"}[fmt]
     p = tmp_path / (name or f"big.{ext}")
     pil.new("RGB", (w, h), (123, 200, 60)).save(p, format=fmt)
@@ -1198,7 +1200,7 @@ def _sized_image(tmp_path, w, h, fmt="PNG", name=None):
 
 
 def _decoded_size(block):
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     with pil.open(io.BytesIO(base64.b64decode(block["data"]))) as im:
         return im.size
 
@@ -1265,7 +1267,7 @@ class TestImageDownscale:
         ``MPO``. Within the cap it rides through byte-identical as
         ``image/jpeg``; over the cap it is re-encoded as JPEG, not as the far
         larger PNG a format outside the table converts to."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
 
         def _mpo(path, w, h):
             primary = pil.new("RGB", (w, h), (10, 20, 30))
@@ -1301,7 +1303,7 @@ class TestImageDownscale:
         decompression-bomb rejection) must NOT reach the model as the original
         >2000px payload -- that is exactly what poisons the session. The path is
         left as text instead."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         p = _sized_image(tmp_path, 2001, 2001)  # over the edge cap
         # Force a decompression-bomb ERROR on decode/resize (pixels > 2 x limit).
         monkeypatch.setattr(pil, "MAX_IMAGE_PIXELS", 1_000_000)
@@ -1312,7 +1314,7 @@ class TestImageDownscale:
     def test_exif_orientation_is_baked_on_downscale(self, tmp_path):
         """A re-encode drops the EXIF orientation tag, so orientation must be
         baked into the pixels first or the model sees a rotated photo."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         p = tmp_path / "rot.jpg"
         img = pil.new("RGB", (3000, 1000), (10, 20, 30))
         exif = img.getexif()
@@ -1332,7 +1334,7 @@ def _noise_image(tmp_path, w, h, name="noise.png", fmt="PNG"):
     Built from one bytes buffer: per-pixel tuples at 2400x2400 peak near 390 MiB, which
     the worker memory budget would have to reserve.
     """
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     rnd = random.Random(1234)
     img = pil.frombytes("RGB", (w, h), rnd.randbytes(w * h * 3))
     p = tmp_path / name

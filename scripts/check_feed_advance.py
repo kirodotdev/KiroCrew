@@ -187,8 +187,12 @@ def tag_candidates(tags: list[str], channel: str, self_tag: str) -> list[str]:
       old line by definition.
     * nightly: none -- nightly builds are untagged, the feed is the only
       signal.
+    * lts: none -- its ``lts-v*`` tags are not in the ``v*`` list the
+      publish lanes pass, and an oss tag says nothing about the LTS line, so
+      the feed is the only signal (one release a month, well past its
+      max-age).
     """
-    if channel == "nightly":
+    if channel in ("nightly", "lts"):
         return []
     self_norm = self_tag.lstrip("v")
     out = []
@@ -208,7 +212,7 @@ def tag_candidates(tags: list[str], channel: str, self_tag: str) -> list[str]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--new", required=True, help="version this run wants to publish")
-    parser.add_argument("--channel", required=True, choices=("nightly", "insider", "stable"))
+    parser.add_argument("--channel", required=True, choices=("nightly", "insider", "stable", "lts"))
     parser.add_argument(
         "--current-file",
         default="",

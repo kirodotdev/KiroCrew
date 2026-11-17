@@ -349,7 +349,7 @@ class TestIsTransientRawError:
             _raise_acp_error(auth_err)
         auth_exc = auth_ei.value
         assert auth_exc.transient is False
-        assert "authentication failed" in str(auth_exc).lower()
+        assert "refused access" in str(auth_exc).lower()
 
     def test_context_window_overflow_is_structural_and_non_transient(self):
         import pytest

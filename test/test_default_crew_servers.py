@@ -575,3 +575,35 @@ def test_no_added_servers_preserves_approvals(managed, per_tool_ceiling, changes
     spec = {"tools": ["read"], "allowedTools": list(_APPROVALS), **changes}
     assert defaults.with_default_crew_servers("custom", spec) is spec
     assert spec["allowedTools"] == _APPROVALS
+
+
+class TestCrewAddedServers:
+    """Which of Crew's default servers Crew itself put on the spec a session runs."""
+
+    def test_the_servers_the_helper_added_are_named(self, managed):
+        out = defaults.with_default_crew_servers("mine", {"name": "mine", "tools": ["fs_read"]})
+        assert defaults.crew_added_servers("mine", out) == ("kirocrew-core", "kirocrew-cron")
+
+    def test_an_entry_the_author_wrote_is_theirs(self, managed):
+        """A declared server is skipped by the helper and is not counted here."""
+        spec = {
+            "name": "mine",
+            "tools": ["fs_read", "@kirocrew-core"],
+            "mcpServers": {"kirocrew-core": {**_CORE, "disabledTools": ["spawn_run"]}},
+        }
+        out = defaults.with_default_crew_servers("mine", spec)
+        assert defaults.crew_added_servers("mine", out) == ("kirocrew-cron",)
+
+    def test_an_agent_crew_wrote_has_none(self, managed):
+        spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": dict(_CORE)}}
+        assert defaults.crew_added_servers("kirocrew", spec) == ()
+
+    @pytest.mark.parametrize("spec", [None, {"tools": ["fs_read"]}, {"mcpServers": []}])
+    def test_no_servers_means_none(self, managed, spec):
+        assert defaults.crew_added_servers("mine", spec) == ()
+
+    def test_a_tool_less_agent_gets_nothing_to_defer(self, managed):
+        """The zero-tool rule holds: the helper adds no server, so nothing is counted."""
+        out = defaults.with_default_crew_servers("mine", {"name": "mine", "tools": []})
+        assert "mcpServers" not in out
+        assert defaults.crew_added_servers("mine", out) == ()

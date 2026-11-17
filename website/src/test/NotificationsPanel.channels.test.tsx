@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { render, fireEvent, screen, waitFor, within, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
@@ -39,7 +39,7 @@ beforeEach(() => {
   localStorage.clear()
   __resetForTests()
   mockChannels.mockReset().mockResolvedValue({ channels: CHANNELS })
-  mockUpdate.mockClear()
+  mockUpdate.mockReset().mockResolvedValue({})
   ;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(() => ({
     state: 'running', currentTime: 0, destination: {},
     resume: vi.fn(() => Promise.resolve()),
@@ -172,6 +172,66 @@ describe('NotificationsPanel channels section', () => {
     expect(member.getAttribute('aria-checked')).toBe('false')
   })
 
+  it('sends a second save of one channel only once the first is answered, so the later click is stored', async () => {
+    // Two overlapping saves could reach the server in either order, and the
+    // earlier click would then be the value it keeps.
+    let answerFirst!: () => void
+    mockUpdate.mockImplementationOnce(() => new Promise(resolve => { answerFirst = () => resolve({}) }))
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const cron = screen.getByRole('switch', { name: /system\.cron/ })
+    fireEvent.click(cron)
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('false'))
+    fireEvent.click(cron)
+    // The unmute shows at once; its save waits behind the mute's.
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('true'))
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+    await act(async () => { answerFirst() })
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(2))
+    expect(mockUpdate.mock.calls.map(c => c[1])).toEqual([{ muted: true }, { muted: false }])
+  })
+
+  it('re-reads the list only once a channel\'s queued saves have all answered', async () => {
+    // A read after the first answer would beat the second save to the server
+    // and put the first click back on screen.
+    let answered = 0
+    const answers: (() => void)[] = []
+    mockUpdate.mockImplementation(() => new Promise(resolve => { answers.push(() => { answered += 1; resolve({}) }) }))
+    const answeredAtRead: number[] = []
+    mockChannels.mockReset().mockResolvedValueOnce({ channels: CHANNELS })
+      .mockImplementation(async () => { answeredAtRead.push(answered); return { channels: CHANNELS } })
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const cron = screen.getByRole('switch', { name: /system\.cron/ })
+    fireEvent.click(cron)
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('false'))
+    fireEvent.click(cron)
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('true'))
+    await act(async () => { answers[0]() })
+    await waitFor(() => expect(answers).toHaveLength(2))
+    await act(async () => { answers[1]() })
+    await waitFor(() => expect(answeredAtRead.length).toBeGreaterThan(0))
+    expect(answeredAtRead).toEqual([2])
+  })
+
+  it('re-reads the list after a save that lands while an earlier save\'s read is still out', async () => {
+    // That earlier read may have been answered before the save landed, so only
+    // a fresh read shows what the server keeps. The first save's read never
+    // answers here, which keeps that save pending while the second one lands.
+    mockChannels.mockReset().mockResolvedValueOnce({ channels: CHANNELS })
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValue({ channels: CHANNELS })
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const cron = screen.getByRole('switch', { name: /system\.cron/ })
+    fireEvent.click(cron)
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('false'))
+    await waitFor(() => expect(mockChannels).toHaveBeenCalledTimes(2))
+    fireEvent.click(cron)
+    await waitFor(() => expect(mockChannels).toHaveBeenCalledTimes(3))
+    expect(mockUpdate.mock.calls.map(c => c[1])).toEqual([{ muted: true }, { muted: false }])
+  })
+
   it('two refused mutes of one channel roll back to the stored value, not to the first optimistic one', async () => {
     mockChannels.mockReset().mockResolvedValueOnce({ channels: CHANNELS }).mockImplementation(() => new Promise(() => {}))
     const refusals: ((e: Error) => void)[] = []
@@ -183,14 +243,16 @@ describe('NotificationsPanel channels section', () => {
     // The first mute shows before the second click, which then unmutes.
     await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('false'))
     fireEvent.click(cron)
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('true'))
+    // The second save goes out only once the first is answered.
+    refusals[0](new Error('first refused'))
     await waitFor(() => expect(refusals).toHaveLength(2))
     expect(mockUpdate.mock.calls.map(c => c[1])).toEqual([{ muted: true }, { muted: false }])
-    refusals[0](new Error('first refused'))
     refusals[1](new Error('second refused'))
-    // Each failure's settle asks for a refetch (which never answers here), so
-    // the third read means both rollbacks have run. Both saves failed, so the
-    // switch shows what the server holds: unmuted.
-    await waitFor(() => expect(mockChannels).toHaveBeenCalledTimes(3))
+    // Only the last save's settle asks for a refetch (which never answers
+    // here), so the second read means both rollbacks have run. Both saves
+    // failed, so the switch shows what the server holds: unmuted.
+    await waitFor(() => expect(mockChannels).toHaveBeenCalledTimes(2))
     expect(cron.getAttribute('aria-checked')).toBe('true')
   })
 

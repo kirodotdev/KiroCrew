@@ -37,7 +37,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.messaging.link import ChannelLink, canonical_key, split_dm_session_key
 from kiro_crew.user_json import loads_user_json
 
@@ -128,7 +128,11 @@ def _load(self: SessionMap) -> None:
     self._thread_to_session = {}
     if self._path.exists():
         try:
-            raw = loads_user_json(self._path.read_text(encoding="utf-8"))
+            # ``read_bytes_with_retry`` rides out a transient Windows sharing
+            # violation, so only a read failure that outlasts its window trips
+            # the refuse-writes state below. A bad UTF-8 sequence raises
+            # ``UnicodeDecodeError``, a ``ValueError``, and is kept aside.
+            raw = loads_user_json(read_bytes_with_retry(self._path).decode("utf-8"))
         except (ValueError, RecursionError):
             # Not usable JSON, so ``_data`` starts empty; the first write moves
             # the file aside before it lands (``_write_payload``), so a hand
@@ -246,7 +250,7 @@ def _canonical_entries(raw: dict) -> tuple[dict[str, dict], bool]:
 
 def _read_map_file(path: pathlib.Path) -> dict[str, dict]:
     """The map file's bindings as :func:`_load` would take them; raises if it is not an object."""
-    raw = loads_user_json(path.read_text(encoding="utf-8"))
+    raw = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{path} holds a JSON {type(raw).__name__}, not an object")
     return _canonical_entries(raw)[0]
@@ -305,6 +309,7 @@ async def _reread_after_failed_load(self: SessionMap) -> None:
             self._rebuild_thread_index()
             self._load_failed = False
             self._dirty = True  # the adopted map is ahead of the file
+            self._touch()
         logger.info("Read %s after a failed load; session-map writes resume", self._path)
 
     if self._reread_task is None:
@@ -322,7 +327,12 @@ def _save(self: SessionMap) -> None:
       that writes in a worker thread and loops until the map is clean, so a
       trailing mutation is never dropped.
     - no running loop (CLI, tests, worker threads): write inline.
+
+    Every mutator calls this AFTER its mutation, so it is also where the map's
+    ``mutation_generation`` moves (a reader keyed on it must never see the bump
+    before the change it announces).
     """
+    self._touch()
     if self._batch_depth:
         self._batch_dirty = True
         return

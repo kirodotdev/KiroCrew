@@ -366,9 +366,9 @@ class TestArmEndpoint:
     ) -> None:
         """A retraction between the cached verdict and the click refuses the arm.
 
-        And says so in its own words. The panel renders ``error`` verbatim, so the
-        no-verdict message ("run a check first") would be a wrong statement of fact
-        here -- a check just ran, and running another returns this same refusal.
+        With its own code, which the panel words as "already up to date": telling
+        the user to run a check would be a wrong statement of fact here -- a check
+        just ran, and running another returns this same refusal.
         """
         from kiro_crew.platform import wheel_engine
         from kiro_crew.platform.update_capability import CHECK_SUCCEEDED
@@ -406,7 +406,8 @@ class TestArmEndpoint:
         arm the feed could not confirm would only move the refusal to the approval
         step, after the user typed the host command. Refusing here, with the failed
         check left in the cache for the panel to show, says the true thing at the
-        moment the user can still act on it.
+        moment the user can still act on it. Its own code, not the no-verdict one:
+        a check just ran, and trying again is the remedy.
         """
         from kiro_crew.platform import wheel_engine
         from kiro_crew.platform.update_capability import CHECK_FAILED
@@ -424,7 +425,9 @@ class TestArmEndpoint:
         try:
             resp = await updates.api_update_arm(_request())
             assert resp.status == 409
-            assert json.loads(resp.body.decode())["code"] == "arm_no_verdict"
+            payload = json.loads(resp.body.decode())
+            assert payload["code"] == "arm_check_failed"
+            assert "run a check first" not in payload["error"]
             assert update_stepup.read_pending() is None, "nothing may be armed on a failed check"
             assert (
                 updates._update_info["check_status"] == CHECK_FAILED
@@ -434,11 +437,11 @@ class TestArmEndpoint:
             updates._set_update_info()
 
     async def test_arm_refuses_without_a_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """No verdict at all keeps the "run a check first" refusal.
+        """A check that ran without failing yet named nothing still refuses.
 
         `update_available: None` is the absence of an answer, not the answer "no" --
-        the distinction the retraction test above pins from the other side. Here the
-        advice is correct and actionable, so it must survive.
+        the distinction the retraction test above pins from the other side -- and
+        not a failed check either, which has its own code.
         """
         from kiro_crew.platform import wheel_engine
 
@@ -450,7 +453,7 @@ class TestArmEndpoint:
         assert resp.status == 409
         payload = json.loads(resp.body.decode())
         assert payload["code"] == "arm_no_verdict"
-        assert "run a check first" in payload["error"]
+        assert update_stepup.read_pending() is None
 
     async def test_arm_refuses_when_check_reports_nothing_to_apply(
         self, monkeypatch: pytest.MonkeyPatch
@@ -527,6 +530,160 @@ class TestArmEndpoint:
             assert pending is not None
             assert pending.version == "0.6.0rc4"
             assert pending.channel == "insider"
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_an_upgrade_click_is_judged_by_the_version_it_offered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The click names the version its button offered; the cache can be newer.
+
+        A background check rolled the lane back to a channel move after the panel
+        drew "Update to v0.4.8" and before the click arrived, so the cache on
+        arrival holds the move. The button offered v0.4.8 over a running v0.4.7,
+        and arming the move would install an older build than the one the user
+        chose.
+        """
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "_local_version", "0.4.7")
+        _freeze_check(monkeypatch)
+        updates._set_update_info(
+            update_available=False,
+            channel_move_pending=True,
+            latest_version="0.4.6",
+            channel="stable",
+        )
+        try:
+            resp = await updates.api_update_arm(_request({"offered": "0.4.8"}))
+            assert resp.status == 409
+            assert json.loads(resp.body.decode())["code"] == "arm_offer_withdrawn"
+            assert update_stepup.read_pending() is None
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_a_click_on_the_offered_channel_move_arms_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The click names the move the panel showed, folded the way the panel folds it.
+
+        An insider 0.5.0rc3 build switched to stable is offered the move to the
+        promoted 0.5.0rc2, which stable labels "0.5.0". That label outranks the raw
+        running stamp, so judging it against the unfolded running build would read
+        the move as an upgrade and refuse it as withdrawn on every click.
+        """
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "")
+        monkeypatch.setattr(updates, "_local_version", "0.5.0rc3")
+        _freeze_check(monkeypatch)
+        updates._set_update_info(
+            update_available=False,
+            channel_move_pending=True,
+            latest_version="0.5.0rc2",
+            channel="stable",
+        )
+        try:
+            resp = await updates.api_update_arm(_request({"offered": "0.5.0"}))
+            assert resp.status == 200
+            pending = update_stepup.read_pending()
+            assert pending is not None
+            assert pending.version == "0.5.0rc2"
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_an_upgrade_click_sharing_the_running_label_is_still_an_upgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stable 0.5.0rc3 build offered the promoted 0.5.0rc4 sees "0.5.0" on both.
+
+        The lane then rolled back to 0.4.9, a move below the running build. Judged
+        against the running build folded the same way, "0.5.0" would not outrank
+        "0.5.0" and the click would arm the rollback; the running build is shown
+        unfolded while a move is pending, and against that the click is an upgrade.
+        """
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "")
+        monkeypatch.setattr(updates, "_local_version", "0.5.0rc3")
+        _freeze_check(monkeypatch)
+        updates._set_update_info(
+            update_available=False,
+            channel_move_pending=True,
+            latest_version="0.4.9",
+            channel="stable",
+        )
+        try:
+            resp = await updates.api_update_arm(_request({"offered": "0.5.0"}))
+            assert resp.status == 409
+            assert json.loads(resp.body.decode())["code"] == "arm_offer_withdrawn"
+            assert update_stepup.read_pending() is None
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_an_upgrade_click_sharing_the_rollbacks_label_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The button offered 0.5.0 while the cache already holds a newer upgrade.
+
+        The arm's own re-check finds the lane rolled back to 0.5.0rc2, which stable
+        labels "0.5.0", so the offered label alone reads as the move. The cached
+        upgrade verdict keeps that stale click from arming a build older than the
+        running one even though its folded label differs from the button's label.
+        """
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "")
+        monkeypatch.setattr(updates, "_local_version", "0.5.0rc3")
+        updates._set_update_info(update_available=True, latest_version="0.5.1rc1", channel="stable")
+
+        async def _rolled_back() -> None:
+            updates._set_update_info(
+                update_available=False,
+                channel_move_pending=True,
+                latest_version="0.5.0rc2",
+                channel="stable",
+            )
+
+        monkeypatch.setattr(updates, "_do_update_check", _rolled_back)
+        try:
+            resp = await updates.api_update_arm(_request({"offered": "0.5.0"}))
+            assert resp.status == 409
+            assert json.loads(resp.body.decode())["code"] == "arm_offer_withdrawn"
+            assert update_stepup.read_pending() is None
+        finally:
+            update_stepup.clear_pending()
+            updates._set_update_info()
+
+    async def test_arm_refuses_a_malformed_offered_without_a_feed_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`offered` crosses a trust boundary: only a short string can be a version."""
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        checks = _freeze_check(monkeypatch)
+        updates._set_update_info(update_available=True, latest_version="0.4.8", channel="stable")
+        try:
+            for bad in (48, ["0.4.8"], "9" * (updates._OFFERED_MAX_CHARS + 1)):
+                resp = await updates.api_update_arm(_request({"offered": bad}))
+                assert resp.status == 400
+                assert json.loads(resp.body.decode())["code"] == "invalid_offered"
+            assert checks == [], "a malformed request must not cost a feed round trip"
+            assert update_stepup.read_pending() is None
         finally:
             update_stepup.clear_pending()
             updates._set_update_info()
@@ -892,6 +1049,76 @@ class TestApproveEndpoint:
         assert req.app["state"]._background_tasks == set()
         await asyncio.to_thread(_assert_update_lock_free)
 
+    async def test_a_gateway_on_the_stable_link_arms_instead_of_promoting_under_itself(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import update_next_start
+        from kiro_crew.platform import wheel_apply
+
+        async def forbidden(**_kw: object) -> None:
+            raise AssertionError("an approve must not promote under a running gateway")
+
+        monkeypatch.setattr(wheel_apply, "relaunch_before_apply", lambda: True)
+        monkeypatch.setattr(wheel_apply, "run_wheel_apply", forbidden)
+        monkeypatch.setattr(updates, "_audit_update_event", AsyncMock())
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "")
+        monkeypatch.setattr(updates, "_local_version", "0.7.0")
+        pending = update_stepup.arm("9.9.9", "stable")
+        try:
+            req = _request({"nonce": pending.nonce})
+            resp = await updates.api_update_approve(req)
+            assert resp.status == 202
+            body = json.loads(resp.body.decode())
+            assert (body["armed"], body["version"]) == (True, "9.9.9")
+            assert update_next_start.read().armed_version == "9.9.9"
+            assert body["status"] == "armed"
+            frames = [c.args for c in req.app["state"].push_update_progress.call_args_list]
+            assert frames and frames[-1][0] == "done" and "armed" in frames[-1][1]
+            assert req.app["state"]._background_tasks == set()
+            _assert_update_lock_free()
+        finally:
+            update_next_start.disarm()
+            update_stepup.clear_pending()
+
+    async def test_a_stable_link_approval_for_a_version_not_newer_is_not_armed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import update_next_start
+        from kiro_crew.platform import wheel_apply
+
+        monkeypatch.setattr(wheel_apply, "relaunch_before_apply", lambda: True)
+        monkeypatch.setattr(updates, "_audit_update_event", AsyncMock())
+        monkeypatch.setattr(updates, "resolve_provider", lambda: None)
+        monkeypatch.setattr(updates, "min_version", lambda: "")
+        pending = update_stepup.arm("0.0.1", "stable")
+        try:
+            resp = await updates.api_update_approve(_request({"nonce": pending.nonce}))
+            assert resp.status == 409
+            assert json.loads(resp.body.decode())["code"] == "restart_first"
+            assert not update_next_start.read().armed
+            _assert_update_lock_free()
+        finally:
+            update_next_start.disarm()
+            update_stepup.clear_pending()
+
+    async def test_the_arm_status_names_a_consumed_request_that_armed_the_next_start(
+        self, tmp_path: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import update_next_start
+
+        update_next_start.arm("9.9.9")
+        try:
+            resp = await updates.api_update_arm_status(_request())
+            body = json.loads(resp.body.decode())
+            assert (body["armed"], body["next_start_armed"], body["version"]) == (
+                False,
+                True,
+                "9.9.9",
+            )
+        finally:
+            update_next_start.disarm()
+
     async def test_wrong_nonce_refused(self) -> None:
         update_stepup.arm("9.9.9", "stable")
         try:
@@ -1033,11 +1260,11 @@ class TestApproveEndpoint:
 
         restarted: list[object] = []
 
-        async def fake_restart(state: object, *, resolver: object) -> bool:
-            assert resolver is wheel_engine.respawn_executable
+        async def fake_restart(state: object, **kwargs: object) -> bool:
             restarted.append(state)
             return True
 
+        from kiro_crew import update_restart_ready
         from kiro_crew.platform import wheel_apply, wheel_engine
 
         monkeypatch.setattr(wheel_engine, "apply_wheel_update", fake_apply)
@@ -1054,7 +1281,11 @@ class TestApproveEndpoint:
             await task
         assert len(applied) == 1
         assert applied[0]["expected_version"] == "9.9.9"
-        assert restarted, "a promoted update must restart the gateway"
+        assert restarted == [], "an approved update never restarts the running gateway"
+        note = update_restart_ready.current()
+        assert note is not None
+        assert (note.reason, note.version) == (update_restart_ready.REASON_STAGED, "9.9.9")
+        req.app["state"].push_refresh.assert_any_call("update_available")
         # Single-use: the nonce file is gone.
         assert update_stepup.read_pending() is None
         _assert_update_lock_free()
@@ -1300,7 +1531,7 @@ class TestApproveEndpoint:
         for task in list(req.app["state"]._background_tasks):
             await task
         assert audited == ["granted", "success"]
-        restart.assert_awaited_once()
+        restart.assert_not_awaited()
         other.cancel()
         _assert_update_lock_free()
 

@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for the Ultra Mode Board's Status milestones: needs you,
+ * Screenshot harness for the conductor mode Board's Status milestones: needs you,
  * working, waiting, stalled and done each read as their own row.
  *
  * Runs the REAL built SPA (website/dist) gateway-free behind the shared
@@ -90,13 +90,13 @@ try {
     logPageProblems(page)
     await stubDashboardApi(page, { slots, theme, localStorageEntries: { 'mc-theme-mode': theme, 'mc-active-slot-chat': ROOT, 'mc-lang': 'en', 'mc-privacy-notice-v1': '1', 'mc-preview-crew-mode': '1' }, extra })
     await page.goto(`${base}/chat?sid=${ROOT}`, { waitUntil: 'domcontentloaded' })
-    const status = page.getByTestId('ultra-status')
+    const status = page.getByTestId('conductor-mode-status')
     await status.waitFor({ timeout: 20000 })
-    await page.locator('[data-testid="ultra-milestones"] > ol [data-testid="ultra-milestone"]').first().waitFor({ timeout: 20000 })
+    await page.locator('[data-testid="conductor-mode-milestones"] > ol [data-testid="conductor-mode-milestone"]').first().waitFor({ timeout: 20000 })
     await page.waitForTimeout(800)
-    const states = await page.getByTestId('ultra-milestone').evaluateAll(els => els.map(e => e.getAttribute('data-state')))
+    const states = await page.getByTestId('conductor-mode-milestone').evaluateAll(els => els.map(e => e.getAttribute('data-state')))
     console.log(theme, 'states:', states.join(','))
-    await page.getByTestId('ultra-crew-panel').screenshot({ path: `${OUT}/${PREFIX}-${theme}.png` })
+    await page.getByTestId('conductor-mode-crew-panel').screenshot({ path: `${OUT}/${PREFIX}-${theme}.png` })
     await context.close()
   }
 } finally {

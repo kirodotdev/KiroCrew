@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 # ── MCP Core: simulate kiro-cli calling tools via JSON-RPC ──
 
@@ -230,10 +231,11 @@ class TestMcpCoreUserActions:
         assert "invalid" in result.lower()
 
     def test_spawn_status_redacts_credentials(self):
+        secret = github_classic(seed=45)
         with patch("kiro_crew.mcp_core._get") as mock_get:
-            mock_get.return_value = {"result": "Found key AKIAIOSFODNN7EXAMPLE in output"}
+            mock_get.return_value = {"result": f"Found key {secret} in output"}
             result = self._simulate_tool_call("spawn_status", {"agent_id": "abc123"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert secret not in result
         assert "[REDACTED" in result
 
     # -- task_run: user says "run this task spec" --

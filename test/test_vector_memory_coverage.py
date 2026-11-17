@@ -224,7 +224,11 @@ class TestRetireStaleEpisodicTextFallback:
 
 
 class TestSqliteVectorSearchEdges:
-    def test_rows_with_a_different_width_are_skipped(self, tmp_path: Path) -> None:
+    def test_rows_with_a_different_width_are_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One fake vector for every text trips FAISS's near-duplicate check.
+        monkeypatch.setattr(vm, "_HAS_FAISS", False)
         store = _store(tmp_path)
         store.embed_fn = _fixed_embed()
         assert store.write_episodic("A memory embedded at the store's native width")
@@ -236,7 +240,11 @@ class TestSqliteVectorSearchEdges:
         store.db.commit()
         assert store.search_episodic(query_embedding=[0.5] * _DIM, limit=5) == []
 
-    def test_tag_filter_excludes_non_matching_rows(self, tmp_path: Path) -> None:
+    def test_tag_filter_excludes_non_matching_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One fake vector for every text trips FAISS's near-duplicate check.
+        monkeypatch.setattr(vm, "_HAS_FAISS", False)
         store = _store(tmp_path)
         store.embed_fn = _fixed_embed()
         assert store.write_episodic("A note that belongs to the ops rotation", tags=["ops"])
@@ -268,7 +276,11 @@ class TestEpisodicContext:
         assert "release train ships every Thursday" in context
         assert context.startswith("[Episodic Memory")
 
-    def test_cap_truncates_the_result_list(self, tmp_path: Path) -> None:
+    def test_cap_truncates_the_result_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One fake vector for every text trips FAISS's near-duplicate check.
+        monkeypatch.setattr(vm, "_HAS_FAISS", False)
         store = _store(tmp_path)
         store.embed_fn = _fixed_embed()
         for i in range(3):
@@ -667,7 +679,11 @@ class TestEpisodicPromotion:
         assert store.promote_episodic_patterns() == 0
 
     @pytest.mark.skipif(not vm._HAS_NUMPY, reason="clustering needs numpy")
-    def test_a_repeated_pattern_becomes_a_semantic_fact(self, tmp_path: Path) -> None:
+    def test_a_repeated_pattern_becomes_a_semantic_fact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One fake vector for every text trips FAISS's near-duplicate check.
+        monkeypatch.setattr(vm, "_HAS_FAISS", False)
         store = _store(tmp_path)
         store.embed_fn = _fixed_embed()
         for i in range(5):
@@ -683,7 +699,11 @@ class TestEpisodicPromotion:
         assert _episodic_texts(store) == []
 
     @pytest.mark.skipif(not vm._HAS_NUMPY, reason="clustering needs numpy")
-    def test_a_cluster_with_no_inferrable_key_is_left_alone(self, tmp_path: Path) -> None:
+    def test_a_cluster_with_no_inferrable_key_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One fake vector for every text trips FAISS's near-duplicate check.
+        monkeypatch.setattr(vm, "_HAS_FAISS", False)
         store = _store(tmp_path)
         store.embed_fn = _fixed_embed()
         for i in range(5):
@@ -695,7 +715,11 @@ class TestEpisodicPromotion:
         assert len(_episodic_texts(store)) == 5
 
     @pytest.mark.skipif(not vm._HAS_NUMPY, reason="clustering needs numpy")
-    def test_a_cluster_below_the_threshold_is_left_alone(self, tmp_path: Path) -> None:
+    def test_a_cluster_below_the_threshold_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One fake vector for every text trips FAISS's near-duplicate check.
+        monkeypatch.setattr(vm, "_HAS_FAISS", False)
         store = _store(tmp_path)
         store.embed_fn = _fixed_embed()
         for i in range(2):

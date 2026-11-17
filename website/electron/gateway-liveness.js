@@ -35,7 +35,7 @@
  * @param {() => void} [o.onRecovered]            fired when a probe succeeds after
  *                                                >=1 prior failure (transient blip)
  * @param {() => boolean} [o.isWindowAlive]       false => stop (window closed)
- * @param {number} [o.failureThreshold=3]         consecutive failures before firing
+ * @param {number} [o.failureThreshold=6]         consecutive failures before firing
  * @param {number} [o.intervalMs=10000]           poll cadence
  * @param {() => number} [o.now=Date.now]         wall clock (counts a host
  *                                                suspend), injectable for tests
@@ -50,7 +50,9 @@ function createLivenessMonitor({
   onUnresponsive,
   onRecovered = () => {},
   isWindowAlive = () => true,
-  failureThreshold = 3,
+  // About a minute at the 10s cadence: a busy startup can leave /api/status
+  // unanswered for half a minute and still recover.
+  failureThreshold = 6,
   intervalMs = 10_000,
   now = Date.now,
   setIntervalFn = setInterval,
@@ -138,15 +140,15 @@ function createLivenessMonitor({
 
 // How long ONE post-handoff probe waits for /api/status before it counts as a
 // miss. This is deliberately NOT the 2s the boot poll uses. The boot poll runs
-// every 500ms and a slow answer just means "poll again"; here three misses in a
-// row force-kill the gateway, so the budget has to tell a loop that is merely
+// every 500ms and a slow answer just means "poll again"; here a run of misses
+// force-kills the gateway, so the budget has to tell a loop that is merely
 // SLOW from one that is WEDGED. Observed on a Windows desktop under a full test
 // run plus several subagents: the event loop logged 1-9s of lag from synchronous
 // disk I/O, still answered every request, and was killed anyway because three
 // 2s probes in a row timed out — 6 subagents orphaned for a loop that was never
 // stuck. A wedged loop answers nothing at all, so 8s costs it only ~6s of extra
-// detection (3 probes × 10s interval ≈ 28s vs 22s), still inside the in-process
-// loop-stall watchdog's own 25s budget, which reports a true wedge through the
+// detection. The in-process loop-stall watchdog's own exit (25s by default)
+// ends a true wedge before the run of misses does, and reports it through the
 // spawn 'exit' watcher rather than through this monitor.
 const LIVENESS_PROBE_TIMEOUT_MS = 8_000;
 

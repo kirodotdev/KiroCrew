@@ -102,14 +102,19 @@ logger = logging.getLogger(__name__)
 # --- aiohttp adapters ------------------------------------------------------
 
 def _is_internal_secret_request(request: web.Request) -> bool:
-    """True when the request was authenticated via X-Internal-Secret (MCP tool path).
+    """True when the caller is the agent transport (MCP tool path), not the person.
 
-    The server enforces preview-only semantics for internal-secret callers:
-    confirm and override_scan are stripped server-side so the MCP tool can never
-    bypass the two-call confirm gate or override scan findings — those actions
-    require human interaction through the dashboard UI.
+    Two transports carry it: the loopback call with ``X-Internal-Secret``, and the
+    agent socket, which sends a capability and no secret header. The auth
+    middleware marks both ``internal_auth`` once verified, so this reads the mark
+    too, the same rule as ``artifacts_parts.route_plumbing._is_agent_call``.
+
+    The server enforces preview-only semantics for these callers: confirm and
+    override_scan are stripped server-side so the MCP tool can never bypass the
+    two-call confirm gate or override scan findings — those actions require
+    human interaction through the dashboard UI.
     """
-    return "X-Internal-Secret" in request.headers
+    return "X-Internal-Secret" in request.headers or request.get("internal_auth") is True
 
 
 # Default-deny allowlist for internal-secret callers.

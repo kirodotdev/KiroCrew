@@ -890,6 +890,38 @@ class TestJudgeParsing:
         assert verdict.score == 0
         assert "parse_error" in verdict.reason
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reason", "expected"),
+        [("null", ""), ("7", "7"), ('["a", "b"]', "['a', 'b']")],
+    )
+    async def test_judge_reason_is_always_text(self, reason, expected):
+        """A passing score with a non-text reason keeps its score and gets text.
+
+        The eval CLI redacts the reason after it records the verdict, and the
+        redactors take text only, so a non-text reason raised there and turned
+        the passing verdict into a failed one.
+        """
+        from kiro_crew.eval.judge import LLMJudge
+        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+        class OddProvider(MockProvider):
+            async def stream(self, message):
+                self.messages.append(message)
+                yield LLMEvent(
+                    kind=EVENT_TEXT_CHUNK, text='{"score": 5, "reason": ' + reason + "}"
+                )
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+        judge = LLMJudge(provider_factory=lambda key, **kw: OddProvider())
+        await judge.start()
+        verdict = await judge.judge_turn("desc", "criteria", "user msg", "assistant msg")
+        await judge.shutdown()
+        assert verdict.score == 5.0
+        assert verdict.reason == expected
+        redacted, _ = redact_credentials(redact_exfiltration_urls(verdict.reason)[0])
+        assert redacted == expected
+
 
 class TestJudgeAssertionType:
     def test_judge_assertion_always_passes(self):

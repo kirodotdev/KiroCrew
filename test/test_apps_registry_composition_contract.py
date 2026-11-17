@@ -311,6 +311,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "list_catalog_apps",
     "list_installed_apps",
     "list_registry",
+    "loads_user_json",
     "logger",
     "logging",
     "minimal_env",

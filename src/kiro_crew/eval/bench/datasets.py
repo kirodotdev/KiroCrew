@@ -354,3 +354,154 @@ def load_json(spec: DatasetSpec | str, *, allow_download: bool = True) -> object
     # this package, and a plain open leaves the check-to-use window that the
     # sidecar and staging-file reads already close. Same helper, same reason.
     return json.loads(read_text_nofollow(path, what="corpus file"))
+
+
+def load_text(spec: DatasetSpec, *, allow_download: bool = True) -> str:
+    """A fetched file's text (CSV, JSONL), through the same verified, no-follow read."""
+    path = ensure(spec, allow_download=allow_download)
+    return read_text_nofollow(path, what="corpus file")
+
+
+# ── Provider benchmark suites ────────────────────────────────────────────────
+#
+# Fetched on demand from immutable upstream revisions, never vendored. A file small
+# enough to fetch while this was written carries its SHA-256; the rest pin on first
+# fetch. Kept apart from SPECS, which `kirocrew bench fetch` lists.
+
+_BEAM_COMMIT = "b2da22eac88bb0874c64665f13457eb99835774a"
+_PRECISIONMEM_COMMIT = "61a712a1754e7d27b6dee42da32a2c214b003ece"
+_PERSONAMEM_HF_REVISION = "ed956dea41521fc4499acbc63f966e0fd3c053ba"
+_MAB_HF_REVISION = "7ea066982b140a19337e17e60d45d4076e042faf"
+_HALUMEM_HF_REVISION = "cb04336aa1b732d4b24f5186c552456b4099806e"
+
+SUITE_SPECS: dict[str, DatasetSpec] = {
+    "precisionmem_seed": DatasetSpec(
+        key="precisionmem_seed",
+        dataset="precisionmembench",
+        variant="seed",
+        url=(
+            "https://raw.githubusercontent.com/tenurehq/precisionmembench/"
+            f"{_PRECISIONMEM_COMMIT}/fixtures/beliefs.seed.json"
+        ),
+        filename="precisionmem_beliefs.seed.json",
+        approx_bytes=33_303,
+        sha256="35659b3b9a581b644fc6746e1b4e902c3e7b56c0973b546bf7b0816a69e3de98",
+        measures_retrieval=True,
+        note="35 seed beliefs every case retrieves from. MIT.",
+    ),
+    "precisionmem_cases": DatasetSpec(
+        key="precisionmem_cases",
+        dataset="precisionmembench",
+        variant="retrieval",
+        url=(
+            "https://raw.githubusercontent.com/tenurehq/precisionmembench/"
+            f"{_PRECISIONMEM_COMMIT}/fixtures/retrieval.cases.json"
+        ),
+        filename="precisionmem_retrieval.cases.json",
+        approx_bytes=35_940,
+        sha256="09e99f0852280538abe34b03570f65583fdb10df3c554b7150f0f665d5db709c",
+        measures_retrieval=True,
+        note="77 must-return and must-not-return cases. MIT.",
+    ),
+    "personamem_v2_text": DatasetSpec(
+        key="personamem_v2_text",
+        dataset="personamem_v2",
+        variant="text",
+        url=(
+            "https://huggingface.co/datasets/bowen-upenn/PersonaMem-v2/resolve/"
+            f"{_PERSONAMEM_HF_REVISION}/benchmark/text/benchmark.csv"
+        ),
+        filename="personamem_v2_benchmark_text.csv",
+        approx_bytes=42_426_457,
+        sha256="95f2a8a324aab7baf2af937feae12731369e2abf7cad5ab3e170594cb25a3e52",
+        measures_retrieval=False,
+        note="5,000 multiple choice personalization questions. CC BY 4.0.",
+    ),
+    "mab_conflict_resolution": DatasetSpec(
+        key="mab_conflict_resolution",
+        dataset="memoryagentbench",
+        variant="conflict_resolution",
+        url=(
+            "https://huggingface.co/datasets/ai-hyz/MemoryAgentBench/resolve/"
+            f"{_MAB_HF_REVISION}/data/Conflict_Resolution-00000-of-00001.parquet"
+        ),
+        filename="mab_conflict_resolution.parquet",
+        approx_bytes=0,
+        sha256=None,
+        measures_retrieval=False,
+        note="FactConsolidation single and multi hop. MIT; reading it needs pyarrow.",
+    ),
+    "mab_accurate_retrieval": DatasetSpec(
+        key="mab_accurate_retrieval",
+        dataset="memoryagentbench",
+        variant="accurate_retrieval",
+        url=(
+            "https://huggingface.co/datasets/ai-hyz/MemoryAgentBench/resolve/"
+            f"{_MAB_HF_REVISION}/data/Accurate_Retrieval-00000-of-00001.parquet"
+        ),
+        filename="mab_accurate_retrieval.parquet",
+        approx_bytes=0,
+        sha256=None,
+        measures_retrieval=False,
+        note="EventQA rows of Accurate Retrieval. MIT; reading it needs pyarrow.",
+    ),
+    "halumem_medium": DatasetSpec(
+        key="halumem_medium",
+        dataset="halumem",
+        variant="medium",
+        url=(
+            "https://huggingface.co/datasets/IAAR-Shanghai/HaluMem/resolve/"
+            f"{_HALUMEM_HF_REVISION}/HaluMem-Medium.jsonl"
+        ),
+        filename="halumem_medium.jsonl",
+        approx_bytes=0,
+        sha256=None,
+        measures_retrieval=False,
+        note=(
+            "CC BY-NC-ND 4.0: converted in memory at run time on this machine, never "
+            "written back out in another form."
+        ),
+    ),
+}
+
+
+def beam_spec(split: str, conversation: int, part: str) -> DatasetSpec:
+    """One BEAM conversation file: ``chat`` or ``questions``, pinned on first fetch."""
+    if split not in ("100K", "500K") or part not in ("chat", "questions"):
+        raise CorpusFetchError(f"unknown BEAM file {split}/{conversation}/{part}")
+    path = "chat.json" if part == "chat" else "probing_questions/probing_questions.json"
+    return DatasetSpec(
+        key=f"beam_{split}_{conversation}_{part}",
+        dataset="beam",
+        variant=split,
+        url=(
+            "https://raw.githubusercontent.com/mohammadtavakoli78/BEAM/"
+            f"{_BEAM_COMMIT}/chats/{split}/{int(conversation)}/{path}"
+        ),
+        filename=f"beam_{split}_{int(conversation)}_{part}.json",
+        approx_bytes=0,
+        sha256=None,
+        measures_retrieval=True,
+        note="BEAM data CC BY-SA 4.0, code MIT.",
+    )
+
+
+def personamem_history_spec(link: str) -> DatasetSpec:
+    """One PersonaMem v2 chat history the benchmark CSV links to (``data/...json``)."""
+    if not link.startswith("data/chat_history_32k/") or ".." in link or not link.endswith(".json"):
+        raise CorpusFetchError(f"unexpected PersonaMem history path {link!r}")
+    name = link.rsplit("/", 1)[-1]
+    return DatasetSpec(
+        key=f"personamem_v2_{name}",
+        dataset="personamem_v2",
+        variant="32k",
+        url=(
+            "https://huggingface.co/datasets/bowen-upenn/PersonaMem-v2/resolve/"
+            f"{_PERSONAMEM_HF_REVISION}/{link}"
+        ),
+        filename=f"personamem_v2_{name}",
+        approx_bytes=0,
+        sha256=None,
+        measures_retrieval=False,
+        note="CC BY 4.0.",
+    )

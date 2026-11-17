@@ -302,10 +302,9 @@ class TestSanitizedPath:
         # writable by anything that can write the project — including the agent. A
         # planted `gh` there would run the moment the user types `gh`, before Enter.
         #
-        # The trusted-chain test is stubbed out so this isolates its own subject.
-        # Asserting against real system directories made it depend on host
-        # ownership, and it broke on CI runners where `/usr/local/bin` is not
-        # root-owned — a true fact about the runner, not about this filter.
+        # The trusted-chain check is stubbed so this tests only the location
+        # filter: real system directories would make it depend on who owns
+        # `/usr/local/bin` on the host, which differs across CI runners.
         monkeypatch.setattr(tc, "_is_trusted_dir", lambda _d: True)
         usr_bin, usr_local_bin = host_abs("usr", "bin"), host_abs("usr", "local", "bin")
         monkeypatch.setenv("PATH", os.pathsep.join([
@@ -326,9 +325,9 @@ class TestSanitizedPath:
         assert tc._is_project_local("/usr/lib/build-helpers") is False
 
     def test_matches_either_separator_on_any_host(self):
-        # Regression: splitting on `os.sep` alone made this silently stop matching
-        # POSIX-shaped paths on Windows — a security filter that quietly returns
-        # False while its own tests still pass on the authoring host.
+        # A filter that splits on `os.sep` alone stops matching POSIX-shaped
+        # paths on Windows: a security filter that quietly returns False while
+        # its tests still pass on the authoring host.
         assert tc._is_project_local(r"C:\Users\u\proj\.venv\Scripts") is True
         assert tc._is_project_local(r"C:\proj\node_modules\.bin") is True
         assert tc._is_project_local("/home/u/proj/.venv/bin") is True

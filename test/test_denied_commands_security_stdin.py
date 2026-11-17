@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
+from denied_commands_security_helpers import _interpreter_work, _linear_work
 
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
@@ -510,27 +511,46 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
              quadratic) hands the scan progressively shorter COPIES, each of which
              costs the slice that made it;
           3. THE START INDEX ADVANCES -- strictly increasing within the word, never
-             reset to 0, so each character is visited once.
+             reset to 0, so each character is visited once;
+          4. WORK FOR THE WHOLE CALL IS LINEAR -- the interpreter instructions the
+             call executes (``_interpreter_work``) grow by the same amount for each
+             equal step in the chain length, and that amount stays under a fixed
+             ceiling. This is what sees cost added OUTSIDE the scan, where the trace
+             cannot: a per-operator loop over the rest of the word, wherever in the
+             call it was added. It cannot see work inside one C call, which is what
+             (2) is for.
 
-        The absolute budget stays as the machine-independent catastrophic-blowup
-        backstop for cost added outside the scan, where the trace cannot see it.
+        Nothing here reads a clock: coverage's tracer multiplies the CPU of every
+        traced line, so a seconds budget reads the shard's instrumentation.
         """
-        import time
-
         from kiro_crew import security
 
-        # Backstop budget, measured BEFORE instrumenting (the tracing wrapper below
-        # would bill its own overhead against it). The input is built OUTSIDE the
-        # timed window, and one untimed small-size call warms the path first, so
-        # first-call cost is not billed against the budget when this test runs
-        # alone.
-        security._python_reads_stdin([">a" * 200, "<<<", "prog"])
-        tokens = [">a" * 1600, "<<<", "prog"]
-        start = time.perf_counter()
-        assert security._python_reads_stdin(tokens) is True
-        large = time.perf_counter() - start
-        # flake-ok: pre-existing 0.2 s backstop over a warmed path; the linearity is pinned by the traced scan starts below; moved verbatim, tracked for a de-flake pass
-        assert large < 0.2, f"1600 glued redirects took {large:.4f}s"
+        sizes = (400, 800, 1200)
+
+        # (4) Measured BEFORE the tracing wrapper below is installed, so its own
+        # instructions are not in it. Each input is built outside the measured call,
+        # and one unmeasured call on a size not measured warms the path first, so
+        # first-call work is not read as the walk's.
+        def work_of(k: int) -> int:
+            tokens = [">a" * k, "<<<", "prog"]
+            verdicts: "list[bool]" = []
+            work = _interpreter_work(lambda: verdicts.append(security._python_reads_stdin(tokens)))
+            # Reached through the measured call, or the work is counting nothing.
+            assert verdicts == [True]
+            return work
+
+        security._python_reads_stdin([">a" * 100, "<<<", "prog"])
+        work = [work_of(k) for k in sizes]
+        assert _linear_work(work), (
+            f"the call executed {work} instructions at {sizes} glued redirects -- each "
+            "operator costs more as the word grows, which is a walk over the rest of "
+            "the word per operator"
+        )
+        # Equal steps cannot see a slowdown that is the same for every operator, so
+        # what one more operator costs is held too, with room for another interpreter
+        # version: about 105 instructions as measured.
+        per_operator = (work[2] - work[0]) // (sizes[2] - sizes[0])
+        assert per_operator < 1_000, f"each glued redirect costs {per_operator} instructions"
 
         real_scan = security._output_redirect_scan
         trace: "list[tuple[int, int]]" = []  # (len(raw), start)
@@ -547,7 +567,6 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
             assert security._python_reads_stdin([word, "<<<", "prog"]) is True
             return list(trace)
 
-        sizes = (400, 800, 1200)
         walks = [walked(k) for k in sizes]
 
         # (1) One scan per operator: equal size steps, equal call increments.

@@ -22,10 +22,13 @@ from kiro_crew.discord.renderer import _UPLOAD_LIMITS, DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES, DiscordTransport
 from kiro_crew.messaging import outbound_files as outbound
 from kiro_crew.messaging.display_safety import canonicalize_display
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN, github_classic
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 _JPEG = b"\xff\xd8\xff" + b"\x11" * 64
-_KEY = "AKIAIOSFODNN7EXAMPLE"
+# A synthetic Slack bot token: no "/" so it can also be a file name, and no "_" or
+# other display markup, so a reassembled form is the token itself.
+_KEY = SAMPLE_SLACK_BOT_TOKEN
 _TEST_UPLOAD_ROOT = ""
 
 
@@ -352,7 +355,7 @@ class TestRestrictedGate:
 
 
 class TestDescriptionRedaction:
-    @pytest.mark.parametrize("streamed", [f"key AKIA\\{_KEY[4:]} here", f"https://x.example.com/u?k=AKIA\\{_KEY[4:]}", f"{_KEY[:4]}\u200b{_KEY[4:]}"])
+    @pytest.mark.parametrize("streamed", [f"key {_KEY[:4]}\\{_KEY[4:]} here", f"https://x.example.com/u?k={_KEY[:4]}\\{_KEY[4:]}", f"{_KEY[:4]}\u200b{_KEY[4:]}"])
     def test_a_display_reassembled_credential_is_redacted(self, streamed: str) -> None:
         from kiro_crew.messaging.outbound_files import unescape_md
         from kiro_crew.security import redact_credentials
@@ -425,7 +428,7 @@ class TestMultipartWire:
     def test_the_form_carries_bytes_and_never_reopens_the_path(self) -> None:
         assert _fields({"content": ""}, [_file("/nonexistent/dir/chart.png")])[1][2] == _PNG
 
-    @pytest.mark.parametrize("raw,mime,expected", [("/tmp/chart.png", "image/jpeg", "chart.jpg"), ("/tmp/deep/dir/shot.png", "image/png", "shot.png"), ('/tmp/no"quotes.png', "image/png", None), ("/tmp/no\nnewline.png", "image/png", None), ("/tmp/../../etc/passwd.png", "image/png", None), ("/tmp/.hidden.png", "image/png", None), ("/tmp/ghp:" + "a" * 36 + ".png", "image/png", "image_0.png")])
+    @pytest.mark.parametrize("raw,mime,expected", [("/tmp/chart.png", "image/jpeg", "chart.jpg"), ("/tmp/deep/dir/shot.png", "image/png", "shot.png"), ('/tmp/no"quotes.png', "image/png", None), ("/tmp/no\nnewline.png", "image/png", None), ("/tmp/../../etc/passwd.png", "image/png", None), ("/tmp/.hidden.png", "image/png", None), ("/tmp/" + github_classic(seed=126) + ".png", "image/png", "image_0.png")])
     def test_the_upload_filename_is_derived_not_trusted(self, raw: str, mime: str, expected: str | None) -> None:
         name = upload_filename(_file(raw, mime=mime), 0)
         if expected is not None:
@@ -547,24 +550,25 @@ class TestDisplayRedactionIsAFloor:
     #: A credential split by Markdown that Discord strips when it renders. The
     #: literal bytes carry ``**``, so a literal-form scan does not match; the
     #: rendered form is one contiguous key.
-    SPLIT_SECRET = "AKIA**IOSFODNN7**EXAMPLE"
+    SPLIT_SECRET = f"{_KEY[:4]}**{_KEY[4:13]}**{_KEY[13:]}"
+    SPLIT_MIDDLE = _KEY[4:13]
 
     @pytest.mark.asyncio
     async def test_a_restricted_session_still_gets_the_display_pass(self) -> None:
         cli = await _turn(f"here it is {self.SPLIT_SECRET}", uploads_allowed=False)
         body = cli.final_text()
-        assert "IOSFODNN7" not in body, body
+        assert self.SPLIT_MIDDLE not in body, body
 
     @pytest.mark.asyncio
     async def test_no_upload_root_still_gets_the_display_pass(self) -> None:
         cli = await _turn(f"here it is {self.SPLIT_SECRET}", upload_root="")
-        assert "IOSFODNN7" not in cli.final_text()
+        assert self.SPLIT_MIDDLE not in cli.final_text()
 
     @pytest.mark.asyncio
     async def test_a_channel_without_files_outbound_still_gets_the_display_pass(self) -> None:
         caps = replace(DISCORD_CAPABILITIES, files_outbound=False)
         cli = await _turn(f"here it is {self.SPLIT_SECRET}", capabilities=caps)
-        assert "IOSFODNN7" not in cli.final_text()
+        assert self.SPLIT_MIDDLE not in cli.final_text()
 
     @pytest.mark.asyncio
     async def test_a_length_rotated_segment_still_gets_the_display_pass(self) -> None:
@@ -572,7 +576,7 @@ class TestDisplayRedactionIsAFloor:
         r, cli = _renderer()
         await r.on_text_chunk("y" * (r._limit() + 50) + f"\n\n{self.SPLIT_SECRET}\n")
         await r.on_done()
-        assert all("IOSFODNN7" not in text for text in _bodies(cli))
+        assert all(self.SPLIT_MIDDLE not in text for text in _bodies(cli))
 
     @pytest.mark.asyncio
     async def test_mentions_are_defanged_on_an_ungated_send_too(self) -> None:

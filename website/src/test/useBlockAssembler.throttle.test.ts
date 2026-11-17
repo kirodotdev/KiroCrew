@@ -8,15 +8,17 @@ import type { ContentBlock } from '../types'
 const THROTTLE_MS = 100
 
 // An export spy cannot see the hook's intra-module call. parseBlocks opens with
-// one `raw.split('\n')`, so counting that on a marked input counts real parses.
+// one `split('\n')` over the normalized text, so counting that on a marked
+// input counts real parses.
 type SplitFn = typeof String.prototype.split
 const realSplit: SplitFn = String.prototype.split
 const MARK = 'prk-marked-input'
+const isLineSplit = (sep: unknown) => sep === '\n'
 
 function countParsesOf(prefix: string): () => number {
   let n = 0
   const patched = function (this: string, ...args: Parameters<SplitFn>): string[] {
-    if (args[0] === '\n' && this.startsWith(prefix)) n += 1
+    if (isLineSplit(args[0]) && this.startsWith(prefix)) n += 1
     return realSplit.apply(this, args)
   }
   String.prototype.split = patched as unknown as SplitFn

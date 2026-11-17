@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers.work_ledger_conductor import _record_conductor
 from kiro_crew.dashboard.handlers.work_ledger_recording import _acting_unit
 from kiro_crew.dashboard.handlers.work_ledger_refusals import _refuse_400
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.validation import sanitize_string
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 
@@ -128,12 +129,16 @@ def _handback_decision(message: str) -> str | None:
     """The sent *message* as a ``decision``: redacted first, like every ledger write.
 
     The record and report routes redact before they commit, so the cache and its
-    crew-log entry hold byte-identical text; the stamp keeps that rule. A message
-    over ``MAX_DECISION_CHARS`` is clipped with a visible marker, because the full
-    text already reached the worker and the decision only names the hand-back.
+    crew-log entry hold byte-identical text; the stamp keeps that rule. The text
+    is first run through ``sanitize_string`` -- dropping hidden and bidi
+    characters and normalising Unicode -- the same cleaning the record route's
+    ``validate_tool_args`` applies to ``action=decide``, so a hand-back and a
+    record-route answer store the same bytes. A message over ``MAX_DECISION_CHARS``
+    is clipped with a visible marker, because the full text already reached the
+    worker and the decision only names the hand-back.
     """
     try:
-        cleaned = crew_log_emit.safe_work_fields({"decision": message.strip()})["decision"]
+        cleaned = crew_log_emit.safe_work_fields({"decision": sanitize_string(message)})["decision"]
     except crew_log_emit.WorkFieldError:
         return None
     if not isinstance(cleaned, str) or not cleaned:

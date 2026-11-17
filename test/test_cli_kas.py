@@ -27,7 +27,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -203,6 +205,18 @@ class TestInstallFromDir:
         assert "The bundle route is off" not in out
         assert "config set agent.kas_bundle true" not in out
         assert "Kiro Crew will use this engine" in out
+
+    def test_the_sharing_preview_route_does_not_claim_the_setting_is_on(
+        self, cfg, host, local_source, tmp_path, monkeypatch, capsys
+    ):
+        cfg.kas_bundle = False
+        _set_route(monkeypatch, bundle=True, reason="chat_runtime_sharing")
+        monkeypatch.setattr(kas_bundle, "install_bundle", lambda m, **k: _installed(tmp_path))
+        assert cli_kas.kas_cmd(self._args(local_source)) == 0
+        out = capsys.readouterr().out
+        assert "agent.kas_bundle is on" not in out
+        assert "relay cannot run here" not in out
+        assert "the ACP runtime sharing preview picks it" in out
 
     def test_a_version_the_harness_does_not_run_names_the_override_env(
         self, cfg, host, local_source, tmp_path, monkeypatch, capsys
@@ -416,6 +430,20 @@ class TestInstallWhenAlreadyInstalled:
         out = capsys.readouterr().out
         assert f"✅ KAS {_PIN} is already installed at {tmp_path / 'engines' / _PIN}" in out
         assert "kirocrew config set agent.kas_bundle true" in out
+
+    def test_the_pinned_engine_on_disk_still_sweeps_a_stale_staging_tree(
+        self, cfg, present, tmp_path, monkeypatch
+    ):
+        """No install runs, so the stale staging sweep ``install_bundle`` would have
+        run runs here: a refresh ended from outside left a tree an hour old."""
+        monkeypatch.setattr(kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched"))
+        orphan = tmp_path / "engines" / f".staging-{_PIN}-orphan1"
+        (orphan / "downloads").mkdir(parents=True)
+        old = time.time() - 2 * 3600
+        for entry in (orphan / "downloads", orphan):
+            os.utime(entry, (old, old))
+        assert cli_kas.kas_cmd(self._args()) == 0
+        assert not orphan.exists()
 
     def test_from_a_directory_the_installed_pin_is_not_reinstalled(
         self, cfg, present, local_source, monkeypatch, capsys

@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from spawn_test_helpers import await_gone, await_pids, kill_leftovers
 
 from kiro_crew.acp._dispatch_parts.permission_requests import build_permission_event, gate_envelope
 from kiro_crew.acp.harness import pi as pi_mod
@@ -426,8 +427,8 @@ def _npm_strands(root: Path, version: str) -> str:
 
 
 def test_the_installed_release_is_read_from_its_manifest(tmp_path) -> None:
-    script = _npm_strands(tmp_path, "0.2.3")
-    assert strands_mod.strands_installed_version(script) == "0.2.3"
+    script = _npm_strands(tmp_path, "0.2.4")
+    assert strands_mod.strands_installed_version(script) == "0.2.4"
     assert strands_mod._strands_version_issue(script) == ""
 
 
@@ -456,8 +457,11 @@ def _venv(project: Path, *, with_harness: bool) -> None:
 
 
 def test_no_python_environment_names_the_command_that_creates_it(tmp_path) -> None:
+    from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
+
     issue = strands_mod.strands_python_env_issue(str(tmp_path))
     assert "venv" in issue and "strands-harness==" in issue
+    assert "terminal on the gateway host" in issue and HOST_TERMINAL_NOTE in issue
 
 
 def test_an_environment_without_the_harness_names_the_install(tmp_path) -> None:
@@ -831,17 +835,18 @@ def test_a_path_that_is_no_project_refuses(tmp_path, monkeypatch) -> None:
         strands_mod._strands_user_project()
 
 
-def test_bedrock_auth_failure_names_the_strands_env_setting():
-    """Strands runs sandboxed with ~/.aws masked, so the remedy names the vault mapping."""
+def test_bedrock_auth_failure_names_the_strands_model_provider_card():
+    """Strands runs sandboxed with ~/.aws masked, so the remedy names the card that
+    keeps its Bedrock key."""
     from kiro_crew.acp.transport_errors import _format_acp_error
 
     frame = {"code": -32603, "message": "Internal error", "data": "AccessDeniedException: denied"}
     strands_text = _format_acp_error(frame, None, backend=ACP_BACKEND_STRANDS)
-    assert "agent.strands_env" in strands_text
+    assert "Strands > Model provider" in strands_text
     assert "AWS_BEARER_TOKEN_BEDROCK" in strands_text
     assert "aws sso login" not in strands_text
     # Every other harness keeps the host-credential advice.
-    assert "agent.strands_env" not in _format_acp_error(frame, None, backend="")
+    assert "Model provider" not in _format_acp_error(frame, None, backend="")
 
 
 @pytest.mark.parametrize(
@@ -1072,6 +1077,7 @@ class _ReadbackProbe:
     def __init__(self, *args, **kwargs) -> None:
         self.stdin = io.BytesIO()
         self.killed = False
+        self.tree_killed = False
         self.waited = False
         self.returncode = None
         _ReadbackProbe.instances.append(self)
@@ -1082,6 +1088,10 @@ class _ReadbackProbe:
     def kill(self) -> None:
         self.killed = True
         self.returncode = -9
+
+    def kill_tree(self) -> None:
+        self.tree_killed = True
+        self.kill()
 
     def wait(self, timeout=None):
         self.waited = True
@@ -1114,6 +1124,8 @@ def test_an_oversize_read_back_is_refused_before_any_probe_starts(tmp_path, monk
 def test_a_failure_after_the_probe_started_still_kills_and_reaps_it(tmp_path, monkeypatch) -> None:
     _ReadbackProbe.instances = []
     monkeypatch.setattr(strands_mod.subprocess_mod, "Popen", _ReadbackProbe)
+    # The fake has no pid for the tree kill to signal: record the tree kill on it instead.
+    monkeypatch.setattr(strands_mod.platform_compat, "kill_popen_tree", _ReadbackProbe.kill_tree)
     calls = {"n": 0}
     real_write = strands_mod.write_frames_blocking
 
@@ -1137,7 +1149,41 @@ def test_a_failure_after_the_probe_started_still_kills_and_reaps_it(tmp_path, mo
 
     assert "could not be read back" in issue
     (probe,) = _ReadbackProbe.instances
-    assert probe.killed and probe.waited and probe.stdin.closed
+    assert probe.killed and probe.tree_killed and probe.waited and probe.stdin.closed
+
+
+#: A Strands CLI stand-in that starts a worker, publishes the gate's marker and then
+#: ignores stdin closing, as a stuck project does. It writes "<own pid> <worker pid>"
+#: before the marker, so the pids are there once the probe has seen the marker.
+_CLI_THAT_STAYS_UP = (
+    "import os, subprocess, sys, time\n"
+    "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+    "open(sys.argv[1] + '.tmp', 'w').write(f'{os.getpid()} {kid.pid}')\n"
+    "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    f"open(os.environ[{strands_mod._ENV_GATE_MARKER!r}], 'w').write('{{}}')\n"
+    "time.sleep(120)\n"
+)
+
+
+def test_a_probe_that_will_not_exit_is_killed_with_everything_it_started(tmp_path) -> None:
+    """The kill takes the CLI's worker too, not only the CLI."""
+    pidfile = tmp_path / "pids"
+
+    try:
+        strands_mod._verify_strands_gate(
+            _readback_session(str(tmp_path)),
+            [sys.executable, "-c", _CLI_THAT_STAYS_UP, str(pidfile)],
+            dict(os.environ),
+            "/sealed/agent.py",
+            str(tmp_path / "marker.json"),
+            "nonce",
+            child_scrub_names=(),
+        )
+        pids = await_pids(pidfile)
+        alive = [pid for pid in pids if not await_gone(pid)]
+    finally:
+        kill_leftovers(await_pids(pidfile) if pidfile.exists() else ())
+    assert alive == [], f"the probe's kill left {alive} of {pids} running"
 
 
 def test_the_reported_model_is_the_one_the_launch_passed() -> None:
@@ -1348,3 +1394,6 @@ def test_sign_in_remedy_names_the_bedrock_vault_mapping_not_the_aws_chain() -> N
         assert "AWS_BEARER_TOKEN_BEDROCK" in text
         assert "AWS_REGION" in text
         assert "credential chain" not in text
+        # The card that writes the mapping is the dashboard path, not the config key.
+        assert "Strands" in text and "Model provider" in text
+        assert "agent.strands_env" not in text

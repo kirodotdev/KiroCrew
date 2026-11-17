@@ -215,6 +215,48 @@ def test_each_added_row_removes_the_stored_row_it_names(monkeypatch):
     assert remove[("skills", "listed-skill")] == {"section": "skills", "id": "listed-skill"}
 
 
+def test_a_file_resource_the_worker_loads_is_listed_and_an_added_one_removes(monkeypatch):
+    """Add abilities copies a ``file://`` resource into the file and the worker
+    loads it, so the summary lists it: ``local`` with a Remove of its stored
+    ``resources`` row when the file adds it, ``inherited`` with none when the
+    base carries it. Applying that Remove takes it off the file, the worker and
+    the list; a ``skill://`` resource stays a skills row."""
+    from kiro_crew.agent_capabilities import _materialize, _rows
+
+    steering = "file://.kiro/steering/**/*.md"
+    notes = "file:///home/x/kit/kit-notes.md"
+    skill = "skill:///home/x/skills/release-notes/SKILL.md"
+    base = {"name": "kirocrew-mate-worker", "mcpServers": {}, "tools": [], "resources": [steering]}
+    state = {"file": {"name": "ben", "mcpServers": {}, "tools": [], "resources": [notes, skill]}}
+
+    def worker_spec(member):
+        additions = mate_worker.worker_additions(base, state["file"])
+        return mate_worker.merge_worker_spec(base, additions)
+
+    assert notes in worker_spec("ben")["resources"]
+    monkeypatch.setattr(mate_worker, "member_worker_spec", worker_spec)
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, state["file"]))
+    _patch_base(monkeypatch, base)
+
+    summary = mate_capabilities.worker_summary("ben", CATALOG)
+    resources = {r["id"]: r for r in summary["rows"] if r["section"] == "resources"}
+    assert set(resources) == {steering, notes}
+    assert resources[notes]["state"] == "local"
+    assert resources[notes]["remove"] == {"section": "resources", "id": notes}
+    assert resources[steering]["state"] == "inherited"
+    assert resources[steering]["remove"] is None
+    assert skill in _ids(summary, "skills")
+
+    stored = _rows(state["file"], CATALOG)
+    remove = {**resources[notes]["remove"], "action": "remove"}
+    mate_capabilities._apply_operations(stored, [remove], CATALOG)
+    state["file"] = _materialize(state["file"], stored, CATALOG)
+    assert state["file"]["resources"] == [skill]
+    assert notes not in worker_spec("ben")["resources"]
+    summary = mate_capabilities.worker_summary("ben", CATALOG)
+    assert _ids(summary, "resources") == [steering]
+
+
 def test_stored_wildcard_prevents_removing_any_tool_row(monkeypatch):
     base = {"mcpServers": {"platform": {"command": "plat"}}, "tools": ["@platform"]}
     file_spec = {
@@ -435,3 +477,47 @@ def test_the_summary_resolves_the_skills_root_once_however_many_skill_links(monk
 
     assert one <= 1
     assert len(calls) == one
+
+
+def test_the_remove_checks_expand_and_match_the_catalog_once_not_once_per_row(monkeypatch):
+    """Each added row's Remove check re-derives the candidate spec's skills. Done by
+    re-expanding and re-matching the whole catalog per row, a Bot with ~120 added
+    rows and a ~700-skill catalog took over 30 s and the Abilities pane timed out,
+    so the work must not grow with rows x catalog."""
+    from kiro_crew import agent_discovery
+    from kiro_crew import skills as sk
+    from kiro_crew.skill_runtime import catalog as skill_catalog
+
+    root = sk.skills_dir().as_posix()
+    catalog = {f"c{i}": f"skill://{root}/c{i}/SKILL.md" for i in range(500)}
+    added = list(catalog.values())[:100]
+    base = {"mcpServers": {}, "tools": [], "resources": []}
+    file_spec = {"resources": list(added)}
+    monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: dict(file_spec))
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, file_spec))
+    _patch_base(monkeypatch, base)
+    counts = {"expand": 0, "match": 0}
+    real_expand, real_match = agent_discovery.expand_skill_uri, skill_catalog._matches_any
+
+    def expand(*a, **kw):
+        counts["expand"] += 1
+        return real_expand(*a, **kw)
+
+    def match(*a, **kw):
+        counts["match"] += 1
+        return real_match(*a, **kw)
+
+    monkeypatch.setattr(agent_discovery, "expand_skill_uri", expand)
+    monkeypatch.setattr(skill_catalog, "_matches_any", match)
+
+    rows = mate_capabilities.worker_summary("ben", catalog)["rows"]
+
+    skills = {row["id"]: row for row in rows if row["section"] == "skills"}
+    assert all(
+        skills[f"c{i}"]["remove"] == {"section": "skills", "id": f"c{i}"} for i in range(100)
+    )
+    assert all(skills[f"c{i}"]["state"] == "local" for i in range(100))
+    # Once per catalog entry and once per distinct resource used as a glob.
+    assert counts["expand"] <= len(catalog) + len(added)
+    # Each distinct resource is matched against the catalog once.
+    assert counts["match"] <= len(added) * len(catalog)

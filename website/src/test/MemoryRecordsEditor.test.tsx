@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useNavigate, Routes, Route } from 'react-router-dom'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import MemoryRecordsEditor from '../pages/overview/MemoryRecordsEditor'
 import SidePanelLayout from '../components/SidePanelLayout'
@@ -178,6 +178,23 @@ describe('memory record editing in both lineages', () => {
     expect(screen.queryByRole('button', { name: 'Set', exact: true })).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: 'Value' })).not.toBeInTheDocument()
     expect(api.vectorSemanticWrite).not.toHaveBeenCalled()
+  })
+
+  it('keeps keyboard focus on the records pager when Next or Previous goes disabled', async () => {
+    mount()
+    await screen.findByText('Contact 0: old@example.com')
+    // The pager is hidden while each page loads, so read the buttons fresh.
+    const next = () => screen.getByRole('button', { name: 'Next page' })
+    const prev = () => screen.getByRole('button', { name: 'Previous page' })
+    act(() => { next().focus() })
+    fireEvent.click(next())
+    await screen.findByText('Contact 50: old@example.com')
+    expect(next()).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(prev()))
+    fireEvent.click(prev())
+    await screen.findByText('Contact 0: old@example.com')
+    expect(prev()).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(next()))
   })
 
   it.each(['default', 'member-review'])('keeps explicit selection across server pages in %s and never writes before reviewed apply', async store => {
@@ -574,7 +591,10 @@ it('hides prior recall evidence immediately when the search query changes', asyn
   const search = screen.getByRole('textbox', { name: 'Search memory' })
   fireEvent.change(search, { target: { value: 'Contact 0:' } })
   const recall = await screen.findByRole('button', { name: 'Recall for this task' })
-  await waitFor(() => expect(recall).toBeEnabled())
+  // Btn uses aria-busy (not the DOM disabled attribute) while recall.isFetching
+  // or the search is still settling, and swallows clicks then. Wait for that
+  // real gate to clear, which toBeEnabled never reflects.
+  await waitFor(() => expect(recall).not.toHaveAttribute('aria-busy'))
   fireEvent.click(recall)
   expect(await screen.findByText('Recall evidence for the previous search')).toBeVisible()
   fireEvent.change(search, { target: { value: 'Contact 1:' } })
@@ -597,7 +617,10 @@ it.each(['custom_or_registered', 'unknown', 'reference_identity'])('shows select
   await screen.findByText('Contact 0: old@example.com')
   fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'checklist' } })
   const recall = await screen.findByRole('button', { name: 'Recall for this task' })
-  await waitFor(() => expect(recall).toBeEnabled())
+  // Btn uses aria-busy (not the DOM disabled attribute) while recall.isFetching
+  // or the search is still settling, and swallows clicks then. Wait for that
+  // real gate to clear, which toBeEnabled never reflects.
+  await waitFor(() => expect(recall).not.toHaveAttribute('aria-busy'))
   const explanation = 'Context the member would receive for this task. Search results below are for browsing and editing.'
   expect(screen.queryByText(explanation)).not.toBeInTheDocument()
   expect(api.memoryRecall).not.toHaveBeenCalled()
@@ -628,7 +651,10 @@ it.each(['rules', 'empty'])('keeps the model notice visible in %s recall without
   await screen.findByText('Contact 0: old@example.com')
   fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'keyboard' } })
   const recall = await screen.findByRole('button', { name: 'Recall for this task' })
-  await waitFor(() => expect(recall).toBeEnabled())
+  // Btn uses aria-busy (not the DOM disabled attribute) while recall.isFetching
+  // or the search is still settling, and swallows clicks then. Wait for that
+  // real gate to clear, which toBeEnabled never reflects.
+  await waitFor(() => expect(recall).not.toHaveAttribute('aria-busy'))
   fireEvent.click(recall)
   const evidence = within(await screen.findByTestId('memory-recall-evidence'))
   expect(evidence.getByText('Memory matching is not verified for this model. Check the memories selected for this task.')).toBeVisible()

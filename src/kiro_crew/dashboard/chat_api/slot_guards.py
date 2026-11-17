@@ -422,3 +422,12 @@ def _switch_target_busy(
         and canonical_key(_cancel_target(other)) == target
         for other in list(state._slots.values())
     )
+
+
+def _send_writes_persona(body: dict) -> bool:
+    """Whether a ``POST /api/chat`` body writes the slot's persona fields.
+
+    ``color_theme`` carries the write; ``theme_consent`` and
+    ``theme_consent_sha`` are applied with it and never alone.
+    """
+    return "color_theme" in body

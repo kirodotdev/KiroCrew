@@ -10,13 +10,12 @@ Two deterministic, subprocess-free surfaces:
 """
 import json
 import sys
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest import mock
 from urllib.parse import urlencode
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
@@ -408,10 +407,17 @@ class TestConnectedRepoIdentity(unittest.TestCase):
     never be stored twice under two spellings — a duplicate entry carries its own
     independent caches and triage settings."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the radar store root.
+
+        The store ``mkdir``s its root on read, so a late reader can re-create a
+        self-removed directory after cleanup; pytest owns ``tmp_path``.
+        """
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp_path
 
     def _repos(self):
         return store.read_config(self.root).get("repos", [])

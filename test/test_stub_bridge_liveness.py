@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -326,14 +327,42 @@ async def test_ping_rate_is_bounded_by_the_interval() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missed_pong_still_declares_peer_dead_within_the_grace() -> None:
+async def test_missed_pong_still_declares_peer_dead_within_the_grace(monkeypatch) -> None:
     """Bounding the ping rate must not lengthen dead-peer detection.
 
     The remainder sleep belongs to the ANSWERED path only. Adding it to the
     missed path as well would make each miss cycle cost two intervals and
     silently double the advertised ``ping_interval × ping_max_misses`` grace, so
-    this pins the wall-clock ceiling, not just the verdict.
+    this pins the waits the monitor takes between pings, not just the verdict.
     """
+    # Every ping put on the wire and every wait the liveness task takes, in
+    # order. Record-only: each call goes through unchanged. ``asyncio.wait_for``
+    # is wrapped; ``asyncio.sleep`` is seen through a profile hook on the loop
+    # thread, keyed on its frame so a resumed coroutine is counted once.
+    events: list[tuple[str, float]] = []
+    real_wait_for = asyncio.wait_for
+    sleep_code = asyncio.sleep.__code__
+    sleeps_seen: list[object] = []
+
+    def _on_monitor() -> bool:
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            return False
+        return task is not None and task.get_name() == "kirocrew-mcp-stub-liveness"
+
+    async def recording_wait_for(fut, timeout, *args, **kwargs):  # noqa: ANN001, ANN202
+        if _on_monitor():
+            events.append(("wait", timeout))
+        return await real_wait_for(fut, timeout, *args, **kwargs)
+
+    def _profile(frame, event, _arg):  # type: ignore[no-untyped-def]
+        if event == "call" and frame.f_code is sleep_code and _on_monitor():
+            if not any(seen is frame for seen in sleeps_seen):
+                sleeps_seen.append(frame)
+                events.append(("wait", frame.f_locals.get("delay")))
+
+    monkeypatch.setattr(asyncio, "wait_for", recording_wait_for)
     gw_reader = asyncio.StreamReader()
     stdin_reader = asyncio.StreamReader()
     stdin_reader.feed_data(_jsonrpc_request("tools/call", "silent-1"))
@@ -344,7 +373,8 @@ async def test_missed_pong_still_declares_peer_dead_within_the_grace() -> None:
         _mc_write_lock = asyncio.Lock()
 
         def write(self, data: bytes) -> None:
-            pass
+            if _safe_json_get_type(data) == _BRIDGE_PING_TYPE:
+                events.append(("ping", 0.0))
 
         async def drain(self) -> None:
             pass
@@ -364,32 +394,38 @@ async def test_missed_pong_still_declares_peer_dead_within_the_grace() -> None:
 
     ping_interval = 0.5
     ping_max_misses = 3
-    grace = ping_interval * ping_max_misses
-    started = loop.time()
 
     session = StubSession()
-    await asyncio.wait_for(
-        run_bridge(
-            gw_reader,
-            _SilentWriter(),  # type: ignore[arg-type]
-            asyncio.Event(),
-            stdin=stdin_reader,
-            stdout_writer=stdout_writer,
-            ping_interval=ping_interval,
-            ping_max_misses=ping_max_misses,
-            peer_supports_ping=True,
-            session=session,
-        ),
-        timeout=30,
-    )
-    elapsed = loop.time() - started
+    previous_profile = sys.getprofile()
+    sys.setprofile(_profile)
+    try:
+        await asyncio.wait_for(
+            run_bridge(
+                gw_reader,
+                _SilentWriter(),  # type: ignore[arg-type]
+                asyncio.Event(),
+                stdin=stdin_reader,
+                stdout_writer=stdout_writer,
+                ping_interval=ping_interval,
+                ping_max_misses=ping_max_misses,
+                peer_supports_ping=True,
+                session=session,
+            ),
+            timeout=30,
+        )
+    finally:
+        sys.setprofile(previous_profile)
 
     assert session.reason == "peer_dead"
-    # Generous absolute slack for a loaded host, but far below the 2x that a
-    # remainder sleep on the missed path would cost.
-    assert elapsed < grace + 1.0, (
-        f"peer declared dead after {elapsed:.3f}s, well past the advertised "
-        f"{grace:.3f}s grace: a miss cycle is costing more than one interval"
+    # Idle waits before the request is outstanding are not part of the grace;
+    # from the first ping on, each miss cycle is one ping and ONE wait of one
+    # interval. A remainder sleep on the missed path shows up as a second wait.
+    assert ("ping", 0.0) in events, f"the monitor never pinged: {events!r}"
+    cycles = events[events.index(("ping", 0.0)) :]
+    assert cycles == [("ping", 0.0), ("wait", ping_interval)] * ping_max_misses, (
+        f"miss cycles {cycles!r} are not one {ping_interval}s wait per ping: the "
+        f"advertised {ping_interval * ping_max_misses}s grace is not what a dead "
+        "peer costs"
     )
 
 

@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, row_mid
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until
 
 _WAIT_SECS = 30.0
@@ -89,6 +90,19 @@ def test_projection_reads_coordinator_record_for_this_slot() -> None:
     assert payload["waiting_for_input"] is False
 
 
+def test_projection_names_the_coordinator_request_instance() -> None:
+    # The id is the caller's and recurs; a client decides through the slot and
+    # this instance, so a stale card cannot decide a later request under the id.
+    slot = _ChatSlot("parent")
+    slot._coordinator_approvals = lambda key: [{**_record("req-7", key), "instance": "inst-7"}]
+
+    info = slot.to_dict()["pending_approval_info"]
+
+    assert info["origin"] == "coordinator"
+    assert info["request_id"] == "req-7"
+    assert info["request_instance"] == "inst-7"
+
+
 def test_projection_without_coordinator_records_is_unchanged() -> None:
     slot = _ChatSlot("parent")
     slot._coordinator_approvals = lambda key: []
@@ -138,8 +152,8 @@ def test_projection_bounds_coordinator_purpose_without_splitting_text(character,
 def test_projection_redacts_full_coordinator_purpose_before_the_display_cut(monkeypatch):
     from kiro_crew.dashboard import state as state_module
 
-    secret = "ghp_" + "A" * 36
-    purpose = "x" * (_MAX_TOOL_PURPOSE - 12) + secret + " tail" * 10
+    secret = github_classic(seed=128)  # a ghp_ without a valid checksum is no token
+    purpose = "x" * (_MAX_TOOL_PURPOSE - 13) + " " + secret + " tail" * 10
     original_redact = state_module._redact
     seen = []
 
@@ -158,7 +172,7 @@ def test_projection_redacts_full_coordinator_purpose_before_the_display_cut(monk
 
 
 def test_projection_preserves_native_upstream_cap_and_one_intact_notice():
-    raw = "x" * (_MAX_TOOL_PURPOSE - 50) + "ghp_" + "A" * 36 + " tail" * 100
+    raw = "x" * (_MAX_TOOL_PURPOSE - 51) + " " + github_classic(seed=129) + " tail" * 100
     purpose = _redact_tool_field(raw, limit=_MAX_TOOL_PURPOSE)
     slot = _ChatSlot("parent")
     loop = asyncio.new_event_loop()
@@ -436,6 +450,54 @@ async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_pat
     assert "lone" not in state._approval_futures
     assert any(a[1] == "lone" for a in resolved)
     assert state.serialize_slot(parent)["pending_approval"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slot_key", ["parent", ""])
+async def test_a_same_id_takeover_names_its_own_instance_and_retires_nothing(tmp_path, slot_key):
+    """A request that takes over a live request's id raises one ``approval``
+    frame naming its own instance and broadcasts no resolution for the request
+    it replaced. A card left on screen for the replaced request cannot decide
+    the replacement: its press names the old instance and the server refuses
+    it, which retires that card. Negative control: an id whose earlier request
+    already ended broadcasts no resolution on reuse either."""
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("parent").key if slot_key else ""
+
+    older = await _register(state, "same", slot)
+    older_instance = state._pending_approvals["same"]["instance"]
+    state.broadcast_ws.reset_mock()
+    replacement = await _register(state, "same", slot)
+    await async_wait_until(
+        lambda: state._pending_approvals["same"]["instance"] != older_instance,
+        describe=lambda: "replacement never registered",
+    )
+    new_instance = state._pending_approvals["same"]["instance"]
+
+    # The shared-decision record the takeover writes is its own frame family;
+    # only the approval frames are this test's concern.
+    frames = [
+        (c.args[0], c.args[1])
+        for c in state.broadcast_ws.call_args_list
+        if c.args[0].startswith("approval")
+    ]
+    assert [kind for kind, _ in frames] == ["approval"]
+    assert frames[0][1]["instance"] == new_instance
+
+    older.cancel()
+    assert await asyncio.wait_for(older, _WAIT_SECS) is False
+    assert [
+        c.args[0] for c in state.broadcast_ws.call_args_list if c.args[0].startswith("approval")
+    ] == ["approval"]
+    assert state.resolve_state_approval("same", True) is True
+    assert await asyncio.wait_for(replacement, _WAIT_SECS) is True
+
+    state.broadcast_ws.reset_mock()
+    reused = await _register(state, "same", slot)
+    kinds = [c.args[0] for c in state.broadcast_ws.call_args_list]
+    assert "approval_resolved" not in kinds
+    reused.cancel()
+    await asyncio.wait_for(reused, _WAIT_SECS)
 
 
 @pytest.mark.asyncio

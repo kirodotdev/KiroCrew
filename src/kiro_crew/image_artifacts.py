@@ -45,6 +45,7 @@ from pathlib import Path
 from kiro_crew.artifacts import (
     MAX_AUTO_WIDGET_ARTIFACTS,
     MAX_CONTENT_BYTES,
+    MAX_NAME_LEN,
     ArtifactAlreadyExistsError,
     ArtifactError,
     ArtifactValidationError,
@@ -245,7 +246,9 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
             break
         try:
             store.create_image(
-                name=alt or _DEFAULT_IMAGE_NAME,
+                # Cut to the name limit: an over-long caption must not cost the
+                # image its artifact (see widget_artifacts).
+                name=alt[:MAX_NAME_LEN].strip() or _DEFAULT_IMAGE_NAME,
                 image_bytes=data,
                 mime=mime,
                 slug=slug,

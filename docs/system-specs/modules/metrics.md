@@ -4,10 +4,32 @@
 
 Local-first metrics telemetry built on the OpenTelemetry SDK (Apache-2.0 / CNCF).
 The trunk is designed so future work is purely adding instrument calls at call
-sites — never changing this plumbing. **Default OFF** (`telemetry.enabled:
-false`): all metric call sites are cheap no-ops and nothing is written or
-exported, byte-identical to no telemetry (mirrors the `mcp_gateway.enabled` /
-`skills.lazy_load` opt-in convention). Any instrument that needs durable state to
+sites, never changing this plumbing. **Local recording is on by default**
+(`telemetry.enabled: true`), bounded on disk by `retention_days` (default 30)
+and `max_total_mb` (default 100). Every user is told: the dashboard's first-run
+Privacy chapter (see "In-product privacy disclosure" below), or on a CLI or headless start
+the one-line stderr notice from `metrics/notice.py`, printed once per install
+(stamp file `usage_notice_shown` under the data home) while no notice version is
+acknowledged and recording is on. Export never follows from the default: it
+needs recording turned on explicitly (see "Export needs an explicit opt-in"
+below). A value written in either config file wins over the default; the
+heartbeat-off load rule keeps an install that turned the heartbeat off without
+setting `telemetry.enabled` off, and `KIROCREW_TELEMETRY_DISABLED`, the old
+heartbeat env opt-out, also holds the default recording off until
+`telemetry.enabled` is written (`env_pin()` answers off and names it, and
+`env_pin_is_soft()` marks it as a hold that a written value lifts, so the
+collection route reports `env_pinned: false`, the Settings switch stays usable,
+and `kirocrew telemetry status` says "Held off by" instead of "Pinned by"). Older
+builds' first boot saved the whole `telemetry` section at its old defaults
+(`enabled: false`, both caps `0`). That section loads as written: recording
+stays off (it may be the user's off), and the caps stay `0`, because `0` is the
+documented "no limit" and a stored `0` cannot be told apart from a chosen one.
+Reading them as the new caps would delete metric shards the user kept. Both caps
+are report-only rows in the superseded-defaults registry (see `config.md`), so
+`kirocrew doctor` and `kirocrew config defaults` name them and the user can adopt
+30 days / 100 MB. When off,
+all metric call sites are cheap no-ops and nothing is written or exported,
+byte-identical to no telemetry. Any instrument that needs durable state to
 survive a process death — currently only the session-lifetime breadcrumb — must
 gate that state on the same consent, and fail closed when consent cannot be
 read, so this sentence stays literally true.
@@ -25,7 +47,9 @@ list here as the inventory. Tests: `test/metrics/`.
 | `schema.py` | Namespace constants (`NS_CORE = "kirocrew."`, `NS_GENAI = "gen_ai."`, `NS_APP_PREFIX = "app."`) + `validate_name` / `validate_attrs` / `redact` guardrails. Documents the low-cardinality contract. |
 | `recorder.py` | `MetricsRecorder` — facade over the OTEL `Meter`. Every metric passes namespace + privacy guardrails BEFORE reaching an instrument. Instrument-cache creation is lock-guarded (atomic check-then-create). Best-effort: a telemetry failure never propagates to the caller. `meter=None` = no-op recorder. |
 | `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. `get_recorder()` serves a memoized recorder and re-resolves the `telemetry.enabled` consent value every `_CONSENT_RECHECK_SECS` (30s), rebuilding when it moved — see "Recorder lifecycle & threading" below. Public consent surface: `env_pin()` / `TELEMETRY_ENV_VAR`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `histogram_bounds()` (`_HISTOGRAM_BUCKETS_MS` for millisecond instruments plus `_HISTOGRAM_BUCKETS_BY_UNIT` for the non-ms ones), each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
-| `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs; the map itself lives in `metrics/temporality.py`, which owns it for the OTLP leg too (declaring it inline here is what let that leg ship CUMULATIVE for the same instruments with nothing failing). Observable counters are deliberately NOT mapped and would export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild. Nothing registers an observable counter today — the process CPU/GC readings and the inventory probe-failure count are lifetime-total GAUGES, which is what removed the last cumulative series — so the entry guards the next one; the aggregator still reduces cumulative streams window-relative (deterministic identity boundary + time-ordered legacy reset detection + first-in-window baseline) for the shards written before that switch. **Process identity:** each record is stamped once at resource level with `kirocrew.process.start_time` (`schema.RESOURCE_ATTR_PROCESS_START_TIME`) — the writing process's OS start-time token from `platform_compat.own_process_start_time()`, module-cached so provider rebuilds inside one process stamp the SAME value, and reboot-unique (Linux start ticks + boot UUID; macOS microsecond `proc_pidinfo` instant; Windows creation FILETIME). A read that cannot honor one-token-one-process (unreadable boot UUID, no `libproc`, 1s-only sources) emits NO token rather than an aliasable coarse one — a degraded token would merge lifetimes AND mute the reset heuristic that catches merges. The shard-filename PID plus this token identify a process beyond PID reuse, making the aggregator's cumulative reset detection deterministic. The stamp lands on the serialized JSONL line, never on the SDK `Resource` — that `Resource` also feeds the opt-in OTLP reader, and this host-local token must not egress. Fail-soft: when the platform read is unavailable the field is absent and the aggregator's legacy value heuristic applies. Resource level, not a metric attribute, so it never multiplies series cardinality. |
+| `consent_pins.py` | The env-var pins and the export opt-in, re-exported by `provider.py` (still the import path and patch seam): `env_pin()` (`DO_NOT_TRACK`, `KIROCREW_TELEMETRY`, and `KIROCREW_TELEMETRY_DISABLED` holding the default off while `telemetry.enabled` is unwritten), `env_pin_is_soft()`, `pin_env_var()`, `_consent_enabled()` (the pin, else `telemetry.enabled`), `outbound_consented()` (see "Export needs an explicit opt-in"), and `_held_consent()`: an unparseable config file or a discarded `telemetry` section loads as defaults, so it may withdraw recording but never turn it on. |
+| `recorder_build.py` | `_Build` (what one recorder build produced, installed under `provider._lock`) and `_agent_key()` (the `agent.acp_backend` / `agent.provider` pair the `kirocrew.harness` resource is read from). Re-exported by `provider.py`, still the import path. |
+| `local_exporter.py` | `JsonlShardStore` holds the shard, rotation and retention logic below, keyed by a file-name prefix; the span sink (`tracing/exporter.py`, prefix `spans`) reuses it. `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs; the map itself lives in `metrics/temporality.py`, which owns it for the OTLP leg too (declaring it inline here is what let that leg ship CUMULATIVE for the same instruments with nothing failing). Observable counters are deliberately NOT mapped and would export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild. Nothing registers an observable counter today — the process CPU/GC readings and the inventory probe-failure count are lifetime-total GAUGES, which is what removed the last cumulative series — so the entry guards the next one; the aggregator still reduces cumulative streams window-relative (deterministic identity boundary + time-ordered legacy reset detection + first-in-window baseline) for the shards written before that switch. **Process identity:** each record is stamped once at resource level with `kirocrew.process.start_time` (`schema.RESOURCE_ATTR_PROCESS_START_TIME`) — the writing process's OS start-time token from `platform_compat.own_process_start_time()`, module-cached so provider rebuilds inside one process stamp the SAME value, and reboot-unique (Linux start ticks + boot UUID; macOS microsecond `proc_pidinfo` instant; Windows creation FILETIME). A read that cannot honor one-token-one-process (unreadable boot UUID, no `libproc`, 1s-only sources) emits NO token rather than an aliasable coarse one — a degraded token would merge lifetimes AND mute the reset heuristic that catches merges. The shard-filename PID plus this token identify a process beyond PID reuse, making the aggregator's cumulative reset detection deterministic. The stamp lands on the serialized JSONL line, never on the SDK `Resource` — that `Resource` also feeds the opt-in OTLP reader, and this host-local token must not egress. Fail-soft: when the platform read is unavailable the field is absent and the aggregator's legacy value heuristic applies. Resource level, not a metric attribute, so it never multiplies series cardinality. |
 | `temporality.py` | Single owner of the instrument-kind -> temporality map, for the local sink AND the opt-in OTLP leg. `delta_preference()` returns a fresh DELTA map for Counter/UpDownCounter/Histogram (ObservableCounter deliberately absent, gauges never applicable); `otlp_preference()` returns it, or `None` to stand aside when `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` is set. Exists because the map lived inline in `local_exporter.__init__` while `_build_otlp_reader` passed nothing, so the two destinations reported the same instruments DELTA on disk and CUMULATIVE on the wire with nothing failing. |
 | `http_metrics.py` | Gateway HTTP observability (rec #1): `record_boot_to_ready()` (boot-to-ready histogram) + `make_route_latency_middleware()` (per-route latency, wired as the outermost middleware on both `start_dashboard`/`start_api_server`). Bounds `route_template` cardinality via `collect_route_templates()` (build-time snapshot) + `route_template()` (`__unknown__` fallback); clamps `method` to a fixed allowlist and `status_class` to `1xx`..`5xx`/`other`. Upgraded WebSocket connections and `text/event-stream` SSE responses are excluded because their handler elapsed time is connection/turn lifetime, not HTTP request latency. Best-effort — a telemetry failure never alters a response. |
 
@@ -136,11 +160,11 @@ worst case is one dropped export cycle rather than a corrupt shard.
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `enabled` | `false` | Main switch. Off = no-op recorder, nothing written. Editable from the dashboard (Settings → Privacy) as well as the config file, `kirocrew config set`, and the env var; re-resolved live, so a change takes effect without a restart. |
+| `enabled` | `true` | Main switch for local recording. Off = no-op recorder, nothing written. Editable from the dashboard (Settings → Privacy) as well as the config file, `kirocrew config set`, and the env var; re-resolved live, so a change takes effect without a restart. |
 | `local_dir` | `""` | JSONL shard dir; empty = `~/.kiro/crew/metrics`. `~` expansion supported. |
 | `export_interval_seconds` | `60` | Flush interval (floored to 1). |
-| `retention_days` | `0` | Age pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive day window to opt in (rec #14). |
-| `max_total_mb` | `0` | Size pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive opportunistic directory budget to opt in; protected active writers can temporarily exceed it (rec #14). |
+| `retention_days` | `30` | Prune shards older than this many days. `0` disables age pruning; an upgraded install that stored `0` keeps it (reported by `doctor` as a superseded default) (rec #14). |
+| `max_total_mb` | `100` | Opportunistic directory budget; protected active writers can temporarily exceed it. `0` disables the size cap; an upgraded install that stored `0` keeps it (reported by `doctor` as a superseded default) (rec #14). |
 | `otlp_endpoint` | `""` | Opt-in OTLP/HTTP metrics endpoint (e.g. `http://localhost:4318/v1/metrics`). **Empty = no network egress (default).** When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires `pip install "opentelemetry-exporter-otlp-proto-http==1.44.0"` (rec #1). Metrics signal only: no spans or log records exist, so `_build_otlp_reader` logs a WARNING (destination name only, never the URL) when the endpoint path ends in `/v1/traces` or `/v1/logs`, and still builds the reader. |
 
 Field validation (`TelemetryConfig.__post_init__`): `export_interval_seconds`
@@ -149,11 +173,12 @@ to `0` (cap disabled) rather than being interpreted as "prune everything".
 
 ## Opt-in, retention bounds & egress (rec #14 / rec #1)
 
-**Default posture — nothing collected, nothing leaves the host.**
-`telemetry.enabled` defaults `false`, so every metric call site is a cheap no-op
-and no file is written — including the session-lifetime breadcrumb, which is
-gated on the same consent and fails closed. Even once local collection is
-enabled, `otlp_endpoint` defaults empty and `otlp_endpoints` defaults to an
+**Default posture — recorded locally, nothing leaves the host.**
+`telemetry.enabled` defaults `true`, so metrics are recorded to the local JSONL
+sink, capped at 30 days / 100 MB. With it off every metric call site is a cheap
+no-op and no file is written — including the session-lifetime breadcrumb, which
+is gated on the same consent and fails closed. Export needs an explicit opt-in
+(see "Export needs an explicit opt-in"), and `otlp_endpoint` defaults empty and `otlp_endpoints` defaults to an
 empty list, so **no data ever leaves the machine unless the operator explicitly
 sets an OTLP endpoint** (or the build ships a collector of its own).
 
@@ -214,8 +239,38 @@ host must also pass the security policy's `capabilities.telemetry` `otlp_hosts`
 list (`otlp_governance.governed_destinations` before the reader is built and `otlp_governance.gate_exporter` before each export; see [governance.md](governance.md)), and a
 policy that pins `capabilities.telemetry` off drops every destination. The public
 `DefaultTelemetryProvider` turns a non-empty `otlp_endpoint` into exactly one
-destination and returns none when it is empty, so a standalone build behaves as it
-did when this module constructed that exporter itself. Readers are appended AFTER
+destination, so a standalone build behaves as it
+did when this module constructed that exporter itself. It then adds each
+`otlp_endpoints` entry and the built-in `kiro-telemetry` destination
+(`metrics/kiro_export.py`): the `PRODUCT_METRICS` preset to a fixed Kiro telemetry
+endpoint, with `ClientType=kiro-crew` and `machineId` (the header's hash) on every point, a reduced resource (no
+install id, pid, `os.type` or `host.*`), delta temporality, no process-wide OTel credentials,
+and a session that adds only `x-kiro-machineid` (a hash of the install id). It is
+the one destination that exports under the recording default
+(`kiro_export.exported`, applied in `_build_recorder`): an operator entry still
+needs `outbound_consented`, while this one needs recording on plus
+`kiro_export.notice_shown` -- `dashboard.kiro_telemetry_ack_version` at least
+`kiro_export.NOTICE_VERSION` (3), written only when the chapter's or
+`kirocrew telemetry enable`'s text named this destination, or the separate
+`kiro_telemetry_notice_shown` stamp that `metrics/notice.py` writes only when a
+start with no dashboard printed the Kiro line to a terminal. `privacy_ack_version`
+alone does not count, nor does a notice of version 2 or lower, which said metrics
+stay on this machine. Whether the notice was shown is part of
+`_endpoints_key`, so a Keep on in a running gateway attaches the reader at the next
+consent recheck. It is not returned in an LTS build or on a CI runner; a
+non-default `KIROCREW_HOME` gets it like any other home. Because the notice names it, the enable refusals (the
+dashboard's `telemetry.enabled` PATCH and `kirocrew telemetry enable`) ask
+`kiro_export.egress_needs_written_opt_in`, which ignores it, and the collection
+status reports that as `enable_refused`. `kiro_export.off_offer_due` names the
+one off case that is asked again: a written `telemetry.enabled: false` (what
+builds before the recording default wrote into every new config), the heartbeat
+on, no env pin, no policy, no `config.local.json` entry, no collector of the
+user's own, and notice version 3 not yet acknowledged. The theme boot payload then
+reports the stored notice version, the collection status reports `off_offer`, and
+the chapter's off form offers Turn on performance metrics (writes `telemetry.enabled: true` and the
+Kiro acknowledgement) or Keep off (writes `telemetry.enabled: false`, already the
+stored value, then `privacy_ack_version`). A start with
+no dashboard prints `notice.OFFER_TEXT` once on a terminal. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
 the local JSONL sink, so an edition can add destinations but can never remove or
 replace the sink the dashboard reads, and it supplies no cadence — the export
 interval stays `telemetry.export_interval_seconds`. Nor does it supply a
@@ -239,6 +294,24 @@ export, where `OTEL_EXPORTER_OTLP_HEADERS` — the only injection point before t
 seam — freezes into the exporter's session at construction and starts returning
 401 once it rotates. A destination built in code carries static headers on
 `Session.headers`; one declared as data names them in `headers_env` (below).
+
+No exporter follows a redirect (`metrics/otlp_session.py`). The `otlp_hosts`
+policy and the https rule check the configured endpoint only, so a 307/308 fails
+that export (one ERROR, no header values, no retry) instead of resending the batch
+and its headers to a host neither checked. A supplied `session` is shallow-copied:
+the same class (so a subclass that signs requests still signs them) and the same
+attributes, with its own `headers` dict, so neither the redirect rule nor the
+exporter's header updates change the edition's object. The legacy entry gets the session the exporter would
+load itself (the OTel credential-provider one, else a plain one); that loader is
+private to the SDK, and if it is missing the legacy destination keeps exporting
+through a plain no-redirect session, with one WARNING (naming the credential-provider
+variable, when one is set, whose session was therefore not loaded). Every session
+the exporter gets has an `auth`: its own (an edition's, or the credential-provider
+session's) is kept, and one without gets an `auth` that applies only the endpoint
+URL's own `user:password@` (what `requests` does with no `auth`), so `requests`
+never reads `$NETRC` or `~/.netrc` for the collector's host. That login would
+otherwise replace a configured `Authorization` header, or add one where none was
+set. Proxy and CA settings from the environment still apply.
 
 The method must be cheap and side-effect-free per call: it is read once per
 recorder build AND on every egress-posture read (the Privacy panel's status, and
@@ -539,7 +612,7 @@ the wrapper sits:
 
 **A point-attribute key is refused, not dropped.** Keys are checked at
 construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
-(`ClientType` only today), and an unreviewed key raises. `_build_otlp_reader`
+(`ClientType` and `machineId` today), and an unreviewed key raises. `_build_otlp_reader`
 turns that into "this destination gets no reader", so the cost is one
 destination's egress and local collection continues. Dropping the label instead
 would publish a series the receiving side cannot route, with only a debug line to
@@ -688,17 +761,17 @@ not PATCH-writable; the config view masks it).
 | `kirocrew.session.idle_expired` | counter | `turn_active` (bool), `orphaned` (bool) | `session_cleanup.py`; emitted after an idle/orphan sweep successfully resets a session. |
 | `kirocrew.session.startup.duration` | histogram (ms) | `outcome` (`ready` / `auth_required` / `error`), `spawned` (bool), `backend` (`kiro`) + `phase` (`total` / `spawn_init` / `session_new` / `session_load` / `set_model`), `channel` (conversation source), `resumed` (bool) on the kiro path | Two sites. **claude**: `acp/client_start.py::AcpClient.ensure_ready()` — times cold-start (spawn + session init) and emits in a `finally` so every exit path is measured, with no `phase` attr. **kiro** (default): `providers/acp_runtime_start.py::_emit_kiro_startup_metric` — one `phase=total` point PLUS one point per internal phase; `spawned` is unconditionally `True` because `_start_kiro_runtime_impl` always spawns a fresh runtime (the warm fast-path returns before reaching either site and is NOT measured). `outcome` defaults to `"error"` so an unexpected exception is never mislabeled `"ready"`. Consumers MUST treat only the end-to-end point (`phase` absent or `total`) as a startup — the phase points are components of one startup. `channel` comes from `messaging.link::telemetry_channel_of`, a closed label set (an unrecognised key classifies as `other`, never the key itself) answering WHICH surface paid the cost; `resumed` separates the `session/load` path from `session/new`. `session_load` is recorded only when a resume was attempted, and `session_new` only when `create_session` actually ran, so a resumed startup never reports a near-zero `session_new`. |
 | `kirocrew.chat.first_token.duration` | histogram (ms) | `channel`, `first_turn` (bool), `resumed` (bool) | `dashboard/chat_turn/turn_stats.py::_emit_ttft_metric`; user-message-to-first-visible-token latency for top-level user prompts. Own bucket family `_STARTUP_BUCKETS_MS`. |
-| `kirocrew.session.pool.decision` | counter | `outcome` (`hit` / `miss_empty` / `bypass_member_capabilities` / `bypass_resume` / `bypass_stateless` / `bypass_member` / `bypass_app_launch` / `bypass_restricted_context` / `bypass_member_context` / `bypass_cwd` / `bypass_env` / `bypass_shared_scratch` / `bypass_backend_override` / `bypass_effort` / `bypass_model_at_launch` / `disabled` / `other`), `channel` | `session_parts/runtimes.py::SessionManager._record_pool_decision`, one point per `get_or_create` warm-pool decision. Exactly one reason is reported per decision — the disqualifiers form a disjunction, so branch order picks the reported reason, not the outcome. Deliberately a counter rather than an attribute on the startup histogram: "was the pool used" and "how long did startup take" are separate questions, and crossing them would multiply every phase series. `bypass_resume` quantifies how often a `resume_sid` disqualifies a session from the pool, and `bypass_shared_scratch` how often a dedicated subagent cold-starts to mount its parent's scratch. `bypass_model_at_launch` counts model-pinned chats on a harness that takes its model only at launch (`ACP_BACKENDS_MODEL_AT_LAUNCH`): the pooled process cannot switch, so it is discarded and the chat cold-starts on its pin. Values are pinned by `session.POOL_DECISIONS`, which lists every reason `get_or_create` assigns (a test reads the assignments), so no reason folds into `other`. |
+| `kirocrew.session.pool.decision` | counter | `outcome` (`hit` / `miss_empty` / `bypass_member_capabilities` / `bypass_resume` / `bypass_stateless` / `bypass_member` / `bypass_app_launch` / `bypass_restricted_context` / `bypass_member_context` / `bypass_cwd` / `bypass_env` / `bypass_shared_scratch` / `bypass_backend_override` / `bypass_effort` / `bypass_crew_oauth_bridge` / `bypass_model_at_launch` / `disabled` / `other`), `channel` | `session_parts/runtimes.py::SessionManager._record_pool_decision`, one point per `get_or_create` warm-pool decision. Exactly one reason is reported per decision — the disqualifiers form a disjunction, so branch order picks the reported reason, not the outcome. Deliberately a counter rather than an attribute on the startup histogram: "was the pool used" and "how long did startup take" are separate questions, and crossing them would multiply every phase series. `bypass_resume` quantifies how often a `resume_sid` disqualifies a session from the pool, and `bypass_shared_scratch` how often a dedicated subagent cold-starts to mount its parent's scratch. `bypass_model_at_launch` counts model-pinned chats on a harness that takes its model only at launch (`ACP_BACKENDS_MODEL_AT_LAUNCH`): the pooled process cannot switch, so it is discarded and the chat cold-starts on its pin. `bypass_crew_oauth_bridge` counts chats that cold-start because they would reach a Crew-owned Connection through the gateway bridge, which a pooled process (projected with no session key) does not carry. Values are pinned by `session.POOL_DECISIONS`, which lists every reason `get_or_create` assigns (a test reads the assignments), so no reason folds into `other`. |
 | `kirocrew.session.resume.outcome` | counter | `outcome` (`loaded` / `fallback_replay` / `no_session_file`), `channel` | `providers/acp_runtime_start.py::_emit_kiro_startup_metric`, emitted only when a resume was attempted. Distinguishes a lossless native resume from the degraded fallback (fresh `session/new` plus history replay on the Kiro Crew side, taken when `session/load` exhausts `_RESUME_MAX_ATTEMPTS` against a stale lock) and from a resume skipped because the session file was gone. |
-| `kirocrew.session.duration` | histogram (ms) | `end_reason` (`reset` / `removed` / `unclaimed` / `destroyed` / `discarded` / `shutdown` / `retired` / `recycled` / `evicted` / `crashed`), `session_source` (via `messaging.link::telemetry_channel_of`), `harness` (the EFFECTIVE harness its start recorded; see "The `harness` label") | `metrics/sessions.py::record_session_ended` (or `record_sessions_ended` for a path that drains many keys at once) for every clean end; `metrics/sessions.py::backfill_crashed_sessions` for `crashed`. **Why the reason is passed in, never derived.** There is no single teardown funnel: `SessionLifecycleService` (its bodies in `session_lifecycle_parts/teardown.py` and `session_lifecycle_parts/fleet.py`) holds six end paths that each pop the registry themselves (`reset` / `remove` / `remove_if_unclaimed` / `destroy` / `discard_conversation` / `close_all`), and four more pop it outside all of those — `retire_kiro_identity_sessions` reports `retired` for the sessions it tears down on an identity change, `reload_provider_factory` reports `retired` too for the registry it clears on a provider switch (both are "this process is no longer the right host for these sessions", which is why they share a label rather than minting a second one), `session_compaction.py::CompactionCoordinator._recycle_held` reports `recycled` (context overflow replacing the provider in place), `session_background.py::recycle_heartbeat` also reports `recycled` (the background runtime replacing its own session at cycle end), and the two dead-provider evictions in `session_allocation.py` report `evicted`. So each site states its own `end_reason`, the same contract `metrics/turns.py` holds its callers to. Every path calls this while it still holds the session registry lock, in the same event-loop tick as its `_sessions.pop`: the pop and the histogram record are both in-memory and both happen before the call's single suspension point, and a later call lets a racing cold start register a SUCCESSOR under the reused key whose record the predecessor's teardown then consumes. `reset` is a PATH label rather than a cause — the idle sweep and a slot reset both reach teardown through it, and the finer causes are already counted by `kirocrew.session.idle_expired` and `kirocrew.watchdog.recovery.outcome`; the other four are separate precisely because they never take the `reset` route. **EVERY registry removal must record an end, and that is a correctness requirement rather than a completeness one.** An unrecorded removal does not merely lose a sample: the crumb below survives it, so the next boot reports the session as `crashed` — a failure that never happened, injected into the one population this histogram exists to measure. Four such paths shipped unrecorded and were caught in review, which is why the gate for this is `test_every_registry_removal_records_an_end`, a fail-closed AST walk over every module that mutates the registry (recognising `pop`, `del` and `clear`) rather than a hand-kept list of method names that a new path silently escapes. **The crumb is what makes a crash countable.** A start time held only in memory dies with the process, which is exactly the population most worth measuring, because a crash runs no teardown path at all. So `record_session_started` drops one small JSON file under `<data home>/metrics/open-sessions/`, named by SHA-256 digest of the session key PLUS the writing pid and the start time, with the key stored inside (keys carry channel ids and slot names and are not filesystem-safe; `session_map.json` already holds every key in the same data home, so this is not new exposure). **The name identifies the writer and the generation, not just the key, and that is what makes every unlink here safe.** A session key is not unique across processes — `BACKGROUND_KEY` is a fixed constant, so a `kirocrew run` and the gateway hold the same key at the same time with a live session each — so while the name was the digest alone they shared one file, and whichever ended first unlinked the other's record; the locks in this module are THREAD locks and never spanned processes, so nothing here could have prevented it. With the writer and the generation in the name, a crumb can only ever be removed by the session that wrote it. Three consequences follow. A clean end unlinks the ONE generation it can name, and an end with no live table entry unlinks NOTHING — the files sharing that digest belong to other processes or earlier runs, and removing them is precisely the bug the name now prevents. A start that displaces a live generation of the same key, and an eviction under `_MAX_LIVE_SESSIONS`, must each reap the generation they orphan, because once the table forgets a generation nothing can ever name its file again; both ride the same awaited worker hop as the start's own write, so those unlinks stay off the event loop without opening a second cancellation window. And the backfill legitimately finds SEVERAL files for one key, each a distinct session judged on its own recorded owner. Whatever survives to the next boot is a session that never ended cleanly, which `backfill_crashed_sessions(started_before)` emits as `crashed` and unlinks; it is also the only reader of these files, so an unparseable crumb is reaped there rather than by an end unlinking blind. A crumb that exists but cannot be READ (an `OSError` other than `FileNotFoundError`) is kept with one DEBUG line naming the error class: its owner cannot be judged, so it waits for a later boot (`test_session_crumb_unreadable.py`). `started_before` is the calling process's own start time, so a crumb at or after it is left alone. **The crumb also records WHO owns it — the writing process's pid plus a per-process start identifier — and the backfill skips any crumb whose owner is still running.** The cutoff alone was not enough: it only ever protected THIS process's own crumbs, and `cli.py` and `eval/runner.py` each build their own session manager against the same data home, so a `kirocrew run` session started before the gateway booted was read as a crash. That both invented a sample and deleted the live crumb, losing the real crash that session might later suffer. The start identifier is what makes pid reuse safe: a recycled pid belongs to a different process and must not look like the owner, and that includes reuse of the CURRENT process's own pid — a container hands the gateway PID 1 on every restart, so a crashed predecessor's crumb arrives carrying this process's pid, and skipping it on the strength of the pid alone meant its crash was never emitted and its file never cleaned on any later boot either. **Liveness comes from `platform_compat.pid_exists`; the start identifier only refines it.** `get_process_start_id` returns None for any process the caller may not introspect, and its own contract says a None must NOT be read as a mismatch — using it as the liveness test would judge dead every owner it cannot introspect and reap live sibling sessions. The ownership check fails CLOSED — a live pid whose identity cannot be read counts as running, so an ambiguous crumb waits for a later boot rather than becoming a fabricated crash; losing a real crash sample costs one data point, inventing one corrupts the population this instrument reports. A crumb with no ownership recorded (written before this field existed) falls back to the cutoff alone. **A registration that never became a session is discarded, not ended:** `discard_session_start` pops the table entry and unlinks that generation's crumb WITHOUT emitting, for the cancellation window between inserting a session into the registry and finishing its start record — a session that never lived has no lifetime to report, and it must not be left as a crumb the next boot calls a crash. It is deliberately not an eleventh `end_reason`, because those describe how a live session ENDED. **Exactly-once accounting.** A crumb is consumed at most once, so the teardown paths — which are NOT mutually exclusive, the idle sweep calls `reset` — cannot double-count between them, and a backfilled session cannot be counted again on the boot after. The clean path deliberately reads neither the crumb nor the popped entry's `created_at`: consuming a DIFFERENT record than the crash path would let a clean end's leftover crumb be re-emitted as `crashed`, and `created_at` is reset when a provider is recycled in place, so it measures provider age rather than registry residency. **A crashed session's END time** is its transcript mtime (`<data home>/sessions/<stem>.jsonl`, appended as the conversation runs, so it is the last moment the session was observably alive and the honest post-hoc maximum). A session with no transcript — a subagent leaves only a replay log — yields no end time and is unlinked WITHOUT an emit rather than recorded as a 0ms lifetime: absence reads as "no data", a recorded zero renders as a real zero. **Two locks, split by what they may be held across.** `_live_lock` guards the in-memory start table ONLY and is never held across I/O, because every end takes it on the event loop; `_crumb_io_lock` orders the two worker-thread paths that touch crumb FILES — the writer, and the backfill's read-decide-unlink — and nothing on the loop may take it. Coupling them was a real stall: the backfill held one lock across a crumb read plus an unlink on a worker while a teardown waited for that same lock on the loop. The end path needs no crumb lock at all, because ownership already partitions the work — the backfill skips every crumb whose owner is live, so the crumbs a session ends in THIS process and the crumbs the backfill reaps are disjoint sets. It is also worth stating that these are THREAD locks and so never protected anything against a sibling PROCESS; that is exactly what the ownership field is for. The write itself runs on a worker thread (`asyncio.to_thread`) and is AWAITED while the caller still holds the session registry lock, which is what satisfies two constraints that look opposed: the syscalls never run on the event loop, where a slow or network-homed data home would stall every gateway task behind one session insertion, and nothing can interleave, because starts, ends and successors all serialise on that registry lock. Three earlier shapes each satisfied one and broke the other — a fire-and-forget pool write let a late writer delete a successor's crumb (an ended-key set, then a generation token compared before and after the write, both failed, because every check still acted on a path the successor SHARED), and writing inline fixed the ordering by putting filesystem I/O on the loop. Naming the file after its writer and generation is what finally removed that shared path, so the post-write check now removes only this writer's own file. The END path's unlink runs on a worker thread too, and is AWAITED there for the same reason the write is. Inline on the event loop it would be one syscall against the data home on the paths a person is waiting on -- closing a tab, resetting a slot, shutting the gateway down -- so on a slow or network-backed home that single `unlink` would park every gateway task behind whichever session happened to be closing, felt as the whole gateway freezing rather than as a metrics problem. Queued fire-and-forget it would be worse than slow: `shutdown_maintenance_executor` drains with `cancel_futures=True`, so at `close_all` -- when teardown is heaviest -- the unlink is dropped outright and a cleanly ended session's crumb survives to be back-filled as `crashed`, inflating the exact population this instrument measures. Awaiting a worker hop is the only shape that is both off the loop and never dropped. The same-tick rule the inline version protected is unaffected, on three counts: the registry pop and the histogram sample both happen BEFORE the function's only suspension point, so a teardown path still accounts for its session immediately after its `_sessions.pop`; every caller awaits while it still holds the session registry lock, which is the lock a racing cold start must take to register and map a SUCCESSOR; and the hop is awaited so nothing is fired blind. **Submitted is not started, so the hop is a BARE executor future awaited through `asyncio.shield`.** On a saturated executor the work item is still queued, and cancelling the await reaches the underlying `concurrent.futures.Future` through `futures._chain_future`'s `_call_check_cancel`, which cancels a work item that has not begun -- the same dropped-unlink failure that ruled out the maintenance pool, reached by a different queue. Shielding leaves the inner future alone, so nothing cancels the queued work and it runs when a thread frees up. Two details make abandoning it safe on the cancellation path, and both are why this is not the fire-and-forget shape the start path forbids. It is a Future and NOT a Task, so `runners._cancel_all_tasks` at loop teardown -- which iterates `all_tasks()` -- cannot reach it; shielding a `to_thread` COROUTINE would be wrong, because `shield` wraps a coroutine in a Task that teardown cancels, dropping a still-queued item all over again. And a worker finishing after the loop closed cannot raise "Event loop is closed", because `_chain_future._call_set_state` returns early when `dest_loop.is_closed()` instead of calling `call_soon_threadsafe`; the historical Windows failure was a start-path write never awaited at all, whereas here the normal path awaits to completion and only a cancellation abandons the future. Unlinking inline in the cancellation handler was tried and rejected in review: it fixed the drop but put a filesystem syscall back on the event loop, which is the thing this issue is about. The start path still must not use this shape, because its write has to be ORDERED under the caller's registry lock and so cannot be allowed to land late; an end's unlink can, because the crumb name encodes the writer and the generation, so a late unlink can only ever reach the file its own session wrote. If the executor is already shut down the hop cannot be scheduled at all, and the crumb is left to the boot backfill rather than unlinked on the loop -- reachable only once the loop itself is tearing down, and the backfill's ownership check means it is claimed only after this process is gone. **A cancellation at that hop is ABSORBED by all three end paths, and that is what makes the new suspension point safe to give a teardown.** The registry pop is the caller's point of no return: past it only the caller's remaining cleanup can finish the job, and `destroy` deletes the session-map entry in a `finally` BELOW its end call while `discard_conversation` and `reset` clear the resume SID on the line after the lock. Raising would exit those callers before that cleanup, leaving a permanently destroyed session's mapping behind for the next boot to resume -- a data-loss window the synchronous version did not have, because it had no suspension point there at all. A cancellation cannot undo a teardown, only leave it half done, so the correct answer is to let the teardown finish. That cancellation is genuinely DISCARDED rather than deferred -- a swallowed `CancelledError` is not re-delivered by asyncio, so the caller runs to completion unless something cancels it again -- which is the intended outcome rather than a side effect, because finishing a teardown that has already popped is exactly what the callers' `finally` blocks exist for. The consequence worth knowing is that a caller wanting a hard cap on teardown must impose it outside the pop, since a cancellation delivered after the pop is not honoured; no caller does today (every `close_all` await site is bare). The two guarantees sit in two places deliberately: whether a CALLER may be aborted is knowable only where its post-pop cleanup is known, so it lives in the end paths, while whether the UNLINK survives a cancelled hop is a property of the hop, so it lives in the helper. Two more consequences are worth stating. The sample is emitted BEFORE the hop, the opposite of `kirocrew.session.started`'s counter, because the risks are opposite: a cancelled start is rolled back and never existed, while an end cannot be rolled back (the pop has already consumed the only record of that generation), so emitting first is what keeps the sample under cancellation and what measures the lifetime at the pop rather than a worker round-trip later. And the four paths that pop MANY keys at once -- `close_all`, `drain_all_providers`, `retire_kiro_identity_sessions` and `reload_provider_factory` -- call `record_sessions_ended` instead, which pops the whole set under one `_live_lock` hold and unlinks it in ONE hop: a hop per key would put a cancellation point BETWEEN two keys, leaving every key after it popped but unrecorded, and on `close_all` (a path cancellation reaches by design) that would turn one orderly shutdown into a burst of fabricated crashes -- strictly worse than the on-loop unlink it replaced. `discard_session_start` is a coroutine for the same reason, and absorbs its cancellation for a second one too: its callers re-raise the failure that started the rollback on the very next line, so letting a cancellation escape would displace that failure with one of its own making. **The crumb is written only under telemetry consent**, checked fail-closed: it exists solely to feed this instrument, which is a no-op without consent, so writing one on an unopted host would persist state nothing can read against a documented default of collecting nothing. Bounded throughout: `_MAX_BACKFILL_EMITS` (2000) caps a runaway crumb directory while still unlinking everything it walks, and `_MAX_LIVE_SESSIONS` (4096) drops the oldest half of the table, unlinking each dropped generation's crumb as it goes — both cost samples, never memory. Own bucket family `_SESSION_BUCKETS_MS`. |
+| `kirocrew.session.duration` | histogram (ms) | `end_reason` (`reset` / `removed` / `unclaimed` / `destroyed` / `discarded` / `shutdown` / `retired` / `recycled` / `evicted` / `crashed`), `session_source` (via `messaging.link::telemetry_channel_of`), `harness` (the EFFECTIVE harness its start recorded; see "The `harness` label") | `metrics/sessions.py::record_session_ended` (or `record_sessions_ended` for a path that drains many keys at once) for every clean end; `metrics/sessions.py::backfill_crashed_sessions` for `crashed`. **Why the reason is passed in, never derived.** There is no single teardown funnel: `SessionLifecycleService` (its bodies in `session_lifecycle_parts/teardown.py` and `session_lifecycle_parts/fleet.py`) holds six end paths that each pop the registry themselves (`reset` / `remove` / `remove_if_unclaimed` / `destroy` / `discard_conversation` / `close_all`), and four more pop it outside all of those — `retire_kiro_identity_sessions` reports `retired` for the sessions it tears down on an identity change, `reload_provider_factory` reports `retired` too for the registry it clears on a provider switch (both are "this process is no longer the right host for these sessions", which is why they share a label rather than minting a second one), `session_compaction.py::CompactionCoordinator._recycle_held` reports `recycled` (context overflow replacing the provider in place), `session_background.py::recycle_heartbeat` also reports `recycled` (the background runtime replacing its own session at cycle end), and the two dead-provider evictions in `session_allocation_parts/get_or_create.py` (`_evict_stale_session` and the same liveness check inside `get_or_create`) report `evicted`. So each site states its own `end_reason`, the same contract `metrics/turns.py` holds its callers to. Every path calls this while it still holds the session registry lock, in the same event-loop tick as its `_sessions.pop`: the pop and the histogram record are both in-memory and both happen before the call's single suspension point, and a later call lets a racing cold start register a SUCCESSOR under the reused key whose record the predecessor's teardown then consumes. `reset` is a PATH label rather than a cause — the idle sweep and a slot reset both reach teardown through it, and the finer causes are already counted by `kirocrew.session.idle_expired` and `kirocrew.watchdog.recovery.outcome`; the other four are separate precisely because they never take the `reset` route. **EVERY registry removal must record an end, and that is a correctness requirement rather than a completeness one.** An unrecorded removal does not merely lose a sample: the crumb below survives it, so the next boot reports the session as `crashed` — a failure that never happened, injected into the one population this histogram exists to measure. Four such paths shipped unrecorded and were caught in review, which is why the gate for this is `test_every_registry_removal_records_an_end`, a fail-closed AST walk over every module that mutates the registry (recognising `pop`, `del` and `clear`) rather than a hand-kept list of method names that a new path silently escapes. **The crumb is what makes a crash countable.** A start time held only in memory dies with the process, which is exactly the population most worth measuring, because a crash runs no teardown path at all. So `record_session_started` drops one small JSON file under `<data home>/metrics/open-sessions/`, named by SHA-256 digest of the session key PLUS the writing pid and the start time, with the key stored inside (keys carry channel ids and slot names and are not filesystem-safe; `session_map.json` already holds every key in the same data home, so this is not new exposure). **The name identifies the writer and the generation, not just the key, and that is what makes every unlink here safe.** A session key is not unique across processes — `BACKGROUND_KEY` is a fixed constant, so a `kirocrew run` and the gateway hold the same key at the same time with a live session each — so while the name was the digest alone they shared one file, and whichever ended first unlinked the other's record; the locks in this module are THREAD locks and never spanned processes, so nothing here could have prevented it. With the writer and the generation in the name, a crumb can only ever be removed by the session that wrote it. Three consequences follow. A clean end unlinks the ONE generation it can name, and an end with no live table entry unlinks NOTHING — the files sharing that digest belong to other processes or earlier runs, and removing them is precisely the bug the name now prevents. A start that displaces a live generation of the same key, and an eviction under `_MAX_LIVE_SESSIONS`, must each reap the generation they orphan, because once the table forgets a generation nothing can ever name its file again; both ride the same awaited worker hop as the start's own write, so those unlinks stay off the event loop without opening a second cancellation window. And the backfill legitimately finds SEVERAL files for one key, each a distinct session judged on its own recorded owner. Whatever survives to the next boot is a session that never ended cleanly, which `backfill_crashed_sessions(started_before)` emits as `crashed` and unlinks; it is also the only reader of these files, so an unparseable crumb is reaped there rather than by an end unlinking blind. A crumb that exists but cannot be READ (an `OSError` other than `FileNotFoundError`) is kept with one DEBUG line naming the error class: its owner cannot be judged, so it waits for a later boot (`test_session_crumb_unreadable.py`). `started_before` is the calling process's own start time, so a crumb at or after it is left alone. **The crumb also records WHO owns it — the writing process's pid plus a per-process start identifier — and the backfill skips any crumb whose owner is still running.** The cutoff alone was not enough: it only ever protected THIS process's own crumbs, and `cli.py` and `eval/runner.py` each build their own session manager against the same data home, so a `kirocrew run` session started before the gateway booted was read as a crash. That both invented a sample and deleted the live crumb, losing the real crash that session might later suffer. The start identifier is what makes pid reuse safe: a recycled pid belongs to a different process and must not look like the owner, and that includes reuse of the CURRENT process's own pid — a container hands the gateway PID 1 on every restart, so a crashed predecessor's crumb arrives carrying this process's pid, and skipping it on the strength of the pid alone meant its crash was never emitted and its file never cleaned on any later boot either. **Liveness comes from `platform_compat.pid_exists`; the start identifier only refines it.** `get_process_start_id` returns None for any process the caller may not introspect, and its own contract says a None must NOT be read as a mismatch — using it as the liveness test would judge dead every owner it cannot introspect and reap live sibling sessions. The ownership check fails CLOSED — a live pid whose identity cannot be read counts as running, so an ambiguous crumb waits for a later boot rather than becoming a fabricated crash; losing a real crash sample costs one data point, inventing one corrupts the population this instrument reports. A crumb with no ownership recorded (written before this field existed) falls back to the cutoff alone. **A registration that never became a session is discarded, not ended:** `discard_session_start` pops the table entry and unlinks that generation's crumb WITHOUT emitting, for the cancellation window between inserting a session into the registry and finishing its start record — a session that never lived has no lifetime to report, and it must not be left as a crumb the next boot calls a crash. It is deliberately not an eleventh `end_reason`, because those describe how a live session ENDED. **Exactly-once accounting.** A crumb is consumed at most once, so the teardown paths — which are NOT mutually exclusive, the idle sweep calls `reset` — cannot double-count between them, and a backfilled session cannot be counted again on the boot after. The clean path deliberately reads neither the crumb nor the popped entry's `created_at`: consuming a DIFFERENT record than the crash path would let a clean end's leftover crumb be re-emitted as `crashed`, and `created_at` is reset when a provider is recycled in place, so it measures provider age rather than registry residency. **A crashed session's END time** is its transcript mtime (`<data home>/sessions/<stem>.jsonl`, appended as the conversation runs, so it is the last moment the session was observably alive and the honest post-hoc maximum). A session with no transcript — a subagent leaves only a replay log — yields no end time and is unlinked WITHOUT an emit rather than recorded as a 0ms lifetime: absence reads as "no data", a recorded zero renders as a real zero. **Two locks, split by what they may be held across.** `_live_lock` guards the in-memory start table ONLY and is never held across I/O, because every end takes it on the event loop; `_crumb_io_lock` orders the two worker-thread paths that touch crumb FILES — the writer, and the backfill's read-decide-unlink — and nothing on the loop may take it. Coupling them was a real stall: the backfill held one lock across a crumb read plus an unlink on a worker while a teardown waited for that same lock on the loop. The end path needs no crumb lock at all, because ownership already partitions the work — the backfill skips every crumb whose owner is live, so the crumbs a session ends in THIS process and the crumbs the backfill reaps are disjoint sets. It is also worth stating that these are THREAD locks and so never protected anything against a sibling PROCESS; that is exactly what the ownership field is for. The write itself runs on a worker thread (`asyncio.to_thread`) and is AWAITED while the caller still holds the session registry lock, which is what satisfies two constraints that look opposed: the syscalls never run on the event loop, where a slow or network-homed data home would stall every gateway task behind one session insertion, and nothing can interleave, because starts, ends and successors all serialise on that registry lock. Three earlier shapes each satisfied one and broke the other — a fire-and-forget pool write let a late writer delete a successor's crumb (an ended-key set, then a generation token compared before and after the write, both failed, because every check still acted on a path the successor SHARED), and writing inline fixed the ordering by putting filesystem I/O on the loop. Naming the file after its writer and generation is what finally removed that shared path, so the post-write check now removes only this writer's own file. The END path's unlink runs on a worker thread too, and is AWAITED there for the same reason the write is. Inline on the event loop it would be one syscall against the data home on the paths a person is waiting on -- closing a tab, resetting a slot, shutting the gateway down -- so on a slow or network-backed home that single `unlink` would park every gateway task behind whichever session happened to be closing, felt as the whole gateway freezing rather than as a metrics problem. Queued fire-and-forget it would be worse than slow: `shutdown_maintenance_executor` drains with `cancel_futures=True`, so at `close_all` -- when teardown is heaviest -- the unlink is dropped outright and a cleanly ended session's crumb survives to be back-filled as `crashed`, inflating the exact population this instrument measures. Awaiting a worker hop is the only shape that is both off the loop and never dropped. The same-tick rule the inline version protected is unaffected, on three counts: the registry pop and the histogram sample both happen BEFORE the function's only suspension point, so a teardown path still accounts for its session immediately after its `_sessions.pop`; every caller awaits while it still holds the session registry lock, which is the lock a racing cold start must take to register and map a SUCCESSOR; and the hop is awaited so nothing is fired blind. **Submitted is not started, so the hop is a BARE executor future awaited through `asyncio.shield`.** On a saturated executor the work item is still queued, and cancelling the await reaches the underlying `concurrent.futures.Future` through `futures._chain_future`'s `_call_check_cancel`, which cancels a work item that has not begun -- the same dropped-unlink failure that ruled out the maintenance pool, reached by a different queue. Shielding leaves the inner future alone, so nothing cancels the queued work and it runs when a thread frees up. Two details make abandoning it safe on the cancellation path, and both are why this is not the fire-and-forget shape the start path forbids. It is a Future and NOT a Task, so `runners._cancel_all_tasks` at loop teardown -- which iterates `all_tasks()` -- cannot reach it; shielding a `to_thread` COROUTINE would be wrong, because `shield` wraps a coroutine in a Task that teardown cancels, dropping a still-queued item all over again. And a worker finishing after the loop closed cannot raise "Event loop is closed", because `_chain_future._call_set_state` returns early when `dest_loop.is_closed()` instead of calling `call_soon_threadsafe`; the historical Windows failure was a start-path write never awaited at all, whereas here the normal path awaits to completion and only a cancellation abandons the future. Unlinking inline in the cancellation handler was tried and rejected in review: it fixed the drop but put a filesystem syscall back on the event loop, which is the thing this issue is about. The start path still must not use this shape, because its write has to be ORDERED under the caller's registry lock and so cannot be allowed to land late; an end's unlink can, because the crumb name encodes the writer and the generation, so a late unlink can only ever reach the file its own session wrote. If the executor is already shut down the hop cannot be scheduled at all, and the crumb is left to the boot backfill rather than unlinked on the loop -- reachable only once the loop itself is tearing down, and the backfill's ownership check means it is claimed only after this process is gone. **A cancellation at that hop is ABSORBED by all three end paths, and that is what makes the new suspension point safe to give a teardown.** The registry pop is the caller's point of no return: past it only the caller's remaining cleanup can finish the job, and `destroy` deletes the session-map entry in a `finally` BELOW its end call while `discard_conversation` and `reset` clear the resume SID on the line after the lock. Raising would exit those callers before that cleanup, leaving a permanently destroyed session's mapping behind for the next boot to resume -- a data-loss window the synchronous version did not have, because it had no suspension point there at all. A cancellation cannot undo a teardown, only leave it half done, so the correct answer is to let the teardown finish. That cancellation is genuinely DISCARDED rather than deferred -- a swallowed `CancelledError` is not re-delivered by asyncio, so the caller runs to completion unless something cancels it again -- which is the intended outcome rather than a side effect, because finishing a teardown that has already popped is exactly what the callers' `finally` blocks exist for. The consequence worth knowing is that a caller wanting a hard cap on teardown must impose it outside the pop, since a cancellation delivered after the pop is not honoured; no caller does today (every `close_all` await site is bare). The two guarantees sit in two places deliberately: whether a CALLER may be aborted is knowable only where its post-pop cleanup is known, so it lives in the end paths, while whether the UNLINK survives a cancelled hop is a property of the hop, so it lives in the helper. Two more consequences are worth stating. The sample is emitted BEFORE the hop, the opposite of `kirocrew.session.started`'s counter, because the risks are opposite: a cancelled start is rolled back and never existed, while an end cannot be rolled back (the pop has already consumed the only record of that generation), so emitting first is what keeps the sample under cancellation and what measures the lifetime at the pop rather than a worker round-trip later. And the four paths that pop MANY keys at once -- `close_all`, `drain_all_providers`, `retire_kiro_identity_sessions` and `reload_provider_factory` -- call `record_sessions_ended` instead, which pops the whole set under one `_live_lock` hold and unlinks it in ONE hop: a hop per key would put a cancellation point BETWEEN two keys, leaving every key after it popped but unrecorded, and on `close_all` (a path cancellation reaches by design) that would turn one orderly shutdown into a burst of fabricated crashes -- strictly worse than the on-loop unlink it replaced. `discard_session_start` is a coroutine for the same reason, and absorbs its cancellation for a second one too: its callers re-raise the failure that started the rollback on the very next line, so letting a cancellation escape would displace that failure with one of its own making. **The crumb is written only under telemetry consent**, checked fail-closed: it exists solely to feed this instrument, which is a no-op without consent, so writing one on an unopted host would persist state nothing can read against a documented default of collecting nothing. Bounded throughout: `_MAX_BACKFILL_EMITS` (2000) caps a runaway crumb directory while still unlinking everything it walks, and `_MAX_LIVE_SESSIONS` (4096) drops the oldest half of the table, unlinking each dropped generation's crumb as it goes — both cost samples, never memory. Own bucket family `_SESSION_BUCKETS_MS`. |
 | `kirocrew.session.started` | counter | `session_source` (via `messaging.link::telemetry_channel_of`), `harness` (the session's EFFECTIVE harness, closed set below) | `metrics/sessions.py::record_session_started`, one increment per session admitted to the registry, called from the sites that insert into `_sessions` (`session_allocation.py` and `session_allocation_parts/get_or_create.py` cold-start and resume paths, `session_background.py`, and the compaction path that keeps a session alive) with the provider the entry was built around. `harness` is read off that provider by `metrics/harness.py::harness_of` (through `providers/acp.py::_provider_backend`, the shape check the session-map label uses), so a per-session or per-agent `acp_backend` override counts as its own harness; see "The `harness` label" below. The denominator the `kirocrew.session.duration` population is a subset of: not every registry removal records an end, so `started` counts admissions while `duration` counts the endings actually observed, and the gap between the two is itself readable. `session_source` is the SAME `telemetry_channel_of` derivation the duration histogram and `metrics/turns.py` use, so all three group by one bounded label set (an unrecognised key classifies as `other`, never the key itself). The increment and the `_live_starts` write are in-memory and therefore safe under the session registry lock; only the crumb touches disk, off-thread. |
-| `kirocrew.turn.duration` | histogram (ms) | `outcome` (`ok` / `timeout` / `cancelled` / `tool_stall` / `stale_recover` / `stall_exhausted` / `error` / `unclassified`), `session_source` (via `messaging.link::telemetry_channel_of`), `model` + `provider` (omitted when the caller cannot resolve them), `harness` (the session's EFFECTIVE harness; always present, `unknown` when unresolved) | **`harness`** is resolved at each owner from the live provider that ran the turn: owner (1) reads it off `model_source`, owner (2) off the turn's `client`, both through `metrics/harness.py::harness_of`. It is not on the row store. **Two emit owners, at most one sample per turn.** Only a completed or timed-out turn is sampled: a dashboard turn that ends without EVENT_COMPLETE (Stop, the turn ceiling, process death, auth loss, a busy prompt, a session not found, a terminal or transient error) still writes its usage row with a synthetic `stop_reason` through `chat_runner._persist_abnormal_turn_usage`, which passes `emit_metric=False` and emits no `kirocrew.turn.*` sample. On the complete path the sample is taken before the row's shielded persist, so a cancellation landing during the persist does not lose it. (1) `dashboard/handlers/usage.py::persist_token_record_async` — the call EVERY dispatch surface already makes once per turn at EVENT_COMPLETE, which is what makes cron, the heartbeat, memory consolidation, subagents, task-runner steps, workflow stages and the messaging channels present in this metric at all, so the page does not report the interactive median as the system's health. It reuses the built row's own `duration_ms`, so the row store and the histogram cannot disagree about one turn. (2) `dashboard/chat_turn/turn_stats.py::_emit_turn_metric`, called from `_on_complete` in the same file, which passes `emit_metric=False` to its persist call and emits itself — that persist sits behind `usage_has_billing`, so a turn that timed out having billed nothing writes no row and would otherwise lose its sample, and only this surface holds the EFFECTIVE session key (a linked channel conversation is attributed to its channel, not to the `slot.key` the row is filed under) and the spent-recovery-budget knowledge that labels `stall_exhausted`. `metrics/turns.py::turn_outcome` owns the mapping (`""`/`None`/`end_turn`/`stop`/`completed` → ok; the two watchdog stop reasons map to their own outcomes — checked BEFORE the `timeout` substring — so a recovered stall is never counted as a generic fault and the stall population stays visible; a stall arriving with its 3-attempt recovery budget already spent, or on a NESTED turn (`_prompt_depth > 0`, which the recovery branches never re-queue — it dies with "please retry"), labels `stall_exhausted`, which IS a terminal fault to the aggregator, so the recovered-stall exclusion cannot hide a session that dies needing user action). `cancelled` is a user pressing Stop, matched by EXACT equality against `STOP_REASON_CANCELLED` so the watchdog's `"error: cancel unacked"` still reaches the error branch; folding it into `error` would put every deliberate cancel into `fault_rate`'s numerator, so it is excluded from the numerator while REMAINING in the denominator (the turn ran). `unclassified` marks a turn whose surface passed a bare `TurnUsage` and so had no stop reason to give; it is in neither the numerator nor the denominator of `fault_rate` (in the numerator it would invent a fault for every clean background turn; in the denominator alone it would dilute the rate towards zero as background traffic grows), and its count is readable as `outcome["unclassified"]`. One histogram powers turn latency p50/p90 AND fault rate. The value is `duration_ms or elapsed_ms`: the acp provider always reports `TurnUsage.duration_ms == 0` (only claude_code fills it), so the caller must pass the locally measured wall clock as `elapsed_ms` or nothing is ever emitted. A still-zero value skips the emit deliberately — absence renders as "no data", whereas a recorded 0 would render as a plausible 0ms p50. **What it measures:** the wall clock starts at turn start, so a turn parked on an interactive tool-approval prompt counts operator thinking time. No finer-grained source exists on the acp path, so this is "turn wall-clock", not pure model latency — a high p90 can mean slow approvals rather than a slow model. |
+| `kirocrew.turn.duration` | histogram (ms) | `outcome` (`ok` / `timeout` / `cancelled` / `tool_stall` / `stale_recover` / `stall_exhausted` / `error` / `unclassified`), `session_source` (via `messaging.link::telemetry_channel_of`), `model` + `provider` (omitted when the caller cannot resolve them), `harness` (the session's EFFECTIVE harness; always present, `unknown` when unresolved) | **`harness`** is resolved at each owner from the live provider that ran the turn: owner (1) reads it off `model_source`, owner (2) off the turn's `client`, both through `metrics/harness.py::harness_of`. Owner (1) also writes the same value onto the row it persists (the row's `harness` field), so the row store and the samples agree about it. **Two emit owners, at most one sample per turn.** Only a completed or timed-out turn is sampled: a dashboard turn that ends without EVENT_COMPLETE (Stop, the turn ceiling, process death, auth loss, a busy prompt, a session not found, a terminal or transient error) still writes its usage row with a synthetic `stop_reason` through `chat_runner._persist_abnormal_turn_usage`, which passes `emit_metric=False` and emits no `kirocrew.turn.*` sample. On the complete path the sample is taken before the row's shielded persist, so a cancellation landing during the persist does not lose it. (1) `dashboard/handlers/usage.py::persist_token_record_async` — the call EVERY dispatch surface already makes once per turn at EVENT_COMPLETE, which is what makes cron, the heartbeat, memory consolidation, subagents, task-runner steps, workflow stages and the messaging channels present in this metric at all, so the page does not report the interactive median as the system's health. It reuses the built row's own `duration_ms`, so the row store and the histogram cannot disagree about one turn. (2) `dashboard/chat_turn/turn_stats.py::_emit_turn_metric`, called from `_on_complete` in the same file, which passes `emit_metric=False` to its persist call and emits itself — that persist sits behind `usage_has_billing`, so a turn that timed out having billed nothing writes no row and would otherwise lose its sample, and only this surface holds the EFFECTIVE session key (a linked channel conversation is attributed to its channel, not to the `slot.key` the row is filed under) and the spent-recovery-budget knowledge that labels `stall_exhausted`. `metrics/turns.py::turn_outcome` owns the mapping (`""`/`None`/`end_turn`/`stop`/`completed` → ok; the two watchdog stop reasons map to their own outcomes — checked BEFORE the `timeout` substring — so a recovered stall is never counted as a generic fault and the stall population stays visible; a stall arriving with its 3-attempt recovery budget already spent, or on a NESTED turn (`_prompt_depth > 0`, which the recovery branches never re-queue — it dies with "please retry"), labels `stall_exhausted`, which IS a terminal fault to the aggregator, so the recovered-stall exclusion cannot hide a session that dies needing user action). `cancelled` is a user pressing Stop, matched by EXACT equality against `STOP_REASON_CANCELLED` so the watchdog's `"error: cancel unacked"` still reaches the error branch; folding it into `error` would put every deliberate cancel into `fault_rate`'s numerator, so it is excluded from the numerator while REMAINING in the denominator (the turn ran). `unclassified` marks a turn whose surface passed a bare `TurnUsage` and so had no stop reason to give; it is in neither the numerator nor the denominator of `fault_rate` (in the numerator it would invent a fault for every clean background turn; in the denominator alone it would dilute the rate towards zero as background traffic grows), and its count is readable as `outcome["unclassified"]`. One histogram powers turn latency p50/p90 AND fault rate. The value is `duration_ms or elapsed_ms`: the acp provider always reports `TurnUsage.duration_ms == 0` (only claude_code fills it), so the caller must pass the locally measured wall clock as `elapsed_ms` or nothing is ever emitted. A still-zero value skips the emit deliberately — absence renders as "no data", whereas a recorded 0 would render as a plausible 0ms p50. **What it measures:** the wall clock starts at turn start, so a turn parked on an interactive tool-approval prompt counts operator thinking time. No finer-grained source exists on the acp path, so this is "turn wall-clock", not pure model latency — a high p90 can mean slow approvals rather than a slow model. |
 | `kirocrew.turn.tokens` | counter (token) | `direction` (`input` / `output`), `model` + `provider`, `harness` (the same value `kirocrew.turn.duration` carries) | Same two owners and the same exactly-once split as `kirocrew.turn.duration`, emitted from `metrics/turns.py::emit_turn_usage` off the same built row, so volume and latency describe one population. ONE instrument with a `direction` attribute rather than an `.input`/`.output` pair: the two series then carry an identical attribute set by construction (a `model` added to one cannot be forgotten on the other), the dashboard's counter path already reports every attribute combination under `by_attr`, and `direction` is a two-value enum so the cardinality cost is exactly 2x. **Positive-only.** Each backend fills only the dimensions it bills in; the kiro/acp backend reports zero for every token field, so emitting the zeros would publish a full series of them per turn and a recorded 0 reads as a measured zero rather than as "this backend does not report here". A negative value is also dropped — a monotonic counter cannot take it back. |
 | `kirocrew.turn.credits` | histogram (credit) | `model` + `provider`, `harness` | The turn's billed amount on a credit-billing backend (kiro/acp). Emitted only when non-zero, which is what makes it mutually exclusive with `cost_usd` on a given host (`acp/types.py`: "Consumers read whichever is non-zero"). Two instruments rather than one with a `currency` attribute because credits and dollars are not the same quantity: percentiles over the union have no unit. Own bucket family `_CREDIT_BUCKETS` (0.025–2500), calibrated against 17,240 real per-turn rows (min 0.03, p10 0.076, p50 6.8, p90 53, p99 155, max 658). NOT in `_HISTOGRAM_BUCKETS_MS`, and claimed by name in `_aggregate` so it never reaches the `*_ms` surface — see the bucket-boundaries section. |
 | `kirocrew.turn.cost_usd` | histogram (usd) | `model` + `provider`, `harness` | The same amount on a dollar-billing backend (claude_code / bedrock), same non-zero gate, same owners. Own bucket family `_USD_BUCKETS` (0.001–100). This is the one bucket array with no local calibration — a credit-billing host reports zero for every `cost_usd` row by construction — so it is sized from published per-token pricing against the observed token range and is worth re-checking once a dollar-billing host reports. Reported through `_amount_stats`, which keeps six decimals so a sub-cent turn does not round to `0.0`. |
 | `kirocrew.tool.call.duration` | histogram (ms) | `tool_kind` (`read` / `fetch` / `search` / `edit` / `write` / `create` / `delete` / `move` / `execute` / `think` / `switch_mode` / `client_built_in` / `mcp` / `other`), `outcome` (`completed` / `failed` / `cancelled`) | **Round-trip latency of one tool call, keyed by kind and never by tool name.** The tool NAME is deliberately not an attribute: MCP names are unbounded (any installed server contributes its own) and the recorder caches one instrument per distinct attribute value with no eviction, so a name-valued label is a cardinality bomb. `tool_kind` is the ACP `kind` normalised by `metrics/tool_calls.py::classify_tool_kind` and pinned to the closed `TOOL_KINDS` set; the `kind` field arrives verbatim from the agent, so an unrecognised or agent-authored kind — including an empty one — folds to `other`, which is what stops a tool name minting a series. An MCP-served call is labelled `mcp` whatever kind it reported, decided by the trusted `_meta.kiro.mcpServerName` rather than the reported kind: an MCP server's kind vocabulary is its own, and "this call left the process over MCP" is the more useful fact than a builtin's finer verb. `outcome` carries exactly the three terminal ACP statuses — a non-terminal update (`pending` / `in_progress` / absent) records nothing and leaves the clock running, so no fourth value is reachable. A `<= 0` span skips the emit, the same rule `kirocrew.turn.duration` follows. The clock is `time.perf_counter`, NOT `time.monotonic`: on Windows the latter advances in ~15.6ms ticks, so any call completing inside one tick measured exactly 0.0 and was dropped by that guard — which silently hid every sub-tick tool call on the platform, i.e. most cached reads. `perf_counter` is the highest-resolution monotonic clock available everywhere, so the guard keeps meaning "unmeasurable" rather than "fast". **Site: two parser layers, one registry, one sample per call.** There is no single choke point, because the two backends parse through different code: the shared builders in `acp/_dispatch_parts/session_update_parser.py` and `acp/_dispatch_parts/tool_result_events.py` (`_build_tool_call_event` starts the clock once the trusted MCP identity is resolved; `_build_tool_result_event` stamps the terminal status BEFORE its output parse can return None, so an output-less completion is still measured), where the scope arrives as `cache_scope` forwarded by the session handle (`acp/session_handle_updates.py`, `acp/session_handle_permissions.py`, `acp/session_handle_dispatch.py`) as the frame's `sessionId`; and `acp/client_tool_events.py::_extract_tool_call_update` with its result-extracting sibling, which shape the same frames inline and scope on the client's own `_session_id`. Every other surface consumes the emitted `AcpEvent` stream downstream of these two, so instrumenting both parsers covers all of them. The registry is keyed `scope|tool_call_id`, spelled exactly as `_dispatch`'s own tool-input cache key: a backend-assigned `toolCallId` is unique only WITHIN one backend session while one runtime hosts many, so the scope is what stops two sessions reusing an id from colliding, and a finish in the wrong scope never steals another session's entry. Both layers derive one frame's scope from the same session id, so whichever sees a frame second pops the entry the first opened and the call is sampled once rather than twice — the disjoint-parser assumption failing would then be a harmless miss instead of a double count. A start is idempotent per scoped id (the first start time and kind win, so a `tool_call_update` refinement cannot shrink the span), a finish with no matching start emits nothing, and the registry is bounded (`_MAX_OPEN_CALLS`, dropped wholesale on overflow: missing samples for in-flight calls, never a leak). The watchdog's `acp/liveness_tool_state.py::ToolCallState.dispatch_ts` is deliberately NOT reused — it is a single last-tool-wins slot, right for stall attribution but wrong for a histogram because interleaved calls overwrite each other, and it exists on only one of the two paths. Own bucket family `_TOOL_CALL_BUCKETS_MS`. Best-effort throughout: a tool call never fails because its telemetry did. |
 | `kirocrew.crew.session_control.calls` | counter | `op` (`create` / `send` / `fork` / `stop` / `close` / `continue` / `broadcast` / `status` / `read_message` / `summary` / `retry` / `reload` / `rename` / `set_model` / `end_wait` / `adopt` / `release` / `generate_title` / `other`), `caller` (the `agent_kind` enum: `default` / `crewmate` / `conductor` / `pipeline_conductor` / `ledger_conductor` / `security_conductor` / `worker` / `team_lead` / `dashboard_author` / `dashboard_manager` / `knowledge` / `research` / `heartbeat` / `lite` / `guest` / `other`), `outcome` (`ok` / `error`) | **Which session-control operations agents reach for, and how often they fail.** Session control is the set of MCP tools an agent uses to act on ANOTHER live conversation — open one, send into it, stop its turn, read its tail, adopt it, close it. People use the dashboard for all of that, so every caller here is an agent. `kirocrew.tool.call.duration` cannot answer the question: it labels a call by ACP `tool_kind` and labels an MCP-served call `mcp` whatever kind it claimed, which is the right trade there and the wrong grain here — it folds all eighteen verbs, every other MCP server's tools and their outcomes into one series. `op` is the TOOL's verb, not the route's path segment, so `/api/session-control/read` is `read_message` (the `session_read_message` tool) and `/set-model` is `set_model`: the question is which tool an agent reached for, and the tool verb is the stable name of the two. The route table is Kiro Crew's own, so the list is closed by construction rather than by trust, but `classify_op` still folds an unlisted value to `other` so a route added without a row cannot mint a series — `revive` and `history` are registered routes the list deliberately does not name and both land in `other` today. `caller` is **derived** from `agent_files.OWNED_KIRO_AGENT_FILES` (file stem minus `kirocrew-`, `-` rewritten to `_`) rather than tabulated, so a new owned agent file joins the enum with no table to update and cannot fall silently into `other`; the bare `kirocrew` agent maps to `default`, and a Bot's pinned DM session is identified by its SLOT KEY's shape (`members.is_member_session_key`) because such a slot's `agent` field carries the Bot's own crew name and could only answer `other`. An agent name outside the owned set — a third-party agent, a user-authored template — is `other`: the raw name is free-form with no cardinality bound, and folding it before the recorder ever sees it is what keeps the series bounded. A BLANK agent on a resolved slot is `default`, not `other`: `_ChatSlot` takes `agent: str = ""` and an ordinary dashboard chat is minted without one, so the blank is what the largest caller population carries, and `crew_log/emit_session.py` already reads it that way (`agent or _DEFAULT_AGENT`). A caller whose slot could not be resolved AT ALL is `other` — same blank agent, different answer, and `classify_caller`'s `slot_found` is where that line is drawn. `outcome` is decided by the status the route answered with (below 400 is `ok`) or `error` for a handler that raised. Ceiling 19 × 16 × 2 = 608 series, and a backend that should not carry all of them can drop `outcome` from its dimensions. **Why not `kirocrew.gateway.request.duration`.** That histogram already covers these twenty paths, labelled `method` × `route_template` × `status_class`, so per-route volume and per-route failures are readable there today and this counter is not the place to go for them. What no instrument carries is WHO called: it has no caller-identity label, and adding one would multiply every route in the gateway's bounded template set by sixteen rather than only these twenty. `caller` is the axis that makes this counter exist; `op` and `outcome` are the dimensions it is crossed with, because "which verbs does a conductor drive, and which of them fail for it" is one question rather than three. **Site: one wrapper per route, outside the auth gate.** `metrics/session_control_calls.py` holds the enums and the emit; `dashboard/handlers/session_control.py::_counted` wraps each of the twenty registered handlers and is the ONLY emit site, so the deferred route binder calling a handler cannot count a call twice. The wrapper sits OUTSIDE the handler's own `_require_internal` / member gate deliberately: a caller refused there made a session-control call that failed, and a wrapper placed under the gate would not see it. A handler that raises is counted `error` and its exception re-raised untouched, so this only ever ADDS the count — the response, the status and the SEL audit line stay the handler's own. The `caller` classification reads LIVE STATE ONLY (the in-memory slot registry, via `get_slot` and then `caller_access.caller_slot_key`'s walk), so no disk read lands on a route an agent is waiting on, and an unresolvable caller is `other` rather than a failure. Best-effort throughout, behind `telemetry.enabled`: a disabled process holds a recorder with no meter and the emit returns before touching an instrument. |
-| `kirocrew.watchdog.action` | counter | `action` (`deferral` / `probe` / `cancel`), `verdict` (`working` / `dead` / `unknown` / `stuck_input`), `evidence_class` (`established_flat` / `mcp_flat` / `remote_flat` / `shell` / `shell_absent` / `platform_limited` / `wait` / `degraded`), `window` (`narrowed` / `extended` / `working_cap` / `standard`), `agent_override` (bool) | `acp/session_handle_watchdog.py::AcpSessionHandle._emit_watchdog_metric`, one point per watchdog DECISION in `_dispatch_events`: `deferral` from `_log_working_deferral` (rides its 10-min rate limit, so an hours-long WORKING build contributes a bounded handful of points, not one per tick), `probe` at the stale-probe send, `cancel` before `_end_stalled_tool`. `evidence_class` is `_watchdog_evidence_class` — a prefix/shape bucket of the free-form oracle evidence (pids/deltas/commands never emitted). `window` encodes the effective window selection: `narrowed` = a tool-branch evidence TAG reduced the suspect window below the build-scale default (90 min) — `established_flat` to the model-silent budget (minutes), `shell_absent` to the ordinary silence budget (`stale_window_secs`, 600s) because the shell command has no process to its name, `platform_limited` to the same `stale_window_secs` only when the tool layer classified the shell command prompt-shaped, `remote_flat` to `remote_flat_probe_secs` (off by default; opt-in) for an MCP tool blocked on its own remote call; `extended` = model-wait-branch `established_flat` extended the stale window from 600s (`stale_window_secs`) to 1800s (`model_silent_probe_secs`) for a non-streamed server-side think; `working_cap` = a WORKING reading the hard cap bounds (an opaque MCP tool's `mcp subtree active`, a Windows shell tool's tree reading, a model wait's) ran past `tool_stall_hard_cap_secs` and got the tool-stall cancel, or the stale probe on the model-wait branch; `standard` = ordinary window in all other cases. `agent_override` is the per-agent watchdog-override BOOLEAN from the `WatchdogSettings` snapshot — deliberately NOT the agent name (free-form ⇒ cardinality bomb; per-agent joins happen via the row store's `agent` + `stop_reason` fields below). Guardrail query: `action=cancel, evidence_class=mcp_flat, window=standard` must not increase — the narrowed window may only affect `established_flat`, `shell_absent`, a prompt-shaped command's `platform_limited` and `remote_flat`. |
+| `kirocrew.watchdog.action` | counter | `action` (`deferral` / `probe` / `cancel`), `verdict` (`working` / `dead` / `unknown` / `stuck_input`), `evidence_class` (`established_flat` / `mcp_flat` / `remote_flat` / `shell` / `shell_absent` / `platform_limited` / `wait` / `silence` / `degraded`), `window` (`narrowed` / `extended` / `working_cap` / `silence` / `standard`), `agent_override` (bool) | `acp/session_handle_watchdog.py::AcpSessionHandle._emit_watchdog_metric`, one point per watchdog DECISION in `_dispatch_events`: `deferral` from `_log_working_deferral` (rides its 10-min rate limit, so an hours-long WORKING build contributes a bounded handful of points, not one per tick), `probe` at the stale-probe send, `cancel` before `_end_stalled_tool`. `evidence_class` is `_watchdog_evidence_class` — a prefix/shape bucket of the free-form oracle evidence (pids/deltas/commands never emitted). `window` encodes the effective window selection: `narrowed` = a tool-branch evidence TAG reduced the suspect window below the build-scale default (90 min) — `established_flat` to the model-silent budget (minutes), `shell_absent` to the ordinary silence budget (`stale_window_secs`, 600s) because the shell command has no process to its name, `platform_limited` to the same `stale_window_secs` only when the tool layer classified the shell command prompt-shaped, `remote_flat` to `remote_flat_probe_secs` (off by default; opt-in) for an MCP tool blocked on its own remote call; `extended` = model-wait-branch `established_flat` extended the stale window from 600s (`stale_window_secs`) to 1800s (`model_silent_probe_secs`) for a non-streamed server-side think; `working_cap` = a WORKING reading the hard cap bounds (an opaque MCP tool's `mcp subtree active`, a Windows shell tool's tree reading, a model wait's) ran past `tool_stall_hard_cap_secs` and got the tool-stall cancel, or the stale probe on the model-wait branch; `silence` = a non-shell call's own per-call silence timer ran out (`acp/tool_silence.py`; its `evidence_class` is `silence` too, and its idle value is that call's silence, not the session's); `standard` = ordinary window in all other cases. `agent_override` is the per-agent watchdog-override BOOLEAN from the `WatchdogSettings` snapshot — deliberately NOT the agent name (free-form ⇒ cardinality bomb; per-agent joins happen via the row store's `agent` + `stop_reason` fields below). Guardrail query: `action=cancel, evidence_class=mcp_flat, window=standard` must not increase — the narrowed window may only affect `established_flat`, `shell_absent`, a prompt-shaped command's `platform_limited` and `remote_flat`. |
 | `kirocrew.watchdog.idle.duration` | histogram (ms) | `action`, `evidence_class` | Same emit helper, same decision points; value = the branch's idle clock (`_tool_idle` / `_stale_idle`) at decision time, converted to ms at the emit site because the dashboard's generic aggregation reports a histogram under `*_ms` keys unless its emitting module declares a non-millisecond unit for it, and this one declares none (a seconds instrument would render 1000x off). Answers whether 900s is right for LLM-shaped stalls (idle-at-action distribution per evidence class). Own bucket family `_WATCHDOG_IDLE_BUCKETS_MS` (1s–4h, densest at the 300/900/3600-second window boundaries). |
 | `kirocrew.watchdog.recovery.outcome` | counter | `mechanism` (`stale_recover` / `tool_stall` / `throttle` / `transient_5xx`), `outcome` (`recovered` / `exhausted`), `attempt_bucket` (1–3) | `dashboard/chat_turn/turn_stats.py::_emit_recovery_outcome`, derived from the per-slot retry budgets the stop-reason branches maintain (`slot._stale_recovery_retries` / `slot._tool_stall_retries`). `throttle` and `transient_5xx` count the interactive ladder's verbatim re-sends of a top-level turn after a pre-output provider error (`slot._turn_retries`, via `chat_turn/recovery.py::_turn_retry_outcomes`): `recovered` when the re-sent turn lands `ok`, `exhausted` when it still ends on the terminal error card, one point per mechanism the turn used. `exhausted` emits in the stall branches when a budget hits its cap ("start a new chat"); `recovered` emits at the budget-reset block when a turn completes with outcome `ok` while a stall budget is armed — the stall branches return early, so an armed budget reaching that reset is by construction a completed recovery cycle (gated on `ok` so a user cancel of the recovery turn never counts as a recovery). `attempt_bucket` clamps to the 3-attempt cap (closed enum, mirrors the CLI's `attempt_number_bucket`). Every stall `recovered` point is one prevented hang. Fault accounting for the exhausted case lives on the turn histogram, not here: the final turn of an exhausted cycle labels `stall_exhausted` (see `kirocrew.turn.duration`), so a dead session counts toward `fault_rate` while this counter stays pure mechanism telemetry. |
 | `kirocrew.autonudge.loops.started` | counter | `kind` (`loop` / `monitor`) | Every inactive-to-active transition of a loop, so a start is counted for each active period and every stop below has a matching start. **Taken at the same commit point and from the same baseline as `kirocrew.autonudge.loops.stopped`** (`autonudge_service/store.py::_record_stops_committed`, which calls `_record_starts_committed`): an id active in the rows just written and absent from the last committed store is a start, the mirror of the stop diff. No mutation names this counter, so the prompt arm, the structured arm, a revival through `update` (a user resume, and the Issue Radar and Research Lab reconcilers re-arming an inactive loop on every pass), the restore after a failed session close, a replacement rollback that writes the displaced row back, and any activation path added later are all counted the same way, after their write has committed; `test_an_activation_path_that_never_names_the_counter_is_counted` pins that. A pause, a resume and a later stop therefore record two starts and two stops, and a re-save of a loop that was already active counts nothing. **A restart counts nothing:** `_load` seeds the baseline from the rows active on disk. A row `_load` resumes from the torn-deactivation shape (inactive, no stop reason, live deadline) was inactive on disk, so it counts once, at the first commit that writes it active, and its later stop is paired. A row `_load` could not parse is rewritten verbatim on every commit but never served, so it is skipped. A refused admission, a refused revival, a 409 on an existing record and a failed persist commit nothing and leave the counter untouched. `kind` is read from the same `autonudge_stop_log::_summary` the stop record carries: `monitor` when the row carries monitor state (a structured controller record, or a prompt loop whose probe gate watches a subject) and `loop` otherwise, so a start and its stop share one label. No loop id, slot key or target is an attribute. |
@@ -718,6 +791,16 @@ not PATCH-writable; the config view masks it).
 | `kirocrew.mcp_gateway.backends.live` | gauge (1) | `class` (`first_party` / `third_party` / `other`) | `metrics/mcp_gateway_gauges.py::register_mcp_gateway_gauges`, callbacks run only at reader collection and observe only in the process that called `bind_pool` (gatewayd, in `run_gatewayd`). Live pooled backend processes, read through `BackendPool.live_pooled_backends`: the same population the dashboard's pool snapshot (`BackendPool.metrics_snapshot_async`, served by `daemon/control.py`) counts, so the two saving figures agree. Draining backends (an old process finishing calls after a credential rotation) and connection-private backends (never shared) are excluded: no session can be pooled onto either. `class` is `first_party` for a name in `mcp_discovery_managed._MANAGED_SERVER_NAMES`, `third_party` for any other name, `other` when the name is missing; the name is dropped after classifying. `first_party` and `third_party` are always published (0 is a real reading), `other` only when non-zero. |
 | `kirocrew.mcp_gateway.sessions.attached` | gauge (1) | `class` | Same module and population: the summed stub attachments (`Backend.refcount`) on those backends. `sessions.attached - backends.live` is the number of backend processes pooling avoided. One runtime opens one stub per server however many sessions it hosts, so this is a lower bound on sessions and the saving derived from it is a lower bound too. |
 | `kirocrew.mcp_gateway.backends.rss_bytes` | gauge (By) | `class` | Same module and population: summed current RSS of each backend through `mcp_gateway/pool.py::backend_rss_kb`, the probe the dashboard's pool snapshot uses (the backend pid AND its descendants, so a launcher that forks the real server is measured with it; KiB, exported as bytes). A pid with no reading (it died, or the platform has no `/proc` subtree walk: macOS and Windows) adds 0 and is skipped; a class where no backend could be read publishes nothing, a gap rather than a fake zero. `bytes_saved ~= (sessions.attached - backends.live) * backends.rss_bytes / backends.live`. gatewayd's own RSS is `kirocrew.process.memory.rss_bytes` where the resource has `kirocrew.process.role=gatewayd`; the main process's has no `kirocrew.process.role`. |
+| `kirocrew.chat_runtime_share.toggled` | counter | `state` (`on` / `off`) | `dashboard/server_runtime/config_watch.py` live-config applier on `dashboard.feature_previews` -> `metrics/chat_runtime_share.py::record_toggled`: one count when the `chat_runtime_sharing` preview flips between two applied documents, from any writer (Settings, CLI, a hand edit). Both sides are read by `acp.chat_runtime_sharing.chat_runtime_sharing_enabled`, through `agent_sdk/chat_runtime_sharing.py`, the same reader the inventory gauge uses. Whether it is on NOW is `kirocrew.inventory.config.toggle{key=preview_chat_runtime_sharing}`. |
+| `kirocrew.chat_runtime_share.placed` | counter | `outcome` (`spawned` / `joined` / `refused`), `reason` (`chat_sharing_ineligible_reason`'s branch names plus `native_subagents` and `auto_permission_mode`, `none` on a placement, `other`), `tenants` (`1` / `2` / `3` / `4-7` / `8-10` / `11+` after the placement, `none` on a refusal), `tree` (`chat` / `bot`: whether the process serves a Bot's session tree, `none` on a refusal), `harness` (`metrics.harness.harness_for_backend` of the chat's backend; with `reason=harness_switched_off` it names the harness whose own switch is off) | `providers/chat_share.py`: `resolve_chat_share` counts a refusal (preview on, start refused); `ChatSharePlacement._accept` counts the confirmed placement, beside its WARNING line. Nothing counts while the preview is off: `resolve_chat_share` returns before either. |
+| `kirocrew.chat_runtime_share.processes` / `.tenants` | gauge (1) | none | `metrics/chat_runtime_share.py::register_chat_runtime_share_gauges` (registered from `metrics/shared_process_gauges.py` beside the MCP gateway pool gauges), read at collection from `RuntimeOwnership.keyed_lease_counts`: live runtimes placed under a compatibility key (a `ChatRuntimeKey`; registration leases are keyed by the runtime itself and are left out), and the chat leases on them. `tenants - processes` is processes saved. Publishes nothing until this process has placed or refused a chat with the preview on, so no other process exports zeros. |
+| `kirocrew.chat_runtime_share.rss_sampled` | counter | `tenants` (`2` / `3` / `4-7` / `8-10` / `11+`), `rss` (`le_512m` / `le_1g` / `le_2g` / `le_4g` / `le_8g` / `gt_8g`, MiB, each edge inclusive) | `session_cleanup_spare.py::note_rss_measured`, called where the RSS watchdog tick first measures a pid's tree (`session_cleanup.py::_rss_threshold_check`, `session_cleanup_leftovers.py`), so a shared process is counted once per tick. Only pids holding two or more chat leases. No sample while `session.watchdog_rss_max_mb` is 0. |
+| `kirocrew.chat_runtime_share.reclaimed` | counter | `reason` (`rss`) | `session_cleanup_spare.py::rss_limit_for`, when a shared process over its scaled ceiling is newly closed to joins (`RuntimeOwnership.close_to_joins` returned non-zero), once per process. |
+| `kirocrew.chat_runtime_share.process_died` | counter | `expected` (`true` / `false`), `tenants` (`0` / `1` / `2` / `3` / `4-7` / `8-10` / `11+` chat leases at death) | `runtime_death.py::announce`, the one place every ACP runtime death is classified. `tenants` is the larger of the kill gate's live count and `RuntimeOwnership.held_leases_on_runtime` (by identity, alive or not), so a process the exit watcher reaped before `_mark_dead` still counts the chats it held. `expected=false, tenants>=2` is a shared crash; `tenants` is its blast radius. |
+| `kirocrew.chat_runtime_share.turn_started` | counter | `tenants` (chat leases on the process when the prompt went out, `0` unless this turn's own session holds one of them: a subagent on its host chat's process or a background runtime reads `0`), `delay` (`le_1s` / `le_2s` / `le_5s` / `le_10s` / `le_20s` / `le_30s` / `le_60s` / `gt_60s`, each edge inclusive), `shared` (`true` when the process was placed by chat runtime sharing, `RuntimeOwnership.placed_by_sharing`, founder or joiner; `false` otherwise, preview off included), `harness` (`metrics/harness.py::harness_for_backend`, as on `kirocrew.turn.completed`) | `acp/session_handle_turn.py::_run_turn`: prompt written to the turn's first own event (a co-tenant's fanned `runtime_global` frame and a watchdog-synthesized terminal are skipped, so a turn the backend never answered records no start). `acp/client_turn.py::stream_events` counts the same span on the `AcpClient` arm (a claude, goose or deepseek chat that does not share, and every other per-process harness) with `tenants` `1` for a session the gateway registered (any channel, the one tenant of its own process: `runtime_ownership.acquire_session_lease` marks the client where a runtime-backed session takes its lease) and `0` for an unregistered one (a subagent, a worker-pool client), `shared=false`, skipping a synthesized terminal. Every ACP turn a provider streams. |
+| `kirocrew.chat_runtime_share.turn_ended` | counter | `tenants` (as read at start), `outcome` (`metrics/turns.py::turn_outcome`, the classifier `kirocrew.turn.completed` uses), `harness` | Same function, once per turn at the first `EVENT_COMPLETE` it hands its consumer. `tool_stall` and `stale_recover` are the watchdog terminals. |
+| `kirocrew.chat_runtime_share.kas_queued` | counter | `tenants` | `acp/session_handle_kas.py::_handle_kas_session_info` on a `session_info_update` with `_meta.kiro.kind == "queued"`: KAS parked the prompt behind another session's turn (`AgentExecutionWaitingForActiveSlot`). From engine 0.66.104 a chat turn never waits there, so on a shared process this stays at about zero. |
+| `kirocrew.kas.engine_install` | counter | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) | `acp/kas_engine_install.py::install_pinned_engine`, one per download attempt that ran (an engine already present counts nothing). A failed spawn-time install fails that spawn; there is no relay fallback. |
 | `kirocrew.skill.lazy_load.count` / `.duration` | counter + histogram (ms) | `hit` (bool); the counter also `skill` (closed, see the usage metrics section) | `skills_body_reads.py::load_skill` (bound as `SkillsLoader.load_skill`) via `_emit_lazy_load_metric` (best-effort; never breaks skill loading). |
 | `kirocrew.subagent.spawned` | counter | `concurrency` (int — the live running count INCLUDING this spawn, bounded by the manager's own concurrency cap, so a MAX over it is the high-water mark without a second instrument), `batched` (bool — the spawn is a member of a fan-out wave rather than a lone one) | `subagent_manager/admission/pump.py::_PumpMixin._log_spawned_impl` — the confirmed-start funnel, reached only after a spawn is admitted, so a rejected or never-started spawn is not counted (a promise an admission-time increment could not make). The `emit_counter` import is function-local, not module-level: `bind_component_globals` rebinds each `*_impl`'s `__globals__` to the owning namespace, where a module-level import here would not be visible. |
 | `kirocrew.subagent.completed` | counter | `outcome` (`completed` / `failed` / `stopped` / `unknown` -- `SubagentInfo.outcome`'s own canonical three-way classification, restated as `metrics/events.py::SUBAGENT_OUTCOMES` because `metrics` sits below the sub-agent manager in the dependency order, and folded through `subagent_outcome` so a record whose outcome cannot be read lands on `unknown` rather than being guessed as `failed`) | `subagent_manager/terminal.py::TerminalCoordinator._record_terminal_metric`, called from `_report_terminal_impl` past the point its finalize claim has been granted. That point, rather than either crew-log closer, is what makes one increment per run true: the reaper and the run loop's own `finally` both race to report and exactly one is let through, whereas a counter on `subagent/completed` and a second on `subagent/failed` would count a run twice on the paths that reach both. Gated on `telemetry.enabled` alone and NOT on the crew-log emitter, so the population is not narrowed to installs that happen to keep a crew log. The `emit_counter` import is function-local for the reason the row above gives. |
@@ -730,12 +813,12 @@ not PATCH-writable; the config view masks it).
 | `kirocrew.work.item_closed` | counter | `state` (`accepted` / `rejected` / `abandoned` — the ledger's terminal states, since `close` refuses `open`), `fails` (`0` / `1` / `2` / `3+`), `duration` (`le_10m` / `le_1h` / `le_4h` / `gt_4h`, each edge inclusive: 600 s / 3600 s / 14400 s from the item's `created_at` to its `closed_at`, beyond which `gt_4h`) | Same site, on `action=close`, from the committed item rather than from the request. A duration is a bucketed counter rather than a histogram so the distribution survives a backend that keeps no explicit buckets; the edges live in `metrics/work.py::DURATION_BUCKET_EDGE_SECS`. An unreadable or missing stamp yields `duration=other` rather than a plausible-looking zero. Counted at the close rather than in the crew log's `work` fold because that fold forgets a closed item once `WORK_CLOSED_WINDOW` newer ones close, keeping only a total — so `state`, `fails` and the duration exist only at the moment the close commits. |
 | `kirocrew.work.dispatches` | counter | `target_kind` (`session` / `crew`) | Same site, on `action=bind` — the action that names the target — after that bind's `work/recorded` entry landed. Deliberately NOT on the `crew/dispatch` echo written just after it: that echo is best-effort and is skipped entirely for a board driven from a slot belonging to no crew, so counting on it would drop every dispatch such a board made. `session` is the only kind the bind builds; `crew` is declared because `crew_log/entry_types.py::CREW_TARGET_KINDS` names it, so a second target kind lands in its own series instead of in `other`. |
 | `kirocrew.work.reports` | counter | `status` (`progress` / `done` / `blocked` / `question` / `reply` / `failed`; `reply` only while `work_ledger.remote_dispatch` is on), `reason` (`approval` / `needs_human` / `none` when the report named none) | `dashboard/handlers/work_ledger_worker.py::api_work_report`, after the report's `work/recorded` entry landed, from the committed item. A refused report — an unknown or closed item, a `done` carrying no evidence, a status outside the worker's vocabulary — returns before this point and contributes nothing. `reason` is carried as the literal `none` rather than omitted, so "no reason given" is distinguishable from a dropped attribute. `failed` is declared because `crew_log/entry_types.py::CREW_REPORT_STATUSES` names it; the ledger's worker half can commit only the others, so this route never emits it today. No summary or artifact text is emitted. |
-| `kirocrew.crew_mode.turned_on` | counter | `via` (`switch` / `create`), `repeat` (bool — an Ultra Mode chat already existed) | `dashboard/chat_api/agent_switch.py::switch_slot_agent` after a committed switch from a non-conductor onto a conductor (`via=switch`), and `dashboard/chat_api/slot_create.py::api_chat_slot_create` for a new chat born on one (`via=create`). `repeat` is the repeat-use signal: true when the gateway already knew another Ultra Mode root. No session key, title or agent name is emitted. |
-| `kirocrew.crew_mode.new_chats` | counter | `crew_mode` (bool) | `slot_create.py::api_chat_slot_create`, one per new chat. The share of new chats in Ultra Mode is `sum(kirocrew.crew_mode.turned_on) / sum(kirocrew.crew_mode.new_chats)` over a window. |
-| `kirocrew.crew_mode.runs_finished` | counter | `state` (`accepted` / `rejected` / `abandoned`) | `dashboard/handlers/work_ledger_conductor.py::_count_crew_mode_run`, after an `action=close` on a board an Ultra Mode root owns landed in the crew log. A run is one crew member item an Ultra Mode chat dispatched. |
+| `kirocrew.crew_mode.turned_on` | counter | `via` (`switch` / `create`), `repeat` (bool — a conductor mode chat already existed) | `dashboard/chat_api/agent_switch.py::switch_slot_agent` after a committed switch from a non-conductor onto a conductor (`via=switch`), and `dashboard/chat_api/slot_create.py::api_chat_slot_create` for a new chat born on one (`via=create`). `repeat` is the repeat-use signal: true when the gateway already knew another conductor mode root. No session key, title or agent name is emitted. |
+| `kirocrew.crew_mode.new_chats` | counter | `crew_mode` (bool) | `slot_create.py::api_chat_slot_create`, one per new chat. The share of new chats in conductor mode is `sum(kirocrew.crew_mode.turned_on) / sum(kirocrew.crew_mode.new_chats)` over a window. |
+| `kirocrew.crew_mode.runs_finished` | counter | `state` (`accepted` / `rejected` / `abandoned`) | `dashboard/handlers/work_ledger_conductor.py::_count_crew_mode_run`, after an `action=close` on a board a conductor mode root owns landed in the crew log. A run is one crew member item a conductor mode chat dispatched. |
 | `kirocrew.crew_mode.steers_per_run` | counter | `steers` (`0` / `1` / `2` / `3+`) | Same site: the closed item's own `steer` events, bucketed. A bucketed counter rather than a histogram so the distribution survives a backend with no explicit buckets. |
 | `kirocrew.crew_mode.steers` | counter | `on_item` (bool — the steer landed as a `steer` event on a ledger item) | `dashboard/handlers/crew_workers.py::api_crew_worker_steer`, one per delivered person steer. No message text is emitted. |
-| `kirocrew.crew_mode.worker_waits` | counter | `status` (`blocked` / `question`), `reason` (`approval` / `needs_human` / `none`) | `dashboard/handlers/work_ledger_worker.py::api_work_report`, after a committed report on an Ultra Mode board that says the crew member is stuck or needs the person. Other statuses count nothing here. No summary text is emitted. |
+| `kirocrew.crew_mode.worker_waits` | counter | `status` (`blocked` / `question`), `reason` (`approval` / `needs_human` / `none`) | `dashboard/handlers/work_ledger_worker.py::api_work_report`, after a committed report on a conductor mode board that says the crew member is stuck or needs the person. Other statuses count nothing here. No summary text is emitted. |
 | `kirocrew.context.compactions` | counter | `success` (bool — whether the compaction ATTEMPT itself completed); `trigger` (`threshold` when context use crossed the auto-compact threshold, `idle` when `session.idle_compaction` compacted a quiet chat before its cache expired) | `session_compaction.py::CompactionCoordinator._fire_compact_callback`, one point per compaction that reached a verdict. Placed on this method rather than inside the callback because every compaction passes through here whether or not a surface registered a compact callback, and the early return below would otherwise drop exactly the surfaces that register none. The sum is compaction ATTEMPTS. `success` is deliberately NOT an effectiveness measure: the coordinator learns whether the backend finished the compaction, not how much context it actually freed, and no before/after context reading is taken, so a compaction can complete while reclaiming little. **The counter's `success` is also not the callback's.** `_recycle_held` fires this funnel with `success=True` because the SESSION now has headroom — which is what the callback needs to know — but it is reached exactly when an in-place `/compact` FAILED and the provider had to be replaced instead. Counting that as a successful compaction would report the failure mode as the success case, so the counter reports `False` there. The recycling marker is set for the whole of `_recycle_held` and popped only after this call, which is what separates the two populations at this point; `test_a_failed_compact_that_recycles_is_not_counted_successful` pins that ordering. |
 | `kirocrew.mcp.reconnects` | counter | `pool` (bool — the reconnecting stub was a warm-pool bridge rather than a directly owned one) | `mcp_gateway/stub_link.py::_reconnect`, one increment per stub reconnect to a restarted gateway daemon, emitted after the replayed handshake is delivered. Each increment is a bridge that died and was rebuilt under a live session, so a rising rate is daemon instability that sessions are absorbing silently. The daemon detail string and the per-session reconnect ordinal go to the log line only, never the attributes. |
 | `kirocrew.mcp_gateway.liveness.escalated_probes` | counter | `answered` (bool — the daemon replied to the longer probe after missing the fast 2 s ping) | `mcp_gateway/manager.py`, once per escalated liveness probe. `answered=true` is a loaded-but-alive daemon, the precursor to a kill cycle; `false` missed both probes |
@@ -805,7 +888,7 @@ not re-pay an expensive failing probe every cycle.
 
 Scope of the `kirocrew.inventory.*` family, stated here because the names invite
 the opposite reading: it is OPERATOR-fleet telemetry, not project-wide adoption
-analytics. Collection is off by default, egress is a second opt-in, and OTLP needs
+analytics. Collection is local by default, egress is a second opt-in, and OTLP needs
 the `kirocrew[otlp]` extra, so any aggregate describes one operator's opted-in
 machines. Adoption data structurally cannot ride this trunk — see "Why it is NOT
 part of the OTEL trunk" below, whose four reasons apply to these instruments
@@ -1275,8 +1358,10 @@ Each row (`_build_token_record`) carries:
 | `context_window` | int | served context-window size in tokens (int-coerced) |
 | `context_sum` | int | the context-window occupancy after each of the turn's model calls, added up (`TurnUsage.context_sum_tokens`): the volume of context the turn's calls carried, cached or not. Measured per call on kiro-cli; `0` when the window is unknown or the provider reports no per-call reading. Not a billed token count |
 | `stop_reason` | str | the turn's terminal stop reason read off the EVENT_COMPLETE event, or a synthetic reason on a dashboard turn that ended without one (`_persist_abnormal_turn_usage`: the caller's reason, else `cancelled`); `""` when the producer has none, e.g. a bare `TurnUsage` from `provider_last_turn_usage`. Free-form is fine HERE (the row store has no cardinality limit, unlike OTel attrs) — this is where per-agent stall analysis happens: joining `stop_reason` (`error: tool stall` / `stale_recover`) against the row's `agent` field attributes watchdog outcomes to free-form agent names retroactively |
-| `delivered` | bool | whether the turn streamed any reply text (`_saw_text_chunk` at EVENT_COMPLETE), so a billed tool-only turn reads apart from one that answered. A backend control notice streamed as text (the claude adapter's `Compacting...`) counts as text; a quiet end on a terminal directive records `false`. Written only by the dashboard's complete path (`turn_stats._on_complete`); every other writer, and the abnormal-end seam, leaves the key off, which means unknown, not undelivered |
+| `delivered` | bool | whether the turn streamed any reply text (`_saw_text_chunk` at EVENT_COMPLETE), so a billed tool-only turn reads apart from one that answered. A backend control notice streamed as text (the claude adapter's `Compacting...`) counts as text; a quiet end on a terminal directive records `false`. Written by the dashboard's two write sites: the complete path (`turn_stats._on_complete`) and the abnormal-end seam (`_persist_abnormal_turn_usage`, from the same `_saw_text_chunk`). Every other writer leaves the key off, which means unknown, not undelivered |
 | `transcript` | str | the key of the transcript the dashboard tab writes to (`slot_history_key(slot)`). A tab linked to another session (a task review, a workflow, a cron run) writes under a key its slot name cannot reach, and the row is the one record that outlives the tab, so this is how the Telemetry card finds a closed tab's transcript. Written by the dashboard's two write sites (the complete path and the abnormal-end seam); every other writer leaves the key off, and rows written before the field have none |
+| `harness` | str | the effective harness of the session the turn ran on, in the `kirocrew.harness` vocabulary (`metrics.harness.harness_of(model_source)`, the same value that labels the turn samples): `kiro`, `kas`, `codex`, …, or `claude_code` on the Claude Code seam. It is what tells a Codex turn from a kiro-cli one, since both record `provider: acp`; Session Activity counts sessions by it (`usage_store._SHARD_COUNTED_HARNESSES`). Written by every writer that passes `model_source`; a writer that passes none, an unresolved harness (`unknown`), and rows written before the field leave the key off |
+| `acp_session_id` | str | the ACP session the turn ran in (`crew_log.emit_state.session_id_of(model_source)`): one per conversation, where a cron job, a heartbeat or a channel thread reuses one `slot` for every run. Session Activity keys a row-counted session by it first (`usage_sessions._shard_sessions`). Written by every writer that passes `model_source`; a provider with no session yet, a writer that passes none, and rows written before the field leave the key off |
 
 The `surface` / `agent` / `context_used` / `context_window` / `context_sum` fields and
 `stop_reason` are all **additive** — every field defaults (`""` / `0`) so existing
@@ -1363,6 +1448,42 @@ thread (no suspension point in the gate) and never fails the turn. Legacy JSONL 
 rows have no key: a kept one is not named, and a cut one still counts in `*_omitted`. Lesson
 text is never written. Purpose: scoring which lessons change behaviour (#20446).
 
+A memory stage running under `shadow` or `enforce` adds one more field, named by
+its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order`,
+`lesson_fold` and `relevance_rule`): `{mode, policy, would_add, would_drop}`, ids
+only; `lesson_fold` adds `pairs`, a list of `[leader, folded]` ids. A stage that
+gates several blocks (`relevance_rule`: findings, task facts, activity) records each
+block as a part, a block rendered again replaces only its own part, and the line
+carries the union; activity ids are `projects:<hash>` and `history:<hash>` of a
+section, never its text. A composition that rendered no lesson tier but recorded a
+stage (activity gated with lessons switched off) still writes a line, its lesson
+lists empty. A line with no stage record keeps
+the bytes above exactly. Stage fields are capped with the kind-routing constants in
+`<data home>/usage/injections/stage-log.json`: a per-UTC-day counter by kind and mode
+(`lines`, `would_add`, `would_drop`), pruned past `COUNTER_DAYS_KEPT` days, counts
+every field; the field itself is written on at most `SAMPLES_PER_DAY` lines a day,
+`SAMPLES_TOTAL` lines and `SAMPLE_BYTES_CAP` bytes in all, and only for
+`SHADOW_SAMPLE_WINDOW_SECS` after the stage first wrote one. A new policy version
+restarts the window and the sample budget. Past a cap, or when the log cannot be
+read or replaced, the line is written without the field.
+
+A stage field may also carry `control`: up to 20 ids of the block the stage keeps
+(`lessons` for `rule_authority_order` and `lesson_fold`; `findings` plus the
+task facts both policies keep, passed as `record_stage(kept=...)`, for
+`relevance_rule`; `kept` itself is never written), picked when the first 4 bytes of SHA-256 over the session tag and
+key, read as an integer, are below 10 modulo 100 (`memory_shadow_trace.control_keys`), so every render
+of one session picks the same rows. While any memory stage flag is on, two outcome
+lines join the shards (`injection_receipts.OUTCOME_KINDS`): `phase: "recall"` with
+the memory keys a tool `memory_recall` delivered (the lessons its lesson block
+rendered, named through a private collection, then its facts), and `phase:
+"learn_add"` with the stored lessons within cosine 0.85 of a person's `learn_add`
+(read before the write). Each is `{ts, sk, phase, memory_store, <phase>: {mode:
+"trace", policy, ids}}`, at most 20 ids, `sk` the first 12 hex characters of
+SHA-256 over the session key; never the query, the rule or the session key. They
+take the stage-field per-day, total and byte caps, each kind its own budget,
+counted over a rolling 14 days rather than a window that closes, so a stage turned
+on later still sees outcomes; a capped outcome line is not written. Incognito and temporary sessions write none.
+
 **Current-request recency boundary.** Injected blocks are not the only proof that a
 turn is contextual. A keyed warm provider session (`is_new_session=False`) carries
 native conversation history even when this turn emits no Kiro Crew context block,
@@ -1446,7 +1567,12 @@ JSON while `json.loads` still accepts them: one such row travels silently into a
 `web.json_response` body no browser can parse, taking down every panel that
 reads the store instead of losing one turn's numbers. `cost_breakdown`
 additionally skips non-finite rows on read, because shards written before this
-guard can already contain them.
+guard can already contain them. The same readers never let one row's bad number
+fail the read: `_parse_token_history` reads a token or `cost` field that is not a
+finite number (a null, a string, an int wider than a double) as 0;
+`cost_breakdown` counts a row with no credits as a turn that billed none and
+skips one whose `credits` is not a finite number, and `slot_spend` skips both,
+all through `usage_spend._finite_number`.
 
 **Subagent turns are excluded from both readers.** `usage.is_session_slot(slot)`
 drops any row whose `telemetry_channel_of` is `subagent`, at the point the row is
@@ -1648,9 +1774,57 @@ expands into its per-turn rows through this endpoint, which is where a
 mid-session model switch or a single runaway turn becomes visible (an average
 hides both). The Spend tab's first screen is a summary: KPI figures for the period (credits,
 the change against the previous period, turns, per-turn cost, the priciest turn), then
-bars for credits by origin, credits by model and the top sessions. The per-session
+bars for credits by origin, credits by model and the top sessions. A window whose turns
+carry no credits but a dollar `cost` (a dollar-billed harness) is summed from `cost`
+instead: `cost_breakdown` reports `unit: "usd"`, keeps every amount under its `credits`
+key at four decimals, and the tab writes each amount as money under **Cost** labels.
+Any credit-bearing session turn inside the window keeps it in credits; the window before
+it is read in the same unit, so a credit-billed week before a harness switch reads as no
+prior spend. A window holding both credit-billed and dollar-billed session turns is the
+credits view with the same view over `cost` nested under `usd`, which the tab renders as
+a second card. Each view counts only its own unit's turns (the dollar view keeps the turns
+billed in dollars, the credits view the rest; a turn billed in both units would show on
+both cards, and no harness writes one), the Context tab titles and links its rows from both
+views' sessions, and the dollar card remembers its own state under the same keys with a
+`:usd` suffix. The per-session
 table sits under a **Full table** disclosure that starts closed and remembers its state
 in `telemetry:spend-table-open`.
+**What a session delivered.** For the 50 costliest conversations in the window,
+`dashboard.handlers.usage_outcome` reads the conversation's own transcript (through the
+derivation seam, `ConversationLog.derive_messages_chained_full_with_keys`, memoised by the
+file's mtime and reread at most once a minute while the file keeps changing) and attaches an
+`outcome` to each row that delivered something: `commits`, `lines_added`, `lines_removed`,
+`prs`, and for the owner `merged`, `unchecked` and `per_merged`. `outcome_scan` on the cost
+block says how many rows were read; a window that delivered nothing returns the block
+unchanged. A row's command is the `command` argument in its `meta.input`, or its title when
+there is none, since a long title can arrive cut short. A commit counts when a shell tool
+row ran `git commit` and its `meta.output` holds git's `[branch sha]` summary line (the line
+after it gives the changed lines). A `git commit -q` prints no summary line, so a quiet
+commit is not counted: nothing else in the row says which commit, if any, that call made.
+An amend, a preview (`--dry-run` and the
+formats that imply it: `--short`, `--porcelain`, `--long`, `-z`/`--null`) or any other
+output does not count. Commands are read by the shared shell reader
+(`security.shell_commands.read_commands`, the batch guard's own), so quoting is the shell's
+and a here-document body is data; a command with a quote left open, or longer than 16,384
+characters, counts nothing. An incognito or temporary transcript, or one whose line cannot be
+read, is refused by the seam (`TranscriptWithheld`) and its row gets no outcome. The scan
+records each delivering row's chain; `usage_outcome.respond_with_session_outcomes` then,
+off the loop, takes the lock stems of every contributing chain in one sorted acquire, enters
+each chain's `ConversationLog.publication_hold` in sorted transcript order, drops the outcome
+of any it refuses from both spend units, and builds the `web.json_response` before any hold
+is let go. A session tightened after its scan (a channel `!incognito`) is not published, and
+none can be tightened while the response is built. A busy lock, or more than 256 transcripts
+(`_PUBLICATION_HOLD_MAX`) across the chains, sends no outcome. No hold spans an await. The memo
+keeps every transcript the chained read covered and asks each one's line on every poll
+before it is served, because tightening a line keeps the mtime. A chain longer than 64
+transcripts (`_MEMO_CHAIN_MAX`) is not memoised, so each poll reads it through the seam again.
+A pull request counts when a row ran `gh pr create` or `glab mr create` and its output holds
+the change's URL on its own line, parsed by `parse_source_url`, unless the output says the
+pull request already exists. Each is counted once by sha or URL, and only inside the
+window. `merged` is read from the chip-status cache (`get_cached_check_status`), never
+refreshed here, so a URL the cache has not seen is `unchecked` rather than open, and a caller
+that is not the dashboard owner gets no merge figures. `per_merged` is the session's spend
+divided by `merged`. The Spend table shows the five columns only once a row has an outcome.
 **Stamping boundary:** rows are stamped at the two write sites that can run
 app-owned work — the dashboard chat runner (the slot's `_app`) and the
 subagent completion path (`info.app`, an app-dispatched subagent's spend).
@@ -1690,11 +1864,12 @@ from fields the row store already carries — no new instrumentation:
 | sub-block | derivation |
 |-----------|-----------|
 | totals | `credits` summed over the window, plus the preceding window of equal length and the delta between them |
-| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show |
+| `by_model` | per-`model` credits, share, credits-per-turn, and per-model delta vs the prior window. **Every model, never truncated** — a top-N cut hides exactly the cheap-model-creep this block exists to show. The stored model is keyed through `model_registry.canonicalize_for_provider` with the row's `provider`, the same reading the daily chart and the series use, so a model stored under two ids across a provider's id migration is one row |
 | `by_channel` | same shape, keyed by `telemetry_channel_of(slot)` |
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
 | `by_category` | same shape as `by_model`, keyed by `usage.session_category(slot)` — the taxonomy the panel groups by: `bg` for an unattended session (cron, heartbeat, task runner), otherwise the transport (`dashboard`, `telegram`, `slack`, …) |
+| `advice` | measured recommendations from `telemetry_spend_advice.spend_advice`, largest share first, `[]` when none applies. Each is `{id, share_pct, ...}` with ids and numbers only; the dashboard words it. `high_context`: the share of the window's credits on turns whose `context_used` is at least 600k. `costly_model`: the share on the model with the highest credits per turn, listed only when a second model has 5 or more turns and costs at most half as much per turn. A share under 10% is left out, and a sub-agent row reaches none of it, as with every figure in this block |
 
 **Channel comes from the slot key, not from `surface`.** New writes now derive
 `surface` from the effective session identity, but historical rows may contain a
@@ -1782,6 +1957,414 @@ transcript, and no title where the metadata line names none), and
 `test/test_dashboard_chat_token_usage.py::TestTokenUsageSurface` (a closed
 task-review tab titled through the transcript its row recorded), plus the
 `context-trace` endpoint.
+
+## Traces (`src/kiro_crew/tracing/`)
+
+Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
+tracing RFC under `docs/request-for-change/`. This section covers what is built:
+session turns, sub-agent runs, the surface roots of the engines that start turns,
+workflow runs and conductor mode rounds, recorded to a local sink, and exported over
+OTLP/HTTP when a collector is named. Tests: `test/tracing/`.
+
+**Switch.** `telemetry.traces_enabled`, default `false`, independent of
+`telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
+read on a worker thread: `watch_config()` starts that read at gateway boot, and a
+config write repeats it. The hook points, `traced` included, only call `peek()`, which
+returns the state already resolved and never reads or awaits anything, so a turn adds
+no suspension point before its prompt is written. A turn that starts before the boot
+read finishes is not traced, nor is a process that never registers the watcher (the
+`kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
+moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_conductor_mode`, `accept_traceparent` or a `traces_otlp_*` key, the worker
+thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
+never shuts it down for a settings write: switched off, it is no longer served to new
+turns, while a turn already streaming keeps ending its spans on it; switched back on,
+the same tracer is served again with the new caps set on its sink. That keeps one
+writer per shard and loses nothing a streaming turn records. Only `shutdown()` stops
+it: the gateway's exit path (`slack/gateway_runtime/exit_path.py::_shutdown_and_exit`)
+calls `flush_for_exit()`, a bounded off-loop shutdown, because `os._exit` skips the
+SDK's atexit flush. A build that fails constructs no export
+thread: the namespace and key are read before the processor exists. Off means no
+`opentelemetry.sdk.trace` import, no `TracerProvider` and no thread: each hook
+costs one call returning `None`, pinned by
+`test_off_imports_no_sdk_and_starts_no_thread`. On means one `TracerProvider`
+(scope `kiro_crew`, resource `service.name` = `OTEL_SERVICE_NAME` or `kirocrew`,
+plus `kirocrew.trace_ns`; metrics keep `kirocrew`) with a `BatchSpanProcessor` into
+`tracing/exporter.py::JsonlSpanExporter`:
+`<data home>/traces/spans-YYYY-MM-DD-<pid>.jsonl`, one `ReadableSpan.to_json` line
+per span, pruned by `retention_days` / `max_total_mb` as a budget of its own. It is not
+the process's global tracer provider. Both span processors run on
+`provider.BATCH_LIMITS` (queue 2,048, batch 512, 5 s delay), so no `OTEL_BSP_*`
+variable changes them.
+
+**Export** (`tracing/otlp.py`). Only while the switch is on. The endpoint is
+`telemetry.traces_otlp_endpoint`, else `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else
+`OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/traces`; an LTS build ignores all three
+(`edition_locks`, control `telemetry.otlp_hosts`). The URL must be `https://` unless
+its host is loopback, and carries no userinfo, query or fragment. Headers follow
+their endpoint's source: a config endpoint sends `traces_otlp_headers_secret`
+(header → vault entry name, read with `SecretVault.get` at exporter build) and
+`traces_otlp_headers_env` (header → variable), never the process-wide OTel header
+variables; an environment endpoint sends `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, else
+`OTEL_EXPORTER_OTLP_HEADERS`. A header that cannot be read, or a config value that
+is not an entry name (a literal), turns export off with one warning that names the
+header and never a value or vault reference. The host passes the metrics signal's
+policy path: `metrics/provider.py::trace_destination_permitted` at build
+(`otlp_governance.governed_destinations`, SEL-audited) and `gate_trace_exporter` on
+every export (`gate_exporter`, refused batches return `SpanExportResult.FAILURE`).
+The first collector adds a second `BatchSpanProcessor` over `otlp.RemoteSpans`,
+which drops `kirocrew.local.*` keys from spans and links and forwards to an
+`OTLPSpanExporter` (http/protobuf, the `otlp` extra, 10 s timeout, its own
+`requests.Session` with `max_redirects = 0`, so a 307/308 fails the export instead
+of resending spans and headers to a host the gate never checked; built through
+`metrics/otlp_session.export_session`, and with a no-op `auth` so `requests` never
+reads `~/.netrc` for the collector's host). Header names, values and references are
+checked against character sets and length bounds (no regex) that refuse anything
+`requests` would refuse, and
+`OTEL_EXPORTER_OTLP_*HEADERS` is parsed by `otlp._otel_env_headers`, not the SDK's
+parser, because both of those log a rejected value verbatim. Behind that check,
+the session (`otlp._export_session`) re-raises every `requests` error as the same
+class with fixed text and replaces each response's reason phrase with the standard
+one, so neither the SDK's failure log nor a collector echoing a header can put a
+header value in a log line. Known limitation: a collector that echoes credentials
+can cause them to appear in local logs. urllib3 logs a malformed response header
+line verbatim, as a WARNING with its traceback, from inside the request, before
+the session sees anything; closing that would need a process-wide filter on
+urllib3's loggers, which every other HTTP client in the process shares, so it is
+not done. The credential stays on this host and only a collector the operator
+named can cause it. A config write swaps or clears that exporter without a new
+thread; switched off, batches are dropped. A refused destination is retried on the
+next write. The exit flush shuts the local processor down first.
+`BatchProcessor` restarts both threads in every fork child; the sandbox probe runs
+in a fresh interpreter, pinned with export on by
+`test_the_sandbox_probe_stays_single_threaded_with_trace_export_on`.
+
+**Where spans open.** `tracing/turns.py::traced` wraps the event stream in the two
+functions every model turn passes through, `acp/session_provider.py::AcpSessionProvider.stream`
+and `acp/client_turn.py::stream_events`, and hands the stream back untouched when
+tracing is off. The tree, the same for every surface:
+
+| Span | Parent | Carries |
+|---|---|---|
+| `invoke_agent <agent>` | none (the trace root), or the run it joins | correlation set, `gen_ai.agent.name`, model, spend, `error.type`; links when it roots several causes |
+| `user.prompt` | turn | marker at prompt send |
+| `chat` / `chat <model>` | turn | the turn's model work as one aggregate (`kirocrew.chat.aggregate`): model, spend, the three `langfuse.observation.*` keys |
+| `execute_tool <tool>` | turn | `gen_ai.tool.name`, `kirocrew.tool_kind`, `kirocrew.tool_call_id`, `kirocrew.tool.outcome` |
+| `turn.complete` | turn | marker at the stop reason, `kirocrew.stop_reason` |
+
+Spend is `TurnUsage` from `EVENT_COMPLETE`, set on both `invoke_agent` and `chat`:
+`kirocrew.usage.credits`, `kirocrew.usage.cost_usd`, `gen_ai.usage.input_tokens` /
+`output_tokens` and `kirocrew.usage.model_calls`, each only when positive, plus
+`kirocrew.usage.complete`. A turn that ends without `EVENT_COMPLETE` reads the
+partial `last_prompt_stats` and is `complete=false`; a cancel is not an error.
+`gen_ai.response.model` is the resolved id and never `auto`. `usage_details`
+carries tokens when reported, else credits, never both.
+
+**Tool spans** open and close in `metrics/tool_calls.py::note_tool_call_started` /
+`record_tool_call_finished`, which both frame parsers call. A turn registers under
+its ACP session id and the hook finds it by its scope, so one `toolCallId` in two
+sessions is two spans. A start for a call that already ended (a `session/load`
+replay) is dropped; a tool still open when its turn ends is ended with it. An MCP
+call is named `mcp`, and so is any tool name spelled like an MCP one; with no
+harness-authored name the tool kind stands in.
+
+**Steps inside a turn.** Each is a child of the turn span and carries no spend.
+
+| Span | Opened by | Carries |
+|---|---|---|
+| `kirocrew.step` | `TurnTrace.observe`: the first at the turn's start, the next at text after a tool group (the boundary the crew log derives in `chat_turn/stream_chunks.py`), the last ended with the turn | `kirocrew.step.index` (1-based), `kirocrew.step.derived=true` |
+| `kirocrew.compaction` | `observe`, on this session's own `compaction_status` events (a fanned-out `runtime_global` frame is not the turn's): `started` to `completed`/`failed`, or zero-length at a result with no start seen | `kirocrew.compaction.outcome`; `failed` is an error |
+| `kirocrew.approval` | `tracing/steps.py::approval_opened`/`approval_closed`, from the moment the prompt can be answered (`asked_now`, taken before a cancellable post) to its decision; a wait cancelled or failed with no answer is the host's (`policy`): the dashboard's `chat_turn/permission_prompt.py::_on_permission_prompt`, a channel's decider wait (`messaging/driver.py::TurnDriver._approve`), a sub-agent's tool prompt (`subagent_manager/run.py::_ApprovalPrompt`, under the child's own turn) and its spawn approval (`admission/pump.py`, under the parent's spawn tool span) | `kirocrew.approval.wait_ms`, `kirocrew.approval.decided_by` (`person`; `policy` when the host decided with no answer: undeliverable, no budget, cancelled, stopped; `timeout`; absent on a sub-agent tool prompt whose approver does not say who answered), `kirocrew.approval.outcome` (`approved`/`rejected`), `kirocrew.tool_call_id` |
+| `kirocrew.steer` | `steps.steered`, zero-length: an interrupt where it is written (`acp/session_handle_steering.py::steer`, the funnel for kiro and Kiro Agent; `acp/client_turn_control.py::steer`), into the turn open on that ACP session; a sub-agent follow-up (`continuation.py::follow_up_run_impl`) into the run's open turn | `kirocrew.steer.mode` (`interrupt`, `follow_up`); never the text |
+
+A tool the harness auto-approves never reaches Crew, so it has no approval span; nor
+does a Crew policy that answers before a prompt is shown. The dashboard and channel
+approvals find their turn through the root bound in the task that streams it.
+
+**Queue wait and senders.** `SlotQueueRepository.queue_append` notes each entry's
+append time in memory (`steps.note_queued`; not on the entry, whose dict shape is
+compared wholesale). The drain (`queue_drain._start_next_queued_turn`) hands the
+drained entries to the turn's task (`steps.drained`), and `bind_turn` takes them once
+for a top-level turn: `kirocrew.queue.wait_ms`, from the oldest entry's append to the
+drain, on the turn span only. A `session_send` or broadcast delivery
+(`session_deliver._deliver_peer`, given the sender's session key by
+`session_messaging.send_to_target`) names the sender's open `session_send` /
+`session_broadcast` tool span, else its turn span: on the queued entry as
+`meta.trace_sender` (`<trace id>:<span id>`), and in the context a turn started at once
+copies. The receiving turn takes one link per sender. After a restart, entries keep
+their senders and lose their wait.
+
+**Workflow launch.** `pin_launcher` keeps the open `workflow_run` tool span (else the
+launching turn), sets `kirocrew.launched_workflow_run_id` on it, and the run's anchor
+links to it (`surfaces.root(links=)`); the run is a separate trace.
+
+**Trace id.** `dashboard/chat_runner.py::_run_chat` binds `turn._recovery_turn_id`
+through `dashboard/trace_binding.py::bind_turn` around the turn, and that id is the
+trace id of each stream the same task opens; the n-th stream is `kirocrew.attempt=n`.
+A task spawned inside the turn does not inherit it (the binding records its task), so
+a background turn roots its own trace. A surface root (below) binds the turns of the
+other engines; a turn none of them binds mints a random turn id per stream. A binding can instead name a run the turn joins
+(`join=`, a `runs.RunRef`): the turn's spans then sit in that trace, under that run's
+span, and wear the run root's `session.id`, while `kirocrew.turn_id` stays the turn's
+own. Every span in a trace carries the root's `session.id`; a span's own session is
+`kirocrew.session_key_hash`.
+
+**Surface roots** (`tracing/surfaces.py`). Every engine that starts a turn outside
+`_run_chat` opens the same root around it, `surfaces.root(trigger, ...)` or the
+`surfaces.rooted(trigger)` decorator, so every root kind has one tree.
+`kirocrew.trigger` is a closed vocabulary on every span of those turns:
+
+| Trigger | Engine | Root |
+|---|---|---|
+| `channel` | `messaging/driver.py::TurnDriver.run`, plus `kirocrew.channel`: the renderer's `channel_type` when it is a channel namespace (`CHANNEL_SESSION_NAMESPACES`), so a reply in a dashboard-linked thread keeps its transport, else the session key's (`messaging/link.py::channel_namespace_of`) | the turn roots itself |
+| `heartbeat` | `slack/gateway_runtime/heartbeat_turns.py`, each heartbeat task | the turn roots itself |
+| `background` | `llm_helpers_parts/background_turns.py::run_bg_oneliner` and `background_turn` | the turn roots itself |
+| `webhook` | `dashboard/handlers/hooks.py::_run_hook_inner` | the turn roots itself |
+| `task` | `task_executor.py::execute_task` (one task-runner step) and `self_review` (its review turn) | the turn roots itself |
+| `cron` | `cron_service/service/run_execution.py::_execute_with_timeout`, around the run's deadline | a run: anchor `cron <job kind>` keyed `(job id, marker_run)` with the root session `cron:<job id>`, the turns join it, `cron outcome <status>` with the roll-up |
+| `workflow` | `workflows/runner.py::WorkflowRunner.run`, around the whole run | a run: anchor `workflow <name>` keyed `(run_id)` with the launching session as root session, phases and agent calls under it, `workflow outcome <status>` with the roll-up (below) |
+
+Every prompt streamed inside one root is the next attempt of the same turn
+(`kirocrew.attempt`), except where the engine starts a new turn with `turns.next_turn` (each
+agent of a cron `agent_sequence`, so a sequence is several turns of one run), so a step's retries, a background one-liner's rejected-model
+retry and a cron run's ACP and transient retries (which re-enter the callback) are
+attempts 2 and on, not new traces. A script or command cron run streams no turn: the
+root adds a `cron run <kind>` step span under the anchor, with
+`kirocrew.run.status`, so the run has no `chat` span. The anchor is named by job kind,
+never the job name; the job id is `kirocrew.cron.job_id` and the kind
+`kirocrew.cron.job_kind`. A run's status is `finished`, `failed` (the callback raised
+or recorded an error, or a deadline ended it), `cancelled` (a user cancel or shutdown)
+or `skipped` (`run_never_started`: the payload never started). With fair admission on,
+the dispatch runs in a task of its own, and `admitted_cron_dispatch` hands the root
+to it (`turns.adopt_root`). A root opened inside another root bound in the
+same task (a one-liner a dashboard turn awaits) owns its turns until it closes, then
+the outer binding is back. Off, a root is one context-variable write.
+
+**Inbound traceparent** (`tracing/inbound.py`). `telemetry.accept_traceparent`, default
+`false`, read with the switch (`provider.accepts_traceparent()` never reads), lets a
+service that calls Kiro Crew over HTTP put its turn in the caller's trace. Only two
+routes read the header, `POST /v1/chat/completions` (`dashboard/openai_compat.py`) and
+`POST /api/hooks/agent` (`dashboard/handlers/hooks.py`), and only after the caller has
+authenticated, at the point the turn is about to start. `begin(headers)` binds nothing
+unless the setting and tracing are both on and exactly one `traceparent` header was
+sent; `ids.parse_traceparent` accepts only a version `00` value of 55 characters (four
+`-` separated lowercase hex fields of 2, 32, 16 and 2 digits, the trace and parent ids
+not all zero), and anything else is ignored with a debug line, never refused. The
+sampled flag and `tracestate` are ignored: the gateway's own switch decides whether a
+turn is recorded. `begin` mints the turn id, so the turn span's id
+(`H(turn, turn_id, 1)`) is known before the turn runs, and the response carries
+`traceparent` built from the caller's trace id and that span id, never an echo of the
+request; the header names the first attempt, and nothing is sent with tracing off. The
+turn takes the minted id through `claim_turn_id`, once: `dashboard/chat_turn/turn_entry.py::_turn_open`
+for a dashboard turn, `surfaces.root` for a webhook turn that roots itself, and a
+`/prompts get` expansion hands it on to the nested turn with `hand_back`, because the
+outer turn returns before it binds a root and the nested one is the turn that produces
+the reply. The bound turn joins the caller's span (`join_for`, a `runs.RunRef` of kind
+`caller` that is never emitted as a span, with no root session, so the spans keep the
+turn's own `session.id`) and `trace_binding.bind_turn` lets it override any join the
+turn would otherwise take (a Bot or conductor round, a run); only the join is replaced,
+so a conductor round's `rollup_key` stays and the round's roll-up still receives the
+turn's spend. An attempt retried within the turn is another child of the caller's span
+with the same `kirocrew.turn_id`. A turn that ends and queues a recovery turn is
+different: the recovery turn mints its own turn id and runs outside the caller's trace.
+Tests: `test/tracing/test_tracing_inbound.py`, `test_tracing_inbound_routes.py`,
+`test/test_trace_inbound_prompt_expansion.py`.
+
+**Workflow runs** (`tracing/workflows.py`). The `workflow` root above opens the anchor,
+named by the script's `META["name"]`, and the outcome: `finished`, `failed` or
+`cancelled`, from the run's own result. Between them:
+
+- `phase <title>` per `phase_started`, read from its `phase_index` (the 1-based
+  ordinal `EventStream` counts). It ends at the next phase or the run's end, because
+  the DSL has no phase-end event, and carries `kirocrew.phase_index` and the roll-up
+  of its calls. A parallel branch can open the next phase while another branch's call
+  under this one still runs, so the span is exported once its last bound call is
+  released (`release_agent`), still ending at the time the next phase began. The
+  run's end exports the phase still open whatever is in flight; an earlier one waits
+  for its calls, which the runner settles before the run ends.
+- Each live `ctx.agent()` call is one turn under its phase (`bind_agent`, around the
+  call's `agent_fn`, in the task that streams it). It is named
+  `invoke_agent <phase>:<label>` (`<phase>:a<call_index>` when the script gives no
+  `label=`, because the runner's fallback label is prompt text), carries
+  `kirocrew.agent_id` (`a<call_index>`), and
+  its schema re-asks are its attempts 2 and on. Its spend rolls up to its phase and
+  to the run's outcome.
+- A call replayed from a prior run's results (`replay_before`) streams no turn, so a
+  resumed run emits no span for it. A rerun is a new `run_id`, so a new trace.
+- A run authored from an intent (`start_from_intent`) has an `Authoring` phase first;
+  the author's model turns are one call under it, `invoke_agent Authoring:author`,
+  bound in the task the runner starts for the author.
+- `WorkflowRunner.run_background` pins the launcher for the launching session
+  (`pin_launcher`, by `turns.open_turn_of_session`) before the run is scheduled: its
+  open `workflow_run` tool span, else the turn (see Workflow launch above).
+- The completion turn: `workflow_startup`'s auto-turn starts it inside
+  `delivering(run_id)`, or queues it with `meta.workflow_run_id`, which the queue
+  drain hands over (`run_of`). `bind_turn` takes the run once (top-level turns
+  only), joins its trace under the anchor and links to the launcher. It keeps its own
+  `kirocrew.turn_id`. A retry of that turn (`_queue_recovery`) carries the same
+  `meta.workflow_run_id` (`recovery_meta`, keyed by the turn id), so it joins the
+  same run.
+
+Every span of the run carries `kirocrew.workflow_run_id` and the launching session's
+`session.id`; a run kind's outcome carries its anchor's keys. Names are script text:
+collapsed to one line, passed whole through `validate_attrs`, then cut to 64
+characters. Runs and launchers are kept in memory (the last
+1,024), so after a restart a completion turn roots its own trace.
+
+**Sub-agents** (`tracing/subagents.py`). The spawn gate
+(`subagent_manager/admission/gate.py`) calls `pin_origin` on a spawn's first
+admission pass, inside the parent's spawn tool call: it finds the parent's open turn
+by its ACP session and keeps that turn's trace id, turn span id, the one open
+`spawn_sub_agents` / `spawn_run` / `spawn_continue` tool span (the turn span when none
+or several are open) and the trace's root session, keyed by the child's agent id.
+`subagent_manager/run_lifecycle.py::_run_impl` binds each run with `bind_child`: a new
+turn id under that spawn span, with `kirocrew.subagent_id` and
+`kirocrew.parent_session_key_hash`. A blocking child ends inside its spawn span, which
+then carries the children's roll-up; an async child runs on under a spawn span that
+has already ended. A continuation (`conversation_key`) and a retry take the origin of
+the run they continue, and are re-pinned under it, so their completion turn joins the
+trace they ran in. A child moved onto a continuation trace still adds to its spawn
+span's roll-up. Pins live in memory only: after a restart a child roots its
+own trace.
+
+**The completion turn.** `slack/gateway_runtime/subagent_injection.py` records which
+runs each queued completion entry delivers (`note_delivery`, by queue id), the queue
+drain hands the drained entries' runs to the turn's task (`delivered`), and
+`bind_turn` takes them once (`take_causes`; a nested turn of the same task gets none).
+A drain that delivers nothing clears the hand-over, so a turn never inherits causes an
+earlier turn in the same task left untaken. A turn requeued by `_queue_recovery` (a
+runtime death before output, say) delivers the same runs on its retry: the causes a
+turn took are kept under its turn id, and `requeue` registers them under the retry's
+queue id.
+One run with a known origin: the turn joins its trace under the parent turn's span.
+Several (a wave digest): the turn roots itself with one link per run, to that run's
+last turn, or to its spawn span when none ended in this process.
+
+**Run roots** (`tracing/runs.py`, RFC R2-R5), shared by every run kind:
+
+| Helper | Does |
+|---|---|
+| `anchor` | emits a run's root as a zero-length span, ids `H(trace.<kind>, *key, cont)` / `H(<kind>, *key, cont)`; children parent to it by id, so nothing is held open |
+| `outcome` | `<kind> outcome <status>` under the anchor, span id `H(<kind>.outcome, *key, cont, outcome_key)`, carrying a roll-up |
+| `Rollup` | sums child turns' spend into `kirocrew.usage.{input_tokens,output_tokens,credits,cost_usd,turns}_total`, never `gen_ai.usage.*` |
+| `segment` | where a run's next child goes: once its trace holds `SPAN_BUDGET` (2,000) spans or is `AGE_BUDGET_SECS` (6 days) old, a `<name> (cont N)` anchor in a new trace that links back, and every later child of the run goes there |
+
+Span counts per trace are kept by `provider.start_span` in this process (bounded,
+lost on restart). Anchors carry `kirocrew.run.kind`, `kirocrew.run.continuation` and,
+on an outcome, `kirocrew.run.status`.
+
+**Crew attributes** (`tracing/crew.py`). A dashboard turn on a conductor mode or Bot
+conductor, or on one of their workers, nested `/prompts get` turns included, carries `kirocrew.crew.root` (hashed root slot
+key), `kirocrew.crew.root_kind` (`conductor_mode` or `mate`) and, for a worker,
+`kirocrew.crew.dispatcher` (hashed). The stamps come from
+`crew_mode.live_stamp_rows`, the slot list's own rule, with no I/O. A worker bound to
+a work item also carries `kirocrew.work.item_id`, `kirocrew.work.round` and
+`kirocrew.work.conductor_hash`, read from the work ledger binding on a worker thread
+before the turn binds. No goal, title, acceptance or other ledger text.
+
+**Conductor mode rounds** (`tracing/work.py`). With `telemetry.traces_conductor_mode` `run`
+(default), one round of a conductor's board (conductor mode or Bot) is one trace: a
+`conductor_mode round N` anchor keyed `(conductor ledger key, goal key, round)`, where the goal
+key is the header's `goal_id` (minted with the board and by each `new_goal`) or
+`<generation>.<goal_items_base>` on a header from before it. The conductor's turns join
+the anchor; each item open in the round has a `work_item <item id>` anchor under it,
+keyed `(item id, generation, goal key, round)`, and its worker's turns join that. A
+round's anchor links to the previous round's. `bind_turn` finds the anchor by reading
+the board header (the worker's through its binding) on a worker thread, so nothing is
+kept open and a restart re-derives the same ids; a turn a delivered run joins (a
+sub-agent completion) keeps that join. Anchors are written only by the ledger write
+that brings their key into being, so nothing is written twice: the board's first
+write, a goal write that changes the goal key or the round (it re-emits each item
+still open under the new round, and ends the old round `conductor_mode outcome advanced`), and
+an item's create. A `close` writes `work_item outcome <state>` with
+`kirocrew.work.verdict`, `kirocrew.work.fails` and the item's roll-up. A round ends
+once, at the goal write that moves the board on: `conductor_mode outcome closed` when no item is
+open, `conductor_mode outcome advanced` when items carry over, with the conductor turns'
+roll-up. Both outcome markers wait until the acting turn has ended
+(`turns.after_turn`), so that turn's spend is in them. A write span sits in its acting
+turn only when that turn is in the write's round trace; otherwise (the turn that opens
+a round was bound before it) it goes under the item's or round's anchor with a link to
+the turn. A round past its span budget or six days old (R5; its age is read from the
+header's `round_started_at`, so it holds across a restart) moves to a `(cont N)` trace;
+each item's anchor is emitted again under it, once per process, on first use. A round's
+roll-up is keyed by its first anchor and an item's by the item itself, so an outcome
+sums the whole run, round changes and rollovers included. Not covered: a board whose round began
+while tracing was off has no anchor until its next round; a worker turn still streaming
+when its item closes adds nothing to that item's roll-up; a goal's last round has no
+round outcome, and keeps its roll-up entry, until a goal write moves the board on (the
+ledger has no "goal finished" action). With `turn`, there are no
+anchors and every turn roots itself.
+
+**Ledger writes.** Every write whose `work/recorded` entry landed gets one
+`kirocrew.work.<action>` span (`report` from a worker), from the routes that append it:
+`_record_conductor_write` (every conductor action, remote and hand-back ones
+included), the worker report, a remote crew's report, and a person's steer. Where it
+sits is described above for `run` mode; with `turn`, it is in the acting turn, and
+with none (a steer, a peer's report) alone in a trace of its own. It
+carries ids, closed-vocabulary values and counts only: `kirocrew.work.action`,
+`actor`, `item_id`, `round`, `generation`, `goal_id`, `state`, `verdict`, `fails`,
+and on a report `status`, `reason` and the `pr` number. Never the goal, a title,
+acceptance, decision, summary or artifact text.
+
+**Deterministic ids** (`tracing/ids.py`, vectors in
+`test/fixtures/tracing/id_conformance.json`):
+`H(kind, p1..pn) = sha256("kirocrew.v1|" + ns + "|" + kind + "|" + esc(p1) + ... )`,
+`esc` maps `%` to `%25` and `|` to `%7C`; a span id is the first 16 hex (the next 16
+when those are zero), a run trace id the first 32 hex of `H("trace." + kind, ...)`.
+`ns` is a random 128-bit namespace minted once at `<data home>/traces/namespace`.
+A turn's trace id is the turn id itself when it is 32 hex, else
+`H(trace.turn, turn_id)`.
+
+| Span | span id inputs |
+|---|---|
+| `invoke_agent` | `turn, turn_id, attempt` |
+| `chat`, `user.prompt`, `turn.complete` | that kind, `turn_id, attempt` |
+| `execute_tool` | `tool, acp_session_id, tool_call_id` |
+| `kirocrew.step`, `kirocrew.compaction`, `kirocrew.steer` | `step` / `compaction` / `steer`, `turn_id, attempt, n` (n counts that kind in the turn from 1) |
+| `kirocrew.approval` | `approval, acp_session_id, tool_call_id` (the request id when there is none); a spawn approval `approval, subagent_id, request_id` |
+| sub-agent `invoke_agent` | `turn, turn_id, attempt`, in the parent's trace under its spawn span |
+| run anchor (`subagent`, `cron`, `workflow`) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
+| `<kind> outcome <status>` | `<kind>.outcome, *key, cont, outcome_key` |
+| `cron run <kind>` step | `cron.step, *key, cont, run <kind>` |
+| `phase <title>` | `workflow.phase, run_id, cont, phase_index` |
+| workflow `invoke_agent` | `turn, turn_id, attempt`, turn id `H(workflow.agent, run_id, agent_id)`, under its phase |
+| `conductor_mode round N` | `conductor_mode, conductor, goal key, round, cont`; trace `trace.conductor_mode`, the same inputs |
+| `work_item <item id>` | `work_item, item id, generation, goal key, round, 1`, in its round's trace |
+| `kirocrew.work.<action>` | `work, conductor, item id, action, event id`; `goal`: `work.goal, conductor, generation, goal_version`; alone, the trace is `trace.<the same>` |
+
+**Correlation and the allowlist** (`tracing/correlation.py`). `ALLOWED_KEYS` is the
+whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook
+contract with a `kirocrew.` prefix: `kirocrew.turn_id`, `kirocrew.acp_session_id`,
+`kirocrew.tool_call_id`, `kirocrew.subagent_id`, `kirocrew.work.item_id`,
+`kirocrew.cron.job_id`, `kirocrew.workflow_run_id`, `kirocrew.launched_workflow_run_id`
+and `kirocrew.agent_id` raw;
+`kirocrew.parent_session_key_hash`, `kirocrew.crew.root`, `kirocrew.crew.dispatcher`
+and `kirocrew.work.conductor_hash` hashed like the session key; `kirocrew.session_key_hash` and `session.id` a
+keyed HMAC-SHA256 (32 hex) under `SecretVault.derive_subkey("trace-correlation")`;
+the raw key under `kirocrew.local.session_key`, which only the local sink may keep.
+Ids are shape-checked rather than run through `validate_attrs`, whose entropy test
+would blank a backend's random tool call ids; every other string goes through
+`validate_attrs`. Never on a span: prompt or completion text, tool arguments or
+output, file paths, MCP server or tool names, exception messages, span events.
+
+### Abnormal turn log (`tracing/turn_anomalies.py`)
+
+Always on and independent of `telemetry.traces_enabled`. `watched` wraps the same
+two stream functions as `traced` and times the turn from Crew's side: start, first
+event, first model output (text, thought or tool call), the longest silence while
+no tool runs and no user ask is open, and the end. A normal turn writes nothing. A
+turn logs one WARNING line, `turn-anomaly <json>`, when its first
+output took over `FIRST_OUTPUT_SLOW_SECS` (30 s) or never came on a turn that ran
+that long, its longest model silence was over `MODEL_GAP_SLOW_SECS` (60 s), the
+stream carried a `retry_wait` status, a model fallback or an MCP start failure, it
+stopped on `timeout`, `stale_recover` or an `error:` reason, or the stream raised. A
+line holds the session key, backend, model, the reasons, the timings in seconds,
+event and tool-call counts, notice counts, the stop reason and the exception class
+name; never prompt text, tool data or an exception message. The line goes through
+the normal logger, so in the gateway it lands in `gateway.log` (`grep turn-anomaly`
+finds it), and that log's own rollover and owner-only mode bound and guard it; the
+diagnostics bundle carries it with `gateway.log` when logs are included. One session
+writes at most 5 lines a minute; its next line after that carries `suppressed: <n>`.
+Tests: `test/tracing/test_turn_anomalies.py`.
 
 ## Circular-import rule
 
@@ -2046,12 +2629,12 @@ The one thing deliberately *not* swallowed is a stamp-write failure's
 consequence: `_mark_sent()` runs only after a delivered request, so a failed send
 retries later rather than silently losing the day.
 
-### Default-ON with six suppressions
+### Default-ON with seven suppressions
 
 `telemetry.beacon_enabled` defaults **true** and gates the repo's only default-on
 egress family: the heartbeat and official-app install receipts.
-`telemetry_permitted()` suppresses both when `KIROCREW_TELEMETRY_DISABLED` is
-truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
+`telemetry_permitted()` suppresses both when `DO_NOT_TRACK` (reason code
+`do_not_track`) or `KIROCREW_TELEMETRY_DISABLED` is truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
 the config toggle is false, the process looks like **CI**, `KIROCREW_HOME` is
 **non-default** (dev home / pod / worktree preview), or this install has never sent
 and `dashboard.privacy_acked` is still false (the first-egress gate below).
@@ -2211,32 +2794,104 @@ consent flow:
   because it is the only way to override a `config.local.json` overlay and the
   only control on a headless host.
 - The **mandatory first-run Privacy chapter** (`components/PrivacyChapter.tsx`,
-  chapter 2 of 3) shows the same disclosure and the same toggle in the
-  `OnboardingChapterShell` layout, so a new user sees what is sent and can opt out
-  before reaching the product. Every path out of chapter 1 routes through it,
-  including "Skip all", and it offers no skip and no Escape. It is still **not a
-  consent gate**: Continue is always enabled and never requires a choice, because
-  the default is a decision the user can change here, in Settings → Privacy, or
-  from the CLI.
+  chapter 2 of 3) says what is on, lists what is and is never collected and where
+  it goes, then offers **Keep on** and **Turn off**, in the
+  `OnboardingChapterShell` layout, so a new user sees what is recorded and sent
+  and can turn it off before reaching the product. Every path out of chapter 1
+  routes through it, including "Skip all", and it offers no skip, and no Escape
+  until a save has failed (below).
+  The text follows the effective state read from `GET /api/telemetry/beacon` and
+  `GET /api/telemetry/collection`: with local recording on, "Performance metrics
+  are on" and the recording list; with only the heartbeat on, "A daily heartbeat
+  is on" and no recording list; when off (an env var, `DO_NOT_TRACK`, a
+  governance pin, or a written `false`), "Performance metrics and the heartbeat
+  are off on this machine" with the reason and one Continue. In first run, off
+  by a written `false` (`offReason` `config`, no `config.local.json` entry)
+  does not show that form: there is nothing to ask, so the chapter records the
+  ack Continue would (`passWhenOff`) without rendering, and a failed write shows
+  the off form with its error. Off by a pin (an env var, `DO_NOT_TRACK`, a
+  governance pin) or a `config.local.json` entry still shows the off form and
+  its Continue, since the heartbeat's first send waits on an ack given on a
+  screen. The chapter calls
+  local recording "performance metrics" and the beacon "the heartbeat", the same
+  two names the Settings > Privacy switches use. An unreadable status gives the
+  neutral form above, with an `ErrorNotice`. Both buttons wait until the status read has answered.
+- **What the buttons write.** Both write `dashboard.privacy_acked`, plus
+  `dashboard.privacy_ack_version` only when the text shown said recording is on.
+  Turn off first writes `telemetry.enabled = false` and
+  `telemetry.beacon_enabled = false` through the config PATCH route (whose
+  config-watcher applier drops the recorder at once, off the event loop), then
+  re-reads both effective states; only when both are off does it write the ack
+  fields. An env var or a `config.local.json` entry that keeps either on leaves
+  the chapter open, naming that setting. A failed write keeps the chapter open
+  with an `ErrorNotice` and marks nothing as seen. From then on the chapter
+  offers Close in its eyebrow row, and Escape does the same: both hide it
+  without recording a choice, as the Ask the agent hand-off does, so it opens
+  again at the next load (`onClose`). A Turn off held by a pin offers no Close,
+  since Keep on still saves.
+- **The notice is versioned.** `dashboard.privacy_ack_version` (int, default 0,
+  never seeded from `privacy_acked`, `onboarded` or localStorage) means "told that
+  local recording is on", and both writers apply that one rule: the chapter writes
+  it on Keep on or Turn off only when the text shown said recording is on, and
+  `kirocrew telemetry enable` writes it only when the command really turns
+  recording on (not on `disable`, and not when it leaves recording off because an
+  export destination is configured); the dashboard's
+  `PRIVACY_NOTICE_VERSION` (`components/privacyNotice.ts`) and
+  `beacon.PRIVACY_NOTICE_VERSION` are both 3 and a backend test pins them
+  together. An existing user whose stored version is lower sees the chapter once
+  at the next dashboard load, decided once per page load, and only while local
+  recording is on; a heartbeat-only or already-off user does not see it. A user
+  who opted out (heartbeat off with `telemetry.enabled` unset, a written `false`,
+  or `DO_NOT_TRACK`) is never re-asked: `_theme_payload` reports the version as
+  current while `_consent_enabled` is false. Only a
+  status read that answered opens the chapter for an existing user. A read that
+  failed opens nothing and stores nothing, so the next dashboard load decides
+  again: a failed read says nothing about what is on, and the first load after
+  the dashboard sign-in runs out fails this way, so opening the chapter on it
+  would put the chapter on screen once a day. `useUsageDataState` reads a
+  status route once more when the gateway refused it for that reason (403 with
+  `X-Auth-Required`), after the sign-in renewal that the refusal started has
+  answered; a renewal that failed, a second refusal, or any other failure
+  leaves the read failed. On a first run, where the chapter is mandatory, a
+  failed read still opens it in its neutral form ("What can be collected", no
+  on/off claim, the read error on screen, "Continue without changes" instead
+  of Keep on), and that button records no version.
 - **The first heartbeat is withheld until that chapter is acknowledged.** The
   gateway starts the beacon thread at boot, before the dashboard has rendered, so
   an ungated fresh install would ping before the user could decline: an opt-out
-  offered only after the fact. Continue persists `dashboard.privacy_acked` (and
-  `kirocrew telemetry enable|disable` sets it too, for headless hosts), which
+  offered only after the fact. Keep on / Turn off persist `dashboard.privacy_acked`
+  (and `kirocrew telemetry enable|disable` sets it too, for headless hosts), which
   `beacon.telemetry_permitted` reads. The gate is **first-egress only**
   (`beacon.is_first_send()`): an install that has already sent is past the
   disclosure, and keying every heartbeat on the flag would silence it permanently
   rather than once. `dashboard.privacy_acked` falls back to `dashboard.onboarded`,
   so a user who finished first run before the chapter existed is never re-gated.
   It gates the install receipt too, via the shared consent ladder.
-- The disclosure copy and the control are single-sourced in
-  `components/PrivacyDisclosure.tsx` (`PrivacyDisclosureSections`,
-  `TelemetryToggle`, `PrivacyCommandList`) and consumed by both surfaces, so the
-  first-run explanation and the durable panel cannot drift.
+- The detail sections are single-sourced in `components/PrivacyDisclosure.tsx`
+  (`PrivacyDisclosureSections`, `PrivacyCommandList`) and consumed by both
+  surfaces, so the first-run explanation and the durable panel cannot drift. The
+  heartbeat switch (`TelemetryToggle`) lives in Settings > Privacy; the chapter's
+  two buttons replace it there.
+- **Export needs an explicit opt-in.** `_build_recorder` attaches an OTLP reader
+  only when `provider.outbound_consented(cfg)` holds: recording was turned on
+  explicitly (`KIROCREW_TELEMETRY` truthy, or `telemetry.enabled: true` written in
+  a config file, read through `config.loader._stored_agent_value` with
+  `section="telemetry"`). A recording default alone never permits export, and neither does the Privacy chapter's
+  acknowledgement, whose text says recorded data stays on this machine. The check
+  runs only when a destination exists, so a local-only host reads nothing extra.
+- **`DO_NOT_TRACK`.** A truthy value (`1`, `true`, `yes`, `on`) acts like
+  `KIROCREW_TELEMETRY=0` plus `KIROCREW_TELEMETRY_DISABLED=1`: `env_pin()`
+  answers False before reading `KIROCREW_TELEMETRY` (off wins) and
+  `telemetry_permitted` refuses with `do_not_track`. `pin_env_var()` /
+  `beacon.opt_out_env_var()` name it, so both Settings switches show it as the
+  pin to unset.
+- **Heartbeat-off load rule.** A config that writes `telemetry.beacon_enabled:
+  false` and never sets `telemetry.enabled` loads with recording off, whatever
+  the field default. No file is rewritten.
 - The durable surface distinguishes local usage/context records from optional
-  performance metrics. Performance metrics are off by default and remain local
+  performance metrics. Performance metrics are on by default and remain local
   when enabled, with one explicit exception: they egress only when the operator
-  configures an OTLP endpoint. It also carries the **recording switch** over
+  configures an OTLP endpoint and turned recording on explicitly. It also carries the **recording switch** over
   `telemetry.enabled` — a second, independent control from the beacon toggle above
   — fed by `GET /api/telemetry/collection` and disabled when an env var, a
   `config.local.json` overlay, or a configured OTLP endpoint means the write
@@ -2453,7 +3108,7 @@ needed because a same-day backfill's 23:59 is in the future and
 **Model CDN.** `embeddings_settings.py::_DEFAULT_MODEL_URL` points at
 `kirocrew-models` (distribution E2UX23B48LKM6V, OAC-only bucket access). The
 `_GGUF_SHA256` pin remains the sole integrity gate, so a tampered CDN object can
-only fail verification. Because `_ensure_downloaded()` returns early when
+only fail verification. Because `ModelDownloadManager.ensure_model()` (`embeddings_download.py`) returns early when
 `model_ready()`, a CDN request is a **first-install** signal, not a DAU signal —
 the dashboard shows it as "downloads", deliberately separate from DAI.
 
@@ -2512,7 +3167,7 @@ Shared attributes (`metrics/usage_attrs.py`):
 | `kirocrew.app.task.completed` | counter | `app`: a shipped built-in app id (`BUILTIN_NAMES`, its `apps/builtins/` directory name) or `private`; `outcome`: `ok` / `error` / `other` | a finished Papyrus compile (`record_app_task`) |
 | `kirocrew.channel.message.received` | counter | `channel`, `admitted`, `automation` | `run_channel_turn`, once admission decides |
 | `kirocrew.ui.control.clicked` | counter | `control` (8 values) | `POST /api/telemetry/ui-control`, owner only, from the dashboard's option chips, question card and follow-up card |
-| `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
+| `kirocrew.tips.feedback` | counter | `action`: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`; `source`: `curated` / `catalog` / `generated` / `other`; `feature`: a curated tip's id when the tip ships in `data/tips_curated.json`, else the tip's doc when it is in `TIP_DOC_ALLOWLIST`, else `other` | `POST /api/tips/feedback`, after the tips state is saved (`tips_metrics.record_tip_feedback_metric`) |
 | `kirocrew.feature_video.status` | counter | `status`: `seen` / `dismissed` / `other`; `feature`: the video's feature key when it is an Explore feature id, an allowlisted doc or the stem of one, else `other` | `feature_videos.record_status`, after the status is saved |
 | `kirocrew.milestone.*` | counter | `group`, `milestone` (catalog keys, tier keys, `all`), `surface`, `send`, `via`; `reached` adds `recommended_by` | the Explore panel and the milestone hooks (`milestones.py`); every value is checked by `milestones.closed_attrs` at the emit site |
 

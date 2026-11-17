@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // `/all` for every catalog: `../../i18n` registers English only.
@@ -355,6 +355,24 @@ describe('RepoSettings — header and failure banners', () => {
     expect((link.closest('a') as HTMLAnchorElement).getAttribute('href'))
       .toBe('https://gitlab.example.com/zzq-org/zzq-pkg')
     expect(link.parentElement?.textContent).toContain('GitLab')
+  })
+
+  it('words the new-issue toggle and the disconnect warning as one sentence each', async () => {
+    // Each is one catalog message holding the repo, the provider and the
+    // markup, so a language can order it; the English reading stays exact.
+    const gitlab: RepoRef = {
+      owner: 'zzq-org', repo: 'zzq-pkg', provider: 'gitlab', host: 'gitlab.example.com',
+    }
+    setCtx({ repos: [{ ...gitlab, permissions: { push: true } }] })
+    renderPage(gitlab)
+    const toggle = await screen.findByRole('switch', { name: /new issue/i })
+    expect(toggle.textContent).toBe('Notify me when a new issue is opened in zzq-org/zzq-pkg')
+    expect(within(toggle).getByText('new issue').tagName).toBe('STRONG')
+    const warning = await screen.findByText(/^Removes zzq-org\/zzq-pkg from Issue Radar/)
+    expect(warning.textContent).toBe(
+      'Removes zzq-org/zzq-pkg from Issue Radar and deletes its local cache. Your GitLab data and glab auth are untouched — you can reconnect anytime.',
+    )
+    expect(within(warning).getByText('glab').tagName).toBe('CODE')
   })
 
   it('reports a settings read failure without pretending the defaults are saved', async () => {

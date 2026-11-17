@@ -106,7 +106,7 @@ describe('hybrid mode', () => {
     renderHook(() => usePushToTalk(voice))
     down('AltRight', { altKey: true }); act(() => { vi.advanceTimersByTime(200) }); up('AltRight')
     expect(voice.recording).toBe(true)
-    down('AltRight', { altKey: true })
+    down('AltRight', { altKey: true }); up('AltRight')
     expect(voice.calls).toEqual(['start', 'stop'])
     expect(voice.recording).toBe(false)
   })
@@ -165,7 +165,7 @@ describe('toggle mode', () => {
     const voice = makeVoice()
     renderHook(() => usePushToTalk(voice))
     down('AltRight', { altKey: true }); up('AltRight')
-    down('AltRight', { altKey: true })
+    down('AltRight', { altKey: true }); up('AltRight')
     expect(voice.calls).toEqual(['start', 'stop'])
   })
 })
@@ -880,12 +880,11 @@ describe('disabling the hook never strands a running capture', () => {
     expect(voice.recording).toBe(true)
 
     rerender({ disabled: true })
-    down('AltRight', { altKey: true })
+    down('AltRight', { altKey: true }); up('AltRight')
     expect(voice.calls).toEqual(['start', 'stop'])
     expect(voice.recording).toBe(false)
 
     // Stopped, still disabled: the next press must not open a new capture.
-    up('AltRight')
     down('AltRight', { altKey: true })
     act(() => { vi.advanceTimersByTime(500) })
     up('AltRight')

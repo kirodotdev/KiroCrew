@@ -283,7 +283,9 @@ def migrate_relocated_skill_uris() -> int:
                     and worker_agent._is_confirmed_managed_dashboard_author(data)
                 )
                 pre_migration_digest = (
-                    agent_state.spec_digest(data) if pre_migration_confirmed else None
+                    worker_agent.dashboard_author_ownership_digest(data)
+                    if pre_migration_confirmed
+                    else None
                 )
                 data["resources"] = updated
                 try:
@@ -293,7 +295,7 @@ def migrate_relocated_skill_uris() -> int:
                         # an interruption leaves the file matching a recorded slot.
                         agent_state.begin_managed_write(
                             spec_path.stem,
-                            agent_state.spec_digest(data),
+                            worker_agent.dashboard_author_ownership_digest(data),
                             current=pre_migration_digest,
                         )
                         _atomic_json_write(spec_path, data)
@@ -389,7 +391,9 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
         )
         # Digest of the CURRENT on-disk bytes (pre-edit), captured before mutation so
         # ``begin_managed_write`` can keep the file confirmable if this write is interrupted.
-        pre_write_digest = agent_state.spec_digest(data) if pre_write_confirmed else None
+        pre_write_digest = (
+            worker_agent.dashboard_author_ownership_digest(data) if pre_write_confirmed else None
+        )
         previous = data.get("model") or ""
         clear_model_pin(data, name)
         # Same strip every spec writer runs: kiro-cli validates with
@@ -402,7 +406,7 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
         # record out of step: record the new bytes' digest as pending, write, finalize.
         if pre_write_confirmed:
             agent_state.begin_managed_write(
-                name, agent_state.spec_digest(data), current=pre_write_digest
+                name, worker_agent.dashboard_author_ownership_digest(data), current=pre_write_digest
             )
             _atomic_json_write(spec_path, data)
             agent_state.finalize_managed_write(name)
@@ -472,7 +476,9 @@ def _sanitize_agent_hooks() -> None:
         pre_sweep_confirmed = stem == worker_agent._MANAGED_OWNED_NAME and (
             worker_agent._is_confirmed_managed_dashboard_author(data)
         )
-        pre_sweep_digest = agent_state.spec_digest(data) if pre_sweep_confirmed else None
+        pre_sweep_digest = (
+            worker_agent.dashboard_author_ownership_digest(data) if pre_sweep_confirmed else None
+        )
         data["hooks"] = {
             key: value
             for key, value in hooks.items()
@@ -484,7 +490,7 @@ def _sanitize_agent_hooks() -> None:
         # bytes and record in step: record the swept bytes' digest as pending, write, finalize.
         if pre_sweep_confirmed:
             agent_state.begin_managed_write(
-                stem, agent_state.spec_digest(data), current=pre_sweep_digest
+                stem, worker_agent.dashboard_author_ownership_digest(data), current=pre_sweep_digest
             )
             _atomic_json_write(f, data)
             agent_state.finalize_managed_write(stem)

@@ -1,21 +1,24 @@
 """``session/load`` end to end.
 
-Resuming a prior session on this runtime, and waiting for its managed MCP servers.
+Resuming a prior session on this runtime, parking it in the host's start agent first when
+a person waits on the re-open, and waiting for its managed MCP servers.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_inits_in_flight``,
-``_session_queues``.
+Instance fields written: ``_load_replay_frames``, ``_parked_copies``, ``_session_cwds``,
+``_session_harness_states``, ``_session_inits_in_flight``, ``_session_queues``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
-``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
-``_kas_telemetry_sent``,
-``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
+``_agent_version``, ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``,
+``_fold_mcp_frame``, ``_host_sends_mcp_init``, ``_initialized``, ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``,
+``_mcp_switched_off``, ``_model``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
+``_pool_lookup``, ``_record_keeping_sessions``, ``_record_tree_in_background``,
+``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
-``_wire_mode_id``, ``_work_dir``,
-``_write_remote_token``.
+``_wire_mode_id``, ``_work_dir``, ``_write_remote_token``, ``can_release``,
+``release_session``.
 """
 
 from __future__ import annotations
@@ -24,17 +27,24 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
+from kiro_crew import session_head
 from kiro_crew.acp import batch_guard, kas_cli_settings, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
+from kiro_crew.acp.kas_start_agent import START_AGENT_ID, parking_load
+from kiro_crew.acp.mcp_prune import prune_session_servers, record_pruned
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
-    mounted_servers,
     required_managed_servers,
     roster_names,
+)
+from kiro_crew.acp.mcp_start_wait import (
+    first_prompt_brief_wait,
+    left_to_first_turn,
+    person_waits,
 )
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
@@ -49,17 +59,25 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
+from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_LOAD_WITHOUT_MODES,
+    ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
+    ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     METHOD_SESSION_LOAD,
+    METHOD_SESSION_RESUME,
+    METHOD_SET_MODE,
     JsonRpcMessage,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk.tool_search import with_client_meta_settings
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
+from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
@@ -78,7 +96,12 @@ async def load_session(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    kas_memory_mode: str | None = None,
     require_replay: bool = False,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
+    focus_resume: bool = False,
+    harness_options: Mapping[str, Any] | None = None,
+    harness_state: Any = None,
 ) -> AcpSessionHandle:
     """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -106,6 +129,13 @@ async def load_session(
     that dropped it would take the channel identity away from a conversation
     that already had it.
 
+    ``kas_memory_mode`` names the saved SID's native policy. The load re-sends
+    its tool mount and policy for a missing record; an explicit stored record
+    remains authoritative. Its acknowledgement must match before prompting.
+    ``""`` states none; ``None`` follows
+    :func:`~kiro_crew.acp.kas_memory.runtime_memory_mode`. The mode sent is
+    recorded on the handle, so a live reload can re-send it unchanged.
+
     ``require_replay`` makes the load fail when the engine replayed no earlier
     turn before answering. KAS answers ``session/load`` for an id whose stored
     record is gone by creating a new, empty record under that id, and the
@@ -115,7 +145,60 @@ async def load_session(
     ``_meta.kiro.replay: true``. A load with none is evicted (the stored record
     is kept) and raised, so the caller starts a fresh session and replays Kiro
     Crew's own transcript.
+
+    ``start_priority`` and ``focus_resume`` say whether a person is waiting on
+    this re-open (``mcp_start_wait.person_waits``). When one is, and the host
+    can park a stored session in its start agent, the load is preceded by
+    :func:`_park_in_start_agent`, so Kiro Crew's servers connect ahead of the
+    agent's own and the first prompt does not wait behind them. Every other
+    resume sends the one load it always sent.
     """
+    if self._harness.per_session_state and harness_state is None:
+        # A host whose sessions each carry their own setup; see create_session.
+        return await self._load_session_with_harness_state(
+            session_file,
+            resume_sid,
+            cwd=cwd,
+            agent=agent,
+            crew_agent=crew_agent,
+            member_session_key=member_session_key,
+            session_key=session_key,
+            channel_id=channel_id,
+            kas_memory_mode=kas_memory_mode,
+            require_replay=require_replay,
+            start_priority=start_priority,
+            focus_resume=focus_resume,
+            harness_options=harness_options,
+        )
+    if self.acp_backend == ACP_BACKEND_KAS and resume_sid not in getattr(
+        self, "_record_keeping_sessions", ()
+    ):
+        # The id names a stored conversation. Every failure arm past the load ends
+        # the session through ``terminate_session``, whose KAS verb deletes that
+        # record, so a refused resume (a gateway restart's first, say) would lose
+        # the chat's history for good. Inside this scope the arm evicts
+        # with ``session/close`` and keeps the record; it ends with the load, so a
+        # later teardown of the returned handle deletes as before. The body is
+        # re-run through this module's function, not the bound method, so the scope
+        # costs no second call of ``AcpRuntime.load_session``.
+        with self.keep_record_on_teardown(resume_sid):
+            return await load_session(
+                self,
+                session_file,
+                resume_sid,
+                cwd=cwd,
+                agent=agent,
+                crew_agent=crew_agent,
+                member_session_key=member_session_key,
+                session_key=session_key,
+                channel_id=channel_id,
+                kas_memory_mode=kas_memory_mode,
+                require_replay=require_replay,
+                start_priority=start_priority,
+                focus_resume=focus_resume,
+                harness_options=harness_options,
+                harness_state=harness_state,
+            )
     if not self._initialized:
         raise AcpRuntimeError("Runtime not initialized — call spawn() first")
     if not self._can_load_session:
@@ -124,6 +207,14 @@ async def load_session(
     # The effective agent, checked before anything is acquired, as create_session()
     # does: a resume that names no agent inherits the spawn agent.
     await self._refuse_over_ceiling_start(agent or self._agent)
+    # The verb that restores a session on this host, read from the set
+    # ``AcpClient`` reads (``client_start``): ``ResumeSessionRequest`` carries the
+    # same fields as ``LoadSessionRequest``, so only the method name differs.
+    restore_method = (
+        METHOD_SESSION_RESUME
+        if self.acp_backend in ACP_BACKENDS_RESUME_WITHOUT_LOAD
+        else METHOD_SESSION_LOAD
+    )
 
     # Re-declare the pooled broker stubs so a resumed session keeps talking
     # to the broker — same injection as create_session() and the AcpClient
@@ -139,6 +230,7 @@ async def load_session(
     # mirrored host's projection resolves the agent spec against this directory.
     session_work_dir = str(await self._session_work_dir(cwd))
     denied_tools: frozenset[tuple[str, str]] = frozenset()
+    zero_tools = False
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
@@ -163,11 +255,19 @@ async def load_session(
             work_dir=session_work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            permission_surface_owned=(
+                harness_state is not None and self._harness.permission_surface_owned(harness_state)
+            ),
         )
+    # The Connection bridge snapshots the array below wrote, for shutdown.
+    crew_bridged: list[str] = []
     if mirrored is not None:
         mcp_servers = mirrored.servers
+        # Mirrors create_session: a resumed session re-declares its bridges.
+        crew_bridged = list(mirrored.crew_bridged)
         stub_token = mirrored.stub_token
         denied_tools = mirrored.denied_tools
+        zero_tools = mirrored.zero_tools
         mirrored_snapshot = mirrored.derived_spec_snapshot
         consumed_spec = mirrored.agent_spec
         ref_spec = mirrored.ref_spec
@@ -254,6 +354,11 @@ async def load_session(
     # a conversation that already had them.
     # Bound once, for the same consumers as session/new: see the note there.
     await self._write_remote_token()
+    # The same prune session/new gets (``mcp_prune``), for the same hosts.
+    pruned = None
+    if self.acp_backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
+        pruned = await prune_session_servers(self.acp_backend, mcp_servers)
+        mcp_servers = pruned.kept
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
@@ -297,6 +402,11 @@ async def load_session(
     payload_snapshot = None
     request_identity = ""
     withheld_notice = ""
+    # The load that parks the session in the host's start agent first, when a
+    # person waits on this re-open; ``None`` on every other resume and host.
+    parking: dict[str, Any] | None = None
+    # The native memory policy the load actually asks KAS for; "" states none.
+    sent_kas_memory_mode = ""
     if self._acp_backend == ACP_BACKEND_KAS:
         kas_extras = await self._kas_custom_agents(
             active_agent,
@@ -319,7 +429,7 @@ async def load_session(
         # its servers, and the managed ones must win the same-name contest
         # on load exactly as they did on new. User-declared servers stay in the
         # agent block, as on new: KAS launches block servers on a cold
-        # session/load too, and only the block carries the 120 s ``timeout``
+        # session/load too, and only the block carries the ``timeout``
         # (finish_settings_mcp); a session-level element has no ``timeout`` slot,
         # so a hoisted server got KAS's 60 s. Probe record: the session/load
         # hoist section of docs/system-specs/modules/acp-client.md.
@@ -347,17 +457,65 @@ async def load_session(
             )
         )
         load_params["mcpServers"] = wire_servers
-        kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
-        attach_kas_custom_agents(load_params, kas_agents)
+        # Same as create_session: a sub-agent the workspace cannot bind is named.
+        remote_notices: list[str] = []
+        registered = len(kas_agents or ())
+        kas_agents = self._remote_workspace_agents(
+            kas_agents, wire_servers, active_agent=active_agent, notices_out=remote_notices
+        )
+        if len(kas_agents or ()) < registered:
+            # Same re-prune as create_session, rebinding the request with the array.
+            wire_servers = self._remote_session_servers(
+                without_excluded_stubs(wire_servers, kas_agents)
+            )
+            load_params["mcpServers"] = wire_servers
+        withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
+        from kiro_crew.acp import kas_memory
+
+        kas_memory_mode = await kas_memory.runtime_memory_mode(self.acp_backend, kas_memory_mode)
+        if kas_memory_mode:
+            load_params = with_client_meta_settings(
+                load_params, kas_memory.memory_settings(kas_memory_mode)
+            )
+        attach_kas_custom_agents(load_params, kas_agents, memory_mode=kas_memory_mode)
         # The same last word session/new gets, asked inside this branch so the
         # kiro resume path still stops at the comparison above.
         load_params, agent = self._harness.session_request(
-            METHOD_SESSION_LOAD,
+            restore_method,
             load_params,
             agent,
             agent_capabilities=self._agent_capabilities,
         )
+        # The policy the resume was actually asked for, which KAS must acknowledge.
+        sent_kas_memory_mode = kas_memory.sent_memory_mode(load_params)
+        if resume_sid in self._parked_copies:
+            # A re-open on this process was cut off before the engine confirmed
+            # freeing the copy it parked. The engine ignores the batch of a load
+            # for a session it holds, and that copy's agent declares no server.
+            raise AcpRuntimeError(
+                f"session/load of {resume_sid}: this process still holds the copy "
+                "loaded to park it in the start agent"
+            )
+        # Only where the engine can free a session and keep its record: the
+        # parked copy must be gone before the load below.
+        if person_waits(start_priority, focus_resume=focus_resume) and self.can_release():
+            parking = parking_load(load_params)
+    if harness_state is not None:
+        # What this session enforces, from the spec its array was projected from.
+        await self._harness.adopt_session_spec(
+            harness_state, consumed_spec if isinstance(consumed_spec, dict) else None
+        )
+        # This session's own envelope, on every host that prepared per-session
+        # state, built after the final array it travels with: a resume carries
+        # the same settings exclusion its session/new did.
+        meta = self._harness.session_meta(
+            harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+        )
+        if meta is not None:
+            load_params["_meta"] = {**(load_params.get("_meta") or {}), **meta}
     budget = await self._session_start_budget()
+    if parking is not None:
+        await self._park_in_start_agent(resume_sid, parking, budget)
     self._session_inits_in_flight += 1
     loaded_session_id = ""
     if require_replay:
@@ -371,19 +529,35 @@ async def load_session(
         # docs/system-specs/modules/acp-client.md "loading a session
         # triggers MCP re-initialization") — so it gets the same budget.
         request_sent_at = time.time()
-        resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params, timeout=budget)
+        if harness_state is None:
+            resp = await self._send_and_await(restore_method, load_params, timeout=budget)
+        else:
+            # A per-session host's load is kept to its end: a load abandoned while
+            # the adapter works on it (a cancel, a timeout) would leave a session
+            # resident with no owner on a process other chats keep alive, so it is
+            # closed once the request settles (``_close_abandoned_load``).
+            load_task = asyncio.ensure_future(
+                self._send_and_await(restore_method, load_params, timeout=budget)
+            )
+            try:
+                resp = await asyncio.shield(load_task)
+            except BaseException:
+                _abandon_load(self, resume_sid, load_task)
+                raise
 
         # A genuine resume echoes "modes" in the response (same signal AcpClient
-        # keys on). Anything else means load did not actually restore state.
-        if "modes" not in resp:
-            raise AcpRuntimeError(f"session/load did not resume session {resume_sid}: {resp}")
+        # keys on). Anything else means load did not actually restore state. A
+        # host that never sends one (``ACP_BACKENDS_LOAD_WITHOUT_MODES``) restored
+        # the session when it answered without an error, as ``AcpClient`` reads it.
+        if "modes" not in resp and self.acp_backend not in ACP_BACKENDS_LOAD_WITHOUT_MODES:
+            raise AcpRuntimeError(f"{restore_method} did not resume session {resume_sid}: {resp}")
         loaded_session_id = resume_sid
     except AcpFrameTooLarge as exc:
         exc.session_start_failed = True
         raise
     except AcpRequestTimeout as exc:
         # Read the staged MCP reports before the finally below clears them.
-        raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, wire_servers) from exc
+        raise self._session_start_stalled(exc, restore_method, wire_servers) from exc
     finally:
         buffered_init = self._finish_session_init(loaded_session_id)
         replayed_turn_frames = self._load_replay_frames.pop(resume_sid, 0)
@@ -398,6 +572,16 @@ async def load_session(
             "the stored conversation was not restored"
         )
 
+    if sent_kas_memory_mode:
+        from kiro_crew.acp import kas_memory
+
+        try:
+            kas_memory.require_memory_ack(resp, sent_kas_memory_mode)
+        except Exception:
+            # A refused resume must retain its stored conversation.
+            await self.evict_session(resume_sid)
+            raise
+
     # Register the queue AFTER _send_and_await returns. During session/load
     # kiro-cli replays the full prior transcript on stdout; without a
     # registered queue those replay frames hit the "unknown session -> drop"
@@ -405,11 +589,39 @@ async def load_session(
     # arriving AFTER this point (from future prompt() calls) reach the queue.
     # The load response itself routes via _pending_requests, not the session
     # queue, so this reorder is safe.
-    queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
+    # session/load re-initializes this session's servers, so the resumed
+    # session gets its own report against the roster load re-declared. Opened
+    # with the queue and no await in between, as create_session does.
+    report = self._open_mcp_report(resume_sid, wire_servers)
+    if pruned is not None:
+        # What the array left out is this resume's own failure, on its new report.
+        record_pruned(report, pruned.pruned, pruned.omitted)
+    # A host with per-session state (claude) can start a turn on its own; its
+    # queue tells the handle (``session_handle_agent_turns``). One flag read.
+    queue: asyncio.Queue[JsonRpcMessage | None] = (
+        AgentTurnQueue() if self._harness.per_session_state else asyncio.Queue()
+    )
     self._session_queues[resume_sid] = queue
     self._session_cwds[resume_sid] = str(session_work_dir)
     for msg in buffered_init:
         queue.put_nowait(msg)
+        self._fold_mcp_frame(resume_sid, msg)
+    if harness_state is not None:
+        self._session_harness_states[resume_sid] = harness_state
+        try:
+            # A restored session carries the mode it was left in, so it is checked
+            # again before its first prompt. A refusal ends only this session.
+            await self._harness.after_session_start(
+                harness_state,
+                resume_sid,
+                resp,
+                send_request=lambda method, req: self._send_and_await(method, req, timeout=budget),
+                close_session=lambda: self.terminate_session(resume_sid),
+                agent_version=self._agent_version,
+            )
+        except BaseException:
+            await asyncio.shield(self.terminate_session(resume_sid))
+            raise
 
     # Mirrors create_session: a resumed session gets the same
     # canonical-crew watchdog snapshot, resolved off-loop.
@@ -423,9 +635,11 @@ async def load_session(
         crew_agent=_crew,
         session_key=session_key,
         bound_cwd=str(load_params["cwd"]),
+        mcp_report=report,
     )
     # Mirrors create_session: the resumed session's own stub token.
     handle.stub_session_token = stub_token
+    handle.kas_memory_mode = sent_kas_memory_mode
     # The restored history predates this handle's batch guard.
     batch_guard.mark_resumed(handle._batch_window)
     handle.member_dispatch_mounted = member_mounted
@@ -435,12 +649,19 @@ async def load_session(
     # Mirrors create_session: the resumed session re-declares the array, so it
     # re-derives the deny set that array came with and re-checks the generation.
     handle.spec_denied_tools = denied_tools
+    handle.spec_zero_tools = zero_tools
     handle.consumed_agent_spec = consumed_spec
     handle.mirror_used = mirrored is not None
+    if harness_state is not None:
+        # Mirrors create_session: what the host's own setup decided that the
+        # handle enforces.
+        self._harness.bind_session_handle(harness_state, handle)
     # Mirrors create_session: the re-registered batch is what this session now
     # runs.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
-    handle.kas_launch_snapshots.extend(launch_snapshots)
+    # shortcut: a load that fails before this line leaves its bridge snapshots to the
+    # boot sweep, as a failed KAS load leaves its batch; track them earlier if that bites.
+    handle.kas_launch_snapshots.extend([*launch_snapshots, *crew_bridged])
     handle.kas_withheld_credentials_notice = withheld_notice
     if self._kas_telemetry_sent is not None:
         handle.kas_telemetry_notice = await asyncio.to_thread(
@@ -472,9 +693,6 @@ async def load_session(
     except Exception:
         await self.terminate_session(resume_sid)
         raise
-    # session/load re-initializes this session's servers, so the resumed
-    # session gets its own report against the roster load re-declared.
-    handle.mcp_session_report().begin_session(wire_servers)
     self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers, mcp_json)
     # Mirrors create_session: load re-declares the servers, so re-record them.
     handle.record_mcp_launches(ref_spec, wire_servers)
@@ -501,6 +719,33 @@ async def load_session(
     # Same routing-table question as create_session: a host with no agent
     # spec has no mode to resume onto either.
     mode_agent = agent if self._activates_agent_by_mode() else None
+    _ids, _resumed_in, _adv = parse_session_modes(resp)
+    if (
+        mode_agent is None
+        and kas_agents
+        and self._activates_agent_by_mode()
+        and (
+            not self._harness.start_mode_ran_servers(_resumed_in or "")
+            or (bool(_resumed_in) and active_custom_agent(load_params, _resumed_in) is None)
+        )
+    ):
+        # The session came back in the host's server-less start agent (a re-open
+        # that parked it there, finished or cut off), or in a mode this load
+        # sent no definition for: the host's own default, which is where a
+        # stored start agent resumes when the batch does not carry it. No
+        # prompt runs in either, so the session's own is activated even with no
+        # override, as create_session activates an injected default, and guard
+        # (A) below refuses a session whose own agent is not advertised.
+        # shortcut: two things are not told apart here. The host answers a load
+        # of a session its start agent fell back from exactly as one a built-in
+        # the host or another client left it in (measured, kiro-cli 3.2.1), so
+        # that built-in is replaced by the session's own agent too; Kiro Crew
+        # itself offers no way into one (pinned by
+        # test_kas_reopen_parking.py::test_no_kiro_crew_entry_point_switches_a_running_session).
+        # And the start agent is known by its id alone, so a session switched to
+        # another agent carrying that id is put back as well. Record the parked
+        # state where the re-open writes it if either is ever reported.
+        mode_agent = self._agent
     # Guard (C) -- see create_session: advertised, but as the host's own.
     # Same wire id as create_session: the batch this load re-sent was renamed.
     mode_wire = (
@@ -521,6 +766,7 @@ async def load_session(
         # then consumed without being recorded, leaving the panel at a false
         # "no report" for the rest of the session.
         staged_before_switch = handle.queued_frame_count()
+        reported_before_switch = handle.mcp_session_report().fold_mark()
         self._switched_model_record().pop(resume_sid, None)
         activated_alias = await self._activate_mode_bracketed(
             resume_sid,
@@ -534,11 +780,17 @@ async def load_session(
         handle.active_agent = mode_agent
         await self._served_default_after_mode(handle, resume_sid)
         # See create_session: after a real mode switch, registration frames
-        # staged during session/load describe the pre-switch roster.
+        # staged during session/load describe the pre-switch roster, unless
+        # that mode was the host's server-less start agent.
         _ids, _current, _adv = parse_session_modes(resp)
-        mode_switched = mode_wire != _current and (
-            bool(_current) or self._harness.notification_aliases.mcp_readiness
+        mode_switched = (
+            mode_wire != _current
+            and (bool(_current) or self._harness.notification_aliases.mcp_readiness)
+            and self._harness.start_mode_ran_servers(_current or "")
         )
+        if mode_switched:
+            # See create_session: those frames were the previous agent's roster.
+            handle.mcp_session_report().forget_reported(reported_before_switch)
     elif mode_agent:
         # Guard (A) — see create_session. A resumed session always echoes a
         # `modes` list (checked above), so an absent agent means its config
@@ -548,7 +800,7 @@ async def load_session(
         await self.terminate_session(resume_sid)
         cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
         raise AcpRuntimeError(
-            f"Agent mode {agent!r} is not available for resumed session "
+            f"Agent mode {mode_agent!r} is not available for resumed session "
             f"{resume_sid} (advertised modes: {_ids or 'none'}); {cause} Refusing "
             f"to run the backend default mode {_current or '(unknown)'} in its place. "
             f"{remedy}"
@@ -566,8 +818,10 @@ async def load_session(
             active_agent,
             budget,
             staged_before_switch if mode_switched else 0,
+            start_priority,
+            focus_resume=focus_resume,
         )
-    elif self._expect_mcp_reports:
+    elif self._expect_mcp_reports and self._host_sends_mcp_init:
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
     else:
         await handle.drain_init(no_report_ceiling=0.0)
@@ -576,19 +830,102 @@ async def load_session(
         self._copy_native_launch_sources(
             handle, set_mode_ran=set_mode_ran, activated_alias=activated_alias
         )
+    # The head this load re-sent, when the engine is known to apply it: a resumed
+    # turn re-sends the agent prompt only when the session does not hold one.
+    for definition in kas_agents or ():
+        if definition.get("id") == active_agent and handle.kas_agent_prompt_applied:
+            session_head.record(
+                handle.native_context_documents, active_agent, definition.get("prompt")
+            )
 
     # A resume re-initializes the MCP servers and forks the same agent
     # processes a fresh session does, so it needs the same scan; without it
-    # every descendant a resumed session created stays unrecorded. Guarded
-    # for the same reason as create_session: session/load already succeeded.
-    try:
-        await self._snapshot_descendants()
-    except BaseException:
-        await self.terminate_session(resume_sid)
-        raise
+    # every descendant a resumed session created stays unrecorded. It runs
+    # beside the session, as create_session's does, and every kill waits for it.
+    self._record_tree_in_background()
 
     logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
     return handle
+
+
+async def _park_in_start_agent(
+    self: AcpRuntime, session_id: str, params: dict[str, Any], timeout: float
+) -> None:
+    """Make the stored session *session_id* come back in the host's start agent.
+
+    Up to three requests. For a session stored in its own agent none of them
+    starts an MCP server: ``session/load`` with
+    *params* (``kas_start_agent.parking_load``: the session's own agent without
+    its servers, no session-level server), ``session/set_mode`` to the start
+    agent, which is what the engine stores, and the release that frees the
+    resident copy and keeps the record. The caller's own ``session/load`` then
+    resumes in the start agent.
+
+    A load that fails here raises as the caller's own would, so the provider's
+    retry and fresh-session paths see one failure, not two. A load the engine
+    answered with an error loaded nothing, so nothing is held and the id is not
+    listed: the provider's retry past a stale session lock loads it again. A
+    load with no answer, or one too large to read, may still be held. A session
+    the engine brought back in another agent than its own (one it was switched
+    to) is left in it, and a ``set_mode`` that
+    fails leaves the stored mode as it was; either way the caller's load takes the
+    order it always took. A copy the engine did not confirm freeing raises: the
+    engine ignores the batch of a load for a session it still holds, and the
+    held copy's agent declares no server.
+
+    No session queue is registered for the id while this runs, so the turns the
+    engine replays are dropped by the reader, as they are during any load.
+    """
+    started = time.monotonic()
+    parked = False
+    # Held by the engine from the request below until its release is confirmed;
+    # load_session refuses the id on this process for as long as it is listed.
+    self._parked_copies.add(session_id)
+    held = True
+    try:
+        try:
+            resp = await self._send_and_await(METHOD_SESSION_LOAD, params, timeout=timeout)
+        except (AcpRequestTimeout, AcpFrameTooLarge):
+            raise
+        except AcpRuntimeError:
+            # The engine's own answer: it did not load the session.
+            held = False
+            raise
+        ids, current, _adv = parse_session_modes(resp)
+        parked = current == START_AGENT_ID
+        # Only a session stored in its own agent, the batch's first entry, is
+        # parked: the switch after the caller's load puts that agent back, which
+        # would replace any other agent the session was switched to.
+        own_id = params["_meta"]["kiro"]["customAgents"][0].get("id")
+        if not parked and current == own_id and START_AGENT_ID in ids:
+            try:
+                await self._send_and_await(
+                    METHOD_SET_MODE,
+                    {"sessionId": session_id, "modeId": START_AGENT_ID},
+                    timeout=timeout,
+                )
+                parked = True
+            except Exception:
+                logger.warning(
+                    "session %s: could not park it in the start agent; "
+                    "its MCP servers connect in the stored order",
+                    session_id,
+                    exc_info=True,
+                )
+    finally:
+        if not held or await self.release_session(session_id):
+            self._parked_copies.discard(session_id)
+    if session_id in self._parked_copies:
+        raise AcpRuntimeError(
+            f"session/load of {session_id}: the copy loaded to park it in the start "
+            "agent could not be freed"
+        )
+    logger.info(
+        "session %s: %s for its re-open in %.0f ms",
+        session_id,
+        "parked in the start agent" if parked else "left in its stored mode",
+        (time.monotonic() - started) * 1000,
+    )
 
 
 def _declared_governed() -> bool:
@@ -620,6 +957,9 @@ async def _wait_managed_mcp(
     agent: str,
     timeout: float,
     stale_report_frames: int,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
+    *,
+    focus_resume: bool = False,
 ) -> None:
     # *params* carries the batch as sent, so its entry is keyed by the wire id.
     wire_agent = kas_wire_agent_id(agent)
@@ -648,16 +988,34 @@ async def _wait_managed_mcp(
             )
         else:
             # An external-only agent still needs the ordinary OAuth/config
-            # drain, even though it has no managed readiness requirement.
+            # drain, even though it has no managed readiness requirement. A
+            # process with MCP switched off starts no server, so no report can
+            # ever arm the drain: holding for one would only spend the ceiling.
+            expects_report = (
+                self._expect_mcp_reports
+                and self._host_sends_mcp_init
+                and not self._mcp_switched_off
+            )
             await handle.drain_init(
                 stale_report_frames=stale_report_frames,
-                no_report_ceiling=None if self._expect_mcp_reports else 0.0,
+                no_report_ceiling=None if expects_report else 0.0,
             )
-        # Best effort, never required: Connections and user servers also belong
-        # in turn 1's catalog, but a slow or dead one must not block the start.
-        rest = tuple(n for n in mounted_servers(params, wire_agent) if n not in required)
-        if rest:
-            await handle.wait_mounted_mcp(rest, MOUNTED_MCP_WAIT_SECS)
+        # Best effort, never required: a slow or dead one must not block the start.
+        # Which servers, and why not the user's own when a person is waiting:
+        # ``first_prompt_brief_wait``.
+        brief = first_prompt_brief_wait(
+            params, wire_agent, required, start_priority, focus_resume=focus_resume
+        )
+        if brief:
+            await handle.wait_mounted_mcp(brief, MOUNTED_MCP_WAIT_SECS)
+        # The agent's own servers a person-waited start skipped: its first turn
+        # is told of them, or holds its prompt for them (same rule).
+        left, more = left_to_first_turn(
+            params, wire_agent, required, start_priority, focus_resume=focus_resume
+        )
+        if left:
+            report = handle.mcp_session_report()
+            report.left_to_turn, report.left_omitted = left, more
     except BaseException:
         # No handle escapes on failure. A fresh session/new has no history
         # to preserve, so evict it from the host and reap its MCP children.
@@ -667,4 +1025,104 @@ async def _wait_managed_mcp(
             self.unregister_session(handle.session_id)
         else:
             await self.terminate_session(handle.session_id)
+        raise
+
+
+#: Closes of loads their caller abandoned: asyncio keeps only weak task references.
+_ABANDONED_LOAD_CLOSES: set[asyncio.Task[Any]] = set()
+
+
+def _abandon_load(runtime: AcpRuntime, resume_sid: str, load: asyncio.Future[Any]) -> None:
+    """Hold the session id from the moment its caller abandons the load.
+
+    A barrier is registered now, before the load settles, and a load of the same id
+    waits on it (``_load_session_with_harness_state``); it is resolved once the load
+    settled and, when that left a session to close, the close finished. So no retry
+    can register the id while the abandoned load or its teardown is in flight.
+    """
+    key = (id(runtime), resume_sid)
+    barrier: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    _PENDING_ABANDONED_CLOSES[key] = barrier
+
+    def _release(_t: Any = None) -> None:
+        if _PENDING_ABANDONED_CLOSES.get(key) is barrier:
+            del _PENDING_ABANDONED_CLOSES[key]
+        if not barrier.done():
+            barrier.set_result(None)
+
+    def _settled(fut: asyncio.Future[Any]) -> None:
+        close = _close_abandoned_load(runtime, resume_sid, fut)
+        if close is None:
+            _release()
+        else:
+            close.add_done_callback(_release)
+
+    load.add_done_callback(_settled)
+
+
+def _close_abandoned_load(
+    runtime: AcpRuntime, resume_sid: str, load: asyncio.Future[Any]
+) -> asyncio.Task[Any] | None:
+    """Close the session a ``session/load`` its caller left restored, once it settles.
+
+    A load that failed restored nothing; one that answered, or ran out of time while
+    the adapter may still be loading, may have left the session resident, and no
+    handle will ever own it. Teardown is ``terminate_session``, which closes only
+    this session (``session/close``) and releases any per-session state recorded.
+    The close task, or None when nothing is closed.
+    """
+    if load.cancelled():
+        return None
+    exc = load.exception()
+    if exc is not None and not isinstance(exc, AcpRequestTimeout):
+        return None
+    if resume_sid in runtime._session_queues:
+        # A session of this id is registered: not the abandoned load's, which
+        # registered nothing, so closing the id would end that session.
+        return None
+    task = asyncio.ensure_future(runtime.terminate_session(resume_sid))
+    _ABANDONED_LOAD_CLOSES.add(task)
+    task.add_done_callback(_ABANDONED_LOAD_CLOSES.discard)
+    return task
+
+
+#: An abandoned load's barrier, by runtime and session id (``_abandon_load``).
+_PENDING_ABANDONED_CLOSES: dict[tuple[int, str], asyncio.Future[None]] = {}
+
+
+async def _load_session_with_harness_state(
+    self: AcpRuntime, session_file: str, resume_sid: str, **kwargs: Any
+) -> AcpSessionHandle:
+    """:meth:`load_session` on a host that prepares each session itself.
+
+    The twin of ``_create_session_with_harness_state``: the state is prepared in
+    the session's own working directory first, and released here when the load
+    fails before the session is recorded. A close of an abandoned load of the same
+    id still in flight is awaited first, so its teardown cannot end this session.
+    """
+    pending = _PENDING_ABANDONED_CLOSES.get((id(self), resume_sid))
+    if pending is not None:
+        await asyncio.wait({pending})
+    agent = kwargs["agent"] or self._agent
+    work_dir = await self._session_work_dir(kwargs["cwd"])
+    state = await self._harness.prepare_session(
+        work_dir=work_dir,
+        agent=agent,
+        model=self._model or "",
+        session_key=kwargs["session_key"],
+        channel_id=kwargs["channel_id"],
+        memory_mode="persistent",
+        options=kwargs.get("harness_options"),
+    )
+    try:
+        return await self.load_session(session_file, resume_sid, **kwargs, harness_state=state)
+    except BaseException:
+        # Recorded but no handle came back (a cancel or a failure after the load
+        # registered it): no caller holds the session, so it is closed here, which
+        # releases the state too. Shielded, so the cancel cannot cut the close.
+        owned = [sid for sid, held in self._session_harness_states.items() if held is state]
+        if owned:
+            await asyncio.shield(self.terminate_session(owned[0]))
+        else:
+            await self._harness.end_session(state)
         raise

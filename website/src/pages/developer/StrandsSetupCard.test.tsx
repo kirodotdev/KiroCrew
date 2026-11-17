@@ -133,6 +133,40 @@ describe('StrandsSetupCard', () => {
     expect(config.agent.strands_provider).toBe('ollama')
   })
 
+  it('keeps the provider picker focusable and refuses a pick while its own write runs', async () => {
+    // A native `disabled` takes the pressed picker out of the tab order, so a
+    // keyboard user lands on the page body while the write runs. aria-disabled
+    // plus a guard keep focus and still refuse a second pick.
+    let release: () => void = () => undefined
+    const patch = vi.mocked(api.patchConfig)
+    patch.mockImplementationOnce(
+      (path, value) => new Promise(resolve => {
+        release = () => resolve(undefined as never)
+        void value
+        void path
+      }) as never,
+    )
+    config.agent.strands_provider = 'openai'
+    renderCard()
+    const picker = await screen.findByRole('combobox', { name: 'Provider' })
+    await waitFor(() => expect(picker.textContent).toContain('OpenAI'))
+    fireEvent.click(picker)
+    fireEvent.click(await screen.findByRole('option', { name: 'Ollama' }))
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('agent.strands_provider', 'ollama'))
+    // While the write runs the picker stays in the tab order, not native disabled.
+    expect(picker).not.toBeDisabled()
+    expect(picker).toHaveAttribute('aria-disabled', 'true')
+    expect(picker).toHaveAttribute('aria-busy', 'true')
+    // A second pick is ignored, so only the first write ran.
+    fireEvent.click(picker)
+    const anthropic = screen.queryByRole('option', { name: 'Anthropic' })
+    if (anthropic) fireEvent.click(anthropic)
+    expect(patch.mock.calls.filter(c => c[0] === 'agent.strands_provider')).toHaveLength(1)
+    release()
+    await waitFor(() => expect(picker).not.toHaveAttribute('aria-disabled'))
+    expect(picker).not.toHaveAttribute('aria-busy')
+  })
+
   it('locks the provider picker while a field save runs', async () => {
     // Switching mid-save would unmount the field and drop the save's outcome, so a
     // failed key would vanish with no notice.

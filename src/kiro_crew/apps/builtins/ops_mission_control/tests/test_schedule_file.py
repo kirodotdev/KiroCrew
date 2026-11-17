@@ -21,8 +21,6 @@ of what would hurt most if broken:
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 import textwrap
 import unittest
 from datetime import datetime, timezone
@@ -43,8 +41,13 @@ _needs_sandbox = pytest.mark.skipif(
 class _Env(unittest.TestCase):
     """Isolated data home, and a stubbed login so no test shells out to ``gh``."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         schedule_file.reset_login_cache()
@@ -60,7 +63,6 @@ class _Env(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _write(body: str) -> Path:

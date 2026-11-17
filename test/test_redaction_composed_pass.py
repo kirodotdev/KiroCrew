@@ -13,39 +13,10 @@ import random
 import pytest
 
 from kiro_crew import security
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# A URL to an unknown host whose query carries a credential-shaped value. The
-# composed pass removes the whole URL.
-_URL = (
-    "https://collector.example/c?d=AKIAIOSFODNN7EXAMPLE"
-    "&s=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY&pad=" + "x" * 40
-)
-_TEXT = f"see {_URL} now"
-_EXPECTED = "see [REDACTED: suspicious URL to collector.example] now"
-
-
-def test_composed_pass_removes_the_url_whole() -> None:
-    assert security.redact(_TEXT) == _EXPECTED
-    assert security.redact_and_truncate(_TEXT) == _EXPECTED
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "see https://AKIAIOSFODNN7EXAMPLE.wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
-        "see https://10.0.0.1wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
-        "see https://host.example:443wJalrXUtnFEMI1K7MDENGbPxRfiCYEXAMPLEKEYzz x",
-    ],
-)
-def test_url_match_never_ends_inside_a_word(text: str) -> None:
-    """A URL host or port is matched whole, so the credential pass sees whole words."""
-    out = security.redact(text)
-    assert "wJalrXUtnFEMI" not in out
-    assert "K7MDENGbPxRfiCY" not in out
-
-
-# Enough query to make the URL pass flag the address. ``x`` and not a hex
-# letter: a 40-run of hex is a git object name and is kept.
+# A long query value that is no credential. ``x`` and not a hex letter: a
+# 40-run of hex is a git object name and is kept.
 _PAD = "x" * 40
 
 
@@ -54,19 +25,13 @@ _PAD = "x" * 40
     [
         # A credential that starts inside a flagged URL and ends after it.
         (f"https://collector.example/?pad={_PAD}&token=)opaque-value-xyz", "opaque-value", ""),
-        # The same, with nothing after the label.
-        (f"https://collector.example/?pad={_PAD}&token=", "collector.example/?", ""),
-        # A flagged URL followed by a labelled secret.
+        # A flagged URL followed by a labelled secret. The value has the AWS
+        # secret's shape (40 characters of its alphabet), which the label needs.
         (
-            f"https://collector.example/?pad={_PAD} aws_secret_access_key=not-a-real-value end",
-            "not-a-real-value",
+            f"https://collector.example/?pad={_PAD}"
+            f" aws_secret_access_key={SAMPLE_AWS_SECRET} end",
+            "Qh4Tm2Vx9KpRc",
             " end",
-        ),
-        # Two flagged URLs around plain text.
-        (
-            f"a https://one.example/?p={_PAD}b x https://two.example/?q={_PAD}c z",
-            "one.example/?",
-            " x ",
         ),
     ],
 )
@@ -77,15 +42,8 @@ def test_composed_pass_removes_what_either_pass_finds(text: str, gone: str, kept
     assert security.redact(out) == out
 
 
-def test_composed_pass_does_not_repeat_a_host_a_credential_runs_through() -> None:
-    text = "see https://AKIAIOSFODNN7EXAMPLE.wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end"
-    out = security.redact(text)
-    assert "wJalrXUtnFEMI" not in out
-    assert out.endswith(" end")
-
-
 _VALUES = (
-    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    SAMPLE_AWS_SECRET,
     "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
     "AKIA" + "Z" * 16,
     "opaque-value-" + "q" * 20,
@@ -130,12 +88,6 @@ def test_composed_pass_removes_at_least_what_either_order_removes() -> None:
                 assert not any(p in out for p in _pieces(value)), text
 
 
-def test_composed_pass_reports_both_kinds_of_finding() -> None:
-    text = f"https://collector.example/?pad={_PAD}&token=)opaque-value-xyz"
-    _out, credentials, urls = security.redact_with_findings(text)
-    assert credentials and urls
-
-
 def test_composed_pass_leaves_clean_text_alone() -> None:
     for text in ("", "plain text", "see https://example.com/a?b=1 now"):
         assert security.redact(text) == text
@@ -147,4 +99,5 @@ def test_stream_redactor_uses_the_composed_pass(cut: int) -> None:
     stream = security.StreamRedactor()
     out = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.flush()
     assert "opaque-value" not in out
-    assert "collector.example/?" not in out
+    # A URL is never replaced whole: everything but the credential's value stays.
+    assert f"see https://collector.example/?pad={_PAD}&token=" in out

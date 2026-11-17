@@ -18,6 +18,14 @@ logger = logging.getLogger("kiro_crew.config.loader")
 #: config.json from carrying an unbounded string into every code-channel session.
 CODE_CHANNEL_DEFAULT_MAX = 256
 
+#: ``slack.code_channel_defaults.approval_mode`` values. ``ask`` is the default
+#: and today's behaviour (every tool call asks), so it is stored as unset;
+#: ``trust_reads`` and ``trust`` are the dashboard approval picker's Reads and
+#: Trust. ``yolo`` is absent on purpose: it is process-global, never a property
+#: of one session.
+CODE_CHANNEL_APPROVAL_ASK = "ask"
+CODE_CHANNEL_APPROVAL_MODES = (CODE_CHANNEL_APPROVAL_ASK, "trust_reads", "trust")
+
 
 @dataclass
 class CodeChannelDefaultsConfig:
@@ -70,6 +78,22 @@ class CodeChannelDefaultsConfig:
             "Reasoning effort new code-channel sessions start with: low, medium, "
             "high, xhigh or max. Empty keeps the agent's own effort. Ignored on "
             "models that do not support effort.",
+            tags=["slack"],
+        ),
+    )
+    approval_mode: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Approval Mode",
+            "Tool approval mode new code-channel sessions start in: ask (the "
+            "default: look-ups such as file reads, web searches and read-only shell "
+            "commands run on their own, everything else asks), trust_reads (also "
+            "searches of memory, past chats, skills and the knowledge library) or "
+            "trust (every tool runs without asking). Trust lets anyone allowed to "
+            "talk to the bot in the channel drive an agent whose tools run unprompted, "
+            "and sessions it spawns inherit that. The mode can still be changed on "
+            "the session afterwards.",
+            enum=list(CODE_CHANNEL_APPROVAL_MODES),
             tags=["slack"],
         ),
     )
@@ -237,6 +261,23 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    show_in_session_list: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Slack Conversations In The Session List",
+            "List conversations that start in Slack (threads, DMs, channel "
+            "mentions) in the dashboard's session list. Off removes them from "
+            "the list only: they keep working in Slack, stay in History and "
+            "search, still raise approvals and notifications, and come back "
+            "when this is turned on again; nothing is closed or deleted. The "
+            "conversation open in the dashboard, and one waiting on an approval "
+            "or an answer, keep their rows. Sessions started "
+            "in the dashboard and linked to Slack, and Slack code channel "
+            "sessions with their helper agents, are always listed. On by "
+            "default; no restart.",
+            tags=["slack"],
+        ),
+    )
     auto_link_sessions: bool = field(
         default=False,
         metadata=_meta(
@@ -268,6 +309,23 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    code_channel_dispatch: bool = field(
+        default=False,
+        metadata=_meta(
+            "Code Channel Dispatch",
+            "Let a Slack code channel's own session hand work to worker sessions: "
+            "create them, bind them to its work ledger and follow their status. "
+            "Only on turns the owner started, only for workers it created itself, "
+            "one level deep, filed in the channel's folder, with the channel's own "
+            "approval mode and never more; channels shared beyond this workspace "
+            "are excluded. Needs slack.code_channels on as well; turning that on "
+            "does not turn this on. Off keeps the full channel containment: a "
+            "conductor in a code channel cannot hand off work. Off by default, and "
+            "a missing, unreadable or malformed value reads as off. Takes effect "
+            "on the next call; no restart.",
+            tags=["slack"],
+        ),
+    )
     code_channels: bool = field(
         default=False,
         metadata=_meta(
@@ -276,7 +334,7 @@ class SlackConfig:
             "that is one session, with a context bar and a diff tab. Adds "
             "features.code_channels and the code-channel scopes "
             "(code_channels:manage, chat:write.customize, canvases:write, "
-            "channels:write.invites, groups:write.invites) to the generated app "
+            "channels:write.invites, groups:write.invites, pins:write) to the generated app "
             "manifest; an installed app needs that update and a reinstall, and the "
             "workspace must have Slack code channels enabled. Until both hold, "
             "Slack behaves as before. Off by default; no restart.",
@@ -287,8 +345,9 @@ class SlackConfig:
         default_factory=CodeChannelDefaultsConfig,
         metadata=_meta(
             "Code Channel Defaults",
-            "Folder, agent, model and reasoning effort a new code-channel session "
-            "starts with. Takes effect on the next new code channel; no restart.",
+            "Folder, agent, model, reasoning effort and approval mode a new "
+            "code-channel session starts with. Takes effect on the next new code "
+            "channel; no restart.",
             tags=["slack"],
         ),
     )

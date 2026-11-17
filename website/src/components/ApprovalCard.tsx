@@ -3,6 +3,7 @@ import { CheckCircle, Handshake, Ban, Package, Wrench } from 'lucide-react'
 import ToolInputPreview from './ToolInputPreview'
 import TrustDropdown from './TrustDropdown'
 import ErrorNotice from './ErrorNotice'
+import StatusNotice from './StatusNotice'
 import { ApiError } from '../api/client'
 import { isTerminalApprovalRefusal } from '../api/apiError'
 import { baseCommandLabel } from '../utils/trustPatterns'
@@ -102,7 +103,7 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
         : buttons.length > 2 ? buttons[1] : buttons[0]
     target.focus()
   }, [failure])
-  const borderColor = decided === 'approved' || decided === 'trust' || decided === 'trust_command' || decided === 'trust_base' ? 'border-l-ok' : decided === 'rejected' || failure?.terminal ? 'border-l-danger' : 'border-l-warn'
+  const borderColor = decided === 'approved' || decided === 'trust' || decided === 'trust_command' || decided === 'trust_base' ? 'border-l-ok' : decided === 'rejected' ? 'border-l-danger' : failure?.terminal ? 'border-l-border' : 'border-l-warn'
 
   const isShell = title.startsWith('Running: ')
   const normalized = title.replace(/^(Running: |Reading )/, '')
@@ -148,14 +149,14 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
         </div>
       )}
-      {failure !== null && (
+      {/* A gone approval is status: nothing the user did failed. */}
+      <StatusNotice tone="info" className="mt-1.5" testId="approval-card-gone" message={failure?.terminal ? i18nT('components.approvalCard.approval_no_longer_pending') : null} />
+      {failure !== null && !failure.terminal && (
         // The card holds no draft: the pending buttons are not user input and the
         // failed decision is retryable, so the hand-off loses nothing.
-        <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.terminal
-          ? i18nT('components.approvalCard.approval_no_longer_pending')
-          : failure.message
-            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
-            : i18nT('components.approvalCard.decision_failed')} />
+        <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.message
+          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
+          : i18nT('components.approvalCard.decision_failed')} />
       )}
       {decided && (
         <div className="mt-1.5 text-[13px] text-muted">

@@ -27,10 +27,12 @@ export function createCronEndpoints({ post, put, del, j, jfetch: fetch, sessionK
     cancelCron: (id: string) => post('/api/crons/' + id + '/cancel').then(j),
     cronToChat: (id: string) => post('/api/crons/' + id + '/to-chat').then(j),
     toggleCron: (id: string, enabled: boolean) => post('/api/crons/' + id + '/enable', { enabled }).then(j),
-    cronHistory: (jobId: string, offset?: number, limit?: number) => {
+    /** `hideIdle` leaves out scheduled Skip() runs and counts them in `idle_hidden`. */
+    cronHistory: (jobId: string, offset?: number, limit?: number, hideIdle?: boolean) => {
       const p = new URLSearchParams()
       if (offset != null) p.set('offset', String(offset))
       if (limit != null) p.set('limit', String(limit))
+      if (hideIdle) p.set('hide_idle', '1')
       const qs = p.toString()
       return fetch('/api/crons/' + jobId + '/history' + (qs ? '?' + qs : ''), { headers: { ..._sk } }).then(j)
     },

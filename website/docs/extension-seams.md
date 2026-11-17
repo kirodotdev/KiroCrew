@@ -134,7 +134,8 @@ Everything the registry seams brand is rendered by React — which means none of
 exists before React mounts. Four surfaces are shown earlier: the `<title>` during
 boot (and whenever a PWA-install dialog or bookmark samples it), the
 `<meta name="theme-color">`, the boot-failure panel's "worth reporting at" issue
-tracker links (shown when the bundle never arrived), and the PWA identity
+tracker links (shown when the bundle never arrived; the panel's heading also names
+the product from that `<title>` when it reveals), and the PWA identity
 (`manifest.json` plus `icon-192.png` / `icon-512.png`). `registerThemeBranding()`
 cannot reach any of them. The edition plugin patches them instead — the HTML
 fields on every build and dev transform, the `public/` overlay at build emit —
@@ -451,6 +452,14 @@ Widgets render in insertion order, take no props (each reads its own state or
 queries), and are each `ErrorBoundary`-isolated. The same rule as for capsule
 segments applies: a widget's size must not depend on the collapse classes or
 level.
+
+**A widget that owns the desktop update flow.** A widget that offers and arms
+the desktop app's update itself (through `window.updateAPI`) also needs the
+core's two update prompts to stay closed, or they open over it. That is not a
+frontend registration: the edition sets `"updatePrompts": "edition"` in the
+`EXTERNALLY-MANAGED` marker it bakes into the app, and every update push then
+carries the flag the prompts read
+([desktop-app.md → Externally-managed installs](../../docs/build/desktop-app.md#externally-managed-installs-repackagers)).
 
 **Theme centre decoration is a backdrop, not a cell.** Under the three-track grid
 `branding.topBar` renders as a full-header background layer, not as a sized flow
@@ -776,7 +785,9 @@ composition benefit.
 So `api/apiTransport.ts` **exports** the blessed `apiTransport`, the same
 `get`/`post`/`put`/`del`/`patch` plus `j`/`jNullable` the core methods use
 (`client.ts` defines them and installs them via `installApiTransport` at its
-module load). An edition builds its OWN fully-typed API module on it:
+module load), and `getWithSignal`, the same `get` aborted by an `AbortSignal`
+for a read its caller bounds with `lib/withDeadline`. An edition builds its OWN
+fully-typed API module on it:
 
 ```ts
 import { apiTransport as t } from '../api/apiTransport'
@@ -791,7 +802,7 @@ static types on the edition side and no new *registry* contract. It never forks
 `client.ts` and never writes raw `fetch`, which would silently drop the session
 key.
 
-`ApiTransport` (the five request helpers plus the `j`/`jNullable` semantics) **is**
+`ApiTransport` (the six request helpers plus the `j`/`jNullable` semantics) **is**
 a small, intentionally frozen downstream contract, because a separately built
 edition compiles against it. There is no version guard on this seam, and the stock
 build stays green whatever you do to it (the seam is inert), so breakage surfaces

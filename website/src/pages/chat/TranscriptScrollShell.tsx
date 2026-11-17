@@ -34,25 +34,53 @@ import { attachUserScrollIntent } from '../../utils/searchScroll'
  *  that contained it would centre the sheet on itself and clip its backdrop. */
 export const PANE_WIDTH_PROPERTY = '--chat-pane-width'
 
+/** The only reader of PANE_WIDTH_PROPERTY: a table the reader widened past the
+ *  reading column (`.markdown-table[data-expanded]`, content-fit.css). */
+const PANE_WIDTH_READER = '.markdown-table[data-expanded]'
+
+/** With no reader mounted, how long the width must hold still before it is
+ *  published. Longer than three frames, so a panel's open or close tween
+ *  (one resize per frame) publishes once, after it ends; shorter than the
+ *  hosts' 200ms width-bucket settle, so the published width is in place
+ *  before a new height-cache scope asks for it (`canMeasure`). */
+export const PANE_WIDTH_REST_MS = 50
+
 /** Publish the scroller's `clientWidth` as PANE_WIDTH_PROPERTY on itself.
  *  `clientWidth` nets out the reserved scrollbar gutter, so it is the width a
  *  child can actually paint into. The measure farm renders inside this same
- *  element, so off-screen rows inherit the identical width. Undebounced: the
- *  tables must reflow with the pane, like the prose column does; the hosts'
- *  own 200ms-settled width buckets scope the height cache, not layout. */
+ *  element, so off-screen rows inherit the identical width. Undebounced while
+ *  a widened table is mounted: it must reflow with the pane, like the prose
+ *  column does; the hosts' own 200ms-settled width buckets scope the height
+ *  cache, not layout. */
 function usePaneWidthProperty(scrollerRef: React.RefObject<HTMLDivElement | null>): void {
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    const publish = () => { el.style.setProperty(PANE_WIDTH_PROPERTY, `${el.clientWidth}px`) }
+    let resting: ReturnType<typeof setTimeout> | undefined
+    const publish = () => {
+      clearTimeout(resting)
+      resting = undefined
+      el.style.setProperty(PANE_WIDTH_PROPERTY, `${el.clientWidth}px`)
+    }
     publish()
     if (typeof ResizeObserver === 'undefined') return
-    // While a side panel slides (panelSlide), only the final width is
-    // published: each change restyles the whole transcript.
-    const observer = new ResizeObserver(() => { if (slideHeld()) afterSlide(publish); else publish() })
+    const observer = new ResizeObserver(() => {
+      // While a side panel slides (panelSlide), only the final width is
+      // published: each change restyles the whole transcript.
+      if (slideHeld()) { clearTimeout(resting); afterSlide(publish); return }
+      // The property is inherited, so each publish restyles every element
+      // under the scroller, and a panel that opens or closes with a click
+      // resizes the scroller on every frame of its tween. With no widened
+      // table mounted nothing on screen reads the value, so it waits until
+      // the width rests.
+      if (el.querySelector(PANE_WIDTH_READER)) { publish(); return }
+      clearTimeout(resting)
+      resting = setTimeout(publish, PANE_WIDTH_REST_MS)
+    })
     observer.observe(el)
     return () => {
       observer.disconnect()
+      clearTimeout(resting)
       forgetAfterSlide(publish)
     }
   }, [scrollerRef])
@@ -139,7 +167,11 @@ function useSlideAnchor(scrollerRef: React.RefObject<HTMLDivElement | null>): vo
     // The reader's own input (a wheel the page's swipe did not claim, a
     // scrollbar press, a scrolling key, a touch) ends the hold at once: the
     // next correction would undo their scroll.
-    const detachIntent = attachUserScrollIntent(el, () => { if (anchor || bottom) drop() })
+    // A downward input (a trackpad's momentum tail) agrees with the bottom pin, so it keeps it.
+    const detachIntent = attachUserScrollIntent(el, (dir) => {
+      if (bottom && dir === 'down') return
+      if (anchor || bottom) drop()
+    })
     const unwatch = watchPanelSlide((sliding, retired) => {
       if (sliding) {
         drop()

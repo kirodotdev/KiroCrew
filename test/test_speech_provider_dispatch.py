@@ -10,6 +10,7 @@ saves a registered name back as ``off``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import io
 import json
@@ -39,7 +40,7 @@ from kiro_crew.platform.interfaces import (
     ProviderAction,
     ProviderStatus,
 )
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _SIGN_IN = ProviderAction(PROVIDER_ACTION_LOGIN, "Sign in to Acme")
 
@@ -419,6 +420,109 @@ class TestSttDispatch:
         _install(stt=(_AcmeStt(),))
         cfg = SttConfig(provider="something-new")
         assert transcribe.batch_duration_cap_secs(cfg) == transcribe._MAX_AUDIO_SECS
+
+
+class _WavOnlyStt(_AcmeStt):
+    """Acme with ``needs_pcm_wav``: notes the format of each clip while it still exists."""
+
+    needs_pcm_wav = True
+
+    async def transcribe_file(self, audio_path: str, stt_config: Any) -> Optional[str]:
+        with wave.open(audio_path, "rb") as wav:
+            shape = (wav.getframerate(), wav.getnchannels(), wav.getsampwidth())
+        self.clips.append((audio_path, shape))
+        return "hello from acme"
+
+
+def _fake_decoder(monkeypatch, *, rate: int = 16000, frames: int = 4) -> list:
+    """Stand in for ffmpeg: write a mono 16-bit WAV at *rate* to the requested output."""
+    calls: list = []
+
+    async def extract(audio_path, start_secs, end_secs, out_path, *, timeout_secs):
+        calls.append((audio_path, start_secs, end_secs, out_path))
+        with wave.open(out_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(b"\x00\x00" * frames)
+        return True
+
+    monkeypatch.setattr(transcribe, "_extract_segment", extract)
+    return calls
+
+
+class TestPcmWavProvider:
+    @pytest.mark.parametrize(
+        "value, needs", [(True, True), (None, False), ("yes", False), (1, False)]
+    )
+    def test_only_exactly_true_asks_for_wav(self, value, needs) -> None:
+        acme = _AcmeStt()
+        if value is not None:
+            acme.needs_pcm_wav = value  # type: ignore[attr-defined]
+        assert speech_providers.needs_pcm_wav(acme) is needs
+
+    def test_a_webm_clip_arrives_as_a_wav_copy_that_is_then_removed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        calls = _fake_decoder(monkeypatch)
+        clip = tmp_path / "recording.webm"
+        clip.write_bytes(b"\x1a\x45\xdf\xa3 webm bytes")
+        cfg = SttConfig(provider="acme")
+        assert asyncio.run(transcribe.transcribe_audio(str(clip), cfg)) == "hello from acme"
+        [(path, shape)] = acme.clips
+        assert path != str(clip) and shape == (16000, 1, 2)
+        assert calls == [(str(clip), 0.0, transcribe._MAX_AUDIO_SECS + 1, path)]
+        assert not Path(path).exists()
+
+    def test_a_pcm_wav_clip_is_passed_unchanged(self, tmp_path, monkeypatch) -> None:
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        calls = _fake_decoder(monkeypatch)
+        clip = tmp_path / "clip.wav"
+        clip.write_bytes(_wav(b"\x01\x00" * 4))
+        asyncio.run(transcribe.transcribe_audio(str(clip), SttConfig(provider="acme")))
+        assert acme.clips == [(str(clip), (16000, 1, 2))] and calls == []
+
+    @pytest.mark.parametrize("over_length", [False, True])
+    def test_no_usable_copy_fails_without_calling_the_provider(
+        self, over_length, tmp_path, monkeypatch
+    ) -> None:
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        if over_length:
+            # One frame a second: a header just past the hour, in a few bytes.
+            calls = _fake_decoder(monkeypatch, rate=1, frames=transcribe._MAX_AUDIO_SECS + 1)
+        else:
+            calls = []
+
+            async def no_decoder(audio_path, start_secs, end_secs, out_path, *, timeout_secs):
+                calls.append((audio_path, start_secs, end_secs, out_path))
+                return False
+
+            monkeypatch.setattr(transcribe, "_extract_segment", no_decoder)
+        clip = tmp_path / "memo.ogg"
+        clip.write_bytes(b"OggS")
+        assert (
+            asyncio.run(transcribe.transcribe_audio(str(clip), SttConfig(provider="acme"))) is None
+        )
+        assert acme.clips == []
+        assert not Path(calls[0][3]).exists()
+
+    def test_a_container_the_decoder_does_not_pin_is_never_converted(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A sniffed playlist would make ffmpeg open the files it names."""
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        calls = _fake_decoder(monkeypatch)
+        clip = tmp_path / "memo.m3u8"
+        clip.write_bytes(b"#EXTM3U\n#EXTINF:1,\n/elsewhere/private.wav\n")
+        assert (
+            asyncio.run(transcribe.transcribe_audio(str(clip), SttConfig(provider="acme"))) is None
+        )
+        assert calls == [] and acme.clips == []
 
 
 @pytest.mark.parametrize(
@@ -1010,3 +1114,189 @@ class TestTtsLanguage:
             body = await (await client.get("/api/voice/config")).json()
         assert body["language_codes"][-1] == "th-TH"
         assert body["language_codes"].count("th-TH") == 1
+
+
+# ── voice product metrics, through the real handlers ─────────────────────────
+
+
+class TestVoiceMetrics:
+    """``metrics.voice`` readings at the real ``/api/ws/stt`` and synthesize handlers."""
+
+    @pytest.fixture
+    def emitted(self, monkeypatch) -> list[tuple[str, dict]]:
+        from kiro_crew.metrics import voice as voice_metrics
+
+        rows: list[tuple[str, dict]] = []
+        monkeypatch.setattr(voice_metrics, "_emit", lambda name, attrs: rows.append((name, attrs)))
+        return rows
+
+    def _point_at_acme(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load",
+            classmethod(lambda cls: _cfg(provider="acme")),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
+
+    @pytest.mark.asyncio
+    async def test_a_session_counts_started_and_one_ended(self, monkeypatch, emitted) -> None:
+        from kiro_crew.metrics import voice as voice_metrics
+
+        _install(stt=(_AcmeStt(streaming=True),))
+        self._point_at_acme(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 8)
+            assert (await _recv_json(ws))["type"] == "final"
+            await ws.send_json({"type": "stop"})
+            await async_wait_until(
+                lambda: any(n == voice_metrics.VOICE_STT_ENDED for n, _ in emitted)
+            )
+            await ws.close()
+        started = [a for n, a in emitted if n == voice_metrics.VOICE_STT_STARTED]
+        ended = [a for n, a in emitted if n == voice_metrics.VOICE_STT_ENDED]
+        assert started == [{"provider": "registered"}]
+        assert len(ended) == 1
+        assert ended[0]["provider"] == "registered"
+        assert ended[0]["outcome"] == "ok"
+        assert ended[0]["transcript"] == "nonempty"
+        assert ended[0]["first_partial"] != "none"
+        # Nothing the person said is an attribute.
+        assert "heard" not in repr(emitted)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_socket_counts_unavailable_and_no_session(
+        self, monkeypatch, emitted
+    ) -> None:
+        from kiro_crew.metrics import voice as voice_metrics
+
+        _install(stt=(_AcmeStt(streaming=False),))
+        self._point_at_acme(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["code"] == "stt_streaming_disabled"
+            await ws.close()
+        names = [n for n, _ in emitted]
+        assert voice_metrics.VOICE_STT_STARTED not in names
+        assert voice_metrics.VOICE_STT_ENDED not in names
+        assert (
+            voice_metrics.VOICE_UNAVAILABLE,
+            {"reason": "provider_not_streaming"},
+        ) in emitted
+
+    @pytest.mark.asyncio
+    async def test_a_provider_ended_session_counts_its_code_and_timeout(
+        self, monkeypatch, emitted
+    ) -> None:
+        from kiro_crew.metrics import voice as voice_metrics
+
+        error = {"type": "error", "message": "ended", "code": "stt_max_duration_exceeded"}
+        _install(stt=(_EndingStt(error),))
+        self._point_at_acme(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 8)
+            await _recv_json(ws)
+            await _recv_json(ws)
+            # Wait while the server is up: its teardown is what reaches the end.
+            await async_wait_until(
+                lambda: any(n == voice_metrics.VOICE_STT_ENDED for n, _ in emitted)
+            )
+            await ws.close()
+        errors = [a for n, a in emitted if n == voice_metrics.VOICE_STT_ERRORS]
+        (ended,) = [a for n, a in emitted if n == voice_metrics.VOICE_STT_ENDED]
+        assert {"provider": "registered", "code": "stt_max_duration_exceeded"} in errors
+        assert ended["outcome"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_a_reply_counts_its_outcome_and_first_audio(
+        self, tmp_path, monkeypatch, emitted
+    ) -> None:
+        from kiro_crew.metrics import voice as voice_metrics
+
+        _install(tts=(_AcmeTts(),))
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        vc = SimpleNamespace(
+            provider="acme",
+            default_voice="Ruth",
+            default_engine="generative",
+            default_rate="100%",
+            default_pitch="+0%",
+            system_voice="",
+            language_code="",
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", vc)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        async with TestClient(TestServer(_voice_app(state))) as client:
+            resp = await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
+            assert resp.status == 200
+        replies = [a for n, a in emitted if n == voice_metrics.VOICE_TTS_REPLIES]
+        assert len(replies) == 1
+        assert replies[0]["provider"] == "registered"
+        assert replies[0]["outcome"] == "ok"
+        assert replies[0]["first_audio"] != "none"
+
+    def _vc(self, monkeypatch, provider: str) -> SimpleNamespace:
+        vc = SimpleNamespace(
+            provider=provider,
+            default_voice="Ruth",
+            default_engine="generative",
+            default_rate="100%",
+            default_pitch="+0%",
+            system_voice="",
+            language_code="",
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", vc)
+        return vc
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_reply_counts_cancelled_not_error(
+        self, tmp_path, monkeypatch, emitted
+    ) -> None:
+        from kiro_crew.dashboard import chat_voice
+        from kiro_crew.metrics import voice as voice_metrics
+
+        self._vc(monkeypatch, "system")
+
+        async def cancelled(*args, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(chat_voice, "_synthesize_request", cancelled)
+        async with TestClient(TestServer(_voice_app(_make_state(tmp_path)))) as client:
+            with contextlib.suppress(Exception):
+                await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
+            await async_wait_until(
+                lambda: any(n == voice_metrics.VOICE_TTS_REPLIES for n, _ in emitted)
+            )
+        (reply,) = [a for n, a in emitted if n == voice_metrics.VOICE_TTS_REPLIES]
+        assert reply["outcome"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_a_reply_keeps_the_provider_that_spoke_it(
+        self, tmp_path, monkeypatch, emitted
+    ) -> None:
+        from kiro_crew.dashboard import chat_voice
+        from kiro_crew.metrics import voice as voice_metrics
+
+        vc = self._vc(monkeypatch, "polly")
+
+        async def switch_then_answer(*args, **kwargs):
+            vc.provider = "system"  # a settings PUT lands mid-synthesis
+            return web.json_response({"ok": True, "chunks": 1})
+
+        monkeypatch.setattr(chat_voice, "_synthesize_request", switch_then_answer)
+        async with TestClient(TestServer(_voice_app(_make_state(tmp_path)))) as client:
+            resp = await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
+            assert resp.status == 200
+        (reply,) = [a for n, a in emitted if n == voice_metrics.VOICE_TTS_REPLIES]
+        assert reply["provider"] == "polly"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_reply_request_counts_nothing(self, tmp_path, emitted) -> None:
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_voice_app(state))) as client:
+            resp = await client.post("/api/voice/synthesize", json={"text": 3})
+            assert resp.status == 400
+        assert emitted == []

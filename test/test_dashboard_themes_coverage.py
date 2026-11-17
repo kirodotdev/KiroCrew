@@ -235,6 +235,15 @@ class TestListThemesSync:
         (themes_dir / "linked").symlink_to(real, target_is_directory=True)
         assert th._list_themes_sync() == []
 
+    def test_junctioned_directory_is_never_listed(
+        self, themes_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Windows junction is a directory that is not a symlink; it is left out like one."""
+        d = _make_pack(themes_dir / "linked")
+        monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda p: Path(p) == d)
+        assert d.is_dir() and not d.is_symlink()
+        assert th._list_themes_sync() == []
+
     # On Windows a read that meets a save's or reinstall's replace raises
     # PermissionError (a sharing violation). That is a valid theme mid-write, so
     # the list retries it instead of dropping the theme like a corrupt file.
@@ -460,6 +469,12 @@ class TestResolveLocalSource:
         src, err = th._resolve_local_source(bad)  # type: ignore[arg-type]
         assert src is None
         assert err == "local 'path' is required"
+
+    @pytest.mark.parametrize("bad", ["~\x00x", "~\ud800"], ids=ascii)
+    def test_a_home_path_with_a_nul_or_surrogate_is_not_a_directory(self, bad: str) -> None:
+        src, err = th._resolve_local_source(bad)
+        assert src is None
+        assert err is not None and "not a directory" in err
 
     def test_non_directory_is_rejected(self, tmp_path: Path) -> None:
         f = tmp_path / "file.txt"

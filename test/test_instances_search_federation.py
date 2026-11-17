@@ -20,6 +20,7 @@ import pytest
 from kiro_crew.dashboard import handlers_instances as hi
 from kiro_crew.history_search import SearchRows
 from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _async_value(value):
@@ -355,9 +356,7 @@ class TestSearchAllEndpoint:
         _enable_instances(monkeypatch)
         state = _state([{"key": "l"}], _Mgr({"a": (True, {"sessions": [{"key": "r"}]})}))
 
-        resp = await hi.api_instances_search_sessions(
-            _request(state, user="slack-minted-user")
-        )
+        resp = await hi.api_instances_search_sessions(_request(state, user="slack-minted-user"))
 
         assert resp.status == 403
 
@@ -366,7 +365,7 @@ class TestSearchAllEndpoint:
         """Defense in depth: a peer's rows are re-redacted locally even though a
         well-behaved peer already redacted them."""
         _enable_instances(monkeypatch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=37)
         mgr = _Mgr({"a": (True, {"sessions": [{"key": "r", "title": f"creds {secret}"}]})})
         state = _state([], mgr)
 

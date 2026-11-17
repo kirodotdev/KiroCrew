@@ -8,6 +8,10 @@
 import type { McpApplyChange } from '../../types'
 import type { ClientTransport } from './transport'
 
+/** GET/POST /api/security/tool-grants: the grants in force, and for the named
+ *  server the code that refuses its grants ('' when they may be given). */
+export interface McpToolGrants { grants: { ref: string }[]; server?: string; refusal?: string }
+
 /** One machine-readable ground for a sharing verdict.
  *
  *  `code` is stable and is what the UI translates. `detail` is verbatim data
@@ -61,6 +65,8 @@ export type McpMeasureProgress = {
   error?: string
 }
 
+export type McpCwdUse = 'uses_cwd' | 'not_used'
+
 export type McpManagedServer = {
   name: string
   stub: boolean            // effective: can_stub AND in_allowlist
@@ -74,6 +80,11 @@ export type McpManagedServer = {
   // enables only servers nobody chose for, so it never re-enables this one.
   // Optional: an older gateway does not send it.
   declined?: boolean
+  // The operator's answer to "does it work on the project's files?" (null when
+  // unanswered), and whether it is Kiro Crew's own server, shared without asking.
+  // Optional: an older gateway does not send them.
+  cwd_use?: McpCwdUse | null
+  cwd_proven?: boolean
   // True when stubbing this server cannot produce a SHARED backend anyway: the
   // rewriter leaves an env-declaring entry unwrapped rather than spawn a pooled
   // backend without a declared key. Optional for the same reason as
@@ -116,6 +127,8 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     // MCP
     mcpServers: () => fetch('/api/mcp').then(j),
     mcpGlobalScopes: () => fetch('/api/mcp/scopes').then(j),
+    /** The MCP config files the servers list skipped because they are saved as UTF-16 or UTF-32. */
+    mcpUnreadableFiles: () => get('/api/mcp/unreadable').then(j) as Promise<{ files: import('../../types').McpUnreadableFile[] }>,
     /** Multi-provider MCP server discovery (official registry, plus the
      *  edition capability provider when one is installed). A query
      *  shorter than 2 chars returns {results: [], providers: [...]} without
@@ -147,6 +160,12 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
       post('/api/mcp/apply', { changes }).then(j),
     mcpToggle: (name: string, enabled: boolean) => post('/api/mcp/toggle', { name, enabled }).then(j),
     mcpToggleTool: (server: string, tool: string, enabled: boolean) => post('/api/mcp/toggle-tool', { server, tool, enabled }).then(j),
+    /** The per-tool "Always allow" grants (`@server/tool`), and with `server`
+     *  the refusal code that keeps that server's toggles off ('' when allowed). */
+    mcpToolGrants: (server: string) =>
+      get(`/api/security/tool-grants?server=${encodeURIComponent(server)}`).then(j) as Promise<McpToolGrants>,
+    mcpToolGrantSet: (ref: string, on: boolean) =>
+      post(on ? '/api/security/tool-grants' : '/api/security/tool-grants/remove', { ref }).then(j) as Promise<McpToolGrants>,
     mcpToggleAll: (enabled: boolean) => post('/api/mcp/toggle-all', { enabled }).then(j),
     mcpRemove: (name: string) => post('/api/mcp/remove', { name }).then(j),
     mcpOAuthRelay: (server: string, redirectUrl: string) =>
@@ -168,7 +187,9 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
     // is written against and is present only when every command could be shown.
     mcpGatewayLaunchPreview: (name: string) => fetch(`/api/mcp-gateway/servers/launch?name=${encodeURIComponent(name)}`).then(j) as Promise<{ name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>,
     mcpGatewayLaunchPreviews: (names: string[]) => post('/api/mcp-gateway/servers/launch', { names }).then(j) as Promise<{ launches: Record<string, { name: string; commands: string[][]; envs: string[][]; complete: boolean; expected_launch?: string }>; errors: Record<string, string> }>,
-    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
+    mcpGatewaySetStub: (name: string, stub: boolean, expectedLaunch?: string, resolveEligibility = false, cwdUse?: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, stub, ...(expectedLaunch ? { expected_launch: expectedLaunch } : {}), ...(resolveEligibility ? { resolve_eligibility: true } : {}), ...(cwdUse ? { cwd_use: cwdUse } : {}) }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; stubbed?: string[]; skipped?: Array<{ name: string; reason: string }>; sharing_on?: boolean; enabled?: boolean; applied?: boolean; restart_required?: boolean; stub_servers?: string[] }>,
+    // Records the answer to "does this server work on the project's files?" alone.
+    mcpGatewaySetCwdUse: (name: string, cwdUse: McpCwdUse) => post('/api/mcp-gateway/servers/stub', { name, cwd_use: cwdUse }).then(j) as Promise<{ ok: boolean; name: string; restart_required?: boolean }>,
     mcpResolveRefresh: () => post('/api/mcp-gateway/resolve-refresh', {}).then(j) as Promise<{ ok: boolean; reason?: string; resolved: Record<string, 'ready' | 'unresolved' | 'error'>; ready?: string[] }>,
     // Starting a measurement pass returns immediately: it spawns two processes per
     // unmeasured server, so the answer arrives through the progress read, not here.

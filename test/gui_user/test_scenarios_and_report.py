@@ -585,6 +585,47 @@ class TestShippedScenarios:
         assert f'Click the "{workspace}" tab' in text
         assert '"Files"' not in text
 
+    def test_settings_security_scenarios_read_the_panes_as_they_render(self) -> None:
+        """The Documentation and Layers scenarios quote what those panes draw.
+
+        A settings card has no frame, and the Layers intro sits behind the
+        heading's info icon, so a scenario expecting a card or an intro line
+        fails every night whatever the product does.
+        """
+        locales = Path(__file__).resolve().parents[2] / "website/src/i18n/locales"
+        en = json.loads((locales / "en.json").read_text(encoding="utf-8"))
+        manual = json.loads((locales / "en.manual.json").read_text(encoding="utf-8"))
+        panel = {
+            **en["pages"]["settings"]["securityPanel"],
+            **manual["pages"]["settings"]["securityPanel"],
+        }
+
+        def text(name: str) -> str:
+            sc = scenarios.load_scenario(SCENARIOS_DIR / f"{name}.yaml")
+            return " ".join([*sc.steps, *sc.expectations])
+
+        docs = text("settings-security-docs-section")
+        for key in (
+            "documentation",
+            "section_group_reference",
+            "security_deep_dive",
+            "security_module_spec",
+        ):
+            assert f'"{panel[key]}"' in docs, key
+        assert "card" not in docs
+
+        layers = text("settings-security-layers-section")
+        for key in (
+            "defense_in_depth_architecture",
+            "feature_os_sandbox",
+            "feature_sensitive_paths",
+            "feature_credential_redaction",
+        ):
+            assert f'"{panel[key]}"' in layers, key
+        assert "info icon" in layers
+        for retired in ("intro line", "six", "6 security layers"):
+            assert retired not in layers, retired
+
     def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
         """The sleeping-session expander row is named by its shipped sentence.
 

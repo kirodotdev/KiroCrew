@@ -194,7 +194,7 @@ describe('SourcesList — inline folder scan panel', () => {
 })
 
 describe('SourcesList — row actions', () => {
-  it('syncs a manual source and disables the button while in flight', async () => {
+  it('syncs a manual source and marks the button busy while in flight', async () => {
     let releaseSync: (v: unknown) => void = () => {}
     handler = (path: string, opts?: RequestInit) => {
       if (path === '/sources') return [src()]
@@ -208,10 +208,13 @@ describe('SourcesList — row actions', () => {
 
     const button = screen.getByLabelText('Sync source')
     fireEvent.click(button)
-    await waitFor(() => expect(screen.getByLabelText('Sync source')).toHaveProperty('disabled', true))
+    // Busy is aria-disabled, not native disabled: the button stays in the tab
+    // order so a keyboard user keeps focus while the sync runs.
+    await waitFor(() => expect(screen.getByLabelText('Sync source')).toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.getByLabelText('Sync source')).toHaveProperty('disabled', false)
 
     releaseSync({ synced: true })
-    await waitFor(() => expect(screen.getByLabelText('Sync source')).toHaveProperty('disabled', false))
+    await waitFor(() => expect(screen.getByLabelText('Sync source')).not.toHaveAttribute('aria-disabled'))
     expect(callsTo('/sources/s1/sync', 'POST')).toHaveLength(1)
   })
 

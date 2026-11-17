@@ -16,10 +16,15 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import skill_trust
 from kiro_crew.config import paths
 from kiro_crew.config.loader import KiroCrewConfig
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=37)
 
 
 @pytest.fixture
@@ -304,13 +309,13 @@ class TestLastMessagePreview:
     def test_an_equal_string_in_another_object_answers_the_same(self):
         from kiro_crew.dashboard import chat_utils_display as cud
 
-        text = "token AKIAIOSFODNN7EXAMPLE in a message " * 3
+        text = f"token {_SECRET_TOKEN} in a message " * 3
         twin = "".join(list(text))
         assert twin is not text
         assert cud._redacted_preview(text, 80) == cud._redacted_preview(twin, 80)
-        assert "AKIAIOSFODNN7EXAMPLE" not in cud._redacted_preview(twin, 80)
+        assert _SECRET_TOKEN not in cud._redacted_preview(twin, 80)
 
-    def test_a_changed_exempt_host_set_is_seen(self, monkeypatch):
+    def test_a_changed_token_parameter_exemption_is_seen(self, monkeypatch):
         from kiro_crew.dashboard import chat_utils_display as cud
 
         text = "see https://tenant.example.com/view and more"
@@ -320,9 +325,11 @@ class TestLastMessagePreview:
         monkeypatch.setattr(
             cud, "_display_redaction_cache_key", lambda *a, **k: keys.append(1) or real(*a, **k)
         )
-        monkeypatch.setattr(cud, "_exempt_exact_hosts", lambda: frozenset({"tenant.example.com"}))
+        monkeypatch.setattr(
+            cud, "_token_param_exempt_prefixes", lambda: ("https://tenant.example.com/",)
+        )
         cud._redacted_preview(text, 80)
-        assert keys, "a new exempt-host set must miss the object memo"
+        assert keys, "a new token-parameter exemption must miss the object memo"
 
     def test_retained_text_is_bounded_by_characters(self, monkeypatch):
         from kiro_crew.dashboard import chat_utils_display as cud
@@ -343,8 +350,10 @@ class TestLastMessagePreview:
     def test_the_redaction_context_is_held_once(self, monkeypatch):
         from kiro_crew.dashboard import chat_utils_display as cud
 
-        # A fresh host set per call, as the policy reader builds one.
-        monkeypatch.setattr(cud, "_exempt_exact_hosts", lambda: frozenset({"a.example.com"}))
+        # A fresh prefix tuple per call, as the policy reader builds one.
+        monkeypatch.setattr(
+            cud, "_token_param_exempt_prefixes", lambda: ("https://a.example.com/",)
+        )
         texts = [f"message number {i}" for i in range(50)]
         for text in texts:
             cud._redacted_preview(text, 80)
@@ -355,7 +364,9 @@ class TestLastMessagePreview:
             len(entry) == 3 and isinstance(entry[1], int)
             for entry in cud._display_preview_by_object.values()
         )
-        monkeypatch.setattr(cud, "_exempt_exact_hosts", lambda: frozenset({"b.example.com"}))
+        monkeypatch.setattr(
+            cud, "_token_param_exempt_prefixes", lambda: ("https://b.example.com/",)
+        )
         cud._redacted_preview(texts[0], 80)
         assert len(cud._display_preview_by_object) == 1, "a new context empties the map"
 

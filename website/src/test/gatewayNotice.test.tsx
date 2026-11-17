@@ -178,6 +178,35 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(retrying, withTool, 0)?.text).toBe(COPY.restored)
   })
 
+  it('words a throttle retry as the provider throttling, never as the connection', () => {
+    // A throttle is the provider's answer: the network was fine, so neither the
+    // pending card nor either settled card may speak of a connection.
+    const throttled = withNotice('transient_throttle_retrying', 'transient_retry')
+    expect(COPY.throttle_retrying).toBe('The model provider is throttling requests — retrying…')
+    expect(resolveGatewayNotice(throttled, [throttled], 0)).toEqual({ text: COPY.throttle_retrying, card: 'notice', tone: 'warn' })
+    const answered = [throttled, throttled, msg('assistant', { content: 'ok' })]
+    for (const i of [0, 1]) {
+      expect(resolveGatewayNotice(throttled, answered, i)).toEqual({ text: COPY.throttle_restored, card: 'notice', tone: 'info' })
+    }
+    expect(resolveGatewayNotice(throttled, [throttled, giveUp], 0)).toEqual({ text: COPY.throttle_interrupted, card: 'notice', tone: 'info' })
+    // The terminal row of a throttle ladder is its own error card.
+    const throttleGiveUp = withNotice('transient_throttle_give_up')
+    expect(resolveGatewayNotice(throttleGiveUp, [throttled, throttleGiveUp], 1)).toEqual({ text: COPY.throttle_give_up, card: 'error' })
+    expect(resolveGatewayNotice(throttled, [throttled, throttleGiveUp], 0)?.text).toBe(COPY.throttle_interrupted)
+    // A throttle that cut off a streamed answer finishes it under the same wording.
+    const throttleResuming = withNotice('transient_throttle_resuming', 'transient_retry')
+    expect(resolveGatewayNotice(throttleResuming, [throttleResuming], 0)).toEqual({ text: COPY.throttle_resuming, card: 'notice', tone: 'warn' })
+    expect(resolveGatewayNotice(throttleResuming, [throttleResuming, msg('assistant', { content: 'ok' })], 0)?.text).toBe(COPY.throttle_restored)
+    expect(resolveGatewayNotice(throttleResuming, [throttleResuming, throttleGiveUp], 0)?.text).toBe(COPY.throttle_interrupted)
+    for (const text of [COPY.throttle_retrying, COPY.throttle_restored, COPY.throttle_interrupted, COPY.throttle_give_up, COPY.throttle_resuming]) {
+      expect(text).not.toMatch(/connection/i)
+    }
+    // A plain 5xx in the same ladder keeps its own connection wording.
+    const mixed = [throttled, retrying, msg('assistant', { content: 'ok' })]
+    expect(resolveGatewayNotice(retrying, mixed, 1)?.text).toBe(COPY.restored)
+    expect(resolveGatewayNotice(throttled, mixed, 0)?.text).toBe(COPY.throttle_restored)
+  })
+
   it('never settles the terminal shape', () => {
     const list = [giveUp, msg('assistant', { content: 'a later, unrelated turn' })]
     expect(resolveGatewayNotice(giveUp, list, 0)?.text).toBe(COPY.give_up)
@@ -374,6 +403,50 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
       text: 'p is throttled — running on f until p recovers.',
       tone: 'warn',
     })
+    expect(resolveGatewayNotice(row('notice', 'model_server_error_fallback', { primary: 'p', fallback: 'f' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'p keeps returning server errors — running on f until p recovers.',
+      tone: 'warn',
+    })
+    // The mode a harness's session moved to, by the name the session advertised.
+    expect(resolveGatewayNotice(row('notice', 'harness_mode_changed', { mode: 'Plan' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'This session switched to Plan mode.',
+      tone: 'info',
+    })
+    // A harness's background task that ended, with its own summary when it sent one.
+    expect(
+      resolveGatewayNotice(row('notice', 'harness_task_completed', { task: 'Sleep then echo', detail: 'exit code 0' }), [], 0),
+    ).toEqual({ card: 'notice', text: 'Background task completed: Sleep then echo — exit code 0', tone: 'info' })
+    expect(resolveGatewayNotice(row('notice', 'harness_task_failed', { task: 'npm test', detail: '' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'Background task failed: npm test',
+      tone: 'warn',
+    })
+    expect(resolveGatewayNotice(row('notice', 'harness_task_stopped', { task: 'watch logs' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'Background task stopped: watch logs',
+      tone: 'info',
+    })
+    // Claude Code retrying a request: the category it named, worded by the catalog.
+    expect(
+      resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 2, max: 10, reason: 'overloaded', status: 529 }), [], 0),
+    ).toEqual({ card: 'notice', text: 'Claude is retrying a failed request (overloaded), attempt 2 of 10.', tone: 'warn' })
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: 'rate_limit' }), [], 0)?.text).toBe(
+      'Claude is retrying a failed request (rate limit), attempt 1 of 3.',
+    )
+    // A category this build does not word is its own token; no category, the HTTP status.
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: 'invalid_request' }), [], 0)?.text).toBe(
+      'Claude is retrying a failed request (invalid request), attempt 1 of 3.',
+    )
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: '', status: 503 }), [], 0)?.text).toBe(
+      'Claude is retrying a failed request (HTTP 503), attempt 1 of 3.',
+    )
+    expect(resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 1, max: 3, reason: '' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'Claude is retrying a failed request, attempt 1 of 3.',
+      tone: 'warn',
+    })
   })
 
   it('classifies pre-token history rows by their wording', () => {
@@ -390,10 +463,10 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     ).toBe('The last tool call was refused because the gateway was at capacity — retrying it in 9s (attempt 3).')
     expect(
       resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.'), [], 0)?.text,
-    ).toBe('Switching to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.')
+    ).toBe('Switching to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.')
     expect(
-      resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
-    ).toBe('Switching to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.')
+      resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
+    ).toBe('Switching to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.')
     // A notice wording on an error row is not ours.
     expect(resolveGatewayNotice(legacy('error', 'ℹ Auto-continue cancelled — your message takes over.'), [], 0)).toBeNull()
   })
@@ -548,9 +621,16 @@ describe('wire parity with the gateway constants', () => {
     [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\s*=\s*"([^"]+)"/gm)].map((m) => m[1]),
   )
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
+  // Every column-0 assignment of a token name, whatever its right-hand side: the
+  // strict scan above must read each one, or a token written in another shape
+  // (an annotation, single quotes) drops out of the per-token check below. Compared
+  // with this scan rather than a stored total, which every PR adding a token edits.
+  const assigned = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_(?!META_KEY|ARGS_KEY)[A-Z_]+\b\s*[:=]/gm)])
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(80)
+    expect(backend.length).toBeGreaterThan(0)
+    expect(backend).toHaveLength(assigned.length)
+    expect(new Set(backend).size).toBe(backend.length)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 
@@ -592,6 +672,13 @@ describe('the composed cards carry no English fragment in a non-English locale',
     const waited = resolveGatewayNotice(row('error', 'background_turn_abandoned', { waited_minutes: 5 }), [], 0)?.text ?? ''
     expect(waited).toContain('\u5206\u949f')
     expect(waited).not.toMatch(/minutes?/)
+  })
+
+  it('words a retry\'s error category in zh-CN', async () => {
+    await i18next.changeLanguage('zh-CN')
+    const retry = resolveGatewayNotice(row('notice', 'harness_api_retry', { attempt: 2, max: 10, reason: 'rate_limit' }), [], 0)?.text ?? ''
+    expect(retry).toContain('\u901f\u7387\u9650\u5236')
+    expect(retry).not.toMatch(/rate|limit/)
   })
 })
 
@@ -646,13 +733,36 @@ describe('the KAS signed-out row', () => {
     expect(resolveGatewayNotice(launcher, [launcher], 0)).toBeNull()
   })
 
-  it('recognises the current "send your message again" ending on a token-less row, as the side panel writes it', () => {
-    const tail = 'Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again.'
+  it.each([
+    'Settings → Agent Harness → Kiro Agent → Kiro sign-in',
+    'Settings → Agent Harness → Kiro sign-in',
+  ])('recognises the current "send your message again" ending on a token-less row naming %s, as the side panel writes it', card => {
+    const tail = `Not signed in to Kiro. Sign in from ${card}, then send your message again.`
     const bare = msg('error', { content: tail })
     const relay = msg('error', { content: `KAS runs through kiro-cli's relay. ${tail}` })
     const bundle = msg('error', { content: `KAS runs on Kiro Crew's own engine because kiro-cli is not installed. ${tail}` })
     expect(resolveGatewayNotice(bare, [bare], 0)?.text).toBe(GN.kas_signed_out)
     expect(resolveGatewayNotice(relay, [relay], 0)?.text).toBe(lead(RELAY, GN.kas_signed_out))
     expect(resolveGatewayNotice(bundle, [bundle], 0)?.text).toBe(lead(BUNDLE, GN.kas_signed_out))
+  })
+})
+
+describe('the row for an agent whose built-in tools were not ready', () => {
+  // The wire content is the readiness timeout's own message, kept for the log.
+  const row = msg('error', {
+    content: 'KAS managed MCP readiness timed out after 90s: kirocrew-core: unreported',
+    meta: { notice: 'tools_not_ready' },
+  } as Partial<ChatMessage>)
+
+  it('reads plainly, and names Resume only on the card that offers it', () => {
+    renderWith(mainRegistry, row)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(en.pages.chat.errorCard.retry_tools_not_ready)
+    expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent(/KAS|MCP|readiness/)
+    cleanup()
+    renderWith(defaultMessageRenderers, row)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(GN.tools_not_ready)
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    cleanup()
   })
 })

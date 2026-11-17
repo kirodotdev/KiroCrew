@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _not_ready_snapshot(
-    initial_setup_complete: bool = False, probe_error: str = ""
+    initial_setup_complete: bool = False, probe_error: str = "", cli_too_old: bool = False
 ) -> dict[str, Any]:
     """A retryable not-ready snapshot for when a status probe cannot run.
 
@@ -41,6 +41,9 @@ def _not_ready_snapshot(
 
     ``probe_error`` names why the probe could not run, so the gate has a
     diagnostic to show instead of a bare not-ready with nothing behind it.
+
+    ``cli_too_old`` carries the service's spawn-proven too-old verdict, so a
+    probe that raised does not drop the Update Kiro CLI card.
     """
 
     result: dict[str, Any] = asdict(
@@ -49,6 +52,7 @@ def _not_ready_snapshot(
             installed=True,
             initial_setup_complete=initial_setup_complete,
             probe_error=probe_error,
+            acp_supported=not cli_too_old,
         )
     )
     # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
@@ -184,6 +188,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
         snapshot = _not_ready_snapshot(
             bool(service.initial_setup_complete),
             probe_error=f"{type(exc).__name__}: {exc}"[:400],
+            cli_too_old=service.cli_too_old,
         )
     snapshot = await _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):

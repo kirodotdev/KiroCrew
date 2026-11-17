@@ -133,9 +133,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A goal check-in skips its run rather than land on a slot a send
                 # has already reserved; it asks again after reading the ledger.
                 ("goal_reminder.py", "_idle_thread"),
-                # A worker report or the upgrade notice waits for the crewmate's
-                # thread to be free, reservation included.
+                # A worker report, the upgrade notice or an app's wake waits for
+                # the crewmate's thread to be free, reservation included.
                 ("mate_thread_wakes.py", "_idle"),
+                # The app's Bot list reports a reserved thread as busy, like the
+                # owner's roster does.
+                ("handlers/members_app.py", "app_bot_list"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
                 ("chat_turn/session_reset.py", "_arm_pending_reset_retry"),
@@ -166,9 +169,16 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # registered yet.
                 ("chat_api/session_relaunch.py", "api_chat_slot_project"),
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
+                # The ultracode and Fast mode routes' shared writer.
+                ("chat_api/slot_effort.py", "_write_session_switch"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
+                # The reload's closing row: a dispatched turn with no registered
+                # provider yet is the one starting the agent, and its reply or
+                # error card says how that went, so the reload posts no row. It
+                # reads the reservation because that turn may not execute yet.
+                ("chat_api/session_relaunch.py", "_report_reload_respawn"),
                 # A crewmate's worker reload waits for a reserved worker slot the
                 # same way, through _switch_target_busy.
                 ("crewmate_worker_reload.py", "_is_busy"),
@@ -248,6 +258,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The summary verb reports liveness beside the digest for the
                 # same reason `read_messages` does.
                 ("session_control_parts/session_status.py", "read_summary"),
+                # The queue verb reports liveness beside the listing, for the
+                # same reason.
+                ("session_control_queue.py", "queue_target"),
                 ("session_control_parts/session_messaging.py", "send_to_target"),
                 # Pre-pick idle check via _switch_target_busy (idle-only tool contract).
                 ("session_control_parts/model_switch.py", "set_model_target"),
@@ -273,6 +286,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("warm_task_brief.py", "_still_current"),
                 ("warm_task_brief.py", "_wait_for_idle_turn"),
                 ("ws.py", "_handle_slot_focused"),
+                # A slot a send has reserved is past the moment a read ahead of
+                # its first message could help.
+                ("skill_read_ahead.py", "read_ahead"),
             }
         },
         **{
@@ -283,6 +299,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # the server's total agree; continue_slot_turn still refuses a
                 # reserved slot, reported as skipped.
                 ("chat_resume_all.py", "collect_interrupted_idle"),
+                # A card send is refused while a turn executes. It also reads the
+                # reservation directly (`_turn_admission_reserved`), which this
+                # table does not enumerate.
+                ("card_send.py", "_thread_is_idle"),
                 ("channel_slots.py", "_window_refresh_is_safe"),
                 ("chat_slack.py", "drain_slack_backfill"),
                 # The synthesis outage re-check fires only on an idle slot: a
@@ -298,6 +318,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # the caller's own reservation must not hold the note back.
                 ("slot_buffers.py", "flush_restored_hold"),
                 ("slot_projection.py", "SlotProjection.to_dict"),
+                # The running turn's project names only a turn that has claimed
+                # its session; a reservation has none yet.
+                ("slot_projection.py", "_running_turn_pin"),
                 ("slot_registry.py", "SlotRegistry.running_session_keys"),
                 ("state_parts/chat_slot.py", "_ChatSlot.running"),
             }

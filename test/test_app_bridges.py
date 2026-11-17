@@ -1146,6 +1146,19 @@ class TestStdioInterpreterResolution:
         )
         assert entry["command"] == str(created[0])
 
+    def test_a_double_dash_ends_option_parsing_and_never_triggers_the_pin(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # ``--`` ends CPython's option parsing; a ``-m`` after it is argv for the
+        # script, not a module launch, so the venv-first default applies.
+        created: list[Path] = []
+        entry = self._register_stdio(
+            tmp_path, app_env, monkeypatch,
+            {"command": "python3", "args": ["--", "-m", "kiro_crew.x"]},
+            setup=lambda root: created.append(_fake_venv_python(root)),
+        )
+        assert entry["command"] == str(created[0])
+
     def test_an_option_value_that_looks_like_a_script_stays_venv_first(
         self, tmp_path, app_env, monkeypatch
     ):

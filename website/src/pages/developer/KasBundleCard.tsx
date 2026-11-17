@@ -10,6 +10,7 @@ import { Btn } from '../../components/ui'
 import { useOutageFailure } from '../../hooks/useOutageFailure'
 import { fmtBytes, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { reportForError } from '../../utils/errorReport'
 
 /** The config field this card's switch writes. */
 export const KAS_BUNDLE_CONFIG_KEY = 'agent.kas_bundle'
@@ -87,6 +88,7 @@ export function KasBundleCard() {
         {statusFailed && (
           <ErrorNotice
             message={i18nT('pages.developer.kasBundleCard.status_unavailable')}
+            report={reportForError(statusQ.error)}
             variant="inline"
             askAgent
           />
@@ -100,12 +102,15 @@ export function KasBundleCard() {
 
   const installed = status.installed
   const canTurnOn = installed !== null && !installing
-  // The last KAS spawn took Crew's own engine because kiro-cli's relay cannot run
-  // here. The only sign of that switch on this card, so it is always shown.
+  // The last KAS spawn took Crew's own engine without agent.kas_bundle: kiro-cli's
+  // relay cannot run here, or the ACP runtime sharing preview picked it. The only
+  // sign of that switch on this card, so it is always shown.
   const automatic = status.route?.automatic === true
   const automaticText = !automatic
     ? ''
-    : status.route?.reason === 'kiro_cli_signed_out'
+    : status.route?.reason === 'chat_runtime_sharing'
+      ? i18nT('pages.developer.kasBundleCard.route_auto_sharing_preview')
+      : status.route?.reason === 'kiro_cli_signed_out'
       ? i18nT('pages.developer.kasBundleCard.route_auto_kiro_cli_signed_out')
       : i18nT('pages.developer.kasBundleCard.route_auto_no_kiro_cli')
   const progress = status.progress
@@ -122,6 +127,14 @@ export function KasBundleCard() {
   return (
     <div className="space-y-2" data-testid="kas-bundle-card">
       <div className="flex flex-wrap items-center gap-2">
+        {/* busy while its OWN save runs, so the switch keeps keyboard focus
+            instead of a native disabled dropping it to the page. The
+            can't-turn-on case stays native disabled: the switch is off and the
+            engine is not installed yet, which is not the save running. (This
+            note sits outside the element on purpose: the settings extractor
+            scans the tag's own text to a 4000-char ceiling, and a backtick in
+            an inline comment would open a template-string state that hides the
+            closing tag and drops the setting from the registry.) */}
         <div className="min-w-0 flex-1">
           <SettingsToggle
             configKey={KAS_BUNDLE_CONFIG_KEY}
@@ -129,7 +142,8 @@ export function KasBundleCard() {
             description={i18nT('pages.developer.kasBundleCard.toggle_description')}
             checked={status.enabled}
             onChange={value => toggleMut.mutate(value)}
-            disabled={toggleMut.isPending || (!status.enabled && !canTurnOn)}
+            busy={toggleMut.isPending}
+            disabled={!status.enabled && !canTurnOn}
           />
         </div>
         {/* Its own notice below says what is pending once a save lands, so the
@@ -214,6 +228,18 @@ export function KasBundleCard() {
                 ? i18nT('pages.developer.kasBundleCard.install_failed')
                 : toggleMut.isError
                   ? i18nT('pages.developer.kasBundleCard.save_failed')
+                  : undefined
+        }
+        // The same order as the message, so the report is the shown failure's own.
+        report={
+          statusFailed
+            ? reportForError(statusQ.error)
+            : status.error
+              ? undefined
+              : installMut.isError
+                ? reportForError(installMut.error)
+                : toggleMut.isError
+                  ? reportForError(toggleMut.error)
                   : undefined
         }
         variant="inline"

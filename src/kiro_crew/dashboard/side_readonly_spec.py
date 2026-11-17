@@ -184,7 +184,9 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
     which puts the cause before its "Refusing to run the backend default mode"
     sentence and the remedy after it. For an ordinary agent
     :func:`_ordinary_mode_explanation` answers: a missing file gets
-    ``kirocrew setup --agent-only``, a present one the parse check. For a
+    ``kirocrew setup --agent-only`` (or, for a configured
+    ``agent.default_agent`` setup never writes,
+    :func:`missing_default_agent_explanation`), a present one the parse check. For a
     spec THIS module published both halves of that are wrong: setup never writes
     it (a side turn does, see :func:`publish_readonly_spec`), and it is usually
     PRESENT -- kiro-cli lists its agents once, at process start, so a process
@@ -236,7 +238,9 @@ def _home_relative(path: Path) -> str:
 def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
     """``(cause, remedy)`` for an agent that is not a published read-only spec.
 
-    A missing ``~/.kiro/agents/<agent>.json`` keeps the "likely missing" answer.
+    A missing ``~/.kiro/agents/<agent>.json`` keeps the "likely missing" answer,
+    except when *agent* is the configured ``agent.default_agent`` and not a spec
+    setup writes: :func:`missing_default_agent_explanation` names the setting.
     A file that IS present was found but not listed, which means kiro-cli refused
     it or started before it was written, so the answer says that and points at
     ``kiro-cli agent validate``, the one check that reports kiro-cli's own parse
@@ -267,7 +271,7 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
         logger.debug("could not read %s to word a mode refusal", target, exc_info=True)
         return missing
     if not present:
-        return missing
+        return missing_default_agent_explanation(agent) or missing
     # Name the file that was probed: ``KIRO_HOME`` can move kiro-cli's agents
     # directory away from ``~/.kiro/agents``, and the command has to validate the
     # file kiro-cli dropped, not a copy at the default path.
@@ -288,6 +292,46 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
         "parser rejected the file, or kiro-cli started before the file was written.",
         f"Run {validate} to see kiro-cli's parse error. If it passes, start a new "
         "session so a fresh kiro-cli lists the agent.",
+    )
+
+
+def missing_default_agent_explanation(agent: str) -> tuple[str, str] | None:
+    """``(cause, remedy)`` when *agent* is ``agent.default_agent`` and has no spec file.
+
+    Every session that names no agent (a plain chat, ``kirocrew chat``, an
+    agent-less schedule) starts from ``agent.default_agent``. When that names an
+    agent with no ``<agents dir>/<agent>.json``, ``kirocrew setup --agent-only``
+    cannot repair it: setup writes only the specs Kiro Crew owns
+    (:data:`~kiro_crew.agent_files.OWNED_KIRO_AGENT_FILES`) and never edits the
+    setting, so the next plain session is refused the same way. The fix is the
+    setting, the same remedy ``kirocrew doctor`` prints for this state.
+
+    ``None`` when *agent* is not a registered agent name, is one of the specs
+    setup writes, is not the configured default, or has a file; the caller then
+    gives its own answer. Blocking I/O (a config load and one stat): run it off
+    the event loop. Never raises, since it only words a refusal.
+    """
+    from kiro_crew.agent import kiro_agents_dir_path
+    from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+
+    if not is_registered_agent_name(agent) or f"{agent}.json" in OWNED_KIRO_AGENT_FILES:
+        return None
+    try:
+        from kiro_crew.config import KiroCrewConfig
+
+        if getattr(KiroCrewConfig.load().agent, "default_agent", "") != agent:
+            return None
+        target = kiro_agents_dir_path() / f"{agent}.json"
+        if os.path.isfile(target):
+            return None
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not check agent.default_agent for %r", agent, exc_info=True)
+        return None
+    return (
+        f"agent.default_agent names {agent!r}, which has no spec at "
+        f"{_home_relative(target)}, and setup writes only Kiro Crew's own agents.",
+        "Run `kirocrew config set agent.default_agent kirocrew`, or pick another "
+        "default in the chat agent picker, then start a new session.",
     )
 
 

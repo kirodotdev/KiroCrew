@@ -884,6 +884,25 @@ def current_tool_call_id() -> str:
     return _CURRENT_TOOL_CALL_ID.get()
 
 
+#: Longest phase word a long tool's heartbeat carries.
+HEARTBEAT_PHASE_MAX_CHARS = 64
+
+
+def heartbeat_fields(phase: str) -> dict[str, str]:
+    """The fields a long tool adds to its ``/api/session-keepalive`` heartbeat.
+
+    ``tool_call_id`` is the harness call the tool runs under (the
+    :func:`current_tool_call_id` the loop installs for the call and for each of
+    its deferred steps), so the gateway restarts that call's own silence timer;
+    ``phase`` is what the tool is doing, the same word its MCP progress
+    notification carries.
+    """
+    return {
+        "tool_call_id": current_tool_call_id(),
+        "phase": str(phase or "")[:HEARTBEAT_PHASE_MAX_CHARS],
+    }
+
+
 # Held in its own slot rather than on ``CallerContext`` because the case it
 # exists for is precisely the one where there IS no ``CallerContext``: a
 # connection the gateway could not name. Folding it into the identity object

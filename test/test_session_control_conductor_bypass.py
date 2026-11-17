@@ -96,6 +96,13 @@ class TestOwnerTabConductorPredicate:
         slot = self._slot()
         assert sc._owner_tab_conductor(self._state(slot), slot.key)
 
+    def test_conductor_modes_default_agent_is_recognised(self):
+        from kiro_crew import crew_mode
+
+        assert crew_mode.DEFAULT_CREW_MODE_AGENT in sc.CONDUCTOR_AGENTS
+        slot = self._slot(agent=crew_mode.DEFAULT_CREW_MODE_AGENT)
+        assert sc._owner_tab_conductor(self._state(slot), slot.key)
+
     def test_deprecated_alias_is_recognised(self):
         slot = self._slot(agent="kirocrew-ledger-conductor")
         assert sc._owner_tab_conductor(self._state(slot), slot.key)

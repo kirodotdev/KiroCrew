@@ -722,33 +722,75 @@ _OWNERS_FOUND = {
 }
 
 
-@functools.lru_cache(maxsize=1)
-def _family_test_texts() -> tuple[tuple[str, str], ...]:
-    """``(path, text)`` of each test-tree file that spells a mirrored facade or an owner,
-    read once for the three scans below."""
-    names = [*_SPELLINGS_FOUND, *_OWNERS_FOUND]
-    root = source_corpus.repo_root()
-    found = []
-    for path in _test_tree_files() if names else ():
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if _mentions(text, names):
-            found.append((path.relative_to(root).as_posix(), text))
-    return tuple(found)
-
-
 #: One spelling table for every corpus scan -- each facade's spellings and each owner's
 #: own name -- so each test file is parsed once for all of them.
 _SCAN_SPELLINGS = tuple(sorted({**_SPELLINGS_FOUND, **{o: o for o in _OWNERS_FOUND}}.items()))
 
 
-@functools.lru_cache(maxsize=None)
-def _events_of(path: str, spellings: tuple[tuple[str, str], ...]) -> tuple[PatchSite, ...]:
-    """:func:`patch_events` of one corpus file, parsed once per spelling table."""
-    text = dict(_family_test_texts())[path]
-    try:
-        return tuple(patch_events(text, dict(spellings)))
-    except SyntaxError:
-        return ()
+@dataclasses.dataclass(frozen=True)
+class _CorpusFile:
+    """What the three corpus scans below need from one test-tree file that spells a
+    mirrored facade or an owner. The file's text is not kept: about 6,000 of them hold
+    over 130 MiB of source, which an xdist worker would otherwise carry to its end."""
+
+    path: str
+    #: :func:`_admitted`: the create=True scan counts this file as measured.
+    admitted: bool
+    #: Admitted, and :func:`may_create` says it may pass ``create`` to a patch.
+    create_candidate: bool
+    #: :func:`parsed_for_the_corpus`: its events feed :func:`_corpus_events`.
+    routed: bool
+    #: :func:`patch_events` with :data:`_SCAN_SPELLINGS`; empty unless a scan reads them.
+    events: tuple[PatchSite, ...]
+    #: :func:`routed_patched_names` of this file alone.
+    patched: dict[str, frozenset[str]]
+
+
+def _read_corpus_file(path: str, text: str) -> _CorpusFile:
+    """One file's :class:`_CorpusFile`, parsing *text* at most once."""
+    parsed: list[tuple[PatchSite, ...]] = []
+
+    def events_of(_path: str = path, _text: str = text) -> tuple[PatchSite, ...]:
+        if not parsed:
+            try:
+                parsed.append(tuple(patch_events(text, dict(_SCAN_SPELLINGS))))
+            except SyntaxError:
+                parsed.append(())
+        return parsed[0]
+
+    admitted = _admitted(text, _SPELLINGS_FOUND)
+    create_candidate = admitted and may_create(text)
+    routed = parsed_for_the_corpus(text, _SPELLINGS_FOUND, _OWNERS_FOUND)
+    patched = routed_patched_names([(path, text)], _SPELLINGS_FOUND, events_of)
+    events = events_of() if create_candidate or routed else ()
+    return _CorpusFile(
+        path,
+        admitted,
+        create_candidate,
+        routed,
+        events,
+        {facade: frozenset(names) for facade, names in patched.items()},
+    )
+
+
+def _corpus_records(paths: Iterable[Path], root: Path) -> tuple[_CorpusFile, ...]:
+    """:func:`_read_corpus_file` of each of *paths* that spells a family member, one text
+    at a time: ``facade_mirror_scan``'s per-text caches are dropped after each file, so
+    no text outlives its own reading."""
+    names = [*_SPELLINGS_FOUND, *_OWNERS_FOUND]
+    found = []
+    for path in paths if names else ():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if _mentions(text, names):
+            found.append(_read_corpus_file(path.relative_to(root).as_posix(), text))
+        facade_mirror_scan.clear_text_caches()
+    return tuple(found)
+
+
+@functools.lru_cache(maxsize=1)
+def _corpus_files() -> tuple[_CorpusFile, ...]:
+    """:func:`_corpus_records` of the whole test tree, read once for the three scans."""
+    return _corpus_records(_test_tree_files(), source_corpus.repo_root())
 
 
 def install_census(root: Path) -> tuple[set[str], set[str]]:
@@ -848,16 +890,16 @@ def test_no_test_patches_a_mirrored_facade_name_with_create_true() -> None:
     }
     offenders = []
     scanned = 0
-    for path, text in _family_test_texts():
-        if not _admitted(text, _SPELLINGS_FOUND):
+    for record in _corpus_files():
+        if not record.admitted:
             continue
         scanned += 1
-        if not may_create(text):
+        if not record.create_candidate:
             continue
-        for site in create_true_sites(_events_of(path, _SCAN_SPELLINGS), forwarded):
-            if (Path(path).name, site.function) in _ALLOWED:
+        for site in create_true_sites(record.events, forwarded):
+            if (Path(record.path).name, site.function) in _ALLOWED:
                 continue
-            offenders.append(f"{path}:{site.line} {site.module}.{site.name}")
+            offenders.append(f"{record.path}:{site.line} {site.module}.{site.name}")
     assert offenders == [], (
         "mock.patch(..., create=True) on a name a mirrored facade forwards deletes it from "
         "every owner on exit and never writes it back; patch it without create=True:\n"
@@ -1037,25 +1079,23 @@ def routed_patched_names(
     return found
 
 
-@functools.lru_cache(maxsize=1)
 def _corpus_events() -> tuple[tuple[str, PatchSite], ...]:
     """``(path, event)`` for every patch a routed test-tree file makes on a family member."""
     return tuple(
-        (path, event)
-        for path, text in _family_test_texts()
-        if parsed_for_the_corpus(text, _SPELLINGS_FOUND, _OWNERS_FOUND)
-        for event in _events_of(path, _SCAN_SPELLINGS)
+        (record.path, event)
+        for record in _corpus_files()
+        if record.routed
+        for event in record.events
     )
 
 
-@functools.lru_cache(maxsize=1)
 def _corpus_patched_names() -> dict[str, set[str]]:
     """Facade -> every name the test trees patch through it (:func:`routed_patched_names`)."""
-    return routed_patched_names(
-        _family_test_texts(),
-        _SPELLINGS_FOUND,
-        lambda path, _text: _events_of(path, _SCAN_SPELLINGS),
-    )
+    found: dict[str, set[str]] = {}
+    for record in _corpus_files():
+        for facade, names in record.patched.items():
+            found.setdefault(facade, set()).update(names)
+    return found
 
 
 def one_facade_patched_names(
@@ -1308,3 +1348,62 @@ def test_the_corpus_scans_parse_once_and_execute_a_bounded_sample(family: Family
     names = {f"n{i}" for i in range(1000)} | set(family.index.holders)
     sample = reach_sample(names, family.index)
     assert len(sample) == _SAMPLE and set(sample) <= set(family.index.holders)
+
+
+def test_the_corpus_readers_read_each_text_once_for_a_large_table() -> None:
+    """A work budget, pinned by count: the regular-expression reader and the router ask the
+    same text about the same large table, and the second asks nothing new; and the parents
+    of every leaf come from one pass over the text, not one pass per leaf."""
+    table = {f"pkg.mod{i}.facade{i}": f"pkg.facade{i}" for i in range(80)}
+    text = "".join(
+        f"from pkg.mod{i} import facade{i}\nfacade{i}.x{i} = 1\nmod{i}.facade{i}.y = 2\n"
+        for i in range(80)
+    )
+    calls: list[str] = []
+    real = facade_mirror_scan._mentions_plain
+    facade_mirror_scan.clear_text_caches()
+
+    def counted(*args: object, **kwargs: object) -> bool:
+        calls.append(str(args[1]))
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(facade_mirror_scan, "_mentions_plain", counted)
+        first = text_patched_names(text, table)
+        asked = len(calls)
+        needs_syntax_tree(text, table)
+    assert len(first) == 80 and asked == 80
+    assert len(calls) == asked, "the router re-read a table the reader already answered"
+    before = facade_mirror_scan._dotted_parents.cache_info().misses
+    for i in range(80):
+        facade_mirror_scan._leaf_parts(text + " ", f"facade{i}")
+    assert facade_mirror_scan._dotted_parents.cache_info().misses == before + 1
+
+
+def test_the_corpus_pass_keeps_no_text_once_a_file_is_read(tmp_path: Path) -> None:
+    """A memory budget, pinned by what is kept: the corpus pass holds each file's findings,
+    never its text, and leaves the scanner's per-text caches empty after every file, so
+    the worker running these guards does not carry the test tree's source to its end."""
+    if not _FACADES:
+        pytest.skip("no mirrored facade to spell")
+    facade = sorted(_FACADES)[0]
+    spelled = tmp_path / "test_spelled.py"
+    spelled.write_text(
+        f"from unittest import mock\nmock.patch('{facade}.anything', create=True)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_plain.py").write_text("x = 1\n", encoding="utf-8")
+    records = _corpus_records(sorted(tmp_path.glob("*.py")), tmp_path)
+    assert [record.path for record in records] == ["test_spelled.py"]
+    record = records[0]
+    assert record.admitted and record.create_candidate and record.events
+    text = spelled.read_text(encoding="utf-8")
+    assert text not in dataclasses.astuple(record)
+    for cached in (
+        facade_mirror_scan._from_imports,
+        facade_mirror_scan._leaf_parts,
+        facade_mirror_scan._dotted_parents,
+        facade_mirror_scan._text_words,
+        facade_mirror_scan._mentioned_in,
+    ):
+        assert cached.cache_info().currsize == 0, cached

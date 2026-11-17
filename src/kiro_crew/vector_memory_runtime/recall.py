@@ -13,8 +13,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
+from kiro_crew import memory_recall_filters as recall_filters
 from kiro_crew import memory_v2
-from kiro_crew.embeddings import PRIORITY_INTERACTIVE
+from kiro_crew.embeddings import PRIORITY_INTERACTIVE, enter_work_phase
 from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery, _RecallSpaceChanged
@@ -22,6 +23,7 @@ from kiro_crew.vector_memory_runtime.embedding import _RecallQuery, _RecallSpace
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from kiro_crew.memory_recall_filters import RecallFilters
     from kiro_crew.vector_memory import VectorMemoryStore
 
 # The store's own logger: callers and tests filter on it by name.
@@ -74,10 +76,10 @@ def _kept_episodes(
 def get_context_preview(store: VectorMemoryStore, query_text: str = "") -> dict:
     """Preview what would be injected into context (for debugging).
 
-    Reports the UNSCOPED view. A ``project_dir`` parameter was offered here
-    briefly and removed: the only caller never passed one, so it could not
-    change any observed output, and a knob nobody turns still has to be read
-    and trusted by whoever comes next.
+    Reports the UNSCOPED view and takes no ``project_dir``: its callers, the
+    dashboard's context-preview and observability endpoints, have no project to
+    pass, and a knob nobody turns still has to be read and trusted by whoever
+    comes next.
     """
     if store.algorithm_version == "v2":
         return store.recall(query_text)
@@ -123,6 +125,7 @@ def recall(
     conversation_id: str = "",
     session_affinity: float = 0.0,
     recency_boost: float = 0.0,
+    filters: RecallFilters | None = None,
 ) -> dict:
     """Compute once; discard mixed-space results and retry keyword-only once.
 
@@ -134,15 +137,18 @@ def recall(
     non-list, or names rows this search did not produce leaves the recall result
     exactly as it is.
     """
+    enter_work_phase("search")
     with store._db_lock:
         generation = store._space_generation
         signature = store.recorded_embedding_space()
+    enter_work_phase("embed")
     vector = (
         store._try_embed(query_text, PRIORITY_INTERACTIVE)
         if query_text.strip() and cap > 0 and store.embed_fn
         else None
     )
-    query = _RecallQuery(vector, generation, signature)
+    enter_work_phase("search")
+    query = _RecallQuery(vector, generation, signature, filters)
     try:
         return store._recall_once(
             query_text,
@@ -161,7 +167,7 @@ def recall(
             query_text,
             cap=cap,
             project_dir=project_dir,
-            query=_RecallQuery(None, None, None),
+            query=_RecallQuery(None, None, None, filters),
             keep=keep,
             conversation_id=conversation_id,
             session_affinity=session_affinity,
@@ -192,8 +198,12 @@ def recall_once(
         v2_operating_point,
     )
 
+    filters = query.filters
+
     def retrieval(facts: list[dict], episodes: list[dict]) -> dict:
         evidence: dict = {"facts": facts, "episodes": episodes}
+        if filters is not None:
+            evidence["filters"] = filters.describe()
         if store.algorithm_version == "v2":
             evidence["operating_point"] = v2_operating_point(
                 store.recorded_embedding_space(), embed_fn=store.embed_fn
@@ -221,26 +231,38 @@ def recall_once(
     # Embed the original question once; lexical scoring uses its topic
     # terms so CJK question endings cannot suppress known facts.
     query_text = " ".join(sorted(memory_recall.recall_terms(query_text)))
-    facts = (
-        store._semantic_candidates_v2(query_text, recall_query=query)
-        if store.algorithm_version == "v2"
-        else store._semantic_candidates_v1(query_text, recall_query=query)
-    )
+    with recall_filters.as_of_scope(filters):
+        if filters is not None and not filters.wants("fact"):
+            facts = []
+        elif store.algorithm_version == "v2":
+            facts = store._semantic_candidates_v2(query_text, recall_query=query)
+        else:
+            facts = store._semantic_candidates_v1(query_text, recall_query=query)
+        # A date filter narrows a ranked list, so look further down it first.
+        episodic_limit = store._episodic_limit * (4 if filters is not None and filters.timed else 1)
+        episodes = (
+            []
+            if filters is not None and not filters.wants("episode")
+            else store.search_episodic(
+                query_embedding=query_embedding,
+                query_text=query_text,
+                limit=episodic_limit,
+                relevance_filter=True,
+                recall_query=query,
+                conversation_id=conversation_id,
+                session_affinity=session_affinity,
+                recency_boost=recency_boost,
+            )
+        )
+    if filters is not None and filters.timed:
+        facts = recall_filters.narrow(store, facts, "fact", filters)
+        episodes = recall_filters.narrow(store, episodes, "episode", filters)[
+            : store._episodic_limit
+        ]
     for fact in facts:
         fact.setdefault("id", f"key:{fact['key']}")
         fact.pop("embedding", None)
         fact.setdefault("retrieval", {"reason": "v1_hybrid_match"})
-    episodes = store.search_episodic(
-        query_embedding=query_embedding,
-        query_text=query_text,
-        limit=store._episodic_limit,
-        relevance_filter=True,
-        recall_query=query,
-        conversation_id=conversation_id,
-        session_affinity=session_affinity,
-        recency_boost=recency_boost,
-    )
-
     for episode in episodes:
         episode.pop("embedding", None)
         episode.setdefault(
@@ -298,18 +320,22 @@ def recall_once(
     # Recall is the only way a private store's or a non-default workspace's
     # lessons reach the model, so they stay in the payload.
     lessons_share = cap // 3
-    lessons = store.get_lessons_context(
-        query_text, cap=lessons_share, project_dir=project_dir, recall_query=query
+    lessons = (
+        ""
+        if filters is not None and not filters.wants("lesson")
+        else store.get_lessons_context(
+            query_text, cap=lessons_share, project_dir=project_dir, recall_query=query
+        )
     )
     # Over the share means the one top-ranked lesson alone did not fit, so it
     # is shortened behind an in-text marker rather than dropped: an empty block
     # reads the same as "no lesson matched", exactly when the best match is the
     # long one. That needs the share to hold the block's frame, the marker and
-    # one character of text: 161 characters for one in-scope lesson (a cap of
-    # 483), and from 217 once the counts line appears (a cap of 651), one more
+    # one character of text: 159 characters for one in-scope lesson (a cap of
+    # 477), and from 215 once the counts line appears (a cap of 645), one more
     # per extra digit in the counts. A query with no recall terms orders the
     # block "most recent" instead of "most relevant", two characters shorter,
-    # so that floor is 215 (a cap of 645). Below that the block is omitted.
+    # so that floor is 213 (a cap of 639). Below that the block is omitted.
     if len(lessons) > lessons_share:
         lessons = _lessons.truncate_explicit_lessons(lessons, lessons_share)
     remainder = cap - len(lessons)
@@ -325,7 +351,10 @@ def recall_once(
     # the hook WIDENING the result rather than narrowing it. Screening what `fit`
     # selected can only shrink the payload, and `bound_recall_payload` below renders
     # the contexts and char counts from the evidence, so the numbers follow.
-    episodes = _kept_episodes(episodes, keep)
+    if keep is not None:
+        enter_work_phase("decision")
+        episodes = _kept_episodes(episodes, keep)
+        enter_work_phase("search")
     # Contexts, char counts and previews are rendered from the evidence here.
     result = bound_recall_payload(
         {

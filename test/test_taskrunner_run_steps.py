@@ -899,7 +899,6 @@ class TestSemaphoreParallelScheduling:
                 # Now let task 1 finish
                 task1_may_finish.set()
 
-        # Run both concurrently
         await finished(
             asyncio.gather(
                 runner._execute_tasks(run, history_key=""),
@@ -916,3 +915,58 @@ class TestSemaphoreParallelScheduling:
             f"task 3 started at index {start3_idx} but task 1 ended at {end1_idx}; "
             "expected task 3 to start BEFORE task 1 finishes (slot refill)"
         )
+
+
+# ── A cancelled parallel step is a failed step, not a silent success ──
+
+
+class TestParallelStepCancellation:
+    """Pin: in a parallel group, a step that raises CancelledError is treated as
+    a FAILED step.
+
+    Regression: ``gather(..., return_exceptions=True)`` captures BaseException,
+    so a cancelled step arrives as an ``asyncio.CancelledError`` instance. The
+    old verdict ``isinstance(result, Exception) or not result`` missed it --
+    ``CancelledError`` is not an ``Exception`` and is truthy -- so the run
+    treated the cancelled step as a success and continued past it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cancelled_parallel_step_fails_the_run(self, tmp_path: Path) -> None:
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(
+            sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=3
+        )
+        # Isolate the group verdict: a detected failure routes to _try_replan,
+        # which here reports no revision so the run ends "failed".
+        runner._try_replan = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        runner._notify = AsyncMock()  # type: ignore[method-assign]
+
+        async def _fake_exec(run, task, history_key="", session_key="") -> bool:
+            if task.index == 2:
+                raise asyncio.CancelledError()
+            task.status = StepStatus.PASSED
+            task.result = "ok"
+            return True
+
+        runner._execute_single_task = _fake_exec  # type: ignore[assignment]
+
+        # Three independent steps -> one parallel group; step 2 is cancelled.
+        tasks = [Step(index=i, title=f"t{i}", description="d") for i in range(1, 4)]
+        run = TaskRun(
+            spec_path=str(tmp_path / "spec.md"),
+            spec_content="# spec",
+            tasks=tasks,
+            status="running",
+            task_id="cancel_test",
+            work_dir=str(tmp_path),
+        )
+        run.started_at = run.last_task_time = 1.0
+
+        await runner._execute_tasks(run, history_key="")
+
+        # The cancelled step must be seen as a failure: the run tried to replan
+        # and, getting none, ended "failed" -- never "running"/"completed".
+        runner._try_replan.assert_awaited_once()
+        assert runner._try_replan.await_args.args[1].index == 2
+        assert run.status == "failed"

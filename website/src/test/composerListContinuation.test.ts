@@ -210,6 +210,53 @@ describe('listLineBreakEdit renumbers the items below a new one', () => {
   })
 })
 
+// A line nests under an item only at or past the item's text column, which
+// moves when the item's number gains or loses a digit.
+describe('the lines nested under a renumbered item follow its text column', () => {
+  it.each([
+    ['8. h|\n9. i\n   - ii', '8. h\n9. \n10. i\n    - ii'],
+    ['98. h|\n99. i\n    - ii', '98. h\n99. \n100. i\n     - ii'],
+    // Wrapped text, a numbered child with its own child, and a code fence.
+    [
+      '8. h|\n9. i\n   wrapped\n   1. sub\n      - deep\n   ```\n   code\n   ```\n10. j\n    - jj',
+      '8. h\n9. \n10. i\n    wrapped\n    1. sub\n       - deep\n    ```\n    code\n    ```\n11. j\n    - jj',
+    ],
+    // A blank line inside the item does not end what is nested under it.
+    ['8. h|\n9. i\n   ```\n   a\n\n   b\n   ```\ntext', '8. h\n9. \n10. i\n    ```\n    a\n\n    b\n    ```\ntext'],
+  ])('moves them in when the number gains a digit %j', (input, expected) => {
+    expect(breakAt(input)).toBe(expected)
+  })
+
+  it('moves them back when the number loses a digit', () => {
+    expect(breakAt('8. h\n9. |\n10. i\n    - ii\n    more')).toBe('8. h\n\n9. i\n   - ii\n   more')
+    expect(backspaceAt('8. h\n9. |\n10. i\n    - ii')).toEqual(['8. h\n\n9. i\n   - ii', 5])
+  })
+
+  it('leaves the lines that are not nested under that item', () => {
+    // Short of its text column, and under an item whose number keeps its width.
+    expect(breakAt('8. h|\n9. i\n  lazy\n   - ii\n10. j\n    - jj'))
+      .toBe('8. h\n9. \n10. i\n  lazy\n    - ii\n11. j\n    - jj')
+    // Past the end of the item.
+    expect(breakAt('8. h|\n9. i\n\ntext\n   - x')).toBe('8. h\n9. \n10. i\n\ntext\n   - x')
+    expect(breakAt('1. h|\n2. i\n   - ii')).toBe('1. h\n2. \n3. i\n   - ii')
+  })
+
+  it('reports each move as a span of the original value, after its number write', () => {
+    expect(listLineBreakEdit('8. h\n9. i\n   - ii', 4)?.renumber).toEqual([
+      { start: 5, end: 6, insert: '10' },
+      { start: 13, end: 13, insert: ' ' },
+    ])
+    expect(listMarkerBackspaceEdit('8. h\n9. \n10. i\n    - ii', 8)?.renumber).toEqual([
+      { start: 9, end: 11, insert: '9' },
+      { start: 18, end: 19, insert: '' },
+    ])
+    // Only spaces are taken back: a line whose indentation ends in a tab stays.
+    expect(listMarkerBackspaceEdit('8. h\n9. \n10. i\n   \t- ii', 8)?.renumber).toEqual([
+      { start: 9, end: 11, insert: '9' },
+    ])
+  })
+})
+
 describe('ordinal increment', () => {
   it.each([
     ['1', '2'],

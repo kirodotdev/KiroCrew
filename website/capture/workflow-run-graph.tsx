@@ -28,7 +28,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // Initialise i18next exactly as main.tsx does: importing the module only DEFINES
 // initI18n, and without calling it every label in the frame renders blank.
 import { initI18n } from '../src/i18n'
-import WorkflowsRuns, { type RunDetail } from '../src/apps/workflows/WorkflowsRuns'
+import WorkflowsRuns, { type RunDetail } from '../src/components/workflows/WorkflowsRuns'
 import '../src/index.css'
 
 initI18n('en')

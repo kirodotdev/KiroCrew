@@ -23,7 +23,7 @@ import ipaddress
 import logging
 import re
 
-# ``socket`` is not used directly here anymore (the hostname helpers moved to
+# ``socket`` is not used directly here (the hostname helpers live in
 # ``urls``), but it is re-exported on purpose: callers and tests patch
 # ``origin.socket.gethostname`` / ``.gethostbyname``, and because this is the one
 # shared stdlib module object, patching it through this name still reaches the

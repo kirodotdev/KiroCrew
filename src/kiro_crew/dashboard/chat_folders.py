@@ -207,7 +207,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
     folder_id = str(body.get("folder_id") or "")
@@ -369,7 +369,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
     # Optional generation token, the same one api_chat_slot_folder reads: the
@@ -1156,7 +1156,7 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
     mode = _coerce_requested_mode(body.get("mode", ""))

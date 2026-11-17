@@ -9,14 +9,14 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``,
-``_compaction_failed_at``, ``_input_wait_emitted``, ``_last_stop_reason``,
+``_compaction_failed_at``, ``_drained_child_events``, ``_input_wait_emitted``, ``_last_stop_reason``,
 ``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
-``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
+``_stale_eligible``, ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
-``_cancelled``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
-``_keepalive_parked``, ``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``,
-``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
+``_cancelled``, ``chat_shared``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
+``_keepalive_parked``, ``_keepalive_ts``, ``_own_ingress_seq``, ``_parked_total``, ``_queue``,
+``_runtime``, ``_session_id``, ``_skill_reads``, ``_steers_proven``,
 ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_raw_params``, ``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``,
@@ -29,8 +29,9 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import raw_sdk_tasks
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     classify_notification,
@@ -48,6 +49,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
 )
+from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
 from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -57,10 +59,14 @@ from kiro_crew.acp.liveness import (
     INTERACTIVE_NARROWING_RISKS,
     VERDICT_DEAD,
     VERDICT_STUCK_INPUT,
+    VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
+from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
+from kiro_crew.acp.session_handle_runtime_contract import host_checks_sessions
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
+from kiro_crew.acp.tool_silence import named_tool_call_id
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     EVENT_AGENT_SWITCHED,
@@ -82,6 +88,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    OWN_STEERING_REQUEST_METHODS,
     STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
@@ -90,6 +97,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -103,6 +111,13 @@ logger = logging.getLogger("kiro_crew.acp.session_handle")
 #: a turn budget it never reaches, instead of racing the arm against the turn's
 #: own deadline.
 QUEUE_POLL_SECS = 5.0
+
+#: Shortest spacing between two reads of the per-call silence timers. The read
+#: runs at the top of every pass, frame or no frame, so a stream of frames that
+#: are not the silent call's cannot starve it; this keeps a fast stream from
+#: walking the in-flight calls once per frame. Named so a test can read it on
+#: every tick.
+SILENCE_CHECK_SECS = 1.0
 
 #: Longest a cancelled kiro turn waits for the metering frame behind its answer.
 #: The frame follows within milliseconds; the bound keeps a missing one from
@@ -156,9 +171,23 @@ async def _dispatch_events(
     # between quiet samples is judged on its longest silence, not on the one
     # flat reading that happens to land on a probe tick.
     tool_moved_ts = float("-inf")
+    # When the per-call silence timers are next read (``acp.tool_silence``).
+    silence_due = float("-inf")
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+    # This turn's claude children are listed as they are seen.
+    self._reset_claude_child_turn()
+    # What the pre-turn drain read from a claude child that ended between turns:
+    # the text its redactor held, then its roster, so its card gets both.
+    if self._drained_child_events:
+        _drained, self._drained_child_events = self._drained_child_events, []
+        for _drained_event in _drained:
+            yield _drained_event
+    # Whether this is the dashboard turn that draws the session's background work.
+    # The readers take the per-chat client; they read the fields this handle names alike.
+    _raw_reader: Any = self
+    _draws_background = raw_sdk_tasks.begin_draw(_raw_reader)
     try:
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -253,6 +282,51 @@ async def _dispatch_events(
                     usage=self.last_prompt_stats.to_turn_usage(),
                 )
                 return
+
+            # Per-call silence timer (``acp.tool_silence``): each non-shell call
+            # in flight has its own bound, restarted only by a frame attributable
+            # to that call. Read at the top of every pass rather than only in the
+            # empty-queue arm below: frames that are not the silent call's (a
+            # co-tenant's fanned-out roster, a sibling call's streamed output)
+            # keep that arm from running at all, and a lost file edit beside a
+            # busy subagent would otherwise wait out the build-scale window. The
+            # oracle arm and the hard cap stay behind it; a shell call has no
+            # silence class and keeps their rules alone. The action is the same
+            # non-lethal tool-stall recovery, naming the silent call: the
+            # recovery prompt tells the model the call timed out, so it can retry.
+            # Read only with nothing queued: a frame still waiting there may be
+            # the silent call's own (its result, landed while this loop was in
+            # an await), and it is judged once it has been handled. Nor while a
+            # concurrent _wait_for_response runs (set_model, a command): it
+            # takes frames off this queue and holds them until its own answer
+            # comes, so a call's own frame can be out of sight in its buffer.
+            if (
+                self._tool_dispatched
+                and not self._cancelled
+                and self._queue.qsize() == 0
+                and not self._awaited_responses
+            ):
+                _silence_now = time.monotonic()
+                if _silence_now >= silence_due:
+                    silence_due = _silence_now + SILENCE_CHECK_SECS
+                    _silent = self._silent_tool_call(_silence_now)
+                    if _silent is not None:
+                        _silence_evidence = _silent.evidence()
+                        self._emit_watchdog_metric(
+                            "cancel",
+                            VERDICT_UNKNOWN,
+                            _silence_evidence,
+                            _silent.silence,
+                            window="silence",
+                        )
+                        async for ev in self._end_stalled_tool(
+                            VERDICT_UNKNOWN,
+                            _silence_evidence,
+                            _silent.silence,
+                            stalled=_silent.state,
+                        ):
+                            yield ev
+                        return
 
             # Cooperative yield, placed where the previous frame is fully
             # handled and the next one is not yet dequeued: every branch
@@ -354,12 +428,15 @@ async def _dispatch_events(
                     # Path B — concurrent _wait_for_response: it dequeues
                     # the frame (qsize unchanged), buffers it, and re-
                     # injects it later. _ingress_seq (incremented in
-                    # _wait_for_response for notification frames) advances.
+                    # _wait_for_response for every buffered frame) advances,
+                    # and _own_ingress_seq too when the frame is this
+                    # session's own.
                     #
                     # Combining both signals means an UNKNOWN-over-window
                     # cancel cannot fire while real activity is in-flight on
                     # either delivery path.
                     _ingress_before = self._ingress_seq
+                    _own_ingress_before = self._own_ingress_seq
                     _q_depth_before = self._queue.qsize()
                     _keepalive_before = self._keepalive_ts
                     verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
@@ -368,19 +445,20 @@ async def _dispatch_events(
                         self._ingress_seq != _ingress_before
                         or self._queue.qsize() > _q_depth_before
                     ):
-                        # Both clocks advance. Neither signal can name the
-                        # arriving frame's owner (it has not been dequeued),
-                        # so this deliberately keeps the guard's existing
-                        # fail-safe over-count — the same trade _ingress_seq
-                        # already documents at its increment. A co-tenant
-                        # frame landing inside the oracle await therefore
-                        # still defers the tool clock, but by ONE tick: when
-                        # it is dequeued the ownership check below leaves
-                        # last_own_data_ts alone, so the deferral cannot
-                        # compound into an unbounded one.
+                        # The verdict is void for this tick and the stale
+                        # clock advances. The tool clock moves only for a
+                        # frame proven to be this session's: one a concurrent
+                        # _wait_for_response buffered names its owner
+                        # (_own_ingress_seq), and one still queued is
+                        # dequeued next, where the ownership check below
+                        # decides. A co-tenant frame landing inside the
+                        # oracle await therefore costs one tick and keeps
+                        # the idle measured so far, so the next consult that
+                        # no frame interrupts acts on the whole window.
                         last_data_ts = time.monotonic()
-                        last_own_data_ts = last_data_ts
-                        parked_at_own_data = self._parked_total
+                        if self._own_ingress_seq != _own_ingress_before:
+                            last_own_data_ts = last_data_ts
+                            parked_at_own_data = self._parked_total
                         continue
                     if self._keepalive_ts > _keepalive_before:
                         # A keepalive for THIS session landed during the
@@ -656,6 +734,13 @@ async def _dispatch_events(
                 # Runtime process died — sentinel
                 raise self._died("Runtime process died during prompt")
 
+            # What Claude Code's background work sent before this frame, drawn
+            # above it by the dashboard turn alone (``raw_sdk_tasks``), as the
+            # per-chat client draws it.
+            if _draws_background:
+                for _raw_event in raw_sdk_tasks.pending_events(_raw_reader):
+                    yield _raw_event
+
             last_data_ts = time.monotonic()
             parked_at_data = self._parked_total
             if not msg.fanout_no_owner:
@@ -667,10 +752,45 @@ async def _dispatch_events(
                 # (a co-tenant's), and only the runtime knows which.
                 last_own_data_ts = last_data_ts
                 parked_at_own_data = parked_at_data
+                if (
+                    req_id == AGENT_STARTED_REQUEST_ID
+                    # A native child's frame is its own work: its tool calls
+                    # are re-tagged as child activity and never disarm the gate.
+                    and str((msg.params or {}).get("sessionId") or "") == self._session_id
+                    and _starts_agent_turn(
+                        msg, str(getattr(self._runtime, "acp_backend", "") or "")
+                    )
+                ):
+                    # A cycle the agent runs on its own ends on its closing
+                    # usage_update, which claude-agent-acp sends only when an
+                    # assistant message set usage. One that goes quiet after a
+                    # thought, a plan or an answered permission request sends
+                    # none, so the stale-turn gate arms from each activity
+                    # frame, not only after text. Set before the frame is
+                    # handled, so a tool call it opens disarms it again.
+                    self._stale_eligible = self._no_tool_in_flight()
+            else:
+                # Fanned out to several sessions: the runtime is shared, so a
+                # kiro-cli sub-agent of this session, whose frames carry its own
+                # sessionId, has its frames dropped, and its silence would be
+                # read off frames this session never saw.
+                self._retire_unseen_subagent_timers(runtime_shared=True)
             self.last_prompt_stats.event_count += 1
 
             # Turn-complete response
             if msg.is_response_for(req_id):
+                if msg.error and host_checks_sessions(self._runtime):
+                    # A claude turn whose only unfinished calls are background
+                    # agents' ends as the finished turn it is, as on the per-chat
+                    # client (``claude_background_calls``), read on this session's
+                    # own harness state.
+                    _state: Any = getattr(self._runtime, "_session_harness_states", {}).get(
+                        self._session_id
+                    )
+                    if getattr(_state, "_ends_background_only_turns", False) is True:
+                        _ended: JsonRpcMessage | None = await _state._settle_background_only(msg)
+                        if _ended is not None:
+                            msg = _ended
                 if msg.error:
                     if error_is_refusal_terminal(msg.error, self.last_prompt_stats.refusal):
                         # A content-filter refusal whose terminal is the
@@ -796,6 +916,22 @@ async def _dispatch_events(
                 if msg.id in self._awaited_responses:
                     self._queue.put_nowait(msg)
                     await asyncio.sleep(0)
+                elif req_id == AGENT_STARTED_REQUEST_ID and _ends_agent_started_turn(msg):
+                    # A turn the agent started reads no response of its own, so a
+                    # response nobody waits on is a prompt's late answer: the
+                    # backend finished, and that ends this turn as its own
+                    # closing usage_update would.
+                    self._tool_dispatched = False
+                    self._last_stop_reason = (
+                        STOP_REASON_CANCELLED if self._cancelled else STOP_REASON_END_TURN
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=self._last_stop_reason,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
                 else:
                     logger.debug(
                         "Dropping stray response frame id=%s (no waiter)",
@@ -846,15 +982,32 @@ async def _dispatch_events(
                     if msg.id is not None:
                         await self._runtime.send_error(msg.id, -32600, "invalid request id")
                     continue
+                # A Stop on the card of the claude child that asks settles it
+                # (``session_handle_claude_children``).
+                self._note_native_child_request(msg)
+                # The request is its call's frame (a child's: its sub-agent's).
+                # The human wait that follows is a consumer park, which every
+                # clock subtracts, so the call's timer is paused while it lasts.
+                if _perm_event.sub_session_id:
+                    self.note_subagent_frame()
+                else:
+                    self.note_tool_call_activity(_perm_event.tool_call_id)
                 # Before the fidelity gate: a tool the spec switched off is
                 # refused whether or not this consumer opted into the child
                 # contract, and naming that reason in the audit is more use
                 # than naming the fidelity one for the same rejected call.
+                # A zero-tool spec refuses every request first, a child's too.
+                if await self._deny_zero_tools(_perm_event):
+                    continue
                 if await self._deny_spec_disabled_tool(_perm_event):
                     continue
                 if await self._refuse_unidentifiable_mcp_approval(msg, _perm_event):
                     continue
                 if await self._refuse_unreadable_mcp_identity(_perm_event):
+                    continue
+                if host_checks_sessions(self._runtime) and await self._refuse_by_harness(
+                    _perm_event
+                ):
                     continue
                 if await self._refuse_unretained_provenance(msg, _perm_event):
                     continue
@@ -865,7 +1018,8 @@ async def _dispatch_events(
                     # fail-closed here instead of yielding — the request
                     # is REJECTED (never dropped), the child gets a tool
                     # error, nothing can hang, and no title-only approve
-                    # can occur on any consumer surface.
+                    # can occur on any consumer surface. The host notice
+                    # goes first, so the turn is not told a user refused.
                     logger.warning(
                         "rejecting low-fidelity child permission request "
                         "id=%s for fidelity-unaware consumer (child=%s)",
@@ -878,7 +1032,12 @@ async def _dispatch_events(
                         "child_low_fidelity_unaware_consumer",
                         sub_session_id=_perm_event.sub_session_id or "",
                     )
-                    await self.reject_tool(_perm_event.request_id)
+                    await self._reject_with_host_notice(
+                        _perm_event,
+                        "this surface does not judge a sub-agent request that arrives "
+                        "without verifiable security context",
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                    )
                     yield AcpEvent(
                         kind=EVENT_SUBAGENT_ACTIVITY,
                         sub_session_id=_perm_event.sub_session_id,
@@ -892,6 +1051,9 @@ async def _dispatch_events(
                         ),
                     )
                     continue
+                # Pending until approve_tool or reject_tool takes it: an ask
+                # naming no call pauses every call's timer meanwhile.
+                self._sync_silence_hold()
                 # Mark BEFORE the yield: the consumer parks on this event, and
                 # an observer reading the park mid-flight must be able to tell
                 # "waiting for a human" from "the consumer stopped pulling".
@@ -902,16 +1064,44 @@ async def _dispatch_events(
                 # itself (decline) unless this consumer can put it to a person;
                 # the returned event is the ask that consumer must answer. No
                 # trust tier applies: it is the server's requirement, not ours.
+                # The ask is its call's frame, as a permission request is; while
+                # it waits on a person the call is not judged, and the answer
+                # restarts its timer (answer_elicitation).
+                self.note_tool_call_activity(named_tool_call_id(msg.params))
                 _elicit_event = await self._handle_elicitation_request(msg)
                 if _elicit_event is None:
                     continue
+                # A Stop on the card of the claude child that asks settles it.
+                self._note_native_child_request(msg)
+                self._sync_silence_hold()
                 # Same park marking as a permission: the consumer waits on a
                 # human here too, and an observer must not read that as a stall.
                 self._awaiting_permission = True
                 yield _elicit_event
             elif action == "server_request_unknown":
+                # A request this client cannot read that names one of this
+                # turn's calls: whatever it asked, that call's silence proves
+                # nothing from here on.
+                self._retire_call_timer(named_tool_call_id(msg.params))
                 await self._runtime.send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found")
+            elif action == "skip":
+                # A notification nothing here reads; one naming a call is a
+                # frame for it of a kind the silence timer cannot read.
+                self._retire_call_timer(named_tool_call_id(msg.params))
             elif action == "update":
+                # A session that left the permission state its host requires is
+                # closed before any of the frame is yielded. Read only on a host
+                # with per-session state, so every other host makes no call.
+                if host_checks_sessions(self._runtime):
+                    self._note_permission_state(msg)
+                    await self._refuse_moved_permission_state()
+                if self._runtime.acp_backend in OWN_STEERING_REQUEST_METHODS:
+                    # The run id a goose steer must name, and goose's echo of a
+                    # steer it drained into this turn (``_steer_via_goose_request``).
+                    self._note_goose_run(msg)
+                    _echo = self._goose_steer_echo(msg)
+                    if _echo is not None:
+                        yield _echo
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
                     # consumer that stops pulling: the call already ran, and this
@@ -948,6 +1138,20 @@ async def _dispatch_events(
                             kind=EVENT_COMPLETE, usage=self.last_prompt_stats.to_turn_usage()
                         )
                         return
+                if req_id == AGENT_STARTED_REQUEST_ID and _ends_agent_started_turn(msg):
+                    # The usage_update that closes a cycle Claude Code ran on its
+                    # own: no response comes for a turn nobody prompted.
+                    self._tool_dispatched = False
+                    self._last_stop_reason = (
+                        STOP_REASON_CANCELLED if self._cancelled else STOP_REASON_END_TURN
+                    )
+                    self._turn_done.set()
+                    yield AcpEvent(
+                        kind=EVENT_COMPLETE,
+                        stop_reason=self._last_stop_reason,
+                        usage=self.last_prompt_stats.to_turn_usage(),
+                    )
+                    return
             elif action == "steer":
                 # Mid-turn steer lifecycle echo from kiro-cli (_session/steer).
                 # queued carries the pending snapshot; consumed carries injected
@@ -1022,6 +1226,7 @@ async def _dispatch_events(
                     # Mirrors AcpClient._handle_compaction_status.
                     self._compaction_failed_at = None
                     self.last_prompt_stats.reset_after_compaction()
+                    self._forget_sent_images()
                 # Compaction summary is backend-echoed text (LLM-influenced)
                 # that reaches the dashboard — redact exfil URLs/credentials
                 # before surfacing it (parity with other text surfaces).
@@ -1044,8 +1249,24 @@ async def _dispatch_events(
             elif action == "clear":
                 # Same provenance as the compaction notice: one that named
                 # no session and was fanned out to co-tenants is not this
-                # session's own.
+                # session's own. A clear of this session's own conversation
+                # drops every picture it held, so the next prompt naming one
+                # must send it again.
+                if not msg.fanout_no_owner:
+                    self._forget_sent_images()
                 yield AcpEvent(kind=EVENT_CLEAR_STATUS, runtime_global=msg.fanout_no_owner)
+            elif (
+                action == "agent_switched"
+                and extract_command_result
+                and msg.fanout_no_owner
+                and self.chat_shared
+            ):
+                # A ``commands/execute`` turn proves this handle issued the
+                # switch, and its OWNED command result reports it below. The
+                # notification was fanned out ownerless (a second queue is
+                # registered), and surfacing it would read as a peer's switch to a
+                # consumer that gates its bookkeeping on ``runtime_global``.
+                pass
             elif action == "agent_switched":
                 saw_agent_switch = True
                 params = msg.params or {}
@@ -1086,6 +1307,9 @@ async def _dispatch_events(
                         # children. Fanned-out rosters name no owner and
                         # must not be counted on every co-tenant.
                         self._note_native_roster(subs)
+                        # And its sub-agent calls' activity; a co-tenant's
+                        # roster restarts no timer of this session's.
+                        self.note_subagent_frame()
                     yield AcpEvent(
                         kind=EVENT_SUBAGENT_LIST,
                         subagents=subs,
@@ -1110,6 +1334,8 @@ async def _dispatch_events(
                     # Native-subtask residency seam (RFC §14.8): same
                     # count as _handle_update's plain-spelling route.
                     self._note_native_child(ssid)
+                    # A child's frame: its sub-agent call's activity.
+                    self.note_subagent_frame()
                     # A backend-internal child's update under the
                     # extension method `_kiro.dev/session/update`. BOTH
                     # session-update spellings are live carriers, not a
@@ -1158,7 +1384,9 @@ async def _dispatch_events(
                         identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                         cache_scope=ssid,
                         cache_overflow=self._tool_call_cache_overflow_for_wire(),
+                        harness_backend=getattr(self._runtime, "acp_backend", "") or "",
                     )
+                    self._note_child_calls(upd, ssid)
                     self._release_settled_tool_call(upd, ssid)
                 tcid = str(upd.get("toolCallId") or "")
                 # Single-source the text-shape read via the shared parser so the
@@ -1176,6 +1404,9 @@ async def _dispatch_events(
                 # is the session the user is already looking at.
                 own_session = bool(ssid) and ssid == self._session_id
                 if own_session:
+                    # kiro-cli's preview of this session's own call
+                    # (``tool_call_chunk``) is that call's frame.
+                    self._note_call_frame(upd)
                     continue
                 if ssid and tcid:
                     # A child's tool call is this session's side effect for

@@ -103,6 +103,21 @@ describe('createScopedApi (via AppApiProvider) — session identity', () => {
     expect(sent.get('Content-Type')).toBe('application/json')
     expect(sent.get('X-Session-Key')).toBe('dashboard:chat-2')
   })
+
+  it('names the app on a session create, so its uninstall resets that conversation', async () => {
+    // The create carries the person's session, so the gateway learns which app's page
+    // began the conversation only from this field. No other path gets it from this client.
+    const api = getScopedApi(['/api/chat/slots'])
+    await api.post('/api/chat/slots', { name: 'test-app-abc', agent: '' })
+    await api.post('/api/chat/./slots')
+    await api.post('/api/chat/slots/test-app-abc/approve', { a: 1 })
+    const bodies = fetchMock.mock.calls.map(c => JSON.parse(String((c[1] as RequestInit).body)))
+    expect(bodies).toEqual([
+      { name: 'test-app-abc', agent: '', embed_app: 'test-app' },
+      { embed_app: 'test-app' },
+      { a: 1 },
+    ])
+  })
 })
 
 describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () => {
@@ -173,6 +188,25 @@ describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () 
   it('does not treat a sibling prefix as allowed (prefix boundary)', async () => {
     const api = getScopedApi(['/api/apps/test'])
     await expect(api.get('/api/apps/test-evil')).rejects.toThrow(/not permitted to access/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('matches an entry marked exact on that path alone, query included', async () => {
+    const api = getScopedApi(['=/api/apps'])
+    await api.get('/api/apps')
+    await api.get('/api/apps?view=list')
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual(['/api/apps', '/api/apps?view=list'])
+    for (const refused of ['/api/apps/install', '/api/apps/', '/api/appsx', '/api/apps/x/../../apps/registry']) {
+      await expect(api.get(refused)).rejects.toThrow(/not permitted to access/)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads no wildcard inside an entry marked exact', async () => {
+    const api = getScopedApi(['=/api/apps/*', '=/api/chat*'])
+    for (const refused of ['/api/apps', '/api/apps/x', '/api/chat', '/api/chatx']) {
+      await expect(api.get(refused)).rejects.toThrow(/not permitted to access/)
+    }
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

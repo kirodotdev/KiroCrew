@@ -1,21 +1,19 @@
 {
-  "content": "Link 1: [REDACTED: suspicious URL to my-bucket.s3.us-east-1.amazonaws.com]&X-Amz-Date=20261008T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa . Link 2: [REDACTED: suspicious URL to my-bucket.s3.us-east-1.amazonaws.com]&X-Amz-Date=20261008T000000Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa .  plain https://my-bucket.s3.us-east-1.amazonaws.com/other-a?X-Amz-Credential=[REDACTED: credential]%2Fx .  plain https://my-bucket.s3.us-east-1.amazonaws.com/other-b?X-Amz-Credential=[REDACTED: credential]%2Fx . ",
+  "content": "Link 1: https://my-bucket.s3.us-east-1.amazonaws.com/report.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261008T000000Z . Link 2: https://my-bucket.s3.us-east-1.amazonaws.com/summary.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261008T000000Z .  plain https://my-bucket.s3.us-east-1.amazonaws.com/other-a?X-Amz-Credential=EXAMPLEKEYID%2Fx .  plain https://my-bucket.s3.us-east-1.amazonaws.com/other-b?X-Amz-Credential=EXAMPLEKEYID%2Fx . ",
   "blocked_links": [
     {
+      "url": "https://my-bucket.s3.us-east-1.amazonaws.com/other-a?X-Amz-Credential=EXAMPLEKEYID%2Fx",
       "domain": "my-bucket.s3.us-east-1.amazonaws.com",
       "rule": "exfil_hard_credential",
-      "path": "/other-a",
       "query_chars": 41,
-      "url": null,
-      "url_withheld": "credential"
+      "withheld": "credential"
     },
     {
+      "url": "https://my-bucket.s3.us-east-1.amazonaws.com/other-b?X-Amz-Credential=EXAMPLEKEYID%2Fx",
       "domain": "my-bucket.s3.us-east-1.amazonaws.com",
       "rule": "exfil_hard_credential",
-      "path": "/other-b",
       "query_chars": 41,
-      "url": null,
-      "url_withheld": "credential"
+      "withheld": "credential"
     }
   ]
 }

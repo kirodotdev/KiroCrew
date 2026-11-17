@@ -14,8 +14,9 @@ and join the same frontend table. ``test/test_transient_notice_parity.py``
 discovers every ``*_NOTICE_*`` token in both modules and pins it against that
 table, so a token added on one side only fails there rather than silently
 rendering raw English. The compaction cards' own ``meta["notice"]`` markers
-(``session_recycled``, ``stuck_turn``) ride the same field on assistant rows and
-are drawn by the compaction card instead, so they are not in this table.
+(``session_recycled``, ``stuck_turn``, ``leftover_memory``) ride the same field on
+assistant rows and are drawn by the compaction card instead, so they are not in
+this table.
 
 A row appended with literal English and no token is copy the dashboard cannot
 localize. Give it a token here and a row in the frontend table.
@@ -55,6 +56,7 @@ GATEWAY_NOTICE_COMPACTION_CONTINUING = "compaction_continuing"
 GATEWAY_NOTICE_MODEL_ACCESS_FALLBACK = "model_access_fallback"
 GATEWAY_NOTICE_MODEL_UNAVAILABLE = "model_unavailable"
 GATEWAY_NOTICE_MODEL_THROTTLED_FALLBACK = "model_throttled_fallback"
+GATEWAY_NOTICE_MODEL_SERVER_ERROR_FALLBACK = "model_server_error_fallback"
 # Refusal-fallback (`agent.refusal_fallback_model`) ``notice`` row: the
 # configured fallback equals the model that just refused, so the one retry is
 # skipped (`_refusal_fallback_is_same_model`). A separate row from the terminal
@@ -116,6 +118,9 @@ GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
 # (``member_rebind_notice``). ``notice_args``: ``bot``, ``agent`` (what a new
 # chat with the Bot runs) and ``recorded`` (what this chat keeps running).
 GATEWAY_NOTICE_MEMBER_REBIND_KEPT_AGENT = "member_rebind_kept_agent"
+# A new KAS chat whose agent, the user's own file, lists no tools
+# (``agent_no_tools_notice``). ``notice_args``: ``agent``.
+GATEWAY_NOTICE_AGENT_NO_TOOLS = "agent_no_tools"
 
 # Rows whose text is COMPOSED outside the dashboard: the token localizes only
 # the fixed frame, and the variable part the gateway interpolated (a reason, a
@@ -148,6 +153,35 @@ GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED = "capability_tool_limits_unsu
 # ``host_auth.signed_out_message``; only the sentences ``host_auth.kas_signed_out_route``
 # recognises get it, with the route they name in ``notice_args["route"]``.
 GATEWAY_NOTICE_KAS_SIGNED_OUT = "kas_signed_out"
+
+# The Windows spawn a host policy refused (``AcpSpawnBlocked``). Its English is
+# ``spawn_blocked.spawn_blocked_message``; the file it names rides in
+# ``notice_args["binary"]``.
+GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED = "windows_spawn_blocked"
+
+# A session start whose managed MCP servers missed the KAS readiness deadline
+# (``mcp_readiness_timeout``). Fixed text; no args. The row's English stays the
+# timeout's own message, for the log and the channel mirrors.
+GATEWAY_NOTICE_TOOLS_NOT_READY = "tools_not_ready"
+
+# The permission mode a harness's session moved to mid-session
+# (``harness_notice_rows``). ``notice_args["mode"]`` is the name the session
+# advertised for the mode, carried verbatim.
+GATEWAY_NOTICE_HARNESS_MODE_CHANGED = "harness_mode_changed"
+
+# A harness's background shell or Monitor task ended (``harness_notice_rows``), one
+# token per outcome. ``notice_args["task"]`` is the task's description and
+# ``notice_args["detail"]`` what the harness's summary adds to it (its exit code), or
+# the whole summary when it does not name the task and is short, both carried verbatim.
+GATEWAY_NOTICE_HARNESS_TASK_COMPLETED = "harness_task_completed"
+GATEWAY_NOTICE_HARNESS_TASK_FAILED = "harness_task_failed"
+GATEWAY_NOTICE_HARNESS_TASK_STOPPED = "harness_task_stopped"
+
+# Claude Code retrying a failed model request, once per turn (``harness_notice_rows``).
+# ``notice_args`` holds ``attempt`` and ``max`` (ints), ``reason``, the bare error
+# category Claude Code named (``rate_limit``), empty when it named none, and
+# ``status``, the HTTP status (int), absent for a request that got no response.
+GATEWAY_NOTICE_HARNESS_API_RETRY = "harness_api_retry"
 
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).

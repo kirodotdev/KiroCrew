@@ -16,6 +16,7 @@ from acp_runtime_helpers import _feed, _make_runtime, _next, _register, _start_r
 from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
 from kiro_crew.acp.types import METHOD_SESSION_LOAD, METHOD_SESSION_NEW
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
 
 
@@ -73,6 +74,54 @@ async def test_an_oversize_reply_fails_its_awaited_request_with_the_size_and_lim
         assert not rt._dead
     finally:
         await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_an_oversize_prompt_reply_ends_its_sessions_turn():
+    """A chat prompt is a routed request with no future: its session reads the
+    reply off its queue. Dropping that reply must hand the session an error reply
+    naming the size and the limit, or the turn waits forever."""
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    rt._routed_requests[6] = "sA"
+    task = await _start_reader(rt)
+    try:
+        frame = b'{"jsonrpc":"2.0","id":6,"result":{"stopReason":"' + b"W" * 2048 + b'"}}\n'
+        reader.feed_data(frame)
+        msg = await _next(q["sA"])
+        assert msg.id == 6
+        assert 6 not in rt._routed_requests
+        assert not rt._dead
+        # What the user reads is one plain sentence with the sizes in MB: no raw
+        # frame, no byte counts (those stay in the log), and no retry.
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        with pytest.raises(Exception) as excinfo:
+            _raise_acp_error(msg.error, [], backend="kas")
+        shown = str(excinfo.value)
+        assert shown == (
+            "The reply was too large to show (0.0 MB, limit 10 MB). "
+            "Try asking for a shorter answer."
+        )
+        assert getattr(excinfo.value, "transient", None) is False
+    finally:
+        await _stop_reader(task)
+
+
+def test_the_oversize_marker_from_the_wire_is_still_redacted():
+    """A backend can send the marker in its own error ``data``; its message must
+    still pass the credential redaction every formatted error goes through."""
+    from kiro_crew.acp.structured_error_data import OVERSIZE_REPLY_DATA
+    from kiro_crew.acp.transport_errors import _format_acp_error_worded
+
+    secret = github_classic(seed=136)
+    error = {"code": -32603, "message": f"leak {secret}", "data": OVERSIZE_REPLY_DATA}
+    shown, worded = _format_acp_error_worded(error, [])
+    assert secret not in shown
+    assert "[REDACTED: credential]" in shown
+    assert worded is True
 
 
 @pytest.mark.asyncio

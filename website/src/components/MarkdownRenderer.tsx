@@ -92,6 +92,7 @@ import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
 import { activatePath, isFileLinkDest, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
 import { wearsRefusedLinkCue } from './markdown/refusedLinkCue'
+import { linkAddress, useLinkAddressTip } from './markdown/linkAddressTip'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
 import { MarkdownTable } from './markdown/MarkdownTable'
@@ -105,6 +106,7 @@ import { isGenericLang, looksLikeMarkdown } from './markdown/markdownSniff'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnknownTags } from './markdown/sanitize'
 import { holdsSessionRef, rehypeMarkFencedCode, rehypeSessionRefPunctuation, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks, SESSION_REF_TRAILING } from './markdown/treeTransforms'
 import { GLOW_TAIL_CHARS, REVEAL_IDLE_SETTLE_MS, rehypeStreamingCaret, rehypeStreamingGlow, rehypeStreamingReveal } from './markdown/streamingEffects'
+import { deferIncompleteStreamingTable, holdPartialTableRow } from './markdown/streamingTable'
 import { closeCjkAutolinkBoundaries, encodeRefusedLinkDestinations } from './markdown/linkBoundaryRepair'
 import { guideUntrusted } from '../guide/guideMarkers'
 
@@ -359,6 +361,13 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   // session link is the sentence's own; whatever this anchor renders as, it
   // goes back right after it, so no branch can swallow a full stop.
   const keep = (el: React.ReactElement) => (trailing ? <>{el}{trailing}</> : el)
+  // Where a plain link goes, shown when the pointer rests on it or keyboard
+  // focus lands on it; only the plain anchor below renders it. A session link
+  // already explains itself on hover; `linkAddress` decides which other links
+  // have an address to show.
+  const addressTip = useLinkAddressTip(
+    href && !sessionHrefNamesSession ? linkAddress(href) : undefined,
+  )
   // The inert label carries the refused-link cue: a muted dotted underline and
   // a generic reason, as the hover title and as visually-hidden generated
   // content for touch, keyboard and screen-reader users. The reason lives in a
@@ -474,6 +483,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       className={missingFileLink || (sessionHrefNamesSession && !sessionLink && sessionRouting)
         ? 'text-muted'
         : 'text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent'}
+      {...addressTip.handlers}
     >
       <InsideLinkCtx.Provider value={linkKind}>{children}</InsideLinkCtx.Provider>
       {/* The not-open explanation reaches touch / keyboard / AT users as a
@@ -490,6 +500,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
         <span className="sr-only">{` (${i18nT('components.markdownRenderer.session_closed_link_disabled')})`}</span>
       )}
     </a>
+    {addressTip.bubble}
     {/* The sentence's own punctuation, before the notice: "See the old run."
         keeps its full stop beside the link, and the notice follows the
         sentence instead of splitting it. */}
@@ -670,14 +681,7 @@ const MD_COMPONENTS = {
   // resolves the component by tag name at runtime regardless of the static type.
   'blocked-link'({ node }: { node?: HastElement }) {
     const p = node?.properties
-    return (
-      <BlockedLinkChip
-        domain={String(p?.domain ?? '')}
-        placeholder={String(p?.placeholder ?? '')}
-        block={String(p?.block ?? '')}
-        tail={String(p?.tail ?? '')}
-      />
-    )
+    return <BlockedLinkChip domain={String(p?.domain ?? '')} block={String(p?.block ?? '')} />
   },
   'cred-tag'({ node }: { node?: HastElement }) {
     return <CredentialTag ordinal={Number(node?.properties?.ordinal)} placeholder={String(node?.properties?.placeholder ?? '')} />
@@ -883,58 +887,66 @@ function stripStrayTags(content: string, openMarker: string, stripRe: RegExp): s
 const stripStrayWidgetTags = (content: string) => stripStrayTags(content, '<mcwidget', MCWIDGET_STRIP_RE)
 const stripStrayToolUseTags = (content: string) => stripStrayTags(content, '<tool_use', TOOL_USE_STRIP_RE)
 
-// A GFM table delimiter row, e.g. `| --- | :--: |` or `---|---`. remark-gfm
-// only promotes the preceding header line to a <table> once this row is present.
-const TABLE_DELIM_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
-
-/**
- * While STREAMING, withhold an incomplete trailing table so it never paints as
- * literal pipe text that later reflows into a <table>.
- *
- * remark-gfm needs BOTH a header row and a `|---|` delimiter row to recognize a
- * table. Mid-stream the header arrives first and renders as a <p> containing
- * literal "| A | B |"; when the delimiter row streams in, that paragraph
- * RESTRUCTURES into a bordered table — a visible structural snap of
- * already-shown content (see MarkdownRenderer.streamingTableSnap.test.tsx).
- * This defers the trailing header run (mirroring how an incomplete fenced code
- * block is held) until the delimiter arrives, so the transition the user sees
- * is the standard "content appears", not "paragraph morphs into a table".
- *
- * Scoped narrowly to avoid hiding ordinary prose: only a run of trailing
- * non-blank lines whose FIRST line is a bordered table header (starts with `|`)
- * is a candidate, and only when that run does NOT yet contain a delimiter row
- * (a `---` row that actually carries a `|`). A run that already has such a
- * delimiter is a real (possibly still growing) table and is left to render.
- *
- * Scoping choices (both close known edge cases):
- *  - Require the first line to START with `|`. A looser "≥2 pipes" test also
- *    matched ordinary prose (e.g. a line with an inline `` `cmd | grep | wc` ``)
- *    and would withhold that whole paragraph for the rest of the stream. Models
- *    emit bordered tables (`| a | b |`), so start-with-`|` keeps the real case
- *    while excluding prose; a borderless table simply isn't deferred (it never
- *    regressed anything — it just renders as before).
- *  - The delimiter must contain a `|`. A bare `---` is a thematic break / setext
- *    underline, NOT a GFM table delimiter (which needs matching pipe-separated
- *    cells), so counting it as "already a table" would wrongly skip deferral and
- *    let the snap happen.
- */
-function deferIncompleteStreamingTable(content: string): string {
-  const lines = content.split('\n')
-  let start = lines.length
-  while (start > 0 && lines[start - 1].trim() !== '') start--
-  if (start >= lines.length) return content // trailing blank line / nothing to defer
-  const run = lines.slice(start)
-  if (!/^\s*\|/.test(run[0])) return content // not a bordered table header
-  // A real GFM delimiter row carries at least one pipe; a bare `---` does not.
-  if (run.some((l) => l.includes('|') && TABLE_DELIM_RE.test(l))) return content
-  return lines.slice(0, start).join('\n')
-}
-
 const noSubscribe = () => () => {}
 
-const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, unfurl, markers }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
+/** The markers of a streaming reply with no records yet: its web links are drawn as
+ *  text until the reply lands with its blocked-link records. */
+const STREAMING_LINK_HOLD: RedactionMarkers = Object.freeze({
+  ordinals: new Set<number>(),
+  links: [],
+  held: new Set<string>(),
+  credentials: new Map(),
+  base: 0,
+  block: 0,
+  pending: true,
+})
+
+/**
+ * One parse of a block's prepared text. react-markdown parses again on every
+ * render, and the streaming tail block renders on every animation frame, so
+ * this is memoized on what the parse reads: the text, the plugin switches and
+ * the redaction records. A frame that leaves all of them alone skips the parse.
+ * The gates that change without the text (`live`, `typing`, link unfurl) reach
+ * the rendered elements through the contexts MarkdownBlock provides.
+ */
+const ParsedMarkdown = memo(function ParsedMarkdown({ text, sourcePos, glow, smooth, softBreaks, markers }: { text: string; sourcePos?: boolean; glow?: boolean; smooth?: boolean; softBreaks?: boolean; markers?: RedactionMarkers }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // A change to an app's text patterns moves this context, which re-parses.
   const textPreviews = useContext(TextPreviewsCtx) > 0 && !sourcePos
+  const baseRehype = sourcePos ? REHYPE_PLUGINS_WITH_SOURCEPOS : REHYPE_PLUGINS
+  // Streaming tail block only (see MarkdownRenderer's `glow` prop):
+  //   - in immediate mode: append the glow plugin for trailing-word shimmer;
+  //   - in smooth mode: append the reveal plugin for per-char fade entrance.
+  let rehypePlugins: PluggableList = baseRehype
+  if (glow) {
+    const tail: PluggableList = []
+    // Inline caret first, so the glow/reveal plugins still see (and animate)
+    // the trailing text node that the caret is inserted after.
+    tail.push(rehypeStreamingCaret)
+    if (!smooth) tail.push([rehypeStreamingGlow, { tailChars: GLOW_TAIL_CHARS }])
+    if (smooth) tail.push(rehypeStreamingReveal)
+    rehypePlugins = [...baseRehype, ...tail]
+  }
+  // After sanitize (baseRehype ends with it) and after the streaming tail, so
+  // the injected marker elements are not stripped and the glow/reveal passes
+  // have already claimed the trailing text. Only added when the message
+  // carries records, so every other surface is untouched.
+  if (markers && (markers.pending || markers.ordinals.size > 0 || markers.links.length > 0 || (markers.held?.size ?? 0) > 0)) {
+    rehypePlugins = [...rehypePlugins, [rehypeRedactionMarkers, markers]]
+  }
+  // Last, so it wraps the root shape every other plugin has finished producing:
+  // an earlier position would let a later plugin read `div` where it expects the
+  // block itself.
+  rehypePlugins = [...rehypePlugins, rehypeStableRootKeys]
+  return (
+    <ReactMarkdown remarkPlugins={textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
+const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, typing, unfurl, markers }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; markers?: RedactionMarkers }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Declared before the early return below — Rules of Hooks.
   //
   // `sourcePos` force-disables unfurl: the inline-commenting flow maps a DOM
@@ -966,34 +978,14 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   if (!sourcePos) clean = capWhitespaceRuns(clean)
   // `glow` marks the live streaming tail block: while streaming, hold back an
   // incomplete trailing table so it doesn't paint as pipe text then snap into a
-  // <table> when the delimiter row arrives.
-  if (glow) clean = deferIncompleteStreamingTable(clean)
+  // <table> when the delimiter row arrives, and hold back the row still being
+  // typed so the table is parsed once per row, not once per frame. Both wait
+  // for text that is still to come, so they apply only while this block's own
+  // text is arriving (`typing`). A block the assembler closed because a fence
+  // or widget opened after it is still the last markdown block, but its text
+  // is final: the line break or delimiter row a hold waits for never comes.
+  if (glow && typing) clean = holdPartialTableRow(deferIncompleteStreamingTable(clean))
   if (!clean.trim()) return null
-  const baseRehype = sourcePos ? REHYPE_PLUGINS_WITH_SOURCEPOS : REHYPE_PLUGINS
-  // Streaming tail block only (see MarkdownRenderer's `glow` prop):
-  //   - in immediate mode: append the glow plugin for trailing-word shimmer;
-  //   - in smooth mode: append the reveal plugin for per-char fade entrance.
-  let rehypePlugins: PluggableList = baseRehype
-  if (glow) {
-    const tail: PluggableList = []
-    // Inline caret first, so the glow/reveal plugins still see (and animate)
-    // the trailing text node that the caret is inserted after.
-    tail.push(rehypeStreamingCaret)
-    if (!smooth) tail.push([rehypeStreamingGlow, { tailChars: GLOW_TAIL_CHARS }])
-    if (smooth) tail.push(rehypeStreamingReveal)
-    rehypePlugins = [...baseRehype, ...tail]
-  }
-  // After sanitize (baseRehype ends with it) and after the streaming tail, so
-  // the injected marker elements are not stripped and the glow/reveal passes
-  // have already claimed the trailing text. Only added when the message
-  // carries records, so every other surface is untouched.
-  if (markers && (markers.ordinals.size > 0 || markers.domains.size > 0)) {
-    rehypePlugins = [...rehypePlugins, [rehypeRedactionMarkers, markers]]
-  }
-  // Last, so it wraps the root shape every other plugin has finished producing:
-  // an earlier position would let a later plugin read `div` where it expects the
-  // block itself.
-  rehypePlugins = [...rehypePlugins, rehypeStableRootKeys]
   // `fixCodeFences` runs FIRST: its later passes CREATE code blocks the raw
   // source did not have (blank line before a fence glued to preceding text,
   // splitting a closing fence glued to trailing text). Rewriting boundaries
@@ -1014,18 +1006,26 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fixUnencodedLinkDestinations(fenced))
   const md = (
     <MdSourceCtx.Provider value={prepared}>
-      <ReactMarkdown remarkPlugins={textPreviews ? (softBreaks ? REMARK_PLUGINS_WITH_BREAKS_TEXT_PREVIEWS : REMARK_PLUGINS_TEXT_PREVIEWS) : (softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS)} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
-        {prepared}
-      </ReactMarkdown>
+      <ParsedMarkdown text={prepared} sourcePos={sourcePos} glow={glow} smooth={smooth} softBreaks={softBreaks} markers={markers} />
     </MdSourceCtx.Provider>
   )
   const body = sourcePos
     ? <div data-block-start={startLine ?? 1}><MdBlockStartCtx.Provider value={startLine ?? 1}>{md}</MdBlockStartCtx.Provider></div>
     : md
-  // The provider carries no DOM node, so sourcepos / lightbox scoping upstream
-  // is unaffected. It is the only way MdAnchor / MdParagraph — which react-markdown
-  // instantiates deep inside its own tree — can see the gate.
-  return <LinkUnfurlCtx.Provider value={unfurlCtx}>{body}</LinkUnfurlCtx.Provider>
+  // The providers carry no DOM node, so sourcepos / lightbox scoping upstream
+  // is unaffected. They are the only way MdAnchor / MdParagraph / InlineCode,
+  // which react-markdown instantiates deep inside its own tree, can see the
+  // gates. PathProbeCtx follows `typing` per block, not the whole message: the
+  // text still being typed may hold a partial path ('/Users' en route to
+  // '/Users/me/x.ts') that must neither burn requests nor flash the wrong
+  // affordance, while a block the assembler has closed is final, so its chips
+  // open while the turn runs. Not `live`: that also covers the last markdown
+  // block when a fence or widget after it is the stream's tail.
+  return (
+    <PathProbeCtx.Provider value={!typing}>
+      <LinkUnfurlCtx.Provider value={unfurlCtx}>{body}</LinkUnfurlCtx.Provider>
+    </PathProbeCtx.Provider>
+  )
 })
 
 /** Languages whose fenced content IS markdown, so a rendered view is
@@ -1052,7 +1052,7 @@ function isMarkdownBlock(lang: string | undefined, content: string): boolean {
  *  control overrides per card. Only mounted for a COMPLETE fence — see the
  *  caller in BlockRenderer. */
 const MarkdownContentCard = memo(function MarkdownContentCard(
-  { content, lang }: { content: string; lang?: string },
+  { content, lang, markers }: { content: string; lang?: string; markers?: RedactionMarkers },
 ) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [view, setView] = useState<'formatted' | 'raw'>('formatted')
@@ -1085,7 +1085,9 @@ const MarkdownContentCard = memo(function MarkdownContentCard(
           Formatted would silently discard them. Keeping it mounted preserves
           that state across any number of view switches. */}
       <div className={view === 'formatted' ? undefined : 'hidden'}>
-        <MarkdownBlock content={content} />
+        {/* The reply's link decisions reach the formatted card too: a blocked link
+            is its chip here, never a live anchor. */}
+        <MarkdownBlock content={content} markers={markers} />
       </div>
       <div className={view === 'raw' ? undefined : 'hidden'}>
         <EditableCodeBlock code={content} lang={lang} complete={true} />
@@ -1123,7 +1125,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle, runYourselfCards, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; runYourselfCards?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, typing, unfurl, collapseDiffs, mdCardToggle, runYourselfCards, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; runYourselfCards?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
   const readOnlyCodeCtx = useContext(ReadOnlyCodeCtx)
   // A fence holding lock tags renders them in place whatever its language:
   // the diagram, diff and formatted-markdown renderers would show the
@@ -1192,7 +1194,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       // Only fenced content whose CLOSE has arrived is offered a rendered view:
       // a half-streamed markdown source would flip structure as delimiters land.
       if (mdCardToggle && block.complete && isMarkdownBlock(block.language, block.content)) {
-        const mdNode = <MarkdownContentCard content={block.content} lang={block.language} />
+        const mdNode = <MarkdownContentCard content={block.content} lang={block.language} markers={markers} />
         return smooth ? <SmoothResize enabled={!block.complete}>{mdNode}</SmoothResize> : mdNode
       }
       // `readOnlyCode`: the content is a record the reader must not be able to
@@ -1230,16 +1232,18 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
           <MarkdownBlock content={block.content.trim()} sourcePos={false} startLine={block.startLine} glow={false} smooth={false} softBreaks={softBreaks} live={false} unfurl={unfurl} markers={markers} />
         </MarkdownWidget>
       }
-      return <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
+      return <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey}
+        blockedLinks={markers?.links} linksPending={markers?.pending} />
     case 'markdown':
-      // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
-      // with the block's own `complete` flag so a provisional block is treated
-      // as live too, whatever produced it.
-      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} unfurl={unfurl} markers={markers} />
+      // `live` = this block is the streaming tail (see MarkdownRenderer), and
+      // `typing` = its text is still arriving. Both are ORed with the block's
+      // own `complete` flag so a provisional block is treated as live and
+      // typing too, whatever produced it.
+      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} typing={!block.complete || !!typing} unfurl={unfurl} markers={markers} />
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false, redactionSlot }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.blocked_links` off the assistant message — the step-3 suspicious-URL records this message's redaction placeholders render from. Validated here; absent/malformed leaves every placeholder as plain text. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean; /** The LOCAL slot the reply's removed credentials were kept for, so the lock-tag card can offer the owner's reveal; falls back to `slotKey`. A host drawing another gateway's rows (the crew window) passes neither. */ redactionSlot?: string }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, textPreviews = false, textPreviewsPaused = false, collapseDiffs = false, mdCardToggle = false, runYourselfCards, readOnlyCode = false, blockedLinks, redactions, redactionCoach = false, redactionSlot }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: wrap text an enabled app's `contributes.linkPreviews[].textPatterns` match in a hoverable span. */ textPreviews?: boolean; /** With `textPreviews`: keep the chat scope but scan nothing yet. A streaming reply passes it so each frame's growing tail is not queued as new text (the scan cache is bounded); the final text is scanned once. */ textPreviewsPaused?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean; /** Assistant chat turns only: draw a closed ```run-yourself fence as the run-it-yourself card (RunYourselfCard). Off everywhere else, so text from outside the agent (an issue, a PR, a skill description) cannot pass as the agent's own hand-over; there the fence is a plain code block. */ runYourselfCards?: boolean; /** Render fenced code with the plain CodeBlock (copy only) instead of EditableCodeBlock. For content the reader must not be able to alter in place -- an approval's command beside its Approve control. */ readOnlyCode?: boolean; /** Raw `meta.link_blocks` off the assistant message: the links the server decided are not rendered live (`security/blocked_links.py`). Validated here; a link whose address matches one is drawn as a Blocked link chip, and the text keeps the address as written. */ blockedLinks?: unknown; /** Raw `meta.redactions` off the assistant message: one record per credential placeholder, validated here. */ redactions?: unknown; /** This reply is the session's first with removed values: show the one-time coach after its first such block. */ redactionCoach?: boolean; /** The LOCAL slot the reply's removed credentials were kept for, so the lock-tag card can offer the owner's reveal; falls back to `slotKey`. A host drawing another gateway's rows (the crew window) passes neither. */ redactionSlot?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // One message = one config-rule scan pool. The blocks below each mount their
   // OWN remark tree, so the rearm cannot live at the plugin's tree entry — a
@@ -1275,7 +1279,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // e.target may be an inline child of the `/artifacts/<slug>` anchor (e.g.
     // <em>/<code>), so walk up with closest(). preventDefault stops the
     // relative href from navigating full-page instead of opening the panel.
-    if (onArtifactOpen && !e.shiftKey) {
+    // Only a PLAIN primary click: Cmd/Ctrl/Alt/Shift-click and middle-click
+    // keep the real href, so the browser can still open a new tab.
+    if (onArtifactOpen && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       const anchor = el.closest('a[href^="/artifacts/"]') as HTMLAnchorElement | null
       if (anchor) {
         const slug = artifactSlugFromHref(anchor.getAttribute('href'))
@@ -1322,9 +1328,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // The message's redaction records, validated once. The sets are what the
   // injection pass gates on; the full records ride down through context.
   // A host allowed from a card still open keeps that card's records here:
-  // the reloaded reply shows the host's links as plain links and no longer
-  // carries them.
-  const replyKey = slotKey && messageTs ? `${slotKey}|${messageTs}` : undefined
+  // the reloaded reply renders the host's links live and carries none of
+  // them, so they describe the card, never a link to draw as a chip.
+  const replyKey = (redactionSlot ?? slotKey) && messageTs ? `${redactionSlot ?? slotKey}|${messageTs}` : undefined
   const holds = useAllowHolds(replyKey)
   const ownBlocked = useMemo(() => normalizeBlockedLinks(blockedLinks), [blockedLinks])
   const heldDomains = useMemo(() => {
@@ -1341,7 +1347,6 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // So a reply carrying any redaction record is never split into paragraph
   // pieces: its block numbering must match the reloaded render.
   const blocks = useBlockAssembler(content, streaming, blockedRecords.length === 0 && credentialRecords.length === 0)
-  const blockedDomains = useMemo(() => new Set(blockedRecords.map(r => r.domain)), [blockedRecords])
   const credentialMap = useMemo(() => new Map(credentialRecords.map(r => [r.ordinal, r])), [credentialRecords])
   const credentialOrdinals = useMemo(() => new Set(credentialMap.keys()), [credentialMap])
   const sessionActions = useMemo<SessionActions>(
@@ -1411,17 +1416,25 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     if (from != null) while (i > 0 && blocks[i - 1].split?.from === from) i--
     return i
   }, [blocks, lastMarkdownIdx])
+  // First block of the text still being typed: the live tail, but only while
+  // that markdown ends the message. A fence or widget after it means the
+  // assembler has closed it, even though it still glows. -1 when none is.
+  const typingFromIdx = streaming && lastMarkdownIdx === blocks.length - 1 ? liveFromIdx : -1
   // Each block renders its own sub-document, so the credential ordinal its
   // first tag carries is the count of tags in every block before it.
   const blockMarkers = useMemo<Array<RedactionMarkers | undefined>>(() => {
-    if (credentialOrdinals.size === 0 && blockedDomains.size === 0) return blocks.map(() => undefined)
+    if (credentialOrdinals.size === 0 && ownBlocked.length === 0 && heldDomains.size === 0) {
+      // One shared object while only the streaming hold applies, so a block whose
+      // text did not change keeps its parse.
+      return blocks.map(() => (streaming ? STREAMING_LINK_HOLD : undefined))
+    }
     let base = 0
     return blocks.map((b, block) => {
-      const m: RedactionMarkers = { ordinals: credentialOrdinals, domains: blockedDomains, held: heldDomains, credentials: credentialMap, base, block }
+      const m: RedactionMarkers = { ordinals: credentialOrdinals, links: ownBlocked, held: heldDomains, credentials: credentialMap, base, block, pending: streaming }
       base += countCredentialTags(b.content)
       return m
     })
-  }, [blocks, credentialOrdinals, blockedDomains, heldDomains, credentialMap])
+  }, [blocks, credentialOrdinals, ownBlocked, heldDomains, credentialMap, streaming])
 
   // Settle the reveal edge once the content stops changing, and NEVER un-settle
   // it. One-way is the whole point: `.ft-word` spans persist across chunks
@@ -1493,12 +1506,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       // Authored content: nothing in it is a control a guide points at.
       {...guideUntrusted}
     >
-      {/* PathProbeCtx: suppress path stat probes while the message is still
-          streaming, so partial paths ('/Users' en route to '/Users/me/x.ts')
-          neither burn requests nor flash the wrong affordance.
-          PathActionCtx: where a confirmed chip sends its click — MD_COMPONENTS is
-          module-level, so the renderer cannot pass these down as props. */}
-      <PathProbeCtx.Provider value={!streaming}>
+      {/* PathActionCtx: where a confirmed chip sends its click. MD_COMPONENTS is
+          module-level, so the renderer cannot pass these down as props. Whether a
+          chip may probe at all is per block (PathProbeCtx in MarkdownBlock). */}
       <PathActionCtx.Provider value={pathActions}>
       <SessionActionCtx.Provider value={sessionActions}>
       {/* CompactImagesCtx: user-message ("sent prompt") callers pass compactImages
@@ -1538,6 +1548,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             // being typed. `streaming` rather than `glow` because a caller may
             // render a streaming transcript without asking for the shimmer.
             live={streaming && liveFromIdx >= 0 && i >= liveFromIdx && block.type === 'markdown'}
+            typing={typingFromIdx >= 0 && i >= typingFromIdx && block.type === 'markdown'}
             unfurl={linkPreviews}
             smooth={smooth}
             softBreaks={softBreaks}
@@ -1554,7 +1565,6 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
       </CompactImagesCtx.Provider>
       </SessionActionCtx.Provider>
       </PathActionCtx.Provider>
-      </PathProbeCtx.Provider>
     </div>
   )
 })

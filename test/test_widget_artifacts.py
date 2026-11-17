@@ -94,6 +94,21 @@ class TestRegisterWidgets:
         assert widget_artifacts.register_widgets(WIDGET_MSG, "", "chat-1") == []
         assert store.list() == []
 
+    def test_over_long_title_still_registers(self, store: ArtifactStore) -> None:
+        title = "Quarterly " * 40  # 400 chars, past the 200-char name limit
+        msg = f'<mcwidget title="{title}">\n<div>hi</div>\n</mcwidget>'
+        slugs = widget_artifacts.register_widgets(msg, "ts-long", "chat-1")
+        assert len(slugs) == 1
+        name = store.get(slugs[0]).name
+        assert 0 < len(name) <= 200
+        assert title.startswith(name)
+
+    def test_blank_title_falls_back_to_default_name(self, store: ArtifactStore) -> None:
+        msg = '<mcwidget title="   ">\n<div>hi</div>\n</mcwidget>'
+        slugs = widget_artifacts.register_widgets(msg, "ts-blank", "chat-1")
+        assert len(slugs) == 1
+        assert store.get(slugs[0]).name == "Widget"
+
     def test_empty_widget_body_skipped(self, store: ArtifactStore) -> None:
         assert widget_artifacts.register_widgets("<mcwidget></mcwidget>", "ts-6", "chat-1") == []
         assert store.list() == []

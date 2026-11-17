@@ -891,9 +891,9 @@ class TestLargeFileEditRedaction:
         assert not entry.get("truncated")
         assert _changed_lines(entry["before"], entry["after"]) == (1, 1)
         stored = entry["before"] + entry["after"]
-        # The window's 20 context lines above the edit fall inside the key body.
+        # The window's 20 context lines above the edit fall inside the key body. The
+        # body is the secret; the END line names the block and stays readable.
         assert not any(line.strip() in stored for line in key[1:-1])
-        assert key[-1].strip() not in stored
 
     def test_flush_redaction_leaves_a_redacted_window_unchanged(self):
         from kiro_crew.security import redact as redact_text

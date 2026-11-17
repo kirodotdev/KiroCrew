@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import Callable, Optional
 
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes
@@ -160,7 +161,14 @@ class RealLaunchEngine:
             raise AWSError(str(detail))
 
     def provision(
-        self, *, tag: str, size_key: str, profile: str, region: str, subnet_id: str = ""
+        self,
+        *,
+        tag: str,
+        size_key: str,
+        profile: str,
+        region: str,
+        subnet_id: str = "",
+        on_network_fallback: Optional[Callable[[str], None]] = None,
     ) -> str:
         tier = sizes.get_tier(size_key)
         # No dashboard_port override: the stack binds its own DashboardPort
@@ -174,6 +182,7 @@ class RealLaunchEngine:
             profile=profile,
             region=region,
             subnet_id=subnet_id,
+            on_network_fallback=on_network_fallback,
         )
         return result.instance_id
 
@@ -209,6 +218,10 @@ class RealLaunchEngine:
                 "be added to your crews. It is running and billing — add it under Remote "
                 "crew, or delete it, so it does not sit idle."
             )
+
+    def resource_exists(self, *, tag: str, profile: str, region: str) -> bool:
+        """Whether this launch's stack exists; raises when AWS cannot say."""
+        return ec2.find_stack(tag, profile, region) is not None
 
     def teardown(self, *, tag: str, profile: str, region: str) -> bool:
         """Delete a stack this launch created — the rollback for a cancelled setup.

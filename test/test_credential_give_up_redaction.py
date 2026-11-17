@@ -10,20 +10,26 @@ The frame's trailing ``data`` repr is machine data and is dropped.
 from __future__ import annotations
 
 import pytest
+from redaction_structured_cases import aws_key_id
 
 from kiro_crew.llm_helpers import credential_give_up_text
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-#: The AWS documentation's own example access key id: credential-shaped, not real.
-_EXAMPLE_KEY = "AKIAIOSFODNN7EXAMPLE"
-#: A link the link redactor removes: a presigned-style query on a storage host.
+#: A synthetic 40-character AWS secret access key: credential-shaped, not real.
+#: A key id would stay visible, since it is an identifier, not a secret; so would
+#: the secret standing alone, so the text gives it its label.
+_EXAMPLE_KEY = SAMPLE_AWS_SECRET
+#: A presigned-style link on a storage host: the URL pass masks its signature value,
+#: and the key id in ``X-Amz-Credential`` stays.
 _LINK_HOST = "example-bucket.s3.us-east-1.amazonaws.com"
+_SIGNATURE = "b" * 64
 _LINK = (
-    f"https://{_LINK_HOST}/report?X-Amz-Credential={_EXAMPLE_KEY}%2Fx"
-    "&X-Amz-Signature=" + "b" * 64
+    f"https://{_LINK_HOST}/report?X-Amz-Credential={aws_key_id()}%2Fx"
+    f"&X-Amz-Signature={_SIGNATURE}"
 )
 _PROVIDER_TEXT = (
     "Internal error: API Error: Could not load AWS credentials · "
-    f"see {_LINK} · key {_EXAMPLE_KEY} was refused. "
+    f"see {_LINK} · aws_secret_access_key={_EXAMPLE_KEY} was refused. "
     "Check or refresh your AWS credentials and try again."
 )
 #: A link whose query carries a ``token`` parameter after a long one. The link
@@ -37,7 +43,7 @@ _TOKEN_LINK_TEXT = (
 )
 #: Each provider text, with the values its give-up line must not show.
 _CASES = {
-    "link-and-key": (_PROVIDER_TEXT, (_EXAMPLE_KEY, "X-Amz-Signature")),
+    "link-and-key": (_PROVIDER_TEXT, (_EXAMPLE_KEY, _SIGNATURE)),
     "token-parameter": (_TOKEN_LINK_TEXT, (_TOKEN_VALUE,)),
 }
 

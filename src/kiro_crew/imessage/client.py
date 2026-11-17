@@ -716,8 +716,8 @@ class IMessageClient:
     def _already_seen(self, guid: str) -> bool:
         """Whether ``guid`` was seen before, recording it as a side effect.
 
-        Check and record are one step again: with the cursor advancing on receipt
-        there is no failure path that needs the record held back.
+        Check and record are one step: with the cursor advancing on receipt there
+        is no failure path that needs the record held back.
         """
         if guid in self._seen_guids:
             return True
@@ -754,8 +754,6 @@ class IMessageClient:
                     self._set_state(False, str(exc)[:120])
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, RECONNECT_MAX_S)
-        except asyncio.CancelledError:
-            raise
         finally:
             self._resubscribe_task = None
 
@@ -797,8 +795,12 @@ class IMessageClient:
             self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(self._cursor_path, json.dumps({"since_rowid": rowid}))
         except OSError:
-            # A read-only home must not stop message delivery; the cost is a
-            # replay window on the next restart, which dedupe absorbs.
+            # A read-only home must not stop message delivery. The in-memory
+            # cursor still advances, so this client's own resubscribes resume
+            # where it left off. Every channel start, an in-process restart
+            # included, builds a new client that reads whatever cursor the
+            # file last held and starts with an empty GUID window, so it
+            # suppresses none of what that start replays.
             logger.debug("imessage: cursor persist failed", exc_info=True)
 
 

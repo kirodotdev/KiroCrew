@@ -68,7 +68,7 @@ export function useMemberDocumentComments({
 
   // Handed out as a stable forwarder to the latest handler: the side panel can
   // keep the callback of an earlier render (it sits under AnimatePresence), and a
-  // Submit must still send with the latest Auto (Jev) answer and connection.
+  // Submit must still send with the latest Auto (decision model) answer and connection.
   const { submitComments } = useStableCallbackProps({ submitComments: async (message: string, count = 0): Promise<boolean> => {
     if (!connected) return false
     const slot = slotRef.current

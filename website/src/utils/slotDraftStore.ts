@@ -58,6 +58,9 @@ export interface SlotDraftStore<T> {
   /** Read sanitized, TTL-fresh entries without changing memory or storage. */
   peek(): Record<string, T>
   save(drafts: Record<string, T>): boolean
+  /** True when this store's most recent `save` did not reach storage, so what
+   *  storage holds can be older than the caller's in-memory drafts. */
+  lastSaveFailed(): boolean
   set(drafts: Record<string, T>, slot: string, value: T): void
   /** @internal test-only: reset module state between tests. `undefined` in the
    *  prod bundle (gated on `!import.meta.env.PROD`). */
@@ -78,6 +81,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
   }
 
   const timestamps: Record<string, number> = {}
+  let saveFailed = false
 
   const store = (): Storage => (storage === 'local' ? localStorage : sessionStorage)
   const safeWrite = (k: string, v: string): boolean =>
@@ -239,6 +243,12 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
   }
 
   function save(drafts: Record<string, T>): boolean {
+    const stored = writeDrafts(drafts)
+    saveFailed = !stored
+    return stored
+  }
+
+  function writeDrafts(drafts: Record<string, T>): boolean {
     mergeStoredTimestamps()
     if (!evictAfterWrite) return persistNow(drafts)
     // Evict-after-write: cap a copy, persist it, and only mirror the evictions
@@ -269,7 +279,8 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     ? (undefined as unknown as () => void)
     : () => {
         for (const k of Object.keys(timestamps)) delete timestamps[k]
+        saveFailed = false
       }
 
-  return { load, peek, save, set, __resetForTests }
+  return { load, peek, save, lastSaveFailed: () => saveFailed, set, __resetForTests }
 }

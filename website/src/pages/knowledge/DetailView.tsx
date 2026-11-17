@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, AlertCircle, Link2, ArrowUpRight, Tag } from 'lucide-react'
+import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, Link2, ArrowUpRight, Tag } from 'lucide-react'
 import { Card, Btn, Badge, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -13,6 +13,7 @@ import { fmtNumber } from '../../i18n/format'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useLatestMutationError } from '../../utils/latestMutationError'
 function highlightEntities(text: string, entities: Entity[], onEntityClick?: (name: string) => void) {
   if (!entities?.length) return text
   const names = [...entities].sort((a, b) => b.name.length - a.name.length).map(e => e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -139,8 +140,11 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
         className="flex-1 px-2 py-1 text-[12px] bg-bg-elevated border border-border rounded outline-hidden focus-ring"
         {...ime.bindEnter({ onEnter: () => saveMutation.mutate(value), onEscape: close })}
         autoFocus />
-      <button onClick={() => saveMutation.mutate(value)} disabled={saveMutation.isPending}
-        className="text-[11px] text-accent bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.save')}</button>
+      {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+          order and drops a keyboard user's focus while the save is in flight. */}
+      <button type="button" onClick={() => { if (!saveMutation.isPending) saveMutation.mutate(value) }}
+        aria-disabled={saveMutation.isPending || undefined} aria-busy={saveMutation.isPending || undefined}
+        className="text-[11px] text-accent bg-transparent border-none cursor-pointer aria-disabled:opacity-50 aria-disabled:cursor-default">{i18nT('pages.knowledge.detailView.save')}</button>
       <button onClick={close} className="text-[11px] text-muted bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.cancel')}</button>
     </div>
     {/* No hand-off: the tag field holds the unsaved tag draft. */}
@@ -208,6 +212,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
     },
   })
 
+  const actionError = useLatestMutationError(archiveMutation, deleteMutation)
   const { copied, copy } = useCopy()
   const copyContent = () => {
     if (!item) return
@@ -333,15 +338,20 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       <div className="flex gap-2 flex-wrap">
         <Btn onClick={copyContent}><Copy size={12} /> {copied ? i18nT('pages.knowledge.detailView.copied') : i18nT('pages.knowledge.detailView.copy_content')}</Btn>
         <Btn onClick={() => { const a = document.createElement('a'); a.href = `/api/knowledge/items/${item.id}/export`; a.download = `${item.title}.knowledge`; a.click() }}><Download size={12} /> {i18nT('pages.knowledge.detailView.export')}</Btn>
+        {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+            order and drops a keyboard user's focus while the request runs. */}
         {item.status === 'archived'
-          ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
-          : <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'archived' })}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
-        <Btn disabled={deleteMutation.isPending} onClick={() => { if (confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
+          ? <Btn aria-disabled={archiveMutation.isPending || undefined} aria-busy={archiveMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!archiveMutation.isPending) archiveMutation.mutate({ id: item.id, status: 'active' }) }}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
+          : <Btn aria-disabled={archiveMutation.isPending || undefined} aria-busy={archiveMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!archiveMutation.isPending) archiveMutation.mutate({ id: item.id, status: 'archived' }) }}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
+        <Btn aria-disabled={deleteMutation.isPending || undefined} aria-busy={deleteMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!deleteMutation.isPending && confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
       </div>
-      {(archiveMutation.isError || deleteMutation.isError) && (
-        <div className="mt-2 text-[12px] text-danger flex items-center gap-1">
-          <AlertCircle size={12} /> {(archiveMutation.error || deleteMutation.error)?.message || i18nT('pages.knowledge.detailView.action_failed')}
-        </div>
+      {actionError != null && (
+        <ErrorNotice
+          askAgent
+          className="mt-2"
+          variant="inline"
+          message={(actionError instanceof Error ? actionError.message : '') || i18nT('pages.knowledge.detailView.action_failed')}
+        />
       )}
     </div>
   )

@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import SimpleSelect from '../components/SimpleSelect'
+import * as touch from '../utils/isTouchDevice'
 
 /**
  * SimpleSelect — the shared Radix Select wrapper that replaced StyledSelect
@@ -9,6 +10,32 @@ import SimpleSelect from '../components/SimpleSelect'
  * jsdom (unlike DropdownMenu), so no mock is needed here.
  */
 describe('SimpleSelect', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('on the native path keeps focus on the same element when busy flips (no remount)', () => {
+    // The native <select> is the one control a keyboard user has focused; if
+    // turning busy on changed the element tree, React would unmount and remount
+    // it and focus would fall to the page -- the exact drop this fix prevents.
+    vi.spyOn(touch, 'isTouchDevice').mockReturnValue(true)
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <SimpleSelect options={['a', 'b']} value="a" onChange={onChange} aria-label="Provider" />
+    )
+    const select = document.querySelector('select') as HTMLSelectElement
+    expect(select).toBeTruthy()
+    select.focus()
+    expect(document.activeElement).toBe(select)
+    rerender(<SimpleSelect options={['a', 'b']} value="a" onChange={onChange} busy aria-label="Provider" />)
+    // Same element instance still mounted and still focused.
+    expect(document.querySelector('select')).toBe(select)
+    expect(document.activeElement).toBe(select)
+    expect(select).toHaveAttribute('aria-disabled', 'true')
+    expect(select).toHaveAttribute('aria-busy', 'true')
+    // A change while busy is refused.
+    fireEvent.change(select, { target: { value: 'b' } })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('keeps identity icons in the selected value and options without changing their text names', async () => {
     const onChange = vi.fn()
     render(<SimpleSelect options={['reviewer', 'writer']} optionLabels={['Code review', 'Writing']} optionIcons={[<img key="reviewer" src="/reviewer.png" alt="" />, <img key="writer" src="/writer.png" alt="" />]} value="reviewer" onChange={onChange} aria-label="Member" />)

@@ -754,9 +754,10 @@ class TestCopyAppTree:
         dest = app_dir("test-app")
         secret = dest / ".app_secret"
         if secret_installed:
+            # A copy an older version left in the folder.
             secret.write_text("s3cret", encoding="utf-8")
         else:
-            secret.unlink()
+            assert not os.path.lexists(secret)  # an install keeps none there
 
         v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
         (v2 / "ui").mkdir()

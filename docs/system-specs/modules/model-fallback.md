@@ -106,7 +106,11 @@ and each error surface must receive the same safe text.
   (`dashboard/chat_turn/model_fallback.py`, which owns the dashboard's four swap and restore
   helpers named below) after its pre-activity transient branch; `_on_acp_transient_exhausted`
   (`chat_turn/acp_recovery.py`) persists a notice and requeues the same message as a synthetic
-  recovery item. The swap's condition excludes nested prompts. On exhaustion `_on_acp_error_card`
+  recovery item. The swap's condition excludes nested prompts and Kiro's per-user rate limit
+  (`AcpError.user_rate_limit`), which every model shares, so that turn ends on its own error
+  row. The notice is `model_server_error_fallback` when the selected model's ladder ended on a
+  provider 5xx (`slot._fallback_walk_server_error`, written at the walk's first swap) and
+  `model_throttled_fallback` otherwise. On exhaustion `_on_acp_error_card`
   (`chat_turn/turn_failures.py`) renders the slot-local walk in the terminal error.
 - `subagent_manager/run_turn.py::_run_inner_impl`'s nested `_stream_with_transient_retry` follows the zero-activity branch,
   uses the shared candidate helper, and applies `annotate_model_fallback` to
@@ -198,12 +202,12 @@ families — a different model routinely accepts what another's filter declined
   names the true primary (the prior restore failed or silently no-oped) —
   preserves that recorded primary instead of overwriting it with the stale
   fallback the session is stranded on, so the eventual restore returns to the
-  user's real model rather than to fallback A. While the record is live,
-  both `slot.model` backfill sites (which write only a slot whose Bot
-  pins a model, see model-selection.md) treat the
-  session like an active throttle fallback: the provider's resolved model is
-  the temporary candidate and must never be persisted into the durable pin,
-  and usage rows attribute to the model that actually served the turn.
+  user's real model rather than to fallback A. While the record is live, the
+  turn-end usage row treats the session like an active throttle fallback: the
+  provider's resolved model is the temporary candidate, never persisted into the
+  durable pin (no site writes the served model into `slot.model`, see
+  model-selection.md), and usage rows attribute to the model that actually served
+  the turn.
 - The retry is requeued at queue index 0 as a synthetic recovery item, in one
   of two shapes decided by `_turn_tool_calls`. A turn refused before it
   dispatched any tool replays the declined message verbatim, carrying its
@@ -216,7 +220,7 @@ families — a different model routinely accepts what another's filter declined
   would run its side effects twice. Because a verbatim replay is the
   user's own words, it cannot be
   recognized by the fixed synthetic-recovery texts — and not by text at
-  all: the drain redacts credentials and exfiltration URLs after the swap
+  all: the drain redacts credentials, inside URLs too, after the swap
   records the raw message, so string equality breaks for exactly the
   content most likely to draw a refusal. Recognition is the drained
   entry's queue id, matched by the drain (the entry must drain alone; a
@@ -401,7 +405,14 @@ State follows the engine, through `EngineFallbackTracker` on the handle and on
   (A to B, then B to C) count as one move from A to C, unless a channel already
   followed the first, which leaves its pick on B.
   `test_engine_fallback.py::test_the_next_cold_start_requests_the_model_the_engine_promoted`
-  pins it.
+  pins it. A Bot's thread with no pick of its own is unpinned here: `slot.model`
+  holds only a person's pick, never a copy of the Bot's model, so the promotion lasts
+  only as long as the live session and the thread's next fresh start asks for the
+  Bot's model again. A promotion stored in such a thread would outlive every later
+  change to the Bot's setting, and the Bot's composer offers no model control to
+  clear it. A person's own pick in the thread (on KAS, `/model <id>` typed there)
+  still wins and still takes the promotion.
+  `test_bot_thread_follows_bot_model.py` pins both.
 - A promotion while Crew's own throttle or refusal fallback serves the slot
   (`_active_fallback_model` or `_refusal_fallback_primary` set) is the one
   exception on the dashboard. The model the engine moved off is Crew's fallback

@@ -433,6 +433,18 @@ def _scrub_keyed_string(keys: tuple[str, ...], value: str, home: str) -> str:
 _FIELD_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]{0,63}\Z")
 
 
+#: Characters a header-style name may separate its words with.
+_NAME_SEPARATORS = str.maketrans("", "", "-_. ")
+
+
+def _names_authorization(name: str) -> bool:
+    """Whether ``name`` is an authorization header name (``Authorization``, ``Proxy-Authorization``).
+
+    Compared lowercase with ``-``, ``_``, ``.`` and spaces removed, as a suffix.
+    """
+    return name.lower().translate(_NAME_SEPARATORS).endswith("authorization")
+
+
 def _scrub_dict_key(keys: tuple[str, ...], key: str, home: str) -> str:
     """Redact a dict KEY that sits under the enclosing *keys*.
 
@@ -451,6 +463,10 @@ def _scrub_dict_key(keys: tuple[str, ...], key: str, home: str) -> str:
                 break
             return "[REDACTED: credential]"
     for ancestor in keys:
+        if _FIELD_NAME_RE.match(key) and _names_authorization(ancestor):
+            # A field name is not an Authorization value. Other ancestors
+            # still supply their own credential context to the joined check.
+            continue
         joined = f"{ancestor}: {key}"
         if redact_text(joined) != joined:
             return "[REDACTED: credential]"

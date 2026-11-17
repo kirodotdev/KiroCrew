@@ -92,7 +92,13 @@ _EXPECTED: dict[str, tuple[list[str], list[str], str, list[str], str | None]] = 
         ["job_open", "job_details_tab", "job_secret_request_pending"],
         None,
     ),
-    "artifacts.starred": (["Artifacts", "Starred"], ["产物", "已加星"], "/artifacts", [], None),
+    "artifacts.starred": (
+        ["Artifacts", "Starred"],
+        ["产物", "已加星"],
+        "/artifacts?scope=all",
+        [],
+        None,
+    ),
     "artifacts.deploy": (
         ["Artifacts", "Artifact Deploy"],
         ["产物", "产物部署"],
@@ -101,8 +107,8 @@ _EXPECTED: dict[str, tuple[list[str], list[str], str, list[str], str | None]] = 
         "desktop",
     ),
     "artifacts.new-folder": (
-        ["Artifacts", "New folder"],
-        ["产物", "新建文件夹"],
+        ["Artifacts", "More ways to add an artifact", "New folder"],
+        ["产物", "添加产物的更多方式", "新建文件夹"],
         "/artifacts",
         [],
         "desktop",
@@ -129,9 +135,16 @@ _EXPECTED: dict[str, tuple[list[str], list[str], str, list[str], str | None]] = 
         None,
     ),
     "mcp.probe": (
-        ["Customize", "Connections", "MCP Servers", "Probe MCP servers"],
-        ["自定义", "连接", "MCP 服务器", "探测 MCP 服务器"],
-        "/capabilities?tab=mcp",
+        ["Customize", "MCP Servers", "Servers", "Probe MCP servers"],
+        ["自定义", "MCP 服务器", "服务器", "探测 MCP 服务器"],
+        "/capabilities?tab=mcp-servers",
+        [],
+        None,
+    ),
+    "knowledge.add-source": (
+        ["Customize", "Knowledge", "Sources", "+ Add Source"],
+        ["自定义", "知识库", "来源", "+ 添加来源"],
+        "/capabilities?tab=knowledge",
         [],
         None,
     ),
@@ -173,6 +186,8 @@ _PHRASINGS: list[tuple[str, str, str]] = [
     ("刷新技能", "zh-CN", "skills.refresh"),
     ("test my MCP servers", "en", "mcp.probe"),
     ("检测 MCP 服务器", "zh-CN", "mcp.probe"),
+    ("add a folder to the knowledge base", "en", "knowledge.add-source"),
+    ("添加文件夹到知识库", "zh-CN", "knowledge.add-source"),
 ]
 
 

@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         ReplayFamily,
         SessionClosingError,
         StructuredStatus,
+        _run_clock,
         classify_stop_reason,
         code_channel_post_thread,
         crew_log_emit,
@@ -70,7 +71,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
-    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire
+    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _crew_fires_agent_spawn, _fire
 
 
 async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
@@ -254,7 +255,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
 
 async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     """Pass the dispatch gates from the session's first turn up to the stream's start."""
-    # Every gate below reads synchronously; the stored Ultra Mode pause is read
+    # Every gate below reads synchronously; the stored conductor mode pause is read
     # (off the loop, once per data home) before any of them, so a turn right
     # after a restart is still held by a crew paused before it.
     from kiro_crew import crew_pause as _crew_pause
@@ -285,7 +286,6 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _trusted_prompt_tail = turn._trusted_prompt_tail
     _turn_msg_boundary = turn._turn_msg_boundary
     _turn_provenance_restored = turn._turn_provenance_restored
-    _turn_t0 = turn._turn_t0
     _user_msg_for_mirror = turn._user_msg_for_mirror
     _user_prepend_offset = turn._user_prepend_offset
     _user_span = turn._user_span
@@ -318,6 +318,18 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         return _Flow.END
     if is_new and _sends_prompt:
         spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key)
+        # Defensive on the accessor, like ``turn_bracket.consume_reinjection``.
+        remember = getattr(state.sessions, "remember_agent_spawn_context", None)
+        if callable(remember):
+            remember(session_key, spawn_injected)
+    elif _sends_prompt and turn._needs_reinjection and _crew_fires_agent_spawn(client):
+        # kiro-cli runs the spec's hooks itself and sends the agentSpawn output
+        # with every request. Where Crew fires the hook instead, the output lives
+        # only in the history, which a compaction summarized away. Send the kept
+        # output once more, on this first turn after it, unrun.
+        read_kept = getattr(state.sessions, "agent_spawn_context", None)
+        kept = read_kept(session_key) if callable(read_kept) else ()
+        spawn_injected = list(kept) if isinstance(kept, tuple) else []
     else:
         spawn_injected = []
 
@@ -360,7 +372,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # On a warm turn the agent still holds its list, so it gets only the rows
     # the person ticked in the pill since its last snapshot (todo_sync_prompt),
     # which is how a click reaches a live agent instead of being reverted by
-    # its next full snapshot.
+    # its next full snapshot. A harness that keeps its checklist itself gets
+    # neither (see _checklist_resync).
     if _sends_prompt and not is_slash:
         full_message, _todo_sync_rendered, _todo_recovery_carried = await _checklist_resync(
             slot,
@@ -369,6 +382,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             _provider_has_history=_provider_has_history,
             _todo_sync_rendered=_todo_sync_rendered,
             _todo_recovery_carried=_todo_recovery_carried,
+            client=client,
         )
         turn._todo_recovery_carried = _todo_recovery_carried
         turn._todo_sync_rendered = _todo_sync_rendered
@@ -405,7 +419,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         await _probe_fallback_restore_for_slot(slot, client)
 
     # ── Jev model routing (decisions/points/model_route.py) ──
-    # For a slot the owner chose not to pin -- the owner picked "Auto (Jev)", or
+    # For a slot the owner chose not to pin -- the owner picked "Auto (decision model)", or
     # the slot is on plain ``auto`` while the preview is on -- and only for a
     # NORMAL chat turn: `_crew_log_actor` is the turn's structural origin, so
     # cron deliveries, sub-agent turns, crew-relayed turns, app injections and
@@ -565,6 +579,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                     session_key,
                     source="slack" if slot._turn_channel_origin else "dashboard",
                     on_bound=_owe_code_channel_turn_end,
+                    # What the person asked, without this runner's prepends: a
+                    # cancelled-turn preamble may quote an older prompt.
+                    prompt=str(turn._jev_route_text or ""),
                 )
             except Exception:
                 logger.debug("code channel turn-start hooks failed", exc_info=True)
@@ -649,15 +666,16 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._turn_refusal = _turn_refusal
 
     # ── Per-turn stats (elapsed / credits) ──
-    # Wall-clock start of the turn. kiro (acp) leaves TurnUsage.duration_ms
-    # at 0, so elapsed is measured here; claude_code's API-reported
+    # The turn's wall clock keeps the start ``_turn_open`` set when the message
+    # reached the runner: it must not restart here, after the session claim and
+    # the prompt build, or the footer leaves out a cold start's engine and MCP
+    # start the person sat through. kiro (acp) leaves TurnUsage.duration_ms
+    # at 0, so elapsed is measured from that start; claude_code's API-reported
     # duration_ms is preferred when present. Captured at EVENT_COMPLETE and
     # attached to the final assistant message via _attach_turn_stats so the
     # dashboard shows the same end-of-turn stats kiro-cli prints natively.
     # _turn_msg_boundary scopes the attach to THIS turn's messages so an
     # error-only turn can't overwrite the previous turn's stats.
-    _turn_t0 = time.monotonic()
-    turn._turn_t0 = _turn_t0
     _turn_elapsed_ms = 0
     turn._turn_elapsed_ms = _turn_elapsed_ms
     _turn_credits = 0.0
@@ -666,6 +684,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._turn_cost_usd = _turn_cost_usd
     _turn_model = ""
     turn._turn_model = _turn_model
+    # Set at EVENT_COMPLETE when the turn rebuilt the prompt cache (``cache_rewrite``).
+    turn._turn_cache_rewrite = False
     # Set once EVENT_COMPLETE has filled the four figures above.
     _turn_stats_captured = False
     turn._turn_stats_captured = _turn_stats_captured
@@ -792,7 +812,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             depth=_prompt_depth,
         )
         return _Flow.END
-    # Ultra Mode "Pause all" holds this session: whichever path reached here (a
+    # Conductor mode "Pause all" holds this session: whichever path reached here (a
     # linked thread, Regenerate, Rewind, Edit & Resend, an API send), no turn
     # starts until Resume all or the session's own Continue lifts the hold, both
     # of which lift it before they dispatch. Read synchronously, beside the stop
@@ -800,7 +820,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     from kiro_crew import crew_pause
 
     if crew_pause.holds_slot(slot):
-        logger.info("Aborting dispatch for %s: its Ultra Mode crew is paused", session_key)
+        logger.info("Aborting dispatch for %s: its conductor mode crew is paused", session_key)
         # Its prompt is already in the transcript: Resume all must continue it,
         # whatever the pause's own Stop of this session answered.
         try:
@@ -914,8 +934,31 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 store=str(turn.memory_store or ""),
             )
         )
+    # A person's message: an admitted human turn from a dashboard or channel
+    # opener, counted once. Depth re-entries, synthetic recovery and replay turns
+    # must not count the same message again. ``_directive_user_origin`` alone is
+    # not enough: a script cron's ``ctx.send_to_session`` reaches /api/chat with it
+    # True, so the turn's structural actor must also be ``user`` (as the
+    # attended-turn checks above require).
+    _persons_message = (
+        _prompt_depth == 0
+        and not _is_refusal_retry_turn
+        and not turn._synthetic_recovery_turn
+        and not turn._replay
+        and turn._directive_user_origin is True
+        and turn._crew_log_actor == "user"
+    )
     if not turn._agent_cancel_owed:
         # A stopped agent-started turn opens only to send its cancel: not a turn.
+        if _persons_message:
+            # A person's message starts a new run, timed from this turn's own
+            # start, so work an earlier run waited on that then ended with no turn
+            # (a loop switched off, a failed activity probe, a cancelled child)
+            # leaves no stamp this run is measured from. Every other turn
+            # continues the open run, or starts one (the ``task`` setter).
+            started = slot._task_started_at
+            slot._run_started_at = started if started is not None else _run_clock.now()
+            slot._run_started_turns = slot._turns_started
         slot._turns_started += 1
     crew_log_emit.on_turn_started(
         _crew_log_sid,
@@ -923,24 +966,12 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._crew_log_actor,
         depth=_prompt_depth,
     )
-    # Milestones count admitted, persistent human turns from dashboard or channel
-    # openers. Depth re-entries, synthetic recovery and replay turns must not count
-    # the same message again. ``_directive_user_origin`` alone is not enough: a
-    # script cron's ``ctx.send_to_session`` reaches /api/chat with it True, so the
-    # turn's structural actor must also be ``user`` (as the attended-turn checks
-    # above require). The write runs off-loop and never raises, adding no
+    # Milestones count a person's message (above) in a persistent session, never a
+    # restricted one. The write runs off-loop and never raises, adding no
     # suspension point here.
     from kiro_crew.dashboard.handlers._shared import is_restricted_session_key
 
-    if (
-        _prompt_depth == 0
-        and not _is_refusal_retry_turn
-        and not turn._synthetic_recovery_turn
-        and not turn._replay
-        and turn._directive_user_origin is True
-        and turn._crew_log_actor == "user"
-        and not is_restricted_session_key(turn.state, session_key)
-    ):
+    if _persons_message and not is_restricted_session_key(turn.state, session_key):
         record_user_turn(
             mate_thread=(
                 getattr(slot, "mode", "") == DM_SLOT_MODE

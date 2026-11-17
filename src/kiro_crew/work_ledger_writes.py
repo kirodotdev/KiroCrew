@@ -13,7 +13,7 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from kiro_crew import work_preview
+from kiro_crew import resource_status, work_preview
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.session_ledger import _store_name
 from kiro_crew.work_ledger_records import (
@@ -22,6 +22,7 @@ from kiro_crew.work_ledger_records import (
     CODE_DEPTH_EXCEEDED,
     CODE_DUPLICATE_ITEM,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
+    CODE_HOST_MEMORY_CRITICAL,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
     CODE_INVALID_VALUE,
@@ -36,7 +37,6 @@ from kiro_crew.work_ledger_records import (
     MAX_EVENT_TEXT_CHARS,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
-    MAX_GOAL_ITEM_CAP,
     MAX_ITEMS_PER_CONDUCTOR,
     MAX_SUMMARY_CHARS,
     MAX_TITLE_CHARS,
@@ -56,8 +56,10 @@ from kiro_crew.work_ledger_rules import (
     _require_artifacts,
     _require_choice,
     _require_count,
+    _require_discussion,
     _require_pr,
     _require_text,
+    _require_wake_at,
     depth_cap_hint,
     is_acceptance_concrete,
     may_conduct,
@@ -86,7 +88,15 @@ from kiro_crew.work_ledger_store import (
     read_conductor,
     read_work_item,
 )
-from kiro_crew.work_vocab import WORK_REASON_STATUSES, worker_statuses
+from kiro_crew.work_vocab import (
+    WORK_ASK_LABEL_CHARS,
+    WORK_ASK_MAX_OPTIONS,
+    WORK_ASK_OUTCOME_CHARS,
+    WORK_ASK_WHAT_CHARS,
+    WORK_ASK_WHY_CHARS,
+    WORK_REASON_STATUSES,
+    worker_statuses,
+)
 
 # Bindings: one file per worker, replaced whole only by ``bind`` under the worker's
 # binding lock, so two conductors cannot both believe they bound it.
@@ -217,7 +227,9 @@ def ensure_conductor(
             parent_item=parent_item,
             created_at=_now_iso(),
             generation=secrets.token_hex(8),
+            goal_id=secrets.token_hex(8),
         )
+        record.round_started_at = record.created_at
         _write_record(directory / _CONDUCTOR_FILE, record.to_dict())
         try:
             atomic_write(directory / _KEY_FILE, slot_key + "\n", mode=0o600)
@@ -240,7 +252,6 @@ def apply_conductor_action(
     goal: Any = None,
     round_number: Any = None,
     fails: Any = None,
-    item_cap: Any = None,
     concurrency_cap: Any = None,
     new_goal: Any = None,
 ) -> dict[str, Any]:
@@ -256,9 +267,10 @@ def apply_conductor_action(
     ``bind``    ``item_id``, ``worker_session_key`` — writes the binding file.
     ``decide``  ``item_id``, ``decision``, optional ``round_number``.
     ``verdict`` ``item_id``, ``verdict``, optional ``fails``.
-    ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``.
-    ``goal``    ``goal``, optional ``round_number``, ``item_cap``,
-                ``concurrency_cap`` and ``new_goal`` — the conductor record only.
+    ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``;
+                ``accepted`` only on an item whose ``verdict`` is ``pass``.
+    ``goal``    ``goal``, optional ``round_number``, ``concurrency_cap`` and
+                ``new_goal`` — the conductor record only.
 
     Returns ``{"conductor", "item", "event"}``; ``item`` and ``event`` are ``None``
     for ``goal``. Raises :class:`WorkLedgerError` with a ``code`` from the ``CODE_*``
@@ -282,7 +294,6 @@ def apply_conductor_action(
                 record,
                 goal,
                 round_number,
-                item_cap,
                 new_goal,
                 concurrency_cap=concurrency_cap,
             ),
@@ -340,7 +351,6 @@ def _write_goal(
     record: ConductorRecord,
     goal: Any,
     round_number: Any,
-    item_cap: Any = None,
     new_goal: Any = None,
     *,
     concurrency_cap: Any = None,
@@ -357,13 +367,6 @@ def _write_goal(
     """
     checked_goal = None if goal is None else _require_text(goal, MAX_GOAL_CHARS, "goal")
     checked_round = None if round_number is None else _require_count(round_number, "round")
-    checked_cap = None if item_cap is None else _require_count(item_cap, "item_cap")
-    if checked_cap is not None and not 1 <= checked_cap <= MAX_GOAL_ITEM_CAP:
-        raise WorkLedgerError(
-            f"item_cap must be between 1 and {MAX_GOAL_ITEM_CAP}; got {checked_cap}",
-            code=CODE_INVALID_VALUE,
-            field="item_cap",
-        )
     checked_concurrency = (
         None if concurrency_cap is None else _require_count(concurrency_cap, "concurrency_cap")
     )
@@ -397,12 +400,16 @@ def _write_goal(
             # before the counter starts the goal's count after its records.
             current.created_total = len(_stored_item_ids(slot_key))
         _settle_goal_base(current)
+        if new_goal or not current.goal_id:
+            # A goal of its own: its rounds share this id (see ConductorRecord.goal_id).
+            current.goal_id = secrets.token_hex(8)
+            current.round_started_at = _now_iso()
         if new_goal:
             current.goal_items_base = current.created_total
         if checked_round is not None:
+            if checked_round != current.round:
+                current.round_started_at = _now_iso()
             current.round = checked_round
-        if checked_cap is not None:
-            current.item_cap = checked_cap
         if checked_concurrency is not None:
             current.concurrency_cap = checked_concurrency
         current.goal_version += 1
@@ -419,10 +426,8 @@ def _create_item(
 ) -> dict[str, Any]:
     """Mint one item under the conductor lock.
 
-    The caps are checked by :func:`_admit_create_locked`. The goal's
-    :attr:`ConductorRecord.item_cap` refuses nothing (it is reported as
-    :attr:`ConductorRecord.cap_exceeded`), and nothing bounds a board's lifetime
-    creates, since the ``work`` fold forgets old closed items.
+    The caps are checked by :func:`_admit_create_locked`. Nothing bounds a
+    board's lifetime creates, since the ``work`` fold forgets old closed items.
 
     The header (with ``created_total`` bumped) is written FIRST, then the item, and
     restored if the item write raises. A failure between them over-counts, the safe
@@ -447,6 +452,7 @@ def _create_item(
         )
     with _existing_conductor_lock(slot_key):
         live = _admit_create_locked(slot_key)
+        _refuse_if_host_critical()
         if checked_round is None:
             checked_round = live.round
         item_id = mint_item_id()
@@ -505,18 +511,40 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
             field="items",
         )
     # The goal's own fan-out bound, only on a board that recorded a goal (a queue
-    # board never does). A person decides past it.
+    # board never does). A bound below the store's is one the user set.
     if live.goal_version > 0 and len(open_items) >= live.concurrency_cap:
         raise WorkLedgerError(
             f"this goal holds {len(open_items)} open items and its concurrency cap "
-            f"is {live.concurrency_cap}. Dispatch nothing new until one lands; to "
-            "run more at once, ask the user, and if they agree raise the cap with "
-            "work_ledger_record action=goal concurrency_cap=<new cap> "
+            f"is {live.concurrency_cap}. Dispatch nothing new until one lands: wait "
+            "for a seat, do not ask to raise it. Only a bound the user sets changes "
+            "it, with work_ledger_record action=goal concurrency_cap=<new cap> "
             f"(at most {MAX_GOAL_CONCURRENCY_CAP})",
             code=CODE_GOAL_CONCURRENCY_CAP_REACHED,
             field="concurrency_cap",
         )
     return live
+
+
+def _refuse_if_host_critical() -> None:
+    """Refuse a create while host memory is critical. Writes nothing.
+
+    rfc-work-ledger-resource-pressure §3.5 (the part not withdrawn), under the admission
+    contract: critical refuses; tight, unknown and ``agent.admission_gate: false``
+    admit. The conductor checks ``resource_status`` before dispatch; this refusal is
+    the only code backstop. A live probe, not the cached
+    verdict: that cache refreshes only when asked, so the first create after memory
+    recovered would be judged on a stale refusal. This runs off the loop (the route
+    calls the store through ``asyncio.to_thread``) and the probe is one memory read.
+    Checked after the caps, so a board at a cap still hears about the cap.
+    """
+    decision = resource_status.admission_check()
+    if not decision.admitted:
+        raise WorkLedgerError(
+            f"create refused: {decision.reason}. Dispatch nothing new until memory is "
+            "no longer critical",
+            code=CODE_HOST_MEMORY_CRITICAL,
+            field="host_memory",
+        )
 
 
 def create_bound_item(
@@ -679,6 +707,8 @@ def _write_item_action(
             assert checked_decision is not None
             item.decision = checked_decision
             item.decided_at = _now_iso()
+            # A decision answers the question the ask record explained.
+            item.ask = None
             event = _commit_item_locked(slot_key, item, "decision", checked_decision)
         elif action == "verdict":
             assert checked_verdict is not None
@@ -692,10 +722,20 @@ def _write_item_action(
             event = _commit_item_locked(slot_key, item, "verdict", checked_verdict)
         else:
             assert checked_state is not None
+            if checked_state == "accepted" and item.verdict != "pass":
+                raise WorkLedgerError(
+                    f"item {checked_id!r} cannot close accepted: its verdict is "
+                    f"{item.verdict or 'not recorded'}, and only a pass verdict closes it "
+                    "accepted. Record accept_eval's verdict (for a human_approval bar, the "
+                    "person's answer) with action=verdict, or close it rejected or abandoned",
+                    code=CODE_INVALID_VALUE,
+                    field="state",
+                )
             item.state = checked_state
             if checked_decision is not None:
                 item.decision = checked_decision
             item.closed_at = _now_iso()
+            item.ask = None
             event = _commit_item_locked(slot_key, item, "close", checked_decision or checked_state)
         return {"conductor": record, "item": item, "event": event}
 
@@ -712,12 +752,16 @@ def apply_worker_report(
     artifacts: Any = None,
     pr: Any = None,
     reason: Any = None,
+    wake_at: Any = None,
+    discussion: Any = None,
 ) -> dict[str, Any]:
-    """Write the fields the WORKER owns: ``status``, ``reason``, ``summary``,
-    ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is reachable from here.
+    """Write the fields the WORKER owns: ``status``, ``reason``, ``wake_at``,
+    ``summary``, ``artifacts``, ``pr``, ``discussion`` and ``last_report_at``.
+    Nothing else is reachable from here.
 
-    ``reason`` rides only on ``blocked`` / ``question`` and is replaced by every
-    report, so a later report without one clears it.
+    ``reason`` rides only on ``blocked`` / ``question``, and ``wake_at`` (when the
+    worker will resume) only on ``progress``. Every report replaces those two and
+    ``discussion``, so a later report without one clears it.
 
     No ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round`` parameter,
     so a worker cannot accept itself or widen its bar; ``status: done`` only
@@ -748,6 +792,8 @@ def apply_worker_report(
                 code=CODE_INVALID_VALUE,
                 field="reason",
             )
+    checked_wake_at = _require_wake_at(wake_at, checked_status)
+    checked_discussion = _require_discussion(discussion)
     checked_id = _require_item_id(item_id)
 
     with item_lock(slot_key, checked_id, create=False):
@@ -760,6 +806,8 @@ def apply_worker_report(
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
         item.status = checked_status
         item.reason = checked_reason
+        item.wake_at = checked_wake_at
+        item.discussion = checked_discussion
         item.summary = checked_summary
         item.artifacts = checked_artifacts
         if checked_pr is not None:
@@ -879,9 +927,106 @@ def apply_acceptance_update(
         if item.is_terminal:
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
         item.acceptance = checked_acceptance
-        # A pending run belongs to the bar it measured; the new bar starts its own.
+        # A pending run and a verdict belong to the bar they measured; the new bar
+        # starts with neither, so ``close accepted`` waits for its own pass.
         item.pending_since = None
+        item.verdict = None
         event = _commit_item_locked(
             slot_key, item, "decision", "acceptance promoted by the conductor"
+        )
+        return {"item": item, "event": event}
+
+
+def _require_ask_options(options: Any) -> list[dict[str, str]]:
+    """The ``ask`` options: at most six ``{label, outcome}``, each label unique."""
+    if options is None:
+        return []
+    if not isinstance(options, list) or len(options) > WORK_ASK_MAX_OPTIONS:
+        raise WorkLedgerError(
+            f"options must be a list of at most {WORK_ASK_MAX_OPTIONS} {{label, outcome}}",
+            code=CODE_INVALID_VALUE,
+            field="options",
+        )
+    checked: list[dict[str, str]] = []
+    for option in options:
+        if not isinstance(option, dict):
+            raise WorkLedgerError(
+                "each option is an object {label, outcome}",
+                code=CODE_INVALID_VALUE,
+                field="options",
+            )
+        label = _require_text(option.get("label"), WORK_ASK_LABEL_CHARS, "options.label")
+        if not label.strip():
+            raise WorkLedgerError(
+                "each option needs a label", code=CODE_INVALID_VALUE, field="options"
+            )
+        outcome = _require_text(
+            option.get("outcome"), WORK_ASK_OUTCOME_CHARS, "options.outcome", required=False
+        )
+        if any(seen["label"] == label for seen in checked):
+            raise WorkLedgerError(
+                f"option label {label!r} appears twice", code=CODE_INVALID_VALUE, field="options"
+            )
+        checked.append({"label": label, "outcome": outcome})
+    return checked
+
+
+def apply_ask_record(
+    slot_key: str,
+    item_id: str,
+    *,
+    what: Any,
+    why: Any = None,
+    options: Any = None,
+    pick: Any = None,
+    pick_why: Any = None,
+) -> dict[str, Any]:
+    """Replace ONE open item's ``ask`` record, appending an ``ask`` event.
+
+    The write behind the ``ask`` tool action: when the conductor relays a question
+    to the person, it records what the item needs, why, each option with what it
+    leads to, and its pick with the reason. ``written_at`` is the store's stamp,
+    never the caller's. ``decide`` and ``close`` clear the record.
+
+    The event kind is ``ask``, not ``decision``: a decision event answers the
+    item's last report (``answered_since_report``), and recording why a question
+    waits must not read as its answer.
+    """
+    checked_id = _require_item_id(item_id)
+    checked_what = _require_text(what, WORK_ASK_WHAT_CHARS, "what")
+    if not checked_what.strip():
+        raise WorkLedgerError("what is required", code=CODE_INVALID_VALUE, field="what")
+    checked_why = _require_text(why, WORK_ASK_WHY_CHARS, "why", required=False)
+    checked_options = _require_ask_options(options)
+    checked_pick = _require_text(pick, WORK_ASK_LABEL_CHARS, "pick", required=False)
+    if checked_pick and checked_pick not in {o["label"] for o in checked_options}:
+        raise WorkLedgerError(
+            "pick must be one of the option labels", code=CODE_INVALID_VALUE, field="pick"
+        )
+    checked_pick_why = _require_text(pick_why, WORK_ASK_OUTCOME_CHARS, "pick_why", required=False)
+    if checked_pick_why and not checked_pick:
+        raise WorkLedgerError("pick_why needs a pick", code=CODE_INVALID_VALUE, field="pick_why")
+
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        item.ask = {
+            "what": checked_what,
+            "why": checked_why,
+            "options": checked_options,
+            "pick": checked_pick,
+            "pick_why": checked_pick_why,
+            "written_at": _now_iso(),
+        }
+        _require_record_fits(item.to_dict())
+        # A nonce salt: two same-`what` asks in one second must stay two events, or
+        # the dedupe drops the newer one and a report between them reads as newest.
+        event = _commit_item_locked(
+            slot_key, item, "ask", checked_what, id_salt="\0" + secrets.token_hex(8)
         )
         return {"item": item, "event": event}

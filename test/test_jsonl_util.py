@@ -14,8 +14,8 @@ import logging
 import os
 import re
 import threading
-import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +84,39 @@ class TestBestEffort:
         rotate_jsonl_at(live, CAP)  # must not raise
         assert (tmp_path / "log.jsonl.1").is_dir()
         assert live.exists(), "a failed rotation must leave the live file appendable"
+
+    def test_refused_rename_warns_once_per_interval(self, tmp_path, caplog, monkeypatch):
+        """A refused rename is the log passing its bound; it must leave a record,
+        but not one per append while the holder keeps refusing."""
+        clock = [1_000.0]
+        monkeypatch.setattr(
+            jsonl_util, "time", SimpleNamespace(monotonic=lambda: clock[0]), raising=False
+        )
+        live = tmp_path / "log.jsonl"
+        live.write_bytes(b"x" * (CAP + 10))
+        (tmp_path / "log.jsonl.1").mkdir()
+
+        def warnings() -> list[str]:
+            return [
+                r.getMessage()
+                for r in caplog.records
+                if r.levelno == logging.WARNING and r.name == "kiro_crew.jsonl_util"
+            ]
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.jsonl_util"):
+            rotate_jsonl_at(live, CAP)
+            assert len(warnings()) == 1, "a refused rename must leave a record"
+            assert str(live) in warnings()[0]
+            assert "IsADirectoryError" in warnings()[0] or "PermissionError" in warnings()[0]
+
+            clock[0] += 300.0  # the next append, well inside the interval
+            rotate_jsonl_at(live, CAP)
+            assert len(warnings()) == 1, "a retry inside the interval repeats nothing"
+
+            clock[0] += jsonl_util.ROTATE_REFUSED_WARN_INTERVAL_SECS
+            rotate_jsonl_at(live, CAP)
+            assert len(warnings()) == 2, "the interval elapsed: the stuck bound is reported again"
+        assert live.exists()
 
     def test_lock_open_failure_does_not_raise(self, tmp_path):
         """An unopenable lock file (fd exhaustion, restrictive dir ACL) must
@@ -509,10 +542,10 @@ class TestBoundedRecordReaders:
         - Searching ``\\n`` afresh per record without the cache walks to the end
           of a file that holds no ``\\n`` until its last byte, once per record.
 
-        Cost added OFF the seam -- say, copying the tail once per record while
-        still searching by offset -- is invisible to any trace, so a generous
-        absolute ``process_time`` budget backstops a catastrophic blowup, per the
-        testing convention's "keep a small-n absolute assertion alongside".
+        Cost added OFF the seam in Python -- say, a per-record walk over what was
+        already read while still searching by offset -- is invisible to the
+        trace, so the interpreter instructions the whole read executes are counted
+        at three file sizes and must grow linearly.
         """
 
         class _TraceFind:
@@ -582,17 +615,31 @@ class TestBoundedRecordReaders:
         # nothing to the constant per-buffer overhead.
         assert len(doubled) - len(base) == count, (len(base), len(doubled))
 
-        # Catastrophic-blowup backstop: two orders of magnitude of headroom that
-        # neither a loaded shared runner nor coverage tracing crosses.
-        budget_path = tmp_path / f"dense{count * 2}.jsonl"
-        begin = time.process_time()
-        with open(budget_path, "rb") as fh:
-            again = sum(1 for _ in bounded_raw_records(fh, budget_path, cap=64 * 1024 * 1024))
-        elapsed = time.process_time() - begin
-        assert again == count * 2, again
-        assert elapsed < 5.0, (
-            f"reading {count * 2} records took {elapsed:.2f}s of process time, "
-            "a catastrophic blowup no runner slowness explains"
+        # Off-seam backstop: the read's interpreter work at 2 000, 4 000 and 6 000
+        # records grows by the same amount per step, so no per-record cost grows
+        # with the records already read. The count is fixed by what the code
+        # does, so neither a loaded runner nor coverage moves it.
+        from denied_commands_security_helpers import _interpreter_work, _linear_work
+
+        def read_all(records: int) -> int:
+            budget_path = tmp_path / f"work{records}.jsonl"
+            budget_path.write_bytes(b'{"a":1}\r' * records + b"\n")
+            got: list[int] = []
+
+            def read() -> None:
+                with open(budget_path, "rb") as fh:
+                    got.append(
+                        sum(1 for _ in bounded_raw_records(fh, budget_path, cap=64 * 1024 * 1024))
+                    )
+
+            work = _interpreter_work(read)
+            assert got == [records], got
+            return work
+
+        work = [read_all(records) for records in (2_000, 4_000, 6_000)]
+        assert _linear_work(work), (
+            f"interpreter work {work} at 2000/4000/6000 records: the read does more "
+            "per record the more records it has already read"
         )
 
     def test_strict_reader_refuses_invalid_utf8_rather_than_replacing_it(self, tmp_path):

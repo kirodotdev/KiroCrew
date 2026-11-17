@@ -20,6 +20,7 @@ from kiro_crew.crew_log.entry_types import (
     GOAL_ENTRY_TYPE,
     GOAL_FOLD_NAME,
     MISTAKES_FOLD_NAME,
+    OBJECTS_FOLD_NAME,
     PANEL_ENTRY_TYPE,
     PANEL_FOLD_NAME,
     RADAR_ENTRY_TYPE,
@@ -79,7 +80,20 @@ from kiro_crew.crew_log.projection_internal import (
     _outline_start,
     _outline_step,
 )
-from kiro_crew.crew_log.projection_ledger import _ledger_render, _ledger_start, _ledger_step
+from kiro_crew.crew_log.projection_ledger import (
+    _ledger_copy,
+    _ledger_render,
+    _ledger_start,
+    _ledger_step,
+)
+from kiro_crew.crew_log.projection_objects import (
+    OBJECT_ENTRY_TYPE,
+    _objects_copy,
+    _objects_render,
+    _objects_rows,
+    _objects_start,
+    _objects_step,
+)
 from kiro_crew.crew_log.projection_otel_session_tree import (
     OTEL_SESSION_TREE_FOLD_NAME,
     OTEL_SESSION_TREE_TYPES,
@@ -127,6 +141,7 @@ from kiro_crew.crew_log.projection_usage import (
 from kiro_crew.crew_log.projection_values import _rows_in
 from kiro_crew.crew_log.projection_work import (
     _work_bind_slot,
+    _work_copy,
     _work_render,
     _work_start,
     _work_step,
@@ -320,6 +335,64 @@ def _subagents_copy(state: dict[str, Any]) -> dict[str, Any]:
     return grown
 
 
+def _radar_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """An item's fields and its ``tried`` list are edited in place; so is each
+    ``phase_lines`` list. ``events``, ``skips`` and ``last_update`` gain and lose rows,
+    and a row in any of them is never edited. ``ci_state`` and ``labels_applied`` are
+    replaced whole, so they stay shared.
+    """
+    grown = dict(state)
+    grown["items"] = {
+        key: {**item, "tried": list(item["tried"])} for key, item in state["items"].items()
+    }
+    grown["phase_lines"] = {key: list(rows) for key, rows in state["phase_lines"].items()}
+    grown["events"] = list(state["events"])
+    grown["skips"] = dict(state["skips"])
+    grown["last_update"] = dict(state["last_update"])
+    return grown
+
+
+def _panel_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """An owner's fields and its ``history`` list are edited in place; ``data`` is
+    replaced whole and a history row is never edited."""
+    grown = dict(state)
+    grown["owners"] = {
+        key: {**own, "history": list(own["history"])} for key, own in state["owners"].items()
+    }
+    return grown
+
+
+def _agentic_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """``fields`` gains and loses rows; a row is replaced whole, never edited."""
+    grown = dict(state)
+    grown["fields"] = dict(state["fields"])
+    return grown
+
+
+def _mistakes_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """A group's counters and its ``corrected_to`` list are edited in place."""
+    grown = dict(state)
+    groups: dict[str, Any] = {}
+    for key, group in state["groups"].items():
+        group = dict(group)
+        if "corrected_to" in group:
+            group["corrected_to"] = list(group["corrected_to"])
+        groups[key] = group
+    grown["groups"] = groups
+    return grown
+
+
+def _custom_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """A failed run marks its writer's rows in place; a failure row and a row's
+    ``data`` are replaced whole. ``failures`` may be absent from an older state, and
+    the step then adds it, so an absent one is left absent."""
+    grown = dict(state)
+    grown["latest"] = {name: dict(row) for name, row in state["latest"].items()}
+    if "failures" in state:
+        grown["failures"] = dict(state["failures"])
+    return grown
+
+
 # --------------------------------------------------------------------------- #
 # What each slot fold RETAINS, counted in rows
 # --------------------------------------------------------------------------- #
@@ -447,50 +520,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _usage_render,
         affects=USAGE_TYPES,
         copy_state=_usage_copy,
-        # Moved off the base for the per-turn context window and the occupancy pair,
-        # and moved again for the monotonic ordinal counter this fold now keeps. That
-        # counter advances over the TURN HISTORY -- a turn that composed nothing still
-        # consumes an ordinal (``context_turns_seq`` plus the memo
-        # that records which turns were counted), and a REFUSED turn does too now
-        # that the fold sees ``turn/refused`` -- so a savepoint from a build whose
-        # counter only moved on compositions, or on completions but not refusals, would
-        # resume with a differently-numbered sequence; the bump retires THIS fold's
-        # files to a cold fold and leaves the others' standing. Moved again because a new
-        # unit now CLEARS the model/window stamps on ``session/opened``: a savepoint from
-        # a build that carried a prior unit's stamp into the next unit would resume still
-        # carrying it. Moved once more because the counter now REMEMBERS every counted
-        # ``(unit, turn)`` in a map rather than only the most recent, so a rewound or
-        # edit-resent turn reuses its ordinal instead of taking a new one; a savepoint
-        # written with the old scalar companion carries no such map and must refold cold.
-        # Moved again because the key's unit is now ``context_key_unit``, which a
-        # re-attachment does not advance; a savepoint keyed by the per-attachment counter
-        # would hand a regenerated turn a second ordinal.
-        # Moved again for ``context_sources_omitted``: a savepoint without the counter
-        # would resume short of it, and the count it renders would be wrong for good.
-        # Moved once more because the memo is now ``context_turn_keys``, one string
-        # covering the whole rewindable range; a savepoint holding the old bounded map
-        # carries neither the new field nor the turns that map had already evicted.
-        # Moved again for a COUNTING fix that keeps every key: ``tokens_turns`` counts
-        # a block of four zeros as unreported, and a savepoint from a build that
-        # counted it as a report would resume onto this logic still carrying the
-        # inflated count for the life of the unit.
-        # Moved again for ``context_started`` and the per-row ``first_start``: a
-        # savepoint without them would mark a later rebuild as the session's start.
-        # Moved again for the engine-measured rows and the running sum of composed
-        # characters beside them: a savepoint without the sum would subtract nothing
-        # from the engine's user text for the rest of the unit.
-        # Moved again for the fixed-size context part (five running sums, the newest
-        # measurement, a 30-row trend ring whose rows carry their own ordinal): a
-        # savepoint holding per-turn rows has none of it.
-        # Moved again because each ring row now holds its turn whole (its blocks by
-        # name and its own engine measurement): a savepoint's shorter rows would be
-        # read past their end.
-        # Moved again for the ordinal memo (``turn_memo``) a rewind reads its ordinal
-        # from: a savepoint without it would give every rewound turn a new ordinal.
-        # Moved again for the dated readings the fullest-turn peak is taken from and
-        # the configured window (``peaks``, ``conf_window``): a savepoint has neither.
-        # Moved again for each row's version and the write counter it comes from
-        # (``row_writes``): a savepoint's shorter rows have neither.
+        # Off the base: this fold's state holds the per-turn context window, the turn
+        # ordinal and its memo, and the context rows, ring and peaks. Bump this
+        # whenever that state changes shape, so a savepoint of another shape refolds
+        # cold instead of resuming onto logic that would misread it.
         state_version=_FOLD_STATE_VERSION_BASE + 18,
     ),
     # The panel's feed section reads this one, so it is pushed like the rest; its value
@@ -620,21 +653,23 @@ _FOLDS: Final[dict[str, _Fold]] = {
     # The SLOT-keyed folds each answer to exactly ONE entry type -- their ``step``
     # returns on its first line for anything else -- so ``affects`` names that type and
     # the kernel skips both the copy and the step for every other entry. A slot's log
-    # is mostly message bodies and tool rows, so that is nearly all of it. They declare
-    # no ``copy_state`` and fall back to the deep copy, which every fold state here is
-    # bounded by construction for.
+    # is mostly message bodies and tool rows, so that is nearly all of it. Each declares
+    # a ``copy_state``: the deep-copy fallback cost one copy of every retained row per
+    # folded entry, which a resumed tail paid once per entry.
     #
     # ALL FOUR ARE EAGER, which is the default and so is written nowhere below. Each is
     # read by a loop that wakes on a timer and each wakes the worker for one entry type
     # in a log that is otherwise message bodies, so the read it serves is a memo lookup
     # rather than a walk of every unit the slot ran under. What their four warm cells
-    # cost resident is :data:`SLOT_FOLD_CACHE_BYTES`' problem, not this table's.
+    # cost resident is bounded by the slot fold cache budget
+    # (``projection_budget.DEFAULT_SLOT_FOLD_CACHE_BYTES``), not by this table.
     "ledger": _Fold(
         "ledger",
         _ledger_start,
         _ledger_step,
         _ledger_render,
         affects=frozenset({LEDGER_ENTRY_TYPE}),
+        copy_state=_ledger_copy,
         count_rows=_ledger_rows,
     ),
     "radar": _Fold(
@@ -643,6 +678,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _radar_step,
         _radar_render,
         affects=frozenset({RADAR_ENTRY_TYPE}),
+        copy_state=_radar_copy,
         count_rows=_radar_rows,
     ),
     "work": _Fold(
@@ -660,6 +696,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         cast("Callable[[dict[str, Any]], dict[str, Any]]", _work_render),
         bind_slot=_work_bind_slot,
         affects=frozenset({WORK_ENTRY_TYPE}),
+        copy_state=_work_copy,
         count_rows=_work_rows,
         count_opaque=_work_opaque,
         # Two past the base. The state carries ``closed``, ``tombstones`` and
@@ -675,6 +712,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _panel_step,
         _panel_render,
         affects=frozenset({PANEL_ENTRY_TYPE}),
+        copy_state=_panel_copy,
         count_rows=_panel_rows,
     ),
     # The two dashboard folds, EAGER like their four siblings and for the same
@@ -689,6 +727,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _agentic_step,
         _agentic_render,
         affects=frozenset({DASHBOARD_AGENTIC_ENTRY_TYPE}),
+        copy_state=_agentic_copy,
         count_rows=_agentic_rows,
     ),
     MISTAKES_FOLD_NAME: _Fold(
@@ -697,6 +736,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _mistakes_step,
         _mistakes_render,
         affects=frozenset({DASHBOARD_REFUSED_ENTRY_TYPE}),
+        copy_state=_mistakes_copy,
         count_rows=_mistakes_rows,
     ),
     # The project report's fold, EAGER like every slot-keyed sibling. It is the widest
@@ -713,8 +753,9 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _workstreams_render,
         bind_slot=_workstreams_bind_slot,
         affects=WORKSTREAMS_TYPES,
-        # One past the base: ``charged`` joined the state.
-        state_version=_FOLD_STATE_VERSION_BASE + 1,
+        # Two past the base: ``charged`` joined the state, then each item's ``reason``
+        # and ``answered``, which an older savepoint lacks, so it rebuilds.
+        state_version=_FOLD_STATE_VERSION_BASE + 2,
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
     ),
@@ -751,8 +792,21 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # A bound cron's FAILED run is folded here too, so its records read as failed
         # rather than current. Version moved: the stored state gained ``failures``.
         affects=frozenset({CUSTOM_ENTRY_TYPE, CUSTOM_FAILED_ENTRY_TYPE}),
+        copy_state=_custom_copy,
         count_rows=_custom_rows,
         state_version=_FOLD_STATE_VERSION_BASE + 1,
+    ),
+    # What code read about objects outside the session (a pull request's state), the
+    # newest per subject and producer. Only ``object/observed`` moves it, and every
+    # producer of that type is gateway code, so the Board can draw it as a fact.
+    OBJECTS_FOLD_NAME: _Fold(
+        OBJECTS_FOLD_NAME,
+        _objects_start,
+        _objects_step,
+        _objects_render,
+        affects=frozenset({OBJECT_ENTRY_TYPE}),
+        copy_state=_objects_copy,
+        count_rows=_objects_rows,
     ),
     # The worker sessions a crewmate created, from the crewmate's OWN log: who it made
     # and when, under the cap. What each worker is doing is ``worker``, merged in at

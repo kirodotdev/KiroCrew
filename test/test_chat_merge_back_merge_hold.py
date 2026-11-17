@@ -49,6 +49,7 @@ from kiro_crew.dashboard.state import (
     _MAX_CONTEXT_PER_SOURCE,
     _MAX_PENDING_CONTEXT,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -1729,6 +1730,7 @@ class TestMerge:
                 "session": effective_session_key(chats.fork),
                 "slot": "fork",
                 "title": "",
+                "createdAt": chats.fork._disk_meta_created_at,
                 "after": chats.fork.messages[1]["meta"]["mid"],
                 "through": first["through"],
                 "digest": first["digest"],
@@ -1827,7 +1829,7 @@ class TestMerge:
         # Pending context reaches the parent's agent as prompt text, so it never
         # carries a credential, and a merge is nothing without its context half:
         # the route refuses instead of writing a card the agent would never read.
-        token = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"  # no literal credential in source
+        token = github_classic(seed=401)
         held_before = list(chats.parent._deferred_notes)
         queued_before = list(chats.parent._pending_context)
 

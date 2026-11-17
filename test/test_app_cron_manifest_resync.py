@@ -414,7 +414,7 @@ class TestCreateOnlyFieldsWaitForAReenable:
             _register_crons(APP, _manifest(_command_cron(command="echo world")))
             await register_app_crons_with_service(APP, svc)
             # What on_app_disable does to the app's jobs, then enable again.
-            assert await svc.remove_job_async(_job(svc).id, actor="test", source="test")
+            assert await svc.remove_jobs_by_owner(f"app:{APP}")
             await register_app_crons_with_service(APP, svc)
             # The pass before the re-enable reported the drift; only the pass
             # after it must be quiet.

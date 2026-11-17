@@ -15,6 +15,7 @@ import { i18nT } from '../i18n/t'
 import { appDisplayName } from '../components/appstore/appManifest'
 import { backendRefusedNotice } from '../components/appstore/backendRefused'
 import type { TrustAppTarget } from '../components/appstore/TrustAppModal'
+import { trustGrants } from '../components/appstore/trustGrants'
 import type { AppInfo } from './appDetailPageTypes'
 
 export type LocalSwitchHandlers = {
@@ -39,8 +40,7 @@ export function openLocalSourceSwitch(app: AppInfo, repository: string, handlers
       // the repository's copy as a registry install.
       origin: 'registry',
       _registry: app._registry,
-      sessionApproval: app.manifest?.permissions?.sessionApproval === true,
-      memberThreads: app.manifest?.permissions?.memberThreads === true,
+      ...trustGrants(app.manifest?.permissions),
       retryInstalls: true,
       replacesInstalled: true,
       switchesLocalSource: true,

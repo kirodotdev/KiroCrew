@@ -1,0 +1,1327 @@
+{
+ "name": "session_golden_v1",
+ "sessions": [
+  {
+   "id": "s01",
+   "age_days": 214,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our staging gateway started refusing connections this morning and the nginx error log is full of 'certificate has expired'. I thought the renewal job ran every week. The job is called renew_edge_certs.sh and it lives in the ops-tools repo under scripts/tls. It exits zero every time, so nobody noticed anything. How do I figure out why the certificate on disk never changed?"
+    },
+    {
+     "role": "assistant",
+     "content": "An exit code of zero with no change usually means the script renewed into a different path than the one nginx reads, or renewed successfully but never reloaded nginx. Can you compare the path in the ssl_certificate directive with the output directory the script writes to? Also check the modification time of both files. If the new certificate exists but nginx still serves the old one, the missing step is a reload after renewal."
+    },
+    {
+     "role": "user",
+     "content": "You were right about the path. The script writes to /etc/edge/certs/live but the nginx config still points at /etc/edge/certs/current, which was a symlink someone replaced with a plain file during the March cleanup. So the symlink is gone and the file is frozen at the old certificate. The script never errors because from its point of view the renewal worked fine."
+    },
+    {
+     "role": "assistant",
+     "content": "Then the fix has two parts. First, restore current as a symlink to live and run nginx -t followed by a reload, which gets staging serving the fresh certificate right away. Second, make the failure loud next time: add a post-renewal check to renew_edge_certs.sh that reads the expiry date nginx actually serves with openssl s_client and exits non-zero if it is less than 14 days away. That turns a silent drift into a failed job."
+    }
+   ]
+  },
+  {
+   "id": "s02",
+   "age_days": 7,
+   "messages": [
+    {
+     "role": "user",
+     "content": "The image for our report-renderer service is 2.3 GB and pulls take forever on the build agents. The Dockerfile is pretty simple: it starts from a full Debian base, installs LibreOffice for document conversion, copies the app, then runs pip install. I tried adding apt-get clean at the end but the size barely moved. What am I missing?"
+    },
+    {
+     "role": "assistant",
+     "content": "apt-get clean in a separate RUN step cannot shrink layers that were already committed, because each RUN creates its own layer and earlier layers keep the deleted files. Run docker history on the image and look at which layer is biggest. My guess is the LibreOffice install layer, which pulls in recommended packages, fonts, and the apt cache all in one step."
+    },
+    {
+     "role": "user",
+     "content": "The LibreOffice layer alone is 1.6 GB. There is also a 300 MB layer from COPY . /app because the build context includes a fixtures folder with sample PDFs that only the tests use. I also noticed we install build-essential for one Python wheel and never remove it afterwards."
+    },
+    {
+     "role": "assistant",
+     "content": "Two concrete changes. Combine the install into one RUN with apt-get install --no-install-recommends libreoffice-writer-nogui, then rm -rf /var/lib/apt/lists/* in the same command, which avoids the full suite and the cache. Then add tests/fixtures and the .git folder to .dockerignore so the COPY layer only carries the app. Rebuild and record the new size in the RENDERER_IMAGE_BUDGET_MB check we discussed so CI fails if it creeps past 900 again."
+    }
+   ]
+  },
+  {
+   "id": "s03",
+   "age_days": 88,
+   "messages": [
+    {
+     "role": "user",
+     "content": "test_export_writes_manifest in the parcelkit project fails maybe once in fifteen CI runs, always with FileExistsError on manifest.json. It never fails on my laptop. Issue #2817 has a pile of plus-ones but nobody has dug in. The test writes a manifest into an output directory and then reads it back to check the fields. Any idea why it would collide only in CI?"
+    },
+    {
+     "role": "assistant",
+     "content": "A FileExistsError that only happens in CI points to parallelism. CI probably runs pytest with xdist across several workers, while you run serially. If the test builds its output path from a fixed location like /tmp/parcelkit-out instead of a per-test directory, two workers can create the same manifest at the same moment. Can you show me how the test chooses its output directory?"
+    },
+    {
+     "role": "user",
+     "content": "Yes, there is a module-level constant OUTPUT_DIR = '/tmp/parcelkit-out' at the top of tests/test_export.py, and three different tests write into it. The CI config does run pytest -n 4. The other two tests that share it are test_export_overwrites and test_export_skips_hidden, and they also flake occasionally, just less often."
+    },
+    {
+     "role": "assistant",
+     "content": "That is the cause: four workers sharing one hard-coded temp directory. Replace OUTPUT_DIR with pytest's built-in tmp_path fixture, so each test gets its own unique directory and cleanup is automatic. Remove the constant entirely so nobody reintroduces it. To confirm the fix, run pytest -n 8 --count 50 on that file locally with pytest-repeat. Then link the change to #2817 and close it once a week of CI runs stays clean."
+    }
+   ]
+  },
+  {
+   "id": "s04",
+   "age_days": 341,
+   "messages": [
+    {
+     "role": "user",
+     "content": "我们要给 orders 表加一个非空列 fulfillment_region，表里大概有八千万行。上次在预发环境直接跑 ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT 'unknown'，结果锁表将近二十分钟，业务全部超时。迁移脚本是 migrations/0143_add_fulfillment_region.sql。这次上生产之前想找一个不锁表的做法，PostgreSQL 版本是 10。"
+    },
+    {
+     "role": "assistant",
+     "content": "问题出在版本上。PostgreSQL 11 之后，带常量默认值的 ADD COLUMN 只改元数据，几乎瞬间完成；但在 10 上它会重写整张表，所以锁了二十分钟。建议拆成几步：先加一个可空、无默认值的列，这一步很快；再分批回填数据，每批一万行左右并在批次之间短暂休眠；最后再加约束。你们能接受回填持续几个小时吗？"
+    },
+    {
+     "role": "user",
+     "content": "几个小时没问题，只要不锁表就行。但最后加 NOT NULL 约束的时候会不会又要全表扫描并且长时间持锁？ 另外，回填期间新写入的订单会不会漏掉？应用代码是不是要先改成写入这个新列，再开始回填旧数据？"
+    },
+    {
+     "role": "assistant",
+     "content": "会扫描，但可以避开长锁。先执行 ADD CONSTRAINT fulfillment_region_not_null CHECK (fulfillment_region IS NOT NULL) NOT VALID，这一步只是瞬间加锁；然后单独执行 VALIDATE CONSTRAINT，它扫描全表时只持有较弱的锁，不阻塞读写。把 0143 拆成 0143a、0143b、0143c 三个脚本，回填部分写成脚本 backfill_fulfillment_region.py，记录已处理的最大 id 以便中断后续跑。下一步先在预发按这个顺序演练一次并记录耗时。"
+    }
+   ]
+  },
+  {
+   "id": "s05",
+   "age_days": 19,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Customers got two copies of the monthly invoice summary email this month. The job is send_invoice_digest, scheduled with a cron expression at 06:00 on the first. Logs show it started twice, about forty milliseconds apart, on different pod names. Nothing changed in the schedule. Last week we did scale the scheduler deployment from one replica to two for availability."
+    },
+    {
+     "role": "assistant",
+     "content": "That scaling change is almost certainly it. Each scheduler replica keeps its own copy of the cron table, so with two replicas every job now fires twice. Forty milliseconds apart on different pods fits exactly. You have two options: run the scheduler as a single replica again, or keep two replicas and add leader election or a distributed lock so only one instance executes each run. Does your scheduler library support a lock backend?"
+    },
+    {
+     "role": "user",
+     "content": "It supports a PostgreSQL advisory lock backend, controlled by a config key scheduler.lock_backend, which is currently set to none. I would prefer to keep two replicas. The library docs say it uses pg_try_advisory_lock under the hood, and our scheduler already has a database connection for its job history table, so adding the lock should not need new infrastructure."
+    },
+    {
+     "role": "assistant",
+     "content": "Then set scheduler.lock_backend to postgres and give each job a stable lock name, for example invoice_digest_monthly. The first replica to acquire the advisory lock runs the job and the other skips it. Separately, make send_invoice_digest idempotent by recording a row keyed on customer and billing month before sending, so even a future double fire cannot send twice. For this month, send a short apology note and verify the lock by triggering a test job on both replicas."
+    }
+   ]
+  },
+  {
+   "id": "s06",
+   "age_days": 133,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our API rate limiter lets bursts through. The limit is 100 requests per minute per key, but a load test showed one key getting about 190 accepted requests in a sixty second window. The limiter is a fixed window counter in middleware/throttle_window.go that stores counts in Redis with a key like rl:{apikey}:{minute}. Is that a bug in my code or a property of the design?"
+    },
+    {
+     "role": "assistant",
+     "content": "It is a property of fixed windows. A client can send 100 requests in the last second of minute N and another 100 in the first second of minute N+1. Both windows accept them, so any sliding sixty-second span can see nearly double the limit. Your 190 matches that boundary effect. If strict smoothing matters, you need a sliding window or a token bucket instead of a fixed counter."
+    },
+    {
+     "role": "user",
+     "content": "Strictness matters for the partner tier, because their contract says 100 per minute. Which approach is simplest to implement against Redis without making every request expensive? The free tier can stay loose, since nobody has complained there. I just do not want to add a Lua script or a sorted set per key if I can avoid it."
+    },
+    {
+     "role": "assistant",
+     "content": "A sliding window counter is a cheap middle ground: keep the current and previous minute counts, and estimate the rate as current plus previous times the fraction of the previous window still overlapping. That is two GET calls and one INCR per request, with no sorted sets. Implement it as allowSliding in throttle_window.go behind a config key throttle.mode with values fixed and sliding, switch only the partner tier first, and rerun the same load test to confirm accepted counts stay at or under 100."
+    }
+   ]
+  },
+  {
+   "id": "s07",
+   "age_days": 52,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Users who upload contact lists from a spreadsheet tool get garbled names in the import preview, for example JosÃ© instead of José. The importer is import_contacts_csv in src/imports/contacts.py, and it opens the file with encoding utf-8. The weird part is that most uploads are fine. Only some customers see this."
+    },
+    {
+     "role": "assistant",
+     "content": "That specific pattern, where one accented character turns into two odd characters, is UTF-8 bytes being decoded as Latin-1 or Windows-1252 somewhere and then re-encoded. Since you decode as UTF-8, the file itself was probably already double-encoded before upload, or the bad decode happens later. Can you check the raw bytes of an affected file? If you see C3 83 C2 A9 for the e with acute, the file arrived already mangled."
+    },
+    {
+     "role": "user",
+     "content": "The raw file is fine, it has C3 A9. But I found that the preview path calls a helper normalize_header_row that does row.encode('latin-1').decode('utf-8', errors='ignore') on every cell, a leftover from an old workaround. It only runs when the header row has more than twelve columns, which is why only some customers hit it."
+    },
+    {
+     "role": "assistant",
+     "content": "That helper is the bug. It reinterprets correct text through Latin-1 and silently drops whatever fails, which produces exactly the garbling you saw. Delete the re-encoding step from normalize_header_row and keep only the whitespace trimming it also does. Add a test that imports a thirteen-column file with names like José and Müller and asserts they survive unchanged. Then reprocess the affected imports from the stored originals, since the database rows already contain the damaged values."
+    }
+   ]
+  },
+  {
+   "id": "s08",
+   "age_days": 3,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our Node notification service grows from 200 MB to about 1.5 GB of heap over two days, then gets killed. I took two heap snapshots six hours apart. The biggest growth is in arrays of closures retained by an EventEmitter called orderBus. The service subscribes to order events inside handleTenantConnect whenever a tenant socket connects."
+    },
+    {
+     "role": "assistant",
+     "content": "That pattern usually means listeners are added on connect but never removed on disconnect. Each closure keeps a reference to the socket and its buffers, so disconnected tenants stay in memory forever. Node normally warns with MaxListenersExceededWarning after ten listeners on one event. Has anyone called setMaxListeners(0) somewhere, which would hide that warning?"
+    },
+    {
+     "role": "user",
+     "content": "Yes, there is orderBus.setMaxListeners(0) in src/bus/order_bus.js with a comment saying 'silence noisy warning'. And handleTenantConnect calls orderBus.on('order.updated', ...) but there is no matching off anywhere. I counted the listeners in a debugger on a box that had been up for a day, and orderBus had over eleven thousand handlers attached to order.updated while only about forty tenants were connected."
+    },
+    {
+     "role": "assistant",
+     "content": "So the warning was the early alarm, and it was switched off. Fix it by keeping a reference to the handler function in handleTenantConnect and calling orderBus.off('order.updated', handler) in the socket close handler. Then remove setMaxListeners(0) or set a realistic ceiling, so a regression shows up in the logs again. Verify by running the soak script for a few hours and comparing listenerCount on order.updated with the number of connected tenants. Both numbers should track each other."
+    }
+   ]
+  },
+  {
+   "id": "s09",
+   "age_days": 276,
+   "messages": [
+    {
+     "role": "user",
+     "content": "In our React checkout page, the quantity stepper sometimes shows the previous value. If you click plus three times quickly, the display says 3 but the order summary says 2. The component is CartLineStepper and the handler does setQty(qty + 1) followed by onQtyChange(qty + 1)."
+    },
+    {
+     "role": "assistant",
+     "content": "Two things are going on. Inside a single render, qty is a captured value, so rapid clicks that happen before a re-render all read the same stale qty. And onQtyChange receives that stale value too, which is why the summary lags. Use the functional update form setQty(prev => prev + 1) so React applies each increment to the latest state."
+    },
+    {
+     "role": "user",
+     "content": "If I use the functional form, how do I pass the new value to onQtyChange? I cannot call it inside the updater, right? The parent uses onQtyChange to recalculate the order summary and shipping estimate, so it really does need the new number every time, not just the final one after the user stops clicking."
+    },
+    {
+     "role": "assistant",
+     "content": "Right, updater functions should stay pure, because React may call them twice in strict mode. The cleaner pattern is to treat qty as the single source of truth and notify the parent from an effect: useEffect(() => { onQtyChange(qty) }, [qty]). Better still, lift qty into the parent cart reducer and make CartLineStepper controlled, so there is only one copy of the number. I would do the controlled version, add a test with userEvent clicking plus three times, and assert both the display and summary read 3."
+    }
+   ]
+  },
+  {
+   "id": "s10",
+   "age_days": 41,
+   "messages": [
+    {
+     "role": "user",
+     "content": "pip install of our internal library tidemark-utils works from a source checkout but fails from the built wheel with ModuleNotFoundError: No module named tidemark_utils.schemas. The schemas folder holds a bunch of JSON files plus an __init__.py. We moved from setup.py to pyproject.toml with setuptools last sprint."
+    },
+    {
+     "role": "assistant",
+     "content": "When a package works from a checkout but not from the wheel, the wheel is missing files. With pyproject.toml and setuptools, automatic package discovery can skip subpackages depending on your layout, and JSON files are never included unless you declare package data. Unzip the wheel and list its contents. Is the schemas directory present at all?"
+    },
+    {
+     "role": "user",
+     "content": "It is completely absent. Our pyproject has [tool.setuptools] packages = ['tidemark_utils'], which someone copied from an example. The example was for a single-module package, so it worked for them. Locally it works because the editable install points straight at the source tree, which explains why nobody caught it before the release."
+    },
+    {
+     "role": "assistant",
+     "content": "That explicit list includes only the top-level package, not subpackages, so schemas is dropped. Replace it with [tool.setuptools.packages.find] where = ['src'] if you use a src layout, which discovers every subpackage. Then add [tool.setuptools.package-data] tidemark_utils = ['schemas/*.json']. Add a CI step called check_wheel_contents that builds the wheel, installs it in a fresh virtualenv, and imports tidemark_utils.schemas, so this class of packaging regression fails the build instead of reaching users."
+    }
+   ]
+  },
+  {
+   "id": "s11",
+   "age_days": 165,
+   "messages": [
+    {
+     "role": "user",
+     "content": "运营后台的订单列表页越来越慢，打开要十几秒。慢查询日志里排第一的是 list_orders_by_merchant，条件是 WHERE merchant_id = ? AND status = 'paid' ORDER BY created_at DESC LIMIT 50。merchant_id 和 created_at 各自都有单列索引，为什么还这么慢？数据库是 PostgreSQL。 这个页面每天被运营同事打开几百次，最大的商户有大约两百万条订单。"
+    },
+    {
+     "role": "assistant",
+     "content": "可以先用 EXPLAIN (ANALYZE, BUFFERS) 看执行计划。常见情况是优化器选了 created_at 上的索引倒序扫描，然后逐行过滤 merchant_id 和 status。如果这个商户的已支付订单很少，就要扫描大量无关行才能凑够五十条。另一种情况是走 merchant_id 索引取出全部订单再排序。贴一下计划吧。"
+    },
+    {
+     "role": "user",
+     "content": "计划显示 Index Scan Backward using idx_orders_created_at，Rows Removed by Filter 大约四百万。确实是你说的第一种情况。 这个商户的订单总量很大，但已支付状态的订单只占很小一部分，大部分是已取消或者待支付的旧订单，所以要扫描很多行。"
+    },
+    {
+     "role": "assistant",
+     "content": "那就加一个复合索引 idx_orders_merchant_status_created，列顺序为 (merchant_id, status, created_at DESC)。这样等值条件直接定位，再按时间顺序取前五十条，不需要过滤也不需要排序。用 CREATE INDEX CONCURRENTLY 创建，避免锁表。建好后重新执行 EXPLAIN ANALYZE，确认用上新索引、耗时降到几毫秒。之后观察一周，如果 idx_orders_created_at 没有其他查询使用，可以考虑删除以减少写入开销。"
+    }
+   ]
+  },
+  {
+   "id": "s12",
+   "age_days": 25,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Uploads of large video files to our S3-compatible object store time out after exactly 60 seconds with error UPL_TIMEOUT_9063 from our own uploader wrapper. Small files are fine. The wrapper is upload_media_object in storage/blob_client.py and it does a single PUT of the whole file. Files over about 400 MB fail consistently from the office network."
+    },
+    {
+     "role": "assistant",
+     "content": "Exactly 60 seconds suggests a fixed timeout somewhere, either the client's read timeout or a proxy in between. A single PUT of 400 MB at office upstream speeds can easily take longer than a minute. The usual fix is multipart upload, so each part is a separate request well under any timeout and failed parts can be retried individually. Does the store support the multipart API?"
+    },
+    {
+     "role": "user",
+     "content": "It does. I also found that blob_client.py sets timeout=60 on the HTTP session, which is where UPL_TIMEOUT_9063 gets raised. So the error is our own wrapper, not the store. The office uplink is around 50 megabits, which works out to well over a minute for a 400 MB file, so the timing fits your theory exactly."
+    },
+    {
+     "role": "assistant",
+     "content": "Then switch upload_media_object to multipart for anything over 64 MB, using 16 MB parts and up to four parts in parallel, with three retries per part. Keep the 60 second timeout, because it now applies per part and still catches hung connections. Make sure the code aborts the multipart upload on final failure, or orphaned parts will accumulate and cost storage. Test with a 2 GB file from the office network and confirm the abort path by killing the process mid-upload."
+    }
+   ]
+  },
+  {
+   "id": "s13",
+   "age_days": 97,
+   "messages": [
+    {
+     "role": "user",
+     "content": "我在功能分支 feature/ledger-split 上做了交互式变基，想把十几个提交压成三个。中途冲突解决错了，又执行了 git rebase --skip，结果现在分支上少了两天的修改，包括 reconcile_ledger_batch 函数的整个重写。分支还没推送，远端只有一周前的版本。还能找回来吗？"
+    },
+    {
+     "role": "assistant",
+     "content": "大概率能找回来。Git 会在 reflog 里记录分支每次指向的提交，即使变基丢掉了它们，对象通常还在本地仓库里，默认至少保留三十天。先执行 git reflog show feature/ledger-split，找到变基开始之前的那条记录，一般写着 rebase (start) 前面的一行。确认那个提交里有 reconcile_ledger_batch 的重写。"
+    },
+    {
+     "role": "user",
+     "content": "找到了，HEAD@{14} 就是变基之前的状态，里面的代码都在。现在应该直接 reset 回去吗？ 我担心 reset 之后会不会把工作区里还没提交的几个小改动也一起丢掉，这些改动和变基没有关系。"
+    },
+    {
+     "role": "assistant",
+     "content": "先别急着 reset，稳妥起见先打一个备份分支：git branch backup/ledger-split-before-rebase HEAD@{14}，这样无论接下来怎么操作，原始提交都有名字保护。然后 git reset --hard backup/ledger-split-before-rebase 回到变基前的状态。重新做交互式变基时，遇到冲突不要用 --skip，解决后用 git rebase --continue。完成后用 git diff backup/ledger-split-before-rebase 对比，确认只有提交结构变了，内容一致，再推送并删除备份分支。"
+    }
+   ]
+  },
+  {
+   "id": "s14",
+   "age_days": 388,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our dashboard's live feed websocket gets stuck in a reconnect loop after the backend restarts. The browser opens a new socket every few hundred milliseconds, hundreds of times, and the server logs are flooded. The client code is in liveFeedSocket.ts, and the onclose handler simply calls connect() again right away."
+    },
+    {
+     "role": "assistant",
+     "content": "An immediate reconnect with no delay is the core problem. When the server is down or still starting, every attempt fails fast and the loop spins as quickly as the browser allows. Multiply by every open tab and you get a thundering herd the moment the backend comes back. The standard fix is exponential backoff with jitter. Is there anything else in onclose, like a check for the close code?"
+    },
+    {
+     "role": "user",
+     "content": "No close code check. Also, during deploys the server sends close code 1012 for service restart, and we treat that the same as an error. During the last deploy we counted roughly forty thousand connection attempts in two minutes from about three hundred open tabs, which is what triggered the alert in the first place."
+    },
+    {
+     "role": "assistant",
+     "content": "Then add a reconnect scheduler: start at 500 ms, double on each failure up to 30 seconds, and add random jitter of up to half the delay so tabs spread out. Reset the delay after a connection stays open for ten seconds. For close code 1012, wait a randomized two to eight seconds before the first attempt. Put the constants in a LIVEFEED_BACKOFF config object and log each attempt number. Test by restarting the backend with twenty tabs open and watching the connection rate."
+    }
+   ]
+  },
+  {
+   "id": "s15",
+   "age_days": 11,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Disk filled up on a worker host overnight. The app writes to /var/log/quarry/worker.log and we have a logrotate rule that rotates daily and keeps seven files. The rotated files are there and look small, but du shows the log directory at 38 GB. ls shows nothing that large."
+    },
+    {
+     "role": "assistant",
+     "content": "When du and ls disagree like that, the space is usually held by a deleted file that a process still has open. logrotate renamed or deleted the old log, but the worker kept writing to its original file descriptor. Run lsof +L1 and look for the worker process holding a deleted worker.log. Does your logrotate rule use copytruncate or a postrotate signal?"
+    },
+    {
+     "role": "user",
+     "content": "lsof shows the worker holding a deleted worker.log.1 at 37 GB. The rule has neither copytruncate nor postrotate, it just has create 0640 quarry quarry. The worker is a long-running Python process using the standard logging FileHandler, and it has been up for about three weeks without a restart, which fits the size of that deleted file."
+    },
+    {
+     "role": "assistant",
+     "content": "So logrotate moves the file and creates a new empty one, but the worker never reopens and keeps filling the moved file, which then gets deleted on a later rotation while still open. Either add a postrotate script that sends the worker SIGUSR1, if its logger reopens files on that signal, or use copytruncate as a stopgap. Long term, have the worker log to stdout and let the process supervisor handle files. Restarting the worker frees the 37 GB right now."
+    }
+   ]
+  },
+  {
+   "id": "s16",
+   "age_days": 63,
+   "messages": [
+    {
+     "role": "user",
+     "content": "We are rolling out the new pricing page behind a feature flag called pricing_v2_enabled, at 10 percent of users. Support says some users see the new page, refresh, and get the old one. That makes no sense for a percentage rollout, which should be sticky. Our flag evaluation is in flags/evaluate.py."
+    },
+    {
+     "role": "assistant",
+     "content": "A percentage rollout is only sticky if the bucket is computed from a stable identifier. If evaluate.py hashes something that changes between requests, like a session id regenerated on refresh or a request id, users jump between buckets. If it uses random() at evaluation time, every request is a fresh coin flip. What does it hash?"
+    },
+    {
+     "role": "user",
+     "content": "It hashes user_id when logged in, but anonymous visitors have no user_id, so it falls back to random.random() < 0.10. Most pricing page visitors are anonymous. So every page load for an anonymous visitor is an independent ten percent chance, which is basically what support is describing when people see the page change after a refresh."
+    },
+    {
+     "role": "assistant",
+     "content": "That fallback explains the flip-flopping. Set a long-lived anonymous id cookie on first visit and hash that for anonymous users, then carry the same bucket over after login by hashing the anonymous id until the account has its own assignment recorded. Hash the flag name together with the id, so different flags do not share bucket boundaries. Add a unit test asserting that a given id gets the same answer across a thousand evaluations, then resume the rollout at 10 percent."
+    }
+   ]
+  },
+  {
+   "id": "s17",
+   "age_days": 149,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our booking app shows appointments one day early for some users in the Americas. A customer booked for March 14 and the confirmation screen says March 13. The API returns appointment_date as '2025-03-14', a plain date. The frontend does new Date(appointment_date) and then formats it with toLocaleDateString."
+    },
+    {
+     "role": "assistant",
+     "content": "That is the classic date-only parsing trap in JavaScript. A string like 2025-03-14 with no time is parsed as midnight UTC, not local midnight. For any user west of UTC, midnight UTC is still the previous evening locally, so formatting shows the 13th. Users in Europe or Asia see the right date, which matches your report that it is only some users."
+    },
+    {
+     "role": "user",
+     "content": "So the backend is fine and only the display is wrong? We use this pattern in maybe a dozen components. The affected components include the confirmation screen, the reminder banner, the reschedule dialog, and the calendar export. I would like one consistent fix rather than patching each of them separately."
+    },
+    {
+     "role": "assistant",
+     "content": "Yes, the backend is correct, since an appointment date is a calendar date and not an instant. Stop converting it to a Date at all. Add a helper formatCalendarDate in src/utils/dates.ts that splits the string into year, month, and day and formats those parts directly, or builds a local date with new Date(y, m - 1, d). Replace every new Date(appointment_date) call with it, and add a lint rule banning new Date on fields ending in _date. Test with the browser timezone set to a western offset."
+    }
+   ]
+  },
+  {
+   "id": "s18",
+   "age_days": 29,
+   "messages": [
+    {
+     "role": "user",
+     "content": "We changed the config schema for our ingestion service so that retry settings move from top-level keys into a nested block, from retry_max and retry_delay_ms to retry.max_attempts and retry.delay_ms. After deploying, half the environments silently use default retries. No errors anywhere. The loader is load_ingest_config in config/loader.py."
+    },
+    {
+     "role": "assistant",
+     "content": "Silent fallback to defaults suggests the loader ignores unknown keys. Environments still using the old top-level keys parse successfully, the nested block is missing, so defaults kick in. Does the loader validate against a schema with extra keys forbidden, or does it just read what it knows?"
+    },
+    {
+     "role": "user",
+     "content": "It just reads what it knows with dict.get and defaults. There is no validation at all. Each environment has its own YAML file, and only the ones we edited by hand during the release got the new nested block. The rest still have the old flat keys, and nothing complains about them."
+    },
+    {
+     "role": "assistant",
+     "content": "Then make two changes. First, add a migration shim in load_ingest_config: if retry_max or retry_delay_ms are present, map them into the nested block and log a deprecation warning with code CFG_DEPRECATED_RETRY_KEYS. Second, validate the final config against a schema that forbids unknown keys, so a typo or stale key becomes a startup error instead of silent defaults. Ship the shim first, collect warnings from every environment for a week, update those files, then remove the shim."
+    }
+   ]
+  },
+  {
+   "id": "s19",
+   "age_days": 71,
+   "messages": [
+    {
+     "role": "user",
+     "content": "我们的应用支持俄语之后，购物车里显示件数的文案不对。比如 2 件应该用一种形式，5 件用另一种，21 件又回到第一种形式，但现在只有 1 显示单数，其他全部显示复数。翻译文件里只定义了 cart_item_count_one 和 cart_item_count_other 两个键，代码里写的是 count === 1 ? one : other。"
+    },
+    {
+     "role": "assistant",
+     "content": "问题在于把英语的复数规则硬编码了。俄语有 one、few、many、other 四种复数类别：以 1 结尾（除 11 外）用 one，以 2 到 4 结尾（除 12 到 14 外）用 few，其余整数大多用 many。所以只判断 count 是否等于 1 是错的。应该用 Intl.PluralRules 根据语言环境选择类别，再取对应的翻译键。"
+    },
+    {
+     "role": "user",
+     "content": "明白了。那翻译文件那边需要怎么改？中文和日语其实不区分单复数，会不会也受影响？ 我们目前支持中文、英文、日语和俄语四种语言，后面可能还会加波兰语。"
+    },
+    {
+     "role": "assistant",
+     "content": "翻译文件按类别补全键：俄语需要 cart_item_count_one、cart_item_count_few、cart_item_count_many、cart_item_count_other。中文和日语的 PluralRules 永远返回 other，只提供 other 即可，不受影响。代码里写一个 pickPluralKey(baseKey, count, locale) 函数，找不到对应类别时回退到 other 并在开发环境打印警告。最后加测试，用 1、2、5、11、21、22、25 这些数字分别断言俄语的输出形式。"
+    }
+   ]
+  },
+  {
+   "id": "s20",
+   "age_days": 302,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Every deploy of our search-api on Kubernetes causes a burst of 502 errors for about twenty seconds. The readiness probe hits /healthz, which returns 200 as soon as the HTTP server binds the port. But the service takes around fifteen seconds after startup to load its index shards into memory."
+    },
+    {
+     "role": "assistant",
+     "content": "So the readiness probe reports ready before the pod can actually serve queries. Kubernetes adds it to the service endpoints, traffic arrives, and requests fail or time out while the shards load. Readiness should mean able to handle real requests. A separate endpoint that checks the shards are loaded is the usual answer. Is /healthz also used as the liveness probe?"
+    },
+    {
+     "role": "user",
+     "content": "Yes, the same /healthz is used for both liveness and readiness. The liveness probe has a short timeout and a low failure threshold, so I was worried that making the endpoint slower would get pods killed in a restart loop during startup."
+    },
+    {
+     "role": "assistant",
+     "content": "Split them. Keep /healthz for liveness, since it should only answer whether the process is alive. Add /ready that returns 503 until a shards_loaded flag is set by load_index_shards, then 200. Point readinessProbe at /ready with periodSeconds 2 and failureThreshold 3. Also add a startupProbe so liveness does not kill the pod during a slow load. Finally, add a short preStop sleep so old pods leave the endpoints before shutdown. Roll it to one replica and watch the 502 count."
+    }
+   ]
+  },
+  {
+   "id": "s21",
+   "age_days": 15,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our GraphQL endpoint for the team overview page takes about 4 seconds. When I enable query logging I see one query to fetch 50 projects, then 50 separate queries to fetch each project's owner, then another 50 for each project's latest build. The resolvers are in schema/project_resolvers.py, and owner and latestBuild each do their own database lookup."
+    },
+    {
+     "role": "assistant",
+     "content": "That is the N plus one problem, here twice over, so 101 queries for one page. The usual fix in GraphQL is a dataloader: each resolver asks the loader for a key, the loader collects all keys requested in the same tick, and issues one batched query with WHERE id IN (...). Are you using an async GraphQL server? The dataloader pattern needs per-request loader instances."
+    },
+    {
+     "role": "user",
+     "content": "It is async, and we create a context object per request already. We use an async server with a context factory that already creates a database session for each request. The page loads fifty projects by default, and some teams have up to two hundred, which makes it much slower for them."
+    },
+    {
+     "role": "assistant",
+     "content": "Then add two loaders to the request context: owner_loader keyed by user id and latest_build_loader keyed by project id. The second needs a query that returns the newest build per project in one pass, for example with DISTINCT ON (project_id) ordered by created_at desc. Change the resolvers to await context.owner_loader.load(project.owner_id). That should bring the page to three queries. Add a test helper assert_max_queries(3) around the overview query so a future resolver change cannot quietly reintroduce the problem."
+    }
+   ]
+  },
+  {
+   "id": "s22",
+   "age_days": 118,
+   "messages": [
+    {
+     "role": "user",
+     "content": "我们的数据导出任务 nightly_usage_export 在某天凌晨跑了两次，客户收到了两份重复的报表。调度器只有一个实例，没有扩容过。cron 表达式是 30 1 * * *，时区配置是一个有夏令时的地区。重复发生的那天正好是秋季夏令时结束的日子。"
+    },
+    {
+     "role": "assistant",
+     "content": "这就是原因。夏令时结束那天，凌晨 1 点到 2 点这一个小时会出现两次：时钟走到 2 点后拨回 1 点。调度器按本地时间匹配，1 点 30 分出现了两次，于是任务触发两次。反过来，春季夏令时开始时，这个时间段被跳过，任务可能一次都不跑。你们有没有发现春天漏跑的情况？"
+    },
+    {
+     "role": "user",
+     "content": "查了一下，三月份确实有一天没有导出，当时以为是偶发故障。所以这两个问题是同一个原因。 这两个问题看起来毫不相关，一个是重复，一个是漏跑，没想到是同一个原因。"
+    },
+    {
+     "role": "assistant",
+     "content": "对，根源是把任务安排在了会被夏令时影响的时间段。最简单的修复是把调度器时区设成 UTC，配置项 scheduler.timezone 改为 UTC，再把表达式换算成对应的 UTC 时间。如果业务必须按本地时间运行，就把时间挪到 3 点之后，避开切换窗口。另外给 nightly_usage_export 加幂等保护：按导出日期写一条记录，已经存在就跳过。最后补发三月漏掉的那份报表。"
+    }
+   ]
+  },
+  {
+   "id": "s23",
+   "age_days": 237,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Users uploading profile banners larger than about 1 MB get a generic error page. The app server logs show nothing for those requests, as if they never arrived. The upload handler is handle_banner_upload and the app itself allows up to 8 MB. We run nginx in front as a reverse proxy."
+    },
+    {
+     "role": "assistant",
+     "content": "If the app never sees the request and the cutoff is around 1 MB, nginx is rejecting it with 413 Request Entity Too Large before proxying. The default client_max_body_size in nginx is 1 MB. Check the nginx access log for those requests. You should see status 413 with no upstream time."
+    },
+    {
+     "role": "user",
+     "content": "Yes, 413 entries everywhere in the access log. And our frontend shows a generic error page because it does not handle 413 specifically. The access log shows these requests take only a few milliseconds and never reach the upstream, which matches what you described. Our users just see an unhelpful generic page and no hint about the size limit."
+    },
+    {
+     "role": "assistant",
+     "content": "Set client_max_body_size 8m inside the location block for the upload route, so the limit matches the app without raising it for every endpoint. Reload nginx after nginx -t. On the frontend, check the file size before upload and show a clear message if it exceeds 8 MB, and map a 413 response to the same message as a fallback. Add a smoke test that uploads a 5 MB image through the proxy, so this layer is covered by tests as well."
+    }
+   ]
+  },
+  {
+   "id": "s24",
+   "age_days": 5,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Users are being logged out at random during peak hours. Sessions are stored in Redis with a 24 hour TTL. When it happens, the session key is simply gone, well before 24 hours. Redis memory is at the maxmemory limit, and maxmemory-policy is allkeys-lru. The same Redis also stores a big product recommendations cache."
+    },
+    {
+     "role": "assistant",
+     "content": "With allkeys-lru, when memory is full Redis evicts the least recently used keys from the whole keyspace, including sessions. During peak hours the recommendation cache churns heavily, memory fills, and sessions for users who were idle a few minutes look old enough to evict. Check the evicted_keys counter in INFO stats around the logout reports."
+    },
+    {
+     "role": "user",
+     "content": "evicted_keys jumps by about 40 thousand every peak hour. So the cache is pushing sessions out. The logout complaints line up with those spikes almost exactly, and the recommendations cache writes millions of short-lived keys during the same hours, most of them never read again."
+    },
+    {
+     "role": "assistant",
+     "content": "The clean fix is separating the workloads. Move sessions to their own Redis instance with maxmemory-policy noeviction and enough memory for peak concurrency, so sessions are only removed by TTL. Keep the recommendations cache on the current instance with allkeys-lru, which is the right policy for a cache. Point the session store at a new config key session_store.redis_url. Until the new instance is ready, a stopgap is volatile-lru with TTLs on cache keys only, but sessions also have TTLs, so separation is the real fix."
+    }
+   ]
+  },
+  {
+   "id": "s25",
+   "age_days": 45,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our Go service image is 1.1 GB, which seems absurd for a single static binary. The Dockerfile starts FROM golang, runs go build, and the final image is that same build stage. I already tried an alpine variant of the golang image but it only went down to 800 MB."
+    },
+    {
+     "role": "assistant",
+     "content": "The size comes from shipping the whole Go toolchain, module cache, and build cache in the runtime image. Alpine only trims the OS, which is the smallest part. A Go binary needs none of that at runtime. A multi-stage build fixes it: compile in a builder stage, then copy only the binary into a minimal final stage. Does the binary need cgo, or can it be fully static?"
+    },
+    {
+     "role": "user",
+     "content": "No cgo. It does make outbound HTTPS calls and uses time zone data for scheduling. The binary is built with a plain go build, and the service runs as a single process. We would also like the final image to avoid a shell entirely, for security reasons."
+    },
+    {
+     "role": "assistant",
+     "content": "Then build with CGO_ENABLED=0 in a stage named builder, and use a scratch or distroless static base for the final stage. Copy the binary, plus the CA certificates bundle for HTTPS. For time zones, import the time/tzdata package in main.go so the zone database is embedded in the binary. Expected size is roughly 20 to 30 MB. Add a startup self-check called verify_runtime_deps that loads one zone and fails fast if anything is missing, so a slimmed image cannot break silently."
+    }
+   ]
+  },
+  {
+   "id": "s26",
+   "age_days": 182,
+   "messages": [
+    {
+     "role": "user",
+     "content": "我们的 Go 服务偶尔整个卡住，不再处理请求，但进程还活着，CPU 几乎为零。重启后就正常了。我在卡住的时候抓了 goroutine dump，发现几百个 goroutine 都停在 inventoryCache.mu.Lock() 上，而持有锁的那个 goroutine 停在 refreshInventorySnapshot 里一个向 channel 发送数据的地方。"
+    },
+    {
+     "role": "assistant",
+     "content": "这是典型的持锁阻塞造成的死锁。持有锁的 goroutine 在锁内向一个 channel 发送数据，而负责接收这个 channel 的 goroutine 很可能自己也在等同一把锁，于是双方互相等待，其余请求全部排队。能看一下 refreshInventorySnapshot 发送的是哪个 channel，以及接收方在做什么吗？"
+    },
+    {
+     "role": "user",
+     "content": "发送的是 snapshotUpdates，这是一个无缓冲 channel。接收方是 notifySubscribers，它在处理每条消息之前会调用 inventoryCache.Get，而 Get 也要拿 mu。确实是循环等待。 这段代码是去年为了支持实时库存推送加上的，之前一直没出过问题，最近订阅者变多以后才开始卡住。"
+    },
+    {
+     "role": "assistant",
+     "content": "修复原则是不要在持锁期间做可能阻塞的操作。把 refreshInventorySnapshot 改成：在锁内只复制需要发送的数据，释放锁之后再发送到 snapshotUpdates。也可以让 notifySubscribers 直接使用消息里携带的快照，不再回调 Get。另外建议在测试里开启竞态检测，并写一个并发测试同时触发刷新和订阅通知，配合超时断言，确认不会再卡住。上线后可以观察 goroutine 数量指标。"
+    }
+   ]
+  },
+  {
+   "id": "s27",
+   "age_days": 22,
+   "messages": [
+    {
+     "role": "user",
+     "content": "test_shuffle_preserves_weights in the quillfeed project fails in CI maybe once every thirty runs, with the assertion that the top item's weight is above 0.4. Issue #3390. It passes every time locally, even when I run it hundreds of times. It is not run in parallel and does not touch the filesystem."
+    },
+    {
+     "role": "assistant",
+     "content": "If it is not parallel and not touching files, look for randomness. A test that asserts on the outcome of a weighted shuffle will fail occasionally unless the random source is fixed. Locally you might be getting a seed set by some other test or plugin, while CI runs in a different order. Does the code under test take a random generator, or call the global random module?"
+    },
+    {
+     "role": "user",
+     "content": "It calls random.choices from the global module. And there is a conftest in my local folder that sets random.seed(0), but that file is gitignored, so CI never gets it. I kept that conftest from an old experiment and forgot about it, so I never noticed that my local runs were all using seed zero."
+    },
+    {
+     "role": "assistant",
+     "content": "That explains the difference: your local runs are seeded and CI runs are not. The robust fix is to make the shuffle take an explicit rng argument, defaulting to a new random.Random(), and have the test pass random.Random(1234). Then the test is deterministic everywhere without relying on global state. Remove the private seeding conftest so local runs match CI. If you also want a statistical check, write a separate test that runs a few thousand trials and asserts the average, not a single draw. Link this to #3390."
+    }
+   ]
+  },
+  {
+   "id": "s28",
+   "age_days": 109,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our webhook receiver started rejecting all events from a payment partner with signature mismatch errors, code WHK_SIG_2210. We verify an HMAC of the request body. Nothing changed on our side, except that last week we added a middleware that parses JSON bodies for all routes, so handlers get a dict."
+    },
+    {
+     "role": "assistant",
+     "content": "That middleware is very likely the cause. HMAC verification must run over the exact raw bytes the sender signed. If the body is parsed into JSON and then re-serialized for verification, key order, spacing, and unicode escaping can all differ, and the digest no longer matches. Is verify_webhook_signature computing the HMAC over json.dumps of the parsed dict?"
+    },
+    {
+     "role": "user",
+     "content": "Yes, exactly. It used to read the raw body, but after the middleware change someone switched it to json.dumps(request.json) because the raw body stream was already consumed. The partner computes the signature over their compact serialization, and our json.dumps adds spaces after colons and commas, so the bytes differ even when the data is identical."
+    },
+    {
+     "role": "assistant",
+     "content": "Change the middleware to store the raw bytes on the request before parsing, for example as request.raw_body, and make verify_webhook_signature use those bytes. Compare digests with a constant-time comparison. Add a test using a captured sample payload with unusual spacing and non-ASCII characters, asserting verification passes, so any future re-serialization breaks the test. After deploying, ask the partner to resend events from the failed window, since they were rejected rather than processed."
+    }
+   ]
+  },
+  {
+   "id": "s29",
+   "age_days": 359,
+   "messages": [
+    {
+     "role": "user",
+     "content": "The bulk product import fails on files exported from an older desktop accounting tool. The error is UnicodeDecodeError: 'utf-8' codec can't decode byte 0x96 in position 2210. The importer is ingest_product_sheet in importers/catalog_csv.py. Files from other sources import fine. Our admin team has to convert them by hand before every import."
+    },
+    {
+     "role": "assistant",
+     "content": "Byte 0x96 is an en dash in Windows-1252, and it is invalid as a starting byte in UTF-8. So these files are not UTF-8 at all, they are legacy Windows encoded, which older desktop tools often produce. The importer assumes UTF-8 for everything. Do you know whether all files from that tool are Windows-1252, or could they vary?"
+    },
+    {
+     "role": "user",
+     "content": "As far as I know, it always uses Windows-1252. But I would rather not ask users to pick an encoding. Many of our merchants are small shops who would not know what an encoding is, and asking them would just generate support tickets. I want the importer to handle common cases automatically."
+    },
+    {
+     "role": "assistant",
+     "content": "Then try decoding as UTF-8 first, including stripping a UTF-8 byte order mark if present, and if that raises UnicodeDecodeError, fall back to cp1252. Since cp1252 accepts almost any byte, record which encoding was used on the import record as detected_encoding, so support can spot misreads. Show a preview of the first rows before committing, so users can catch wrong characters. Add two fixture files to the tests, one UTF-8 with BOM and one cp1252 with dashes and accented names."
+    }
+   ]
+  },
+  {
+   "id": "s30",
+   "age_days": 9,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our activity feed API uses offset pagination, and users report seeing the same item twice when scrolling, and sometimes missing items. The endpoint is GET /feed with page and page_size, ordered by created_at desc. New items arrive constantly. The query lives in fetch_feed_page."
+    },
+    {
+     "role": "assistant",
+     "content": "Offset pagination breaks on a feed that changes while the user scrolls. If five new items arrive between page 1 and page 2, everything shifts down by five, so page 2 starts with the last five items of page 1, which produces the duplicates. Deletions shift the other way and skip items. Cursor pagination fixes this by continuing after the last item seen instead of counting rows."
+    },
+    {
+     "role": "user",
+     "content": "Makes sense. But created_at is not unique, many items share the same timestamp during imports. During bulk imports, thousands of rows can get the exact same created_at value, so a cursor on created_at alone would still skip or repeat items at the boundary between pages."
+    },
+    {
+     "role": "assistant",
+     "content": "Then use a composite cursor of created_at plus id, and order by created_at desc, id desc. The next page query becomes WHERE (created_at, id) < (cursor_ts, cursor_id), which is unambiguous even with equal timestamps. Encode the pair as an opaque base64 string in a next_cursor field so clients do not depend on its format. Add an index on (created_at desc, id desc). Keep the offset parameters working for a release while the clients migrate, then deprecate them."
+    }
+   ]
+  },
+  {
+   "id": "s31",
+   "age_days": 76,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our Python pricing worker's memory grows steadily, about 300 MB per day, until the container hits its limit. tracemalloc shows most new allocations coming from a module-level dict called _quote_cache in pricing/quotes.py. Entries are keyed by a tuple of product id, region, and a request timestamp rounded to the second."
+    },
+    {
+     "role": "assistant",
+     "content": "Including a timestamp in the key means almost every request creates a new key, so the cache never gets hits and never evicts. It is effectively a log of every quote ever computed. Was the timestamp added on purpose, for example to make prices refresh over time?"
+    },
+    {
+     "role": "user",
+     "content": "Yes, someone added it so prices would refresh, because otherwise cached quotes went stale forever. The original dict had no eviction at all. Quotes do need to refresh within about a minute, because supplier prices change during the day, but a quote can safely be reused for a few seconds between requests."
+    },
+    {
+     "role": "assistant",
+     "content": "So the real requirement is freshness with bounded size, and a timestamp in the key gets neither. Replace _quote_cache with a TTL cache, keyed only by product id and region, with a maximum of around 50 thousand entries and a TTL of 60 seconds. The cachetools TTLCache does exactly this. If the worker is multithreaded, guard it with a lock. Add a metric for cache size and hit rate, then run the worker for a day and confirm memory flattens."
+    }
+   ]
+  },
+  {
+   "id": "s32",
+   "age_days": 254,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our thumbnail worker sometimes produces sideways thumbnails for photos taken on phones. The original looks correct in the browser, but the thumbnail is rotated 90 degrees. The worker is make_thumbnail in media/thumbs.py and uses Pillow to open, resize, and save as JPEG."
+    },
+    {
+     "role": "assistant",
+     "content": "Phones often store the pixels in sensor orientation and add an EXIF Orientation tag that tells viewers how to rotate. Browsers honour the tag, so the original looks right. Pillow does not apply it automatically, and when you save a new JPEG the EXIF data is dropped, so the thumbnail shows the raw sensor orientation. Do the sideways ones all come from phones?"
+    },
+    {
+     "role": "user",
+     "content": "Yes, all phone photos, and only portrait shots. Landscape photos from the same phones come out fine, and photos from desktop uploads or screenshots never have the problem. The sideways thumbnails always look rotated clockwise or counterclockwise by exactly a quarter turn."
+    },
+    {
+     "role": "assistant",
+     "content": "Call ImageOps.exif_transpose on the image right after opening it in make_thumbnail. It rotates the pixels according to the tag and removes the tag, so the result is correct in any viewer. Then resize and save as before. Add test fixtures with orientation values 6 and 8, and assert that the thumbnail's width and height match a portrait shape. Then run a backfill job, regenerate_rotated_thumbnails, over images that have an orientation tag other than 1."
+    }
+   ]
+  },
+  {
+   "id": "s33",
+   "age_days": 27,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our daily sales report undercounts orders placed late in the evening. Orders between 7 pm and midnight local time show up in the next day's report. The report query groups by DATE(created_at), and created_at is stored as timestamp without time zone. The report job is build_daily_sales_rollup."
+    },
+    {
+     "role": "assistant",
+     "content": "If created_at holds UTC values in a column without a time zone, then DATE(created_at) gives the UTC calendar date. For a business five hours behind UTC, anything after 7 pm local is already the next day in UTC, which matches what you see. Can you confirm the application writes UTC into that column?"
+    },
+    {
+     "role": "user",
+     "content": "Confirmed, the ORM writes UTC. And the business wants reports by the store's local day, and we have stores in two time zones. One group of stores is five hours behind UTC and the other is eight hours behind, and both regions observe daylight saving time on the same dates."
+    },
+    {
+     "role": "assistant",
+     "content": "Then convert before grouping, using each store's zone: DATE((created_at AT TIME ZONE 'UTC') AT TIME ZONE stores.timezone), joining to stores to get the zone name. That handles both zones and daylight saving correctly. Longer term, migrating the column to timestamp with time zone removes the ambiguity. Rerun build_daily_sales_rollup for the last ninety days to correct history, and add a test with orders at 23:30 local in each zone, asserting they land on the right day."
+    }
+   ]
+  },
+  {
+   "id": "s34",
+   "age_days": 34,
+   "messages": [
+    {
+     "role": "user",
+     "content": "我们用消息队列处理积分发放，消费者 grant_reward_points 偶尔会给同一个用户发两次积分。日志里看到同一条消息被消费了两次，两次之间隔了大约三十秒。消费者处理完才确认消息，处理逻辑里有一步调用外部风控接口，有时候很慢。"
+    },
+    {
+     "role": "assistant",
+     "content": "间隔三十秒很关键，这很可能等于队列的可见性超时或确认超时。如果处理时间超过这个值，队列会认为消费者失败，把消息重新投递给另一个消费者，结果两边都处理成功。风控接口偶尔很慢，正好会触发这种情况。你们队列的确认超时配置是多少？"
+    },
+    {
+     "role": "user",
+     "content": "配置项 consumer.ack_timeout_seconds 设的是 30，风控接口最慢的时候要四十多秒。 风控接口是另一个团队维护的，我们改不了它的性能，只能在我们这边做保护。 目前我们只能在发现重复之后人工扣回积分，用户体验很差。"
+    },
+    {
+     "role": "assistant",
+     "content": "那就对上了。修复分两层：第一，给风控调用设置明确的超时，比如十秒，并把 consumer.ack_timeout_seconds 提高到 120，保证正常处理不会被重投。第二，也是更根本的，消费者必须幂等，因为任何队列都只保证至少一次投递。在积分流水表上用消息 id 建唯一索引，发放前先插入流水，冲突就直接确认跳过。最后排查一下历史重复发放的记录并做冲正。"
+    }
+   ]
+  },
+  {
+   "id": "s35",
+   "age_days": 199,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our make -j8 build fails intermittently with 'fatal error: generated/proto_types.h: No such file or directory'. A plain make with no parallelism always works. The header is produced by a code generation rule, and several object files include it. It happens maybe one build in five on the CI machines."
+    },
+    {
+     "role": "assistant",
+     "content": "That is a missing dependency in the Makefile. With -j8, make starts compiling objects in parallel and nothing tells it those objects need the generated header first. Serial builds work by luck because the generation rule happens to run earlier in the order. Can you show how the object rules and the generation rule are declared?"
+    },
+    {
+     "role": "user",
+     "content": "The generation rule is generated/proto_types.h: schema/types.proto, with the generator command. The object rule is a pattern rule %.o: %.c and there is no mention of the header anywhere. There are about thirty object files and I do not know off the top of my head which ones include that header, so listing them by hand feels fragile."
+    },
+    {
+     "role": "assistant",
+     "content": "Make the dependency explicit. Either list the header as a prerequisite of the objects that include it, or, more maintainable, enable automatic dependency generation with -MMD -MP and add the generated header as an order-only prerequisite: $(OBJS): | generated/proto_types.h. The order-only form ensures it exists before compiling without forcing rebuilds on timestamp changes. Verify with make clean, then make -j16 twenty times in a loop. Name the loop script stress_parallel_build.sh and add it to the nightly job."
+    }
+   ]
+  },
+  {
+   "id": "s36",
+   "age_days": 2,
+   "messages": [
+    {
+     "role": "user",
+     "content": "The customer lookup in our support tool takes about six seconds. The query is find_customer_by_phone, WHERE phone_number = $1, and there is a btree index on phone_number. EXPLAIN shows a sequential scan on the whole customers table, about twelve million rows. Why is the index ignored?"
+    },
+    {
+     "role": "assistant",
+     "content": "When an existing index on the exact column is ignored for an equality match, a type mismatch is a common reason. If phone_number is varchar but the parameter arrives as a different type, the planner may need to cast the column on every row, and the index on the raw column cannot be used. Can you check the column type and look at the filter line in EXPLAIN for a cast?"
+    },
+    {
+     "role": "user",
+     "content": "The filter says ((phone_number)::numeric = '5550142'::numeric). The column is varchar, and our data layer binds the parameter as a number, because the phone field in the form is numeric. The form validation strips everything except digits before submitting, and the data layer converts the result to an integer."
+    },
+    {
+     "role": "assistant",
+     "content": "That cast is the issue: the column is converted to numeric for every row, so the varchar index is useless. Fix the data layer to bind phone numbers as text, and normalise them to digits only as a string. Never store or compare phone numbers as numbers, since leading zeros and plus signs get lost. After the change, EXPLAIN should show an index scan with no cast. Add a test on the query plan for find_customer_by_phone, and grep the codebase for other numeric bindings on text columns."
+    }
+   ]
+  },
+  {
+   "id": "s37",
+   "age_days": 128,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our invoice PDF export renders customer names with Vietnamese and Polish characters as empty boxes. English names are fine. The export is render_invoice_pdf in billing/pdf_export.py, and it uses a PDF library with the built-in Helvetica font. This only started being an issue when we expanded to new markets."
+    },
+    {
+     "role": "assistant",
+     "content": "The standard built-in PDF fonts like Helvetica only cover a basic Latin character set. Characters outside it have no glyph, so they render as boxes or disappear. The fix is to embed a TrueType font with wide Unicode coverage and use it for any text that comes from customer data. Do you have a font licence preference, or can you use an open-licence font family?"
+    },
+    {
+     "role": "user",
+     "content": "An open-licence font is fine. Will embedding a font make every invoice much larger? Our invoices are usually one or two pages, and some customers download dozens of them each month, so I would like to keep the files reasonably small for email attachments and storage."
+    },
+    {
+     "role": "assistant",
+     "content": "Not by much if the library subsets the font, embedding only the glyphs actually used. Most libraries subset by default for TrueType fonts. Register a regular and a bold face from an open-licence family with wide coverage, store the files in billing/fonts, and switch render_invoice_pdf to them. Add a test that renders an invoice with names like Nguyễn and Łukasz and asserts the extracted text matches. Check the file size before and after on a typical invoice to confirm the increase stays small."
+    }
+   ]
+  },
+  {
+   "id": "s38",
+   "age_days": 57,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Our mobile web chat client keeps reconnecting its websocket roughly every 60 seconds, even when the server is healthy. Each reconnect drops any message being typed in a draft indicator. The client already uses backoff, so it is not a tight loop. It just disconnects once a minute like clockwork. The client is chatSocketManager.ts."
+    },
+    {
+     "role": "assistant",
+     "content": "A disconnect at a fixed interval with a healthy server usually means an intermediary is closing idle connections. Load balancers and reverse proxies often have a 60 second idle timeout. If no frames cross the connection during that time, the proxy drops it. Do you send any heartbeat or ping frames while the chat is idle?"
+    },
+    {
+     "role": "user",
+     "content": "No heartbeats. And our proxy has proxy_read_timeout set to 60s for the chat location. The close code we see in the browser is 1006, abnormal closure. The timing is suspiciously consistent, so I am fairly sure it is not the server dropping the connection."
+    },
+    {
+     "role": "assistant",
+     "content": "That confirms it: the proxy closes the idle connection, which the browser reports as 1006. Add an application heartbeat to chatSocketManager.ts that sends a small ping message every 25 seconds, and have the server reply with a pong. If no pong arrives within ten seconds, treat the connection as dead and reconnect. Optionally raise proxy_read_timeout for the chat location to 300s, but keep the heartbeat, since other networks have their own idle timeouts. Verify by leaving a chat idle for ten minutes."
+    }
+   ]
+  },
+  {
+   "id": "s39",
+   "age_days": 17,
+   "messages": [
+    {
+     "role": "user",
+     "content": "Product edits take hours to show up in site search. The search index is updated by a sync job, sync_catalog_index, that runs every five minutes and picks up products with updated_at greater than the last sync time. Some edits appear quickly, others take until a nightly full reindex. No errors in the job logs."
+    },
+    {
+     "role": "assistant",
+     "content": "Incremental sync by timestamp has two classic gaps. Rows written by a transaction that commits after the job has already read past their updated_at get skipped forever. And updates that do not touch updated_at, for example a price change written by a bulk SQL script, are invisible. Which kind of edits are delayed: are they from the admin UI, or from bulk scripts?"
+    },
+    {
+     "role": "user",
+     "content": "Mostly from the bulk price update script, which runs a raw UPDATE on the prices table. The admin UI edits show up fine. The script runs every hour and touches thousands of rows at a time, and prices are the most common thing people search for after the product name."
+    },
+    {
+     "role": "assistant",
+     "content": "Then the bulk script never bumps products.updated_at, so sync_catalog_index never sees those changes. Make the script update updated_at for affected products in the same transaction, or add a trigger on the prices table that touches the parent product row. Separately, protect against late commits by reading from the last sync time minus a two minute overlap; reindexing a few products twice is harmless. Add a metric called search_index_lag_seconds comparing the newest indexed timestamp with the newest product timestamp."
+    }
+   ]
+  },
+  {
+   "id": "s40",
+   "age_days": 290,
+   "messages": [
+    {
+     "role": "user",
+     "content": "我们前端首页的 JavaScript 打包后有 4.8 MB，移动网络下首屏要七八秒。用打包分析工具一看，最大的三个块是一个图表库、一个日期处理库的全部语言包，还有一个富文本编辑器。但首页其实只用到一个小折线图，编辑器只在后台设置页才用。入口文件是 src/entry/home.tsx。"
+    },
+    {
+     "role": "assistant",
+     "content": "这几个问题都很常见，可以分别处理。编辑器只在设置页使用，应该改成路由级别的动态导入，用 React.lazy 包一层，首页就不会加载它。日期库的语言包一般是因为整包导入或者打包配置把所有 locale 都带进来了，只保留需要的几种语言即可。图表库要看是否支持按需引入。"
+    },
+    {
+     "role": "user",
+     "content": "图表库支持按模块引入，我们之前是从包根目录整体导入的。日期库我们只需要中文和英文。 编辑器基本不会出现在首页，只有管理员才会打开。 其他页面暂时不用动。"
+    },
+    {
+     "role": "assistant",
+     "content": "那就三步：第一，把设置页的 RichSettingsEditor 改为 React.lazy 动态导入，并加 Suspense 占位；第二，把图表库改为只引入折线图和坐标轴模块；第三，在打包配置里用忽略规则排除日期库的 locale 目录，再手动引入中文和英文两个语言包。改完重新分析，预计首页主包能降到 1 MB 以内。最后在持续集成里加一个体积检查，配置项 HOME_BUNDLE_LIMIT_KB 设为 900，超出就让构建失败。"
+    }
+   ]
+  }
+ ],
+ "queries": [
+  {
+   "id": "q-literal-01",
+   "class": "literal",
+   "query": "renew_edge_certs.sh",
+   "gold_session_ids": [
+    "s01"
+   ]
+  },
+  {
+   "id": "q-literal-02",
+   "class": "literal",
+   "query": "UPL_TIMEOUT_9063",
+   "gold_session_ids": [
+    "s12"
+   ]
+  },
+  {
+   "id": "q-literal-03",
+   "class": "literal",
+   "query": "WHK_SIG_2210",
+   "gold_session_ids": [
+    "s28"
+   ]
+  },
+  {
+   "id": "q-literal-04",
+   "class": "literal",
+   "query": "normalize_header_row",
+   "gold_session_ids": [
+    "s07"
+   ]
+  },
+  {
+   "id": "q-literal-05",
+   "class": "literal",
+   "query": "#2817",
+   "gold_session_ids": [
+    "s03"
+   ]
+  },
+  {
+   "id": "q-literal-06",
+   "class": "literal",
+   "query": "scheduler.lock_backend",
+   "gold_session_ids": [
+    "s05"
+   ]
+  },
+  {
+   "id": "q-literal-07",
+   "class": "literal",
+   "query": "generated/proto_types.h",
+   "gold_session_ids": [
+    "s35"
+   ]
+  },
+  {
+   "id": "q-literal-08",
+   "class": "literal",
+   "query": "search_index_lag_seconds",
+   "gold_session_ids": [
+    "s39"
+   ]
+  },
+  {
+   "id": "q-paraphrase-01",
+   "class": "paraphrase",
+   "query": "spec breaks only on build server since my machine pinned dice",
+   "gold_session_ids": [
+    "s27"
+   ]
+  },
+  {
+   "id": "q-paraphrase-02",
+   "class": "paraphrase",
+   "query": "simultaneous jobs clobbering one hardcoded scratch spot",
+   "gold_session_ids": [
+    "s03"
+   ]
+  },
+  {
+   "id": "q-paraphrase-03",
+   "class": "paraphrase",
+   "query": "doubled timer daemons dispatching identical mailings",
+   "gold_session_ids": [
+    "s05"
+   ]
+  },
+  {
+   "id": "q-paraphrase-04",
+   "class": "paraphrase",
+   "query": "callbacks not unregistered when clients leave, RAM balloons",
+   "gold_session_ids": [
+    "s08"
+   ]
+  },
+  {
+   "id": "q-paraphrase-05",
+   "class": "paraphrase",
+   "query": "memo dictionary misses constantly since its lookup includes current clock",
+   "gold_session_ids": [
+    "s31"
+   ]
+  },
+  {
+   "id": "q-paraphrase-06",
+   "class": "paraphrase",
+   "query": "telephone values coerced into decimals, forcing exhaustive relation reads",
+   "gold_session_ids": [
+    "s36"
+   ]
+  },
+  {
+   "id": "q-paraphrase-07",
+   "class": "paraphrase",
+   "query": "messenger link severed periodically because middlebox culls silent pipes",
+   "gold_session_ids": [
+    "s38"
+   ]
+  },
+  {
+   "id": "q-paraphrase-08",
+   "class": "paraphrase",
+   "query": "stampede of hasty redials by many pages once host reboots",
+   "gold_session_ids": [
+    "s14"
+   ]
+  },
+  {
+   "id": "q-paraphrase-09",
+   "class": "paraphrase",
+   "query": "trim gopher container bloat, keep just executable and root CAs",
+   "gold_session_ids": [
+    "s25"
+   ]
+  },
+  {
+   "id": "q-paraphrase-10",
+   "class": "paraphrase",
+   "query": "aged bookkeeping program spreadsheets crash decoder, need charset guessing",
+   "gold_session_ids": [
+    "s29"
+   ]
+  },
+  {
+   "id": "q-paraphrase-11",
+   "class": "paraphrase",
+   "query": "reservation appears off by one for clients behind Greenwich",
+   "gold_session_ids": [
+    "s17"
+   ]
+  },
+  {
+   "id": "q-paraphrase-12",
+   "class": "paraphrase",
+   "query": "night purchases credited to the following morning tally",
+   "gold_session_ids": [
+    "s33"
+   ]
+  },
+  {
+   "id": "q-paraphrase-13",
+   "class": "paraphrase",
+   "query": "storage exhausted since an erased journal remained grabbed by daemon",
+   "gold_session_ids": [
+    "s15"
+   ]
+  },
+  {
+   "id": "q-paraphrase-14",
+   "class": "paraphrase",
+   "query": "guests flipping among variants on each reload during gradual launch",
+   "gold_session_ids": [
+    "s16"
+   ]
+  },
+  {
+   "id": "q-paraphrase-15",
+   "class": "paraphrase",
+   "query": "people booted at crunch time because in-ram kv purges login state",
+   "gold_session_ids": [
+    "s24"
+   ]
+  },
+  {
+   "id": "q-paraphrase-16",
+   "class": "paraphrase",
+   "query": "inbound callbacks fail hash check once content got reserialized",
+   "gold_session_ids": [
+    "s28"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-01",
+   "class": "paraphrase_cjk",
+   "query": "大表加字段导致长时间锁住，怎样分步骤上线",
+   "gold_session_ids": [
+    "s04"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-02",
+   "class": "paraphrase_cjk",
+   "query": "变基操作失误丢了代码，怎样恢复之前的提交",
+   "gold_session_ids": [
+    "s13"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-03",
+   "class": "paraphrase_cjk",
+   "query": "俄语数量词的单复数形式显示不对",
+   "gold_session_ids": [
+    "s19"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-04",
+   "class": "paraphrase_cjk",
+   "query": "服务卡死不响应，协程都在等同一把互斥锁",
+   "gold_session_ids": [
+    "s26"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-05",
+   "class": "paraphrase_cjk",
+   "query": "发布时健康检查过早通过，导致短时间网关报错",
+   "gold_session_ids": [
+    "s20"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-06",
+   "class": "paraphrase_cjk",
+   "query": "手机竖着拍的照片生成缩略图后方向歪了",
+   "gold_session_ids": [
+    "s32"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-07",
+   "class": "paraphrase_cjk",
+   "query": "发票文件里越南语和波兰语的名字变成方框",
+   "gold_session_ids": [
+    "s37"
+   ]
+  },
+  {
+   "id": "q-paraphrase_cjk-08",
+   "class": "paraphrase_cjk",
+   "query": "打包成安装包以后子模块丢失，导入报错",
+   "gold_session_ids": [
+    "s10"
+   ]
+  },
+  {
+   "id": "q-short-01",
+   "class": "short",
+   "query": "cert expired",
+   "gold_session_ids": [
+    "s01"
+   ]
+  },
+  {
+   "id": "q-short-02",
+   "class": "short",
+   "query": "cron twice",
+   "gold_session_ids": [
+    "s05",
+    "s22"
+   ]
+  },
+  {
+   "id": "q-short-03",
+   "class": "short",
+   "query": "flaky test",
+   "gold_session_ids": [
+    "s03",
+    "s27"
+   ]
+  },
+  {
+   "id": "q-short-04",
+   "class": "short",
+   "query": "image size",
+   "gold_session_ids": [
+    "s02",
+    "s25"
+   ]
+  },
+  {
+   "id": "q-short-05",
+   "class": "short",
+   "query": "rate limiter",
+   "gold_session_ids": [
+    "s06"
+   ]
+  },
+  {
+   "id": "q-short-06",
+   "class": "short",
+   "query": "stale useState",
+   "gold_session_ids": [
+    "s09"
+   ]
+  },
+  {
+   "id": "q-short-07",
+   "class": "short",
+   "query": "413 upload",
+   "gold_session_ids": [
+    "s23"
+   ]
+  },
+  {
+   "id": "q-short-08",
+   "class": "short",
+   "query": "cursor pagination",
+   "gold_session_ids": [
+    "s30"
+   ]
+  },
+  {
+   "id": "q-short-09",
+   "class": "short",
+   "query": "exif rotation",
+   "gold_session_ids": [
+    "s32"
+   ]
+  },
+  {
+   "id": "q-short-10",
+   "class": "short",
+   "query": "font boxes",
+   "gold_session_ids": [
+    "s37"
+   ]
+  },
+  {
+   "id": "q-short-11",
+   "class": "short",
+   "query": "parallel make",
+   "gold_session_ids": [
+    "s35"
+   ]
+  },
+  {
+   "id": "q-short-12",
+   "class": "short",
+   "query": "websocket reconnect",
+   "gold_session_ids": [
+    "s14",
+    "s38"
+   ]
+  },
+  {
+   "id": "q-identifier_plus_description-01",
+   "class": "identifier_plus_description",
+   "query": "load_ingest_config legacy flat settings quietly fall back",
+   "gold_session_ids": [
+    "s18"
+   ]
+  },
+  {
+   "id": "q-identifier_plus_description-02",
+   "class": "identifier_plus_description",
+   "query": "fetch_feed_page repeated entries on scroll",
+   "gold_session_ids": [
+    "s30"
+   ]
+  },
+  {
+   "id": "q-identifier_plus_description-03",
+   "class": "identifier_plus_description",
+   "query": "find_customer_by_phone wrong parameter type",
+   "gold_session_ids": [
+    "s36"
+   ]
+  },
+  {
+   "id": "q-identifier_plus_description-04",
+   "class": "identifier_plus_description",
+   "query": "grant_reward_points slow fraud check causes redelivery",
+   "gold_session_ids": [
+    "s34"
+   ]
+  },
+  {
+   "id": "q-identifier_plus_description-05",
+   "class": "identifier_plus_description",
+   "query": "pricing_v2_enabled guests see variant change on reload",
+   "gold_session_ids": [
+    "s16"
+   ]
+  },
+  {
+   "id": "q-identifier_plus_description-06",
+   "class": "identifier_plus_description",
+   "query": "assert_max_queries repeated per-row fetches on overview",
+   "gold_session_ids": [
+    "s21"
+   ]
+  },
+  {
+   "id": "q-no_answer-01",
+   "class": "no_answer",
+   "query": "consumer group partition rebalance storm",
+   "gold_session_ids": []
+  },
+  {
+   "id": "q-no_answer-02",
+   "class": "no_answer",
+   "query": "refresh token rotation for login",
+   "gold_session_ids": []
+  },
+  {
+   "id": "q-no_answer-03",
+   "class": "no_answer",
+   "query": "infrastructure state file lock conflict",
+   "gold_session_ids": []
+  },
+  {
+   "id": "q-no_answer-04",
+   "class": "no_answer",
+   "query": "gpu out of memory during model training",
+   "gold_session_ids": []
+  },
+  {
+   "id": "q-no_answer-05",
+   "class": "no_answer",
+   "query": "screen reader labels on icon buttons",
+   "gold_session_ids": []
+  },
+  {
+   "id": "q-no_answer-06",
+   "class": "no_answer",
+   "query": "dark mode theme switching css variables",
+   "gold_session_ids": []
+  }
+ ]
+}

@@ -272,6 +272,7 @@ class TestNamingMigration:
         agents_dir.mkdir()
         (agents_dir / "test.json").write_text(json.dumps({
             "name": "test",
+            "tools": ["*"],
             "mcpServers": {
                 "pooled": {"command": sys.executable, "args": ["--stdio"]},
             },

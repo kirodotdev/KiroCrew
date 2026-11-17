@@ -2,8 +2,12 @@
 
 The first toggle is a compare-and-set on the ``expected_launch`` the launch
 endpoint displays: a toggle without it, a partial display and a batch toggle-on
-are refused, and a reapprove lands only while the declared launches still match
-the refusal the page shows, replacing the old approval when they do. A toggle
+are refused, a launch passing one flag and value per tool is shown in full and
+approved, first time or from its refusal, and a reapprove lands when it pins the
+launch the name resolves to now, replacing the old approval and the refusal even
+while that refusal still pins an older launch. A press pinning a refusal the
+launch has moved past is refused with the launch to show instead, and writes
+nothing. A toggle
 with no launch, too many launches or a full store changes neither the config nor
 the approval store, the over-cap and changed-launch refusals are audited as
 denied, a failed approval write admits nothing, and the refusal store is read off
@@ -43,7 +47,7 @@ def _declare_two(agents: Path, first: list[str], second: list[str]) -> None:
     for agent_name, args in (("a", first), ("b", second)):
         entry = {"command": _ATTACK_CMD, "args": args}
         (agents / f"{agent_name}.json").write_text(
-            json.dumps({"name": agent_name, "mcpServers": {"srv": entry}})
+            json.dumps({"name": agent_name, "tools": ["*"], "mcpServers": {"srv": entry}})
         )
 
 
@@ -76,11 +80,20 @@ async def test_launch_endpoint_returns_the_first_toggle_compare_and_set(toggle_h
     assert body["expected_launch"]
 
 
+def _past_the_display_bound(shape: str) -> list[str]:
+    """Args whose display is cut: too many entries, or too many characters."""
+    mod = _approval_module()
+    if shape == "args":
+        return [str(index) for index in range(getattr(mod, "_MAX_DISPLAY_ARGS") + 1)]
+    return ["y" * (getattr(mod, "_MAX_DISPLAY_TOTAL_CHARS") // 2) for _ in range(4)]
+
+
 @pytest.mark.asyncio
-async def test_partial_launch_display_cannot_be_approved(toggle_home):
+@pytest.mark.parametrize("shape", ["args", "chars"])
+async def test_partial_launch_display_cannot_be_approved(toggle_home, shape):
     from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
-    padded = [str(index) for index in range(getattr(_approval_module(), "_MAX_DISPLAY_ARGS") + 1)]
+    padded = _past_the_display_bound(shape)
     _declare(toggle_home, "agent spec", _APPROVED_CMD, padded)
     launches = await asyncio.to_thread(
         mcp_mod.launch_resolve.resolve_launches, ["srv"], refresh_specs=False
@@ -102,6 +115,59 @@ async def test_partial_launch_display_cannot_be_approved(toggle_home):
     )
     assert response.status == 409
     assert json.loads(response.body)["code"] == "launch_display_incomplete"
+
+
+#: One flag and value per tool: past 32 entries, far inside the character budget.
+_INCLUDE_TOOLS = [
+    part for index in range(20) for part in ("--include-tools", f"workspace_tool_{index:02d}")
+]
+
+
+@pytest.mark.asyncio
+async def test_a_long_include_tools_launch_is_shown_in_full_and_approved(toggle_home):
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    mod = _approval_module()
+    _declare_two(toggle_home, ["--short"], _INCLUDE_TOOLS)
+    request = _stub_request({})
+    request.query = {"name": "srv"}
+    response = await mcp_mod.api_mcp_gateway_server_launch(request)
+    display = json.loads(response.body)
+
+    assert response.status == 200
+    assert sorted(display["commands"]) == sorted(
+        [[_ATTACK_CMD, "--short"], [_ATTACK_CMD, *_INCLUDE_TOOLS]]
+    )
+    assert display["complete"] is True
+    status, body = await _toggle_on(expected_launch=display["expected_launch"])
+
+    assert status == 200, body
+    stored = mod.load_approvals()
+    assert stored.admits_command("SRV", rewriter.hash_command(_ATTACK_CMD, ["--short"]))
+    assert stored.admits_command("SRV", rewriter.hash_command(_ATTACK_CMD, _INCLUDE_TOOLS))
+
+
+@pytest.mark.asyncio
+async def test_a_long_include_tools_launch_put_on_the_list_by_hand_can_be_approved(
+    tmp_path, toggle_home
+):
+    """Its boot refusal shows the launch in full and carries the token Approve sends."""
+    mod = _approval_module()
+    _declare_two(toggle_home, ["--short"], _INCLUDE_TOOLS)
+
+    _target_env, refused = _next_boot_rewrite(tmp_path, toggle_home)
+    assert refused.refused == {"SRV": mod.REFUSED_UNAPPROVED}
+    assert mod.save_pass(refused)
+    refusal = mod.refused_servers()["srv"]
+
+    assert [_ATTACK_CMD, *_INCLUDE_TOOLS] in refusal["commands"]
+    assert refusal["complete"] is True
+    status, body = await _toggle_on(expected_launch=refusal["expected_launch"])
+
+    assert status == 200, body
+    stored = mod.load_approvals()
+    assert stored.stored_refused == {}
+    assert stored.admits_command("SRV", rewriter.hash_command(_ATTACK_CMD, _INCLUDE_TOOLS))
 
 
 @pytest.mark.asyncio
@@ -165,7 +231,107 @@ async def test_a_changed_launch_identity_set_still_rejects_reapprove(tmp_path, t
     status, body = await _toggle_on(expected_launch=expected_launch)
 
     assert status == 409
+    assert body["code"] == "launch_display_stale"
+
+
+async def _live_display(name: str = "srv") -> dict:
+    """What the launch read shows for *name* right now."""
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    launches = await asyncio.to_thread(
+        mcp_mod.launch_resolve.resolve_launches, [name], refresh_specs=False
+    )
+    return mcp_mod.display_launches(name, launches[name])
+
+
+async def _refusal_the_launch_moved_past(tmp_path: Path, agents: Path) -> str:
+    """A stored refusal pinning the launch a start pass saw, which moved again since.
+
+    The way a tool update that relocates the command behaves: approved, changed
+    before a gateway start that refuses it, changed again while that gateway
+    runs. Returns the stored refusal's ``expected_launch``.
+    """
+    mod = _approval_module()
+    _declare(agents, "agent spec", _APPROVED_CMD, [])
+    assert (await _toggle_on())[0] == 200
+    _declare(agents, "agent spec", _ATTACK_CMD, ["-c", "id"])
+    _target_env, refused = _next_boot_rewrite(tmp_path, agents)
+    assert refused.refused == {"SRV": mod.REFUSED_CHANGED}
+    assert mod.save_pass(refused)
+    stored_launch = mod.refused_servers()["srv"]["expected_launch"]
+    _declare(agents, "agent spec", _ATTACK_CMD, ["-c", "whoami"])
+    return stored_launch
+
+
+@pytest.mark.asyncio
+async def test_approving_the_launch_now_lands_while_a_refusal_pins_an_older_one(
+    tmp_path, toggle_home
+):
+    mod = _approval_module()
+    assert mod is not None
+    stored_launch = await _refusal_the_launch_moved_past(tmp_path, toggle_home)
+    live = await _live_display()
+    assert live["expected_launch"] != stored_launch
+
+    status, body = await _toggle_on(expected_launch=live["expected_launch"])
+
+    assert status == 200, body
+    stored = mod.load_approvals()
+    assert stored.stored_refused == {}
+    assert stored.admits_command("SRV", rewriter.hash_command(_ATTACK_CMD, ["-c", "whoami"]))
+    assert not stored.admits_command("SRV", rewriter.hash_command(_ATTACK_CMD, ["-c", "id"]))
+    _target_env, next_boot = _next_boot_rewrite(tmp_path, toggle_home)
+    assert next_boot.refused == {}
+
+
+@pytest.mark.asyncio
+async def test_approving_a_refusal_the_launch_moved_past_answers_with_the_launch_now(
+    tmp_path, toggle_home, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    mod = _approval_module()
+    assert mod is not None
+    stored_launch = await _refusal_the_launch_moved_past(tmp_path, toggle_home)
+    audit = MagicMock()
+    monkeypatch.setattr(mcp_mod, "sel", lambda: audit)
+    approval_before = mod.approvals_path().read_bytes()
+    config_before = (tmp_path / "config.json").read_bytes()
+
+    status, body = await _toggle_on(expected_launch=stored_launch)
+
+    assert status == 409
+    assert body["code"] == "launch_display_stale"
+    # Only a gateway start rewrites the refusal, so the answer carries the launch
+    # the name resolves to now, as the launch read shows it, for the page to show.
+    assert body["launch"] == await _live_display()
+    assert body["launch"]["commands"] == [[_ATTACK_CMD, "-c", "whoami"]]
+    event = audit.log_api_access.call_args.kwargs
+    assert event["operation"] == "mcp_stub_rejected_launch_display_stale"
+    assert event["outcome"] == "denied"
+    assert mod.approvals_path().read_bytes() == approval_before
+    assert (tmp_path / "config.json").read_bytes() == config_before
+
+    status, body = await _toggle_on(expected_launch=body["launch"]["expected_launch"])
+
+    assert status == 200, body
+
+
+@pytest.mark.asyncio
+async def test_a_launch_moved_since_its_read_with_no_refusal_keeps_the_changed_code(
+    toggle_home,
+):
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
+    read = (await _live_display())["expected_launch"]
+    _declare(toggle_home, "agent spec", _ATTACK_CMD, ["-c", "id"])
+
+    status, body = await _toggle_on(expected_launch=read)
+
+    assert status == 409
     assert body["code"] == "launch_changed_since_display"
+    assert "launch" not in body
 
 
 @pytest.mark.asyncio
@@ -215,7 +381,7 @@ async def test_a_toggle_whose_launches_exceed_the_cap_changes_nothing(
     for index in range(cap + 1):
         entry = {"command": _APPROVED_CMD, "args": [str(index)]}
         (toggle_home / f"a{index:03d}.json").write_text(
-            json.dumps({"name": f"a{index:03d}", "mcpServers": {"srv": entry}})
+            json.dumps({"name": f"a{index:03d}", "tools": ["*"], "mcpServers": {"srv": entry}})
         )
     resolved = launch_resolve.resolve_launches(["srv"], refresh_specs=False)
     assert "srv" in getattr(resolved, "over_cap", ())
@@ -336,11 +502,11 @@ async def test_reapprove_rejects_a_launch_changed_after_it_was_shown(
     status, body = await _toggle_on(expected_launch=expected_launch)
 
     assert status == 409
-    assert body["code"] == "launch_changed_since_display"
+    assert body["code"] == "launch_display_stale"
     event = audit.log_api_access.call_args.kwargs
-    assert event["operation"] == "mcp_stub_rejected_launch_changed_since_display"
+    assert event["operation"] == "mcp_stub_rejected_launch_display_stale"
     assert event["outcome"] == "denied"
-    assert event["resources"] == "code=launch_changed_since_display names=srv"
+    assert event["resources"] == "code=launch_display_stale names=srv"
     assert mod.approvals_path().read_bytes() == approval_before
     assert (tmp_path / "config.json").read_bytes() == config_before
 

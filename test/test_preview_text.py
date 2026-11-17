@@ -10,11 +10,13 @@ text without rendering it; both producers must apply it.
 
 from __future__ import annotations
 
-import time
+from redaction_structured_cases import github_classic
 
 from conftest import assert_rejected_without_backtracking
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.preview_text import strip_markdown_preview
+
+TOKEN = github_classic(seed=148)
 
 
 class TestStripMarkdownPreview:
@@ -93,6 +95,9 @@ class TestStripMarkdownPreview:
         # Third control-tag family (task planner anchors) — same leak class
         # as deliver: routing tags; covered by the shared constant.
         assert strip_markdown_preview("plan ready\n<!-- plan_task_id:abc123 -->") == "plan ready"
+
+    def test_option_action_tag_is_stripped(self):
+        assert strip_markdown_preview("all done\n<!-- option-action:close=Done -->") == "all done"
 
     def test_link_keeps_label(self):
         assert strip_markdown_preview("see [the docs](https://x.y/z)") == "see the docs"
@@ -223,12 +228,18 @@ class TestStripMarkdownPreview:
         # run's remainder — O(n^2). A ~100k-char whitespace-heavy preview
         # wedged the gateway event loop past the 25s watchdog window at
         # dashboard boot, and the same persisted slot re-triggered it on
-        # every restart (dump-then-exit crash loop). Linear now.
-        evil = "x" + "\n" * 100_000 + " " * 100_000 + "tail"
-        start = time.perf_counter()
-        assert strip_markdown_preview(evil) == "x tail"
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.0, f"preview strip too slow ({elapsed:.2f}s) — may backtrack"
+        # every restart (dump-then-exit crash loop). Linear now, asserted with
+        # the shared ramped CPU guard rather than one wall-clock reading.
+        def reject(text: str) -> None:
+            assert strip_markdown_preview(text) == "x tail"
+
+        # The thread-CPU constant the wall-clock bound carried: a kept complexity
+        # budget stays at its original value (testing-conventions D7).
+        assert_rejected_without_backtracking(
+            reject,
+            lambda n: "x" + "\n" * n + " " * n + "tail",
+            budget_seconds=1.0,  # flake-ok: the original 1.0 s thread-CPU budget, kept per D7
+        )
 
 
 class TestSlotLastMessageStripsMarkdown:
@@ -271,7 +282,7 @@ class TestSlotLastMessageStripsMarkdown:
         assert d["last_message"] == "pick one"
 
     def test_syntax_only_message_falls_back_to_older_preview(self):
-        # Codex PR-243 finding: a latest message that is ONLY stripped syntax
+        # A latest message that is ONLY stripped syntax
         # must not blank the preview — fall back to the previous visible
         # message (mirrors history.last_message_preview's skip-empty scan).
         s = self._slot_with(
@@ -299,13 +310,13 @@ class TestSlotLastMessageStripsMarkdown:
         assert s.to_dict()["last_message"] == "here is the real answer"
 
     def test_credential_split_by_markdown_is_still_redacted(self):
-        # Codex PR-243 HIGH finding: stripping must run BEFORE redaction.
+        # Stripping must run BEFORE redaction.
         # Markdown markers inside a secret split the credential signature past
         # the scanner; stripping afterwards would rejoin the fragments into a
         # valid credential in the broadcast preview.
-        s = self._slot_with(("assistant", "key is AKIA**IOSFODNN7EXAMPLE** ok"))
+        s = self._slot_with(("assistant", f"key is {TOKEN[:4]}**{TOKEN[4:]}** ok"))
         msg = s.to_dict()["last_message"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in msg
+        assert TOKEN not in msg and TOKEN[4:] not in msg
         assert msg.startswith("key is ")
 
     def test_credential_split_by_zwsp_is_still_redacted(self):
@@ -313,9 +324,9 @@ class TestSlotLastMessageStripsMarkdown:
         # characters had split, so strip-before-redact is load-bearing for
         # this class too: stripping after redaction would rejoin the halves
         # into a live key in the broadcast preview.
-        s = self._slot_with(("assistant", "key is AKIA\u200bIOSFODNN7EXAMPLE ok"))
+        s = self._slot_with(("assistant", f"key is {TOKEN[:4]}\u200b{TOKEN[4:]} ok"))
         msg = s.to_dict()["last_message"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in msg
+        assert TOKEN not in msg and TOKEN[4:] not in msg
         assert msg.startswith("key is ")
 
 

@@ -19,11 +19,20 @@ uses: ``api``, ``events`` and every registered family a manifest declares.
 The points shipped in this package register at the bottom of this module, so the
 registry is complete once it is imported.
 
-``register_permission_grants(families, entries)``
+``register_permission_grants(families, entries, *, explicit_only=False)``
     The same, for a grant a manifest declares in ``permissions`` rather than in
-    ``contributes`` (``permissions.workerAutoApprove``): ``entries`` maps the
-    manifest's ``permissions`` (parsed or a raw dict). Its families are staged and
-    approved exactly like a point's, and :func:`point_grant_families` lists them too.
+    ``contributes`` (``permissions.workerAutoApprove``,
+    ``permissions.reachableByUserSessions``, ``permissions.desktopCapabilities``):
+    ``entries`` maps the manifest's ``permissions`` (parsed or a raw dict). Its
+    families are staged and approved exactly like a point's, and
+    :func:`point_grant_families` lists them too.
+    ``explicit_only`` families are approved only by entries a stored set names: a
+    stored set that lacks one approves nothing in it, where it would otherwise
+    approve what the manifest declares (:func:`explicit_only_grant_families`).
+
+``register_ui_grants(families, entries, *, explicit_only=False)``
+    The same again, for a grant a manifest declares in ``ui`` (``ui.frameSources``):
+    ``entries`` maps the manifest's ``ui`` (parsed or a raw dict).
 """
 
 from __future__ import annotations
@@ -37,6 +46,10 @@ EntriesFn = Callable[[Any], dict[str, list[str]]]
 _REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
 #: ``permissions`` -> ``{family: entries}`` for one permission's families.
 _PERMISSION_REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
+#: ``ui`` -> ``{family: entries}`` for one ui field's families.
+_UI_REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
+#: Families a stored set approves only by naming their entries.
+_EXPLICIT_ONLY: list[str] = []
 
 
 def _refuse_clash(families: tuple[str, ...]) -> None:
@@ -52,15 +65,41 @@ def register_point_grants(families: tuple[str, ...], entries: EntriesFn) -> None
     _REGISTRY.append((tuple(families), entries))
 
 
-def register_permission_grants(families: tuple[str, ...], entries: EntriesFn) -> None:
-    """Register one permission's grant families, read from the manifest's ``permissions``."""
+def register_permission_grants(
+    families: tuple[str, ...], entries: EntriesFn, *, explicit_only: bool = False
+) -> None:
+    """Register one permission's grant families, read from the manifest's ``permissions``.
+
+    ``explicit_only`` suits a permission that a manifest could declare before this
+    host knew the key: the owner was never shown it, so a stored set written then
+    must not approve it.
+    """
     _refuse_clash(families)
     _PERMISSION_REGISTRY.append((tuple(families), entries))
+    if explicit_only:
+        _EXPLICIT_ONLY.extend(families)
+
+
+def register_ui_grants(
+    families: tuple[str, ...], entries: EntriesFn, *, explicit_only: bool = False
+) -> None:
+    """Register one ``ui`` field's grant families, read from the manifest's ``ui``."""
+    _refuse_clash(families)
+    _UI_REGISTRY.append((tuple(families), entries))
+    if explicit_only:
+        _EXPLICIT_ONLY.extend(families)
 
 
 def point_grant_families() -> tuple[str, ...]:
-    """Every registered point family, then every permission family, in registration order."""
-    return tuple(f for families, _ in (*_REGISTRY, *_PERMISSION_REGISTRY) for f in families)
+    """Every registered point family, then every permission and ui family, in registration order."""
+    return tuple(
+        f for families, _ in (*_REGISTRY, *_PERMISSION_REGISTRY, *_UI_REGISTRY) for f in families
+    )
+
+
+def explicit_only_grant_families() -> tuple[str, ...]:
+    """The registered families a stored set that lacks them approves nothing in."""
+    return tuple(_EXPLICIT_ONLY)
 
 
 def grant_source(manifest: Any) -> dict[str, list[str]] | None:
@@ -74,6 +113,7 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
     if isinstance(manifest, dict):
         perms = manifest.get("permissions")
         contributes = manifest.get("contributes")
+        ui_view: Any = manifest.get("ui")
         perms = perms if isinstance(perms, dict) else {}
         api = perms.get("api")
         events = perms.get("events")
@@ -81,6 +121,7 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
     else:
         perms_obj = getattr(manifest, "permissions", None)
         contributes = getattr(manifest, "contributes", None)
+        ui_view = getattr(manifest, "ui", None)
         api = getattr(perms_obj, "api", None)
         events = getattr(perms_obj, "events", None)
         permissions_view = perms_obj
@@ -96,6 +137,10 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
             out[family] = list(declared.get(family, []))
     for families, entries in _PERMISSION_REGISTRY:
         declared = entries(permissions_view)
+        for family in families:
+            out[family] = list(declared.get(family, []))
+    for families, entries in _UI_REGISTRY:
+        declared = entries(ui_view)
         for family in families:
             out[family] = list(declared.get(family, []))
     return out
@@ -141,11 +186,51 @@ from kiro_crew.apps.worker_auto_approve import (  # noqa: E402
 
 register_permission_grants(WORKER_AUTO_APPROVE_GRANT_FAMILIES, worker_auto_approve_grant_entries)
 
+from kiro_crew.apps.user_session_reach import (  # noqa: E402
+    USER_SESSION_REACH_GRANT_FAMILIES,
+    user_session_reach_grant_entries,
+)
+
+register_permission_grants(
+    USER_SESSION_REACH_GRANT_FAMILIES, user_session_reach_grant_entries, explicit_only=True
+)
+
+from kiro_crew.apps.desktop_capabilities import (  # noqa: E402
+    DESKTOP_CAPABILITY_GRANT_FAMILIES,
+    desktop_capability_grant_entries,
+)
+
+register_permission_grants(
+    DESKTOP_CAPABILITY_GRANT_FAMILIES, desktop_capability_grant_entries, explicit_only=True
+)
+# ``permissions.bots`` (``apps.bot_grants``): the Bot scopes an app holds. Explicit-only,
+# so a stored set that never named a scope approves none, whatever the manifest declares.
+from kiro_crew.apps.manifest_sections import (  # noqa: E402
+    BOT_GRANT_FAMILIES,
+    bot_grant_entries,
+)
+
+register_permission_grants(BOT_GRANT_FAMILIES, bot_grant_entries, explicit_only=True)
+
+
+def _frame_source_grant_entries(ui: Any) -> dict[str, list[str]]:
+    # Deferred: ``frame_sources`` stays off the path an MCP server walks before its
+    # tool list, which has a module budget (``test_mcp_listing_import_budget``).
+    from kiro_crew.apps.frame_sources import frame_source_grant_entries  # noqa: PLC0415
+
+    return frame_source_grant_entries(ui)
+
+
+#: ``frame_sources.GRANT_FAMILY``, named here so registering it imports nothing.
+register_ui_grants(("frameSources",), _frame_source_grant_entries, explicit_only=True)
+
 
 __all__ = [
     "EntriesFn",
+    "explicit_only_grant_families",
     "grant_source",
     "point_grant_families",
     "register_permission_grants",
     "register_point_grants",
+    "register_ui_grants",
 ]

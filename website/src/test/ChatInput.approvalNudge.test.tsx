@@ -10,7 +10,6 @@ import { APPROVAL_MODE_ADJUSTED_LS_KEY } from '../components/ApprovalModePicker'
 import { api } from '../api/client'
 import { sseChatMessage } from '../store/chatSlice'
 import type { RootState } from '../store'
-import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', () => {
   class MockApiError extends Error {
@@ -24,6 +23,7 @@ vi.mock('../api/client', () => {
   return {
     api: {
       resolveApproval: vi.fn(() => Promise.resolve({})),
+      decideApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
       chatMode: vi.fn(() => Promise.resolve({})),
     },
@@ -44,6 +44,7 @@ function permissionMsg(n: number, meta: Record<string, unknown> = {}) {
     content: `Running: ls /tmp/${n}`,
     meta: {
       approval_id: `ap-${n}`,
+      mid: `mid-${n}`,
       request_id: `req-${n}`,
       tool_input: `{"command":"ls /tmp/${n}"}`,
       tool_title: `Running: ls /tmp/${n}`,
@@ -117,7 +118,7 @@ describe('approval nudge trigger (B2)', () => {
   async function approveN(store: ReturnType<typeof renderWithProviders>['store'], n: number) {
     for (let i = 1; i <= n; i++) {
       fireEvent.click(screen.getByText('Allow once'))
-      await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledTimes(i))
+      await waitFor(() => expect(api.decideApproval).toHaveBeenCalledTimes(i))
       if (i < n) {
         act(() => { store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never)) })
         await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
@@ -179,7 +180,7 @@ describe('review-round fixes (hint retirement + coexistence)', () => {
     await act(async () => renderWithProviders(<ChatInput {...defaultProps} />, { store }))
     for (let i = 1; i <= 3; i++) {
       fireEvent.click(screen.getByText('Allow once'))
-      await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledTimes(i))
+      await waitFor(() => expect(api.decideApproval).toHaveBeenCalledTimes(i))
       act(() => { store.dispatch(sseChatMessage({ slot: 'slot-1', ...permissionMsg(i + 1) } as never)) })
       await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
     }
@@ -188,6 +189,3 @@ describe('review-round fixes (hint retirement + coexistence)', () => {
     expect(screen.queryByText('Tired of confirming every step?')).not.toBeInTheDocument()
   })
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

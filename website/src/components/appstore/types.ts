@@ -112,7 +112,8 @@ export type RegistryApp = {
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
   manifest?: {
-    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean }
+    permissions?: { api?: string[]; sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; chatSlots?: boolean; hiddenSessions?: boolean; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; webhookSource?: boolean }
+    mcpServers?: Record<string, McpServerView>
     platform?: { requiresDesktopApp?: boolean }
   }
 }
@@ -156,7 +157,7 @@ export type InstalledApp = {
   enabled: boolean
   sessionApprovalConsentPending?: boolean
   /** Approved api/events entries, present only while an update's new ones await approval. */
-  approvedGrants?: { api?: string[]; events?: string[] }
+  approvedGrants?: { api?: string[]; events?: string[]; bots?: string[] }
   /** Approved link-preview hosts and text patterns, and the ones an update holds back. */
   linkPreviewGrant?: LinkPreviewGrantRow
   /** Approved message actions, and the entries an update holds back. */
@@ -168,6 +169,12 @@ export type InstalledApp = {
   selectionActionGrant?: SelectionActionGrantRow
   /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
   workerAutoApproveGrant?: { approved: boolean; staged: boolean }
+  /** `permissions.reachableByUserSessions` verbs the owner approved, and the ones an update holds back; absent when undeclared. */
+  userSessionReachGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.desktopCapabilities` the owner approved, and the ones an update holds back; absent when undeclared. */
+  desktopCapabilitiesGrant?: { approved: string[]; staged: string[] }
+  /** `ui.frameSources` origins the owner approved, and the ones an update or edit holds back; absent when undeclared. */
+  frameSourcesGrant?: { approved: string[]; staged: string[] }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -237,6 +244,8 @@ export type InstalledApp = {
       panelTabs?: unknown
       messageActions?: unknown
     }
+    /** Normalized by `mcpServerConfigs`: object entries only, display fields typed. */
+    mcpServers?: Record<string, McpServerView>
     permissions?: {
       api?: string[]
       events?: string[]
@@ -247,6 +256,13 @@ export type InstalledApp = {
       sessionApproval?: boolean
       memberThreads?: boolean
       workerAutoApprove?: boolean
+      chatSlots?: boolean
+      hiddenSessions?: boolean
+      reachableByUserSessions?: string[]
+      desktopCapabilities?: string[]
+      webhookSource?: boolean
+      /** Bot scopes, `"read"` and `"wake"` (apps/bot_grants.py). */
+      bots?: string[]
     }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string
@@ -388,6 +404,59 @@ function sanitizeStargazersCount(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined
 }
 
+/** One `mcpServers` entry as the detail page's MCP card reads it. */
+export interface McpServerView {
+  url?: string
+  command?: string
+  autoApprove?: string[]
+  [key: string]: unknown
+}
+
+/**
+ * `mcpServers` from third-party app.json. The manifest parser checks only that
+ * the map is an object, so an entry can be `null`, a string, or carry a
+ * non-list `autoApprove`; keep object entries and type the fields the card
+ * renders, so one bad entry cannot take the page down.
+ */
+export function mcpServerConfigs(v: unknown): Record<string, McpServerView> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  // `fromEntries` defines each name as an own key, so a server named
+  // `__proto__` (a plain JSON key the backend registers and launches) stays
+  // listed instead of hitting the object-literal prototype setter.
+  return Object.fromEntries(
+    Object.entries(v as Record<string, unknown>)
+      .filter(([, raw]) => raw && typeof raw === 'object' && !Array.isArray(raw))
+      .map(([name, raw]) => {
+        const c = raw as Record<string, unknown>
+        const view: McpServerView = {
+          ...c,
+          url: typeof c.url === 'string' ? c.url : undefined,
+          command: typeof c.command === 'string' ? c.command : undefined,
+          autoApprove: Array.isArray(c.autoApprove) ? c.autoApprove.filter((t): t is string => typeof t === 'string') : [],
+        }
+        return [name, view]
+      }),
+  )
+}
+
+/**
+ * A store row's `manifest.permissions`, read the way the manifest parser grants
+ * them (`Permissions.from_dict`): a yes/no grant only on a literal `true`, a list
+ * grant only from a real list of strings, `memory` only as a string. The row
+ * carries the raw app.json block, so `"storage": "false"` or `"api": "/x"`
+ * would otherwise show as granted or reach `.map`.
+ */
+export function storePermissions(v: unknown): Record<string, unknown> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const p = v as Record<string, unknown>
+  const list = (x: unknown) => (Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string') : [])
+  const out: Record<string, unknown> = { ...p }
+  for (const k of ['api', 'events', 'mcpTools', 'reachableByUserSessions']) out[k] = list(p[k])
+  for (const k of ['storage', 'network', 'cron', 'sessionApproval', 'memberThreads', 'workerAutoApprove']) out[k] = p[k] === true
+  out.memory = typeof p.memory === 'string' ? p.memory : ''
+  return out
+}
+
 /**
  * Normalize a registry row for rendering.
  *
@@ -409,6 +478,18 @@ export function normalizeRegistryApp(raw: RegistryApp): RegistryApp {
     version: str(raw?.version, '0.0.0'),
     author: str(raw?.author),
     tags: Array.isArray(raw?.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : [],
+    // The store page maps these; app.json is third-party, so a string or an
+    // object here would otherwise reach `.map` (the installed path coerces too).
+    highlights: Array.isArray(raw?.highlights) ? raw.highlights.filter((h): h is string => typeof h === 'string') : [],
+    ...(raw?.manifest && typeof raw.manifest === 'object'
+      ? {
+          manifest: {
+            ...raw.manifest,
+            mcpServers: mcpServerConfigs(raw.manifest.mcpServers),
+            permissions: storePermissions(raw.manifest.permissions),
+          },
+        }
+      : {}),
     stargazersCount: sanitizeStargazersCount(raw?.stargazersCount),
   }
 }
@@ -471,6 +552,7 @@ export function normalizeInstalledApp<T extends InstalledApp>(raw: T): T {
       tags: strings(manifest.tags),
       jobFamilies: strings(manifest.jobFamilies),
       highlights: strings(manifest.highlights),
+      mcpServers: mcpServerConfigs(manifest.mcpServers),
       useCases: strings(manifest.useCases),
       configuration: strings(manifest.configuration),
       // Art fields, coerced here for the reason in this function's docstring: the

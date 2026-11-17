@@ -41,6 +41,25 @@ describe('WelcomeView', () => {
     expect(last(18)).toBe('Good evening. Where should we start?')
   })
 
+  it("draws the chat's agent greeting under the heading", () => {
+    renderWithProviders(<WelcomeView {...defaultProps} agentWelcome={'Drop a URL.\nI will draft the slides.'} />)
+    const greeting = screen.getByTestId('agent-welcome')
+    expect(greeting.textContent).toBe('Drop a URL.\nI will draft the slides.')
+    expect(greeting.previousElementSibling).toBe(screen.getByRole('heading', { level: 2 }))
+  })
+
+  it('draws the greeting as plain text, never as markup', () => {
+    renderWithProviders(<WelcomeView {...defaultProps} agentWelcome={'<b>bold</b> [link](https://x.test)'} />)
+    const greeting = screen.getByTestId('agent-welcome')
+    expect(greeting.textContent).toBe('<b>bold</b> [link](https://x.test)')
+    expect(greeting.querySelector('b, a')).toBeNull()
+  })
+
+  it('draws no greeting when the chat has none', () => {
+    renderWithProviders(<WelcomeView {...defaultProps} agentWelcome="" />)
+    expect(screen.queryByTestId('agent-welcome')).not.toBeInTheDocument()
+  })
+
   it('keeps the memory chip out of the welcome body (ChatPage puts it above the composer)', () => {
     renderWithProviders(<WelcomeView {...defaultProps} />)
     expect(screen.queryByText('Choose memory mode')).not.toBeInTheDocument()

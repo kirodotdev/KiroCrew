@@ -156,11 +156,48 @@ describe('CollapsibleToolGroup approval dispatch', () => {
 
     fireEvent.click(screen.getByText(T('approve')))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
+    // A gone approval is status, not an error (#18203).
+    expect(await screen.findByRole('status')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByText(T('approve'))).not.toBeInTheDocument()
     expect(screen.queryByText(T('reject'))).not.toBeInTheDocument()
+    // Nothing is left to decide, so the header no longer says one is needed.
+    expect(screen.queryByText(T('approval_needed'))).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(T('approval_needed'))).not.toBeInTheDocument()
+  })
+
+  it('a terminal refusal drops the pending amber bar from the command preview', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onApprove = vi.fn().mockRejectedValue(new ApiError(404, 'not found'))
+    renderWithProviders(
+      <CollapsibleToolGroup count={1} hasPermission permissionMeta={{ tool_input: 'zzq --run' }} onApprove={onApprove}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+    expect(screen.getByTestId('tool-group-approval-preview').className).toContain('amber')
+    fireEvent.click(screen.getByText(T('approve')))
+    await screen.findByRole('status')
+    expect(screen.getByTestId('tool-group-approval-preview').className).not.toContain('amber')
+  })
+
+  it('asks again for a new approval that arrives at the same count after a gone one', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onApprove = vi.fn().mockRejectedValue(new ApiError(404, 'not found'))
+    const group = (id: string) => (
+      <CollapsibleToolGroup count={1} hasPermission pendingPermCount={1} permissionMeta={{ approval_id: id }} onApprove={onApprove}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>
+    )
+    const { rerender } = renderWithProviders(group('apr-a'))
+    fireEvent.click(screen.getByText(T('approve')))
+    await screen.findByRole('status')
+    expect(screen.queryByText(T('approve'))).not.toBeInTheDocument()
+
+    rerender(group('apr-b'))
+    expect(screen.getByText(T('approve'))).toBeInTheDocument()
+    expect(screen.getAllByLabelText(T('approval_needed')).length).toBeGreaterThan(0)
   })
 
   it('keeps an auth-required 404 retryable and shows the server refusal', async () => {

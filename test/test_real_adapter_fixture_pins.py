@@ -46,6 +46,7 @@ from real_adapter_gate import (
     pinned_version,
 )
 
+from kiro_crew.acp.client_turn_control import KIRO_CLI_TESTED_RANGE
 from kiro_crew.acp.kas_pin import KAS_PIN_VERSION
 from kiro_crew.agent_sdk.backends_launch import COPILOT_VERIFIED_VERSION
 from kiro_crew.kiro_cli import (
@@ -71,13 +72,11 @@ PINNED_FIXTURE_ADAPTERS: dict[str, tuple[str, str]] = {
 }
 
 #: Adapters held to a measured release written here instead of the lane manifest.
-#: No lane test drives claude-agent-acp yet, so the lane does not install it; the
-#: claude captures are held to the release they were taken on, and the pin moves
-#: into ``test/real_adapters/package.json`` when a lane test needs the install.
 #: Copilot is held to the one release the harness accepts at the handshake, so
 #: raising ``COPILOT_VERIFIED_VERSION`` reds here until the captures are re-taken.
+#: claude-agent-acp is in the manifest now (the harness probe drives it), pinned at
+#: the release its captures were taken on.
 MEASURED_NOT_INSTALLED: dict[str, str] = {
-    "@agentclientprotocol/claude-agent-acp": "0.94.0",
     COPILOT_PACKAGE: COPILOT_VERIFIED_VERSION,
 }
 
@@ -248,24 +247,32 @@ def _release(version: str) -> tuple[int, ...] | None:
 
 
 #: kiro-cli and KAS have no lane pin, so their live captures are held to a floor
-#: instead: the highest kiro-cli release a Crew version gate branches on (below it
-#: Crew drives a path a current kiro-cli never takes), and for KAS the engine the
-#: bundle pins. ``<dir>`` -> header key -> floor. KAS headers that name the
-#: kiro-cli they ran under are held to the kiro-cli floor too.
-_KIRO_CLI_FLOOR = ".".join(
-    map(
-        str,
-        max(
-            MANDATORY_MCPS_DROP_MIN_VERSION,
-            SPEC_PERMISSIONS_MIN_VERSION,
-            MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION,
-        ),
-    )
-)
+#: instead: the bottom of ``KIRO_CLI_TESTED_RANGE``, which must be the highest
+#: kiro-cli release a Crew version gate branches on (below it Crew drives a path a
+#: current kiro-cli never takes), and for KAS an engine floor
+#: that depends on the route. ``<dir>`` -> header key -> floor. KAS headers that
+#: name the kiro-cli they ran under are held to the kiro-cli floor too.
+#:
+#: A KAS capture marked ``route: kas-bundle`` ran Crew's own pinned engine, so it is
+#: held to ``KAS_PIN_VERSION`` (``_KAS_BUNDLE_ROUTE``). Every other KAS capture ran
+#: through kiro-cli's relay, which runs the engine kiro-cli ships rather than the
+#: pin, so a pin bump cannot move it; it is held to ``_KAS_RELAY_ENGINE_FLOOR``,
+#: which rises only by re-capturing on a newer kiro-cli.
+_KIRO_CLI_FLOOR = ".".join(map(str, KIRO_CLI_TESTED_RANGE[0]))
+_KAS_RELAY_ENGINE_FLOOR = "0.66.33"
+_KAS_BUNDLE_ROUTE = "kas-bundle"
 FIXTURE_FLOORS: dict[str, dict[str, str]] = {
     "kiro": {"agent_version": _KIRO_CLI_FLOOR},
-    "kas": {"agent_version": KAS_PIN_VERSION, "kiro_cli_version": _KIRO_CLI_FLOOR},
+    "kas": {"agent_version": _KAS_RELAY_ENGINE_FLOOR, "kiro_cli_version": _KIRO_CLI_FLOOR},
 }
+
+
+def _floor_for(directory: str, meta: dict, header: str, floor: str) -> str:
+    """*floor*, or the bundle pin for a KAS capture made off Crew's own engine."""
+    if directory == "kas" and header == "agent_version" and meta.get("route") == _KAS_BUNDLE_ROUTE:
+        return KAS_PIN_VERSION
+    return floor
+
 
 #: ``<dir>/<file>:<header key>`` -> (header version, floor it is below). Shrink-only:
 #: a fixture below its floor is re-captured, not added here.
@@ -292,7 +299,8 @@ def _floored_live_versions(corpus: Path = CORPUS) -> list[tuple[str, str, str]]:
             for header, floor in floors.items():
                 if header in meta or header == "agent_version":
                     key = f"{directory}/{path.name}:{header}"
-                    found.append((key, str(meta.get(header)), floor))
+                    bar = _floor_for(directory, meta, header, floor)
+                    found.append((key, str(meta.get(header)), bar))
     return found
 
 
@@ -371,6 +379,77 @@ def test_a_kas_capture_under_an_old_kiro_cli_reds(tmp_path) -> None:
     problems = below_floor(_floored_live_versions(tmp_path), {})
     want = f"kas/a-live.jsonl:kiro_cli_version is 2.20.0, below floor {_KIRO_CLI_FLOOR}"
     assert problems == [f"{want}: re-capture it"]
+
+
+@pytest.mark.parametrize(
+    ("route", "version", "floor"),
+    [
+        (_KAS_BUNDLE_ROUTE, "0.66.33", KAS_PIN_VERSION),
+        (None, "0.66.32", _KAS_RELAY_ENGINE_FLOOR),
+    ],
+    ids=["bundle-held-to-pin", "relay-held-to-relay-floor"],
+)
+def test_a_kas_capture_is_held_to_its_routes_floor(tmp_path, route, version, floor) -> None:
+    """A bundle capture is held to the pin; a relay capture to the relay engine floor."""
+    (tmp_path / "kas").mkdir()
+    meta = {"backend": "kas", "recorded": "live", "agent_version": version}
+    if route:
+        meta["route"] = route
+    (tmp_path / "kas" / "a-live.jsonl").write_text(json.dumps({"_meta": meta}) + "\n")
+    problems = below_floor(_floored_live_versions(tmp_path), {})
+    assert problems == [
+        f"kas/a-live.jsonl:agent_version is {version}, below floor {floor}: re-capture it"
+    ]
+
+
+def test_the_kiro_cli_tested_floor_is_the_highest_version_gate() -> None:
+    """A gate raised above the tested floor moves the floor, and the notice, with it."""
+    gates = (
+        MANDATORY_MCPS_DROP_MIN_VERSION,
+        SPEC_PERMISSIONS_MIN_VERSION,
+        MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION,
+    )
+    assert KIRO_CLI_TESTED_RANGE[0] == max(gates)
+
+
+def _kiro_cli_releases(corpus: Path = CORPUS) -> dict[str, tuple[int, ...]]:
+    """The kiro-cli release of every live kiro capture and KAS relay capture that names one."""
+    found = {}
+    for key, version, _floor in _floored_live_versions(corpus):
+        if key.startswith("kiro/") or key.endswith(":kiro_cli_version"):
+            if (release := _release(version)) is not None:
+                found[key] = release
+    return found
+
+
+def test_the_kiro_cli_tested_range_covers_every_capture_and_ends_at_the_next_major() -> None:
+    """``KIRO_CLI_TESTED_RANGE`` is CI's one record of the kiro-cli Crew tested.
+
+    No capture may be on a release at or past its top (a 4.x capture reds until the
+    range moves), its top is the major after the newest capture (so it never claims
+    a major nothing was captured on), and the Docker image's pinned kiro-cli is in it.
+    """
+    low, high = KIRO_CLI_TESTED_RANGE
+    releases = _kiro_cli_releases()
+    past = {key: v for key, v in releases.items() if v >= high}
+    assert not past, f"captures past the tested range {KIRO_CLI_TESTED_RANGE}: {past}"
+    assert high == (max(releases.values())[0] + 1, 0, 0)
+    docker = _release((ROOT / "packaging" / "kiro-cli-version").read_text().strip())
+    assert low <= docker < high
+
+
+def test_a_capture_on_the_next_kiro_cli_major_reds(tmp_path) -> None:
+    (tmp_path / "kiro").mkdir()
+    meta = {"backend": "kiro", "recorded": "live", "agent_version": "4.0.0"}
+    (tmp_path / "kiro" / "a-live.jsonl").write_text(json.dumps({"_meta": meta}) + "\n")
+    releases = _kiro_cli_releases(tmp_path)
+    assert releases == {"kiro/a-live.jsonl:agent_version": (4, 0, 0)}
+    assert max(releases.values()) >= KIRO_CLI_TESTED_RANGE[1]
+
+
+def test_the_relay_floor_never_passes_the_pin() -> None:
+    """The relay floor is a floor for engines older than the pin, never above it."""
+    assert _release(_KAS_RELAY_ENGINE_FLOOR) <= _release(KAS_PIN_VERSION)
 
 
 def test_another_adapters_capture_in_copilot_reds(monkeypatch, tmp_path) -> None:

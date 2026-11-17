@@ -18,10 +18,10 @@ emoji, or a combining accent in half produces visible mojibake on both sides.
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Callable
 
 from kiro_crew.constants import md_link_destination
+from kiro_crew.messaging.graphemes import joins_previous as _joins_previous
 
 #: Fence delimiter line: three or more backticks or tildes, optional info string.
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})\s*(\S*)\s*$")
@@ -84,26 +84,6 @@ _EMPHASIS_RES = (
 #: Three or more consecutive newlines collapse to a paragraph break.
 _BLANK_RUN_RE = re.compile(r"\n{3,}")
 
-#: Characters that must never be separated from what precedes them.
-_ZWJ = "\u200d"
-_VARIATION_SELECTORS = range(0xFE00, 0xFE10)
-_VARIATION_SUPPLEMENT = range(0xE0100, 0xE01F0)
-_SKIN_TONES = range(0x1F3FB, 0x1F400)
-_REGIONAL_INDICATORS = range(0x1F1E6, 0x1F200)
-_KEYCAP = 0x20E3
-_TAG_RANGE = range(0xE0020, 0xE0080)
-
-#: General categories that carry Grapheme_Extend. ``unicodedata.combining``
-#: reports the canonical combining CLASS, which is 0 for a large share of real
-#: marks -- every Thai vowel sign above the baseline (U+0E31 MAO EK, U+0E34,
-#: U+0E47), Khmer and the Indic matras -- so testing the class alone declared
-#: those marks safe to cut after and split a grapheme the reader sees as one
-#: character. Testing the CATEGORY is the property that actually holds: a mark
-#: belongs to the preceding base whatever its class. Erring wide here can only
-#: move a cut earlier, never split a cluster, so the whole file's guarantee
-#: ("never separate a mark from its base") gets stronger, not weaker.
-_MARK_CATEGORIES = frozenset({"Mn", "Mc", "Me"})
-
 
 def to_plaintext(text: str) -> str:
     """Flatten markdown to plain text, passing code-block contents through.
@@ -123,10 +103,9 @@ def to_plaintext(text: str) -> str:
                 # Keep the opener's ACTUAL run, not a normalised three. Per
                 # CommonMark a fence is closed only by a run of the same
                 # character that is at least as long, so a ``` line inside a
-                # ```` block is content. Normalising to three made that inner
-                # line close the block, and everything after it was then
-                # markdown-flattened -- silent corruption of the code the user
-                # was shown.
+                # ```` block is content. Normalising to three would let that
+                # inner line close the block and markdown-flatten the rest of
+                # the code the user is shown.
                 fence = marker
                 continue
             if marker[0] == fence[0] and len(marker) >= len(fence):
@@ -254,8 +233,6 @@ def chunk_plaintext(text: str, limit: int) -> list[str]:
         if head:
             chunks.append(head)
         remaining = remaining[cut:].lstrip("\n")
-        if not remaining:
-            return chunks
     tail = remaining.rstrip()
     if tail:
         chunks.append(tail)
@@ -314,37 +291,8 @@ def _grapheme_boundary(text: str, index: int) -> int:
 
 
 def _grapheme_end(text: str, index: int) -> int:
-    """Smallest boundary > ``index`` that does not split a grapheme cluster."""
+    """Smallest boundary >= ``index`` (and >= 1) that does not split a grapheme cluster."""
     end = max(index, 1)
     while end < len(text) and _joins_previous(text, end):
         end += 1
     return end
-
-
-def _joins_previous(text: str, index: int) -> bool:
-    """True when cutting at ``index`` would break a grapheme cluster."""
-    following = text[index]
-    code = ord(following)
-    if (
-        following == _ZWJ
-        or unicodedata.combining(following)
-        or unicodedata.category(following) in _MARK_CATEGORIES
-        or code in _VARIATION_SELECTORS
-        or code in _VARIATION_SUPPLEMENT
-        or code in _SKIN_TONES
-        or code in _TAG_RANGE
-        or code == _KEYCAP
-    ):
-        return True
-    previous = text[index - 1]
-    if previous == _ZWJ:
-        return True
-    # A flag is an EVEN-length run of regional indicators. Cutting inside a
-    # pair turns one flag into two stray letters, so only an even offset from
-    # the run's start is a boundary.
-    if code in _REGIONAL_INDICATORS and ord(previous) in _REGIONAL_INDICATORS:
-        start = index - 1
-        while start > 0 and ord(text[start - 1]) in _REGIONAL_INDICATORS:
-            start -= 1
-        return (index - start) % 2 == 1
-    return False

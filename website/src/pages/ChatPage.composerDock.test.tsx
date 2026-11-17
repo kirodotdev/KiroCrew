@@ -21,7 +21,18 @@ vi.mock('../components/AgentDropdownList', () => ({
 }))
 vi.mock('../components/ProjectPicker', () => ({ default: (p: Captured & { footer?: ReactNode }) => { seen.projectPicker = p; return <>{p.footer}</> } }))
 vi.mock('../components/ProjectAwsProfile', () => ({ ProjectAwsProfileSection: (p: Captured) => { seen.awsProfile = p; return null } }))
-vi.mock('../components/ModelEffortDropdown', () => ({ default: (p: Captured) => { seen.modelDropdown = p; return null } }))
+// The model picker's props are captured; a case that sets `realModelPicker.on` also
+// draws the real picker, to see which session switches the dock's props give it.
+const realModelPicker = vi.hoisted(() => ({ on: false }))
+vi.mock('../components/ModelEffortDropdown', async (orig) => {
+  const { default: RealModelEffortDropdown } = await orig<typeof import('../components/ModelEffortDropdown')>()
+  return {
+    default: (p: Captured) => {
+      seen.modelDropdown = p
+      return realModelPicker.on ? <RealModelEffortDropdown {...(p as unknown as Parameters<typeof RealModelEffortDropdown>[0])} /> : null
+    },
+  }
+})
 vi.mock('../components/ChatInput', () => ({ default: (p: Captured) => { seen.chatInput = p; return null } }))
 vi.mock('../components/SessionControlHost', () => ({ default: (p: Captured) => { seen.sessionControl = p; return null } }))
 vi.mock('../components/ErrorNotice', () => ({ default: () => null }))
@@ -34,6 +45,7 @@ vi.mock('../components/MemoryModeChip', () => ({ MemoryModeChip: () => null }))
 vi.mock('../components/crew/useCrewRoot', () => ({ useCrewRoot: () => ({ rootClosed: false, rootTitle: '', workers: undefined, failed: false }) }))
 vi.mock('../chat-core/composer/Composer', () => ({ useComposerDraftText: () => null, Composer: forwardRef(({ children }: { children: ReactNode }, _ref) => <>{children}</>) }))
 vi.mock('../composerActions/useComposerActionItems', () => ({ useComposerActionItems: () => [] }))
+vi.mock('./chat/McpLoadingBar', () => ({ default: () => null }))
 vi.mock('./chat/SubagentProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/TaskProgressBar', () => ({ default: () => null }))
 vi.mock('./chat/WorkflowProgressBar', () => ({ default: () => null }))
@@ -46,8 +58,10 @@ vi.mock('../components/sessionEnvironmentHooks', async (orig) => ({
   useSlotRunsHere: () => runsHere.value,
 }))
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ComposerDockView from './chat/page/ComposerDockView'
 import { dismissFollowupItem } from '../store/chatSlice'
+import { i18nT } from '../i18n/t'
 
 type DockProps = Parameters<typeof ComposerDockView>[0]
 
@@ -65,7 +79,7 @@ function dockProps(over: Partial<DockProps> = {}): DockProps {
   } as DockProps
 }
 
-beforeEach(() => { for (const k of Object.keys(seen)) seen[k] = null; runsHere.value = true })
+beforeEach(() => { for (const k of Object.keys(seen)) seen[k] = null; runsHere.value = true; realModelPicker.on = false })
 
 describe('ComposerDockView', () => {
   it.each([
@@ -130,6 +144,38 @@ describe('ComposerDockView', () => {
     expect(mutate).toHaveBeenCalledWith({ agent: 'helper', model: '' })
   })
 
+  it.each([
+    [{ fastMode: false }, true],
+    [{}, false],
+  ])("draws the model picker's Fast mode switch only while the slot's read carries it (%o)", (over, shown) => {
+    realModelPicker.on = true
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ComposerDockView {...dockProps({ modelDropdown: true, modelBtnRect: { top: 0, left: 0, width: 10, height: 10 } as never, filteredModels: [], ...over })} />
+      </QueryClientProvider>,
+    )
+    const toggle = screen.queryByRole('switch', { name: i18nT('components.fastModeToggle.label') })
+    expect(toggle !== null).toBe(shown)
+    if (toggle) expect(toggle.getAttribute('aria-disabled')).toBeNull()
+  })
+
+  it("draws a Fast mode switch the harness says cannot be turned on disabled, with the harness's reason", () => {
+    realModelPicker.on = true
+    const reason = 'disabled by environment configuration'
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ComposerDockView {...dockProps({
+          modelDropdown: true, modelBtnRect: { top: 0, left: 0, width: 10, height: 10 } as never, filteredModels: [],
+          fastMode: false, fastUnavailable: reason,
+        })} />
+      </QueryClientProvider>,
+    )
+    const toggle = screen.getByRole('switch', { name: i18nT('components.fastModeToggle.label') })
+    expect(toggle.getAttribute('aria-disabled')).toBe('true')
+    expect(document.getElementById(toggle.getAttribute('aria-describedby') ?? '')?.textContent)
+      .toBe(i18nT('components.fastModeToggle.unavailable', { reason }))
+  })
+
   it('closes the project picker when its AWS profile footer hands off', () => {
     const setProjectPickerOpen = vi.fn()
     render(<ComposerDockView {...dockProps({ _slotProject: '/p', projectPickerOpen: true, setProjectPickerOpen })} />)
@@ -171,5 +217,13 @@ describe('ComposerDockView', () => {
     expect(handleResumeSession).toHaveBeenLastCalledWith('chat-9-1785440411', 'chat-9-1785440411')
     fireEvent.keyDown(options[1], { key: 'Enter' })
     expect(handleResumeSession).toHaveBeenLastCalledWith('chat-8-1785440400', 'chat-8-1785440400')
+  })
+
+  it('hands the transcript quote jump to the composer, so the staged card jumps like a sent one (#34335)', () => {
+    const onJumpToQuote = vi.fn()
+    render(<ComposerDockView {...dockProps({ onJumpToQuote })} />)
+    const quote = { role: 'user' as const, text: 'q', ts: 't1' }
+    act(() => { (seen.chatInput!.onJumpToQuote as (q: typeof quote) => void)(quote) })
+    expect(onJumpToQuote).toHaveBeenCalledWith(quote)
   })
 })

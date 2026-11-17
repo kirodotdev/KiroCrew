@@ -23,18 +23,26 @@ from pathlib import Path
 
 import pytest
 from real_adapter_gate import (
+    CLAUDE_AGENT_ACP_PACKAGE,
     CODEX_ACP_PACKAGE,
+    DSH_PACKAGE,
+    GOOSE_PIN,
     LOCKFILE,
     MANIFEST,
+    MANIFEST_DIR,
     MARKER,
+    MEASURED_CLAUDE_AGENT_ACP_VERSION,
     MEASURED_CODEX_ACP_VERSION,
+    MEASURED_DSH_VERSION,
     MEASURED_OPENCODE_VERSION,
     MEASURED_PI_ACP_VERSION,
     MEASURED_PI_VERSION,
+    MEASURED_STRANDS_CLI_VERSION,
     OPENCODE_PACKAGE,
     PI_ACP_PACKAGE,
     PI_PACKAGE,
     REQUIRE_ENV,
+    STRANDS_CLI_PACKAGE,
     pinned_version,
     real_adapters_required,
     require_real_adapter,
@@ -210,6 +218,14 @@ def test_the_lane_installs_from_the_committed_lockfile_and_copies_no_pin():
     # unrelated tool pin elsewhere in the workflow.
     assert MEASURED_PI_ACP_VERSION not in lane
     assert MEASURED_PI_VERSION not in lane
+    for version in (
+        MEASURED_CLAUDE_AGENT_ACP_VERSION,
+        MEASURED_DSH_VERSION,
+        MEASURED_STRANDS_CLI_VERSION,
+        GOOSE_PIN["version"],
+        GOOSE_PIN["sha256"],
+    ):
+        assert version not in lane, version
 
 
 def test_the_manifest_pins_exact_releases_and_the_lockfile_agrees():
@@ -226,9 +242,13 @@ def test_the_manifest_pins_exact_releases_and_the_lockfile_agrees():
         (OPENCODE_PACKAGE, MEASURED_OPENCODE_VERSION),
         (PI_ACP_PACKAGE, MEASURED_PI_ACP_VERSION),
         (PI_PACKAGE, MEASURED_PI_VERSION),
+        (CLAUDE_AGENT_ACP_PACKAGE, MEASURED_CLAUDE_AGENT_ACP_VERSION),
+        (DSH_PACKAGE, MEASURED_DSH_VERSION),
+        (STRANDS_CLI_PACKAGE, MEASURED_STRANDS_CLI_VERSION),
     ):
         assert pinned_version(package) == pin
-        assert len(pin.split(".")) == 3 and pin.replace(".", "").isdigit(), pin
+        release = pin.split("-", 1)[0]
+        assert len(release.split(".")) == 3 and release.replace(".", "").isdigit(), pin
         locked = json.loads(LOCKFILE.read_text(encoding="utf-8"))["packages"]
         assert locked[f"node_modules/{package}"]["version"] == pin, package
 
@@ -244,6 +264,42 @@ def test_a_range_in_the_manifest_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(real_adapter_gate, "MANIFEST", manifest)
     with pytest.raises(ValueError, match="not an exact release"):
         real_adapter_gate.pinned_version("x")
+
+
+@pytest.mark.parametrize("pin", ["0.2.0-rc.2", "1.2.3"])
+def test_an_exact_prerelease_is_a_pin(tmp_path, monkeypatch, pin):
+    """One exact build either way: some upstreams ship only prereleases."""
+    import real_adapter_gate
+
+    manifest = tmp_path / "package.json"
+    manifest.write_text(json.dumps({"dependencies": {"x": pin}}), encoding="utf-8")
+    monkeypatch.setattr(real_adapter_gate, "MANIFEST", manifest)
+    assert real_adapter_gate.pinned_version("x") == pin
+
+
+@pytest.mark.parametrize("pin", ["^0.2.0-rc.2", "latest", "1.2-rc.1", "next-1.2.3"])
+def test_a_prerelease_range_or_tag_is_still_refused(tmp_path, monkeypatch, pin):
+    import real_adapter_gate
+
+    manifest = tmp_path / "package.json"
+    manifest.write_text(json.dumps({"dependencies": {"x": pin}}), encoding="utf-8")
+    monkeypatch.setattr(real_adapter_gate, "MANIFEST", manifest)
+    with pytest.raises(ValueError, match="not an exact release"):
+        real_adapter_gate.pinned_version("x")
+
+
+def test_the_goose_pin_names_one_digest_checked_asset():
+    """goose cannot ride the lockfile, so its pin carries what ``npm ci`` would: one
+    exact release, and a digest the lane refuses a mismatched download on."""
+    assert GOOSE_PIN["version"].replace(".", "").isdigit(), GOOSE_PIN
+    assert f"/v{GOOSE_PIN['version']}/" in GOOSE_PIN["url"]
+    assert GOOSE_PIN["url"].startswith("https://github.com/")
+    assert re.fullmatch(r"[0-9a-f]{64}", GOOSE_PIN["sha256"]), GOOSE_PIN
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    lane = workflow.split("real-adapter-contract:", 1)[1].split("\n  coverage-combine:", 1)[0]
+    assert "sha256sum -c" in lane and "goose.json" in lane
+    assert "--require-hashes -r strands-requirements.txt" in lane
+    assert (MANIFEST_DIR / "strands-requirements.txt").exists()
 
 
 def test_the_manifest_is_not_the_product_s_and_dependabot_refreshes_it():
@@ -262,6 +318,9 @@ def test_the_manifest_is_not_the_product_s_and_dependabot_refreshes_it():
         OPENCODE_PACKAGE,
         PI_ACP_PACKAGE,
         PI_PACKAGE,
+        CLAUDE_AGENT_ACP_PACKAGE,
+        DSH_PACKAGE,
+        STRANDS_CLI_PACKAGE,
     }
 
     dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")

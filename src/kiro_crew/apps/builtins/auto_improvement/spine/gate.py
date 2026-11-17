@@ -292,8 +292,8 @@ class Gate:
             )
         finally:
             # The staged RED-base snapshot is throwaway — remove it after the gate.
-            # One tree was created per bug candidate per cycle and (pre-fix) leaked in
-            # the worktree root for the life of the run. The fallback path returns the
+            # One tree is created per bug candidate per cycle, and without this it would
+            # pile up in the worktree root for the life of the run. The fallback path returns the
             # worktree's own src (base_src == cand_src) — never delete that.
             if base_src != cand_src:
 

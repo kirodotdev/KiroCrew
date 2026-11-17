@@ -26,6 +26,7 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection
 from kiro_crew.dashboard.handlers import member_dashboard as routes
 from kiro_crew.dashboard_templates.manifest import parse_manifest
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 SLOT = "member-shared-crew"
 UNIT = "acp-shared-crew"
@@ -152,8 +153,8 @@ def test_a_credential_in_a_published_line_never_reaches_the_page() -> None:
     The line is appended straight to the log, past the publish route's scrubber,
     so the only thing between it and the page is the page read's redaction.
     """
-    # Assembled at runtime so the diff carries no credential-shaped literal.
-    token = "ghp" + "_" + "ZXAMPLEzxampleZXAMPLEzxampleZXAMPLE12"
+    # Built at runtime so the diff carries no credential-shaped literal.
+    token = github_classic(seed=116)
     _publish(MINE, {"note": f"fetched with {token}", token: "a key that is the secret"})
 
     fields, _ = _page_values(MINE)

@@ -36,7 +36,7 @@ from kiro_crew.dashboard.handlers.members import _deny_app_caller, _member_name_
 
 logger = logging.getLogger(__name__)
 
-#: ``?team=`` ids are minted by ``teams._new_team_id`` (12 lowercase hex);
+#: ``?team=`` ids are minted by ``crew_teams._new_team_id`` (12 lowercase hex);
 #: anything else in the path is refused before any file is touched -- the same
 #: spelling the store itself accepts on read (``crew_teams._TEAM_ID_RE``), so a
 #: malformed id is 400 ``invalid_team_id``, never a 404 that looks like a miss.

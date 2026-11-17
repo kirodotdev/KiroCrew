@@ -37,6 +37,8 @@ import { openPanelView } from '../hooks/usePanelTabs'
 import { i18nT } from '../i18n/t'
 import { isSupersededPagingRejection, openActivityPanel } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
+import { formatToken } from '../utils/pasteTokens'
+import { prependQuote } from '../chat-core/composer/messageQuote'
 import type { DisplayItem } from './chat/types'
 import { useTranscriptPins } from './chat/page/transcriptPins'
 
@@ -66,6 +68,7 @@ function props(over: Partial<Props> = {}): Props {
     scrollerRef: { current: null }, search: { isOpen: false } as never, navToDisplayIndex: vi.fn(), pinnedJumpChrome: () => 0,
     scrollToPinnedPrompt: vi.fn(), setHighlightTs: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
     editSeqRef: { current: 0 }, renderedDisplayItems: rows(messages), renderedTranscript: { messages, displayItems: rows(messages) },
+    insertIntoComposer: vi.fn(),
     ...over,
   }
 }
@@ -167,6 +170,86 @@ describe('a target outside the loaded rows', () => {
     rerender({ cursorIsForActiveSlot: true, loadingOlder: true })
     expect(dispatch.mock.calls.some(([a]) => typeof a === 'function')).toBe(false)
     expect(result.current.pinStatus).toBeNull()
+  })
+})
+
+describe('putting a pinned message in the composer', () => {
+  it('puts the message as sent in the composer once and jumps to the row; a plain Jump does not fill', () => {
+    const block = { id: 'p1', seq: 1, lines: 3, content: 'a\nb\nc' }
+    const prompt = { role: 'user', content: `rerun ${formatToken(block)}`, ts: 't1', cls: '', meta: { mid: 'm1', pastes: [block] } } as unknown as ChatMessage
+    const p = props({ messages: [prompt, msg('assistant', 't2', 'm2')] })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    act(() => { result.current.handlePutPinInComposer('t1', 'm1') })
+    expect(p.insertIntoComposer).toHaveBeenCalledWith('rerun a\nb\nc')
+    expect(p.navToDisplayIndex).toHaveBeenCalledWith(0, { behavior: 'smooth', align: 'center' })
+    act(() => { result.current.handleJumpToPin('t1', 'm1') })
+    expect(p.insertIntoComposer).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the reply a pinned message quoted, as edit-and-resend does', () => {
+    const quote = { role: 'assistant' as const, text: 'the plan', ts: 't0', mid: 'm0' }
+    const prompt = { role: 'user', content: prependQuote('do step 2', quote), ts: 't1', cls: '', meta: { mid: 'm1', quote } } as unknown as ChatMessage
+    const p = props({ messages: [prompt] })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    act(() => { result.current.handlePutPinInComposer('t1', 'm1') })
+    expect(p.insertIntoComposer).toHaveBeenCalledWith(prependQuote('do step 2', quote))
+  })
+
+  it('never fills from a reply that a legacy pin resolves to by its ts', () => {
+    const p = props({ messages: [msg('assistant', 'same', 'a'), msg('user', 'same', 'b')] })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    act(() => { result.current.handlePutPinInComposer('same') })
+    expect(p.navToDisplayIndex).toHaveBeenCalledWith(0, expect.anything())
+    expect(p.insertIntoComposer).not.toHaveBeenCalled()
+  })
+
+  it('pages a distant pin in and fills the composer exactly once, through the bounded-page re-resolve', async () => {
+    const dispatch = pagingDispatch(async () => ({}))
+    const insertIntoComposer = vi.fn()
+    const base = { slotHasMore: true, slotOldestIndex: 40, dispatch: dispatch as never, insertIntoComposer }
+    const { result, rerender } = renderHook((over: Partial<Props>) => useTranscriptPins(props({ ...base, ...over })), {
+      initialProps: {} as Partial<Props>, wrapper: withQueryClient(),
+    })
+    act(() => { result.current.handlePutPinInComposer('old', 'old') })
+    await waitFor(() => expect(dispatch.mock.calls.some(([a]) => typeof a === 'function')).toBe(true))
+    expect(insertIntoComposer).not.toHaveBeenCalled()
+    const paged = [msg('user', 'old', 'old'), msg('user', 't1', 'm1'), msg('assistant', 't2', 'm2')]
+    rerender({ messages: paged, activeViewIsBoundedPage: true })
+    rerender({ messages: [...paged], activeViewIsBoundedPage: false })
+    expect(insertIntoComposer).toHaveBeenCalledTimes(1)
+    expect(insertIntoComposer).toHaveBeenCalledWith('user old')
+  })
+
+  it('drops a pending fill when a newer jump lands on a loaded row before the page arrives', async () => {
+    const dispatch = pagingDispatch(async () => ({}))
+    const insertIntoComposer = vi.fn()
+    const base = { slotHasMore: true, slotOldestIndex: 40, dispatch: dispatch as never, insertIntoComposer }
+    const { result, rerender } = renderHook((over: Partial<Props>) => useTranscriptPins(props({ ...base, ...over })), {
+      initialProps: {} as Partial<Props>, wrapper: withQueryClient(),
+    })
+    act(() => { result.current.handlePutPinInComposer('old', 'old') })
+    await waitFor(() => expect(dispatch.mock.calls.some(([a]) => typeof a === 'function')).toBe(true))
+    act(() => { result.current.handleJumpToPin('t1', 'm1') })
+    rerender({ messages: [msg('user', 'old', 'old'), msg('user', 't1', 'm1'), msg('assistant', 't2', 'm2')] })
+    expect(insertIntoComposer).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['Split View', { splitMode: true, splitFeatureEnabled: true }],
+    ['a crew window', { crewWindow: { instanceId: 'i1', key: 'k1' } }],
+  ] as const)('drops a pending fill whose page lands while %s hides the composer', async (_name, hidden) => {
+    const dispatch = pagingDispatch(async () => ({}))
+    const insertIntoComposer = vi.fn()
+    const navToDisplayIndex = vi.fn()
+    const base = { slotHasMore: true, slotOldestIndex: 40, dispatch: dispatch as never, insertIntoComposer, navToDisplayIndex }
+    const { result, rerender } = renderHook((over: Partial<Props>) => useTranscriptPins(props({ ...base, ...over })), {
+      initialProps: {} as Partial<Props>, wrapper: withQueryClient(),
+    })
+    act(() => { result.current.handlePutPinInComposer('old', 'old') })
+    await waitFor(() => expect(dispatch.mock.calls.some(([a]) => typeof a === 'function')).toBe(true))
+    rerender({ ...hidden, messages: [msg('user', 'old', 'old'), msg('user', 't1', 'm1'), msg('assistant', 't2', 'm2')] })
+    expect(navToDisplayIndex).toHaveBeenCalledWith(0, { behavior: 'smooth', align: 'center' })
+    expect(insertIntoComposer).not.toHaveBeenCalled()
   })
 })
 

@@ -20,25 +20,38 @@ logger = logging.getLogger("kiro_crew.config.loader")
 # into the config package. Setting the field to "" disables the beacon outright.
 _DEFAULT_BEACON_ENDPOINT = "https://d175o3ylxqum0e.cloudfront.net"
 
+# Disk bounds for the local metric recorder, which is on by default.
+DEFAULT_METRICS_RETENTION_DAYS = 30
+DEFAULT_METRICS_MAX_TOTAL_MB = 100
+
 
 @dataclass
 class TelemetryConfig:
-    """Metrics telemetry settings (Wave 0 trunk).
+    """Metrics telemetry settings.
 
-    Default OFF: when disabled, metric call sites are cheap no-ops and nothing is
-    written or exported (byte-identical to no telemetry), mirroring the
-    ``mcp_gateway.enabled`` / ``skills.lazy_load`` opt-in convention. When
-    enabled, a local-first JSONL sink under ``~/.kiro/crew/metrics`` is activated;
-    remote / OTLP egress is a separate opt-in requiring ``kirocrew[otlp]``.
+    Default ON for local recording: a local-first JSONL sink under
+    ``~/.kiro/crew/metrics`` records how the app is used, bounded on disk by the
+    ``retention_days`` and ``max_total_mb`` defaults below. Every user is told in
+    the dashboard's Privacy chapter (or by a one-line notice on a CLI or headless
+    start) and can turn it off there, in Settings > Privacy, with ``kirocrew
+    telemetry disable``, ``KIROCREW_TELEMETRY=0`` or ``DO_NOT_TRACK=1``. A value
+    written in either config file wins over the default, and an install that
+    turned the heartbeat off without setting this switch loads as off. When off,
+    metric call sites are cheap no-ops and nothing is written. Remote / OTLP
+    egress is a separate opt-in, and needs recording turned on explicitly (see
+    ``metrics.provider.outbound_consented``).
     """
 
     enabled: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Enabled",
-            "Main switch for Kiro Crew metrics telemetry. Off by default: metric "
-            "call sites are no-ops and nothing is written. When on, a local-first "
-            "JSONL sink under ~/.kiro/crew/metrics is enabled (no network egress).",
+            "Main switch for local usage metrics. On by default: a local-first JSONL "
+            "sink under ~/.kiro/crew/metrics records how long things take and how "
+            "often features are used (no prompts, files or credentials), with no "
+            "network egress. Turn it off here, in Settings > Privacy, with kirocrew "
+            "telemetry disable, KIROCREW_TELEMETRY=0 or DO_NOT_TRACK=1. When off, "
+            "metric call sites are no-ops and nothing is written.",
         ),
     )
     local_dir: str = field(
@@ -56,22 +69,28 @@ class TelemetryConfig:
             "How often the local exporter flushes aggregated metrics to disk (>=1).",
         ),
     )
+    # Non-zero defaults because recording is on by default: an uncapped
+    # recorder grows on disk without end. 30 days covers the Telemetry panel's
+    # 14-day window with room to spare. 100 MB is about 9 days of a heavy user's
+    # shards (one measured busy host wrote about 11 MB a day), so on such a host
+    # the size cap, not the age cap, sets how far back the panel reaches.
     retention_days: int = field(
-        default=0,
+        default=DEFAULT_METRICS_RETENTION_DAYS,
         metadata=_meta(
             "Retention (days)",
             "Prune local JSONL metric shards older than this many days on each "
-            "export cycle. 0 disables age-based pruning. Bounds on-disk telemetry "
-            "growth.",
+            f"export cycle. Default {DEFAULT_METRICS_RETENTION_DAYS}. 0 disables "
+            "age-based pruning. Bounds on-disk telemetry growth.",
         ),
     )
     max_total_mb: int = field(
-        default=0,
+        default=DEFAULT_METRICS_MAX_TOTAL_MB,
         metadata=_meta(
             "Max Total Size (MB)",
             "Opportunistic directory budget for local metric shards. Closed shards "
             "are pruned oldest-first; protected active writers can temporarily exceed "
-            "the budget. 0 disables the size cap.",
+            f"the budget. Default {DEFAULT_METRICS_MAX_TOTAL_MB}. 0 disables the "
+            "size cap.",
         ),
     )
     otlp_endpoint: str = field(
@@ -113,6 +132,91 @@ class TelemetryConfig:
             sensitive=True,
         ),
     )
+    traces_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Traces Enabled",
+            "Record OpenTelemetry traces of agent turns: one trace per turn, "
+            "with the model, credits, tokens where reported, and one span per "
+            "tool call. Off by default, and off loads nothing. When on, spans "
+            "go to a local JSONL sink under ~/.kiro/crew/traces, pruned by the "
+            "Retention and Max Total Size settings above, which the traces "
+            "directory gets as its own budget; they leave the host only when "
+            "Traces OTLP Endpoint below (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / "
+            "OTEL_EXPORTER_OTLP_ENDPOINT) names a collector. Never records prompt "
+            "or reply text, tool arguments or output, file paths, or MCP server "
+            "and tool names. Independent of the metrics 'enabled' switch.",
+        ),
+    )
+    traces_otlp_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Traces OTLP Endpoint",
+            "Opt-in OTLP/HTTP traces URL, the full path included (e.g. "
+            "https://cloud.langfuse.com/api/public/otel/v1/traces or "
+            "https://xray.us-east-1.amazonaws.com/v1/traces). EMPTY = spans stay "
+            "on this host (default). Read only while Traces Enabled is on; then "
+            "it wins over the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and "
+            "OTEL_EXPORTER_OTLP_ENDPOINT variables. Must be https:// unless the "
+            "host is loopback, and carries no user:password or query. Obeys the "
+            "capabilities.telemetry otlp_hosts policy, and an LTS build "
+            "ignores it. Requires the otlp package extra.",
+            sensitive=True,
+        ),
+    )
+    traces_otlp_headers_secret: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Traces OTLP Headers (vault)",
+            "Header name -> the name of a Settings -> Secrets entry holding that "
+            'header\'s whole value, e.g. {"Authorization": "LANGFUSE_OTLP_AUTH"} '
+            "where the entry holds 'Basic <base64 public:secret>', or an X-Ray "
+            "API key as 'Bearer <key>'. Read when the exporter is built; no value "
+            "is stored here or logged. An entry that is missing, or a value that "
+            "is not an entry name, turns export off. Sent to Traces OTLP Endpoint "
+            "only, never to an endpoint from the environment.",
+            # Masked wherever config values are shown or logged: a credential
+            # pasted here by mistake must not reach a load warning.
+            sensitive=True,
+        ),
+    )
+    traces_otlp_headers_env: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Traces OTLP Headers (environment)",
+            "Header name -> the environment variable holding its value, as "
+            "headers_env does for a metrics destination. Read when the exporter "
+            "is built, never logged; an unset variable turns export off. Sent to "
+            "Traces OTLP Endpoint only.",
+            sensitive=True,
+        ),
+    )
+    traces_conductor_mode: str = field(
+        default="run",
+        metadata=_meta(
+            "Traces: conductor mode Shape",
+            "How a conductor's work in conductor mode or a Bot is traced while Traces "
+            "Enabled is on. 'run' (default): one trace per round, a 'conductor_mode "
+            "round N' root with the conductor's turns and one 'work_item' span per item "
+            "holding its worker's turns, so a round reads as one waterfall. "
+            "'turn': every turn is its own trace, joined by the shared "
+            "kirocrew.crew.root and kirocrew.work.item_id attributes.",
+            enum=["run", "turn"],
+        ),
+    )
+    accept_traceparent: bool = field(
+        default=False,
+        metadata=_meta(
+            "Traces: join the caller's trace",
+            "While Traces Enabled is on, a W3C 'traceparent' header on an authenticated "
+            "POST /v1/chat/completions or POST /api/hooks/agent request parents the turn "
+            "it starts under the caller's span, so the turn's trace id is the caller's, "
+            "and the response carries a 'traceparent' header for the turn span. A header "
+            "that is not a valid version 00 value is ignored. The caller's sampled flag "
+            "never turns recording on, and nothing is returned while tracing is off. "
+            "Off (default): the header is ignored.",
+        ),
+    )
     beacon_enabled: bool = field(
         default=True,
         metadata=_meta(
@@ -134,7 +238,19 @@ class TelemetryConfig:
             "capabilities.telemetry governance scope, which this switch cannot "
             "override. Independent "
             "of the 'enabled' switch above, which is local-only metrics "
-            "collection and still never egresses.",
+            "collection and egresses only to a configured export destination "
+            "after recording was turned on explicitly.",
+        ),
+    )
+    plan_alert_pcts: list[float] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Plan Credit Alert Percentages",
+            "Percentages of your plan's credits (for example [50, 80, 100]) at which "
+            "to send one notification per plan period when the credits used cross "
+            "them. Empty = no alerts. Values must be above 0 and at most 1000; "
+            "others are ignored. Needs the dashboard open, since the reading is "
+            "taken when the credit pill refreshes.",
         ),
     )
     beacon_endpoint: str = field(
@@ -221,6 +337,20 @@ class WakaTimeConfig:
             "yet. Incognito and temporary sessions never send one: they keep "
             "no record of the chat, and a heartbeat is an external record of "
             "it.",
+            tags=["wakatime"],
+        ),
+    )
+    oauth_client_id: str = field(
+        default="",
+        metadata=_meta(
+            "OAuth Client ID",
+            "WakaTime OAuth app client ID, from https://wakatime.com/apps. "
+            "Required to read stats, summaries, and durations after WakaTime "
+            "makes API keys write-only on 1 November 2026. The matching client "
+            "secret and the user's access and refresh tokens are stored in the "
+            "secrets vault, not here. Empty keeps the integration on API-key "
+            "auth, which still works before the cutoff and for self-hosted "
+            "backends.",
             tags=["wakatime"],
         ),
     )

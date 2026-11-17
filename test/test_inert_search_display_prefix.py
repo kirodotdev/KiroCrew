@@ -60,7 +60,7 @@ REFUSED_NEIGHBOURS = [
     f"grep '{ROOT_WIPE}' f && echo done",
     f'grep -rn "$({ROOT_WIPE})" test/',
     f'grep -rn "`{ROOT_WIPE}`" test/',
-    f"grep x <({ROOT_WIPE}tmp/victim)",
+    f"grep x <({ROOT_WIPE}etc)",
     f"grep x ${{ {ROOT_WIPE};}}",
     f"grep -rn '{ROOT_WIPE}' test/ > out.txt",
     f'/usr/bin/grep -rn "{ROOT_WIPE}" test/',

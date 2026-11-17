@@ -322,10 +322,11 @@ class TaskRunner:
         self._stop_settles: dict[str, asyncio.Task[None]] = {}
         # task_id -> the conversation the run was started FROM, so a notification
         # can be routed back to the surface the operator is actually watching.
-        # Deliberately in memory only and deliberately not on ``Project``: it is
-        # a routing hint for the lifetime of one process, and a persisted channel
-        # key would outlive the binding it names and send a restart's first
-        # notice into a conversation that may no longer resolve.
+        # A routing hint, not on ``Project``: ``runs.json`` carries it across a
+        # restart so the recovery and resume notices reach that conversation,
+        # and the sink resolves it at delivery time (an open dashboard tab, a
+        # governed channel binding), so a key that does not resolve reaches
+        # only the bell.
         self._run_session_keys: dict[str, str] = {}
         # Optional publication port into the shared workflow history. TaskRunner
         # remains the owner of planning/execution semantics; this port only

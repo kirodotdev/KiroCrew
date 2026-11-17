@@ -422,9 +422,13 @@ def set_inject_on_trigger(loader: SkillsLoader, name: str, inject: bool) -> bool
         content = skill_file.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    new_content = rewrite_inject_on_trigger(content, inject)
+    # The loader reads a UTF-8 byte-order mark as part of the encoding, so a
+    # Notepad-saved SKILL.md is a valid skill; keep the mark and edit after it.
+    bom = "\ufeff" if content.startswith("\ufeff") else ""
+    new_content = rewrite_inject_on_trigger(content[len(bom) :], inject)
     if new_content is None:
         return False
+    new_content = bom + new_content
     # The same atomic, access-control-carrying replace update_skill uses: the
     # file's mode AND its named ACL entries are taken from the inode being
     # replaced. Mode bits alone would keep 0644 but drop a named-user deny, and

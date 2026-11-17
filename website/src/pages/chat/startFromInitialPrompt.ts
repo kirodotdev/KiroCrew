@@ -71,7 +71,7 @@ export async function startFromInitialPrompt(
       await api.chatSlotAgent(key, agent, agentKind)
       await api.chatSlotProject(key, project)
     } catch (err) {
-      await api.deleteChatSlot(key).catch(() => {})
+      await api.deleteChatSlot(key, created?.incarnation).catch(() => {})
       throw err
     }
   }

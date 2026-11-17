@@ -7,10 +7,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from sage_lib import learning as L  # noqa: N812
 from sage_lib import store
 
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _pattern(title, repo="github.com/o/r", guidance="do the thing carefully", **kw):
@@ -38,13 +40,13 @@ class TestRenderParse(unittest.TestCase):
 
 
 class TestStaging(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_inadmissible_source_rejected(self):
         with self.assertRaises(ValueError):
@@ -71,13 +73,13 @@ class TestStaging(unittest.TestCase):
 
 
 class TestConsolidate(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp) / "apps" / "code-review-sage"
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_consolidate_replaces_common_and_clears_candidate(self):
         L.stage_learning(_pattern("Staged lesson"), "fix_introduce", self.root)
@@ -118,7 +120,7 @@ class TestConsolidate(unittest.TestCase):
     def test_secret_in_a_heading_is_redacted_without_refusing_the_merge(self):
         # The shape check reads the worker's text as written, so scrubbing a
         # credential out of a heading cannot turn a valid merge into a refusal.
-        token = "ghp_" + "A" * 40
+        token = github_classic(seed=87)
         merged = L.render_pattern(_pattern("Rotate " + token))
         res = L.consolidate_apply(merged, self.root)
         self.assertTrue(res["ok"])
@@ -130,8 +132,9 @@ class TestConsolidate(unittest.TestCase):
         # Two distinct credentials become the same redaction tag, so the titles are
         # identical only in the text that would be stored. Uniqueness must be judged
         # there, not on the worker's pre-redaction text.
-        merged = (L.render_pattern(_pattern("Rotate ghp_" + "A" * 40))
-                  + L.render_pattern(_pattern("Rotate ghp_" + "B" * 40)))
+        merged = L.render_pattern(
+            _pattern("Rotate " + github_classic(seed=87))
+        ) + L.render_pattern(_pattern("Rotate " + github_classic(seed=88)))
         res = L.consolidate_apply(merged, self.root)
         self.assertFalse(res["ok"])
         redacted = "Rotate [REDACTED: credential]"
@@ -164,12 +167,12 @@ class TestConsolidate(unittest.TestCase):
 
 
 class TestSeed(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.root = Path(self.tmp) / "apps" / "code-review-sage"
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+    def setUp(self):
+        self.root = Path(self.tmp) / "apps" / "code-review-sage"
 
     def test_seed_populates_common(self):
         n = L.seed_common(self.root)
@@ -406,13 +409,13 @@ class TestCandidateLockRefusesPlantedLockFile(unittest.TestCase):
 class TestConsolidationSnapshot(unittest.TestCase):
     """The pre-merge ruleset survives an apply that silently drops rules."""
 
+    @pytest.fixture(autouse=True)
+    def _tmp_root(self, tmp_path):
+        self.tmp = str(tmp_path)
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp)
         store.ensure_layout(self.root)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _live(self):
         return L.common_file(self.root, None)

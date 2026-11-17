@@ -253,8 +253,11 @@ class TestRedaction:
         The sentinel is assembled at runtime so the secret scanners find no
         credential-shaped literal in the source.
         """
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
-        payload = {"series": [{"env": f"AWS_SECRET_ACCESS_KEY={secret}"}]}
+        from redaction_structured_cases import aws_secret
+
+        secret = aws_secret(seed=54)
+        # A JSON member under its label: an assignment inside a quoted string is not read.
+        payload = {"series": [{"aws_secret_access_key": secret}]}
         with patch.object(server, "_get", return_value=payload):
             raw = server._call_tool("debug_snapshots", {})
         assert secret not in raw

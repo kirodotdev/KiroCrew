@@ -34,7 +34,11 @@ from transcribe_helpers import (
 
 from kiro_crew import stt, transcribe
 from kiro_crew.config.loader import SttConfig
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.transcribe import availability_detail, find_brew, is_available, transcribe_audio
+
+#: A GitHub token with a valid checksum; a bare 40-character run stays visible.
+_TOKEN = github_classic(seed=321)
 
 
 def _stub_recogniser_importable(monkeypatch) -> None:
@@ -810,14 +814,14 @@ class TestTranscriptRedaction:
         monkeypatch.setattr(stt, "availability", lambda: stt.Availability(True))
 
         async def fake_transcribe_pcm(pcm, **kwargs):
-            return "the key is AKIAIOSFODNN7EXAMPLE ok", stt.Availability(True)
+            return f"the key is {_TOKEN} ok", stt.Availability(True)
 
         monkeypatch.setattr(stt, "transcribe_pcm", fake_transcribe_pcm)
 
         result = await transcribe_audio(str(audio), cfg)
 
         assert result is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert _TOKEN not in result
         assert "[REDACTED: credential]" in result
         # The surrounding speech survives: redaction replaces the secret, it does
         # not discard the utterance.

@@ -13,7 +13,7 @@ import {
   useSharedCrewViewer,
   useTeamAttribution,
 } from '../../../hooks/sharedCrew/useSharedCrew'
-import { fmtNumber } from '../../../i18n/format'
+import { fmtList, fmtNumber } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 
 /** Visible chips before the rest fold into "+N". */
@@ -29,7 +29,7 @@ export function PresenceChips({ entries, viewer }: { entries: readonly PresenceE
   if (others.length === 0) return null
   const shown = others.slice(0, MAX_CHIPS)
   const rest = others.length - shown.length
-  const hidden = others.slice(shown.length).map(e => principalName(e.principal) || i18nT('sharedCrew.unattributed')).join(', ')
+  const hidden = fmtList(others.slice(shown.length).map(e => principalName(e.principal) || i18nT('sharedCrew.unattributed')), { style: 'narrow' })
   return (
     <ul className="flex items-center gap-0.5 shrink-0" aria-label={i18nT('sharedCrew.here_now', { n: fmtNumber(others.length) })} data-testid="presence-chips">
       {shown.map(e => {

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import platform_log_append
 from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions.log import append, build_row, log_path, session_digest
@@ -235,7 +236,7 @@ class TestAppend:
         blocked = tmp_path / "blocked"
         blocked.write_text("i am a file, not a directory", encoding="utf-8")
         monkeypatch.setattr(log_mod, "log_dir", lambda: blocked / "decisions")
-        append(_row())  # must not raise
+        assert append(_row()) is False  # must not raise, and must say it wrote nothing
 
     def test_an_unserialisable_value_is_survived(self, home):
         """``default=str`` keeps an odd value from losing the whole row."""
@@ -330,7 +331,7 @@ class TestRetention:
 
         assert log_mod.sweep_expired(today + timedelta(days=1)) == 1
 
-    @pytest.mark.skipif(os.name != "posix", reason="directory links via the POSIX pinned walk")
+    @requires_symlinks
     def test_a_swapped_directory_link_does_not_redirect_the_sweep(self, home, tmp_path):
         """The listing and the unlink both go through the pinned no-follow descriptor,
         so a link installed under the log directory's name reaches nothing."""

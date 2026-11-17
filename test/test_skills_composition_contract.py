@@ -1000,7 +1000,7 @@ class TestSeamsReachTheRuntime:
         _skill(extra, "ext")
         loader = make_loader(extra_paths=[str(extra)])
         assert [name for name, _p, _w in loader._iter_uncached()] == ["ext"]
-        monkeypatch.setattr(sk, "validate_file_path", lambda _raw: None)
+        monkeypatch.setattr(sk, "validate_file_path", lambda _raw, **_kw: None)
         assert loader._iter_uncached() == []
 
     def test_the_tree_walk_is_read_through_the_facade(

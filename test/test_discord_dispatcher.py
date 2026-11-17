@@ -307,9 +307,7 @@ class TestDispatcher:
         async def _denied(_channel_type: str) -> bool:
             return False
 
-        monkeypatch.setattr(
-            "kiro_crew.discord.transport_dispatch.channel_inbound_permitted", _denied
-        )
+        monkeypatch.setattr("kiro_crew.messaging.dispatch.channel_inbound_permitted", _denied)
         result = await d.handle_message(
             self._msg("[Monitor wake]"),
             interpret_commands=False,
@@ -1000,6 +998,29 @@ class TestDispatcher:
         assert "Stopped" in cli.sent[-1][0]
 
     @pytest.mark.asyncio
+    async def test_a_typed_stop_survives_a_channels_governance_deny(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(_channel_type: str) -> bool:
+            return False
+
+        # Denied in both namespaces that read the ceiling, so a strict read
+        # anywhere on the way in drops the stop.
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        monkeypatch.setattr(td_mod, "channel_inbound_permitted", _denied)
+        d, cli, sess = _dispatcher({"u1"})
+        sess._busy = True
+        # Every other message keeps the strict gate, a cancel word Discord does
+        # not spell included.
+        for text in ("hello", "停止", "!stop now"):
+            await d.handle_message(self._msg(text))
+        assert cli.sent == [] and sess.acquired == [] and sess._gp.steered == []
+        for text in ("!stop", "/cancel"):
+            await d.handle_message(self._msg(text))
+        assert sess._gp.cancelled == 2
+        assert "Stopped" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
     async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
         # The Kiro account check flagged the session without retiring it: try_acquire
         # refuses it while has_session still answers True, and no reply is running.
@@ -1058,8 +1079,8 @@ class TestDispatcher:
 
     @pytest.mark.asyncio
     async def test_compact_timeout_reports_gracefully(self) -> None:
-        # Regression: nested 120s timeouts made the graceful-timeout branch
-        # unreachable and destroyed a healthy session. A compaction that yields
+        # Nested 120s timeouts would make the graceful-timeout branch
+        # unreachable and destroy a healthy session. A compaction that yields
         # no terminal status must report a timeout and KEEP the session.
         d, cli, sess = _dispatcher({"u1"})
 

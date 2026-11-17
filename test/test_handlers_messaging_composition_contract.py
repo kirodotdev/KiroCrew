@@ -184,7 +184,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         """.split()),
     "proactive_send": tuple("""
         _redact_all _resolve_session_link_url _resolve_session_target _sanitize_blocks
-        _session_link_blocks api_delete_message api_update_message
+        _session_link_blocks _update_message api_delete_message
 
         """.split()),
     "channel_delivery": tuple("""
@@ -249,9 +249,15 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the facade before the split that moved it: each
 #: moved name keeps the kind and signature it had there.
-#: One deliberate divergence since: ``_deliver_to_channel`` answers
-#: ``(sent, code, detail)``, so a refusal is distinguishable from a delivery fault.
-_BASE_SHAPE_DIGEST = "82c3e60c66b0d7ffc32db02b5e59c4e3bd3f170ae3b0df61e8244e22b5b17afc"
+#: Two deliberate divergences since: ``_deliver_to_channel`` answers
+#: ``(sent, code, detail)``, so a refusal is distinguishable from a delivery fault;
+#: and ``_deliver_channel_dm`` takes an optional ``posted`` list of the delivered
+#: ``(conversation id, message id)`` pairs, so the notification bridge can link a
+#: reply transport's note to the approval a reply answers. And one rename:
+#: ``proactive_send`` owns the update-message body as ``_update_message``, with the
+#: same signature, since the facade's ``api_update_message`` opens the channel egress
+#: seam around it.
+_BASE_SHAPE_DIGEST = "f7406e5ce9a776bd509c08a75234781e7ae4a34c9bc0d6418081976ee965810b"
 
 
 #: Helpers the split of ``api_send_message`` added to the send owner: the body it
@@ -395,6 +401,66 @@ def _server_handler_names() -> set[str]:
     }
 
 
+#: The names ``dashboard/handlers/__init__.py`` re-exports from the facade, one per
+#: line, so two changes to the package edit two lines (see testing-conventions.md
+#: § Merge-safe ratchets and counts).
+_PACKAGE_REEXPORTS = (
+    "_redact",
+    "_resolve_session_target",
+    "_sanitize_blocks",
+    "api_channel_folder_backfill",
+    "api_delete_message",
+    "api_discord_config_get",
+    "api_discord_config_save",
+    "api_feishu_config_get",
+    "api_feishu_config_save",
+    "api_imessage_config_get",
+    "api_imessage_config_save",
+    "api_notification_ack",
+    "api_notification_agent_dismiss",
+    "api_notification_agent_push",
+    "api_notification_channel_settings",
+    "api_notification_channels",
+    "api_notification_delete",
+    "api_notification_unack",
+    "api_notifications",
+    "api_notifications_ack_all",
+    "api_notifications_clear",
+    "api_send_message",
+    "api_slack_code_channel_agents",
+    "api_slack_config_get",
+    "api_slack_config_save",
+    "api_slack_history",
+    "api_slack_manifest",
+    "api_slack_manifest_status",
+    "api_slack_pins",
+    "api_slack_profile",
+    "api_slack_reactions",
+    "api_slack_reconnect",
+    "api_spawn",
+    "api_spawn_continue",
+    "api_spawn_delete",
+    "api_spawn_list",
+    "api_spawn_lost",
+    "api_spawn_mark_collected",
+    "api_spawn_release",
+    "api_spawn_retry",
+    "api_spawn_status",
+    "api_spawn_steer",
+    "api_spawn_stop_all",
+    "api_teams_activity",
+    "api_teams_config_get",
+    "api_teams_config_save",
+    "api_telegram_config_get",
+    "api_telegram_config_save",
+    "api_update_message",
+    "api_webex_config_get",
+    "api_webex_config_save",
+    "api_wecom_config_get",
+    "api_wecom_config_save",
+)
+
+
 def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     """Every route the gateway registers for a messaging handler, every name the
     handlers package re-exports, and every handler ``server.py`` names is the
@@ -412,7 +478,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
     assert len({id(h) for h in served}) >= 28
     assert [h.__name__ for h in served if getattr(msg, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 52
+    assert sorted(reexports) == list(_PACKAGE_REEXPORTS)
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(msg, n)] == []
     server_names = _server_handler_names()
     assert {"api_spawn", "api_send_message"} <= server_names
@@ -581,7 +647,6 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(
         f"{name} {_shape(getattr(msg, name))}" for names in _BASE_OWNERS.values() for name in names
     )
-    assert len(lines) == 101
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -601,14 +666,16 @@ def _facade_module_assignments() -> set[str]:
 #: the redact-then-authorize block of ``api_send_message`` with its origin-session
 #: injection and its two census sites; the Teams activity route and the iMessage save
 #: entry that path-keyed registers name; the two predicates unowned specs cite by this
-#: path; the two finalizer exceptions; the helpers several owners call; and the
+#: path; the two finalizer exceptions; the helpers several owners call; the
 #: ``.env`` write's off-loop drain, whose open code-scanning finding stays at the path
-#: that tracks it. The Slack workspace routes and their ten census sites live in
+#: that tracks it; and the update-message route, which opens the channel egress seam
+#: around its owner's ``_update_message``. The Slack workspace routes and their ten census sites live in
 #: ``slack_workspace``, the rest of the channel-config write path every settings owner
 #: commits through in ``channel_config_writes``, and the backfill and agent-push routes
 #: in owners of their own (``_BASE_OWNERS``).
 _FACADE_DEFS = (
     "api_send_message",
+    "api_update_message",
     "api_teams_activity",
     "api_imessage_config_save",
     "_run_belongs_to_caller",
@@ -1356,8 +1423,8 @@ _CENSUS_HOMES = {
 
 
 def test_the_census_sites_stay_in_their_census_homes() -> None:
-    """``test_security_posture``'s census pins twelve gate-side baseline log sites to
-    two paths of this family; each stays in its home and no other owner grows one."""
+    """``test_security_posture``'s census pins gate-side baseline log sites to two
+    paths of this family, per path; each stays in its home and no other owner grows one."""
     from test_security_posture import _BASELINE_LOG_SITE_CENSUS, _gate_side_baseline_log_sites
 
     found = {
@@ -1370,7 +1437,6 @@ def test_the_census_sites_stay_in_their_census_homes() -> None:
     )
     assert found == _CENSUS_HOMES
     assert {path: _BASELINE_LOG_SITE_CENSUS.get(path) for path in _CENSUS_HOMES} == _CENSUS_HOMES
-    assert sum(_CENSUS_HOMES.values()) == 12
 
 
 def test_every_owner_coroutine_file_is_checked_for_config_dir() -> None:

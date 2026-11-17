@@ -219,6 +219,37 @@ class TestTheStartupRevive:
         assert _Tunnel.built == ["cd-1"]
         await mgr.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_a_shutdown_mid_revive_stops_at_the_next_instance(self, env):
+        """A gateway stop that lands mid-revive tears every tunnel down; the
+        revive must not start the next forwarder after that, or it outlives the
+        gateway holding a loopback port."""
+        from kiro_crew import shutdown_event
+
+        reg, mgr = env
+        reg.add(name="B", ssh_host="b-alias", instance_id="b", remote_port=7778)
+        reg.update("cd-1", was_connected=True)
+        reg.update("b", was_connected=True)
+        state = _state(reg, mgr, restarting=False)
+        real_connect = mgr.connect
+
+        async def _connect_then_stop(instance_id, *args, **kwargs):
+            status = await real_connect(instance_id, *args, **kwargs)
+            shutdown_event.set()
+            await mgr.shutdown()
+            return status
+
+        mgr.connect = _connect_then_stop
+        try:
+            await server._revive_intended_instances(reg, mgr, state)
+        finally:
+            shutdown_event.clear()
+
+        assert _Tunnel.built == ["cd-1"]
+        assert mgr.status("b") is None, "no forwarder may start after shutdown"
+        assert reg.get("b").was_connected is True, "the intent survives for the next start"
+        await mgr.shutdown()
+
 
 def _child_tunnel(cwd):
     """A forwarder whose ``start`` spawns a real long-lived child process."""

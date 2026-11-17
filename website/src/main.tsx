@@ -11,7 +11,10 @@ import './lib/installBasePath'
 // Empty in the stock build. See website/src/extensions.ts.
 import './extensions'
 import { startMemoryWatch } from './lib/memoryWatch'
-import React, { StrictMode, Suspense, lazy } from 'react'
+// Side effect only: when the slow frame log is on (Settings > Developer > Debug
+// tools), it starts here so it sees the page load. Off, it creates no observer.
+import './dev/slowFrameLog'
+import React, { StrictMode, Suspense, lazy, startTransition } from 'react'
 import { createRoot } from 'react-dom/client'
 import { withCommitProfiler, installCommitProfilerConsoleApi } from './lib/commitProfiler'
 import { Provider } from 'react-redux'
@@ -37,6 +40,7 @@ import { desktopWindowBridge, desktopWindowTarget } from './desktopWindow/deskto
 import { ensureCatalog, i18next, initI18n, isCatalogChunkError } from './i18n/lazy'
 import { DEFAULT_LANGUAGE } from './i18n/languages'
 import { LanguageProvider } from './i18n/LanguageProvider'
+import { AppMotionConfig } from './AppMotionConfig'
 import App from './App'
 import { queryClient } from './api/queryClient'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -316,6 +320,10 @@ function announceBoot(stage: string): void {
   }
 }
 announceBoot('entry')
+// Tells the shell's boot-module reload in index.html that this entry and its
+// whole static import graph ran, so a module-script error it saw belongs to
+// something the app does not need, and reloading would only repeat the load.
+;(window as Window & { __kcBootEntryRan?: boolean }).__kcBootEntryRan = true
 
 // (See the block above announceBoot for why the first-time boot may reload.)
 function boot(startSync: boolean): void {
@@ -327,7 +335,12 @@ function boot(startSync: boolean): void {
   // definition for how the language is reconciled first).
   void catalogReady.then(() => {
     announceBoot('render')
-    createRoot(document.getElementById('root')!).render(rootTree)
+    const root = createRoot(document.getElementById('root')!)
+    // The first render of the whole app is one long task when it runs
+    // synchronously. As a transition React renders it in slices and yields
+    // to the browser between them. Nothing is on screen to keep responsive yet,
+    // so the only visible effect is that this render no longer blocks input.
+    startTransition(() => { root.render(<AppMotionConfig>{rootTree}</AppMotionConfig>) })
     if (startSync) startUiPrefsSync()
   })
 }

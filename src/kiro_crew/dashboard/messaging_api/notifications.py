@@ -53,7 +53,7 @@ async def api_notification_delete(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -95,8 +95,13 @@ async def api_notifications_clear(request: web.Request) -> web.Response:
         if hidden:
             # Clear what the teammate sees and keep what they are withheld: no
             # whole-feed clear, and no clear broadcast that would empty the owner's.
+            # Each cleared note is withdrawn by name instead, so every open view
+            # drops exactly those.
+            cleared = [note.get("ts") for note in state._notification_log if not _is_app_note(note)]
             state._notification_log = hidden
             await state._rewrite_notifications_async()
+            for ts in cleared:
+                state.broadcast_ws("notification_dismiss", {"ts": ts})
             audit_teammate_withheld("notifications_clear")
             return web.json_response({"ok": True})
     await state.clear_notifications()
@@ -109,7 +114,7 @@ async def api_notification_ack(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -129,7 +134,7 @@ async def api_notification_unack(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -254,11 +259,13 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         # Valid-but-non-object JSON ([], null, "str") would AttributeError on
         # body.get below -- an unintended 500 instead of a validation 400.
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
     channel = body.get("channel")
     if not isinstance(channel, str) or not channel.strip():
         return web.json_response({"error": "channel is required"}, status=400)

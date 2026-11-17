@@ -18,13 +18,16 @@ import asyncio
 import json
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.decisions import consent as consent_mod
 from kiro_crew.decisions import gate as gate_mod
 from kiro_crew.decisions.points import compaction_keep as point
 from kiro_crew.decisions.types import Answer, Choice
 
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+# An AWS key ID is an Identifier with the structured detectors on, so the
+# credential these tests expect to be redacted is a GitHub token.
+SECRET = github_classic(seed=18)
 
 
 def tool_row(index: int, *, tool: str = "execute_bash", inp: str = "ls", out: str = "ok") -> dict:

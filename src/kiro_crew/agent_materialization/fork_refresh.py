@@ -24,7 +24,8 @@ from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AG
 from kiro_crew.agent_materialization import auto_approve
 from kiro_crew.agent_spec_format import is_markdown_spec
 
-#: The dashboard-author origin stem, digest-gated in :func:`_origin_is_owned`.
+#: The dashboard-author origin stem, digest-gated in :func:`fork_origin_is_owned`
+#: and :func:`_owned_spec_has_its_own_writer`.
 _DASHBOARD_AUTHOR_STEM = Path(DASHBOARD_AUTHOR_AGENT_FILENAME).stem
 
 #: The SEL operation :func:`_report_mcp_json_merge_pinned_off` records.
@@ -84,12 +85,12 @@ def refresh_after_rebuild(
     # "defer" is the boot path: per-fork work scales with fork count and must
     # not delay readiness. Owning the deferral HERE keeps the skip+schedule
     # pair in one place, so no caller can skip the refresh and forget the
-    # background half (or drop gated_off, as the first split version did).
+    # background half (or drop gated_off).
     if refresh_forks == "defer":
         # The whole refresh — plumbing AND the governance projection — stays
         # off the boot path (no-new-work-on-gateway-boot-path: the per-fork
         # pass scales with fork count). Sessions do not get to race it either:
-        # the settled event is cleared here and ensure_agent_materialized
+        # the settled event is cleared here and require_fork_governance
         # holds a fork-backed spawn until the pass re-sets it, so a fork
         # carrying grants the ceiling has since tightened away is re-filtered
         # before any session consumes it.

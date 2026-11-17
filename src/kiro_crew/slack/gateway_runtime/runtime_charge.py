@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         _GateTally,
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
+        acp_error_needs_sign_in,
         logger,
         note_turn_landed,
         runtime_death,
@@ -104,6 +105,20 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     # permanently tripped and the exemption silently stops applying.
     runtime_death.clear_shared_deaths(f"cron:{job.id}")
     return False
+
+
+def _cron_auth_expiry(job: CronJob, exc: BaseException) -> bool:
+    """Whether a failed cron run failed only because the harness needs a new sign-in.
+
+    Typed data only, never the error's text (``acp_error_needs_sign_in``): the
+    harness reported itself signed out (``AcpAuthRequired``), the ACP layer tagged a
+    session-expiry answer for the sign-in card (``auth_required``), or the error's
+    AWS code (``auth_error_code``) is an expired token. Agent jobs only: a command or script job never
+    runs the ACP turn those verdicts come from.
+    """
+    if job.command or job.script:
+        return False
+    return acp_error_needs_sign_in(exc)
 
 
 def _cron_failure_attribution(job: CronJob, _run_provider: object | None) -> tuple[bool, bool]:
@@ -189,7 +204,7 @@ def _cron_failure_attribution(job: CronJob, _run_provider: object | None) -> tup
     return _job_owns_failure, _hand_over_streak
 
 
-def _charge_failure(job: CronJob, _hand_over_streak: bool) -> None:
+def _charge_failure(job: CronJob, _hand_over_streak: bool, *, auth_expiry: bool = False) -> None:
     """Charge this run's failure, performing any pending hand-over first.
 
     The two are one indivisible move. The hand-over raises the
@@ -201,11 +216,14 @@ def _charge_failure(job: CronJob, _hand_over_streak: bool) -> None:
     charges nothing on its way out, so a torn move would leave the
     counter and the streak disagreeing with no writer left to
     reconcile them.
+
+    ``auth_expiry`` is forwarded to :meth:`CronJob.record_failure`: the failure
+    counts like any other, but never auto-pauses the job.
     """
     if _hand_over_streak:
         job.consecutive_failures = max(job.consecutive_failures, _AUTO_PAUSE_THRESHOLD - 1)
         runtime_death.clear_shared_deaths(f"cron:{job.id}")
-    job.record_failure()
+    job.record_failure(auth_expiry=auth_expiry)
 
 
 def _streak_after_charge(job: CronJob, charges: bool, _hand_over_streak: bool) -> int:
@@ -249,7 +267,17 @@ async def _inject_with_retry(
     baseline there. When ``full_msg`` is set, *msg* is a note that leans on
     backend session ``sent_to_session`` already holding the full report; a
     reload onto any other session has never seen it and is sent ``full_msg``.
+
+    A completion's turn is not a person's, and no session applier reads its
+    stream, so a directive only a person's turn may issue (``set_project``, ...)
+    is refused and audited (``person_only_directive_refuser``, as on a cron
+    turn). Every refusal of the call, a retried attempt's included, leads the
+    reply.
     """
+    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+    refusals: list[str] = []
+    _refuse_person_only = person_only_directive_refuser(parent_key, refusals)
     _snf_reloaded = False
     attempt = 0
     while True:
@@ -262,7 +290,11 @@ async def _inject_with_retry(
 
         try:
             response = await stream_and_collect(
-                client, msg, retry_transient=False, on_complete=_note_complete
+                client,
+                msg,
+                retry_transient=False,
+                on_complete=_note_complete,
+                on_event=_refuse_person_only,
             )
             # The parent's turn consumed the report: the positive
             # acknowledgement an owed expiry report is cleared on.
@@ -273,7 +305,7 @@ async def _inject_with_retry(
             # stream with no completion, and none of those landed.
             if stop_reason_landed(stop["reason"]):
                 note_turn_landed(self.sessions, parent_key)
-            return response
+            return "\n\n".join([*refusals, response])
         except PromptBusyExhaustedError:
             # Provider is dead after exhausting prompt-busy retries.
             # Reset session + notify, same as TimeoutError path.

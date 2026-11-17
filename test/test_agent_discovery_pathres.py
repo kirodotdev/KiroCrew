@@ -401,6 +401,65 @@ class TestTheSpecReadIsPinnedAndCapped:
             ad_mod._read_spec_bytes(alias.resolve(strict=True))
         assert _read_agent_spec(alias, operation="t", source="test") is None
 
+    def test_a_hardlink_refusal_warns_once_per_path(self, tmp_path: Path, caplog) -> None:
+        # A hard-linked install tree is refused on every read; the WARNING says so
+        # once per resolved path, and the repeats go to DEBUG.
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        aliases = []
+        for name in ("one", "two"):
+            target = tmp_path / f"{name}-target.json"
+            target.write_text(json.dumps({"name": name}), encoding="utf-8")
+            alias = agents / f"{name}.json"
+            os.link(target, alias)
+            aliases.append(alias)
+        one, two = aliases
+
+        def warnings_for(alias: Path) -> list[logging.LogRecord]:
+            return [
+                r
+                for r in caplog.records
+                if r.levelno == logging.WARNING
+                and alias.name in r.getMessage()
+                and "refusing to read a hardlinked file" in r.getMessage()
+            ]
+
+        with caplog.at_level(logging.DEBUG, logger=ad_mod.logger.name):
+            for _ in range(3):
+                assert _read_agent_spec(one, operation="t", source="test") is None
+            assert len(warnings_for(one)) == 1, caplog.text
+            repeats = [
+                r
+                for r in caplog.records
+                if r.levelno == logging.DEBUG and "Skipping agent config" in r.getMessage()
+            ]
+            assert len(repeats) == 2, caplog.text
+
+            assert _read_agent_spec(two, operation="t", source="test") is None
+            assert len(warnings_for(two)) == 1, caplog.text
+
+    def test_the_warn_once_record_is_capped(self, tmp_path: Path, caplog, monkeypatch) -> None:
+        # Past the cap one WARNING names the overflow; every later path logs at DEBUG.
+        monkeypatch.setattr(ad_mod, "_HARDLINK_WARNED_MAX", 1)
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        aliases = []
+        for name in ("one", "two", "three"):
+            target = tmp_path / f"{name}-target.json"
+            target.write_text(json.dumps({"name": name}), encoding="utf-8")
+            alias = agents / f"{name}.json"
+            os.link(target, alias)
+            aliases.append(alias)
+
+        with caplog.at_level(logging.DEBUG, logger=ad_mod.logger.name):
+            for alias in aliases:
+                assert _read_agent_spec(alias, operation="t", source="test") is None
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2, caplog.text
+        assert "one.json" in warnings[0]
+        assert "More than 1 hardlinked agent configs refused" in warnings[1]
+        assert len(ad_mod._HARDLINK_WARNED) == 2
+
 
 class TestTheUncTrustedRootGateStays:
     """A UNC spelling outside the trusted roots is refused before and after ``resolve``.

@@ -348,3 +348,69 @@ async def test_a_reclaim_refused_by_a_cancel_ends_the_step_not_the_run(
         assert store.state_of(handle.task_id) == m.CANCELLED, "the cancel was overwritten"
     finally:
         store.close()
+
+
+# ── a call's own silence timer is answered inside the step ───────────────────
+
+#: What the session handle writes when a built-in's silence timer runs out.
+_SILENCE = (
+    "verdict=unknown; idle_secs=301; processes_terminated=0; "
+    "silence_timer=builtin: no frame for this call in 301s (bound 300s)"
+)
+
+
+class _TimedOutClient(_Client):
+    """The first prompt's built-in edit runs out its silence timer; the next one answers."""
+
+    async def stream(self, prompt: str) -> AsyncIterator[LLMEvent]:
+        self.turns += 1
+        self.prompts.append(prompt)
+        if self.turns > self._ceiling:
+            raise _Unbounded(f"turn {self.turns}: the continuation is not bounded")
+        await asyncio.sleep(0)
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"partial from turn {self.turns}")
+        if self.turns == 1:
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason=STOP_REASON_TOOL_STALL,
+                title="Editing notes.md",
+                text=_SILENCE,
+                usage=TurnUsage(duration_ms=0),
+            )
+        else:
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason=STOP_REASON_END_TURN,
+                usage=TurnUsage(duration_ms=0),
+            )
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_timed_out_is_handed_back_inside_the_step(
+    tmp_path: Path, patched: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A built-in's silence timer ended the step's first prompt. The same session is
+    told that call timed out and the step passes on the model's answer to it: no
+    recovery wait, no re-claim, and no fresh re-run of the task prompt."""
+    clock = Clock()
+    store = _open(tmp_path, clock)
+    recovery = _Recovery(clock)
+    monkeypatch.setattr(task_executor, "_recovery_delay", recovery)
+    try:
+        adm, _ = _admitted(store, clock)
+        handle = await _row(adm)
+        client = _TimedOutClient(ceiling=4)
+        task = Task(index=1, title="notes", description="desc")
+
+        ok = await _step(client, task, handle)
+
+        assert ok is True, f"the step did not finish on the continuation: {task.error}"
+        assert client.turns == 2
+        assert client.prompts[0] == "desc"
+        assert client.prompts[1].startswith("[Tool stall")
+        assert "Kiro Crew cancelled Editing notes.md with a timeout error" in client.prompts[1]
+        assert recovery.delays == [], "a timed-out call was recovered as a stalled turn"
+        assert [e.kind for e in store.events(handle.task_id)].count("claimed") == 1
+        assert task.status is TaskStatus.PASSED
+    finally:
+        store.close()

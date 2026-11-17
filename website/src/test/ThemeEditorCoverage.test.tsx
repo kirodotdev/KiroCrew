@@ -30,6 +30,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 
 import type { CustomThemeData } from '../hooks/useTheme'
+import { i18next } from '../i18n/all'
 
 /* ── seams ────────────────────────────────────────────────────── */
 
@@ -847,9 +848,21 @@ describe('ThemeEditorPanel Paste CSS', () => {
     const css = Array.from({ length: 13 }, (_, i) => `--x${i}: red;`).join(' ')
     fireEvent.change(cssArea(), { target: { value: `:root { --bg: #000; ${css} }` } })
 
-    const line = screen.getByText(/--x9 and 3 more$/)
+    const line = screen.getByText(/--x9, 3 more$/)
     expect(line).toHaveTextContent('Skipped, the dashboard has no color named: --x0, ')
     expect(line.textContent).not.toContain('--x10')
+  })
+
+  it('separates a capped name list the way Japanese does (#34103)', async () => {
+    await i18next.changeLanguage('ja')
+    onTestFinished(() => i18next.changeLanguage('en'))
+    openNew()
+    fireEvent.click(btn(/CSS を貼り付け/))
+    const css = Array.from({ length: 13 }, (_, i) => `--x${i}: red;`).join(' ')
+    fireEvent.change(screen.getByLabelText('テーマ CSS'), { target: { value: `:root { --bg: #000; ${css} }` } })
+
+    const line = screen.getByText(/--x8、--x9、ほか 3 件$/)
+    expect(line.textContent).not.toContain(', ')
   })
 
   it('carries a paste into the picker and on into the JSON pane', () => {

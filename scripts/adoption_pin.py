@@ -41,6 +41,7 @@ from typing import Any
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
+from kiro_crew.apps import backend_sdk  # noqa: E402
 from kiro_crew.apps import builtin_adoption_fetch as fetch  # noqa: E402
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL  # noqa: E402
 from kiro_crew.apps.builtin_adoption_checks import pinned_tree_refusal  # noqa: E402
@@ -51,11 +52,21 @@ from kiro_crew.apps.builtin_adoption_pins import (  # noqa: E402
     AdoptionPin,
     parse_adoption_pins,
 )
+from kiro_crew.dashboard.token_auth_app_scope import EXACT_API_ENTRY_MARK  # noqa: E402
 
 #: ``AppContext`` attributes above seam level 1, with the level that publishes each
 #: (app-kit-platform.md §32a, §32b, §36). An app reads them as ``ctx.<seam>`` or
 #: feature-detects them with ``getattr(<context>, "<seam>", None)``.
-_CONTEXT_SEAMS = {"turns": 2, "untrusted": 2, "lifecycle": 2, "auto_approve": 2}
+_CONTEXT_SEAMS = {
+    "turns": 2,
+    "untrusted": 2,
+    "lifecycle": 2,
+    "auto_approve": 2,
+    "app_token": 5,
+    "gateway_origin": 5,
+    "chat_slots": 7,
+    "webhook_source": 7,
+}
 
 #: A receiver whose last name says it is the app's context (``ctx``, ``self._ctx``,
 #: ``context``, ``app_ctx``). ``getattr``/``hasattr`` of a seam name counts on any
@@ -64,6 +75,14 @@ _CONTEXT_NAME = re.compile(r"ctx|context", re.IGNORECASE)
 
 #: The text form, for a source file this interpreter cannot parse.
 _SEAM_TEXT = re.compile(r"[.\"'](%s)\b" % "|".join(_CONTEXT_SEAMS))
+
+#: The public backend SDK package and the level that publishes it (app-kit-platform.md
+#: §40). An app reaches it by a dotted import, a ``from kiro_crew.apps import
+#: backend_sdk``, an attribute of an imported parent or a string lookup, so a file
+#: that names both the root package and the package's own name counts, in any form.
+_BACKEND_SDK_MODULE = backend_sdk.__name__
+_BACKEND_SDK_ROOT = _BACKEND_SDK_MODULE.split(".", 1)[0]
+_BACKEND_SDK_LEAF = re.compile(r"\b%s\b" % re.escape(_BACKEND_SDK_MODULE.rsplit(".", 1)[1]))
 
 #: Directories a backend never imports from, so a test fake's ``ctx.turns`` is no use.
 _UNSCANNED_DIRS = frozenset({"tests", "test", "node_modules", ".git"})
@@ -110,10 +129,15 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     """Every App Kit seam above level 1 that the app tree at *tree* uses, with its level.
 
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
-    ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3) and the
-    context seams any non-test ``.py`` file reaches. A miss lets a pin adopt on a
-    host without the seam, so the scan errs wide: a false hit only asks for a
-    higher ``--min-sdk-level``.
+    ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
+    ``agentReadOnlyDirs``, an exact ``permissions.api`` entry,
+    ``permissions.chatSlots``, ``permissions.desktopCapabilities`` and
+    ``permissions.webhookSource`` at level 7, a directory entry in
+    ``credentialMasks``, a shortcut's ``platformAccelerators`` and
+    ``contributes.memoryProviders`` at level 8), the context seams any non-test
+    ``.py`` file reaches, and the backend SDK package (level 7) any of them names. A
+    miss lets a pin adopt on a host without the seam, so the scan errs wide: a false hit
+    only asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -124,8 +148,34 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     for flag in ("agentTurns", "workerAutoApprove"):
         if permissions.get(flag) is True:
             uses[f"app.json permissions.{flag}"] = 2
-    if raw.get("credentialMasks"):
+    masks = raw.get("credentialMasks")
+    if masks:
         uses["app.json credentialMasks"] = 3
+    if raw.get("agentReadOnlyDirs"):
+        uses["app.json agentReadOnlyDirs"] = 7
+    api = permissions.get("api")
+    if isinstance(api, list) and any(
+        isinstance(entry, str) and entry.strip().startswith(EXACT_API_ENTRY_MARK) for entry in api
+    ):
+        uses["app.json permissions.api exact entry"] = 7
+    if permissions.get("chatSlots") is True:
+        uses["app.json permissions.chatSlots"] = 7
+    if permissions.get("desktopCapabilities"):
+        uses["app.json permissions.desktopCapabilities"] = 7
+    if permissions.get("webhookSource") is True:
+        uses["app.json permissions.webhookSource"] = 7
+    if isinstance(masks, list) and any(isinstance(m, str) and m.endswith("/") for m in masks):
+        uses["app.json credentialMasks directory"] = 8
+    desktop = raw.get("desktop")
+    desktop = desktop if isinstance(desktop, dict) else {}
+    shortcuts = desktop.get("shortcuts")
+    if isinstance(shortcuts, list) and any(
+        isinstance(s, dict) and "platformAccelerators" in s for s in shortcuts
+    ):
+        uses["app.json desktop.shortcuts platformAccelerators"] = 8
+    contributes = raw.get("contributes")
+    if isinstance(contributes, dict) and contributes.get("memoryProviders"):
+        uses["app.json contributes.memoryProviders"] = 8
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):
@@ -137,6 +187,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
             source = path.read_text(encoding="utf-8", errors="replace")
             for seam in _source_seams(source):
                 uses.setdefault(f"ctx.{seam}", _CONTEXT_SEAMS[seam])
+            if _BACKEND_SDK_ROOT in source and _BACKEND_SDK_LEAF.search(source):
+                uses.setdefault(_BACKEND_SDK_MODULE, backend_sdk.BACKEND_SDK_LEVEL)
     return uses
 
 

@@ -19,6 +19,7 @@ import dis
 import functools
 import importlib.util
 import re
+import sys
 from collections.abc import Iterable, Iterator, Mapping
 from types import CodeType
 
@@ -684,6 +685,19 @@ _PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
 #: per-facade guards pass tables of one to a few leaves, the corpus guards hundreds.
 _WORD_INDEX_MIN_LEAVES = 64
 
+# The per-text readings below (:func:`_from_imports`, :func:`_dotted_parents`,
+# :func:`_text_words`, :func:`_mentioned_in`) keep every text they read until
+# :func:`clear_text_caches`. The corpus guards read every test-tree file twice (once to
+# select the files naming a family member, then to scan them), and a cache smaller than the
+# tree drops each reading before the second pass. ``test/conftest.py`` clears them after
+# every test module, so the memory is held only while one module's guards run.
+
+
+def clear_text_caches() -> None:
+    """Drop every per-text reading this module keeps."""
+    for cached in (_from_imports, _leaf_parts, _dotted_parents, _text_words, _mentioned_in):
+        cached.cache_clear()
+
 
 @functools.lru_cache(maxsize=64)
 def _plain_leaves(names: tuple[str, ...]) -> tuple[tuple[str | None, ...], bool]:
@@ -710,12 +724,14 @@ def _mentions_plain(text: str, dotted: str, words: _TextWords | None = None) -> 
     present, parents, relative = _leaf_parts(text, leaf)
     if not present:
         return False
-    if dotted in text or leaf in _from_imports(text).get(head, ()):
+    if leaf in _from_imports(text).get(head, ()) or head.rpartition(".")[2] in parents:
         return True
-    return head.rpartition(".")[2] in parents or relative or _alias_chain(text, dotted, words)
+    if relative or (words is None or words.may_hold(dotted)) and dotted in text:
+        return True
+    return _alias_chain(text, dotted, words)
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=None)
 def _from_imports(text: str) -> dict[str, frozenset[str]]:
     """Each ``from <head> import`` head in *text* -> the words its import list holds: the
     rest of that line, and the parenthesised list when one opens there."""
@@ -739,28 +755,24 @@ def _leaf_parts(text: str, leaf: str) -> tuple[bool, frozenset[str], bool]:
     ``".<leaf>"`` (a relative ``import_module``)."""
     if leaf not in text:
         return False, frozenset(), False
-    parents = set()
-    if f".{leaf}" in text:
-        for match in re.finditer(rf"\b{re.escape(leaf)}\b", text):
-            at = match.start() - 1
-            while at >= 0 and text[at].isspace():
-                at -= 1
-            if at < 0 or text[at] != ".":
-                continue
-            at -= 1
-            while at >= 0 and text[at].isspace():
-                at -= 1
-            end = at + 1
-            while at >= 0 and _is_word(text[at]):
-                at -= 1
-            if at + 1 < end:
-                parents.add(text[at + 1 : end])
+    parents = _dotted_parents(text).get(leaf, frozenset()) if f".{leaf}" in text else frozenset()
     relative = f"'.{leaf}'" in text or f'".{leaf}"' in text
-    return True, frozenset(parents), relative
+    return True, parents, relative
 
 
-def _is_word(char: str) -> bool:
-    return char.isalnum() or char == "_"
+_DOTTED_PAIR = re.compile(r"\b(\w+)(?=\s*\.\s*(\w+))")
+
+
+@functools.lru_cache(maxsize=None)
+def _dotted_parents(text: str) -> dict[str, frozenset[str]]:
+    """Each word *text* writes after ``<parent> .`` -> those parents, read in one pass.
+
+    :func:`_leaf_parts` is asked about every leaf of a large spelling table, so one scan of
+    the text per leaf is what a scan of the test tree would otherwise cost."""
+    found: dict[str, set[str]] = {}
+    for match in _DOTTED_PAIR.finditer(text):
+        found.setdefault(sys.intern(match.group(2)), set()).add(sys.intern(match.group(1)))
+    return {word: frozenset(parents) for word, parents in found.items()}
 
 
 class _TextWords:
@@ -771,26 +783,33 @@ class _TextWords:
     starts there; a ``from <head> import`` list, a ``\\b<leaf>\\b`` match, a quoted
     ``'.<leaf>'`` and :func:`_alias_chain`'s ``.<leaf>`` followed by a non-word character
     each hold the leaf as a whole word. :meth:`starts` asks exactly that, with a binary
-    search, once per leaf; :meth:`chain_words` keeps :func:`_chain_words` per leaf, since
+    search; :meth:`chain_words` keeps :func:`_chain_words` per leaf, since
     the hundreds of spellings sharing a facade's leaf differ only in the parent they name.
     """
 
-    __slots__ = ("_text", "_words", "_starts", "_chains")
+    __slots__ = ("_text", "_words", "_chains")
 
     def __init__(self, text: str) -> None:
         self._text: str = text
-        self._words: list[str] = sorted(set(_WORD.findall(text)))
-        self._starts: dict[str, bool] = {}
+        self._words: list[str] = sorted(set(map(sys.intern, _WORD.findall(text))))
         self._chains: dict[str, frozenset[str]] = {}
+
+    def holds(self, word: str) -> bool:
+        """Whether *word* is a word of the text."""
+        at = bisect.bisect_left(self._words, word)
+        return at < len(self._words) and self._words[at] == word
+
+    def may_hold(self, dotted: str) -> bool:
+        """False only when *dotted* cannot occur in the text: each segment between two
+        dots of a substring is bounded by non-word characters, so it is a word of the text.
+        A lookup per segment spares a scan of the whole text for each of the hundreds of
+        spellings that share a leaf."""
+        return all(self.holds(part) for part in dotted.split(".")[1:-1])
 
     def starts(self, leaf: str) -> bool:
         """Whether some word of the text begins with *leaf*."""
-        known = self._starts.get(leaf)
-        if known is None:
-            at = bisect.bisect_left(self._words, leaf)
-            known = at < len(self._words) and self._words[at].startswith(leaf)
-            self._starts[leaf] = known
-        return known
+        at = bisect.bisect_left(self._words, leaf)
+        return at < len(self._words) and self._words[at].startswith(leaf)
 
     def chain_words(self, leaf: str) -> frozenset[str]:
         """:func:`_chain_words` of the text for *leaf*, read once."""
@@ -800,7 +819,7 @@ class _TextWords:
         return chained
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=None)
 def _text_words(text: str) -> _TextWords:
     """The word index of *text*, built once per text for the large tables that ask it."""
     return _TextWords(text)
@@ -811,14 +830,20 @@ def _mentioned(text: str, spellings: Iterable[str]) -> list[str]:
 
     In a large table (:data:`_WORD_INDEX_MIN_LEAVES`) a plain spelling whose leaf no word of
     *text* begins with is dropped from the word index alone, which spares the call for most
-    of the hundreds of spellings each text is asked about.
+    of the hundreds of spellings each text is asked about. The answer is kept per text and
+    table: :func:`text_patched_names` and :func:`needs_syntax_tree` ask the same question
+    of every corpus file.
     """
-    names = tuple(spellings)
+    return list(_mentioned_in(text, tuple(spellings)))
+
+
+@functools.lru_cache(maxsize=None)
+def _mentioned_in(text: str, names: tuple[str, ...]) -> tuple[str, ...]:
     leaves, indexed = _plain_leaves(names)
     if not indexed:
-        return [name for name in names if _mentions(text, [name])]
+        return tuple(name for name in names if _mentions(text, [name]))
     words = _text_words(text)
-    return [
+    return tuple(
         name
         for name, leaf in zip(names, leaves)
         if (
@@ -826,7 +851,7 @@ def _mentioned(text: str, spellings: Iterable[str]) -> list[str]:
             if leaf is None
             else words.starts(leaf) and _mentions_plain(text, name, words)
         )
-    ]
+    )
 
 
 def _admitted(text: str, spellings: Mapping[str, str]) -> bool:

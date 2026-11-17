@@ -154,7 +154,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.sandbox_leaves": tuple("""
         _POLICY_CACHE_LEAF _VOICE_RUNTIME_LEAF _CREW_HOME_DEFAULT _CREW_HOME_PREFIXES
         _LIVE_TARGET_LEAF _LIVE_TARGET_STAGING_LEAF _AUTH_STORE_STAGING_LEAF
-        _SECRET_REQUEST_POLICY_LEAF MD_NOTEBOOK_APP_NAME
+        _SECRET_REQUEST_POLICY_LEAF _UPDATE_STAGING_LEAF MD_NOTEBOOK_APP_NAME
         _MD_NOTEBOOK_STATE_LEAVES _MD_NOTEBOOK_STAGING_LEAF _CREW_HIDDEN_LEAVES
         _MD_NOTEBOOK_STATE_FILES _MD_NOTEBOOK_RETIRED_STATE_LEAVES
         _CREW_UNREADABLE_MASK_LEAVES _RELOCATED_CREW_HIDDEN_LEAVES _CREW_READONLY_LEAVES
@@ -166,7 +166,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
-        app_declared_mask_targets _liftable_declared_file
+        app_declared_mask_targets app_declared_readonly_targets _liftable_declared_file
+        _liftable_declared_dir
         crew_home_visible_spellings carveout_chain_has_planted_link
         enterprise_policy_cache_view _caller_mask_contains _POLICY_CACHE_META_LEAF
         _policy_cache_meta_names_its_source
@@ -178,7 +179,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _IN_SANDBOX_MARKER _IN_SANDBOX_LEVEL_VAR _TIER_ORDINALS _mode_to_level _SANDBOX_MODE_ALIASES
         _CGROUP_AGENTS_SLICE
         effective_sandbox_mode _governance_sandbox_floor _clamp_sandbox_mode _floor_mandates_sandbox
-        _clamp_sandbox_mode_to_floor
+        _clamp_sandbox_mode_to_floor configured_readonly_layer warn_readonly_layer_unenforced
+        _READONLY_LAYER_CACHE _READONLY_LAYER_WARNED _readonly_layer_from
         """.split()),
     "kiro_crew.sandbox_precreate": tuple("""
         _CREW_PRECREATE_READONLY_DIR_LEAVES _CREW_NOFOLLOW_READONLY_DIR_LEAVES
@@ -205,9 +207,10 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _refuse_aliased_masked_leaves _masked_leaf_pathonly_alias_detail
         _masked_leaf_multilink_detail _masked_leaf_alias_search_hint masked_credential_leaf_aliases
         _app_declared_leaves _hidden_leaves _hardlink_refused_leaves
+        _app_declared_readonly_leaves _establish_app_readonly_dirs _app_data_dir_settled
         """.split()),
     "kiro_crew.sandbox_staging": tuple("""
-        _materialize_maskable_dirs _materialize_live_target_mask_target
+        _materialize_maskable_dirs _materialize_declared_mask_dirs _materialize_live_target_mask_target
         _refuse_if_live_target_symlink LiveTargetUnfitness _live_target_irregular_detail
         _live_target_multilink_detail _live_target_symlink_detail _refuse_unless_sole_regular_link
         live_target_pointer_unfitness _md_notebook_degraded_mask_dirs
@@ -247,7 +250,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _carveout_probes _plan_cwd _live_plan_host _spawn_plan _build_launcher_script
         _build_seatbelt_profile namespace_argv _pinned_env_bin sandbox_exec_argv
         _sandbox_env_scrub_keys _sandbox_env_unset_args cleanup_stale_sandbox_profiles
-        _ENV_BINARY_CANDIDATES _unset_env_argv
+        _ENV_BINARY_CANDIDATES _unset_env_argv _operator_layer_probes
         """.split()),
     "kiro_crew.sandbox_delegation": tuple("""
         _KIRO_INTERNAL_SETTINGS_PATH _KIRO_INTERNAL_SANDBOX_KEY _kiro_delegation_warned

@@ -46,6 +46,7 @@ from kiro_crew.providers.base import (
     EVENT_TEXT_CHUNK,
     LLMEvent,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 _GENERIC = "User denied tool execution"
 _TAG = "[Kiro Crew host notice]"
@@ -360,7 +361,7 @@ async def test_the_funnel_with_cause_none_stays_bare(fake_sel):
 @pytest.mark.asyncio
 async def test_agent_authored_text_is_redacted_before_it_reaches_the_model(fake_sel):
     provider = _Provider()
-    token = "ghp_" + "A" * 36
+    token = github_classic(seed=26)
     await R.SessionAgentRunner._reject(
         provider,
         "r9",

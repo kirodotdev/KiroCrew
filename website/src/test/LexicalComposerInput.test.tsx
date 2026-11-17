@@ -9,6 +9,7 @@ import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import type { ComposerControl } from '../components/composerControl'
 import type { PromptHistoryItem } from '../components/composerPromptHistory'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
+import { quoteIntoDraft } from '../chat-core/composer/quoteDraft'
 
 const block: PasteBlock = {
   id: 'paste-1',
@@ -184,6 +185,42 @@ describe('LexicalComposerInput', () => {
       />,
     )
     expect(await screen.findByTestId('paste-token-1')).toBeInTheDocument()
+  })
+
+  it('keeps the caret in the text when the host replaces the value, so the next typed text adds no blank lines', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    function QuoteHost() {
+      const [value, setValue] = useState('')
+      return (
+        <>
+          <LexicalComposerInput value={value} blocks={[]} onChange={setValue} onBlocksChange={vi.fn()} onSend={vi.fn()} ariaLabel="Message input" placeholder="Write a message" editorRef={editorRef} />
+          <button onClick={() => setValue(prev => quoteIntoDraft(prev, 'a quoted line'))}>Quote</button>
+          <output data-testid="value">{JSON.stringify(value)}</output>
+        </>
+      )
+    }
+    render(<QuoteHost />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    const editor = editorRef.current!
+    // The user has typed, so the editor holds a caret when the quote arrives.
+    await dispatchAtEnd(editor, CONTROLLED_TEXT_INSERTION_COMMAND, 'first comment')
+    fireEvent.click(screen.getByRole('button', { name: 'Quote' }))
+    const quoted = 'first comment\n\n> a quoted line\n\n'
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(JSON.stringify(quoted)))
+    // Typed without moving the caret first: a caret left on the root would put
+    // this text in a second paragraph, which reads back as two more newlines.
+    act(() => { editor.dispatchCommand(CONTROLLED_TEXT_INSERTION_COMMAND, 'second comment') })
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(JSON.stringify(quoted + 'second comment')))
+    expect(editor.getEditorState().read(() => $getRoot().getChildrenSize())).toBe(1)
+  })
+
+  it('does not give a caret to an editor that had none when the host replaces the value', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const props = { blocks: [], onChange: vi.fn(), onBlocksChange: vi.fn(), onSend: vi.fn(), ariaLabel: 'Message input', placeholder: 'Write a message', editorRef }
+    const { rerender } = render(<LexicalComposerInput value="plain" {...props} />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    rerender(<LexicalComposerInput value="pushed by the host" {...props} />)
+    expect(editorRef.current!.getEditorState().read(() => $getSelection())).toBeNull()
   })
 
   it('copies and cuts selected paste chips as expanded text', async () => {
@@ -756,12 +793,12 @@ describe('LexicalComposerInput', () => {
     await waitFor(() => expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument())
   })
 
-  it('navigates prompt history and restores the draft with canonical caret placement', async () => {
+  it('navigates prompt history and returns to the empty composer with canonical caret placement', async () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
       <ControlledHost
-        initial="draft"
+        initial=""
         editorRef={editorRef}
         controlRef={controlRef}
         sentMessages={['first', 'second']}
@@ -783,8 +820,8 @@ describe('LexicalComposerInput', () => {
         new KeyboardEvent('keydown', { key: 'ArrowDown' }),
       )
     })
-    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('draft'))
-    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(''))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 0, end: 0 }))
   })
 
   function pressArrow(editor: LexicalEditor, key: 'ArrowUp' | 'ArrowDown', init: KeyboardEventInit = {}): boolean {
@@ -897,14 +934,14 @@ describe('LexicalComposerInput', () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     const { rerender } = render(
-      <ControlledHost initial="draft A" editorRef={editorRef} controlRef={controlRef} historyScope="a" sentMessages={['same']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} historyScope="a" sentMessages={['same']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))
     pressArrow(editorRef.current!, 'ArrowUp')
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('same'))
     rerender(
-      <ControlledHost initial="draft A" editorRef={editorRef} controlRef={controlRef} historyScope="b" sentMessages={['other', 'same']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} historyScope="b" sentMessages={['other', 'same']} />,
     )
     act(() => controlRef.current!.setSelection('same'.length))
     expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
@@ -915,7 +952,7 @@ describe('LexicalComposerInput', () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
-      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))
@@ -928,26 +965,40 @@ describe('LexicalComposerInput', () => {
     expect(screen.getByTestId('value')).toHaveTextContent('second!')
   })
 
-  it('ignores an auto-repeat ↑ that reaches the start of a typed draft', async () => {
+  it('never recalls over a typed draft, held or fresh, even with the caret at its start', async () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
-      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+      <ControlledHost initial={'draft line 1\nline 2'} editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(3))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp', { repeat: true })).toBe(false)
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    expect(screen.getByTestId('value').textContent).toBe('draft line 1\nline 2')
+  })
+
+  it('keeps a paste chip draft and its content when ↑ is pressed', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost initial={formatToken(block)} initialBlocks={[block]} editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))
-    expect(pressArrow(editorRef.current!, 'ArrowUp', { repeat: true })).toBe(false)
-    expect(screen.getByTestId('value')).toHaveTextContent(/^draft$/)
-    // Letting go and pressing again is a deliberate recall.
-    pressArrow(editorRef.current!, 'ArrowUp')
-    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+    expect(screen.getByTestId('value').textContent).toBe(formatToken(block))
+    expect(JSON.parse(screen.getByTestId('blocks').textContent!)).toEqual([block])
   })
 
   it('keeps walking history on auto-repeat once a prompt is recalled', async () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
-      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))

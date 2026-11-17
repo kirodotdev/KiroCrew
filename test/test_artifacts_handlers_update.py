@@ -29,6 +29,7 @@ from artifacts_handlers_helpers import (  # noqa: F401 -- fixtures are requested
     patch_restricted_fixture,
 )
 from body_stream_helpers import attach_json_body
+from redaction_structured_cases import github_classic
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew import mcp_core
@@ -937,18 +938,20 @@ class TestDashboardBindingTargets:
         # The refusal names the target so the author can see which binding was wrong,
         # and an agent can put anything in a bound_to slug. A credential-shaped one
         # must not come back verbatim in the 400 body.
-        resp = await api_artifact_update(_bound_request(bound, "crewmate:AKIAIOSFODNN7EXAMPLE"))
+        secret = github_classic(seed=20)
+        resp = await api_artifact_update(_bound_request(bound, f"crewmate:{secret}"))
         assert resp.status == 400
-        assert b"AKIAIOSFODNN7EXAMPLE" not in resp.body
+        assert secret.encode() not in resp.body
         assert b"REDACTED" in resp.body
 
     @pytest.mark.asyncio
     async def test_the_session_scope_refusal_is_redacted_too(self, isolated_store, bound) -> None:
         # Both scopes build their sentences through the same helper, so neither can
         # return one that was never redacted.
-        resp = await api_artifact_update(_bound_request(bound, "session:AKIAIOSFODNN7EXAMPLE"))
+        secret = github_classic(seed=21)
+        resp = await api_artifact_update(_bound_request(bound, f"session:{secret}"))
         assert resp.status == 400
-        assert b"AKIAIOSFODNN7EXAMPLE" not in resp.body
+        assert secret.encode() not in resp.body
         assert b"REDACTED" in resp.body
 
     @pytest.mark.asyncio

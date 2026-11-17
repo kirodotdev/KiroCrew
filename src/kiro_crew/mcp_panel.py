@@ -360,10 +360,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "argument. A preview is OPTIONAL, never a step before applying: use "
                 "it only when the person asks to look first. dashboard_apply with "
                 "the `template_id` puts it live. A page you composed yourself is "
-                "saved with dashboard_save, not previewed here. While the person has "
-                "locked the layout (your [DASHBOARD] block says LOCKED), you can "
-                "still preview a page for them to look at, but do not apply it: "
-                "ask them to unlock it first."
+                "saved with dashboard_save, not previewed here."
             ),
             "inputSchema": {
                 "type": "object",
@@ -389,9 +386,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "dashboard_templates to use a shipped or operator page, or pass "
                 "nothing to put live the page you saved with dashboard_save. Every "
                 "earlier version stays on disk, so dashboard_rollback goes back in "
-                "one call. Tell the person what you changed. Refused with "
-                "`dashboard_locked` while the page is locked (your [DASHBOARD] "
-                "block says LOCKED)."
+                "one call. Tell the person what you changed."
             ),
             "inputSchema": {
                 "type": "object",
@@ -417,9 +412,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "versions you can still reach; a version the store has dropped is "
                 "refused, so read that list rather than guessing. A rollback moves "
                 "FORWARD: restoring version 1 over version 2 writes version 3, so "
-                "nothing is lost and you can roll back again. Refused with "
-                "`dashboard_locked` while the page is locked (your [DASHBOARD] "
-                "block says LOCKED)."
+                "nothing is lost and you can roll back again."
             ),
             "inputSchema": {
                 "type": "object",

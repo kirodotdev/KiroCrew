@@ -11,8 +11,10 @@ from test_snapshot import unpinnable_argv
 
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+# A synthetic GitHub token the redactor removes; a bare 40-character run stays visible.
+KEY = github_classic(seed=170)
 
 
 def _tree_with_nested_link(tmp_path: Path) -> Path:

@@ -106,9 +106,7 @@ class TestAPinnedUpdateReportsTheOutage:
             "apps": [catalog_git()],
         }
         self._pinned(monkeypatch, lambda url: doc)
-        monkeypatch.setattr(
-            reg.official_catalog, "_read_cache", lambda: {reg.official_catalog._FAILED_KEY: 1.0}
-        )
+        monkeypatch.setattr(reg.official_catalog, "_failed_recently", lambda: True)
         entry, error = reg._resolve_install_entry("demo-app")
         assert error == ""
         assert entry is not None and entry.get("commit") == SHA

@@ -85,6 +85,11 @@ describe('selectAutoConnectTargets with a disabled crew', () => {
     const list = [{ ...inst('a', 'disconnected'), disabled: true }, inst('b', 'disconnected')]
     expect(selectAutoConnectTargets(list, {}, 5)).toEqual(['b'])
   })
+
+  it('never targets a cloud crew the owner stopped', () => {
+    const list = [{ ...inst('a', 'error'), cloud_stopped: true }, inst('b', 'disconnected')]
+    expect(selectAutoConnectTargets(list, {}, 5)).toEqual(['b'])
+  })
 })
 
 describe('autoConnectEnabled', () => {

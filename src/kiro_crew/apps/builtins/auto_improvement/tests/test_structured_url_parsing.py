@@ -158,7 +158,7 @@ def test_parse_gitlab_path_checks_each_segment(raw_path: str, expected: str) -> 
 def test_gitlab_dir_name_keeps_allowed_characters(host: str, path: str, readable: str) -> None:
     name = clone_setup._gitlab_dir_name(host, path)
     assert name.startswith(f"gitlab+{readable}--")
-    assert len(name.rsplit("--", 1)[-1]) == 12
+    assert len(name.rsplit("--", 1)[-1]) == 32
 
 
 def test_keep_allowed_folds_each_run_into_one_separator() -> None:

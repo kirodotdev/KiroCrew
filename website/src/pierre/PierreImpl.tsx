@@ -646,7 +646,13 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
     [dark, themes, options],
   )
   const resolvedFile = useMemo(() => {
-    const withLang = file.lang || !langHint ? file : { ...file, lang: fenceLanguage(langHint) }
+    // Pierre's line cache splits on a lone `\r` but its highlighted output does
+    // not, so a file with old-Mac or mixed line endings has fewer rendered lines
+    // than counted and renderFile throws. `\r\n` is consistent in both and stays.
+    const contents = normalizeLoneCarriageReturns(file.contents)
+    // A caller-supplied cacheKey stays valid: the mapping is deterministic.
+    const normalized = contents === file.contents ? file : { ...file, contents }
+    const withLang = normalized.lang || !langHint ? normalized : { ...normalized, lang: fenceLanguage(langHint) }
     return withLang.cacheKey
       ? withLang
       : { ...withLang, cacheKey: contentCacheKey(withLang.name, withLang.contents, surfaceId + ':file') }
@@ -676,6 +682,12 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
         : code}
     </PierreShell>
   )
+}
+
+/** `\r` not followed by `\n` becomes `\n`. Pierre's line cache already counts
+ *  a lone `\r` as a break, so line numbers and anchors stay where they were. */
+export function normalizeLoneCarriageReturns(contents: string): string {
+  return contents.includes('\r') ? contents.split('\r\n').map(part => part.replaceAll('\r', '\n')).join('\r\n') : contents
 }
 
 export function PierrePatchImpl({ patch, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {

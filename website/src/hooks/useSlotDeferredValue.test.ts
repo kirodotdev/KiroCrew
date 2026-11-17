@@ -187,4 +187,47 @@ describe('useSlotDeferredValue', () => {
       expect(shown.at(-1)).toBe(live)
     })
   })
+
+  describe('drawnAtOnce', () => {
+    type V = { rows: number }
+    // Nothing is on screen in the committed value, and the new one is small.
+    const firstRows = (committed: V, next: V) => committed.rows === 0 && next.rows < 3
+    const mountEmpty = () =>
+      renderHook(({ slot, value }) => useSlotDeferredValue(slot, value, undefined, firstRows), {
+        initialProps: { slot: 'chat-a', value: { rows: 0 } as V },
+      })
+
+    it('renders a value at once while its deferred render is pending, and still hands it to the deferral', () => {
+      freeze = true
+      const { result, rerender } = mountEmpty()
+      const one = { rows: 1 }
+      rerender({ slot: 'chat-a', value: one })
+      expect(result.current).toBe(one)
+      // Unlike sameShape, the deferral was given the new value.
+      expect(new Set(inputs).size).toBe(2)
+    })
+
+    it('keeps the last value drawn at once, not the committed one, when a later value does not qualify', () => {
+      freeze = true
+      const { result, rerender } = mountEmpty()
+      rerender({ slot: 'chat-a', value: { rows: 1 } })
+      const two = { rows: 2 }
+      rerender({ slot: 'chat-a', value: two })
+      expect(result.current).toBe(two)
+      rerender({ slot: 'chat-a', value: { rows: 3 } })
+      expect(result.current).toBe(two)
+    })
+
+    it('is judged against the committed value, not the one still pending', () => {
+      freeze = true
+      const start = { rows: 5 }
+      const { result, rerender } = renderHook(({ slot, value }) => useSlotDeferredValue(slot, value, undefined, firstRows), {
+        initialProps: { slot: 'chat-a', value: start as V },
+      })
+      // The committed value has rows on screen, so nothing is drawn at once.
+      rerender({ slot: 'chat-a', value: { rows: 0 } })
+      rerender({ slot: 'chat-a', value: { rows: 1 } })
+      expect(result.current).toBe(start)
+    })
+  })
 })

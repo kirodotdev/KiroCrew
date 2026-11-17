@@ -180,6 +180,21 @@ export function fmtPercent(ratio: number, options?: NumberOptions): string {
   return fmtNumber(ratio, { style: 'percent', maximumFractionDigits: 0, ...options })
 }
 
+/**
+ * A ratio as a percentage cut DOWN to `digits` decimals, so it never shows a
+ * line (90%, 100%) the share has not reached: 9,996 of 10,000 reads `99.9%`.
+ *
+ * Snaps float noise first. `167 / 1000` arrives as 0.16699999…, and a bare
+ * `roundingMode: 'trunc'` would print `16.6%`; rounding to a millionth of the
+ * last printed step before flooring keeps it `16.7%`.
+ */
+export function fmtPercentFloor(ratio: number, digits = 1): string {
+  if (!Number.isFinite(ratio)) return '—'
+  const step = 10 ** (digits + 2)
+  const floored = Math.floor(Math.round(ratio * step * 1e6) / 1e6) / step
+  return fmtPercent(floored, { maximumFractionDigits: digits })
+}
+
 /** Money. `currency` is an ISO 4217 code; placement and symbol are the locale's. */
 export function fmtCurrency(value: number, currency = 'USD', options?: NumberOptions): string {
   if (!Number.isFinite(value)) return '—'
@@ -638,6 +653,49 @@ export function fmtList(
   return memo('list', locale, { type, style }, () =>
     new Intl.ListFormat(locale, { localeMatcher: 'lookup', type, style }),
   ).format(items.filter((item) => item !== ''))
+}
+
+/**
+ * Languages whose sentences end with a full-width stop and run on with no space
+ * before the next sentence (`…です。次は…`, `…状态。如果…`).
+ */
+const UNSPACED_SENTENCE_LANGUAGES = new Set(['ja', 'zh'])
+const FULL_WIDTH_SENTENCE_ENDS = ['。', '！', '？']
+
+/**
+ * Join whole, separately translated sentences the way the language does.
+ *
+ * `join(' ')` is right for English but leaves `。 ` mid-message in Japanese and
+ * Chinese, which put no space after a sentence. A sentence there that ends in
+ * something else, such as a gateway's raw English reason, still gets a space,
+ * so two words never run together. Only for complete sentences; a list of names
+ * goes through `fmtList`. Empty entries are dropped, so a filtered-out sentence
+ * leaves no separator.
+ */
+export function joinSentences(sentences: readonly (string | undefined | null | false)[]): string {
+  const unspaced = UNSPACED_SENTENCE_LANGUAGES.has(activeLocale().split('-')[0])
+  let text = ''
+  for (const sentence of sentences) {
+    if (typeof sentence !== 'string' || sentence === '') continue
+    const joined = text === '' || (unspaced && FULL_WIDTH_SENTENCE_ENDS.some((end) => text.endsWith(end)))
+    text += joined ? sentence : ` ${sentence}`
+  }
+  return text
+}
+
+/** Characters that already close a sentence, Latin and CJK full-width. */
+const SENTENCE_ENDINGS = ['.', '!', '?', '\u3002', '\uff01', '\uff1f'] as const
+
+/**
+ * A refusal's reason ahead of a card's recovery text, as two sentences, so the
+ * person learns why it was refused and not only that it was. A reason with no
+ * closing stop (the framed `send_failed_with_error`, "Send failed: <error>")
+ * gets a full stop first. No reason: the recovery text alone.
+ */
+export function withReason(reason: string | undefined | null, text: string): string {
+  if (!reason) return text
+  const stop = SENTENCE_ENDINGS.some(c => reason.endsWith(c)) ? '' : '.'
+  return `${reason}${stop} ${text}`
 }
 
 /* ----------------------------------------------------------------- collation */

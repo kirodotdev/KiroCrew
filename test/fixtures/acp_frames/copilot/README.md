@@ -1,6 +1,6 @@
 # Copilot CLI frame corpus
 
-Five files, all live. Read `../README.md` first for what a fixture is and what the
+Five live files and one synthesized from a live capture. Read `../README.md` first for what a fixture is and what the
 corpus does and does not prove.
 
 | File | Frame classes it carries |
@@ -10,8 +10,9 @@ corpus does and does not prove.
 | `mcp-stdio-mount-live.jsonl` | a stdio MCP server supplied at launch completing a ROUND TRIP: `tool_call` / `session/request_permission` / `tool_call_update` for the probe server's `marker` tool, then an edit-tool call that also asks |
 | `session-load-live.jsonl` | a SECOND process's `session/load`: the conversation replayed as `user_message_chunk` / `tool_call` / `tool_call_update` before the answer, which carries `configOptions` and `modes`, then a prompt answered from the restored history |
 | `compact-live.jsonl` | three ordinary turns with their `usage_update`, a `/compact` turn (the `Compacted conversation history` chunk, its `usage_update`, `end_turn`), and one ordinary turn after it |
+| `model-effort.jsonl` | **synthesized** from the Copilot CLI 1.0.107 capture attached to #32092, on an account whose plan offers model choice: the `initialize` response, the `session/new` response with its `models` block and `model` and `reasoning_effort` selects, the `-32603` refusal of an effort write on the starting model, the `model` write's answer and `config_option_update`, an effort write that reads back, and a prompt ending `end_turn` |
 
-**Nothing here is synthesized.** Captured off Copilot CLI 1.0.100
+**Every file but `model-effort.jsonl` is live.** Captured off Copilot CLI 1.0.100
 (`@github/copilot`, `copilot --acp --stdio`) driven directly over stdio, signed in
 through the host's GitHub CLI login, which Copilot CLI reads as its lowest-priority
 credential source. Session and tool-call ids are replaced with fixed synthetic
@@ -57,3 +58,17 @@ next turn        used 20843
 The turn after `/compact` reads below the pre-compact peak, and nothing arrives after
 the `/compact` turn's `end_turn`. Those two facts are the memberships in
 `ACP_BACKENDS_COMPACT` and `ACP_BACKENDS_INLINE_COMPACTION`.
+
+## What the model and effort capture establishes
+
+`model-effort.jsonl` is marked synthesized, not live: the capture was edited after
+recording to remove each model entry's `_meta` (usage multiplier, enablement, price
+category), so it is not wire evidence in this corpus's sense and is not held to
+`COPILOT_VERIFIED_VERSION`. Its header carries the capture's own note. It is the
+evidence for `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` and
+`ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` membership: on a plan with model choice,
+`session/new` advertises a `model` select and a per-model `reasoning_effort` select, a
+model without the setting answers an effort write with `-32603` "This model does not
+support reasoning_effort configuration" (`effort_refused_by_model`), and after a model
+switch a write of `high` reads back. The 1.0.100 files beside it, on an account with
+only `auto`, advertise neither select. A re-capture on the pinned release replaces it.

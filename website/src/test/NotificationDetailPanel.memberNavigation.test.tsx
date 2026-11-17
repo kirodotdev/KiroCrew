@@ -69,6 +69,30 @@ beforeEach(() => {
 })
 
 describe('NotificationDetailPanel session-page navigation', () => {
+  it('opens a chat its app keeps out of the session lists on that app\'s page', async () => {
+    const { queryClient } = renderPanel(note({ slot: 'dj-1' }), [slot({ key: 'dj-1', mode: 'mood-music' })])
+    queryClient.setQueryData(['apps'], [{
+      name: 'mood-music', enabled: true, origin: 'registry',
+      manifest: { ui: { pages: [{ route: '/mood-music', label: 'Mood Music' }] }, permissions: { hiddenSessions: true } },
+    }])
+
+    await userEvent.click(screen.getByRole('button', { name: /Go to chat/i }))
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/apps/mood-music'))
+    expect(switchSlot).not.toHaveBeenCalled()
+  })
+
+  it('still opens /chat for an app mode whose app does not hide its chats', async () => {
+    const { queryClient } = renderPanel(note({ slot: 'dj-2' }), [slot({ key: 'dj-2', mode: 'mood-music' })])
+    queryClient.setQueryData(['apps'], [{
+      name: 'mood-music', enabled: true, origin: 'registry',
+      manifest: { ui: { pages: [{ route: '/mood-music', label: 'Mood Music' }] }, permissions: {} },
+    }])
+
+    await userEvent.click(screen.getByRole('button', { name: /Go to chat/i }))
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/chat'))
+  })
   it('opens an active member thread on the Members page', async () => {
     renderPanel(note({ slot: 'member-alice' }), [slot({ key: 'member-alice', mode: 'member', agent: 'Alice' })])
 

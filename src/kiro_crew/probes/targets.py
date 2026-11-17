@@ -72,9 +72,9 @@ _PR_SHORTHAND = re.compile(
 #: ``autonudge.py#1751`` from reading as a pull request.
 #:
 #: The prefix covers a CHAINED list, because "PRs #42 and #7" carries the prefix
-#: once and then relies on it: matching only the first number let the second one
-#: through unseen, so a loop gated on the URL for #42 retired with the work on #7
-#: unfinished. The chain is bounded to ``#N`` separated by a comma, ``and`` or ``&``
+#: once and then relies on it: matching only the first number would miss #7, and
+#: a loop gated on the URL for #42 could retire with the work on #7 unfinished.
+#: The chain is bounded to ``#N`` separated by a comma, ``and`` or ``&``
 #: -- it stops at the first token that is neither -- so a later unrelated ``#88``
 #: elsewhere in the instruction is not swept in.
 _PR_BARE = re.compile(
@@ -143,9 +143,12 @@ def _pull_requests_named(text: str) -> set[tuple[str, str, int]]:
     is simply not gated, which costs a turn per interval -- today's cost, and the
     safe direction.
     """
-    found: set[tuple[str, str, int]] = set()
+    # Keyed case-folded, because GitHub slugs are: ``Owner/Repo`` and ``owner/repo``
+    # are one pull request, and two spellings of it must not read as two subjects.
+    # The first spelling seen is the one kept.
+    found: dict[tuple[str, str, int], tuple[str, str, int]] = {}
     if not isinstance(text, str) or not text:
-        return found
+        return set()
     for match in _PR_URL.finditer(text):
         try:
             number = int(match.group("pr"))
@@ -159,8 +162,9 @@ def _pull_requests_named(text: str) -> set[tuple[str, str, int]]:
             continue
         if number <= 0:
             continue
-        found.add((match.group("owner"), match.group("repo"), number))
-    return found
+        owner, repo = match.group("owner"), match.group("repo")
+        found.setdefault((owner.lower(), repo.lower(), number), (owner, repo, number))
+    return set(found.values())
 
 
 def work_ledger_target(slot_key: str) -> Target | None:
@@ -382,7 +386,8 @@ def _infer_from_text(text: str) -> Target | None:
             other_number = int(other.group("pr"))
         except ValueError:
             continue
-        if (other.group("owner"), other.group("repo"), other_number) != (owner, repo, number):
+        named = (other.group("owner").lower(), other.group("repo").lower(), other_number)
+        if named != (owner.lower(), repo.lower(), number):
             return None
     # The same argument for the BARE form, which is how a person actually writes it:
     # "Babysit PR #42; blocked on <URL for #7>" would otherwise gate on #7, so #7

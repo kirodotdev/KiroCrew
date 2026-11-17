@@ -18,9 +18,15 @@ const path = require("node:path");
 const SHELL = path.join(__dirname, "..");
 const BUILTINS = path.join(SHELL, "..", "..", "src", "kiro_crew", "apps", "builtins");
 const HOST_FILES = [
+  "app-local-files.js",
+  "app-window-gateways.js",
   "app-window-host.js",
   "app-window-host-rules.js",
+  "app-window-placement.js",
   "app-window-preload.js",
+  "app-window-prefs.js",
+  "app-window-span.js",
+  "dashboard-session.js",
   "shell-shortcut-reservations.js",
 ];
 

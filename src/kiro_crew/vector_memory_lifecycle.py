@@ -31,8 +31,10 @@ from pathlib import Path
 from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 
+from kiro_crew import memory_reconcile_child
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
+from kiro_crew.boot_timing import timed_step
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 
 if TYPE_CHECKING:
@@ -112,7 +114,13 @@ class StoreDbLock:
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         if blocking:
             _note_loop_thread_acquire()
-        acquired = self._lock.acquire(blocking, timeout)
+        acquired = self._lock.acquire(False)
+        if not acquired and blocking:
+            # Only a real wait is recorded, so a timed-out recall can name the lock.
+            from kiro_crew.embeddings import work_phase
+
+            with work_phase("store_lock"):
+                acquired = self._lock.acquire(True, timeout)
         if acquired:
             self._local.depth = getattr(self._local, "depth", 0) + 1
         return acquired
@@ -516,19 +524,20 @@ def _init_database(self: VectorMemoryStore) -> None:
     # raises "no transaction is active", so such a step fails the open loudly.
     migrated: list[int] = []
     try:
-        if self._schema_steps(migrated):
-            self._db.execute("BEGIN IMMEDIATE")
-            try:
-                self._db.execute(
-                    "CREATE TABLE IF NOT EXISTS schema_version "
-                    "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
-                )
-                for step in self._schema_steps(migrated):
-                    step()
-                self._db.execute("COMMIT")
-            except BaseException:
-                self._db.rollback()
-                raise
+        with timed_step("vector_init.schema"):
+            if self._schema_steps(migrated):
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    self._db.execute(
+                        "CREATE TABLE IF NOT EXISTS schema_version "
+                        "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+                    )
+                    for step in self._schema_steps(migrated):
+                        step()
+                    self._db.execute("COMMIT")
+                except BaseException:
+                    self._db.rollback()
+                    raise
     finally:
         self._db.isolation_level = ""  # Restore implicit transaction handling
     for ver in migrated:
@@ -536,10 +545,19 @@ def _init_database(self: VectorMemoryStore) -> None:
 
     # The metadata backfill keeps its own transaction: it reads every row, and
     # the write lock the schema transaction holds must not wait on that scan.
+    # A full pass (no trusted marker) runs in a child process so the GIL cannot
+    # starve it; the parent holds no transaction while the child works.
+    child_done = False
+    if not self._db.in_transaction and record_meta.full_pass_needed(self._db):
+        with timed_step("vector_init.record_meta_reconcile"):
+            child_done = memory_reconcile_child.run_full_pass_in_child(str(self._db_path))
     with self._db:
-        record_meta.reconcile(self._db)
+        if not child_done:
+            with timed_step("vector_init.record_meta_reconcile"):
+                record_meta.reconcile(self._db)
         if self.algorithm_version == "v1":
-            record_meta.limit_v1_accepted_history(self._db)
+            with timed_step("vector_init.limit_v1_accepted_history"):
+                record_meta.limit_v1_accepted_history(self._db)
 
     # Second pass, after the connect: covers what SQLite has just created. Runs
     # on EVERY init, not only when init created the files -- an existing DB is
@@ -563,7 +581,8 @@ def _init_database(self: VectorMemoryStore) -> None:
 
     # Load persisted FAISS index (or rebuild from SQLite embeddings)
     try:
-        self.load_faiss_index()
+        with timed_step("vector_init.load_faiss_index"):
+            self.load_faiss_index()
     except Exception:
         logger.warning("FAISS index not loaded (faiss-cpu may not be installed yet)", exc_info=True)
 
@@ -609,6 +628,12 @@ def _schema_steps(self: VectorMemoryStore, migrated: list[int]) -> list[Callable
         # their physical rows or version series; old binaries remain readable.
         if not record_meta.schema_is_current(self.db):
             steps.append(functools.partial(record_meta.ensure_schema, self.db))
+        # A store with no rows is marked in the same one commit that builds it, so a
+        # later start has nothing to scan. The step only joins schema work that is
+        # already pending: an up-to-date file must not take the write lock for it, so
+        # any other store is marked by reconcile, which never waits for the lock.
+        if steps and record_meta.marker_wanted_for_empty_store(self.db):
+            steps.append(functools.partial(record_meta.install_marker_if_empty, self.db))
         if self._lineage == memory_schema.LINEAGE_CREW:
             # Before its migrations run, a crew file has no memory_meta to read,
             # so the stamp step is planned and reads the stamps when it runs.

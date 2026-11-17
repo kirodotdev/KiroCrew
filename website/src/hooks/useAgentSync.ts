@@ -3,12 +3,15 @@ import { useSelector } from 'react-redux'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { selectSlotsWithLiveLastTs } from '../store/slotLastTs'
+import { coordinatorTarget, nativeTarget } from '../types/approvalTarget'
+import type { ApprovalTarget } from '../types'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { recencyEpoch } from '../components/commandPalette/providers/recentsProvider'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { sliceCodePoints } from '../utils/codePoints'
+import { pollWhileVisible } from '../lib/pollWhileVisible'
 
 export interface AgentSource {
   id: string
@@ -22,7 +25,9 @@ export interface AgentSource {
   /** True when the session is waiting for user input */
   waitingForInput?: boolean
   /** Pending tool approval blocking the session, if any */
-  pendingApproval?: { tool: string; requestId: string } | null
+  /** `target` names the request the scene decides; null when the slot sent
+   *  no owner-bound identity for it, and then nothing decides it. */
+  pendingApproval?: { tool: string; requestId: string; target: ApprovalTarget | null } | null
 }
 
 const MAX_AGENTS = 8
@@ -61,19 +66,27 @@ export function useAgentSync() {
     lastMessage: sl.last_message || '',
     waitingForInput: !!sl.waiting_for_input,
     pendingApproval: sl.pending_approval_info
-      ? { tool: sl.pending_approval_info.tool, requestId: sl.pending_approval_info.request_id }
+      ? { tool: sl.pending_approval_info.tool, requestId: sl.pending_approval_info.request_id,
+          target: sl.pending_approval_info.origin === 'native'
+            ? nativeTarget(sl.pending_approval_info.request_id, sl.key, sl.pending_approval_info.request_mid)
+            : sl.pending_approval_info.origin === 'coordinator'
+              ? coordinatorTarget(sl.pending_approval_info.request_id, sl.key, sl.pending_approval_info.request_instance)
+              : null }
       : null,
   })), [slots, defaultAgent, langGen])
 
   useEffect(() => {
     let cancelled = false
-    let cronTimer: ReturnType<typeof setTimeout> | undefined
-    let spawnTimer: ReturnType<typeof setTimeout> | undefined
+    let cronBusy = false
+    let spawnBusy = false
     let cronResult: AgentSource[] = []
     let spawnResult: AgentSource[] = []
     const update = () => { if (!cancelled) setExtras([...cronResult, ...spawnResult]) }
 
+    // One read of each at a time: a slow answer is not overtaken by the next tick.
     const pollCron = async () => {
+      if (cronBusy) return
+      cronBusy = true
       try {
         const cronData = await api.crons()
         const jobs = Array.isArray(cronData.jobs) ? cronData.jobs : []
@@ -83,11 +96,13 @@ export function useAgentSync() {
           running: cr.is_running === true, detail: cr.schedule,
         }))
       } catch { /* ignore */ }
+      cronBusy = false
       update()
-      if (!cancelled) cronTimer = setTimeout(pollCron, CRON_POLL_MS)
     }
 
     const pollSpawn = async () => {
+      if (spawnBusy) return
+      spawnBusy = true
       try {
         const spawnData = await api.spawnList()
         const children = Array.isArray(spawnData.agents) ? spawnData.agents : []
@@ -97,12 +112,14 @@ export function useAgentSync() {
           running: !sp.done, detail: sp.done ? 'done' : 'running',
         }))
       } catch { /* ignore */ }
+      spawnBusy = false
       update()
-      if (!cancelled) spawnTimer = setTimeout(pollSpawn, SPAWN_POLL_MS)
     }
 
-    pollCron(); pollSpawn()
-    return () => { cancelled = true; clearTimeout(cronTimer); clearTimeout(spawnTimer) }
+    void pollCron(); void pollSpawn()
+    const stopCron = pollWhileVisible(() => { void pollCron() }, CRON_POLL_MS)
+    const stopSpawn = pollWhileVisible(() => { void pollSpawn() }, SPAWN_POLL_MS)
+    return () => { cancelled = true; stopCron(); stopSpawn() }
   }, [])
 
   const agents = useMemo(() => [...slotAgents, ...extras].slice(0, MAX_AGENTS), [slotAgents, extras])

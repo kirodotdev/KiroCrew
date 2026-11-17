@@ -168,7 +168,8 @@ def _ensure_agent_slice_memory_high() -> None:
             "SECURITY: could not apply MemoryHigh=%s to %s (%s); the AGGREGATE "
             "agent memory ceiling is NOT enforced on this host — per-scope "
             "MemoryMax still applies. See "
-            "docs/architecture/resource-protection.md.",
+            "https://github.com/kirodotdev/KiroCrew/blob/main/"
+            "docs/architecture/resource-protection.md",
             desired,
             _CGROUP_AGENTS_SLICE,
             exc,
@@ -256,7 +257,8 @@ def _check_slice_memory_pressure() -> None:
         "aggregate agent memory crossed the slice MemoryHigh ceiling and the "
         "kernel is throttling the whole agent subtree; agents run slowly "
         "(not hung) until aggregate memory drops. See "
-        "docs/architecture/resource-protection.md.",
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         _CGROUP_AGENTS_SLICE,
         previous,
         current,
@@ -322,11 +324,13 @@ def _reconcile_slice_memory_high_off_thread() -> None:
 # memory only, so a value set for any of these is accepted but not enforced.
 _WINDOWS_INERT_RESOURCE_LIMIT_KEYS = (
     "cpu_weight",
+    "max_address_space_mb",
     "max_cpu_percent",
     "max_cpu_seconds",
     "max_open_files",
     "max_total_memory_mb",
     "max_total_processes",
+    "max_user_processes",
     "scope_memory_high_pct",
     "slice_reclaim_trigger_pct",
 )
@@ -362,7 +366,7 @@ def _warn_windows_inert_resource_limits_once() -> None:
         )
 
 
-def apply_windows_resource_ceiling(pid: int) -> bool:
+def apply_windows_resource_ceiling(pid: int, *, background: bool = False) -> bool:
     """Windows counterpart to :func:`cgroup_scope_argv`, applied AFTER the spawn.
 
     ``cgroup_scope_argv`` bounds an agent subprocess and all its descendants by
@@ -387,16 +391,30 @@ def apply_windows_resource_ceiling(pid: int) -> bool:
     :func:`platform_compat.apply_job_limits` has already logged as a SECURITY
     warning. Never raises: a missing ceiling must not fail the spawn, matching
     how an unavailable cgroup scope is handled.
+
+    *background* names a runtime whose role is background work (a task run's
+    runtime, the sub-agent companion runtime). With ``agent.windows_background_qos``
+    on, that tree also gets a lowered Job CPU weight, ``BELOW_NORMAL`` and EcoQoS
+    (:mod:`kiro_crew.windows_background_qos`); the hints never change the return.
     """
     if not platform_compat.IS_WINDOWS:
         return False
     _warn_windows_inert_resource_limits_once()
     max_procs, max_mem_mb, _cpu_weight, _max_cpu_percent = _cgroup_limits_from_config()
-    return platform_compat.apply_job_limits(
+    # Imported here so the facade gains no name: windows_background_qos sits
+    # below platform_compat and reads the config lazily itself.
+    from kiro_crew import windows_background_qos
+
+    qos = background and windows_background_qos.enabled_in_config()
+    applied = platform_compat.apply_job_limits(
         pid,
         max_procs=max_procs,
         max_memory_bytes=max_mem_mb * 1024 * 1024,
+        cpu_weight=windows_background_qos.BACKGROUND_JOB_CPU_WEIGHT if qos else 0,
     )
+    if qos:
+        windows_background_qos.apply_background_qos(pid)
+    return applied
 
 
 # Prefix of the scope unit name a caller gets from ``scope_unit_name``. Carries
@@ -461,7 +479,9 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     descendants are bounded as one cgroup and the kernel kills the scope on
     breach. ``--scope`` execs into the target (it does NOT fork a wrapper), so
     the returned argv's eventual PID is the real child — parent PID tracking,
-    ``killpg``, and descendant scans are unaffected.
+    ``killpg``, and descendant scans are unaffected. ``--collect`` makes the
+    manager drop the unit once the scope ends, a failed scope included, so no
+    caller leaves a failed unit behind for ``reset-failed`` to clear.
 
     Every scope is parented under a per-instance child of
     :data:`_CGROUP_AGENTS_SLICE` (see :func:`_agents_slice_name`, which explains
@@ -567,6 +587,15 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         systemd_run,
         "--user",
         "--scope",
+        # CollectMode=inactive-or-failed. Without it the manager keeps every
+        # FAILED scope loaded until someone runs ``reset-failed``, and a scope
+        # fails whenever its process is gone before the manager attaches it
+        # (``Result=resources``: the wrapper was killed while it still waited
+        # for admission) or the kernel OOM-kills it. Each retained unit is more
+        # state the user manager walks, so a slow manager whose callers time out
+        # and kill the wrapper grows that state on every call. Collecting it
+        # changes no limit: it only frees the unit record once the scope ends.
+        "--collect",
         "-q",
         f"--slice={parent_slice}",
         *props,
@@ -1328,7 +1357,8 @@ def _disarm_slice_reclaim(reason: object, *, level: int = logging.WARNING) -> No
         level,
         "agent slice %s: proactive page-cache reclaim is off for this process (%s); "
         "the slice MemoryHigh ceiling still applies. See "
-        "docs/architecture/resource-protection.md.",
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         _CGROUP_AGENTS_SLICE,
         reason,
     )

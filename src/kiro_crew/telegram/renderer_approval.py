@@ -152,9 +152,8 @@ class TelegramApprovalDecider:
         For a caller with somewhere else to fall through to, so no wait of its own
         runs on this key: the spawn-approval gate falls through to Slack and the
         dashboard. A caller whose driver WILL await the decider wants
-        :meth:`refuse_undelivered` instead, because dropping the reservation there
-        only means the wait opens a fresh window and spends the whole timeout on a
-        prompt nobody can see.
+        :meth:`refuse_undelivered` instead, which leaves a press that already
+        landed standing.
 
         Releases a detached caller's ownership claim as well, so a window that ends
         here cannot leave the key permanently exempt from the sweep.
@@ -168,11 +167,8 @@ class TelegramApprovalDecider:
     def refuse_undelivered(cls, key: str) -> None:
         """Record a denial for a prompt that never reached the chat.
 
-        The prompt is unanswerable, so the only safe verdict is a refusal -- and
-        recording it on the reservation the driver is about to adopt is what makes
-        that refusal immediate. The alternative, dropping the reservation, reaches
-        the same verdict only after the wait has spent the full decision window on
-        a prompt nobody can see, and reports that elapsed wait as an expiry.
+        The prompt is unanswerable, so the only safe verdict is a refusal, recorded
+        on the reservation the driver is about to adopt so that it denies at once.
 
         Leaves the maps alone: the adopting ``__call__`` clears both when it
         consumes the decision, which keeps one owner for that cleanup. A key with
@@ -231,7 +227,14 @@ class TelegramApprovalDecider:
         reserved = adoptable_reservation(
             TelegramApprovalDecider._REGISTRY.get(k), asyncio.get_running_loop()
         )
-        if reserved is not None and reserved.done():
+        if reserved is None:
+            # Nothing reserved means no prompt went out: a muted conversation's
+            # SilentRenderer drops it. Deny now rather than wait the window for
+            # a question nobody was asked.
+            TelegramApprovalDecider.retire(k)
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
+            return False
+        if reserved.done():
             if reserved.cancelled() or reserved.exception() is not None:
                 # A torn-down reservation, not a decision. Open a fresh window
                 # rather than read it as consent or as a refusal.
@@ -247,6 +250,9 @@ class TelegramApprovalDecider:
                     TelegramApprovalDecider._UNDELIVERED.discard(k)
                     TelegramApprovalDecider._REGISTRY.pop(k, None)
                     TelegramApprovalDecider._NONCES.pop(k, None)
+                    # A detached arm claimed this key; dropping the key without
+                    # its claim exempts it from the turn-end sweep for good.
+                    TelegramApprovalDecider._AWAITED.discard(k)
         fut: "asyncio.Future[bool]" = (
             reserved if reserved is not None else asyncio.get_running_loop().create_future()
         )
@@ -400,9 +406,8 @@ async def on_prompt_choice(  # noqa: D401 - imperative reads wrong for a handler
         # The prompt never reached the chat, so nothing can be pressed and no
         # wait will run the ``finally`` that normally closes this window.
         # Retire it here instead of leaving a live nonce and reservation for a
-        # prompt nobody saw. Raised on, because a caller that swallowed this
-        # would leave the driver waiting out the whole window on an invisible
-        # prompt and then call that elapsed wait a decision.
+        # prompt nobody saw. Raised on, so the turn fails with the send's own
+        # error.
         TelegramApprovalDecider.retire(key)
         raise
     if not posted:

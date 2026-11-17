@@ -163,6 +163,31 @@ async def _rmtree_force_settled(path: str | Path) -> None:
         raise
 
 
+async def _mkdtemp_settled(prefix: str) -> str:
+    """Make a scratch dir off the loop; a cancel during the hop removes it.
+
+    A cancel that lands while the worker thread is still making the dir leaves the
+    caller before it binds the path, so its ``finally`` has nothing to remove and the
+    thread makes the dir anyway. Shield the hop and, on a cancel, wait for the
+    thread -- through any further cancel too -- remove what it made, then re-raise.
+    """
+    import tempfile
+
+    worker = asyncio.ensure_future(asyncio.to_thread(tempfile.mkdtemp, prefix=prefix))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.wait({worker})
+            except asyncio.CancelledError:
+                continue
+        # A failed mkdtemp made no dir; the cancel is what propagates either way.
+        if not worker.cancelled() and worker.exception() is None:
+            await _rmtree_force_settled(worker.result())
+        raise
+
+
 async def _communicate_with_timeout(
     proc: asyncio.subprocess.Process,
     timeout: float,

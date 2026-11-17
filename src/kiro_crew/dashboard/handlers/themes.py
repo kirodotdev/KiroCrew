@@ -142,7 +142,7 @@ def _list_themes_sync() -> list[dict[str, Any]]:
         for d in sorted(
             p
             for p in themes_path.iterdir()
-            if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
+            if p.is_dir() and not is_link_or_junction(p) and not p.name.startswith(".")
         ):
             mpath = d / "theme.json"
             if not mpath.is_file():
@@ -178,7 +178,7 @@ async def api_themes_create(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     err = _validate_theme_data(body)
     if err:
@@ -237,7 +237,10 @@ def _resolve_local_source(path_str: str) -> tuple[Path | None, str | None]:
     """Resolve a user-supplied local folder path to an existing directory."""
     if not isinstance(path_str, str) or not path_str.strip():
         return None, "local 'path' is required"
-    p = Path(path_str).expanduser()
+    try:
+        p = Path(path_str).expanduser()
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        return None, f"not a directory: {path_str}"
     # EVERY filesystem call below is too late for these two, so both are screened
     # first. `expanduser` only reads the environment and touches nothing.
     #
@@ -872,7 +875,7 @@ async def api_themes_install(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     source = body.get("source") if isinstance(body, dict) else None
     if not isinstance(source, dict):
         return web.json_response({"error": "missing 'source' object"}, status=400)
@@ -1020,7 +1023,7 @@ async def api_theme_detail(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         err = _validate_theme_data(body)
         if err:
             return web.json_response({"error": err}, status=400)

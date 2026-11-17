@@ -88,11 +88,29 @@ echo "[dev] starting backend (port $GATEWAY_PORT, home .kirocrew-dev) -> $BACKEN
 # --no-open: the gateway would otherwise auto-open its OWN url (:6777) — the
 # bundled-snapshot surface. The live surface is the Vite url printed below.
 #
-# NOTE: the gateway's CSRF origin allowlist trusts Vite's DEFAULT port 3000
-# only. If something squats on 3000, Vite falls back to 3001+ and every
-# mutating request (chat send, etc.) fails with "CSRF check failed" while
-# reads and the WS still work. If that happens, either free port 3000 or
-# export KIROCREW_ALLOWED_LOOPBACK_PORTS=3000,3001,3002 before running this.
+# The gateway trusts no browser origin but its own until told to, so this
+# script opts in the one port it starts Vite on. Trusting a port lets every
+# page served there act as you in the dashboard, so the port must be free
+# now, and Vite runs with --strictPort below so it fails instead of moving to
+# 3001+ and leaving the trusted :3000 to whatever takes it next.
+VITE_DEV_PORT=3000
+for vite_host in 127.0.0.1 '[::1]'; do
+    # Only a refused connection (curl exit 7) means the port is free. A listener
+    # that accepts and then answers slowly, never answers, or closes at once is
+    # still a listener, so every other outcome counts as taken.
+    # The exit code is captured with `||` so `set -e` does not end the script
+    # on the refused connection that is the normal, free-port case, and no
+    # proxy is consulted, so only a real loopback listener can answer.
+    probe_rc=0
+    curl -gsS --noproxy '*' -o /dev/null --connect-timeout 2 --max-time 2 "http://$vite_host:$VITE_DEV_PORT/" 2>/dev/null || probe_rc=$?
+    if [ "$probe_rc" -ne 7 ]; then
+        echo "[dev] ERROR: something is already listening on :$VITE_DEV_PORT."
+        echo "[dev] Stop it first: the dev gateway trusts that port as a browser origin."
+        exit 1
+    fi
+done
+# Added to any ports the caller already opted in (an SSH tunnel, say).
+export KIROCREW_ALLOWED_LOOPBACK_PORTS="${KIROCREW_ALLOWED_LOOPBACK_PORTS:+$KIROCREW_ALLOWED_LOOPBACK_PORTS,}$VITE_DEV_PORT"
 ./dev-backend.sh --no-open > "$BACKEND_LOG" 2>&1 &
 PIDS+=($!)
 
@@ -110,14 +128,21 @@ done
 echo "[dev] backend up on :$GATEWAY_PORT"
 
 echo "[dev] starting Vite -> $VITE_LOG"
-( cd website && KIROCREW_PORT="$GATEWAY_PORT" exec npm run dev > "$VITE_LOG" 2>&1 ) &
+( cd website && KIROCREW_PORT="$GATEWAY_PORT" exec npm run dev -- --port "$VITE_DEV_PORT" --strictPort > "$VITE_LOG" 2>&1 ) &
 PIDS+=($!)
 
-# Vite picks 3000, or the next free port — read the real one from its banner.
+# --strictPort pins Vite to VITE_DEV_PORT; read it back from the banner anyway.
+# If Vite exits (its strict bind failed), stop at once: the gateway trusting
+# the port must not outlive the Vite that was meant to hold it.
+VITE_PID=$!
 VITE_PORT=""
 for i in $(seq 1 30); do
     VITE_PORT="$(grep -oE 'Local:.*localhost:[0-9]+' "$VITE_LOG" 2>/dev/null | grep -oE '[0-9]+$' | head -1)"
     [ -n "$VITE_PORT" ] && break
+    if ! kill -0 "$VITE_PID" 2>/dev/null; then
+        echo "[dev] ERROR: Vite exited before it reported a port; see $VITE_LOG"
+        exit 1
+    fi
     sleep 1
 done
 if [ -z "$VITE_PORT" ]; then

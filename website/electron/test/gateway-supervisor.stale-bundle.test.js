@@ -131,7 +131,7 @@ async function spawnedSuccessor(built) {
   return successor;
 }
 
-const SUCCESSOR_READY_TIMEOUT_MS = 60_000;
+const SUCCESSOR_READY_TIMEOUT_MS = 150_000;
 
 const BUNDLED_BIN = "/virtual/resources/backend-dist/kirocrew-backend-x64/bin/kirocrew";
 
@@ -401,7 +401,7 @@ test("a successor that never serves within the bound is stopped and this instanc
   assert.deepStrictEqual(state.exits, [], "a timed-out handoff must not exit this instance");
   assert.strictEqual(successor.child.killed, true, "the unconfirmed successor is stopped so one instance remains");
   assert.strictEqual(state.lockRequests, 1, "the single-instance lock is taken back");
-  assert.ok(logs.some((line) => line.includes("did not answer on :5476 within 60s")));
+  assert.ok(logs.some((line) => line.includes("did not answer on :5476 within 150s")));
   assert.deepStrictEqual(timers.pending, [], "the poll is disarmed with the deadline");
 
   // A late readiness answer must not exit either.

@@ -376,6 +376,9 @@ def _holds_exactly(path: Path, data: bytes) -> bool:
     simply "not the same" and gets atomically replaced, never waited on. At most one
     byte more than *data* is read. Absent or unreadable is also "not the same".
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -386,7 +389,7 @@ def _holds_exactly(path: Path, data: bytes) -> bool:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return False
         with os.fdopen(fd, "rb", closefd=False) as handle:
-            return handle.read(len(data) + 1) == data
+            return bounded_read(handle, len(data) + 1) == data
     except OSError:
         return False
     finally:

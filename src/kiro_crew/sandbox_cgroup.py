@@ -219,7 +219,8 @@ def _warn_cgroup_unavailable(reason: str) -> None:
     _CGROUP_WARNED = True
     logger.warning(
         "SECURITY: cgroup v2 scope enforcement unavailable (%s); %s See "
-        "docs/architecture/resource-protection.md.",
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         reason,
         _cgroup_unavailable_effect(),
     )
@@ -432,7 +433,9 @@ def _log_cgroup_scope_transition(result: tuple[bool, str]) -> None:
         "SECURITY: cgroup v2 scope enforcement became unavailable while the gateway "
         "was running (%s). New agent subprocesses start WITHOUT the fork-bomb / "
         "memory-DoS ceilings (RLIMIT_NOFILE still applies) instead of failing with "
-        "'Failed to connect to bus'. See docs/architecture/resource-protection.md.",
+        "'Failed to connect to bus'. See "
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         reason,
     )
 
@@ -556,10 +559,10 @@ def _cgroup_limits_from_config(
     if rl is not None:
         # ``>= 1``, so 0 lands on the default with everything else out of domain:
         # TasksMax=0 / MemoryMax=0M are rejected by systemd and the scope would
-        # never start, so this ceiling is never left unset. The SAME two keys
-        # mean "leave inherited" when 0 reaches the rlimit path in
-        # security.apply_resource_limits — ResourceLimitsConfig carries both
-        # domains so neither side can be tightened without seeing the other.
+        # never start, so this ceiling is never left unset. On the rlimit path
+        # in security.apply_resource_limits 0 means "leave inherited" for its
+        # own keys -- ResourceLimitsConfig carries both domains so neither side
+        # can be tightened without seeing the other.
         if rl.max_processes is not None and rl.max_processes >= 1:
             max_procs = rl.max_processes
         if rl.max_memory_mb is not None and rl.max_memory_mb >= 1:

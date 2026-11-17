@@ -65,6 +65,8 @@ class ToolCallState:
             self.tool_name = self.tool_name[:MAX_RETAINED_NAME_CHARS]
         if len(self.mcp_server_name) > MAX_RETAINED_NAME_CHARS:
             self.mcp_server_name = self.mcp_server_name[:MAX_RETAINED_NAME_CHARS]
+        if len(self.silence_server) > MAX_RETAINED_NAME_CHARS:
+            self.silence_server = self.silence_server[:MAX_RETAINED_NAME_CHARS]
 
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
@@ -118,6 +120,18 @@ class ToolCallState:
     # classification see the same value the dispatch computed, and so a
     # detached consult never re-derives it from a different command string.
     interactive_risk: str = INTERACTIVE_NONE
+    # The per-call silence timer (``acp.tool_silence``). ``silence_class`` is the
+    # bound this call gets, "" for none (a shell call keeps the oracle's rules).
+    # ``silence_server`` is the MCP server the harness's frame named, kept only so
+    # Kiro Crew's own keepalive can be matched to a call it served; it is never an
+    # identity anything trusts. ``last_activity_ts`` is when a frame attributable
+    # to this call last arrived (monotonic; the dispatch instant until one does),
+    # and ``activity_parked`` is the turn's consumer park banked at that moment,
+    # so the timer subtracts only parks that came after it.
+    silence_class: str = ""
+    silence_server: str = ""
+    last_activity_ts: float = 0.0
+    activity_parked: float = 0.0
 
     @staticmethod
     def identity_of(event: object) -> tuple[str, str]:
@@ -353,6 +367,17 @@ class InFlightToolTracker:
         map that dropped rows never reads like one that was never that full.
         """
         return self._evicted_count
+
+    def states(self) -> list[tuple[str, ToolCallState]]:
+        """Every call still open as ``(toolCallId, state)``, in dispatch order.
+
+        The id-less judged call is included under ``""``: a per-call timer has to
+        see it too, and it is the one call ``active_calls`` leaves out.
+        """
+        out = [(call_id, state) for call_id, (state, _aux) in self._calls.items()]
+        if self._idless is not None:
+            out.append(("", self._idless[0]))
+        return out
 
     @property
     def active_calls(self) -> dict[str, tuple[ToolCallState, object]]:

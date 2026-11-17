@@ -1,13 +1,15 @@
-"""Commit permalinks survive the bare-secret pass; a key beside a commit does not."""
+"""Commit permalinks are never masked.
+
+A bare 40-character key with no key ID nearby and no label stays visible by design,
+so the cases that pinned such a key beside a commit are gone with the bare-secret pass.
+"""
 
 from __future__ import annotations
 
 import random
 import re
-import string
 
 import pytest
-from named_cases_helpers import named_cases
 
 from kiro_crew.security import redact, redact_credentials
 from kiro_crew.security import redaction as _redaction
@@ -89,15 +91,6 @@ def test_the_fixtures_are_what_they_claim() -> None:
 
 
 @pytest.mark.parametrize("url", FIRING_LINKS)
-def test_the_fixture_link_trips_the_heuristic_without_the_ceiling(
-    url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _without_the_commit_ceiling(monkeypatch)
-    assert _redaction._text_contains_bare_secret(url)
-    assert redact_credentials(url)[0] != url
-
-
-@pytest.mark.parametrize("url", FIRING_LINKS)
 @pytest.mark.parametrize(
     "template",
     ["{}", "see {} for details.", "[gateway.py]({})", "<{}>", "`{}`", '{{"url":"{}"}}'],
@@ -116,101 +109,6 @@ def test_no_seeded_commit_fires(template: str) -> None:
         commit = "".join(rng.choice("0123456789abcdef") for _ in range(40))
         url = template.format(commit)
         assert redact_credentials(url) == (url, []), url
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        *named_cases(
-            "test_a_key_beside_a_commit_is_still_redacted",
-            "text",
-            [
-                f"{COMMIT}{KEY}",
-                f"{KEY}{COMMIT}",
-                f"{COMMIT.upper()}{KEY}",
-                f"https://github.com/kirodotdev/KiroCrew/blob/{KEY}",
-                f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT}/{KEY}",
-                f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT}/src/{KEY}/gateway.py",
-            ],
-        ),
-        *named_cases(
-            "test_a_key_in_a_plural_route_link_is_still_redacted",
-            "text",
-            [
-                f"https://git.example/packages/WidgetHubChatBridge/blobs/{KEY}",
-                f"https://git.example/packages/WidgetHubChatBridge/blobs/{COMMIT}/{KEY}",
-                f"https://git.example/packages/WidgetHubChatBridge/trees/{COMMIT}/src/{KEY}/x.py",
-                f"https://git.example/packages/WidgetHubChatBridge/blobs/{KEY}/--/src/x.py",
-                f"{KEY}/blobs/{COMMIT}/--/x.py",
-            ],
-        ),
-    ],
-)
-def test_a_key_beside_a_link_is_still_redacted(text: str) -> None:
-    result, warnings = redact_credentials(text)
-    assert KEY not in result
-    assert TAG in result
-    assert warnings
-
-
-def test_seeded_keys_glued_to_a_commit_are_redacted() -> None:
-    """Every key-shaped window a key brings is still classified at its own offset."""
-    rng = random.Random(7)
-    alphabet = string.ascii_letters + string.digits + "+/"
-    checked = 0
-    while checked < 300:
-        key = "".join(rng.choice(alphabet) for _ in range(40))
-        if not _redaction._looks_like_secret_key(key):
-            continue
-        if key.count("/") > _redaction._SECRET_MAX_SLASHES:
-            continue
-        for text in (
-            f"{COMMIT}{key}",
-            f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT}/{key}",
-            f"https://github.com/kirodotdev/KiroCrew/blob/{key}",
-            f"{key}{COMMIT}",
-        ):
-            assert key not in redact_credentials(text)[0], text
-        checked += 1
-
-
-@pytest.mark.parametrize("text", [HEAD_HEX_KEY, f"secret: {HEAD_HEX_KEY}\n", f'["{HEAD_HEX_KEY}"]'])
-def test_a_standalone_key_holding_hex_digits_is_still_redacted(text: str) -> None:
-    """The ceiling reads only a fragment: a 40-char run IS the token somebody wrote."""
-    result, _ = redact_credentials(text)
-    assert HEAD_HEX_KEY not in result
-    assert TAG in result
-
-
-@pytest.mark.parametrize(
-    ("key", "text"),
-    [
-        (HEAD_HEX_KEY, f"X{HEAD_HEX_KEY}"),
-        (HEAD_HEX_KEY, f"{HEAD_HEX_KEY}A"),
-        (HEAD_HEX_KEY, f"https://evil.example/collect/{HEAD_HEX_KEY}"),
-        (HEAD_HEX_KEY, f"{COMMIT}/{HEAD_HEX_KEY}"),
-        (HEAD_HEX_KEY, f"{COMMIT}{HEAD_HEX_KEY}"),
-        (HEAD_HEX_KEY, f"https://github.com/kirodotdev/KiroCrew/blob/{HEAD_HEX_KEY}"),
-        (TAIL_HEX_KEY, f"{TAIL_HEX_KEY}{COMMIT}"),
-        (SLASH_HEX_KEY, f"{SLASH_HEX_KEY}{COMMIT}"),
-        (SLASH_HEX_KEY, f"{SLASH_HEX_KEY}{COMMIT[:28]}/README.md"),
-        (LEAD_SLASH_KEY, f"{COMMIT[:28]}{LEAD_SLASH_KEY}"),
-        (
-            LEAD_SLASH_KEY,
-            f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT[:28]}{LEAD_SLASH_KEY}",
-        ),
-        (
-            HEX_HEAD_KEY,
-            f"https://github.com/kirodotdev/KiroCrew/blob/{COMMIT[:12]}{HEX_HEAD_KEY}",
-        ),
-    ],
-)
-def test_a_glued_key_holding_hex_digits_is_still_redacted(key: str, text: str) -> None:
-    """Only hex right after a code-host route is a commit; hex a key carries is not."""
-    result, warnings = redact_credentials(text)
-    assert key not in result
-    assert TAG in result
-    assert warnings
 
 
 class _CountingStarts(list[int]):
@@ -304,44 +202,6 @@ def test_a_sha256_segment_after_a_plural_route_survives(template: str) -> None:
     assert redact_credentials(url) == (url, [])
 
 
-@pytest.mark.parametrize(
-    ("key", "text"),
-    [
-        (HEAD_HEX_KEY, f"https://git.example/packages/P/blobs/{HEAD_HEX_KEY}"),
-        (
-            LEAD_SLASH_KEY,
-            f"https://git.example/packages/P/blobs/{COMMIT[:28]}{LEAD_SLASH_KEY}",
-        ),
-        (HEX_HEAD_KEY, f"https://git.example/packages/P/trees/{COMMIT[:12]}{HEX_HEAD_KEY}"),
-    ],
-)
-def test_a_glued_key_after_a_plural_route_is_still_redacted(key: str, text: str) -> None:
-    result, warnings = redact_credentials(text)
-    assert key not in result
-    assert TAG in result
-    assert warnings
-
-
-def test_seeded_keys_glued_to_a_plural_route_commit_are_redacted() -> None:
-    rng = random.Random(22831)
-    alphabet = string.ascii_letters + string.digits + "+/"
-    checked = 0
-    while checked < 300:
-        key = "".join(rng.choice(alphabet) for _ in range(40))
-        if not _redaction._looks_like_secret_key(key):
-            continue
-        if key.count("/") > _redaction._SECRET_MAX_SLASHES:
-            continue
-        for text in (
-            f"https://git.example/packages/WidgetHubChatBridge/blobs/{COMMIT}/{key}",
-            f"https://git.example/packages/WidgetHubChatBridge/blobs/{key}",
-            f"x{key}/trees/{COMMIT}",
-            f"{key}blobs/{COMMIT}",
-        ):
-            assert key not in redact_credentials(text)[0], text
-        checked += 1
-
-
 #: A key-shaped base the padded keys below are cut from (the AWS example with no `/`).
 PAD_BASE = "wJalrXUtnFEMIQK7MDENGQbPxRfiCYEXAMPLEKEY"
 PAD_HEX = "3f9c0a7b1d4e7c2b9a0f"
@@ -350,25 +210,6 @@ PAD_HEX = "3f9c0a7b1d4e7c2b9a0f"
 def _padded_key(route: str, digits: int) -> str:
     """A 40-char key ending in `/<route>/` and *digits* hex digits."""
     return PAD_BASE[: 40 - len(route) - 2 - digits] + f"/{route}/" + PAD_HEX[:digits]
-
-
-@pytest.mark.parametrize("route", ["blob", "tree", "blobs", "trees"])
-@pytest.mark.parametrize("digits", [1, 2, 7])
-def test_a_key_padded_into_a_route_below_the_floor_is_redacted(route: str, digits: int) -> None:
-    """A key ending in a route word, `/` and fewer than eight hex digits, padded to a commit.
-
-    The text after it completes a 40-digit routed commit, so the key's own window
-    crosses that commit's opening `/`. Below the floor it takes too few digits to be
-    declined, so the key is still found.
-    """
-    key = _padded_key(route, digits)
-    assert len(key) == 40
-    assert _redaction._looks_like_secret_key(key), key
-    glued = f"{key}{COMMIT[: 40 - digits]}/README.md"
-    result, warnings = redact_credentials(glued)
-    assert key not in result
-    assert TAG in result
-    assert warnings
 
 
 @pytest.mark.parametrize("route", ["blob", "tree", "blobs", "trees"])

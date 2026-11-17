@@ -18,7 +18,7 @@ superseded-by: []
   the repository takes no standalone RFC pull requests, so `doc-pr` is null and
   the implementation is the one named in `implementation-prs`.
 - Builds on [`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md) Phase 3
-  (the `work-ledger` probe, in flight on
+  (the `work-ledger` probe, merged in
   [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781)) and on
   [`rfc-append-only-ledger`](rfc-append-only-ledger.md) (the crew log). It adds
   no delivery path and no second loop: it moves one deadline.
@@ -369,6 +369,18 @@ and the batch would never be delivered. And the window counts as open only while
 the armed timer is still live, so a report arriving after a cancel (a user
 message in the watched session cancels the timer without clearing the push mark)
 arms a window of its own instead of joining one nothing will close.
+
+**The window is not waited out when nobody can join it.** A report from the only
+open item bound to a worker arms its tick at delay zero
+(`conductor_wake._Registry.reports_alone`): no second report can arrive to share
+the turn, so the window would be ten seconds of latency with nothing bought. A
+conductor that runs its items one after another paid it on every hand-off. The
+set of items a report can still come from is kept from the `work` fold's own
+render (`state` is `open` and `worker_session_key` is set), beside the report
+stamps and under their bound. A board the subscriber has not yet seen whole keeps
+the window, because a second worker may be out. The tick armed at once reads the
+ledger when it runs, so it also delivers a report an earlier, still open window
+was holding.
 
 Reports that land while the conductor is already mid-turn are NOT this window's
 to carry: they are covered by the steer in #17582, which folds them into the

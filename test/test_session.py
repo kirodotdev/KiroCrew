@@ -89,8 +89,11 @@ class TestSessionManager:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.get_or_create("thread1")
         mgr._sessions["thread1"].last_used = time.monotonic() - 9999
+        released_at = time.monotonic()
         mgr.release("thread1")
-        assert mgr._sessions["thread1"].last_used > time.monotonic() - 5
+        # Stamped at the release itself: no earlier than the clock read just
+        # before it, so the backdated value is gone.
+        assert mgr._sessions["thread1"].last_used >= released_at
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -631,6 +634,26 @@ class TestWarmPool:
         background_gate.set()
         await asyncio.wait_for(background, _HANG_CEILING_S)
         assert mgr._sessions[BACKGROUND_KEY].provider is starts[1]
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_background_start_overtaken_by_a_reset_is_shut_down(self, cfg, monkeypatch):
+        """A reset of ``_bg`` while its cold start is in flight makes that start stale
+        (the ``kirocrew-lite`` repair resets ``_bg`` after rewriting its spec): the
+        provider is shut down instead of registered, so no later claimant can take it."""
+        gate = asyncio.Event()
+        factory, starts, started = self._gated_bg_factory(monkeypatch, [gate])
+        mgr = SessionManager(cfg, provider_factory=factory)
+        await mgr.start_pool()
+
+        start = asyncio.create_task(mgr._ensure_background())
+        await asyncio.wait_for(started[0].wait(), _HANG_CEILING_S)
+        await asyncio.wait_for(mgr.reset(BACKGROUND_KEY), _HANG_CEILING_S)
+        gate.set()
+        await asyncio.wait_for(start, _HANG_CEILING_S)
+
+        assert BACKGROUND_KEY not in mgr._sessions
+        starts[0].shutdown.assert_awaited_once()
         await mgr.close_all()
 
     @pytest.mark.asyncio

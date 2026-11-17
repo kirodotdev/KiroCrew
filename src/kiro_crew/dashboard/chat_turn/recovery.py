@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.dashboard.chat_utils import (
@@ -133,9 +134,9 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
     """Report a cycle that never obtained a model session to its nudge loop.
 
     ``self_wake`` marks the loop's OWN cycle, a recovery it queued for itself
-    included (``_ChatTurn._wake_cycle``): only that may spend its stand-down
-    budget, or a human turn that happened to be starved on a slot that also
-    carries a loop would stop one the human never drove.
+    and a turn that carries its steered wake included (``_ChatTurn._wake_cycle``):
+    only that may spend its stand-down budget, or a human turn that happened to be
+    starved on a slot that also carries a loop would stop one the human never drove.
 
     Only a start that TIMED OUT or whose reply was dropped as oversize carries the
     tag: the ``session/new`` and ``session/load`` arms in ``acp/runtime`` and the
@@ -196,10 +197,10 @@ async def _note_cycle_failure(
     The gate, in the one place it is defined:
 
     * ``self_wake`` -- only the loop's OWN cycle counts, a recovery it queued
-      for itself included; a human turn
-      that happened to error on a slot that also carries a loop must not spend
-      the loop's stand-down budget. Same marker ``_note_cycle_start_failure``
-      relies on.
+      for itself and a turn that carries its steered wake included; any other
+      human turn that happened to error on a slot that also carries a loop must
+      not spend the loop's stand-down budget. Same marker
+      ``_note_cycle_start_failure`` relies on.
     * NOT a session-start failure -- that has its own streak
       (``notify_cycle_start_failed``); the ``session_start_failed`` tag is read
       with ``getattr`` because the two ACP families carry it independently.
@@ -262,7 +263,7 @@ async def _note_cycle_failure(
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Nine structural tags, read here without looking at the prose. Four are set
+    Eleven structural tags, read here without looking at the prose. Four are set
     by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
     (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``),
     a spent plan allowance (``usage_limit``) and a context overflow
@@ -286,8 +287,13 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     The eighth, ``kiro_cli_missing``, is set where the kiro-cli binary is not
     found at spawn (``AcpKiroCliMissing`` on the runtime path, ``AcpError`` on the
     dedicated client); its row lets a feature-request chat offer the form. The
-    ninth, ``model_unavailable``, ranks last: it is a capacity or rollout refusal
-    of a served model, so every more specific verdict wins over it.
+    ninth, ``windows_spawn_blocked``, is set where Windows policy refused the
+    agent binary at spawn (``AcpSpawnBlocked``); its row carries a notice token
+    naming the file. The tenth, ``mcp_readiness_timeout``, is set where Crew's
+    managed MCP servers missed the KAS readiness deadline; its row carries a
+    notice token so the card reads plainly. The eleventh, ``model_unavailable``,
+    ranks last: it is a capacity or rollout refusal of a served model, so every
+    more specific verdict wins over it.
 
     Ahead of all but the entitlement verdict, a start the declared-name resolver
     refused over contested specs (an ``AmbiguousAgentSpecError`` anywhere in the
@@ -308,7 +314,7 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     if getattr(exc, "auth_required", False):
         return {"kind": AUTH_REQUIRED_KIND, **_kas_signed_out_notice(str(exc))}
     if getattr(exc, "usage_limit", False):
-        return {"kind": USAGE_LIMIT_KIND}
+        return {"kind": USAGE_LIMIT_KIND, **_limit_reset_meta(exc)}
     if getattr(exc, "image_dimension_wedge", False) is True:
         return {"kind": IMAGE_REPAIR_KIND}
     if getattr(exc, "context_overflow", False) is True:
@@ -319,6 +325,20 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         return {"kind": APP_AGENT_REFUSED_KIND}
     if getattr(exc, "kiro_cli_missing", False) is True:
         return {"kind": KIRO_CLI_MISSING_KIND}
+    if getattr(exc, "windows_spawn_blocked", False) is True:
+        # A host policy refused the agent binary (``AcpSpawnBlocked``): the token
+        # lets the dashboard word the card, naming the file, in the reader's language.
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        binary = getattr(exc, "binary", "")
+        return gn.gateway_notice_meta(
+            gn.GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED,
+            binary=binary if isinstance(binary, str) else "",
+        )
+    if getattr(exc, "mcp_readiness_timeout", False) is True:
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        return gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TOOLS_NOT_READY)
     # Last, and only on a frame the raise-time classifier tagged: a capacity or
     # rollout refusal of the selected model that reached the terminal card. The
     # ladder already re-sent the turn to that model and the fallback chain had
@@ -328,6 +348,21 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     if getattr(exc, "model_unavailable", False) is True:
         return {"kind": MODEL_UNAVAILABLE_KIND}
     return None
+
+
+def _limit_reset_meta(exc: BaseException) -> dict[str, object]:
+    """``reset_at``, the ISO instant a usage limit opens again, for the card to show.
+
+    Empty unless the error read one (``AcpError.usage_limit_reset_at``), so a
+    limit row with no readable reset clause keeps exactly ``{"kind": ...}``.
+    """
+    at = getattr(exc, "usage_limit_reset_at", None)
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return {}
+    try:
+        return {"reset_at": datetime.fromtimestamp(at, tz=timezone.utc).isoformat()}
+    except (OverflowError, OSError, ValueError):
+        return {}
 
 
 def _kas_signed_out_notice(text: str) -> dict[str, object]:

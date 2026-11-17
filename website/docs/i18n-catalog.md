@@ -504,6 +504,16 @@ platform picks for a missing glyph. A test pins the `:root` tokens, every
 declaration site (including the theme blocks, which redeclare both), the
 `html:lang(zh-CN/ja/ko)` overrides, and the ordering.
 
+**No letter-spacing under a Hindi or Bengali UI.** Devanagari and Bengali hang
+each word from one headline stroke and join letters into conjuncts, so
+letter-spacing pulls a word apart (or crowds it, when negative). One rule in `src/styles/content-fit.css`
+puts letter-spacing back to `normal` under `html:lang(hi)` and `html:lang(bn)`, on
+every `tracking-*` utility and on each class that sets letter-spacing in a
+stylesheet. A new stylesheet class that tracks text joins that rule's list;
+`src/i18n/scriptLetterSpacing.test.ts` fails until it does. The rule matches by
+class, not `*`, because xterm's DOM renderer aligns its cell grid through
+inherited letter-spacing.
+
 ## Translating the corpus
 
 Shard the work rather than doing one pass. `node scripts/i18n-shard.mjs split <dir>`

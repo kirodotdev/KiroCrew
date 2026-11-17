@@ -1,22 +1,21 @@
-"""Dashboard handlers for the owner's credential-redaction switch.
+"""Dashboard handlers for the owner's credential-redaction setting.
 
 Two routes, both OWNER-gated, and the PUT is the ONLY writer of the
 ``credential_redaction.json`` keystone (see ``security.redaction_switch`` for
-what the switch does and does not govern).
+what the setting does and does not govern).
 
-Why owner-gated rather than merely authenticated: the switch turns off the
-credential pass in the owner's dashboard file viewer, the one surface it
-governs. A Slack-allow-listed non-owner running ``!dashboard`` authenticates
+Why owner-gated rather than merely authenticated: the setting turns off the
+credential pass on every path ``redaction_seams.OUTPUT_SEAMS`` lists and in the owner's
+file viewer. A Slack-allow-listed non-owner running ``!dashboard`` authenticates
 with ``app == ""`` and ``sub != owner_id``, so plain token auth admits them; the
 owner predicate does not.
 
 Known limit, stated rather than papered over: the owner gate is an IDENTITY
 check, not a proof that a human clicked. An agent driving the owner's
-authenticated browser through computer use could flip the switch. What that
-buys it is bounded to the owner's own file viewer -- exfiltration-URL redaction
-and every request-blocking gate stay on regardless (``redaction_switch`` module
-docstring) -- and every change is SEL-audited, so the flip leaves a record even
-though the redaction does not.
+authenticated browser through computer use could flip the setting. What that
+buys it is those paths -- every request-blocking gate, the exfiltration-URL blocking
+decisions among them, stays on regardless (``redaction_seams.ALWAYS_REDACTED``) -- and
+every change is SEL-audited, so the flip leaves a record even though the redaction does not.
 """
 
 from __future__ import annotations
@@ -109,6 +108,12 @@ async def _deny_non_owner(request: web.Request, operation: str) -> web.Response 
     return _owner_denial_response(request, "dashboard owner required", _CODE_OWNER_REQUIRED)
 
 
+async def _view(state: redaction_switch.RedactionState) -> dict:
+    """The state in force, plus whether this host's policy forbids turning redaction off."""
+    locked = not await asyncio.to_thread(redaction_switch.owner_may_disable)
+    return {**state.to_dict(), "locked_by_policy": locked}
+
+
 async def api_credential_redaction_get(request: web.Request) -> web.Response:
     """GET /api/security/credential-redaction -- the switch in force."""
     denied = await _deny_non_owner(request, "credential_redaction.read")
@@ -125,16 +130,16 @@ async def api_credential_redaction_get(request: web.Request) -> web.Response:
         caller=str(request.get("user") or "owner"),
         detail=f"enabled={state.enabled}",
     )
-    return web.json_response(state.to_dict())
+    return web.json_response(await _view(state))
 
 
 async def api_credential_redaction_put(request: web.Request) -> web.Response:
-    """PUT /api/security/credential-redaction -- record ``{"enabled": bool}``.
+    """PUT /api/security/credential-redaction -- move the one setting.
 
-    ``enabled`` must be a JSON boolean; anything else is a 400 and nothing is
-    written. The record carries the time of the change so the card can say when
-    redaction was switched off. OFF is a 403 when the governance policy does not
-    allow it (``redaction_switch.owner_may_disable``).
+    The body is exactly ``{"enabled": bool}``: anything else, a field an earlier record
+    carried (``engine``, ``seams_enabled``) included, is a 400 and nothing is written. The
+    record carries the time of the change. OFF is a 403 when the governance policy does
+    not allow it (``redaction_switch.missing_opt_in``); ON is always allowed.
     """
     denied = await _deny_non_owner(request, "credential_redaction.write")
     if denied:
@@ -143,21 +148,24 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": _CODE_INVALID_JSON}, status=400)
-    enabled = body.get("enabled") if isinstance(body, dict) else None
+    enabled = body.get("enabled") if isinstance(body, dict) and set(body) == {"enabled"} else None
     if not isinstance(enabled, bool):
         return web.json_response(
-            {"error": "enabled must be a boolean", "code": _CODE_INVALID_BODY}, status=400
+            {"error": 'send {"enabled": boolean}', "code": _CODE_INVALID_BODY},
+            status=400,
         )
+    outcome = "enabled" if enabled else "disabled"
     changed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     subject = str(request.get("user") or "owner")
-    if not enabled and not await asyncio.to_thread(redaction_switch.owner_may_disable):
+    # Off needs the administrator's opt-in on a governed host; the refusal names the
+    # scope that is missing.
+    scope = None if enabled else await asyncio.to_thread(redaction_switch.missing_opt_in)
+    if scope is not None:
         reason = "this host's governance policy keeps credential redaction on"
         await asyncio.to_thread(
             _audit, outcome="denied", caller=subject, detail=f"credential_redaction.write: {reason}"
         )
-        await asyncio.to_thread(
-            audit_refusal, "credential_redaction.write", redaction_switch.DISABLE_SCOPE, "", reason
-        )
+        await asyncio.to_thread(audit_refusal, "credential_redaction.write", scope, "", reason)
         return web.json_response({"error": reason, "code": _CODE_LOCKED_BY_POLICY}, status=403)
 
     def _write_and_audit() -> redaction_switch.RedactionState:
@@ -180,7 +188,7 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
             # owner check, and this row is the one that must say which one
             # turned the credential pass off.
             recorded = _audit(
-                outcome="enabled" if enabled else "disabled",
+                outcome=outcome,
                 caller=subject,
                 detail=f"changed_at={changed_at}",
                 critical=True,
@@ -188,7 +196,7 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
             if not enabled and not recorded:
                 raise _AuditUnavailable()
             try:
-                return redaction_switch.set_enabled(enabled, changed_at=changed_at)
+                state = redaction_switch.set_enabled(enabled, changed_at=changed_at)
             except OSError as exc:
                 _audit(
                     outcome="write_failed",
@@ -197,6 +205,8 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
                     critical=True,
                 )
                 raise
+            redaction_switch.publish_verdict(state)
+            return state
 
     try:
         state = await asyncio.to_thread(_write_and_audit)
@@ -220,13 +230,17 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
     # the switch position is owner posture, and ``_send_ws_owners`` bypasses the
     # app-scope gate by construction, so no app token sees it.
     _broadcast_switch_changed(request, state)
-    return web.json_response(state.to_dict())
+    return web.json_response(await _view(state))
 
 
-#: The switch position owner dashboards were last told about (None until seeded).
+#: The setting's position owner dashboards were last told about (None until seeded).
 _pushed_enabled: bool | None = None
 #: Bumped on every push, so a queued policy frame can tell a newer push overtook it.
 _push_count = 0
+
+#: The frame that makes an owner document drop the file bodies it holds and re-read
+#: the setting: the setting moved.
+_FRAME_PURGE = "credential_redaction_changed"
 
 
 def _broadcast_switch_changed(request: web.Request, state: redaction_switch.RedactionState) -> None:
@@ -237,31 +251,52 @@ def _push_to_owners(dashboard_state, state: redaction_switch.RedactionState) -> 
     global _pushed_enabled, _push_count
     _pushed_enabled = state.enabled
     _push_count += 1
+    payload = {"enabled": state.enabled, "changed_at": state.changed_at}
     try:
-        dashboard_state.broadcast_ws_owners(
-            "credential_redaction_changed",
-            {"enabled": state.enabled, "changed_at": state.changed_at},
-        )
+        dashboard_state.broadcast_ws_owners(_FRAME_PURGE, payload)
     except Exception:  # noqa: BLE001 -- the write already landed; a lost push must not fail the PUT
         logger.warning(
-            "could not push the redaction switch change to owner dashboards", exc_info=True
+            "could not push the redaction setting change to owner dashboards", exc_info=True
         )
 
 
 def seed_pushed_switch() -> None:
-    """Record the switch in force at boot, so the first policy refresh can compare."""
+    """Record the setting in force at boot, so the first policy refresh can compare."""
     global _pushed_enabled
-    _pushed_enabled = redaction_switch.read_state().enabled
+    # Read and publish under the store lock an owner write holds, so a PUT cannot
+    # land between them and be overwritten by this older read.
+    with redaction_switch.transaction():
+        state = redaction_switch.read_state()
+        redaction_switch.publish_verdict(state)
+        off_by_default = not state.enabled and redaction_switch.reads_the_default()
+    _pushed_enabled = state.enabled
+    if off_by_default:
+        # The audit trail of the shipped default: a boot whose setting in force is OFF
+        # only because no choice is stored says so in the SEL, once per boot.
+        _audit(
+            outcome="off_by_default",
+            caller="gateway",
+            operation="default_off",
+            detail=(
+                "credential redaction is off: no stored choice, so the default applies "
+                "(docs/decisions/2026-11-15-credential-redaction-off-by-default.md)"
+            ),
+        )
 
 
 def push_switch_moved_by_policy(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
-    """Post-install hook: a refresh that moved the switch in force tells owner dashboards.
+    """Post-install hook: a refresh that moved the setting tells owner dashboards.
 
     A policy that withdraws the opt-in turns a stored OFF into ON (``read_state``), and
-    the push is what makes open documents drop the raw file bodies they hold. Runs on
-    the refresher thread on every confirming poll, so it pushes only on a change.
+    the push is what makes open documents drop the raw file bodies they hold. Runs on the
+    refresher thread on every confirming poll, so it pushes only on a change.
     """
-    state = redaction_switch.read_state()
+    # Every poll re-publishes the verdict, so a policy that withdraws the opt-in turns
+    # redaction back on in this process within one refresh. The read and the publish share
+    # the owner write's lock, as at boot.
+    with redaction_switch.transaction():
+        state = redaction_switch.read_state()
+        redaction_switch.publish_verdict(state)
     if state.enabled == _pushed_enabled:
         return
     seen = _push_count

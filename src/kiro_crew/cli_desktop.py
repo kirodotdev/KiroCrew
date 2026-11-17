@@ -36,17 +36,18 @@ ARTIFACT_NAME = "desktop-metrics.json"
 # Electron productName values, probed under ~/Library/Logs on macOS. Kept in sync
 # with website/electron/package.json (the release default) and
 # packaging/build-desktop.sh, which overrides it with
-# `-c.productName=KiroCrew Nightly` for nightly stamps. Nightly is not a cosmetic
+# `-c.productName=KiroCrew Nightly` for nightly stamps and
+# `-c.productName=KiroCrew LTS` for an LTS build. Nightly is not a cosmetic  # brand-ok
 # variant: it installs as a separate app with its own log directory, and its users
 # are the ones most likely to be profiling, so omitting it made the command report
 # "not found" against an app that was recording correctly.
-PRODUCT_NAMES = ("KiroCrew", "KiroCrew Nightly")
+PRODUCT_NAMES = ("KiroCrew", "KiroCrew Nightly", "KiroCrew LTS")  # brand-ok -- product names
 
 # npm package names, which name the Windows and Linux app.getPath("logs"): there it
 # is <userData>/logs, and Electron derives userData from the package `name`, not the
 # productName. Kept in sync with the `name` in website/electron/package.json and the
-# nightly `-c.extraMetadata.name=` override in packaging/build-desktop.sh.
-PACKAGE_NAMES = ("kirocrew-desktop", "kirocrew-desktop-nightly")
+# nightly and LTS `-c.extraMetadata.name=` overrides in packaging/build-desktop.sh.
+PACKAGE_NAMES = ("kirocrew-desktop", "kirocrew-desktop-nightly", "kirocrew-desktop-lts")
 
 SUPPORTED_VERSION = 1
 
@@ -165,7 +166,7 @@ def summarize(doc: dict, top: int = 5) -> str:
     lines: list[str] = []
     window = f"{len(samples)} sample(s)"
     interval = doc.get("intervalMs")
-    if isinstance(interval, (int, float)) and interval > 0:
+    if isinstance(interval, (int, float)) and _is_num(interval) and interval > 0:
         window += f" at {interval / 1000:g}s"
     lines.append(
         f"platform={doc.get('platform') or 'unknown'} "
@@ -213,9 +214,7 @@ def _num(value: object) -> float:
     if isinstance(value, bool):
         return 0.0
     if isinstance(value, (int, float)):
-        return (
-            float(value) if value == value and value not in (float("inf"), float("-inf")) else 0.0
-        )
+        return float(value) if _is_num(value) else 0.0
     return 0.0
 
 
@@ -231,12 +230,20 @@ def _fmt_kb(value: object) -> str:
 
 
 def _is_num(value: object) -> bool:
-    """Whether a value is a finite real number (and not a bool)."""
+    """Whether a value is a finite real number a float can hold (and not a bool).
+
+    JSON integers parse to exact Python ints of any size, and one past float's
+    range raises ``OverflowError`` in ``float()`` and in ``:.1f``.
+    """
     if isinstance(value, bool):
         return False
     if not isinstance(value, (int, float)):
         return False
-    return value == value and value not in (float("inf"), float("-inf"))
+    try:
+        number = float(value)
+    except OverflowError:
+        return False
+    return number == number and number not in (float("inf"), float("-inf"))
 
 
 def _fmt_int(value: object) -> str:
@@ -269,7 +276,7 @@ def _load(path: Path) -> tuple[dict | None, str | None]:
         return None, f"Could not read {path}: {exc}"
     try:
         doc = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         # A torn read should be impossible (the writer renames into place), so a
         # parse failure means the file is genuinely malformed.
         return None, f"{path} is not valid JSON: {exc}"
@@ -307,7 +314,13 @@ def _desktop_metrics(args: argparse.Namespace) -> int:
         return 5
 
     if args.json:
-        print(json.dumps(doc, indent=2))
+        try:
+            rendered = json.dumps(doc, indent=2)
+        except RecursionError:
+            # The C parser accepts deeper nesting than the encoder re-emits.
+            print(f"{path} is not valid JSON: nested too deeply to print", file=sys.stderr)
+            return 5
+        print(rendered)
         return 0
 
     print(f"source: {path}")

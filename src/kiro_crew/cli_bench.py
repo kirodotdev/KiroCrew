@@ -265,6 +265,25 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         help="Rank on the keyword measure alone, as a session with no vectors does",
     )
 
+    sr = bench_sub.add_parser(
+        "session-recall",
+        help="Measure session search recall/MRR against a golden set (deterministic)",
+        description=(
+            "Writes a labeled golden set of conversations into a throwaway session "
+            "directory, searches it with the same call the history filter and "
+            "search_chat_history use, and scores whether the conversation each "
+            "query looks for ranks first -- reported as recall@k and MRR per query "
+            "class (literal, paraphrase, Chinese paraphrase, short, identifier plus "
+            "description), plus how many no-answer queries returned any row."
+        ),
+    )
+    sr.add_argument(
+        "golden",
+        nargs="?",
+        default=None,
+        help="Path to a golden-set JSON (default: the packaged session_golden_v1.json)",
+    )
+
 
 def bench_cmd(args: argparse.Namespace) -> int:
     """Dispatch, with the ONE catch site for every deliberate refusal.
@@ -302,7 +321,8 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
     action = getattr(args, "bench_action", None)
     if action is None:
         print(
-            "usage: kirocrew bench {list,fetch,retrieval,kb-retrieval,lesson-recall,compare}",
+            "usage: kirocrew bench "
+            "{list,fetch,retrieval,kb-retrieval,lesson-recall,session-recall,compare}",
             file=sys.stderr,
         )
         return 2
@@ -312,8 +332,9 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
     # the bench imports to module scope costs +280 modules and +0.21s of import
     # time on this host (152 -> 432 modules, 0.046s -> 0.254s) and drags
     # `kiro_crew.vector_memory` plus `sqlite3` into the boot path of commands that
-    # will never touch a benchmark. `test/test_perf_boot_path.py` exists to pin
-    # exactly that class of regression, and `cli.py` already uses this pattern for
+    # will never touch a benchmark. `test/test_cli_lazy_imports.py` keeps
+    # `kiro_crew.vector_memory` out of `import kiro_crew.cli`, and `cli.py` already
+    # uses this pattern for
     # the same reason (see its `computer_use.cli` import inside the dispatch).
     # AUTOSDE `top-level-imports` is `blocking: false`; its concerns (dependency
     # tracing, IDE navigation, mock targeting) are real but are outweighed here by
@@ -344,6 +365,9 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
 
     if action == "lesson-recall":
         return _lesson_recall(args)
+
+    if action == "session-recall":
+        return _session_recall(args)
 
     print(f"unknown bench action: {action}", file=sys.stderr)
     return 2
@@ -526,10 +550,10 @@ def _retrieval(args: argparse.Namespace) -> int:
 def _kb_retrieval(args: argparse.Namespace) -> int:
     """Run the Knowledge Library recall harness against a golden set.
 
-    Lazy imports, like ``_retrieval``: this keeps ``knowledge.store`` /
-    ``knowledge.retrieval`` (and their sqlite/embedder pull-ins) out of the boot
-    path of every unrelated ``kirocrew`` subcommand -- the perf regression
-    ``test/test_perf_boot_path.py`` pins.
+    Lazy imports, like ``_retrieval``: this keeps this module from adding
+    ``knowledge.store`` / ``knowledge.retrieval`` (and their sqlite/embedder
+    pull-ins) to the boot path of every unrelated ``kirocrew`` subcommand.
+    No test pins it.
     """
     from kiro_crew.eval.bench.kb_retrieval import (
         KBGoldenSet,
@@ -674,4 +698,22 @@ def _lesson_recall(args: argparse.Namespace) -> int:
         print(f"refusing to run: store error while building the eval store: {exc}", file=sys.stderr)
         return 1
     print(format_lesson_report(report, k=args.k))
+    return 0
+
+
+def _session_recall(args: argparse.Namespace) -> int:
+    """Run the session search recall harness against a golden set.
+
+    Lazy imports, like ``_lesson_recall``: the history module stays out of the
+    boot path of every unrelated ``kirocrew`` subcommand.
+    """
+    from kiro_crew.eval.bench.session_recall import (
+        SessionGoldenSet,
+        default_session_golden_set_path,
+        format_session_report,
+        run_session_recall,
+    )
+
+    golden = SessionGoldenSet.from_json(args.golden or default_session_golden_set_path())
+    print(format_session_report(run_session_recall(golden)))
     return 0

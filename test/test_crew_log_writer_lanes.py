@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED, CrewLogError
+from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED, CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.writer import CrewLogWriter, GroupPart, WriteJob, WriterLimits
 from kiro_crew.testing.wait import default_timeout, wait_until
 
@@ -268,6 +268,17 @@ def test_a_refusal_mid_batch_drops_only_that_entry_and_owes_a_marker(home, pool)
     assert writer.stats().dropped == 1
 
 
+def test_an_inline_refusal_with_nothing_after_it_still_gets_its_marker(home, pool):
+    """A session's last entry refused inline is admitted by a pass, not by a later entry."""
+    writer = _writer(home, pool)
+    bad = UNITS[0]
+    home.fault = lambda unit, steps: CrewLogError("malformed", code=CODE_BAD_DATA)
+    assert writer.submit(bad, home.job(bad, 1))  # no running loop: written inline, refused
+    assert writer.flush(timeout=default_timeout()), "no pass came for the owed marker"
+    assert [e["type"] for e in home.entries(bad)] == ["write/dropped"]
+    assert writer.stats().dropped == 1
+
+
 def test_shutdown_drain_writes_every_lanes_backlog(home, pool):
     writer = _writer(home, pool, batch_deadline_seconds=3600.0)  # flake-ok: never waited out
     _queue(writer, [(u, home.job(u, n)) for n in range(1, 6) for u in UNITS])
@@ -331,11 +342,11 @@ def test_a_second_process_owning_a_unit_still_refuses_this_writer(home, pool):
         home.handles[owned] = lg.CrewLog.open(lg.KIND_SESSION, owned)
         writer = _writer(home, pool)
         _queue(writer, [(u, home.job(u, 1)) for u in [owned, *UNITS]])
-        # The marker admitting the refused entry is refused too, again on each pass, so
-        # the writer is never quiet for that unit; the others land regardless. Whether
-        # the marker is owed or in flight at any one read is a race, so it is not read.
+        # The marker admitting the refused entry is refused too, so its debt is parked:
+        # still owed, but it holds no flush, and the refused marker is no lost append.
         wait_until(lambda: all(home.steps(u) == [1] for u in UNITS))
-        wait_until(lambda: writer.stats().dropped >= 1)
+        assert writer.flush(timeout=default_timeout()), "a marker the owner refuses held flush"
+        assert (writer.stats().dropped, writer.loss_markers_owed()) == (1, 1)
         types = [e["type"] for e in home.entries(owned)]
         assert types == ["step/started"], "this process wrote into a log another one owns"
     finally:

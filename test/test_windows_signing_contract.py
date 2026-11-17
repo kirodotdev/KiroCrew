@@ -256,12 +256,21 @@ def test_the_publish_lane_expects_the_publisher_the_client_verifies() -> None:
 def test_the_published_basename_matches_the_clients_manual_download_url() -> None:
     # manualDownloadUrl() is the escape hatch a user follows when an in-app
     # update fails, so a basename drift turns the one recovery path into a 404.
+    # One stem per edition: `KiroCrew-Setup` on every oss channel,
+    # `KiroCrew-LTS-Setup` on lts (release-lts.yml). The client builds the same  # brand-ok
+    # name from the same stem (`${stem}-Setup.exe`).
     basename = _publish_job()["env"]["PUBLISHED_BASENAME"]
-    auto_update = (ROOT / "website" / "electron" / "auto-update.js").read_text(encoding="utf-8")
-    assert f'"{basename}.exe"' in auto_update, (
-        f"publish-windows.yml publishes {basename}.exe but auto-update.js does not "
-        "build that filename; the manual download link would 404."
+    assert basename == (
+        "${{ inputs.channel == 'lts' && 'KiroCrew-LTS-Setup' || 'KiroCrew-Setup' }}"  # brand-ok
     )
+    auto_update = (ROOT / "website" / "electron" / "auto-update.js").read_text(encoding="utf-8")
+    assert "x64: `${stem}-Setup.exe`" in auto_update, (
+        "auto-update.js must build the Windows filename from the published stem; "
+        "the manual download link would 404."
+    )
+    assert (
+        'const stem = channel === "lts" ? "KiroCrew-LTS" : "KiroCrew";' in auto_update  # brand-ok
+    )  # brand-ok
 
 
 def test_windows_has_exactly_one_channel_file() -> None:
@@ -382,7 +391,13 @@ def test_the_updater_offers_exactly_the_channels_that_publish_windows() -> None:
     # fresh build-windows upload.
     assert "KiroCrew-notarized-stable-" in release["with"]["installer_artifact"]
 
-    published = {nightly["with"]["channel"]} | {"insider", "stable"}
+    lts = next(
+        job
+        for job in _workflow("release-lts.yml")["jobs"].values()
+        if str(job.get("uses", "")).endswith("publish-windows.yml")
+    )
+    assert lts["with"]["channel"] == "lts"
+    published = {nightly["with"]["channel"]} | {"insider", "stable"} | {lts["with"]["channel"]}
     assert client_channels == published, (
         f"the client knows channels {sorted(client_channels)} but the workflows "
         f"publish Windows on {sorted(published)}; a channel on only one side "

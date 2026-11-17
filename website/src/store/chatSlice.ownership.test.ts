@@ -38,6 +38,7 @@ import * as transcript from './chat/transcript'
 import * as wire from './chat/wire'
 import * as windowWalk from './chat/windowWalk'
 import * as workflows from './chat/workflows'
+import * as chatState from './chat/state'
 
 const CHAT_DIR = join(__dirname, 'chat')
 const WEBSITE = join(__dirname, '..', '..')
@@ -101,7 +102,7 @@ describe('store/chat owners', () => {
 
 /** Reducers the facade wires inline next to the families: small UI flags and the live frame reducer. */
 const INLINE_REDUCERS = [
-  'setPendingInput', 'stagePendingSend', 'stageToMainComposer', 'setAgentSwitchNotice', 'setVoicePlaying', 'setVoicePreparing', 'setVoiceAudio',
+  'setPendingInput', 'stagePendingSend', 'stageToMainComposer', 'setAgentSwitchNotice', 'setVoicePlaying', 'setVoicePreparing', 'setVoicePaused', 'setVoiceAudio',
   'requestSlotReveal', 'requestSlotFolderOpen', 'clearSlotReveal', 'requestFolderReveal', 'sseChatMessage', 'setCloseRefused',
 ]
 
@@ -174,7 +175,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['side', side, ['beginSideQueueEdit', 'finishSideQueueEdit', 'forgetSideSteerSubmittedText', 'noteSideQueueCancelWaiting', 'noteSideQueueDroppedByClose', 'queueEditBroadcastAt', 'readSideSteerSubmittedText', 'recordSideSteerSubmittedText', 'setSideQueueEditDraft', 'takeSideQueueDroppedByClose', 'takeSideQueueDroppedByResyncThenClose', 'takeSideSteerDroppedByClose', 'takeSideQueueEditForClose']],
   ['selectors', selectors, [
     'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSlotMessages',
-    'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
+    'selectPendingTurn', 'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
     'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],
   ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'setSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
@@ -183,6 +184,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['windowWalk', windowWalk, ['WINDOW_WALK_MAX_PAGES']],
   ['lifecycle', lifecycle, ['PENDING_OPEN_LEASE_MS', 'captureForkOrigin', 'clearHistorySessions', 'createSlot', 'deleteHistorySession', 'fetchHistory', 'forkMayOpen', 'forkSlot', 'listForkedSlot', 'promoteSlot', 'resumeFromHistory', 'resumeStillOpening']],
   ['openCreatedSlot', openCreatedSlot, ['openCreatedSlot']],
+  ['state', chatState, ['hasSavedActivityOpen']],
 ]
 
 /** Names the facade itself defines rather than re-exports. */

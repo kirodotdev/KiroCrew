@@ -416,6 +416,38 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     expect(other?.textContent).not.toContain('In use.')
   })
 
+  it('reads the hidden status block as one paragraph per agent, led by its name', async () => {
+    // Browse mode reads the block as text. Japanese, because there an in-use line
+    // glued on with an English space differs from the one catalog message.
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
+      acpBackendsMock.mockResolvedValue({
+        backends: [
+          probeRow('kiro', { installed: 'installed', ...card() }),
+          probeRow('claude', { installed: 'missing', missing_components: ['claude-agent-acp'], ...card() }),
+        ],
+      })
+      wrap()
+      // Config (in use) and probe (missing) are two queries; this waits for both. The
+      // row's description stays the status alone: its name is read just before.
+      await waitFor(() =>
+        expect(row('Claude Code')).toHaveAccessibleDescription('使用中。このマシンにありません: claude-agent-acp'),
+      )
+      const block = document
+        .getElementById(row('Claude Code').getAttribute('aria-describedby') as string)
+        ?.closest('.sr-only') as HTMLElement
+      // A sentence that already names its agent is not led by the name again.
+      expect([...block.children].map(p => `${p.tagName} ${p.textContent}`)).toEqual([
+        'P Kiro Agent：デフォルト。',
+        'P Kiro CLI はインストール済みで、すぐに使用できます。',
+        'P Claude Code：使用中。このマシンにありません: claude-agent-acp',
+      ])
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
   it('marks in-use independently of readiness, so a broken active row keeps its word', async () => {
     // The regression this guards: an earlier single-glyph row let a readiness problem
     // hide which backend was running.
@@ -465,6 +497,46 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     await waitFor(() => expect(detail().textContent).toContain(`This host has ${name} 1.0.103`))
     expect(detail().textContent).toContain(command)
     expect(useButton(name)).toBeDisabled()
+  })
+
+  it('names Node.js under an npm install command, and only under one', async () => {
+    // #36377: on a host without Node.js `npm i -g opencode-ai@1` fails with
+    // "npm: command not found" and the card never said npm comes with Node.js.
+    // goose installs through its own curl script, so its card says nothing about it.
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'opencode', 'goose']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('kiro', card()),
+        probeRow('opencode', {
+          installed: 'missing',
+          missing_components: ['opencode'],
+          install_command: 'npm i -g opencode-ai@1',
+          ...card(),
+        }),
+        probeRow('goose', {
+          installed: 'missing',
+          missing_components: ['goose'],
+          install_command:
+            'curl -fsSL https://raw.githubusercontent.com/block/goose/main/download_cli.sh | bash',
+          ...card(),
+        }),
+      ],
+    })
+    wrap()
+    const opencode = acpBackendName({ id: 'opencode', policy_id: 'opencode' })
+    await waitFor(() => expect(rowLabel(opencode).textContent).toContain('Not installed'))
+    highlight(opencode)
+    await waitFor(() => expect(detail().textContent).toContain('npm i -g opencode-ai@1'))
+    expect(detail().textContent).toContain('This command needs Node.js and npm on the gateway host.')
+    const link = panel().getByRole('link', { name: /Download Node\.js/ })
+    expect(link).toHaveAttribute('href', 'https://nodejs.org/en/download')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+
+    highlight(acpBackendName({ id: 'goose', policy_id: 'goose' }))
+    await waitFor(() => expect(detail().textContent).toContain('download_cli.sh | bash'))
+    expect(detail().textContent).not.toContain('Node.js')
+    expect(panel().queryByRole('link', { name: /Download Node\.js/ })).toBeNull()
   })
 
   it('says "In use" visibly on the row, not only to a screen reader', async () => {
@@ -742,6 +814,7 @@ describe('AgentBackendTab switching', () => {
     )
     const { qc } = wrapWithClient()
     qc.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'old-backend-model' }])
+    qc.setQueryData(['kiro-usage'], { used: 1, limit: 10, bonusCredits: [], email: 'old-login@example.com' })
     const reset = vi.spyOn(qc, 'resetQueries')
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Claude Code')
@@ -751,6 +824,8 @@ describe('AgentBackendTab switching', () => {
     // The old rows are gone the moment the switch saves, not after a refetch.
     expect(qc.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    // So is the usage reading, which names the old harness's login (#36156).
+    expect(qc.getQueryData(['kiro-usage'])).toBeUndefined()
   })
 
   it('leaves the model list alone when the save is rejected', async () => {

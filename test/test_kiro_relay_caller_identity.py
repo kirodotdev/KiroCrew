@@ -242,7 +242,7 @@ async def test_the_relay_off_honors_nothing() -> None:
 
 
 def test_the_gateway_builds_its_ingress_from_the_relay_switch() -> None:
-    """The dashboard app's ingress is built from ``tunnel.relay_enabled``, nothing else.
+    """The dashboard app's ingress is switched by ``tunnel.relay_enabled``, nothing else.
 
     Only the JSON boolean ``true`` reads as on, and an LTS build ignores that
     local switch with the rest of the ``tunnel`` control.
@@ -260,6 +260,9 @@ def test_the_gateway_builds_its_ingress_from_the_relay_switch() -> None:
     # The switch's rule, the JSON boolean ``true`` and the LTS lock, is
     # ``edition_locks.relay_selected``; test_relay_client_selection pins it.
     assert ast.unparse(enabled) == "relay_selected(_cfg)"
+    # The relayed-email labels, read once at start; display only.
+    (domains,) = [kw.value for kw in calls[0].keywords if kw.arg == "handle_email_domains"]
+    assert ast.unparse(domains) == "_cfg.tunnel.relay_handle_email_domains"
 
 
 # ---------------------------------------------------------------------------

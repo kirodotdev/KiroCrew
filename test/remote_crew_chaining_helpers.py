@@ -6,7 +6,8 @@ Each file of the family imports what it uses from here by name. ``_mgr`` builds 
 how the restart cases restart. It forwards through ``_FakeTunnel``, mints with a fake ssh mint
 unless a case passes its own, makes both loopback port probes answer free (``_free_ports``),
 takes its base port from ``_fake_base_port``'s per-worker band, or from the kernel when a case
-asks for the real hop guard, puts an ``_InertGuard`` in place of the hop guard otherwise, and
+asks for the real hop guard (kept bound until that guard takes it, ``_hand_hint_to_guard``),
+puts an ``_InertGuard`` in place of the hop guard otherwise, and
 answers the far-end identity probe as a crew that reports no id unless a case asks for the real
 probe. ``_relay_mint`` is a chained mint that reports the hop, lifetime and hop identity a
 parent in agreement with the row answers. ``_FakeMintSession`` records the URL each real
@@ -141,12 +142,13 @@ def _mgr(tmp_path, monkeypatch, *, mint=None, real_hop_guard=False, real_identit
         return f"SSH_TOKEN_FOR_{host}_epp{embed_parent_port}"
 
     base_port = _fake_base_port()
+    hint = None
     if real_hop_guard:
         # Real ownership cases use a kernel-selected hint, never a fixed worker band.
         # The guard must still acquire it through the production transition under test.
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            base_port = probe.getsockname()[1]
+        hint = socket.socket()
+        hint.bind(("127.0.0.1", 0))
+        base_port = hint.getsockname()[1]
 
     mgr = SshTunnelManager(
         reg,
@@ -156,8 +158,10 @@ def _mgr(tmp_path, monkeypatch, *, mint=None, real_hop_guard=False, real_identit
         parent_port=4242,
     )
     # Fake-port cases bind nothing; real ownership cases keep the manager's real guard.
-    if not real_hop_guard:
+    if hint is None:
         mgr._hop_guard = _InertGuard()
+    else:
+        _hand_hint_to_guard(monkeypatch, mgr._hop_guard, hint)
     if not real_identity:
 
         async def _reports_no_id(_port):
@@ -165,6 +169,31 @@ def _mgr(tmp_path, monkeypatch, *, mint=None, real_hop_guard=False, real_identit
 
         monkeypatch.setattr(mgr, "_peer_identity", _reports_no_id)
     return reg, mgr
+
+
+def _hand_hint_to_guard(monkeypatch, guard, hint):
+    """Keep *hint* bound until *guard* first holds its port, as a live forward would.
+
+    The fake forwarder binds nothing, so between choosing the hint and the guard's bind only
+    this socket keeps the port: without it, another worker's ``bind(0)`` or outbound connect
+    can be handed the port first, and the guard's hold then fails with EADDRINUSE. Closed
+    just before that hold, it leaves a gap of a few statements, like the release-to-bind gap
+    the guard's docstring names; ``close_all`` frees a hint no case held.
+    """
+    port = hint.getsockname()[1]
+    hold, close_all = guard.hold, guard.close_all
+
+    def _hold(p, until):
+        if p == port:
+            hint.close()
+        return hold(p, until)
+
+    def _close_all():
+        hint.close()
+        close_all()
+
+    monkeypatch.setattr(guard, "hold", _hold)
+    monkeypatch.setattr(guard, "close_all", _close_all)
 
 
 class _InertGuard:

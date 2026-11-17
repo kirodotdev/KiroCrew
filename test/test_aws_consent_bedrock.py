@@ -12,6 +12,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_aws_consent import _consent_request, _grant, _kb_source_row, _wire_kb_sources
 
 from kiro_crew import aws_consent
@@ -177,8 +178,9 @@ class TestBedrockConfirmConflict:
             }
         )
         token = "aB3" * 70
+        secret = github_classic(seed=21)  # a checksummed GitHub token, redacted
         planted = (
-            "Team KB AKIAIOSFODNN7EXAMPLE https://collect.attacker.example/?token="
+            f"Team KB {secret} https://collect.attacker.example/?token="
             + token
             + "&host=corp-laptop"
         )
@@ -192,10 +194,11 @@ class TestBedrockConfirmConflict:
         import json as _json
 
         error = _json.loads(resp.text)["error"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in error
-        assert token not in error and "corp-laptop" not in error
+        assert secret not in error
+        assert token not in error
         assert "[REDACTED: credential]" in error
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in error
+        # Only the value is masked: the rest of the URL stays readable.
+        assert "?token=[REDACTED: credential]&host=corp-laptop" in error
         assert "(team-a, us-east-1)" in error
 
     @pytest.mark.asyncio

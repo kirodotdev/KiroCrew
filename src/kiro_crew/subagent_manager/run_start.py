@@ -561,7 +561,9 @@ async def _bind_shared_handle_impl(
     # A subagent's provider never rekeys either, and its whole point is that
     # it is NOT its parent: without the key its re-claim carries none and
     # gatewayd drops it, leaving this session unable to re-bind its token.
-    provider = AcpSessionProvider(handle, runtime, session_key=session_key)
+    provider = AcpSessionProvider(
+        handle, runtime, session_key=session_key, kas_memory_mode=handle.kas_memory_mode
+    )
     provider.memory_mode = info.memory_mode
     # The handle exists now. Publish ownership before any cancellable await so
     # force-reap always takes the shared-session branch and destroys this handle
@@ -580,14 +582,23 @@ async def _bind_shared_handle_impl(
     # instead of failing closed with the retry metadata kept. Resolved through
     # ``PROVIDER_LABEL_BY_BACKEND`` (harness-parity H13).
     cleanup_provider = self._manager._provider_label_of(provider)
+    # Imported here: a rebound ``_impl`` resolves globals in ``kiro_crew.subagent``.
+    from kiro_crew.agent_sdk.codex_transcripts import is_codex_provider_label, recorded_codex_home
+
+    # The runtime's extra_env can move the store, and the prune has no session to ask.
+    cleanup_codex_home = (
+        recorded_codex_home(provider) if is_codex_provider_label(cleanup_provider) else ""
+    )
     setattr(info, "_session_id", cleanup_session_id)
     setattr(info, "_session_provider", cleanup_provider)
+    setattr(info, "_session_codex_home", cleanup_codex_home)
     self._publish_identity(
         info.id,
         session_id=cleanup_session_id,
         provider=cleanup_provider,
         keep=info.keep,
         conversation_key=session_key if info.keep else "",
+        codex_home=cleanup_codex_home,
     )
     try:
         await self._remember_identity_off_loop(
@@ -596,6 +607,7 @@ async def _bind_shared_handle_impl(
             provider=cleanup_provider,
             keep=info.keep,
             conversation_key=session_key if info.keep else "",
+            codex_home=cleanup_codex_home,
         )
     except (OSError, ValueError, RecursionError):
         logger.debug(

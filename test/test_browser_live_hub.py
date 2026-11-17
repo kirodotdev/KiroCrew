@@ -390,6 +390,22 @@ async def test_set_state_refuses_unknown_states_and_in_control_without_a_lock(hu
     assert wire.events[-1][1]["state"] == "live"
 
 
+async def test_a_supervisor_state_during_a_takeover_waits_for_the_hand_back(hub) -> None:
+    h, wire = hub
+    await h.start_stream(
+        "chat-1", FakeRelay(), "a", browser="user_chrome", headless=False, stream_factory=FakeStream
+    )
+    assert await h.claim("chat-1") is True
+    h.set_state("chat-1", lh.STATE_WAITING_ALLOW)
+    h.set_state("chat-1", lh.STATE_ERROR)
+    await _settled(h)
+    assert h.get("chat-1").state == "in_control"
+    assert wire.events[-1][1]["state"] == "in_control"
+    await h.release("chat-1")
+    assert h.get("chat-1").state == "error"
+    assert wire.events[-1][1]["state"] == "error"
+
+
 async def test_the_singleton_is_one_hub_and_resettable() -> None:
     lh.reset_live_hub()
     a = lh.get_live_hub()

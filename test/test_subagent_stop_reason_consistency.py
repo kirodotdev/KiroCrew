@@ -19,7 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from subagent_stop_reason_helpers import (
-    _RUN_CEILING,
+    _STALL_EVIDENCE,
+    _await_run,
     _complete,
     _done_event,
     _manager,
@@ -31,7 +32,6 @@ from subagent_stop_reason_helpers import (
     _text,
     _wait_writers_landed,
 )
-from test_taskrunner import _make_mock_sessions as _make_taskrunner_sessions
 
 from kiro_crew.acp.types import (
     STOP_CLASS_CANCELLED,
@@ -49,17 +49,11 @@ from kiro_crew.acp.types import (
     classify_stop_reason,
 )
 from kiro_crew.dashboard.state import TOOL_STALL_RECOVERY_PREFIX
-from kiro_crew.providers.base import LLMEvent
 from kiro_crew.subagent import SubagentInfo, SubagentManager
-from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
-_STALL_EVIDENCE = (
-    "verdict=unknown; idle_secs=5400; tool=execute_bash; "
-    "command=pytest -q; evidence=no result frame"
-)
 _GENERIC_ERROR = "error: process exited (exit 137)"
 
 
@@ -1239,7 +1233,7 @@ async def test_a_run_another_path_already_ended_counts_no_success():
         info = mgr.spawn("do work")
         assert info is not None
         holder["info"] = info
-        await asyncio.wait_for(mgr._tasks[info.id], _RUN_CEILING)
+        await _await_run(mgr, info)
         await _wait_settled(mgr, info)
 
     assert not info._ending_claimed
@@ -1309,10 +1303,26 @@ async def test_the_usage_row_never_holds_an_ending(monkeypatch: pytest.MonkeyPat
             assert info.done and info.outcome == "completed"
             rows = [t for t in mgr._report_tasks if not t.done()]
             assert rows, "the usage row is held by the manager while it runs"
-            loop = asyncio.get_running_loop()
-            started = loop.time()
-            await asyncio.wait_for(mgr.cancel_all(), 30)
-            assert loop.time() - started < 10, "shutdown waited on the usage row"
+            budget = subagent._REPORT_DRAIN_TIMEOUT
+            drain_waits: list[float | None] = []
+            real_wait = asyncio.wait
+
+            def _recording_wait(fs, **kwargs):  # noqa: ANN001, ANN202
+                # Records only, so every asyncio.wait caller may pass through; list
+                # first so the membership check never uses up an iterator.
+                fs = list(fs)
+                if any(row in fs for row in rows):
+                    drain_waits.append(kwargs.get("timeout"))
+                return real_wait(fs, **kwargs)
+
+            with monkeypatch.context() as patched:
+                patched.setattr(asyncio, "wait", _recording_wait)
+                await asyncio.wait_for(mgr.cancel_all(), 30)
+            assert drain_waits, "shutdown never waited on the usage row"
+            assert all(t is not None and t <= budget + 1e-6 for t in drain_waits), (
+                f"shutdown waited on the usage row for {drain_waits!r}, past the "
+                f"{budget}s report drain bound"
+            )
             assert all(t.done() for t in rows), "shutdown left the usage row running"
     finally:
         wedged.set()
@@ -1703,7 +1713,7 @@ async def test_a_transient_run_completes_without_touching_disk(
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("do work", _memory_mode=mode)
         assert info is not None
-        await asyncio.wait_for(mgr._tasks[info.id], _RUN_CEILING)
+        await _await_run(mgr, info)
 
     assert info.outcome == "completed"
     assert not (tmp_path / "subagents" / info.id).exists()
@@ -1863,123 +1873,3 @@ async def test_blocking_wait_expiry_does_not_fail_the_child():
     src = Path(wave.__file__).read_text(encoding="utf-8")
     assert '"still_running"' in src
     assert "task_ids" in src
-
-
-# ── 4. The task runner path (task_executor) ───────────────────────────
-
-
-def _taskrunner_provider(stop_reason: str, text: str = "half") -> MagicMock:
-    provider = MagicMock()
-    calls: list[str] = []
-
-    async def _stream(message: str):
-        calls.append(message)
-        yield LLMEvent(kind="text_chunk", text=text)
-        yield LLMEvent(kind="complete", stop_reason=stop_reason, text=_STALL_EVIDENCE)
-
-    provider.stream = _stream
-    provider.approve_tool = AsyncMock()
-    provider.reject_tool = AsyncMock()
-    provider.context_usage_pct = MagicMock(return_value=0.0)
-    provider.calls = calls
-    return provider
-
-
-@pytest.mark.asyncio
-async def test_taskrunner_persistent_tool_stall_step_is_failed(tmp_path: Path):
-    sessions = _make_taskrunner_sessions()
-    provider = _taskrunner_provider(STOP_REASON_TOOL_STALL)
-    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
-    runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
-    run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running")
-    step = Step(index=1, title="Test step", description="desc")
-    run.tasks = [step]
-
-    success = await runner._execute_single_task(run, step)
-
-    assert success is False
-    assert step.status == StepStatus.FAILED
-    assert step.result == "half"  # the partial is kept on the task
-    sessions.record_success.assert_not_called()
-    # Bounded: the existing retry ladder (incl. same-error loop detection) ran.
-    assert 1 < len(provider.calls) <= 5
-    # Every retry prompt names the stall and continues from it, never a bare re-run.
-    for retry_prompt in provider.calls[1:]:
-        assert "retry attempt" in retry_prompt
-        assert "stalled" in retry_prompt and STOP_REASON_TOOL_STALL in retry_prompt
-
-
-@pytest.mark.asyncio
-async def test_taskrunner_tool_stall_then_success_passes_on_retry(tmp_path: Path):
-    sessions = _make_taskrunner_sessions()
-    provider = MagicMock()
-    calls: list[str] = []
-
-    async def _stream(message: str):
-        calls.append(message)
-        if len(calls) == 1:
-            yield LLMEvent(kind="text_chunk", text="half")
-            yield LLMEvent(
-                kind="complete", stop_reason=STOP_REASON_TOOL_STALL, text=_STALL_EVIDENCE
-            )
-        else:
-            yield LLMEvent(kind="text_chunk", text="whole")
-            yield LLMEvent(kind="complete", stop_reason=STOP_REASON_END_TURN)
-
-    provider.stream = _stream
-    provider.approve_tool = AsyncMock()
-    provider.reject_tool = AsyncMock()
-    provider.context_usage_pct = MagicMock(return_value=0.0)
-    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
-    runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
-    run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running")
-    step = Step(index=1, title="Test step", description="desc")
-    run.tasks = [step]
-
-    assert await runner._execute_single_task(run, step) is True
-    assert step.status == StepStatus.PASSED and step.error == ""
-    assert step.result == "whole"
-    assert "retry attempt 2" in calls[1] and "stalled" in calls[1]
-
-
-@pytest.mark.asyncio
-async def test_taskrunner_end_turn_step_passes(tmp_path: Path):
-    sessions = _make_taskrunner_sessions()
-    provider = _taskrunner_provider(STOP_REASON_END_TURN, text="done")
-    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
-    runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
-    run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running")
-    step = Step(index=1, title="Test step", description="desc")
-    run.tasks = [step]
-    assert await runner._execute_single_task(run, step) is True
-    assert step.status == StepStatus.PASSED and step.result == "done"
-    assert provider.calls[0] and "retry attempt" not in provider.calls[0]
-
-
-# ── 5. The main chat uses the same table (no private spelling) ────────
-
-
-def test_chat_runner_has_no_private_stop_reason_mapping():
-    """chat_runner must not re-derive the class with its own `startswith("error:")`
-    or a literal retry budget; it reads the classifier and the shared constant."""
-    import kiro_crew.dashboard.chat_runner as cr
-
-    runner = Path(cr.__file__)
-    turn_files = [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
-    src = "\n".join(t.read_text(encoding="utf-8") for t in turn_files if t.name != "__init__.py")
-    assert 'startswith("error:")' not in src
-    assert "classify_stop_reason(" in src
-    assert "_tool_stall_retries < 3" not in src and "_tool_stall_retries >= 3" not in src
-    assert "_stale_recovery_retries < 3" not in src and "_stale_recovery_retries >= 3" not in src
-    assert "STOP_RECOVERY_MAX_RETRIES" in src
-
-
-def test_subagent_run_has_no_private_stop_reason_mapping():
-    import kiro_crew.subagent_manager.run as run_mod
-
-    # run.py binds most of its members from sibling ``run_*`` owners: read the family.
-    facade = Path(run_mod.__file__)
-    family = [facade, *sorted(facade.parent.glob("run_*.py"))]
-    src = "\n".join(path.read_text(encoding="utf-8") for path in family)
-    assert 'startswith("error:")' not in src
-    assert "classify_stop_reason(" in src

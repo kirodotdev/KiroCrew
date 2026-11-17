@@ -81,7 +81,7 @@ class TestAgentStateSidecarWriteProtection:
         assert "agent_model_state.json.lock" in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
 
     def test_template_spec_lock_is_sealed_by_the_sandbox(self) -> None:
-        # GPT rounds 39-40: the whole KIRO AGENTS tree is sealed read-only —
+        # The whole KIRO AGENTS tree is sealed read-only —
         # the fork specs are what governance sanitizes, so a sandboxed write
         # to one hands the next spawn forged grants; the advisory lock is
         # covered by the same directory seal. Resolved per spawn (never a

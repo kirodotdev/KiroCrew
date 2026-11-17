@@ -100,6 +100,51 @@ def validate_cron_expr(expr: str) -> bool:
     return len(parts) == 1 and expr.startswith("@")
 
 
+def _hash_random_item(item: str) -> str:
+    """``item`` with a croniter ``R`` token (``R``, ``R(0-29)``, ``R/15``) as ``H``.
+
+    Never a name such as ``mar``, ``thu`` or ``fri``: only an item that is ``R``
+    alone, or starts with ``R(`` or ``R/``, is random.
+    """
+    upper = item.upper()
+    if upper == "R" or upper.startswith(("R(", "R/")):
+        return "H" + item[1:]
+    return item
+
+
+def pin_random_cron_fields(expr: str, job_id: str) -> str:
+    """``expr`` with each croniter random (``R``) field replaced by its values for ``job_id``.
+
+    croniter draws a fresh value for an ``R`` field every time it reads the
+    expression, so a stored ``R 9 * * *`` fired at a different minute on each
+    check: some days never, some days twice, with a preview that changed on every
+    read. The pick is croniter's ``H`` hash of ``job_id`` instead, so the same job
+    always gets the same minute, every reader agrees on it, and two jobs with
+    the same expression still spread apart. An expression without ``R``, or one
+    croniter cannot expand, is returned unchanged.
+    """
+    if not isinstance(expr, str):
+        return expr
+    parts = expr.split()
+    if len(parts) != 5:
+        return expr
+    hashed = [",".join(_hash_random_item(item) for item in part.split(",")) for part in parts]
+    if hashed == parts:
+        return expr
+    if parts[2].upper() == "R":
+        # A bare random day of the month stays on a day every month has: a pick
+        # of 29-31 would skip short months, and 30 or 31 never fires in February.
+        hashed[2] = "H(1-28)"
+    try:
+        expanded = croniter.expand(" ".join(hashed), hash_id=job_id.encode())[0]
+    except (ValueError, KeyError, TypeError):
+        return expr
+    return " ".join(
+        ",".join(str(value) for value in values) if hashed[i] != part else part
+        for i, (part, values) in enumerate(zip(parts, expanded))
+    )
+
+
 def never_fires_warning(schedule: CronSchedule) -> str:
     """A one-line caveat for a cron schedule that matches no date, else ``""``.
 
@@ -123,6 +168,26 @@ def never_fires_warning(schedule: CronSchedule) -> str:
     except Exception:
         return ""
     return ""
+
+
+def raised_interval_warning(requested: object, schedule: CronSchedule) -> str:
+    """A one-line caveat when *schedule* runs less often than the interval asked for, else ``""``.
+
+    ``build_job`` raises an ``every`` interval below its minimum rather than refusing
+    it, because a stored job with such an interval must still load and save. The add
+    surfaces that clamp instead of refuse show this beside their success answer, so the
+    caller learns the rate the job actually runs at.
+    """
+    if schedule.kind != "every" or not schedule.every_secs:
+        return ""
+    if not isinstance(requested, int) or isinstance(requested, bool):
+        return ""
+    if schedule.every_secs == requested:
+        return ""
+    return (
+        f"an interval of {requested}s is below the {schedule.every_secs}s minimum, "
+        f"so this job runs every {schedule.every_secs}s"
+    )
 
 
 def runs_more_than_once_a_day(schedule: CronSchedule) -> bool:
@@ -191,6 +256,7 @@ def _humanize_cron(expr: str, tz_name: str = "") -> str:
                 result = f"At {local_time}, {desc.removeprefix('At ')}"
             return result
         except Exception:
+            # Falls back to the UTC description below.
             pass
 
     return desc
@@ -892,7 +958,8 @@ def _already_ran_by_wall_clock(job: CronJob, slot: datetime) -> bool:
     the last run belonged to, read in the zone the host was in then, does not
     run a second time. Every other slot runs, so a frequent job keeps running
     through the trip. Moving east skips the slots the clock jumped over; nothing
-    catches them up, as nothing catches up a slot the gateway slept through.
+    catches them up, as nothing catches up a slot the gateway slept through
+    for longer than :data:`_LATE_TICK_GRACE_SECS`.
 
     ``last_run_ts`` is stamped when a run ENDS, so from its dispatch the run spans
     up to the job's own longest jitter wait (:func:`jitter_bound`) plus its time
@@ -919,6 +986,7 @@ def _already_ran_by_wall_clock(job: CronJob, slot: datetime) -> bool:
         try:
             then = ZoneInfo(zone)
         except Exception:
+            # A zone name this host cannot load is skipped.
             continue
         occurrence = _cron_occurrence_ts(expr, last, then)
         # Only an occurrence the scheduler could have dispatched in this zone: the
@@ -949,14 +1017,53 @@ def _cron_occurrence_ts(expr: str, ts: float, tz: tzinfo) -> float | None:
     return occurrence if isinstance(occurrence, float) else None
 
 
-def is_due(job: CronJob, now: float) -> bool:
-    """Whether ``job`` is due at ``now``: its schedule has arrived and ``now`` is not a skip date."""
+#: The longest gap between two timer ticks whose skipped cron minutes still run. A
+#: tick lands late when the loop or the worker thread its store scan waits on is
+#: busy; a longer gap is a host that slept, which nothing catches up.
+_LATE_TICK_GRACE_SECS = 10 * 60
+
+
+def _skipped_cron_minute(job: CronJob, now: float, since: float | None, tz: tzinfo) -> float | None:
+    """The start of the cron minute a late timer tick skipped, which is due now, or ``None``.
+
+    ``since`` is the previous tick, at most the grace before ``now``. The minute is the
+    latest one after its minute and before ``now``'s that the expression matches, and
+    after the job's creation, its last run's end and any failure backoff. A process's
+    first tick has no ``since``.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    if since is None or not job.schedule.cron_expr or now - since > _LATE_TICK_GRACE_SECS:
+        return None
+    floor = max(
+        since,
+        job.created_ts,
+        job.last_run_ts or 0.0,
+        job.failure_backoff_until() or 0.0,
+    )
+    minute = (int(now) // 60 - 1) * 60
+    while minute > floor:
+        if seams.cron_expr_matches(
+            job.schedule.cron_expr, seams.datetime.fromtimestamp(minute, tz=tz)
+        ):
+            return float(minute)
+        minute -= 60
+    return None
+
+
+def is_due(job: CronJob, now: float, since: float | None = None) -> bool:
+    """Whether ``job`` is due at ``now``: its schedule has arrived and that time is not a skip date.
+
+    ``since`` is the timer's previous tick: a cron minute between the two ticks that
+    neither landed in is due late, once (:func:`_skipped_cron_minute`).
+    """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     # A failing job past the default limit waits out its backoff whatever its schedule says.
     backoff_until = job.failure_backoff_until()
     if backoff_until is not None and now < backoff_until:
         return False
+    when = now
     if job.schedule.kind == "every" and job.schedule.every_secs:
         last = job.last_run_ts or job.created_ts
         if now < last + job.schedule.every_secs:
@@ -968,7 +1075,10 @@ def is_due(job: CronJob, now: float) -> bool:
         tz = _job_tz(job)
         dt = seams.datetime.fromtimestamp(now, tz=tz)
         if not seams.cron_expr_matches(job.schedule.cron_expr, dt):
-            return False
+            skipped = _skipped_cron_minute(job, now, since, tz)
+            if skipped is None:
+                return False
+            when, dt = skipped, seams.datetime.fromtimestamp(skipped, tz=tz)
         # Don't re-fire within the same UTC minute (immune to DST ambiguity)
         if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
             return False
@@ -976,8 +1086,8 @@ def is_due(job: CronJob, now: float) -> bool:
         # spring-forward day croniter matches a skipped wall time (02:30) in two
         # adjacent UTC minutes. The time bound keeps an occurrence that matches
         # again much later (the repeated fall-back hour) due.
-        if job.last_run_ts and now - job.last_run_ts < _SAME_OCCURRENCE_SECS:
-            occurrence = _cron_occurrence_ts(job.schedule.cron_expr, now, tz)
+        if job.last_run_ts and when - job.last_run_ts < _SAME_OCCURRENCE_SECS:
+            occurrence = _cron_occurrence_ts(job.schedule.cron_expr, when, tz)
             if occurrence is not None and occurrence == _cron_occurrence_ts(
                 job.schedule.cron_expr, job.last_run_ts, tz
             ):
@@ -988,7 +1098,7 @@ def is_due(job: CronJob, now: float) -> bool:
         return False
     # Skip dates check (evaluated in job's local timezone, applies to all schedule types)
     if job.skip_dates:
-        local_date = seams.datetime.fromtimestamp(now, _job_tz(job)).strftime("%Y-%m-%d")
+        local_date = seams.datetime.fromtimestamp(when, _job_tz(job)).strftime("%Y-%m-%d")
         if local_date in job.skip_dates:
             return False
     return True

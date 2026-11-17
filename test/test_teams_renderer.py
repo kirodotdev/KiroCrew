@@ -15,6 +15,7 @@ from kiro_crew.teams.client import TeamsSendError
 from kiro_crew.teams.commands import HELP_TEXT, parse_command
 from kiro_crew.teams.renderer import TeamsRenderer, _strip_options
 from kiro_crew.teams.transport import TEAMS_CAPABILITIES
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 
 class _FakeClient:
@@ -364,11 +365,13 @@ class TestDisplayRedaction:
         """Teams renders markup away, reassembling a key the raw scan saw as broken."""
         client = _EditingClient()
         r = TeamsRenderer(client, "conv-1", "https://smba.trafficmanager.net/", TEAMS_CAPABILITIES)
-        await r.on_text_chunk("key AKIA**IOSFODNN7EXAMPLE** here")
+        # A Slack bot token: no ``_`` in it, which the display form drops as markup.
+        secret = SAMPLE_SLACK_BOT_TOKEN
+        await r.on_text_chunk(f"key {secret[:13]}**{secret[13:]}** here")
         await r.on_done()
 
         delivered = client.sent[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in delivered.replace("*", "")
+        assert secret not in delivered.replace("*", "")
 
 
 class TestRedactionNotice:

@@ -16,7 +16,8 @@ and re-settles on every exit; and a failed tier-one rebuild keeps the port owned
 two's mint. A torn-down lent hop stays bound by the guard, so a separate process cannot take
 it, and reclaim leaves an orphan holding a lent port in place. ``hop_ownership_violations`` is
 asserted empty with the forward live, after an unexpected exit, after a recovery that gives up
-and after a teardown: for every live lease, a live forward owns its port or the guard holds it.
+and after a teardown: for every live lease, a live forward owns its port or the guard holds it;
+before the guard's first hold, no other socket can bind the port the fixture handed out.
 The lent lifetime is capped at ``LENT_HOP_TTL_CAP`` in the mint, the lease and the answer
 alike, with a shorter row keeping its own, this gateway's own pane keeping the row's and the
 cap leaving a re-mint room to finish. The retained lease map is bounded on both sides:
@@ -40,6 +41,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 
 import pytest
@@ -168,6 +170,20 @@ class TestTheHopOwnershipInvariantHolds:
 
             monkeypatch.setattr(stm, "_reclaim_identity_key", _never)
             asyncio.run(mgr._reclaim_orphan_forwarder(inst, mgr._resolve_transport(inst)))
+        finally:
+            mgr._hop_guard.close_all()
+
+    def test_no_other_socket_can_take_the_port_before_the_guard_does(self, tmp_path, monkeypatch):
+        """The fixture stands in for the live forward until the guard's first hold."""
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        reg, mgr, hop = self._lent(tmp_path, monkeypatch)
+        try:
+            with socket.socket() as other, pytest.raises(OSError):
+                other.bind(("127.0.0.1", hop))
+            mgr._tunnels["c"].status.state = TunnelState.ERROR
+            mgr._hold_lent_port_now("c")
+            assert hop in mgr._hop_guard.held_ports(), "the guard could not take the port"
         finally:
             mgr._hop_guard.close_all()
 

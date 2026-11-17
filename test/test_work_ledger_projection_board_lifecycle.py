@@ -121,7 +121,7 @@ async def test_a_failed_create_in_the_boards_first_second_is_still_undone(monkey
         CONDUCTOR, {"action": "create", "title": "same second", "acceptance": ACCEPTANCE}
     )
     assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
-    assert wl.read_work_item(CONDUCTOR, body["item_id"]) is None
+    assert body["item_id"] is None and wl.list_work_items(CONDUCTOR) == []
     header = wl.read_conductor(CONDUCTOR)
     assert header is not None and header.goal == "ship it"
     monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", real)
@@ -663,6 +663,9 @@ async def test_a_rebuild_never_reclaims_a_worker_another_board_now_holds(monkeyp
         WORKER, {"status": "done", "summary": "finished", "artifacts": {"commit": "abc1234"}}
     )
     assert status == 200, body
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     status, body = await _record(
         CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}
     )

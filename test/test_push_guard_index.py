@@ -11,13 +11,13 @@ rebase, merge, cherry-pick or revert is handled. ``TestPushGuardOperations`` cal
 from __future__ import annotations
 
 import io
+import itertools
 import os
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import push_guard_helpers
@@ -43,6 +43,7 @@ from push_guard_helpers import (
     _spy_popen,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import default_timeout
 
@@ -449,8 +450,11 @@ class TestPushGuardGitFailures:
         self, repo_pair, monkeypatch, tmp_path
     ):
         clone_dir, _ = repo_pair
-        # flake-ok: real-clock start of a loose ceiling, half the 30 s bound, on a 1 s stall
-        start = time.monotonic()
+        fetch_waits: list[float | None] = []
+        _spy_popen(
+            monkeypatch,
+            on_wait=lambda argv, timeout: fetch_waits.append(timeout) if "fetch" in argv else None,
+        )
         rc, _, stderr = _inprocess(
             monkeypatch,
             clone_dir,
@@ -459,8 +463,16 @@ class TestPushGuardGitFailures:
         )
         assert rc == 40 and "made no progress for 1 s" in stderr, stderr
         assert "git fetch origin main by hand" in stderr, stderr
-        # flake-ok: loose real-time ceiling, half the 30 s bound, on a stall the guard cuts at 1 s
-        assert time.monotonic() - start < _SUBPROCESS_TIMEOUT_S / 2
+        # Cut at the 1 s stall, not ridden out to the fake's 30 s hang: every poll
+        # of the silent fetch before the guard stops it is bounded by the stall,
+        # and there are only a few of them. The usual run is two polls (the first
+        # records the output size, the second sees it unchanged for the stall);
+        # a wait returning early on a coarse clock, or output that lands late
+        # from a slow child start, adds one each, so four leaves that margin
+        # while a guard that rides out the hang polls about thirty times.
+        polls = list(itertools.takewhile(lambda t: t != _PG._KILL_GRACE_S, fetch_waits))
+        assert polls and all(t is not None and t <= 1 for t in polls), fetch_waits
+        assert len(polls) <= 4, f"the guard polled the stalled fetch for {polls}"
 
     def test_a_slow_fetch_that_keeps_receiving_is_never_cut_off(
         self, repo_pair, monkeypatch, tmp_path
@@ -863,7 +875,7 @@ class TestPushGuardPrivateIndex:
             _PG._parse_args([mode, "-F", "-", "--", "a.py"])
         assert exc.value.code == _PG.EXIT_USAGE
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="needs a symlink")
+    @requires_symlinks
     def test_a_path_through_a_symlinked_directory_is_the_same_path(self, repo_pair, tmp_path):
         clone_dir, _ = repo_pair
         _git(clone_dir, "checkout", "-q", "-b", "feature/x")

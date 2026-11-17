@@ -30,6 +30,7 @@ from kiro_crew import members as members_mod
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.dashboard.handlers import agent_panel as routes
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,8 +79,8 @@ async def test_a_publish_lands_on_the_callers_own_crew(vetted):
 async def test_the_fold_a_page_reads_carries_the_scrubbed_publish_not_the_raw_body(vetted):
     """A dashboard page binds the ``panel`` fold, so the fold must hold what the
     publish path scrubbed, never the body the caller sent."""
-    # Assembled at runtime so the diff carries no credential-shaped literal.
-    token = "ghp" + "_" + "ZXAMPLEzxampleZXAMPLEzxampleZXAMPLE12"
+    # Built at run time, so the source carries no credential literal.
+    token = github_classic(seed=409)
     _unit_for(CREW)
     async with _client() as c:
         resp = await c.post(

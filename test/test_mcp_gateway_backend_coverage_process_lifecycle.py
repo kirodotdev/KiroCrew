@@ -154,6 +154,8 @@ class TestRecycleIfIdle:
         backend = _make_backend()
         assert await backend.recycle_if_idle() is False
         assert backend.dead_reason is None
+        # No signal was sent, so a later death of its own is still named.
+        assert backend._gateway_ending is False
 
     @pytest.mark.asyncio
     async def test_tree_kill_failure_falls_back_to_pid_kill(
@@ -248,12 +250,13 @@ class TestBackgroundTasksAndShutdown:
         assert backend._stdout_task is None and backend._stderr_task is None
 
     @pytest.mark.asyncio
-    async def test_shutdown_of_exited_process_is_a_fast_noop(self) -> None:
+    async def test_shutdown_of_exited_process_closes_nothing_and_records_its_exit(self) -> None:
         backend = _make_backend(returncode=0)
         await backend.shutdown()
         cast(Any, backend.stdin).close.assert_not_called()
-        # The early return records no shutdown reason of its own.
-        assert backend.dead_reason is None
+        # Nothing saw the process go before this, so the early return records
+        # its own exit, never a shutdown reason.
+        assert backend.dead_reason == "exit rc=0"
 
     @pytest.mark.asyncio
     async def test_graceful_shutdown_closes_stdin_and_records_reason(self) -> None:
@@ -859,10 +862,10 @@ class TestBackendTmpContainment:
     async def test_ambient_temp_does_not_suppress_containment(
         self, fake_spawn, monkeypatch, tmp_path
     ) -> None:
-        # Regression: the resolver folds the daemon's own inherited environ
-        # into the spawn env, and macOS always exports TMPDIR (Windows: TMP /
-        # TEMP). An env-membership gate read that ambient value as an operator
-        # declaration and disabled containment on those platforms entirely.
+        # The resolver folds the daemon's own inherited environ into the spawn
+        # env, and macOS always exports TMPDIR (Windows: TMP / TEMP). An
+        # env-membership gate would read that ambient value as an operator
+        # declaration and disable containment on those platforms entirely.
         # Ambient keys must be OVERRIDDEN by the managed triple.
         from pathlib import Path
 

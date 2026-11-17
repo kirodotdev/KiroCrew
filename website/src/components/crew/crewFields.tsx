@@ -173,7 +173,7 @@ function WorkspaceForm({
       </DialogBody>
       <DialogFooter>
         <Btn onClick={onClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
-        <SendBtn onClick={submit} disabled={submitting}>{submitting ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}</SendBtn>
+        <SendBtn onClick={submit} busy={submitting}>{submitting ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}</SendBtn>
       </DialogFooter>
     </>
   )
@@ -263,7 +263,7 @@ function withCurrent(opts: string[], cur: string): string[] {
  * composes them in its Advanced settings; the editor mounts them individually,
  * one per rail pane.
  */
-export function WorkspaceField({ options, value, onChange, onNewWorkspace, subject, hint, ownOption = false }: {
+export function WorkspaceField({ options, value, onChange, onNewWorkspace, subject, hint, ownOption = false, disabled }: {
   options: string[]; value: string; onChange: (v: string) => void; onNewWorkspace: () => void; subject: FormSubject
   /** Replaces the subject's default hint. The defaults are EDIT-time copy
    *  ("new chats start fresh in the new folder"); a create form has no old
@@ -273,6 +273,9 @@ export function WorkspaceField({ options, value, onChange, onNewWorkspace, subje
    *  forms only: the API allocates on create and never on update, so the
    *  editor must not show a choice it cannot save. */
   ownOption?: boolean
+  /** Locks the select while a form submit is in flight. A select never
+   *  implicitly submits a form, so a native lock here cannot drop focus. */
+  disabled?: boolean
 }) {
   const choices = ownOption
     ? [OWN_WORKSPACE, ...withCurrent(options, value).filter(o => o !== OWN_WORKSPACE)]
@@ -289,6 +292,7 @@ export function WorkspaceField({ options, value, onChange, onNewWorkspace, subje
         value={value}
         onChange={onChange}
         action={{ label: i18nT('pages.kiroCrewAgentsPage.new_workspace_action'), onSelect: onNewWorkspace }}
+        disabled={disabled}
         aria-label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
       />
     </Field>
@@ -410,7 +414,9 @@ export function displayNameFallback(agent: KiroCrewAgent | null | undefined, key
 
 /** The routing-keyword input. Rendered by the create form and by the editor's
  *  routing pane, so it is a component rather than two copies. */
-export function TriggersField({ value, onChange, subject }: { value: string; onChange: (v: string) => void; subject: FormSubject }) {
+export function TriggersField({ value, onChange, subject, busy }: { value: string; onChange: (v: string) => void; subject: FormSubject; /** Held, not disabled, while a form submit is out: Enter in this text
+   *  field implicitly submits, so a native disable would blur it to <body>. */
+  busy?: boolean }) {
   const hint = subject === 'member'
     ? i18nT('pages.kiroCrewAgentsPage.triggers_hint_member')
     : i18nT('pages.kiroCrewAgentsPage.triggers_hint')
@@ -423,6 +429,8 @@ export function TriggersField({ value, onChange, subject }: { value: string; onC
         placeholder={i18nT('pages.kiroCrewAgentsPage.triggers_placeholder')}
         value={value}
         onChange={e => onChange(e.target.value)}
+        readOnly={busy}
+        aria-disabled={busy || undefined}
         aria-label={i18nT('pages.kiroCrewAgentsPage.triggers')}
       />
     </Field>
@@ -431,7 +439,10 @@ export function TriggersField({ value, onChange, subject }: { value: string; onC
 
 /** Session color picker for agent configuration. Sets the default session
  *  tint color for new sessions created with this agent. */
-export function SessionColorField({ value, onChange, subject }: { value: string; onChange: (v: string) => void; subject: FormSubject }) {
+export function SessionColorField({ value, onChange, subject, busy }: { value: string; onChange: (v: string) => void; subject: FormSubject; /** Locks the field while a form submit is out: the hex text input is
+   *  held (Enter in it implicitly submits), the swatches / picker / Clear
+   *  are natively disabled -- none of those can submit a form. */
+  busy?: boolean }) {
   const HEX_RE = /^#[0-9a-f]{6}$/i
   const [draft, setDraft] = useState(value || '')
   // Re-sync the draft when the committed value changes from outside (e.g. the
@@ -488,6 +499,7 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
               // SessionColorSwatches uses, and it separates from every hue here.
               className={`h-5 w-5 p-0 cursor-pointer rounded-full border-2 transition-transform hover:brightness-125 swatch-cue ${active ? 'border-text-strong scale-110' : 'border-border'}`}
               style={{ background: c }}
+              disabled={busy}
               onClick={() => onChange(c)}
             />
           )
@@ -499,6 +511,7 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
           value={value || HEX_COLOR_EXAMPLE}
           onChange={e => onChange(e.target.value.toLowerCase())}
           className="h-8 w-8 flex-none cursor-pointer p-0.5"
+          disabled={busy}
           aria-label={i18nT('pages.kiroCrewAgentsPage.session_color')}
         />
         <Input
@@ -513,6 +526,10 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
           }}
           onBlur={e => commit(e.target.value)}
           className="flex-1 font-mono text-[13px]"
+          // Held, not disabled: Enter in this hex field implicitly submits the
+          // create form, so a native disable would blur it to <body>.
+          readOnly={busy}
+          aria-disabled={busy || undefined}
           aria-label={i18nT('pages.kiroCrewAgentsPage.session_color_hex')}
         />
         {value && (
@@ -520,6 +537,7 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
             type="button"
             onClick={() => onChange('')}
             className="text-[11px]"
+            disabled={busy}
             aria-label={i18nT('pages.kiroCrewAgentsPage.session_color_clear')}
           >
             {i18nT('pages.kiroCrewAgentsPage.session_color_clear')}

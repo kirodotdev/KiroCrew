@@ -87,6 +87,35 @@ class TestCronListOwnership:
         assert "owner: none" in out
         assert "created by: import:slack-reminders" in out
 
+    @pytest.mark.parametrize(
+        ("managed_by", "where"),
+        [
+            ("goal-daily:scout", "bot's Goals tab"),
+            ("goal-weekly:scout", "bot's Goals tab"),
+            ("goal-monthly:scout", "bot's Goals tab"),
+            ("goal-heartbeat:scout", "Heartbeat row on the bot's Schedules tab"),
+            ("dashboard-stale-wake", "Wake bots to update out-of-date fields"),
+        ],
+    )
+    def test_list_names_where_a_job_no_schedule_list_shows_is_switched(
+        self, capsys, managed_by, where
+    ):
+        """The Schedule page leaves these jobs out, so the hint names the switch
+        that controls each one instead of a page that does not list it."""
+        job = _job()
+        job.managed_by = managed_by
+        job.project_path = ""
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.list_jobs.return_value = [job]
+            _cron(argparse.Namespace(cron_action="list"))
+        out = capsys.readouterr().out
+        assert "owner: none" in out
+        assert where in out
+        assert "Schedule page" not in out
+
 
 class TestCronAdopt:
     def test_adopt_reports_the_delivery_consequence(self, capsys):

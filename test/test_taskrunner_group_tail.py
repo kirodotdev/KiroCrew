@@ -16,8 +16,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.taskrunner import _RESULT_MEM_CAP, Step, StepStatus, TaskRun, TaskRunner
+
+#: A synthetic GitHub token with a valid checksum, which the credential plan redacts.
+_TOKEN = github_classic(seed=49)
 
 # The indices of the first group's steps; a second group of one step depends on all of them.
 _FIRST_GROUP = {"one-step": (1,), "parallel": (1, 2)}
@@ -82,7 +86,7 @@ async def test_a_refused_replan_fails_the_run_with_the_error_redacted(
     async def _execute(_run, step, _history_key, session_key=""):
         if step.index == 1:
             step.status = StepStatus.FAILED
-            step.error = "broke AKIAIOSFODNN7EXAMPLE here"
+            step.error = f"broke {_TOKEN} here"
             return False
         step.status = StepStatus.PASSED
         return True
@@ -97,7 +101,7 @@ async def test_a_refused_replan_fails_the_run_with_the_error_redacted(
 
     assert run.status == "failed"
     assert run.error.startswith("Task 1 failed: broke ")
-    assert "AKIAIOSFODNN7EXAMPLE" not in run.error
+    assert _TOKEN not in run.error
 
 
 @pytest.mark.asyncio

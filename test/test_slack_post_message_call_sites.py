@@ -77,6 +77,11 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
+    "slack/code_channels/board/publisher.py": (
+        1,
+        "work board's needs-you reply: needs_you_text escapes already-redacted row fields, "
+        "no command, gated by _writable just before the send",
+    ),
     "slack/code_channels/routing.py": (
         1,
         "one helper for a code channel's fixed notices: kickoff, refusals, hand-off line",
@@ -103,10 +108,9 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        79,
+        78,
         "slash and text command replies: fixed status and help text, the"
-        " channel-agent link refusal, the !channel config-save refusal, and"
-        " the transport path's fixed !voice text-only reply",
+        " channel-agent link refusal, and the !channel config-save refusal",
     ),
     "slack/handler_runtime/delivery.py": (
         5,
@@ -149,8 +153,12 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
     "slack/renderer.py": (
-        7,
+        6,
         "the channel renderer: placeholders, answer parts, fallback and notices",
+    ),
+    "slack/renderer_stream_debt.py": (
+        1,
+        "the renderer's fixed delivery-debt notice when its stream append is refused",
     ),
     "slack/transport.py": (1, "the Slack transport adapter: forwards content the caller rendered"),
     "slack/transport_dispatch.py": (4, "hook reply, stats, ping and transport error text"),

@@ -16,7 +16,7 @@ import { createTestStore } from '../../test/helpers'
  *   - each pick writes the crew record AND the live DM slot, so the open thread
  *     follows at once; the picker page stays open, check mark moved;
  *   - "Inherited" goes over the wire as '' (the record's inherit spelling);
- *   - the lock stays a switch in the group, with its help as the group's caption.
+ *   - the group has no dashboard lock switch.
  * The card is stood in for by a fake push with two hosts (depth 0: the group,
  * depth 1: the picker); the pages are portalled into them, so the test reads
  * them like the card would show them. */
@@ -26,10 +26,11 @@ const mockApi = vi.hoisted(() => ({
   chatMode: vi.fn(),
   chatSlotModel: vi.fn(),
   chatSlotReasoningEffort: vi.fn(),
+  chatSlotAutocompact: vi.fn(),
+  setChatSlotAutocompact: vi.fn(),
   agentResolvedModel: vi.fn(),
   harnessModels: vi.fn(),
   memberDashboard: vi.fn(),
-  memberDashboardLock: vi.fn(),
   kirocrewConfig: vi.fn(),
 }))
 vi.mock('../../api/client', () => ({ api: mockApi }))
@@ -46,7 +47,6 @@ import { ProfilePagePushContext, type ProfilePagePush } from './CrewProfilePanel
 import { isTrustRootTarget } from '../../guide/findTargetPolicy'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
-import { MEMBER_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
 
 let lastQc: QueryClient
 let hosts: [HTMLDivElement, HTMLDivElement]
@@ -93,18 +93,18 @@ const rowValue = (key: string) => within(group()).getByTestId(`crew-profile-sett
 const page = (key: string) => within(hosts[1]).getByTestId(`crew-profile-setting-page-${key}`)
 const open = (key: string) => { fireEvent.click(row(key)); return page(key) }
 /** Open the setting's page and pick one option by its label. */
-const pick = (key: string, option: string) => fireEvent.click(within(open(key)).getByRole('radio', { name: option }))
+const pick = (key: string, option: string | RegExp) => fireEvent.click(within(open(key)).getByRole('radio', { name: option }))
 const checked = (key: string) => within(page(key)).getByRole('radio', { checked: true })
 
 beforeEach(() => {
   vi.clearAllMocks()
   modelsState.isDegraded = false
-  mockApi.memberDashboard.mockResolvedValue({ structure_locked: false })
-  mockApi.memberDashboardLock.mockResolvedValue({ ok: true, structure_locked: true })
+  mockApi.memberDashboard.mockResolvedValue({})
   mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
   mockApi.chatMode.mockResolvedValue({ ok: true })
   mockApi.chatSlotModel.mockResolvedValue({ ok: true })
   mockApi.chatSlotReasoningEffort.mockResolvedValue({ ok: true })
+  mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 70, min: 5, max: 90 })
   mockApi.agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
   mockApi.kirocrewConfig.mockResolvedValue({ dashboard: {} })
   mockApi.harnessModels.mockResolvedValue([{ model_name: 'auto' }, { model_name: 'sonnet-cc' }])
@@ -209,6 +209,103 @@ describe('CrewProfileSettings row and group', () => {
     modelsState.isDegraded = true
     setup(member())
     expect(within(group()).getByTestId('crew-profile-settings-models-error')).not.toBeEmptyDOMElement()
+  })
+})
+
+describe('CrewProfileSettings auto-compact', () => {
+  it('reads Inherited when the record holds 0, and says which threshold that is', async () => {
+    setup(member({ autocompact_pct: 0 }))
+    expect(rowValue('autocompact_pct')).toHaveTextContent('Inherited')
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Follows the default in Settings → Chat, now 70%'))
+  })
+
+  it('writes the picked percent as a number to the record and leaves the thread alone', async () => {
+    setup(member())
+    pick('autocompact_pct', '30%')
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { autocompact_pct: 30 }))
+    expect(rowValue('autocompact_pct')).toHaveTextContent('30%')
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].autocompact_pct).toBe(30)
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+  })
+
+  it('sends Inherited as 0', async () => {
+    setup(member({ autocompact_pct: 40 }))
+    expect(rowValue('autocompact_pct')).toHaveTextContent('40%')
+    // The option's name carries its hint, so match its label at the start.
+    pick('autocompact_pct', /^Inherited/)
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { autocompact_pct: 0 }))
+  })
+
+  it('names the harness, not the global, when the thread runs on one that compacts on its own', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, agent_pct: 40, global_pct: 70, harness_managed: 'kas', min: 5, max: 90 })
+    setup(member({ autocompact_pct: 40 }))
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Kiro Agent summarizes these chats on its own schedule'))
+    expect(p).not.toHaveTextContent('Follows the default')
+  })
+
+  it('re-reads the global when the picker opens, so a changed chat setting shows', async () => {
+    setup(member())
+    await waitFor(() => expect(mockApi.chatSlotAutocompact).toHaveBeenCalledTimes(1))
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 90, min: 5, max: 90 })
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Follows the default in Settings → Chat, now 90%'))
+  })
+
+  it('says so on the picker when the threshold cannot be read', async () => {
+    mockApi.chatSlotAutocompact.mockRejectedValue(new Error('gateway down'))
+    setup(member())
+    open('autocompact_pct')
+    const notice = await within(hosts[1]).findByTestId('crew-profile-settings-autocompact-error')
+    // Plain words, not the transport's own message, and a way to try again.
+    expect(notice).toHaveTextContent("Couldn't read the current default for this chat.")
+    expect(notice).not.toHaveTextContent('gateway down')
+    // Inherited still says where its value comes from, without a number.
+    expect(hosts[1]).toHaveTextContent('Follows the default in Settings → Chat')
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 70, min: 5, max: 90 })
+    const calls = mockApi.chatSlotAutocompact.mock.calls.length
+    fireEvent.click(within(notice).getByTestId('crew-profile-settings-autocompact-retry'))
+    await waitFor(() => expect(mockApi.chatSlotAutocompact.mock.calls.length).toBeGreaterThan(calls))
+    await waitFor(() => expect(hosts[1]).toHaveTextContent('Follows the default in Settings → Chat, now 70%'))
+  })
+
+  it('says when the thread has its own threshold, which this record does not move', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: 55, global_pct: 70, min: 5, max: 90 })
+    setup(member())
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('This chat has its own threshold, 55%'))
+  })
+
+  it('clears the thread\'s own threshold from the page, since no pick here moves it', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: 55, global_pct: 70, min: 5, max: 90 })
+    mockApi.setChatSlotAutocompact.mockResolvedValue({ ok: true, pct: null, global_pct: 70 })
+    setup(member())
+    const p = open('autocompact_pct')
+    const clear = await within(p).findByTestId('crew-profile-settings-autocompact-clear-thread')
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: null, global_pct: 70, min: 5, max: 90 })
+    fireEvent.click(clear)
+    await waitFor(() => expect(mockApi.setChatSlotAutocompact).toHaveBeenCalledWith('member-oncall', null))
+    // The record is left alone: only the thread's override goes.
+    expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
+    await waitFor(() => expect(within(p).queryByTestId('crew-profile-settings-autocompact-clear-thread')).toBeNull())
+    expect(p).not.toHaveTextContent('This chat has its own threshold')
+  })
+
+  it('says so when the thread\'s own threshold cannot be cleared', async () => {
+    mockApi.chatSlotAutocompact.mockResolvedValue({ pct: 55, global_pct: 70, min: 5, max: 90 })
+    mockApi.setChatSlotAutocompact.mockRejectedValue(new Error('down'))
+    setup(member())
+    const p = open('autocompact_pct')
+    fireEvent.click(await within(p).findByTestId('crew-profile-settings-autocompact-clear-thread'))
+    expect(await within(p).findByTestId('crew-profile-settings-autocompact-clear-error')).toHaveTextContent("Couldn't clear this chat's own threshold.")
+  })
+
+  it('offers no clear when the thread has no threshold of its own', async () => {
+    setup(member())
+    const p = open('autocompact_pct')
+    await waitFor(() => expect(p).toHaveTextContent('Follows the default in Settings → Chat, now 70%'))
+    expect(within(p).queryByTestId('crew-profile-settings-autocompact-clear-thread')).toBeNull()
   })
 })
 
@@ -554,79 +651,16 @@ describe('CrewProfileSettings worker model and effort', () => {
   })
 })
 
-/* The person's lock on the mate's dynamic dashboard lives HERE, on the
- * mate's card, as one labelled switch in the group with a line of help as
- * the group's caption. The Dashboard tab only shows a badge
- * (CrewDynamicDashboard.test.tsx pins that it has no control). */
-describe('CrewProfileSettings dashboard lock', () => {
-  const SWITCH = 'Lock dashboard layout'
-
-  it('offers the switch and reads lock state', async () => {
+/* The card has no dashboard lock switch and does not read the dashboard: a crewmate
+ * changes its page only through its own tools, and rollback undoes a change. */
+describe('CrewProfileSettings without a dashboard lock', () => {
+  it('offers no lock switch and does not read the dashboard', async () => {
     setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
-    expect(screen.getByTestId('crew-profile-dashboard-lock')).toHaveTextContent(SWITCH)
-    expect(group()).toHaveTextContent(
-      "While locked, oncall can't replace its dashboard with a different layout or restore an older one.",
-    )
-  })
-
-  it('reads the lock off the dashboard body, so it shows what the gateway holds', async () => {
-    mockApi.memberDashboard.mockResolvedValue({ structure_locked: true })
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
-    expect(mockApi.memberDashboard).toHaveBeenCalledWith('oncall', 'oncall')
-  })
-
-  it('is held until the read answers: a switch that moves first shows a state nothing holds', async () => {
-    let answer: (v: { structure_locked: boolean }) => void = () => {}
-    mockApi.memberDashboard.mockReturnValue(new Promise((r) => { answer = r }))
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    expect(sw).toHaveAttribute('aria-disabled', 'true')
-    fireEvent.click(sw)
-    expect(mockApi.memberDashboardLock).not.toHaveBeenCalled()
-    answer({ structure_locked: false })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-  })
-
-  it('flips the lock through the owner route, then re-reads every dashboard query for the mate', async () => {
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-    const spy = vi.spyOn(lastQc, 'invalidateQueries')
-    fireEvent.click(sw)
-    await waitFor(() => expect(mockApi.memberDashboardLock).toHaveBeenCalledWith('oncall', 'oncall', true))
-    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, 'oncall'] }))
-    // The tab's frame reads under the same prefix, so it is refreshed by that one call.
-    expect(spy.mock.calls.some(([arg]) => (arg as { queryKey: string[] }).queryKey[0] === MEMBER_DASHBOARD_QUERY_PREFIX)).toBe(true)
-  })
-
-  it('says which change failed and what stayed the same', async () => {
-    mockApi.memberDashboard.mockResolvedValue({ structure_locked: true })
-    mockApi.memberDashboardLock.mockRejectedValue(new Error('403'))
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-    fireEvent.click(sw)
-    await waitFor(() => expect(mockApi.memberDashboardLock).toHaveBeenCalledWith('oncall', 'oncall', false))
-    expect(await screen.findByTestId('crew-profile-dashboard-lock-error')).toHaveTextContent(
-      "Couldn't unlock the dashboard. It's still locked. Try again.",
-    )
-  })
-
-  it('hides the switch and shows error + hint when the lock cannot be read', async () => {
-    mockApi.memberDashboard.mockRejectedValue(new Error('500'))
-    setup(member())
-    expect(await screen.findByTestId('crew-profile-dashboard-lock-error')).toHaveTextContent(
-      "Couldn't read whether the dashboard is locked.",
-    )
-    // Switch is hidden when the state is unknown (showing a dim off switch
-    // for an unknown state would look identical to "unlocked" and mislead),
-    // but the caption is still shown so the row is not context-free.
-    expect(screen.queryByRole('switch', { name: SWITCH })).toBeNull()
-    expect(group()).toHaveTextContent("can't replace")
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    expect(screen.queryByRole('switch', { name: 'Lock dashboard layout' })).toBeNull()
+    expect(screen.queryByTestId('crew-profile-dashboard-lock')).toBeNull()
+    expect(group()).not.toHaveTextContent("can't replace its dashboard")
+    expect(mockApi.memberDashboard).not.toHaveBeenCalled()
   })
 })
 
@@ -979,5 +1013,112 @@ describe('CrewProfileSettings harness', () => {
     const radios = within(open('acp_backend')).getAllByRole('radio')
     expect(radios.filter((r) => r.getAttribute('tabindex') === '0')).toHaveLength(1)
     expect(radios[0]).toHaveAttribute('tabindex', '0')
+  })
+})
+
+/* The per-crewmate switch for one-click Dashboard card replies. A preview, OFF by
+ * default: an older gateway sends no field, and a crewmate that never opted in has
+ * none, both of which read as off. The gateway enforces it; this only writes the
+ * crewmate's record. */
+describe('CrewProfileSettings dashboard card send', () => {
+  const SWITCH = 'Send replies in one click'
+
+  it('is off when the roster row says nothing, and off when it says false', async () => {
+    setup(member())
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('is on only when the record says true', async () => {
+    setup(member({ dashboard_card_send: true }))
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent("a reply button on oncall's Dashboard tab")
+  })
+
+  it('writes the crewmate record and updates the roster row', async () => {
+    mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dashboard_card_send: true }))
+    await waitFor(() => {
+      const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
+      expect(rows?.[0].dashboard_card_send).toBe(true)
+    })
+  })
+
+  it('says the setting did not change when the write fails, and leaves the row alone', async () => {
+    mockApi.updateKirocrewAgent.mockRejectedValue(new Error('500'))
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    expect(await screen.findByTestId('crew-profile-dashboard-card-send-error')).toHaveTextContent(
+      "Couldn't turn on one-click send. It's still off.",
+    )
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].dashboard_card_send).toBeUndefined()
+  })
+})
+
+describe('CrewProfileSettings show in my Sessions list', () => {
+  const SWITCH = 'Show in my Sessions list'
+
+  it('is off (hidden) when the roster row says nothing', async () => {
+    setup(member())
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent(
+      'Chats oncall opens also show in your Sessions list. Its Sessions tab always lists them.',
+    )
+  })
+
+  it('is on only when the record says true', async () => {
+    setup(member({ show_sessions_in_list: true }))
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('writes the Bot record and updates the roster row', async () => {
+    mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { show_sessions_in_list: true }))
+    await waitFor(() => {
+      const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
+      expect(rows?.[0].show_sessions_in_list).toBe(true)
+    })
+  })
+
+  it('says the setting did not change when the write fails', async () => {
+    mockApi.updateKirocrewAgent.mockRejectedValue(new Error('500'))
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    expect(await screen.findByTestId('crew-profile-show-sessions-in-list-error')).toHaveTextContent("Couldn't save this setting.")
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].show_sessions_in_list).toBeUndefined()
+  })
+})
+
+describe('CrewProfileSettings workers at once', () => {
+  it('reads No limit when the record sets none, and says only the owner changes it', () => {
+    setup(member())
+    expect(rowValue('max_workers')).toHaveTextContent('No limit')
+    expect(open('max_workers')).toHaveTextContent('The most workers oncall can run at the same time. Only you can change this, not oncall.')
+    expect(checked('max_workers')).toHaveAccessibleName('No limit')
+  })
+
+  it('sends No limit back as 0', async () => {
+    setup(member({ max_workers: 3 }))
+    pick('max_workers', 'No limit')
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { max_workers: 0 }))
+  })
+
+  it('writes the pick to the record as a number, and touches no thread', async () => {
+    setup(member({ max_workers: 8 }))
+    pick('max_workers', '3')
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { max_workers: 3 }))
+    expect(mockApi.chatSlotModel).not.toHaveBeenCalled()
+    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    await waitFor(() => expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].max_workers).toBe(3))
+  })
+
+  it('offers a stored limit the steps do not list, checked', () => {
+    setup(member({ max_workers: 5 }))
+    expect(rowValue('max_workers')).toHaveTextContent('5')
+    open('max_workers')
+    expect(checked('max_workers')).toHaveAccessibleName('5')
   })
 })

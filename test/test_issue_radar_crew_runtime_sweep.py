@@ -8,18 +8,19 @@ case. The shared fakes and autouse fixtures live in ``issue_radar_crew_runtime_h
 """
 
 import asyncio
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
+import pytest
 from issue_radar_crew_runtime_helpers import (  # noqa: F401 -- the autouse fixtures register by import
     OWNER,
     REPO,
     _app,
     _app_is_on,
     _crew,
+    _FakeClient,
     _FakeLoop,
     _FakeNudge,
     _FakeSlot,
@@ -52,10 +53,11 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
     :func:`crew_runtime.dispatch_crew_turn`; the wake is pinned here.
     """
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
 
     async def test_a_wake_hands_the_slot_the_capped_runner(self):
         crew = _crew(self.root, unattended=True)
@@ -174,10 +176,13 @@ class TestTriageModel(unittest.IsolatedAsyncioTestCase):
                 self.slots[name] = TestTriageModel._Slot(name, model=model)
             return super().get_or_create_slot(name=name, model=model, **kw)
 
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
         from kiro_crew.apps.builtins.issue_radar.backend import crew_model
 
         crew_model._withheld.clear()
@@ -524,38 +529,12 @@ class TestDetectUnblocks(unittest.TestCase):
 # ── the sweep ───────────────────────────────────────────────────────────────
 
 
-class _FakeClient:
-    """The gh layer, stubbed. Counts calls so the sweep's API cost is assertable."""
-
-    def __init__(self, issue=None, pr=None, timeline=None, enriched=None):
-        self.issue = issue or {"comments": 0, "state": "open"}
-        self.pr = pr or {}
-        self.timeline = timeline or []
-        self.enriched = enriched or []
-        self.calls: list[str] = []
-
-    def get_issue_detail(self, owner, repo, number, **kw):
-        self.calls.append(f"issue:{number}")
-        return dict(self.issue)
-
-    def get_pr_detail(self, owner, repo, number, **kw):
-        self.calls.append(f"pr:{number}")
-        return dict(self.pr)
-
-    def list_issue_timeline(self, owner, repo, number, **kw):
-        self.calls.append(f"timeline:{number}")
-        return list(self.timeline)
-
-    def enrich_pulls_by_number(self, owner, repo, pulls, **kw):
-        self.calls.append("enrich")
-        return list(self.enriched)
-
-
 class TestSweep(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
 
     async def _sweep(self, client, state=None):
         with (
@@ -745,10 +724,11 @@ class TestDismissal(unittest.IsolatedAsyncioTestCase):
     directions are asserted.
     """
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
 
     def _teardown_mod(self):
         """Imported per-test, never in ``setUp``.
@@ -932,7 +912,7 @@ class TestDismissal(unittest.IsolatedAsyncioTestCase):
         """
         teardown = self._teardown_mod()
         crew = _crew(self.root)
-        elsewhere = Path(self._tmp.name) / "other-provider"
+        elsewhere = self.root / "other-provider"
         elsewhere.mkdir(parents=True, exist_ok=True)
 
         # Registered against a root with no crews in it at all.
@@ -1106,10 +1086,13 @@ class TestForgeIdentityFresh(unittest.TestCase):
 
 
 class TestHumanAnswer(unittest.IsolatedAsyncioTestCase):
+    @pytest.fixture(autouse=True)
+    def _per_test_root(self, tmp_path):
+        # The store mkdirs its root on read, so pytest owns the directory, not the test.
+        self.root = tmp_path / "radar-root"
+        self.root.mkdir()
+
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
         self.now = [_T0_MS]
         from kiro_crew.crew_log import store as crew_log_store
 

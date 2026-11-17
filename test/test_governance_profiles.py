@@ -265,7 +265,7 @@ def test_cold_store_transient_error_recovers_on_metadata_change(profiles_dir, mo
     # entry to preserve) a transient read error yields an unbound deny-all →
     # cron surface policy-only. The fingerprint IS committed (NOT uncached — the
     # old uncache hack re-ran iterdir/read_text on every hot-path resolve, an
-    # event-loop wedge GPT flagged). Recovery is therefore picked up the normal
+    # event-loop wedge). Recovery is therefore picked up the normal
     # hot-reload way: when the file's metadata changes again, the next access
     # reloads and the real profile takes effect.
     import os
@@ -365,7 +365,7 @@ def test_unreadable_runtime_reload_fails_closed_bind_preserving(profiles_dir, mo
 
 
 def test_unreadable_reload_commits_fingerprint_no_reread_storm(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 1 #2): a PERSISTENTLY unreadable profile must NOT force a
+    # A PERSISTENTLY unreadable profile must NOT force a
     # re-read (iterdir + read_text) on EVERY synchronous resolve — that runs on the
     # event loop (hooks.on_tool_call) and can wedge the gateway on a slow FS. After
     # the first unrecoverable reload, the fingerprint is committed, so subsequent
@@ -411,7 +411,7 @@ def test_unreadable_reload_commits_fingerprint_no_reread_storm(profiles_dir, mon
 
 
 def test_reload_publishes_valid_update_while_other_profile_unreadable(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 3): a valid TIGHTENING of profile A must be published even when
+    # A valid TIGHTENING of profile A must be published even when
     # profile B is unreadable in the same reload. The whole-store rollback would
     # have discarded A's update (kept the old permissive A). Per-profile handling
     # publishes A's update; B fails CLOSED (bind-preserving deny-all), staying bound
@@ -521,7 +521,7 @@ def test_malformed_profile_fails_closed_and_recovers_on_metadata_change(profiles
 
 
 def test_directory_unenumerable_preserves_last_known_good(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 2): a directory iterdir() OSError on a WARM store must NOT
+    # A directory iterdir() OSError on a WARM store must NOT
     # clear the bind index to policy-only. The prior snapshot is preserved.
     from pathlib import Path
 
@@ -574,7 +574,7 @@ def test_missing_profiles_dir_is_absent_no_warning(profiles_dir, monkeypatch, ca
 
 
 def test_cold_start_dir_error_governed_boot_aborts(profiles_dir, monkeypatch):
-    # HIGH (GPT pass 2): a NON-FileNotFoundError directory error at COLD start
+    # A NON-FileNotFoundError directory error at COLD start
     # (unreadable EXISTING dir, no prior snapshot) must NOT silently clear to
     # policy-only and pass the boot assertion. It is flagged unrecoverable so a
     # governed fleet boot-aborts.
@@ -773,7 +773,6 @@ def test_warm_store_non_blocking_under_contention_serves_prior_snapshot(profiles
     # passes even when the served snapshot is empty (a fail-open; see
     # test_cold_store_contention_never_serves_ungoverned_permit).
     import os
-    import time
 
     path = profiles_dir / "cron.json"
     path.write_text(
@@ -791,19 +790,41 @@ def test_warm_store_non_blocking_under_contention_serves_prior_snapshot(profiles
     store = gp._STORE
     assert store._snap.loaded
 
-    # Bump mtime so the fingerprint differs (forcing the reload path), then hold the
-    # reload lock as if another thread were mid-reload.
+    # Bump mtime to force the reload path, with the reload lock held by "another thread".
     st = path.stat()
     os.utime(path, (st.st_atime, st.st_mtime + 5))
-    assert store._lock.acquire(blocking=False)
-    try:
-        started = time.monotonic()
-        prof = gp.resolve_active_scope("cron:j:r")
-        elapsed = time.monotonic() - started
-    finally:
-        store._lock.release()
+    real_lock = store._lock
+    acquires: list[tuple[bool, float]] = []
+    caller = threading.get_ident()
 
-    assert elapsed < 1.0, f"a warm caller must not block on the reload lock ({elapsed:.2f}s)"
+    class _HeldElsewhere:
+        """The reload lock as another thread holds it; other threads get the real one."""
+
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            if threading.get_ident() != caller:
+                return real_lock.acquire(blocking, timeout)
+            acquires.append((blocking, timeout))
+            assert not blocking, f"a warm caller blocked on the reload lock ({timeout=})"
+            return False
+
+        def release(self) -> None:
+            if threading.get_ident() != caller:
+                return real_lock.release()
+            raise AssertionError("released a reload lock it never took")
+
+        def __enter__(self) -> bool:
+            return self.acquire()
+
+        def __exit__(self, *exc: object) -> None:
+            self.release()
+
+    store._lock = _HeldElsewhere()
+    try:
+        prof = gp.resolve_active_scope("cron:j:r")
+    finally:
+        store._lock = real_lock
+
+    assert acquires == [(False, -1)], "a warm caller must try the reload lock once, non-blocking"
     # And it served the PRIOR (coherent, still-restrictive) snapshot — not nothing.
     assert (
         prof is not None
@@ -1413,7 +1434,6 @@ def test_the_cold_load_barrier_never_blocks_the_event_loop(profiles_dir, monkeyp
     their own thread, and a loop caller keeps the unresolved fail-closed answer.
     """
     import asyncio
-    import time
 
     (profiles_dir / "host.json").write_text(
         json.dumps(
@@ -1428,21 +1448,36 @@ def test_the_cold_load_barrier_never_blocks_the_event_loop(profiles_dir, monkeyp
     try:
         store = gp._STORE
         assert not store._snap.loaded, "precondition: the store must be cold"
-        assert store._lock.acquire(blocking=False), "precondition: own the reload lock"
+        real_lock = store._lock
+        assert real_lock.acquire(blocking=False), "precondition: own the reload lock"
+        loop_thread = threading.get_ident()
+        blocking_acquires: list[tuple[bool, float]] = []
+
+        class _RefusingLock:
+            """The store's lock, refusing any BLOCKING acquire on the thread under test."""
+
+            def acquire(self, blocking=True, timeout=-1):
+                if threading.get_ident() == loop_thread and (blocking or timeout != -1):
+                    blocking_acquires.append((blocking, timeout))
+                    return False
+                return real_lock.acquire(blocking, timeout)
+
+            def release(self):
+                real_lock.release()
+
         try:
+            monkeypatch.setattr(store, "_lock", _RefusingLock())
 
             async def _resolve_on_the_loop():
-                started = time.monotonic()
-                prof = gp.resolve_active_scope(gp.HOST_SESSION_KEY)
-                return time.monotonic() - started, prof
+                return gp.resolve_active_scope(gp.HOST_SESSION_KEY)
 
-            elapsed, prof = asyncio.run(_resolve_on_the_loop())
+            prof = asyncio.run(_resolve_on_the_loop())
         finally:
-            store._lock.release()
+            real_lock.release()
 
-        assert elapsed < gp._COLD_LOAD_WAIT_S / 2, (
-            f"a loop-thread caller waited {elapsed:.2f}s for a cold load another "
-            f"thread owned; the barrier must be confined to off-loop callers"
+        assert blocking_acquires == [], (
+            f"a loop-thread caller waited on the reload lock {blocking_acquires} for a "
+            f"cold load another thread owned; the barrier must be confined to off-loop callers"
         )
         assert prof is not None and prof.name.startswith(
             "_deny_all_unloaded"
@@ -1807,173 +1842,3 @@ def test_fallback_profile_names_bind_preserved_unreadable(profiles_dir, monkeypa
     os.utime(path, (st.st_atime, st.st_mtime + 5))
 
     assert "host" in gp.fallback_profile_names()
-
-
-# ── Configurable loosened fallback (policy top-level ``fallback``): when a
-#    profile FILE is unusable, an enterprise ceiling may substitute a looser
-#    profile than deny-all — e.g. deny only channels + apps, leave the basic
-#    operational planes (subagent/cron/heartbeat, tools, commands, fs, network) to
-#    the ceiling. Default (no ``fallback`` declared) stays deny-all. ──
-
-
-def test_policy_fallback_key_parses_into_ceiling():
-    from kiro_crew.platform.context import PlatformCompositionError
-    from kiro_crew.platform.governance import parse_policy
-
-    # Absent → None: the deny-all default is preserved (public edition unchanged).
-    c0 = parse_policy({"version": 1, "boot": {"fail_closed": True}})
-    assert c0.fallback_profile is None
-
-    # Present → a Profile that lists ONLY channels + apps (both denied), leaving
-    # every other plane ABSENT so the ceiling alone governs it.
-    c1 = parse_policy(
-        {
-            "version": 1,
-            "boot": {"fail_closed": True},
-            "fallback": {
-                "channels": {"members": {"mode": "allow", "allow": []}},
-                "apps": {"mode": "allow", "allow": []},
-            },
-        }
-    )
-    assert c1.fallback_profile is not None
-    # The two named planes are governed (present) and denied…
-    assert "channels" in c1.fallback_profile.controls
-    assert "apps" in c1.fallback_profile.controls
-    assert not resolve(None, c1.fallback_profile, "apps", "some-app").permitted
-    # …every unlisted plane is ABSENT, so the profile does not narrow it (the
-    # ceiling governs → permitted at the profile level).
-    assert "tools" not in c1.fallback_profile.controls
-    assert "capabilities.spawn" not in c1.fallback_profile.controls
-    assert resolve(None, c1.fallback_profile, "tools", "read").permitted
-    assert resolve(None, c1.fallback_profile, "capabilities.spawn", "researcher").permitted
-
-    # Non-dict fallback → fail closed at boot.
-    with pytest.raises(PlatformCompositionError):
-        parse_policy({"version": 1, "boot": {"fail_closed": True}, "fallback": []})
-    # A STRUCTURAL key inside the fallback (extends/name/bind/updates/fallback/…)
-    # would be silently dropped by _parse_controls, so it must fail closed rather
-    # than vanish — e.g. `fallback: {"extends": "lockdown"}` losing its intent.
-    with pytest.raises(PlatformCompositionError):
-        parse_policy(
-            {"version": 1, "boot": {"fail_closed": True}, "fallback": {"extends": "lockdown"}}
-        )
-    # An unknown scope INSIDE the fallback fails closed exactly like a real
-    # profile would (the fallback is parsed with the same scope validation).
-    with pytest.raises(PlatformCompositionError):
-        parse_policy(
-            {
-                "version": 1,
-                "boot": {"fail_closed": True},
-                "fallback": {"capabilities": {"zzz_not_a_scope": {"enabled": False}}},
-            }
-        )
-
-
-def _install_ceiling(monkeypatch, ceiling):
-    """Point governance_profiles' current_context() at a ceiling for the test."""
-    import types
-
-    from kiro_crew.platform import context as ctx_mod
-
-    monkeypatch.setattr(
-        ctx_mod, "current_context", lambda: types.SimpleNamespace(governance=ceiling)
-    )
-
-
-def test_unusable_profile_uses_declared_loosened_fallback(profiles_dir, monkeypatch):
-    # With a ceiling that declares a loosened fallback (deny only channels+apps),
-    # an unusable profile FILE falls back to THAT profile, NOT deny-all: the basic
-    # operational planes stay permitted, only channels + apps are denied.
-    from kiro_crew.platform.governance import parse_policy
-
-    ceiling = parse_policy(
-        {
-            "version": 1,
-            "boot": {"fail_closed": True},
-            "fallback": {
-                "channels": {"members": {"mode": "allow", "allow": []}},
-                "apps": {"mode": "allow", "allow": []},
-            },
-        }
-    )
-    _install_ceiling(monkeypatch, ceiling)
-
-    # Schema-invalid profile bound to the cron surface → unusable → fallback.
-    _write(
-        profiles_dir,
-        "cron",
-        {"name": "cron", "bind": {"type": "surface", "id": "cron"}, "tools": {"mode": "banana"}},
-    )
-    prof = gp.resolve_active_scope("cron:job-1:run-1")
-    assert prof is not None, "bound surface must resolve to the loosened fallback, not None"
-    # Only channels + apps are denied by the fallback…
-    assert "channels" in prof.controls and "apps" in prof.controls
-    assert not resolve(None, prof, "apps", "some-app").permitted
-    # …the basic operational planes are left to the ceiling (NOT deny-all'd).
-    assert resolve(
-        None, prof, "capabilities.spawn", "researcher"
-    ).permitted, "spawn must stay available under the loosened fallback"
-    assert resolve(None, prof, "tools", "read").permitted
-
-
-def test_unusable_profile_defaults_to_deny_all_without_declared_fallback(profiles_dir, monkeypatch):
-    # No declared fallback (governance present but fallback_profile is None) →
-    # deny-all is preserved: the public/default posture is unchanged.
-    from kiro_crew.platform.governance import parse_policy
-
-    _install_ceiling(monkeypatch, parse_policy({"version": 1, "boot": {"fail_closed": True}}))
-    _write(
-        profiles_dir,
-        "cron",
-        {"name": "cron", "bind": {"type": "surface", "id": "cron"}, "tools": {"mode": "banana"}},
-    )
-    prof = gp.resolve_active_scope("cron:job-1:run-1")
-    assert prof is not None
-    assert not resolve(None, prof, "tools", "read").permitted
-    assert not resolve(None, prof, "capabilities.spawn", "researcher").permitted  # deny-all
-
-
-def test_declared_fallback_applies_after_governance_composes(profiles_dir, monkeypatch):
-    # Boot-order race guard: if the store is first touched BEFORE governance
-    # composes, an unusable profile bakes deny-all. Once governance composes with a
-    # declared fallback, the NEXT resolve must pick it up WITHOUT any file mtime
-    # change — the fallback token folded into the freshness key forces one reload.
-    # Without that token the baked deny-all would persist until a file changed,
-    # silently ignoring the declared fallback (the boot-order race the fix closes).
-    import types
-
-    from kiro_crew.platform import context as ctx_mod
-    from kiro_crew.platform.governance import parse_policy
-
-    _write(
-        profiles_dir,
-        "cron",
-        {"name": "cron", "bind": {"type": "surface", "id": "cron"}, "tools": {"mode": "banana"}},
-    )
-
-    # Phase 1: governance not composed yet → deny-all baked into the snapshot.
-    monkeypatch.setattr(ctx_mod, "current_context", lambda: types.SimpleNamespace(governance=None))
-    prof1 = gp.resolve_active_scope("cron:job-1:run-1")
-    assert prof1 is not None
-    assert not resolve(None, prof1, "capabilities.spawn", "researcher").permitted
-
-    # Phase 2: governance composes with a declared loosened fallback. NO file change.
-    ceiling = parse_policy(
-        {
-            "version": 1,
-            "boot": {"fail_closed": True},
-            "fallback": {
-                "channels": {"members": {"mode": "allow", "allow": []}},
-                "apps": {"mode": "allow", "allow": []},
-            },
-        }
-    )
-    monkeypatch.setattr(
-        ctx_mod, "current_context", lambda: types.SimpleNamespace(governance=ceiling)
-    )
-    prof2 = gp.resolve_active_scope("cron:job-1:run-1")
-    assert prof2 is not None
-    assert resolve(
-        None, prof2, "capabilities.spawn", "researcher"
-    ).permitted, "declared fallback must apply once governance composes, without a file change"

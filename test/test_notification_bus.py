@@ -500,7 +500,7 @@ class TestPayloadFromLegacy:
         assert p.channel == "system.agent"
 
     def test_unknown_kind_preserved_in_note(self):
-        # Regression: notify("secretary_alert", ...) must keep its kind for
+        # notify("secretary_alert", ...) must keep its kind for
         # frontend filters even though it delivers on the fallback channel.
         bus, delivered = _make_bus()
         bus.push(payload_from_legacy("secretary_alert", "t", "b"))
@@ -508,7 +508,7 @@ class TestPayloadFromLegacy:
         assert delivered[0]["channel"] == "system.agent"
 
     def test_oversized_body_truncated_not_dropped(self):
-        # Regression: legacy notify() never dropped — cron results and
+        # Legacy notify() never drops — cron results and
         # send_message text can exceed the schema body cap.
         bus, delivered = _make_bus()
         bus.push(payload_from_legacy("cron", "t", "x" * 30000))
@@ -523,14 +523,14 @@ class TestPayloadFromLegacy:
         assert len(delivered[0]["title"]) == 500
 
     def test_empty_title_gets_placeholder(self):
-        # Regression: send_message with title="" must still deliver.
+        # send_message with title="" must still deliver.
         bus, delivered = _make_bus()
         bus.push(payload_from_legacy("agent", "", "b"))
         assert len(delivered) == 1
         assert delivered[0]["title"] == "Notification"
 
     def test_non_string_inputs_coerced_not_raised(self):
-        # Regression: legacy notify() never raised — a None/int body must be
+        # Legacy notify() never raises — a None/int body must be
         # coerced, not TypeError out of the adapter.
         bus, delivered = _make_bus()
         bus.push(payload_from_legacy("agent", None, 42))  # type: ignore[arg-type]

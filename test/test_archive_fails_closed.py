@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from test_transcript_file_change_bound import _loaded_slot, _plain
+from test_transcript_file_change_bound import _history, _loaded_slot, _plain
 
 from kiro_crew import channel_transcript_migration
 from kiro_crew import history as history_module
@@ -25,6 +25,7 @@ from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.slot_persistence import transcript_merge
 from kiro_crew.dashboard.slot_persistence.transcript_merge import (
+    FILE_CHANGES_ARCHIVE_REASON,
     _frozen_prefix_and_foreign_appends,
 )
 from kiro_crew.history import ARCHIVE_DIR_NAME, ConversationLog
@@ -334,6 +335,95 @@ class TestTheDashboardRewriteFailsClosed:
         assert len(path.read_text(encoding="utf-8").splitlines()) == 3
         assert slot._pending_rewrite is False
         assert list((tmp_path / ARCHIVE_DIR_NAME).glob("*.jsonl"))
+
+
+def _held_replace(*_a: Any, **_k: Any) -> None:
+    """A replace another program's open handle refuses: the transcript is left as it was."""
+    raise PermissionError(13, "Access is denied")
+
+
+def _archive_reasons(tmp_path: Path) -> list[str]:
+    return [
+        json.loads(p.read_text(encoding="utf-8").splitlines()[0])["reason"]
+        for p in sorted((tmp_path / ARCHIVE_DIR_NAME).glob("*.jsonl"))
+    ]
+
+
+class TestADashboardSaveWhoseReplaceFailsLeavesNoArchive:
+    """A retry under a lasting replace fault adds no archive copy; the landed save leaves one."""
+
+    @staticmethod
+    def _fail_three_times_then_land(
+        state: Any, slot: Any, path: Path, monkeypatch: pytest.MonkeyPatch, **save: Any
+    ) -> list[str]:
+        before = path.read_bytes()
+        real_write = chat_persistence.atomic_write
+        monkeypatch.setattr(chat_persistence, "atomic_write", _held_replace)
+        for _ in range(3):
+            slot._dirty = True
+            with pytest.raises(PermissionError):
+                _save_slot_to_history(state, slot, **save)
+        assert path.read_bytes() == before
+        assert _archive_reasons(path.parent) == []
+
+        monkeypatch.setattr(chat_persistence, "atomic_write", real_write)
+        slot._dirty = True
+        assert _save_slot_to_history(state, slot, **save) is True
+        return _archive_reasons(path.parent)
+
+    def test_the_rewrite_tail(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        rows = [_plain(i) for i in range(4)]
+        state, slot, path = _loaded_slot(tmp_path, monkeypatch, rows, window=4)
+        del slot.messages[2:]
+        slot._pending_rewrite = True
+
+        landed = self._fail_three_times_then_land(state, slot, path, monkeypatch, rewrite=True)
+
+        assert landed == ["compact"]
+
+    def test_the_file_change_bound(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A retry served from the cached prefix would land the bound without its archive."""
+        monkeypatch.setattr(transcript_merge, "_file_changes_keep_turns", lambda: 2)
+        state, slot, path = _loaded_slot(tmp_path, monkeypatch, _history(5), window=2)
+
+        landed = self._fail_three_times_then_land(state, slot, path, monkeypatch)
+
+        assert landed == [FILE_CHANGES_ARCHIVE_REASON]
+
+    def test_the_foreign_dedup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        state, slot, path = _loaded_slot(tmp_path, monkeypatch, [_plain(0)], window=1)
+        slot.messages.append(
+            {"role": "user", "content": "new ask", "ts": "2099-01-01T00:00:00.000000"}
+        )
+        copy = {"role": "user", "content": "new ask", "ts": "2099-01-01T00:00:01.000000"}
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(copy) + "\n")
+
+        landed = self._fail_three_times_then_land(state, slot, path, monkeypatch)
+
+        assert landed == ["foreign-dedup"]
+
+    def test_a_replace_that_landed_before_raising_keeps_its_archive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The dropped rows are then in the archive only."""
+        rows = [_plain(i) for i in range(4)]
+        state, slot, path = _loaded_slot(tmp_path, monkeypatch, rows, window=4)
+        del slot.messages[2:]
+        slot._pending_rewrite = True
+        real_write = chat_persistence.atomic_write
+
+        def land_then_raise(*args: Any, **kwargs: Any) -> None:
+            real_write(*args, **kwargs)
+            raise OSError(5, "device did not take the directory sync")
+
+        monkeypatch.setattr(chat_persistence, "atomic_write", land_then_raise)
+
+        with pytest.raises(OSError):
+            _save_slot_to_history(state, slot, rewrite=True)
+
+        assert len(path.read_text(encoding="utf-8").splitlines()) == 3
+        assert _archive_reasons(tmp_path) == ["compact"]
 
 
 def _dedup_fixture(tmp_path: Path) -> tuple[Any, Path, list[dict]]:

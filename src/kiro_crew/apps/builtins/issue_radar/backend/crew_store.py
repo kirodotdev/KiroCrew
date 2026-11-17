@@ -146,6 +146,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         crew_log_units,
     )
     from kiro_crew.apps.builtins.issue_radar.backend.crew_store_records import (  # noqa: F401
+        _BOOL_SETTINGS,
         _CREW_ID_MINT_TRIES,
         _CREW_ID_RE,
         _DEFAULT_CREW,

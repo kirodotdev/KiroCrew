@@ -119,10 +119,10 @@ def _interactive_approval(
 
     ``on_host_decision`` is told ``(request_id, cause)`` on every answer given
     with nobody asked: an auto-approve source, the ``--approval`` mode, the YOLO
-    override, slot trust, no UI at all, or a Slack prompt whose window closed.
-    *cause* is a ``DENY_CAUSE_*`` code when one names the host's reason (an expired
-    window), ``""`` otherwise. A dashboard-only prompt's own expiry still returns a
-    bare ``False``.
+    override, slot trust, no UI at all, or a prompt whose window closed on Slack or
+    on the dashboard alone. *cause* is a ``DENY_CAUSE_*`` code when one names the
+    host's reason (an expired window), ``""`` otherwise. A dashboard-only wait that
+    is cancelled raises to such a caller instead of answering ``False``.
     """
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
@@ -176,6 +176,17 @@ def _interactive_approval(
         _child_grant_eligible = (not _child_lf) or (
             getattr(event, "child_unconditional_grant_eligible", False) is True
         )
+        # A call under a moved Bot's limit its worker could not carry exactly
+        # (``mate_held_rules``): marked by the unattended gate, or found here for
+        # the parent session (a sub-agent of the Bot's worker). No shortcut below
+        # approves it; only the person's prompt at the end can.
+        from kiro_crew import mate_held_rules
+
+        _held_call = mate_held_rules.call_is_held() or bool(
+            await asyncio.to_thread(mate_held_rules.held_for, event, session_key=parent_session_key)
+        )
+        if _held_call:
+            _child_grant_eligible = False
         # A tool request's id is the backend's JSON-RPC id, counted per connection,
         # so two runtimes ask with the same one (each sub-agent's first is ``1``).
         # Every background source shares the dashboard's approval registry, so the
@@ -224,7 +235,7 @@ def _interactive_approval(
             approval_slot = ""
 
         # Per-source auto-approve (e.g. cron, taskrunner, subagent)
-        if source in self._cfg.hooks.get("auto_approve_sources", []):
+        if source in self._cfg.hooks.get("auto_approve_sources", []) and not _held_call:
             if not _child_grant_eligible:
                 # The operator explicitly configured this source to run
                 # UNATTENDED — nobody is watching the interactive window,
@@ -350,7 +361,16 @@ def _interactive_approval(
                 # A Crew Mode card trust ("Trust this worker") is a slot trust
                 # here like any other (``_slot_is_trusted``): it covers the
                 # worker's spawn_run and its subagents' tools.
-                if _ps_trusted and not _child_grant_eligible:
+                if _ps_trusted and _held_call:
+                    # Slot IS trusted; a limit the Bot's move could not apply
+                    # is what blocks the auto-approve, so the audit names it.
+                    _sel_log(
+                        caller=f"slot:{_parent_slot_key}",
+                        operation=f"{source}.bot_limit_held",
+                        outcome="not_auto_approved",
+                        resources=_safe_title,
+                    )
+                elif _ps_trusted and not _child_grant_eligible:
                     # Slot IS trusted; the fidelity gate is what blocks
                     # the auto-approve. A distinct audit reason — an
                     # auditor reading "not_trusted" for a trusted slot
@@ -538,6 +558,9 @@ def _interactive_approval(
                     if is_background
                     else DashboardState._APPROVAL_TIMEOUT
                 )
+                # Read by the cleanup below even when the wait is cancelled,
+                # so a cancelled caller is not turned into a dashboard wait.
+                outcome = "expired"
                 try:
                     outcome = await asyncio.wait_for(pending.future, timeout=approval_timeout)
                     # Answered on Slack or the dashboard: a loop paused for
@@ -581,6 +604,9 @@ def _interactive_approval(
                     pass
 
                 if outcome == "expired":
+                    from kiro_crew.llm_helpers import note_approval_expired
+
+                    note_approval_expired()
                     return _by_host(False, DENY_CAUSE_APPROVAL_TIMEOUT)
                 return outcome == "approved"
             except Exception:
@@ -604,11 +630,16 @@ def _interactive_approval(
                 tool_purpose=event.tool_purpose,
                 slot=approval_slot,
                 is_background=is_background,
+                on_host_decision=(
+                    None
+                    if on_host_decision is None
+                    else lambda cause: on_host_decision(request_id, cause)
+                ),
             )
-        if _child_lf:
+        if _child_lf or _held_call:
             # No human surface answered and none of the (skipped)
-            # shortcuts may speak for an agent-authored request:
-            # fail closed.
+            # shortcuts may speak for an agent-authored request, or for a
+            # call a held Bot limit covers: fail closed.
             return _by_host(False)
         return _by_host(True)  # no UI → auto-approve
 

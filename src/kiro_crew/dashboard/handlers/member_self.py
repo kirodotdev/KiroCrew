@@ -16,7 +16,10 @@ Two halves, split the way the guide and the change cards are:
   - ``POST /api/member/self/update`` writes the presentation fields a crewmate
     owns (:data:`kiro_crew.members.SELF_EDITABLE_FIELDS`) at once, records the
     change for undo (:mod:`member_self_changes`) and draws one row with an Undo
-    in the crewmate's chat (:mod:`chat_cards`, surface ``self``).
+    in the crewmate's chat (:mod:`chat_cards`, surface ``self``). A display name
+    that moved also renames the crewmate's home folder
+    (:func:`mate_folders.follow_display_name`), the way the crew editor's own
+    save does, and so does taking that change back.
   - ``POST /api/member/self/propose`` turns a named request (a model, an
     approval mode, a tools draft) into the existing change card for the
     caller's own member: the crewmate names what it wants, the card engine
@@ -201,6 +204,16 @@ async def api_member_self_update(request: web.Request) -> web.Response:
         chat_cards.record_self_change(state, rec)
         answer["change_id"] = rec["id"]
         answer["undoable"] = rec["undoable"]
+    if "display_name" in result["changed"]:
+        # The crewmate's home folder carries its display name, so a rename from
+        # its own chat renames the folder, exactly as the crew editor's save
+        # does (``agent_admin.crew_update``). Without this the sidebar keeps the
+        # old label until the next chat this crewmate opens renames the folder
+        # anyway (``mate_folders.ensure_mate_home``), and until then the folder
+        # disagrees with the Bots page and the thread title.
+        from kiro_crew.dashboard.mate_folders import follow_display_name
+
+        await follow_display_name(request.app.get("state"), thread_store, result["name"])
     _audit(sk, OP_UPDATE_SELF, "ok", ",".join(result["changed"]))
     return web.json_response(answer)
 
@@ -629,6 +642,12 @@ async def api_member_self_undo(request: web.Request) -> web.Response:
     state = request.app["state"]
     await chat_cards.load_conversation_window(state, undone)
     chat_cards.record_self_change_status(state, undone)
+    if "display_name" in result["changed"]:
+        # Taking a rename back is a rename: the folder follows the restored
+        # name the same way it follows the new one.
+        from kiro_crew.dashboard.mate_folders import follow_display_name
+
+        await follow_display_name(request.app.get("state"), rec["memory_store"], result["name"])
     return web.json_response(
         {"ok": True, "member": rec["member"], "changed": result["changed"], "status": "undone"}
     )

@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
+from app_token_records import mark_apps_live
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +35,7 @@ def clear_nonces(tmp_path, _floor_monkeypatch):
     import kiro_crew.dashboard.token_auth as _ta
 
     _floor_monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    mark_apps_live(_floor_monkeypatch)
     # Pin the memoized revocation generation to 0 (skips the lazy disk load)
     # so no persisted counter from a prior test or the real home leaks in.
     _floor_monkeypatch.setattr(_rg, "_gen", 0)

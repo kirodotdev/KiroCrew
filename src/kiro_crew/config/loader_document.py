@@ -123,6 +123,23 @@ def acp_backend_stored_as_kiro() -> bool:
     return _stored_agent_value("acp_backend") == STORED_BACKEND_KIRO
 
 
+def acp_backend_stored_runs_kas() -> bool:
+    """Whether the stored ``agent.acp_backend`` asks for KAS: no choice (the default) or ``"kas"``.
+
+    Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
+    Absent and ``""`` are no choice and take the product default; a stored JSON
+    ``null`` or any other value is not KAS. Read by ``ensure_kiro_cli_kas_verdict``,
+    so a process outside the gateway reads the data home's record of a kiro-cli
+    that refused its v3 engine before a config load that would run KAS.
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, DEFAULT_ACP_BACKEND
+
+    value = _stored_agent_value("acp_backend")
+    if value is _ABSENT_AGENT_KEY or value == "":
+        value = DEFAULT_ACP_BACKEND
+    return value == ACP_BACKEND_KAS
+
+
 def acp_backend_bundle_route() -> bool:
     """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
 
@@ -130,8 +147,50 @@ def acp_backend_bundle_route() -> bool:
     On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
     own bundled engine, which kiro-cli's own v3 support says nothing about, so the
     gateway floor and the per-process probe both decline to promote the pick.
+    An absent key reads :func:`kas_bundle_build_default`, as the loader does.
+    A stored value that is not a bool reads the same default, as the loader's
+    ``_safe_bool`` does, so the two readers agree.
     """
-    return bool(_stored_agent_value("kas_bundle") is True)
+    stored = _stored_agent_value("kas_bundle")
+    return stored if isinstance(stored, bool) else kas_bundle_build_default()
+
+
+def kas_bundle_build_default() -> bool:
+    """What an UNDECLARED ``agent.kas_bundle`` resolves to in this build.
+
+    True only in a build the nightly pipeline stamped (``_build_info.BUILD_CHANNEL
+    == "nightly"``, :mod:`kiro_crew.build_channel`), so the nightly lane runs the
+    bundled engine by default while stable, insider and source builds keep the
+    relay. A fact about the build's bytes, never the ``channel`` file a user can
+    switch before the update lands. Like :func:`unsandboxed_exec_platform_default`
+    it is resolved into the loaded value, and ``save()`` leaves the key off disk
+    while it is undeclared, so a nightly install that later takes a stable build
+    goes back to the stable default instead of keeping a value nobody chose.
+    """
+    from kiro_crew.build_channel import is_nightly_build
+
+    return is_nightly_build()
+
+
+#: The ``agent`` keys whose absent value is resolved from the host or the build,
+#: not from the field default, so ``save()`` must leave them off disk while the
+#: operator has not declared them (see :func:`strip_undeclared_resolved_defaults`).
+_RESOLVED_DEFAULT_AGENT_KEYS = ("sandbox_allow_unsandboxed_exec", "kas_bundle")
+
+
+def strip_undeclared_resolved_defaults(document: dict) -> None:
+    """Drop each :data:`_RESOLVED_DEFAULT_AGENT_KEYS` key the documents do not declare.
+
+    Called by :meth:`KiroCrewConfig.save` on the whole-document snapshot, which holds
+    the RESOLVED value of every field: writing one of these back would freeze a
+    platform or build default in as a declaration that outranks the next default.
+    """
+    agent_section = document.get("agent")
+    if not isinstance(agent_section, dict):
+        return
+    for key in _RESOLVED_DEFAULT_AGENT_KEYS:
+        if not _agent_key_declared(key):
+            agent_section.pop(key, None)
 
 
 def acp_backend_overlay_owned() -> bool:
@@ -155,18 +214,19 @@ def _backend_choice_declared(key: str) -> bool:
 _ABSENT_AGENT_KEY = object()
 
 
-def _raw_agent_section(path: Path) -> dict | None:
-    """The raw ``agent`` object of the config document at *path*, or ``None``.
+def _raw_agent_section(path: Path, section: str = "agent") -> dict | None:
+    """The raw *section* object (``agent`` by default) of the config document at *path*.
 
-    An unreadable or non-object document contributes nothing: a corrupt config is
-    not a declaration. Read as the load reads it (:func:`read_endorsed_config_text`).
+    ``None`` when absent. An unreadable or non-object document contributes
+    nothing: a corrupt config is not a declaration. Read as the load reads it
+    (:func:`read_endorsed_config_text`).
     """
     try:
         doc = json.loads(read_endorsed_config_text(path))
     except (OSError, ValueError):
         return None
-    agent = doc.get("agent") if isinstance(doc, dict) else None
-    return agent if isinstance(agent, dict) else None
+    node = doc.get(section) if isinstance(doc, dict) else None
+    return node if isinstance(node, dict) else None
 
 
 def _raw_stt_provider(path: Path) -> object:
@@ -182,12 +242,16 @@ def _raw_stt_provider(path: Path) -> object:
     return stt.get("provider") if isinstance(stt, dict) else None
 
 
-def _stored_agent_value(key: str) -> object:
-    """The raw stored ``agent.<key>`` a load would read: overlay first, then base."""
+def _stored_agent_value(key: str, section: str = "agent") -> object:
+    """The raw stored ``<section>.<key>`` a load would read: overlay first, then base.
+
+    *section* is ``agent`` unless named. No field default is filled in, so this
+    tells a written value from a default one.
+    """
     for path in (config_local_path(), config_path()):
-        agent = _raw_agent_section(path)
-        if agent is not None and key in agent:
-            return agent[key]
+        node = _raw_agent_section(path, section)
+        if node is not None and key in node:
+            return node[key]
     return _ABSENT_AGENT_KEY
 
 

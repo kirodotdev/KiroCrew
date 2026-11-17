@@ -31,6 +31,14 @@ def _fresh_create_budget():
     create_rate_limit.reset_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _session_harness_preview_on(_floor_monkeypatch):
+    """Everything here is the preview's ON behaviour; OFF is test_session_harness_preview.py."""
+    from kiro_crew import session_harness_preview
+
+    _floor_monkeypatch.setattr(session_harness_preview, "session_harness_enabled", lambda: True)
+
+
 @pytest.fixture
 def selectable(monkeypatch):
     """Kiro, Claude and Codex are allowed and installed; Pi is allowed but missing."""

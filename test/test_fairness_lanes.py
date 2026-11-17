@@ -965,7 +965,8 @@ def test_spawn_sub_agents_holds_then_returns_children_results() -> None:
     holds = [p for p in seen if p.startswith("/api/spawn/p9/resume")]
     assert len(holds) == 2, "held until the second answer said granted"
     # The children were read before the hold and their results collected after it.
-    assert seen.index("/api/spawn/c1") < seen.index(holds[0])
+    reads = [i for i, p in enumerate(seen) if p.partition("?")[0] == "/api/spawn/c1"]
+    assert reads[0] < seen.index(holds[0]) < reads[-1]
 
 
 @pytest.mark.asyncio

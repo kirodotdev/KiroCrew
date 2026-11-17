@@ -36,6 +36,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from redaction_structured_cases import github_classic
 
 import kiro_crew.autonudge as autonudge
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop, _AutoNudgeMaintenanceView
@@ -229,7 +230,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_serialized_loops": ("method", "297c6249aa5f"),
     "_set_monitor_deadline": ("method", "a9f111186976"),
     "_settle_delivered_terminal": ("method+async", "fa9fb3019298"),
-    "_settle_fire_cycle": ("method+async", "1146844abf1f"),
+    "_settle_fire_cycle": ("method+async", "c04d230bcaeb"),
     "_sidecar_transaction": ("method", "140eaa502228"),
     "_start_persistence": ("method", "3582b2532748"),
     "_stop_monitor_admitted": ("method+async", "5cc2e2081504"),
@@ -248,6 +249,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     # The close side of the same liveness question, injected the same way.
     "_worker_closed": ("method", "490393185551"),
     # The loop side of the same liveness question, read from this service's own table.
+    "_worker_loop_held": ("method", "490393185551"),
     "_worker_looping": ("method", "490393185551"),
     # Reads one loop's monitor kind: the startup resume treats a work-ledger
     # watch differently, because its news arrives by a push a restart loses.
@@ -363,8 +365,9 @@ _BASE_NUDGELOOP_FIELDS: list[tuple[str, str | None]] = [
 
 
 _FIXED_NOW = 1_790_000_000.0
-#: AWS's documented example key: credential-shaped, so the loader holds its row aside.
-_HELD_ID = "AKIAIOSFODNN7EXAMPLE"
+#: A GitHub token with a valid checksum: credential-shaped, so the loader holds its
+#: row aside. (An AWS key ID is an identifier to the redactor and stays visible.)
+_HELD_ID = github_classic(seed=181)
 
 #: ``autonudge.json`` as the golden scenario writes it, each ``monitor`` object folded
 #: to ``<MONITOR>``: those bytes belong to ``monitoring.models.monitor_state_to_dict``,
@@ -537,12 +540,12 @@ _GOLDEN_SIDECAR = """\
   "version": 1,
   "quarantined": [
     {
-      "id": "AKIAIOSFODNN7EXAMPLE",
+      "id": "<HELD_ID>",
       "slot_key": "chat-3-300",
       "message": "held aside"
     }
   ]
-}"""
+}""".replace("<HELD_ID>", _HELD_ID)
 
 _MONITOR_OBJECT = re.compile(r'(?ms)^      "monitor": \{\n.*?^      \},\n')
 

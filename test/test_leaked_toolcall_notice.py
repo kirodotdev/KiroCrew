@@ -194,21 +194,19 @@ def test_adversarial_delimiter_runs_scan_in_linear_time():
     # stay linear on ADVERSARIAL model-authored text: the previous
     # backreference regex took seconds at a few thousand consecutive
     # backticks (superlinear backtracking) — long enough for the liveness
-    # watchdog to kill the gateway. The ceiling is generous by orders of
-    # magnitude for a linear pass (microseconds); only a reintroduced
-    # backtracking pattern can approach it (the old regex needed >6s at
-    # 8k characters and grew ~8x per doubling).
-    import time
+    # watchdog to kill the gateway. Only a reintroduced backtracking pattern
+    # comes near a CPU budget (the old regex needed >6s at 8k characters and
+    # grew ~8x per doubling). That cost is inside the regex engine, which no
+    # work counter can see, so the shared ramp holds this thread's CPU to its
+    # 2 s budget (``REDOS_LARGE_BUDGET_SECONDS``), one unit at a time and then
+    # at growing pumps.
+    from conftest import assert_rejected_without_backtracking
 
-    for payload in (
-        "`" * 50_000,
-        "`` " * 20_000,
-        ("`a" * 30_000),
-        ("```x~~~y" * 10_000),
-    ):
-        start = time.perf_counter()
-        has_leaked_tool_call(payload + " tail text")
-        assert time.perf_counter() - start < 2.0
+    def reject(text: str) -> None:
+        assert not has_leaked_tool_call(text)
+
+    for unit in ("`", "`` ", "`a", "```x~~~y"):
+        assert_rejected_without_backtracking(reject, lambda n, unit=unit: unit * n + " tail text")
 
 
 # ── Gates (each test flips exactly one) ──

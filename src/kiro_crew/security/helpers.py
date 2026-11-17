@@ -83,9 +83,9 @@ _RLIMIT_DEFAULTS = {
     # runs as its own dedicated UID; operators opt in via config there.
     # NOTE: the fork-bomb defense that IS default-on is the cgroup v2 scope
     # (sandbox.cgroup_scope_argv → pids.max), which is per-cgroup not per-UID.
-    # This same ``max_processes`` key sets that cgroup pids.max ceiling (default
-    # 8192 there); the RLIMIT_NPROC path below stays opt-in for the reasons above.
-    "max_processes": 0,
+    # ``max_processes`` sets that pids.max ceiling (default 8192) and never this
+    # rlimit: a per-scope task budget must not also cap the whole UID.
+    "max_user_processes": 0,
     # RLIMIT_CPU: CPU-seconds. 0 = disabled (default). CAVEAT: this counts
     # against the WHOLE lifetime of a long-lived process — the root agent runs
     # up to a 30-min wall-clock turn and a busy tool-heavy session can
@@ -93,18 +93,21 @@ _RLIMIT_DEFAULTS = {
     # SIGXCPU-kills healthy sessions. Set per-deployment only if the spawn
     # population is exclusively short-lived tools.
     "max_cpu_seconds": 0,
-    # RLIMIT_AS: virtual address space (bytes-worth, expressed in MB). 0 =
-    # disabled (default). CAVEAT: RLIMIT_AS caps VIRTUAL memory, not resident
-    # memory, and Node/V8 (kiro-cli, claude-agent-acp, every npm MCP server)
-    # reserves huge virtual mappings far exceeding real use — measured ~2GB VSZ
-    # for 4 idle worker threads, ~3.4GB for 8 — so even a "generous" 4GB cap
-    # SIGKILLs normal MCP-heavy sessions with spurious ENOMEM. Do NOT enable
-    # globally for Node-backed spawns. The default-on memory ceiling is instead
-    # the cgroup v2 scope (sandbox.cgroup_scope_argv → memory.max, an RSS cap,
-    # host-proportional by default — 65% of physical RAM, so ~10.6 GB on a
-    # 16 GB box / ~21.3 GB on 32 GB), which this same ``max_memory_mb`` key
-    # overrides; the RLIMIT_AS path here stays opt-in for non-Node fleets.
-    "max_memory_mb": 0,
+    # RLIMIT_AS: virtual address space (bytes-worth, expressed in MB), read
+    # from ``max_address_space_mb``. 0 = disabled (default). CAVEAT: RLIMIT_AS
+    # caps VIRTUAL memory, not resident memory. Node/V8 (kiro-cli,
+    # claude-agent-acp, every npm MCP server) reserves virtual mappings far
+    # beyond real use: ~2GB VSZ measured for 4 idle worker threads, ~3.4GB for
+    # 8, and fetch() cannot allocate its Wasm parser under 5GB. A GraalVM
+    # native image reserves its heap range at startup; one CLI was measured
+    # failing at 16GB and starting at 64GB. So even a "generous" cap
+    # stops normal tools and MCP servers from starting; do NOT enable it
+    # globally for Node-backed spawns. The default-on memory ceiling is the
+    # cgroup v2 scope instead (sandbox.cgroup_scope_argv: memory.max, an RSS
+    # cap, 65% of physical RAM by default), which ``max_memory_mb`` overrides.
+    # That key never reaches this path, because a resident cap must not also
+    # cap the address space.
+    "max_address_space_mb": 0,
 }
 
 
@@ -145,8 +148,8 @@ def resource_limit_spec(config: dict | None = None) -> list[tuple[str, int]]:
     Names, not ``resource`` constants: the consumer resolves them with
     ``getattr`` and skips any its platform lacks. A value of ``0`` means "leave
     inherited" and is dropped here -- the OPPOSITE of what ``0`` means on the
-    cgroup path, which reads two of these same keys and treats ``0`` as "use the
-    module default" because systemd rejects a zero property. Both domains are
+    cgroup path, whose keys treat ``0`` as "use the module default" because
+    systemd rejects a zero property. Both domains are
     stated on ``ResourceLimitsConfig``, which is where the coercion lives.
     """
     limits = dict(_RLIMIT_DEFAULTS)
@@ -175,12 +178,12 @@ def resource_limit_spec(config: dict | None = None) -> list[tuple[str, int]]:
                 limits[key] = val
 
     # (rlimit name, requested soft/hard value in the rlimit's native unit).
-    max_memory_bytes = limits["max_memory_mb"] * 1024 * 1024
+    max_address_space_bytes = limits["max_address_space_mb"] * 1024 * 1024
     specs = [
-        ("RLIMIT_NPROC", limits["max_processes"]),
+        ("RLIMIT_NPROC", limits["max_user_processes"]),
         ("RLIMIT_NOFILE", limits["max_open_files"]),
         ("RLIMIT_CPU", limits["max_cpu_seconds"]),
-        ("RLIMIT_AS", max_memory_bytes),
+        ("RLIMIT_AS", max_address_space_bytes),
     ]
     return [(name, value) for name, value in specs if value > 0]
 
@@ -189,11 +192,13 @@ def apply_resource_limits(config: dict | None = None) -> "Callable[[], None]":
     """Return a preexec_fn that applies POSIX resource limits to a child process.
 
     Reads limits from the ``resource_limits`` config section:
-      - ``max_processes``: RLIMIT_NPROC (process count for the child's UID).
+      - ``max_user_processes``: RLIMIT_NPROC (process count for the child's UID).
       - ``max_open_files``: RLIMIT_NOFILE (open file descriptors).
       - ``max_cpu_seconds``: RLIMIT_CPU in seconds (``0`` disables — default).
-      - ``max_memory_mb``: RLIMIT_AS (virtual address space) in MB (``0``
-        disables — default; see the RLIMIT_AS caveat in ``_RLIMIT_DEFAULTS``).
+      - ``max_address_space_mb``: RLIMIT_AS (virtual address space) in MB
+        (``0`` disables, the default; see the RLIMIT_AS caveat in
+        ``_RLIMIT_DEFAULTS``). ``max_memory_mb`` is the cgroup resident cap
+        and sets no rlimit.
 
     Each key accepts a positive integer to set that limit, or ``0`` to leave the
     limit unchanged (inherited). Missing keys fall back to ``_RLIMIT_DEFAULTS``.

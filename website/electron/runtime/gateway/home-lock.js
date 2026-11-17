@@ -10,11 +10,12 @@ const STUCK_GATEWAY_STOP_TIMEOUT_MS = 30_000;
 /**
  * This data folder's `gateway.lock`, the fact that ties a running gateway to
  * this app's own home: whether a given pid holds it, which single port holder
- * does, the CLI's pid-pinned stop of that holder, and the CLI's
- * socket-independent probe of who holds the lock at all.
+ * does, the CLI's pid-pinned stop of that holder, the CLI's port stop of an
+ * orphaned gateway, and the CLI's socket-independent probe of who holds the
+ * lock at all.
  *
- * Both CLI calls run the backend binary the launch would spawn, under the same
- * scrubbed environment, and never inherit KIROCREW_PORT.
+ * Every CLI call runs the backend binary the launch would spawn, under the same
+ * scrubbed environment, and never inherits KIROCREW_PORT.
  */
 function createHomeLock({
   fs,
@@ -63,33 +64,48 @@ function createHomeLock({
     return await holdsHomeGatewayLock(pids[0]) ? pids[0] : 0;
   }
 
+  // Run `kirocrew stop --port PORT` with `extraArgs` and resolve whether it
+  // exited 0. The stop runs the same bundled binary the launch path spawns, so
+  // it must inherit the same scrubbed environment: a bundled Python left with
+  // an inherited PYTHONPATH/PYTHONHOME from a dev shell would import checkout
+  // code instead of its packaged tree. Route it through the one helper that
+  // strips those for a bundled binary (gateway-env.js), detecting bundled the
+  // same way the spawn does (resolveGatewayBin lands under backend-dist).
+  function runCliStop(extraArgs, label) {
+    const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
+    const bin = resolveGatewayBin();
+    const bundled = bin.includes("backend-dist");
+    return new Promise((resolve) => {
+      execFile(bin, ["stop", "--port", String(PORT), ...extraArgs], {
+        timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
+        windowsHide: true,
+        env: buildGatewayEnvironment({ ...cleanEnv, KIROCREW_HOME }, { bundled, platform: processObj.platform }),
+      }, (error, stdout, stderr) => {
+        const output = `${stdout || ""}${stderr || ""}`.trim();
+        const said = output ? `: ${output.slice(0, 200)}` : "";
+        if (error) glog(`${label}: \`kirocrew stop --port ${PORT}\` failed: ${error.message}${said}`);
+        else glog(`${label}: \`kirocrew stop --port ${PORT}\` finished${said}`);
+        resolve(!error);
+      });
+    });
+  }
+
   // Run the CLI's own stop for PORT, pinned to the pid this app proved. With
   // --expect-pid the CLI re-reads the listener and this home's gateway.lock
   // right before the signal and refuses, signalling nothing, unless that pid
   // still holds both -- so a gateway that replaced it is never stopped. POSIX
   // only: its one caller is behind sameHomeGatewayPid.
   function runGatewayStop(pid) {
-    const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
-    // The stop runs the same bundled binary the launch path spawns, so it must
-    // inherit the same scrubbed environment: a bundled Python left with an
-    // inherited PYTHONPATH/PYTHONHOME from a dev shell would import checkout
-    // code instead of its packaged tree. Route it through the one helper that
-    // strips those for a bundled binary (gateway-env.js), detecting bundled the
-    // same way the spawn does (resolveGatewayBin lands under backend-dist).
-    const bin = resolveGatewayBin();
-    const bundled = bin.includes("backend-dist");
-    return new Promise((resolve) => {
-      execFile(bin, ["stop", "--port", String(PORT), "--expect-pid", String(pid)], {
-        timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
-        windowsHide: true,
-        env: buildGatewayEnvironment({ ...cleanEnv, KIROCREW_HOME }, { bundled, platform: processObj.platform }),
-      }, (error, stdout, stderr) => {
-        const output = `${stdout || ""}${stderr || ""}`.trim();
-        if (error) glog(`stuck gateway: \`kirocrew stop --port ${PORT}\` failed: ${error.message}${output ? ` — ${output.slice(0, 200)}` : ""}`);
-        else glog(`stuck gateway: \`kirocrew stop --port ${PORT}\` finished${output ? ` — ${output.slice(0, 200)}` : ""}`);
-        resolve(!error);
-      });
-    });
+    return runCliStop(["--expect-pid", String(pid)], "stuck gateway");
+  }
+
+  // Run the very command the stale and orphan dialogs name for PORT, for a
+  // gateway nothing restarts. No --expect-pid: it pins its signal with a pidfd,
+  // which only Linux has, and these holders are macOS orphans. The CLI still
+  // signals only a Kiro Crew listener on PORT and refuses one the desktop app
+  // runs. The caller re-proves the holder right before it calls this.
+  function runPortStop() {
+    return runCliStop([], "orphaned gateway");
   }
 
   /**
@@ -125,9 +141,14 @@ function createHomeLock({
    * (holder=indeterminate), and a packaged app's refusal to run a
    * PATH-fallback `kirocrew`.
    *
+   * With `port`, the CLI names a held lock whose stamp a Windows mandatory
+   * lock hides from the gateway's fresh run record for that port
+   * (`gateway-pid --port`); without it such a lock stays `held`.
+   *
+   * @param {{port?: number}} [options]
    * @returns {Promise<{verdict:"captured"|"released"|"held"|"unverified"|"refused", pid:number|null}>}
    */
-  function probeLockHolderPid() {
+  function probeLockHolderPid({ port } = {}) {
     const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
     const bin = resolveGatewayBin();
     // The same refusal spawnGateway applies: a packaged Windows app with no
@@ -138,7 +159,11 @@ function createHomeLock({
       return Promise.resolve({ verdict: "refused", pid: null });
     }
     const bundled = bin.includes("backend-dist");
-    const { bin: probeBin, args: probeArgs } = gatewayCliInvocation(bin, ["gateway-pid"], path);
+    const { bin: probeBin, args: probeArgs } = gatewayCliInvocation(
+      bin,
+      Number.isInteger(port) && port > 0 ? ["gateway-pid", "--port", String(port)] : ["gateway-pid"],
+      path,
+    );
     return new Promise((resolve) => {
       execFile(probeBin, probeArgs, {
         timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
@@ -189,6 +214,7 @@ function createHomeLock({
     holdsHomeGatewayLock,
     sameHomeGatewayPid,
     runGatewayStop,
+    runPortStop,
     probeLockHolderPid,
   };
 }

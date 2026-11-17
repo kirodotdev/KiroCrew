@@ -16,7 +16,7 @@ PAGES_PER_GIB = GIB // PAGE  # 65536
 # A synthetic vm_stat modelled on a 48 GB machine, mirroring the values from
 # the reported screenshot (Activity Monitor: App ~24, Wired ~4, Compressed ~4,
 # Cached Files ~15, Memory Used ~32). Crucially "Pages inactive" is large (19
-# GiB) — the old code counted all of it as free, yielding 28 GB used / 20 free.
+# GiB) — counting all of it as free would yield 28 GB used / 20 free.
 _VM_STAT_48GB = f"""Mach Virtual Memory Statistics: (page size of {PAGE} bytes)
 Pages free:                                {1 * PAGES_PER_GIB}.
 Pages active:                              {23 * PAGES_PER_GIB}.

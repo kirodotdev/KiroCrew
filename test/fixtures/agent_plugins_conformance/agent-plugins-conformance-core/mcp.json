@@ -1,0 +1,117 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "default": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/dist/probe.mjs",
+        "default",
+        "arg with spaces",
+        "",
+        "${PLUGIN_ROOT}",
+        "${PLUGIN_DATA}",
+        "${APC_UNKNOWN}",
+        "$APC_VALUE",
+        "${PLUGIN_ROOT_SUFFIX}"
+      ],
+      "env": {
+        "APC_VALUE": "fixture value with spaces",
+        "APC_EXPANSION": "${PLUGIN_ROOT}|${PLUGIN_DATA}|${PLUGIN_ROOT}",
+        "APC_LITERAL": "${APC_UNKNOWN}|$APC_VALUE|${PLUGIN_ROOT_SUFFIX}",
+        "USER": "apc-configured-environment-precedence",
+        "USERNAME": "apc-configured-environment-precedence"
+      }
+    },
+    "relative": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/dist/probe.mjs",
+        "relative"
+      ],
+      "cwd": "./probe-workdir"
+    },
+    "root": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/dist/probe.mjs",
+        "root"
+      ],
+      "cwd": "${PLUGIN_ROOT}/probe-workdir"
+    },
+    "http": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:43187/conformance/mcp?value=$APC_HTTP_VALUE",
+      "headers": {
+        "AcCePt": "text/plain",
+        "x-apc-fixture": "${PLUGIN_ROOT}|${PLUGIN_DATA}|fixture value with spaces"
+      }
+    },
+    "data": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/dist/probe.mjs",
+        "data"
+      ],
+      "cwd": "${PLUGIN_DATA}"
+    },
+    "command-token-posix": {
+      "type": "stdio",
+      "command": "./bin/posix/probe token.sh",
+      "args": [
+        "arg with spaces",
+        "",
+        "literal-value"
+      ],
+      "cwd": "./probe-workdir"
+    },
+    "command-token-windows": {
+      "type": "stdio",
+      "command": "./bin/windows/probe token.cmd",
+      "args": [
+        "arg with spaces",
+        "",
+        "literal-value"
+      ],
+      "cwd": "./probe-workdir"
+    },
+    "sse": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/sse?value=$APC_SSE_VALUE",
+      "headers": {
+        "x-apc-fixture": "${PLUGIN_ROOT}|${PLUGIN_DATA}|fixture value with spaces"
+      }
+    },
+    "http-redirect": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:43187/conformance/redirect",
+      "headers": {
+        "x-apc-fixture": "public redirect fixture value"
+      }
+    },
+    "sse-header-precedence": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/sse-header-precedence",
+      "headers": {
+        "AcCePt": "application/x-apc-configured"
+      }
+    },
+    "sse-redirect": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/sse-redirect",
+      "headers": {
+        "x-apc-fixture": "public SSE redirect fixture value"
+      }
+    },
+    "sse-endpoint-origin": {
+      "type": "sse",
+      "url": "http://127.0.0.1:43187/conformance/sse-endpoint-origin",
+      "headers": {
+        "x-apc-fixture": "public SSE endpoint fixture value"
+      }
+    }
+  }
+}

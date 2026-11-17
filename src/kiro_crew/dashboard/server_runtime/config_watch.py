@@ -116,14 +116,21 @@ def _register_config_watch(
         # subagent role is read live at spawn and needs no rebuild.
         if not change.touched("agent.role_models.background"):
             return
-        try:
-            from kiro_crew.agent import rebuild_agent_config
+        from kiro_crew.agent import rebuild_agent_config_reporting
 
-            await asyncio.to_thread(rebuild_agent_config)
-            logger.info("agent.role_models.background changed -- background agent specs rebuilt")
-        except Exception:
-            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
-            logger.warning("background-model rebuild failed", exc_info=True)
+        # Raised, never swallowed: ConfigWatch retries only an applier that
+        # raises, so a failed or unwritten rebuild would otherwise leave the
+        # specs on the previous background model until a restart. Same contract
+        # as the agent.model applier, a shared-home refusal (wrote=False)
+        # included. PlatformCompositionError raises here too; the previous spec
+        # stays.
+        _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
+        if not wrote:
+            raise RuntimeError(
+                "background agent spec rebuild did not write (shared agent home "
+                "refused, or the existing spec could not be read)"
+            )
+        logger.info("agent.role_models.background changed -- background agent specs rebuilt")
 
     default_model_failure_notified = False
 
@@ -251,11 +258,57 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
 
+    def _push_command_bar(change: ConfigChange) -> None:
+        # What the quick-search shortcut opens is read from the shared config query
+        # too (the shell, its trigger labels and the Settings toggle), so a switch
+        # set from the CLI, $EDITOR or another dashboard reaches every open one only
+        # through a refresh frame.
+        if change.touched("dashboard.command_bar_enabled"):
+            state.push_refresh("config")
+
+    def _push_channels_switch(change: ConfigChange) -> None:
+        # Channels' sidebar row, its Search Everywhere result and its Settings row
+        # read the shared config query, so a switch set from the CLI, $EDITOR or
+        # another dashboard reaches every open one only through a refresh frame.
+        if change.touched("dashboard.channels_enabled"):
+            state.push_refresh("config")
+
+    async def _sync_stale_wake(change: ConfigChange) -> None:
+        # The `dashboard_stale_wake` preview's one cron job exists only while the
+        # preview is on, from whichever writer flipped it (dashboard, CLI, $EDITOR).
+        if not change.touched("dashboard.feature_previews"):
+            return
+        from kiro_crew.dashboard import stale_wake
+
+        # A failure propagates so the watcher retries the apply.
+        await stale_wake.sync_job(getattr(state, "crons", None))
+
+    def _count_chat_runtime_sharing_toggle(change: ConfigChange) -> None:
+        # Adoption telemetry: one count per on/off flip of the preview, from
+        # whichever writer flipped it. A synthesized change has no old document.
+        if change.old is None or not change.touched("dashboard.feature_previews"):
+            return
+        from kiro_crew.agent_sdk.chat_runtime_sharing import chat_runtime_sharing_enabled
+        from kiro_crew.metrics.chat_runtime_share import record_toggled
+
+        after = chat_runtime_sharing_enabled(change.new)
+        if chat_runtime_sharing_enabled(change.old) != after:
+            record_toggled(after)
+
     def _push_app_settings(change: ConfigChange) -> None:
         # The app session mute and the per-app model picker read ``apps`` off the
         # ``kirocrewConfig`` query, which only a refresh frame invalidates.
         if change.touched("apps"):
             state.push_refresh("config")
+
+    def _push_mate_listing(change: ConfigChange) -> None:
+        # Each mate thread's row carries its Bot's "Show in my Sessions list"
+        # switch (crew_mode.stamp_rows), so a flip from any writer re-sends the
+        # slot list and refreshes the roster so every dashboard's lists and
+        # Bot Settings switch follow it.
+        if any(p.endswith(".show_sessions_in_list") for p in change.under("agents")):
+            state.push_slots_update()
+            state.push_refresh("agents")
 
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
@@ -314,7 +367,28 @@ def _register_config_watch(
             callback=_push_feature_previews,
             name="dashboard.feature_previews",
         ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_sync_stale_wake,
+            name="dashboard.stale_wake",
+        ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_count_chat_runtime_sharing_toggle,
+            name="dashboard.chat_runtime_sharing_toggle",
+        ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe("agents", callback=_push_mate_listing, name="agents.show_sessions_in_list"),
+        live.subscribe(
+            "dashboard.command_bar_enabled",
+            callback=_push_command_bar,
+            name="dashboard.command_bar_enabled",
+        ),
+        live.subscribe(
+            "dashboard.channels_enabled",
+            callback=_push_channels_switch,
+            name="dashboard.channels_enabled",
+        ),
         live.subscribe(
             "dashboard.terminal.enabled",
             callback=_apply_terminal_enabled,
@@ -334,12 +408,18 @@ def _register_config_watch(
     app["config_watch_initial"] = initial
 
     async def _config_watch_shutdown(app_: web.Application) -> None:
-        await live.watch().stop()
+        try:
+            await live.watch().stop()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Config watcher stop failed during shutdown", exc_info=True)
         lifecycle = getattr(state, "_dynamic_cards", None)
         if lifecycle is not None:
-            # One call rather than reaching for a worker attribute: the producer owns two
-            # tasks, the model queue and the number refresher, and both must settle.
-            await lifecycle.shutdown()
+            try:
+                # One call rather than reaching for a worker attribute: the producer owns
+                # two tasks, the model queue and the number refresher, and both must settle.
+                await lifecycle.shutdown()
+            except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+                logger.warning("Dynamic cards shutdown failed", exc_info=True)
 
     app.on_cleanup.append(_config_watch_shutdown)
 

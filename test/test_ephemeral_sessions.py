@@ -23,6 +23,7 @@ from ephemeral_sessions_helpers import (
     _make_app,
     _make_state,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.history import ConversationLog
@@ -103,7 +104,8 @@ class TestSlotCreation:
         assert "dashboard:reuse" in state._restricted_keys
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/reuse")
+            inc = state._slots["reuse"]._dashboard_card_identity
+            resp = await client.delete(f"/api/chat/slots/reuse?incarnation={inc}")
             assert resp.status == 200
 
         assert "dashboard:reuse" not in state._restricted_keys
@@ -709,6 +711,8 @@ class TestMcpCoreSessionKeyPassthrough:
         import io
         import urllib.error
 
+        token = github_classic(seed=161)
+
         with (
             patch("kiro_crew.mcp_core.loopback_urlopen") as mock_urlopen,
             patch("kiro_crew.mcp_core._resolve_session_key", return_value=""),
@@ -718,13 +722,13 @@ class TestMcpCoreSessionKeyPassthrough:
                 code=502,
                 msg="Bad Gateway",
                 hdrs=None,
-                fp=io.BytesIO(b'{"error": "upstream rejected key AKIAIOSFODNN7EXAMPLE"}'),
+                fp=io.BytesIO(f'{{"error": "upstream rejected key {token}"}}'.encode()),
             )
             from kiro_crew.mcp_core import _post
 
             result = _post("/api/lessons", {"rule": "x"})
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["error"]
+        assert token not in result["error"]
         assert "REDACTED" in result["error"]
 
     def test_learn_add_tool_maps_unknown_session_to_friendly_message(self):

@@ -4,8 +4,9 @@
  * One row per updatable app: the shared icon tile, the display name, the
  * version diff, and an in-place Update button; the header carries Update All
  * with the sequential batch's progress. The rows are `useAppsData.updatables`
- * — the SAME list the sidebar badge and the sub-tab count are sized from — so
- * a row leaves this list by the data refresh that confirms its update
+ * — the list the sub-tab count is sized from, and whose enabled rows the
+ * sidebar badge counts — so a row leaves this list by the data refresh that
+ * confirms its update
  * (`useAppUpdates` announces each success, the registry refetch clears the
  * app's `updateAvailable`), never by local bookkeeping that could disagree
  * with the badge.
@@ -26,6 +27,7 @@ import AppIconTile from '../../components/appstore/AppIconTile'
 import { appDisplayName } from '../../components/appstore/appManifest'
 import { installedIcon } from '../../components/appstore/useHeroArt'
 import { i18nT } from '../../i18n/t'
+import { offlineProps } from '../../utils/offline'
 import type { LibraryApp } from './useAppsData'
 
 /** A button running the update it started is held with `aria-disabled`, never
@@ -34,7 +36,7 @@ import type { LibraryApp } from './useAppsData'
 const HELD = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-30'
 
 export default function UpdatesList({
-  rows, updatingAll, updatePending, onUpdate, onUpdateAll,
+  rows, updatingAll, updatePending, connected, onUpdate, onUpdateAll,
 }: {
   /** The updatable Library rows (`useAppsData.updatables`) — non-empty; the page owns the empty state. */
   rows: LibraryApp[]
@@ -42,11 +44,14 @@ export default function UpdatesList({
   updatingAll: { done: number; total: number } | null
   /** Name of the app whose single in-place update is in flight, or null. */
   updatePending: string | null
+  /** The gateway connection flag: offline, every update control is held and refuses. */
+  connected: boolean
   /** Per-row update dispatch (`useAppUpdates.runUpdate`). */
   onUpdate: (name: string) => void
   /** The shared sequential batch (`useAppUpdates.updateAll`). */
   onUpdateAll: () => void
 }) {
+  const offlineVerb = i18nT('utils.offline.manage_apps')
   return (
     <div>
       {/* Header: the same count sentence the Library hint row shows (same
@@ -59,8 +64,9 @@ export default function UpdatesList({
         </h3>
         <Btn
           className={`!bg-[var(--info)] !text-info-fg hover:!opacity-80 ${HELD}`}
-          onClick={() => { if (!updatingAll && !updatePending) onUpdateAll() }}
-          aria-disabled={!!updatingAll || undefined}
+          onClick={() => { if (connected && !updatingAll && !updatePending) onUpdateAll() }}
+          {...offlineProps(connected, offlineVerb, i18nT('pages.appsPage.update_all'))}
+          aria-disabled={!!updatingAll || !connected || undefined}
           // A row's own update owns the single pending slot: a batch started
           // now would post that app a second time. Nobody pressed this button
           // for that run, so plain `disabled` drops no focus.
@@ -111,12 +117,13 @@ export default function UpdatesList({
               </div>
               <Btn
                 className={`!bg-[var(--info)] !text-info-fg hover:!opacity-80 shrink-0 ${HELD}`}
-                onClick={() => { if (!busy) onUpdate(app.name) }}
+                onClick={() => { if (connected && !busy) onUpdate(app.name) }}
+                title={i18nT('components.appstore.installedAppCard.update_to', { version: app._newVersion || app.version })}
+                {...offlineProps(connected, offlineVerb, i18nT('components.appstore.installedAppCard.update'))}
                 // The pressed row is held rather than disabled, so it keeps
                 // focus while it runs and after a failed update leaves it here.
-                aria-disabled={updatePending === app.name || undefined}
+                aria-disabled={updatePending === app.name || !connected || undefined}
                 disabled={busy && updatePending !== app.name}
-                title={i18nT('components.appstore.installedAppCard.update_to', { version: app._newVersion || app.version })}
               >
                 {/* In-flight form at the point of action: a slow registry
                     re-clone otherwise leaves a silently disabled button. */}

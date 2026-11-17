@@ -35,6 +35,9 @@ from apps_routes_coverage_helpers import (
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
 from kiro_crew.apps.routes import register_app_routes
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+_TOKEN = github_classic(seed=33)
 
 # POST /api/apps/{name}/update
 
@@ -309,7 +312,7 @@ class TestUpdateApp:
                 ok=False, name=APP, error="source manifest mismatch"
             ),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: calls.append("deregister"))
+        monkeypatch.setattr(routes_mod, "deregister_app", _deregister_into(calls))
         monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
@@ -317,7 +320,7 @@ class TestUpdateApp:
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/update", json={})
             assert resp.status == 400
-        assert calls == ["stop", "deregister"], calls
+        assert calls == ["stop", "deregister (agents kept)"], calls
 
     @pytest.mark.asyncio
     async def test_registry_update_refuses_before_stopping_while_startup_hook_runs(
@@ -439,7 +442,7 @@ class TestUpdateApp:
                 ok=False, name=APP, error="source manifest mismatch"
             ),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
 
@@ -540,7 +543,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
 
@@ -570,7 +573,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
         resync = AsyncMock(return_value=[])
@@ -597,7 +600,7 @@ class TestUpdateApp:
             "update_app",
             lambda source, expected_name=None: AppResult(ok=True, name=APP, message="updated"),
         )
-        monkeypatch.setattr(routes_mod, "deregister_app", lambda n: None)
+        monkeypatch.setattr(routes_mod, "deregister_app", lambda n, **_: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
         resync = AsyncMock(return_value=[])
@@ -873,7 +876,7 @@ class TestUninstallRefusals:
         ) -> dict[str, Any]:
             seen_env.update(extra_env or {})
             return {
-                "output": "wiped with token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
+                "output": f"wiped with token={_TOKEN}",
                 "failed": True,
             }
 
@@ -883,7 +886,7 @@ class TestUninstallRefusals:
             resp = await client.post(f"/api/apps/{APP}/uninstall", json={})
             assert resp.status == 200
             log = (await resp.json())["uninstall_log"]
-        assert "ghp_0123456789abcdefghijABCDEFGHIJ0123456789" not in log
+        assert _TOKEN not in log
         assert "onUninstall script failed" in log
         # The script is told which data disposition was chosen.
         assert seen_env == {"KEEP_DATA": "1", "PURGE_DATA": "0"}
@@ -981,7 +984,7 @@ class TestMigrateCleanup:
             routes_mod._stop_backend_and_observe.return_value = (12345, True)
         if warning == "deregister":
             routes_mod._deregister_app_off_loop.return_value.errors = [
-                "cleanup failed: https://user:secret@example.test/path"
+                "cleanup failed: https://user:Pw9x-s3cr3t@example.test/path"
             ]
         from kiro_crew.apps import manager
 
@@ -992,7 +995,8 @@ class TestMigrateCleanup:
             body = await resp.json()
         assert resp.status == 200, body
         assert body["ok"] and bool(body.get("notice")) == (warning != "none")
-        assert "user:secret" not in body.get("notice", "")
+        # Only the password is masked; ``secret`` would be a placeholder word, kept.
+        assert "Pw9x-s3cr3t" not in body.get("notice", "")
         assert {p.name for p in dest.iterdir()} == {"data"}
         assert (dest / "data" / "keep.txt").read_text(encoding="utf-8") == "keep me"
         assert {p.name for p in (dest / "data").iterdir()} == {"keep.txt", ".kirocrew-deps.lock"}
@@ -1108,7 +1112,7 @@ async def test_update_stops_the_backend_before_deregistering_resources(
     _install(tmp_path)
     order: list[str] = []
 
-    async def _fake_deregister(name: str):
+    async def _fake_deregister(name: str, **_: Any):
         order.append("deregister")
         return SimpleNamespace(to_dict=lambda: {})
 

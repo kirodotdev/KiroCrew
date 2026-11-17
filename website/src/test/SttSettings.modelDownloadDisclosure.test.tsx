@@ -8,9 +8,9 @@
  * contract: the per-option size, copy naming the one-click path, and the explicit
  * download control with the size on it.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
 import { initI18n } from '../i18n'
@@ -36,6 +36,22 @@ const mockApi = api as unknown as {
 const BASE_BYTES = 147_951_465
 const TURBO_BYTES = 1_624_555_275
 
+/** The status body the gateway serves, with `status` laid over it. A deep copy, so
+ *  each read is a fresh object the way a parsed response is. */
+function statusBody(status: Record<string, unknown> = {}) {
+  return structuredClone({
+    available: true,
+    code: '',
+    detail: '',
+    models: [
+      { name: 'base', size_bytes: BASE_BYTES, present: false },
+      { name: 'large-v3-turbo', size_bytes: TURBO_BYTES, present: false },
+    ],
+    download: { step: 'idle', model: '', downloaded_bytes: 0, total_bytes: 0, error: '' },
+    ...status,
+  })
+}
+
 function mount(status: Record<string, unknown> = {}) {
   mockApi.sttConfig.mockResolvedValue({
     enabled: true,
@@ -47,25 +63,21 @@ function mount(status: Record<string, unknown> = {}) {
     language_codes: ['en-US'],
     prereqs: [],
   })
-  mockApi.sttStatus.mockResolvedValue({
-    available: true,
-    code: '',
-    detail: '',
-    models: [
-      { name: 'base', size_bytes: BASE_BYTES, present: false },
-      { name: 'large-v3-turbo', size_bytes: TURBO_BYTES, present: false },
-    ],
-    download: { step: 'idle', model: '', downloaded_bytes: 0, total_bytes: 0, error: '' },
-    ...status,
-  })
+  mockApi.sttStatus.mockImplementation(async () => statusBody(status))
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
         <SttSettings />
       </QueryClientProvider>
     </Provider>,
   )
+  return qc
+}
+
+/** A transfer that ended in `failed` for the selected model. */
+function failedDownload(error: string) {
+  return { step: 'failed', model: 'base', downloaded_bytes: 0, total_bytes: BASE_BYTES, error }
 }
 
 const modelSelect = () => screen.getByRole('combobox', { name: /model/i })
@@ -132,6 +144,21 @@ describe('SttSettings model download disclosure', () => {
     expect(screen.queryByRole('button', { name: /download now/i })).toBeNull()
   })
 
+  it('puts the failed download hand-off on a line of its own on a phone', async () => {
+    // Beside the message, the hand-off squeezes the sentence into ~60% of a phone's
+    // width. jsdom has no layout, so the wrap is read off the classes.
+    mount({
+      download: { step: 'failed', model: 'base', downloaded_bytes: 0, total_bytes: BASE_BYTES, error: 'connection reset' },
+    })
+    const message = await screen.findByText('The download failed: connection reset')
+    const row = message.closest('[role="alert"]') as HTMLElement
+    expect(row.classList).toContain('flex-wrap')
+    expect(row.classList).toContain('sm:flex-nowrap')
+    expect(message.classList).toContain('basis-[calc(100%-2rem)]')
+    expect(message.classList).toContain('sm:basis-auto')
+    expect(within(row).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+  })
+
   it('does not attribute another model transfer to the selected one', async () => {
     // The gateway runs one transfer at a time, so a switch mid-download leaves the
     // store reporting the PREVIOUS model. Claiming that progress here would show a
@@ -148,6 +175,43 @@ describe('SttSettings model download disclosure', () => {
     await waitFor(() => expect(modelSelect()).toBeTruthy())
     expect(screen.queryByText(/downloading the speech model/i)).toBeNull()
     expect(screen.getByRole('button', { name: /download now/i })).toBeTruthy()
+  })
+
+  it('lets the user dismiss a failed download until another failure or attempt', async () => {
+    // Notifications run on microtasks here, so the `act` around each refetch
+    // flushes the re-render: an absence asserted after it is a real absence.
+    notifyManager.setScheduler(queueMicrotask)
+    onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+    const qc = mount({ download: failedDownload('connection reset') })
+    await screen.findByText(/connection reset/)
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByText(/connection reset/)).toBeNull()
+
+    // A re-read reporting the same failure keeps it dismissed.
+    await act(() => qc.refetchQueries({ queryKey: ['sttStatus'] }))
+    expect(screen.queryByText(/connection reset/)).toBeNull()
+
+    // The same failure after the transfer was seen running is a new attempt's.
+    mockApi.sttStatus.mockImplementation(async () => statusBody({
+      download: { ...failedDownload(''), step: 'downloading', downloaded_bytes: 1_000_000 },
+    }))
+    await act(() => qc.refetchQueries({ queryKey: ['sttStatus'] }))
+    mockApi.sttStatus.mockImplementation(async () => statusBody({ download: failedDownload('connection reset') }))
+    await act(() => qc.refetchQueries({ queryKey: ['sttStatus'] }))
+    expect(await screen.findByText(/connection reset/)).toBeTruthy()
+
+    // A different failure is news, so it shows.
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    mockApi.sttStatus.mockImplementation(async () => statusBody({ download: failedDownload('disk full') }))
+    await act(() => qc.refetchQueries({ queryKey: ['sttStatus'] }))
+    expect(await screen.findByText(/disk full/)).toBeTruthy()
+
+    // Pressing Download now again reports that attempt, even when it fails the
+    // same way before any poll sees it running.
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByText(/disk full/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /download now/i }))
+    expect(await screen.findByText(/disk full/)).toBeTruthy()
   })
 
   it('reports a model already on disk instead of offering it again', async () => {

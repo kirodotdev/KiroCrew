@@ -405,6 +405,7 @@ async def test_real_lfs_clone_and_push_bypass_the_smart_http_rewrite(tmp_path, m
     from aiohttp import web
     from aiohttp.test_utils import TestServer
     from test_remote_git_proxy import (
+        CLIENT_PATH,
         HttpBackendUpstream,
         _client_env,
         _git,
@@ -414,8 +415,11 @@ async def test_real_lfs_clone_and_push_bypass_the_smart_http_rewrite(tmp_path, m
         _stop,
     )
 
-    if shutil.which("git-lfs") is None:
-        pytest.skip("git-lfs is required for the real LFS transfer")
+    # Looked up on the PATH the git children get, not on this process's: a git-lfs
+    # found only through a launcher directory on the operator's PATH never reaches
+    # them, and that launcher's own tool choice follows the HOME they replace.
+    if shutil.which("git-lfs", path=CLIENT_PATH) is None:
+        pytest.skip("git-lfs is required on the git client's PATH for the real LFS transfer")
     root = tmp_path / "upstream"
     bare = _seed_bare(tmp_path, root / "github.com" / "acme" / "widgets.git")
     initial = b"an LFS object\n"

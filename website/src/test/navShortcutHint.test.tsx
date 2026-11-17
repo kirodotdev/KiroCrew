@@ -114,6 +114,7 @@ const PANEL_CHORDS = [
  */
 const RAIL_ROWS = [
   { route: '/chat', navId: 'chat', name: 'Sessions', aria: 'Alt+C', display: 'Alt + C' },
+  { route: '/projects', navId: 'projects', name: 'Task Runner', aria: 'Alt+P', display: 'Alt + P' },
   { route: '/schedule', navId: 'schedule', name: 'Schedule', aria: 'Alt+S', display: 'Alt + S' },
 ] as const
 
@@ -155,11 +156,11 @@ describe('nav shortcut hint — derivation from the registry', () => {
   })
 
   it('pins which rail routes carry a chord, so un-hiding a surface surfaces the question', () => {
-    // Two of the four panel chords have no rail row: /notifications is
-    // hiddenFromNav (topbar bell) and /projects is appOnly. Both are filtered
-    // out of the set the rail iterates, so the hint they would get has nowhere
-    // to render. Asserted as an equality rather than a containment: if either is
-    // un-hidden later, this reddens and the new row's hint gets considered.
+    // One of the four panel chords has no rail row: /notifications is
+    // hiddenFromNav (topbar bell), so it is filtered out of the set the rail
+    // iterates and the hint it would get has nowhere to render. Asserted as an
+    // equality rather than a containment: if it is un-hidden later, this reddens
+    // and the new row's hint gets considered.
     expect(railRoutesWithChord().sort()).toEqual(RAIL_ROWS.map(r => r.route).sort())
   })
 })

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 
+from kiro_crew.metrics import chat_runtime_share as crs
 from kiro_crew.metrics import inventory_gauges as ig
 from kiro_crew.metrics import process_gauges as pg
 from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
@@ -39,11 +40,13 @@ _DECLARING_MODULES = (
     "kiro_crew.metrics.work",
     "kiro_crew.metrics.crew_mode",
     "kiro_crew.metrics.feature_usage",
+    "kiro_crew.metrics.voice",
     "kiro_crew.metrics.http_metrics",
     "kiro_crew.metrics.db_metrics",
     "kiro_crew.metrics.tool_calls",
     "kiro_crew.metrics.inventory_gauges",
     "kiro_crew.metrics.process_gauges",
+    "kiro_crew.metrics.chat_runtime_share",
     # The Explore panel's counters are declared beside the state they count.
     "kiro_crew.milestones",
 )
@@ -70,7 +73,11 @@ def _declared_instrument_names() -> "dict[str, str]":
 
 
 def _gauge_names() -> "frozenset[str]":
-    return frozenset(ig.ALL_METRIC_NAMES) | frozenset(pg.ALL_METRIC_NAMES)
+    return (
+        frozenset(ig.ALL_METRIC_NAMES)
+        | frozenset(pg.ALL_METRIC_NAMES)
+        | frozenset({crs.GAUGE_PROCESSES, crs.GAUGE_TENANTS})
+    )
 
 
 def _instrument_kind(

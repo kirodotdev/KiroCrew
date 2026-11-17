@@ -27,15 +27,24 @@ CREW_TOOLS = (
     "session_close",
 )
 
+#: The goal-conductor skill keeps its remote-dispatch procedure out of SKILL.md, so
+#: a conductor learns of it only from these descriptions, which exist only while
+#: the preview is on.
+_READ_FIRST = (
+    "Before your first crew or work_item call, read references/remote-dispatch.md "
+    "in the goal-conductor skill's directory and follow it."
+)
+
 _CREW_PROPERTY: dict[str, Any] = {
     "type": "string",
     "description": (
         "Preview. Run this on a connected remote crew instead of this machine: the "
         "crew's instance id or exact name. The session lives on that crew and shows "
-        "in its sidebar group. With crew, session_create takes only title, agent and "
-        "model (omit agent to get the crew's own default), and send, read, stop and "
+        "in its sidebar group. With crew, session_create takes only title, agent, "
+        'agent_kind ("template" only) and model (omit agent to get the crew\'s own '
+        "default), and send, read, stop and "
         "close reach only a crew session YOU opened with session_create(crew=) on "
-        "that same crew; pass the key it returned as target."
+        "that same crew; pass the key it returned as target. " + _READ_FIRST
     ),
 }
 
@@ -48,8 +57,26 @@ _WORK_ITEM_PROPERTY: dict[str, Any] = {
         "Omit crew and the hub picks the connected crew with the most headroom; when "
         "none has room the item stays unbound, and only a turn the owner sends can "
         "retry. Its reports reach your next work_ledger_read, and a decide reaches "
-        "the worker."
+        "the worker. " + _READ_FIRST
     ),
+}
+
+
+_REQUIRES_PROPERTY: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Preview, with work_item. What the crew must have: tags (words the crew's "
+        "operator set in work_ledger.remote_dispatch_tags) and logins (gh, glab or "
+        'az, each reported "valid" by that crew), e.g. {"logins": ["gh"]}. Placement '
+        "skips a crew that lacks any of them; with crew, that crew is checked. When "
+        "none qualifies the call is refused crew_requirements_unmet naming what each "
+        "crew lacked."
+    ),
+    "properties": {
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "logins": {"type": "array", "items": {"type": "string"}},
+    },
+    "additionalProperties": False,
 }
 
 
@@ -65,6 +92,7 @@ def with_crew_schema(tools: list[dict[str, Any]], enabled: bool) -> list[dict[st
             props["crew"] = dict(_CREW_PROPERTY)
             if tool.get("name") == "session_create":
                 props["work_item"] = dict(_WORK_ITEM_PROPERTY)
+                props["requires"] = copy.deepcopy(_REQUIRES_PROPERTY)
         out.append(tool)
     return out
 
@@ -75,7 +103,11 @@ def _on(resp: dict[str, Any]) -> str:
 
 
 def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
-    payload = {k: args[k] for k in ("crew", "title", "agent", "model", "work_item") if k in args}
+    payload = {
+        k: args[k]
+        for k in ("crew", "title", "agent", "agent_kind", "model", "work_item", "requires")
+        if k in args
+    }
     extra = sorted(k for k in args if k not in payload and args.get(k) not in (None, ""))
     if extra:
         return f"Error: session_create with crew does not take {', '.join(extra)}."

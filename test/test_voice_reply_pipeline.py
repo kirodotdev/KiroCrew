@@ -21,6 +21,7 @@ from voice_reply_helpers import (
     _patch_aws_on_path,
 )
 
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.voice_reply import (
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
@@ -106,8 +107,8 @@ class TestSynthesizeSpeechDispatcher:
     @pytest.mark.asyncio
     async def test_redacts_credentials_before_synthesis(self) -> None:
         """LLM output must be redacted for credentials before crossing into audio."""
-        # AKIA... pattern is a typical AWS key shape caught by redact_credentials.
-        raw = "secret AKIAIOSFODNN7EXAMPLE here"
+        # A Slack bot token is a credential shape caught by redact_credentials.
+        raw = f"secret {SAMPLE_SLACK_BOT_TOKEN} here"
         captured_text: list[str] = []
 
         async def capture_polly(ssml, **kwargs):
@@ -121,8 +122,8 @@ class TestSynthesizeSpeechDispatcher:
             await synthesize_speech(raw, provider=PROVIDER_POLLY)
 
         assert captured_text, "polly should have been called"
-        # The raw AKIA key should NOT appear in the SSML passed to Polly.
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured_text[0]
+        # The raw token should NOT appear in the SSML passed to Polly.
+        assert SAMPLE_SLACK_BOT_TOKEN not in captured_text[0]
 
 
 # ── upload_voice_to_slack() ──────────────────────────────────────────────
@@ -237,13 +238,13 @@ class TestStreamingVoiceReply:
             "kiro_crew.voice_reply._synthesize_polly",
             side_effect=fake_polly,
         ):
-            gen = streaming_voice_reply("AKIAIOSFODNN7EXAMPLE is secret. Bye.")
+            gen = streaming_voice_reply(f"{SAMPLE_SLACK_BOT_TOKEN} is secret. Bye.")
             async for _idx, _sent, _bytes in gen:
                 pass
 
         assert sentences_seen, "polly should have been called per sentence"
         for s in sentences_seen:
-            assert "AKIAIOSFODNN7EXAMPLE" not in s
+            assert SAMPLE_SLACK_BOT_TOKEN not in s
 
     @pytest.mark.asyncio
     async def test_skips_sentences_with_failed_synth(self, tmp_path) -> None:
@@ -553,6 +554,15 @@ class TestStitchMp3s:
     untouched on failure.
     """
 
+    @pytest.fixture(autouse=True)
+    def _trusted_ffmpeg_present(self):
+        # The stitch only starts an ffmpeg from a trusted directory; these
+        # tests are about cleanup, so state that one exists whatever the host.
+        # Which ffmpeg it picks is test_voice_stitch_ffmpeg_trust.py's subject.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("kiro_crew.transcribe._find_system_ffmpeg", lambda: "/usr/bin/ffmpeg")
+            yield
+
     @staticmethod
     def _two_inputs(tmp_path) -> list[str]:
         """Two fake MP3 inputs — one path short-circuits before ffmpeg runs."""
@@ -624,8 +634,10 @@ class TestStitchMp3s:
         allocated = _capture_mkstemp(monkeypatch)
         proc = _mock_subprocess(returncode=0)
         proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+        argv: list = []
 
         async def fake_exec(*cmd, **kwargs):
+            argv.extend(cmd)
             return proc
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -636,6 +648,7 @@ class TestStitchMp3s:
         proc.communicate.assert_awaited()
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
+        assert not os.path.exists(argv[argv.index("-i") + 1])  # the list file
 
     @pytest.mark.asyncio
     async def test_empty_output_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
@@ -725,6 +738,38 @@ class TestStitchMp3s:
         proc.wait.assert_not_awaited()
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_chunk_paths_go_in_a_list_file_not_the_command_line(self, monkeypatch) -> None:
+        """Windows refuses a command line over 32,767 characters, which one
+        ``concat:`` argument naming every chunk passes at about 630 chunks."""
+        allocated = _capture_mkstemp(monkeypatch)
+        paths = [f"/chunks/{i}.mp3" for i in range(649)] + ["/chunks/it's.mp3"]
+        seen: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            listing = cmd[cmd.index("-i") + 1]
+            seen["argv"], seen["listing"] = cmd, listing
+            if os.path.isfile(listing):
+                with open(listing, encoding="utf-8") as f:
+                    seen["lines"] = f.read().splitlines()
+            with open(cmd[-1], "wb") as f:
+                f.write(b"stitched-mp3-data")
+            return _mock_subprocess(returncode=0)
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(paths)
+
+        try:
+            assert result == allocated[0]
+            assert not any(p in arg for arg in seen["argv"] for p in paths)
+            assert seen.get("lines") == [f"file '/chunks/{i}.mp3'" for i in range(649)] + [
+                "file '/chunks/it'\\''s.mp3'"
+            ]
+            assert not os.path.exists(seen["listing"])
+        finally:
+            if allocated and os.path.exists(allocated[0]):
+                os.unlink(allocated[0])
 
 
 class TestSynthesizeSpeechDoesNotSwallowARefusal:

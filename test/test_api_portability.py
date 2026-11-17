@@ -568,7 +568,7 @@ async def test_memory_only_import_passes_the_flag(monkeypatch) -> None:
     monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
     monkeypatch.setattr(module, "validate_import_zip", lambda p: (True, "", {"version": 2}))
 
-    def apply(zip_path, mode, *, channel_settings=None, memory_only=False):
+    def apply(zip_path, mode, *, channel_settings=None, memory_only=False, **_kw):
         seen.append(memory_only)
         return {"items": [], "components": ["memory"]}
 
@@ -597,7 +597,7 @@ async def test_a_validated_memory_manifest_scopes_the_import(monkeypatch) -> Non
         lambda p: (True, "", {"version": 2, "components": ["memory"]}),
     )
 
-    def apply(zip_path, mode, *, channel_settings=None, memory_only=False):
+    def apply(zip_path, mode, *, channel_settings=None, memory_only=False, **_kw):
         seen.append(memory_only)
         return {"items": []}
 

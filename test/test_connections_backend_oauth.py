@@ -51,8 +51,17 @@ def _visible() -> list[dict]:
 
 def _on_backend(monkeypatch: pytest.MonkeyPatch, backend: str, member: str | None = None) -> None:
     """Make the resolved chat (and crewmate) backend read as *backend*."""
+    # A clean read with sign-in persistence at its default, so the status feed's
+    # KAS vault lookup (``mcp_grant_kas.persistence_enabled``) reads it as it would.
     fake = SimpleNamespace(
-        agent=SimpleNamespace(acp_backend=backend, member_acp_backend=member or backend)
+        agent=SimpleNamespace(
+            acp_backend=backend,
+            member_acp_backend=member or backend,
+            kas_persist_mcp_sign_in=True,
+        ),
+        degraded_sections=frozenset(),
+        _base_unreadable=False,
+        _overlay_unreadable=False,
     )
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **kw: fake))
 

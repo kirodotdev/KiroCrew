@@ -19,6 +19,7 @@ from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
 from kiro_crew.acp.harness import deepseek as deepseek_mod
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_DEEPSEEK
+from kiro_crew.agent_sdk.backends_sessions import can_restore_session
 
 # ── The restore verb ─────────────────────────────────────────────────────────
 
@@ -121,8 +122,13 @@ def test_both_varying_reads_are_keyed_on_the_one_set() -> None:
     hazard is a second decision site appearing, which no behavioural test sees.
     """
     body = inspect.getsource(AcpClient._initialize_session)
-    assert body.count("ACP_BACKENDS_RESUME_WITHOUT_LOAD") == 2
-    assert 'session_capabilities.get("resume")' in body
+    # The verb is keyed on the set here; the capability through the one reader both
+    # drivers share, which keys on the same set.
+    assert body.count("ACP_BACKENDS_RESUME_WITHOUT_LOAD") == 1
+    assert "can_restore_session(self.backend, capabilities)" in body
+    reader = inspect.getsource(can_restore_session)
+    assert "ACP_BACKENDS_RESUME_WITHOUT_LOAD" in reader
+    assert 'session_capabilities.get("resume")' in reader
     assert "METHOD_SESSION_RESUME" in body
     assert "restore_method" in body
 

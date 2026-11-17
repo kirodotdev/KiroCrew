@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,14 @@ if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
 
 logger = logging.getLogger("kiro_crew.cron")
+
+#: Hex digits in the run id a stateless run's key ends with.
+_STATELESS_RUN_ID_HEX_CHARS = 8
+#: ``cron:<job id>:<run id>``, both ids ``uuid4().hex[:8]``, in the live ``:`` spelling
+#: or the transcript stem ``history_files._safe_key`` folds it to.
+_STATELESS_RUN_KEY = re.compile(
+    rf"cron[:_][0-9a-f]{{8}}[:_][0-9a-f]{{{_STATELESS_RUN_ID_HEX_CHARS}}}"
+)
 
 
 def agent_sequence_dispatches(seq: list[str]) -> bool:
@@ -39,7 +48,9 @@ def agent_sequence_dispatches(seq: list[str]) -> bool:
     return len(seq) > 1
 
 
-def split_cron_agent_member(agent_id: str, member_id: str) -> tuple[str, str]:
+def split_cron_agent_member(
+    agent_id: str, member_id: str, *, config: Any = None
+) -> tuple[str, str]:
     """Classify a cron create's agent name as a provider template OR a member.
 
     The CLI, the MCP ``cron_add`` tool and a scripted dashboard POST send a member
@@ -51,23 +62,108 @@ def split_cron_agent_member(agent_id: str, member_id: str) -> tuple[str, str]:
     A provider template, or an explicit ``member_id``, is returned unchanged.
 
     Only the owner-driven create callers (CLI ``cron add``, MCP ``cron_add``,
-    ``POST /api/crons``) call this. The App Kit SDK (``ctx.cron.add_job``) must
-    not: an app may not reach a member's private memory by naming it. Update
-    paths keep recording ``agent_id`` as a template (``bind_cron_memory``).
+    ``POST /api/crons``) call this, and the start-of-process move of an owner's
+    schedule whose create recorded a member's name as a template
+    (:func:`migrate_member_named_template_schedules`). The App Kit SDK
+    (``ctx.cron.add_job``) must not: an app may not reach a member's private
+    memory by naming it. Update paths keep recording ``agent_id`` as a template
+    (``bind_cron_memory``).
 
-    A name to classify loads the configuration from disk on every call, so an
-    ``async`` caller hands this function to ``asyncio.to_thread``.
+    Without a *config*, a name to classify loads the configuration from disk on
+    every call, so an ``async`` caller hands this function to ``asyncio.to_thread``.
     """
     from kiro_crew.config.loader import KiroCrewConfig, _resolve_agent_selection
 
     if member_id or not agent_id:
         return agent_id, member_id
-    config = KiroCrewConfig.load()
+    config = config if config is not None else KiroCrewConfig.load()
     _record, alias, _passthrough, _resolved = _resolve_agent_selection(config, agent_id)
     aliased = config.agents.get(alias) if alias == agent_id else None
     if aliased is not None and aliased.member_id:
         return "", agent_id
     return agent_id, member_id
+
+
+def app_schedule_names_bot(
+    agent_id: str,
+    member_id: str,
+    *,
+    maker_session: str = "",
+    job: CronJob | None = None,
+) -> bool:
+    """Whether a schedule an app is creating or changing would run as a Bot.
+
+    The create and update entries that carry an app claim ask this before storing:
+    ``POST /api/crons`` and ``PATCH /api/crons/{id}`` from an app token, and the
+    ``cron_add`` and ``cron_update`` tools called from an app's session, scheduled
+    run or background run (*maker_session*). It judges the record the write would
+    store: for a create, what :func:`cron_capture_execution` captures (the function
+    ``bind_cron_memory`` stores); for an update of *job*, the job's capture
+    re-pointed by :func:`recapture_cron_template`. With that record R and the
+    maker's own record M, it refuses when any holds:
+
+    1. ``agent`` is a Bot's own file (``mate_worker.is_mate_owned_agent``) and is not
+       M's template, whatever ``member_id`` names;
+    2. R is a Bot's own (``execution_context.is_bot_own_execution``) and M is not
+       already that Bot (``execution_context.is_same_bot``);
+    3. R names no member and ``agent`` keys ``config.agents``: fire time collapses
+       such an alias onto its row, so that row's execution is judged as in 2.
+
+    A selection that does not resolve is refused rather than handed to an app on a
+    guess. Naming neither an agent nor a member is allowed: the job runs as its
+    maker, or as the operator's default agent. Neither entry takes an
+    ``agent_sequence``; a step an App Kit job stores is refused at fire time.
+
+    shortcut: a job the ``cron_add`` tool makes carries no ``app:`` tag, so it is
+    judged once, here; a later config change (an alias rebound to a Bot, a template
+    that becomes a Bot's file, a Bot's file set as the default agent) is not judged
+    again at fire time. Upgrade by tagging such jobs once the fire-time guards
+    exempt a Bot that schedules as itself.
+
+    Reads the configuration and session records from disk, so an ``async`` caller
+    hands this function to ``asyncio.to_thread``.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.execution_context import (
+        execution_from_record,
+        is_bot_own_execution,
+        is_same_bot,
+        read_session_execution,
+        resolve_member_execution,
+    )
+    from kiro_crew.mate_worker import is_mate_owned_agent
+
+    try:
+        config = KiroCrewConfig.load()
+        maker = read_session_execution(maker_session) if maker_session else None
+        if job is None:
+            agent, member = split_cron_agent_member(agent_id, member_id, config=config)
+            if not agent and not member:
+                return False
+            stored = cron_capture_execution(maker_session, "", agent, member)
+        else:
+            agent, member = agent_id, member_id or job.member_id
+            if member != job.member_id or job.execution_context is None:
+                # The store refuses a member change on update; judged as the capture
+                # it would make, so an app never learns otherwise.
+                stored = cron_capture_execution(job.session_key, job.memory_store, agent, member)
+            else:
+                record = recapture_cron_template(job, agent) or job.execution_context
+                stored = execution_from_record({"execution_context": record}, required=True)
+        alias = (
+            resolve_member_execution(config, agent)
+            if stored.member_id is None and agent in config.agents
+            else None
+        )
+    except (OSError, ValueError):
+        return True
+    if is_mate_owned_agent(agent) and not (maker is not None and agent == maker.template_id):
+        return True
+    return any(
+        is_bot_own_execution(record, config) and not is_same_bot(maker, record)
+        for record in (stored, alias)
+        if record is not None
+    )
 
 
 def build_cron_session_context(job: CronJob) -> tuple[str, str]:
@@ -85,8 +181,21 @@ def build_cron_session_context(job: CronJob) -> tuple[str, str]:
         return f"cron:{job.id}", job.message
 
     # Stateless: fresh key, bare message.
-    run_id = uuid.uuid4().hex[:8]
+    run_id = uuid.uuid4().hex[:_STATELESS_RUN_ID_HEX_CHARS]
     return f"cron:{job.id}:{run_id}", job.message
+
+
+def is_stateless_cron_run_key(key: str) -> bool:
+    """Whether *key* names one fire of a stateless job, minted above.
+
+    Every fire of such a job writes its own transcript, so a job firing every few
+    minutes writes thousands, and session search leaves them out of its window
+    unless the run opened a chat tab. A persistent job's ``cron:<job id>`` is not one: that single transcript can
+    hold a conversation. Neither is the sequential-agent ``cron:<job id>:<agent>``,
+    unless the agent's name is eight lowercase hex characters, the one shape the
+    two kinds share.
+    """
+    return _STATELESS_RUN_KEY.fullmatch(key) is not None
 
 
 def cron_prior_result_context(job: CronJob) -> str:
@@ -282,6 +391,30 @@ def legacy_member_cron_execution(job: CronJob, *, config: Any = None) -> Executi
         ) from exc
 
 
+def _identity_job(record: dict[str, Any]) -> CronJob:
+    """The identity fields of one raw ``crons.json`` record, for the start-of-process moves."""
+    from kiro_crew.cron_service.model import CronJob
+
+    agent_id = record.get("agent_id")
+    sequence = record.get("agent_sequence")
+    return CronJob(
+        id=str(record.get("id", "")),
+        name=str(record.get("name", "")),
+        message="",
+        agent_id=agent_id if isinstance(agent_id, str) else "",
+        member_id=record.get("member_id"),  # type: ignore[arg-type]
+        memory_store=record.get("memory_store"),  # type: ignore[arg-type]
+        # The two fields that decide which session key dispatch mints, read as
+        # the store reads them.
+        persistent_session=bool(record.get("persistent_session", True)),
+        agent_sequence=(
+            [item for item in sequence if isinstance(item, str)]
+            if isinstance(sequence, list)
+            else []
+        ),
+    )
+
+
 def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
     """Capture the execution of every pre-identity member schedule once; never raises.
 
@@ -300,7 +433,6 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
 
     from kiro_crew.atomic_write import atomic_write
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.cron_service.model import CronJob
     from kiro_crew.cron_service.store import _CRONS_FILE, cron_store_lock
 
     path = store_dir / _CRONS_FILE
@@ -318,24 +450,7 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
                 # The old build wrote no execution_context key at all.
                 if not isinstance(record, dict) or record.get("execution_context") is not None:
                     continue
-                agent_id = record.get("agent_id")
-                sequence = record.get("agent_sequence")
-                job = CronJob(
-                    id=str(record.get("id", "")),
-                    name=str(record.get("name", "")),
-                    message="",
-                    agent_id=agent_id if isinstance(agent_id, str) else "",
-                    member_id=record.get("member_id"),  # type: ignore[arg-type]
-                    memory_store=record.get("memory_store"),  # type: ignore[arg-type]
-                    # The two fields that decide which session key dispatch mints,
-                    # read as the store reads them.
-                    persistent_session=bool(record.get("persistent_session", True)),
-                    agent_sequence=(
-                        [item for item in sequence if isinstance(item, str)]
-                        if isinstance(sequence, list)
-                        else []
-                    ),
-                )
+                job = _identity_job(record)
                 try:
                     execution = legacy_member_cron_execution(job, config=config)
                 except LegacyScheduleRefused as exc:
@@ -497,6 +612,152 @@ def rebind_cron_session_template(
     logger.info("Cron '%s': its session record now carries the agent it names", job_name)
 
 
+def _names_member_as_template(execution: ExecutionContext, agent_id: str) -> bool:
+    """Whether *execution* runs *agent_id* as a bare provider template on the Global store.
+
+    The capture a create made of a crew member's name when it did not classify
+    the name: ``template`` kind, no member, the ``default`` store, persistent, no
+    app, and a ``template_id`` that is the record's own ``agent_id``.
+    """
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    return (
+        execution.selection_kind == "template"
+        and execution.member_id is None
+        and execution.store.store_id == DEFAULT_MEMORY_STORE
+        and execution.memory_mode == "persistent"
+        and not execution.app
+        and execution.template_id == agent_id
+    )
+
+
+def _move_member_named_session(job: CronJob, old: ExecutionContext, new: ExecutionContext) -> bool:
+    """Whether *job* may move from *old* to *new*; its session record is moved first.
+
+    Every fire republishes the capture under the stable ``cron:<id>`` key with a
+    plain ``bind_session_execution``, which refuses a record that decodes to
+    anything else, and :func:`rebind_cron_session_template` reconciles a template
+    change only. So the record must carry *new* before the schedule does. A record
+    that still decodes to *old*, its ``selection_revision`` aside (a publication
+    guard), is rewritten under a compare-and-set against that value. One that
+    already carries *new* (a retry after a failed schedule write), or no record
+    (never fired; the first fire writes it), needs nothing. Any other record (a
+    template picked on the job's tab, a restricted mode) is logged and ``False``
+    keeps the schedule as it is. Not vouched: a cron key is never the caller slot
+    of an own-store admission.
+
+    A per-run key is fresh on every fire, so a stateless job has no record to move.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
+
+    if not job.persistent_session:
+        return True
+    session_key, _ = build_cron_session_context(job)
+    current = read_session_execution(session_key)
+    if current is None:
+        return True
+    unguarded = replace(current, selection_revision="")
+    if unguarded == replace(new, selection_revision=""):
+        return True
+    if unguarded != replace(old, selection_revision=""):
+        logger.warning(
+            "Cron '%s' still runs %r as a template: its session record names another "
+            "execution; recreate the schedule to run it as that crew member",
+            job.name,
+            job.agent_id,
+        )
+        return False
+    bind_session_execution(session_key, new, replace_existing=True, expected=current, vouch=False)
+    return True
+
+
+def migrate_member_named_template_schedules(store_dir: Path) -> list[str]:
+    """Move every owner schedule that runs a crew member's name as a template; never raises.
+
+    A create that did not classify its agent name captured a member's alias as a
+    provider template on the Global store (:func:`_names_member_as_template`).
+    Dispatch runs a capture as it stands and an update refuses to re-point a
+    schedule onto a member, so such a schedule, and every reply in its chat, ran
+    without the member's identity or store until it was recreated. Run after
+    :func:`migrate_legacy_member_schedules`, before the scheduler arms, this
+    gives each one the capture a create makes today:
+    ``derive_execution(<old>, target_member=<alias>)``, with ``agent_id`` cleared
+    and ``member_id`` and ``memory_store`` following it, as
+    :func:`bind_cron_memory` writes a member schedule.
+
+    The name is classified by :func:`split_cron_agent_member`, the rule create
+    uses. An app's schedule (``created_by`` ``app:<name>``) keeps its template, as
+    its create does, so an app cannot reach a member's store by naming it; a
+    record that already names a member, and a dispatching ``agent_sequence``,
+    are left too. The session record under the stable key moves first
+    (:func:`_move_member_named_session`); a schedule whose record could not move
+    stays as it is for the next start, and the others proceed. Under the store
+    lock. Returns the moved ids.
+    """
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.cron_service.store import _CRONS_FILE, cron_store_lock
+    from kiro_crew.execution_context import derive_execution, execution_from_record
+
+    path = store_dir / _CRONS_FILE
+    try:
+        if not path.is_file():
+            return []
+        config = KiroCrewConfig.load()
+        with cron_store_lock(store_dir):
+            data = json.loads(path.read_bytes())
+            records = data.get("jobs") if isinstance(data, dict) else None
+            if not isinstance(records, list):
+                return []
+            moved: list[str] = []
+            for record in records:
+                if (
+                    not isinstance(record, dict)
+                    or not isinstance(record.get("execution_context"), dict)
+                    or record.get("member_id")
+                    or str(record.get("created_by") or "").startswith("app:")
+                ):
+                    continue
+                job = _identity_job(record)
+                if not job.agent_id or agent_sequence_dispatches(job.agent_sequence):
+                    continue
+                try:
+                    old = execution_from_record(record)
+                except ValueError:
+                    # Dispatch refuses an undecodable capture with its own reason.
+                    continue
+                if not _names_member_as_template(old, job.agent_id):
+                    continue
+                if split_cron_agent_member(job.agent_id, "", config=config) != ("", job.agent_id):
+                    continue
+                try:
+                    new = derive_execution(old, target_member=job.agent_id, config=config)
+                    if not _move_member_named_session(job, old, new):
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Cron '%s' still runs %r as a template: it could not be moved onto "
+                        "that crew member",
+                        job.name,
+                        job.agent_id,
+                        exc_info=True,
+                    )
+                    continue
+                record["agent_id"] = ""
+                record["execution_context"] = new.to_record()
+                record["member_id"] = new.member_id or ""
+                record["memory_store"] = new.store.legacy_name
+                moved.append(job.id)
+            if moved:
+                atomic_write(path, json.dumps(data, indent=2))
+        return moved
+    except Exception:
+        logger.warning("schedules naming a crew member as a template were not moved", exc_info=True)
+        return []
+
+
 def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | None:
     """*job*'s captured execution re-pointed at a newly chosen *agent_id*.
 
@@ -550,8 +811,18 @@ def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | Non
     return replace(execution, template_id=template_id).to_record()
 
 
-def bind_cron_memory(job: CronJob) -> None:
-    """Capture existing member or creator once inside the new job record."""
+def cron_capture_execution(
+    session_key: str, memory_store: str, agent_id: str, member_id: str
+) -> ExecutionContext:
+    """The execution a new job created with these fields captures.
+
+    The creator session's record, else the job's store under ``agent_id`` (or the
+    ``kirocrew`` floor); moved to ``member_id`` when one is named; its template
+    replaced by ``agent_id`` when one is named. :func:`bind_cron_memory` stores
+    this and :func:`app_schedule_names_bot` judges it, so the two cannot disagree
+    about what a create runs as. Reads the session record and configuration
+    from disk; raises ``ValueError`` when a selection does not resolve.
+    """
     from dataclasses import replace
 
     from kiro_crew.execution_context import (
@@ -560,19 +831,27 @@ def bind_cron_memory(job: CronJob) -> None:
         read_session_execution,
     )
 
+    creator = read_session_execution(session_key) if session_key else None
+    execution = creator or execution_for_store(memory_store, template_id=agent_id or "kirocrew")
+    if member_id:
+        execution = derive_execution(execution, target_member=member_id)
+    if agent_id:
+        execution = replace(execution, template_id=agent_id)
+    return execution
+
+
+def bind_cron_memory(job: CronJob) -> None:
+    """Capture existing member or creator once inside the new job record."""
     if job.execution_context is not None:
         resolve_cron_memory(job, validate_memory_files=False)
         return
-    creator = read_session_execution(job.session_key) if job.session_key else None
-    execution = creator or execution_for_store(
-        job.memory_store, template_id=job.agent_id or "kirocrew"
+    execution = cron_capture_execution(
+        job.session_key, job.memory_store, job.agent_id, job.member_id
     )
-    if job.member_id:
-        execution = derive_execution(execution, target_member=job.member_id)
+    # The template swap leaves the mode as derived, so checking it after the
+    # swap refuses exactly what checking it before did.
     if execution.memory_mode != "persistent":
         raise ValueError("Restricted sessions cannot create persistent schedules")
-    if job.agent_id:
-        execution = replace(execution, template_id=job.agent_id)
     job.execution_context = execution.to_record()
     job.member_id = execution.member_id or ""
     job.memory_store = execution.store.legacy_name

@@ -1,4 +1,5 @@
 import type { ArtifactFolder } from '../types'
+import { compareText } from '../i18n/format'
 
 /**
  * Pure helpers for the artifact-library folder tree.
@@ -23,7 +24,7 @@ export function childFolders(folders: readonly ArtifactFolder[], parentId: strin
     // Alphabetical, not manual/creation order: folders are persistent
     // containers whose position should be predictable at a glance (artifacts
     // themselves sort by recency, where "latest first" is what's useful).
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.order - b.order)
+    .sort((a, b) => compareText(a.name, b.name) || a.order - b.order)
 }
 
 /**

@@ -65,9 +65,14 @@ class _LinkedApproval:
     calls ``approve_tool`` / ``reject_tool`` is the dashboard's ``_on_permission_prompt``
     (``chat_turn/permission_prompt.py``), parked on the slot's approval *future*. A Slack
     button click here must therefore ONLY resolve that future (via
-    ``state.resolve_approval``); the dashboard loop then answers the backend
+    ``state.resolve_slot_approval``); the dashboard loop then answers the backend
     exactly once. Calling ``approve_tool`` from here too would answer the
     JSON-RPC request twice.
+
+    ``slot_key`` and ``future`` name the one request the prompt mirrors. A request
+    id is the agent's own per-process counter, so two slots can each hold one under
+    the same id; the click settles this future on this slot, and an entry without a
+    slot settles nothing.
 
     ``trust_grantable`` carries the server-side durable-grant proof that was true
     of the dashboard card when the prompt was mirrored (see
@@ -76,17 +81,21 @@ class _LinkedApproval:
     cannot grant Trust.
     """
 
-    __slots__ = ("request_id", "session_key", "trust_grantable")
+    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future")
 
     def __init__(
         self,
         request_id: str | int,
         session_key: str,
         trust_grantable: bool = False,
+        slot_key: str = "",
+        future: asyncio.Future[str] | None = None,
     ) -> None:
         self.request_id = request_id
         self.session_key = session_key
         self.trust_grantable = trust_grantable
+        self.slot_key = slot_key
+        self.future = future
 
 
 class _LinkedApprovalEvent:
@@ -249,14 +258,24 @@ async def post_linked_approval(
     mcp_server_name: str = "",
     tool_name: str = "",
     mcp_identity_trusted: bool = False,
+    slot_key: str = "",
+    future: asyncio.Future[str] | None = None,
+    channel_trust: bool = False,
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
     Posts Approve / Reject buttons threaded under ``thread_ts`` and registers a
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
+    *slot_key* and *future* are the slot that asked and the future it parked on:
+    the click settles that future and no other.
     ``thread_ts=None`` posts top-level: a Slack Code channel's own session
     replies in the channel itself, so its prompts go there too.
+
+    ``channel_trust`` (a Slack Code channel's own session) adds a secondary
+    "Trust this channel" button, answered by
+    :mod:`kiro_crew.slack.code_channels.approval_picker` with that module's
+    owner gates; this function grants nothing for it.
 
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``
@@ -300,7 +319,11 @@ async def post_linked_approval(
     trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
     # _build_approval_blocks is typed for AcpEvent but only reads the
     # attributes the shim provides.
-    blocks = _build_approval_blocks(event, is_dm=trust_grantable)  # type: ignore[arg-type]
+    blocks = _build_approval_blocks(
+        event,  # type: ignore[arg-type]
+        is_dm=trust_grantable,
+        channel_trust=channel_trust and not trust_grantable,
+    )
     try:
         approval_ts = await slack.post_blocks(
             channel, blocks, "Manual approval required", thread_ts
@@ -314,7 +337,7 @@ async def post_linked_approval(
         )
         return None
     _linked_approvals[f"{channel}:{approval_ts}"] = _LinkedApproval(
-        request_id, session_key, trust_grantable
+        request_id, session_key, trust_grantable, slot_key, future
     )
     return approval_ts
 
@@ -343,7 +366,9 @@ def mcp_identity_text(server: str, tool: str) -> str:
     return f"MCP tool: *{shown[0]}* / *{shown[1]}*"
 
 
-def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = "") -> list[dict]:
+def _build_approval_blocks(
+    event: LLMEvent, is_dm: bool = True, source: str = "", *, channel_trust: bool = False
+) -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
     Args:
@@ -352,6 +377,9 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
         source: Optional label for background agents (e.g. "subagent",
             "cron").  Prefixed to the header so users can tell main-agent
             approvals apart from background ones.
+        channel_trust: A Slack Code channel's own session: adds a secondary
+            "Trust this channel" button between Approve and Reject (Approve
+            stays the one primary button).
 
     Shows the full command text (from tool_input) in a code block so users
     can see exactly what will run before approving.  Falls back to the
@@ -360,7 +388,9 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
 
     In DMs: Approve / Trust / Reject
     In group channels: Approve / Reject only (Trust excluded
-    to limit blast radius — it escalates permissions for the session).
+    to limit blast radius — it escalates permissions for the session), except a
+    Slack Code channel's own session (``channel_trust``), whose channel IS the
+    session: it adds the owner-only "Trust this channel".
     YOLO is owner-only via ``!yolo on`` command — no button.
     """
     # Slack Block Kit requires button `value` to be a string. ACP backends
@@ -387,6 +417,23 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
                 "value": req_value,
             },
         )
+    elif channel_trust:
+        from kiro_crew.slack.code_channels.approval_picker import (
+            TRUST_CALL_ACTION_ID,
+            TRUST_CALL_CONFIRM,
+            TRUST_CALL_LABEL,
+        )
+
+        buttons.append(
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": TRUST_CALL_LABEL},
+                "action_id": TRUST_CALL_ACTION_ID,
+                "value": req_value,
+                # It reaches the whole channel and its running workers: ask first.
+                "confirm": TRUST_CALL_CONFIRM,
+            },
+        )
     buttons.append(
         {
             "type": "button",
@@ -402,11 +449,18 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
     tag = f"[{source}] " if source else ""
     title_safe, _ = redact_exfiltration_urls(event.title)
     title_safe, _ = redact_credentials(title_safe)
-    footer = f":lock: {tag}*{title_safe}*"
+    from kiro_crew.slack.format import escape_mrkdwn
+
+    def _esc(text: str) -> str:
+        # A code channel's card lands in a shared channel: agent-authored text
+        # must not carry <!channel>/<@U…> entities into it.
+        return escape_mrkdwn(text) if channel_trust else text
+
+    footer = f":lock: {tag}*{_esc(title_safe)}*"
     if event.tool_purpose:
         purpose, _ = redact_exfiltration_urls(event.tool_purpose)
         purpose, _ = redact_credentials(purpose)
-        footer += f" — {purpose}"
+        footer += f" — {_esc(purpose)}"
 
     # When full tool_input is available, show a simple header and the
     # complete command in a code block below.
@@ -421,27 +475,59 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
         # Security: scan for exfiltration URLs and credentials before posting
         sanitized, _ = redact_exfiltration_urls(event.tool_input)
         sanitized, _ = redact_credentials(sanitized)
-        # Truncate with marker if exceeds Slack limit
-        if len(sanitized) > _SLACK_SECTION_TEXT_LIMIT:
-            detail = (
-                sanitized[: _SLACK_SECTION_TEXT_LIMIT - len(_TRUNCATION_MARKER)]
-                + _TRUNCATION_MARKER
+        # A code channel's card shows the command once: the readable command
+        # line, then the other arguments as JSON only when there are any.
+        command, extra = None, None
+        if channel_trust:
+            from kiro_crew.slack.format import command_and_rest
+
+            command, extra = command_and_rest(sanitized)
+        parts = [command, extra] if command is not None else [sanitized]
+        for part in parts:
+            if part is None:
+                continue
+            if command is not None:
+                # Decoding the JSON can turn escapes back into the plain text the
+                # redactors ran on above, so each rebuilt part is redacted again.
+                part, _ = redact_exfiltration_urls(part)
+                part, _ = redact_credentials(part)
+            # The input can close the code fence itself, so on a code channel's
+            # card its entities are escaped too, not only the footer's.
+            part = _esc(part)
+            if channel_trust:
+                # A literal fence in the input would end the code block, and the
+                # rest would render as formatted text styled like the card's own.
+                from kiro_crew.slack.format import CODE_FENCE_STAND_IN
+
+                part = part.replace("```", CODE_FENCE_STAND_IN)
+            # Truncate with marker if exceeds Slack limit
+            if len(part) > _SLACK_SECTION_TEXT_LIMIT:
+                part = (
+                    part[: _SLACK_SECTION_TEXT_LIMIT - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+                )
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"```{part}```"},
+                },
             )
-        else:
-            detail = sanitized
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"```{detail}```"},
-            },
-        )
+        if command is not None:
+            from kiro_crew.slack.format import title_restates_command
+
+            if title_restates_command(title_safe, command):
+                # The command is on the card already: the lock line keeps only
+                # the purpose, and goes when there is none. Any other title (an
+                # UNVERIFIED warning above all) stays.
+                footer = f":lock: {tag}{_esc(purpose)}" if event.tool_purpose else ""
 
     blocks.append({"type": "actions", "elements": buttons})
-    footer_elements = [{"type": "mrkdwn", "text": footer}]
+    # A code channel's card drops an empty lock line; the identity line stays.
+    footer_elements = [{"type": "mrkdwn", "text": footer}] if footer else []
     identity = mcp_identity_text(*trusted_mcp_identity(event))
     if identity:
         footer_elements.append({"type": "mrkdwn", "text": identity})
-    blocks.append({"type": "context", "elements": footer_elements})
+    if footer_elements:
+        blocks.append({"type": "context", "elements": footer_elements})
     return blocks
 
 
@@ -456,8 +542,8 @@ def _resolve_linked_click(
 
     The dashboard's ``_on_permission_prompt`` (chat_turn/permission_prompt.py) owns the ACP
     answer (it is parked on the slot's approval future), so this resolves ONLY that future, through
-    ``state.resolve_approval``, and never calls ``approve_tool`` / ``reject_tool``:
-    that would answer the JSON-RPC request twice. Anything that isn't an explicit
+    ``state.resolve_slot_approval`` on the entry's own slot, and never calls ``approve_tool`` /
+    ``reject_tool``: that would answer the JSON-RPC request twice. Anything that isn't an explicit
     reject approves THIS call; a Trust click additionally widens the session, and only
     a widening that actually took counts as an approval.
     """
@@ -494,10 +580,16 @@ def _resolve_linked_click(
             error="" if trusted else "trust_grant_unavailable",
         )
     resolved = False
-    if _dashboard_state is not None and hasattr(_dashboard_state, "resolve_approval"):
+    slot = (getattr(_dashboard_state, "_slots", None) or {}).get(linked_entry.slot_key)
+    if _dashboard_state is not None and slot is not None:
         try:
             resolved = bool(
-                _dashboard_state.resolve_approval(str(linked_entry.request_id), approved)  # type: ignore[attr-defined]
+                _dashboard_state.resolve_slot_approval(  # type: ignore[attr-defined]
+                    slot,
+                    str(linked_entry.request_id),
+                    approved,
+                    expected_future=linked_entry.future,
+                )
             )
         except Exception:
             logger.warning(

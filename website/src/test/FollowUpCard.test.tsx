@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import FollowUpCard from '../components/FollowUpCard'
 import reducer, { setFollowupCard, clearFollowupCard, dismissFollowupItem, deleteSlot } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
@@ -17,6 +18,7 @@ function setup(props: Partial<React.ComponentProps<typeof FollowUpCard>> = {}) {
   const onStartInWorktree = vi.fn().mockResolvedValue(undefined)
   const onStartInNewChat = vi.fn().mockResolvedValue(undefined)
   const onSkip = vi.fn()
+  // A router, because one-click mode links its footer to Settings.
   const utils = render(
     <FollowUpCard
       items={[item()]}
@@ -27,6 +29,7 @@ function setup(props: Partial<React.ComponentProps<typeof FollowUpCard>> = {}) {
       onSkip={onSkip}
       {...props}
     />,
+    { wrapper: MemoryRouter },
   )
   return { onAddToSession, onStartInWorktree, onStartInNewChat, onSkip, ...utils }
 }
@@ -36,14 +39,137 @@ describe('FollowUpCard', () => {
     setup()
     expect(screen.getByText('Add rate limiting')).toBeInTheDocument()
     expect(screen.getByText('The upload endpoint is unbounded.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /start in a separate copy/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /add to this session/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /skip/i })).toBeInTheDocument()
   })
 
-  it('states that nothing is sent without the user pressing send', () => {
+  it('pre-fills by default: the footer says nothing is sent and Start shows no send glyph', () => {
+    const { container } = setup()
+    const start = screen.getByRole('button', { name: /start in a separate copy/i })
+    // The worktree footer says what the copy is, so the label needs no git term.
+    expect(start).toHaveAccessibleDescription(/^Start in a separate copy opens a new session on a fresh copy of this project, in a new folder next to it, with the prompt in its message box\. Your current files and this session stay as they are\..*Nothing is sent until you press send\.$/)
+    expect(container.querySelector('.lucide-send')).toBeNull()
+    expect(screen.queryByText(/sends the prompt/i)).not.toBeInTheDocument()
+  })
+
+  it('describes both Start buttons with the footer that says Start sends when one-click send is on', () => {
+    const { container } = setup({ startSends: true })
+    expect(screen.getByRole('button', { name: /run in a separate copy/i })).toHaveAccessibleDescription(/sends the prompt to a new session/i)
+    expect(container.querySelector('.lucide-send')).not.toBeNull()
+    setup({ projectDir: undefined, startSends: true })
+    expect(screen.getByRole('button', { name: /run in new chat/i })).toHaveAccessibleDescription(/run in new chat sends the prompt/i)
+  })
+
+  it('states, with one-click send on, that Start sends the prompt and Add only puts it in the message box', () => {
+    setup({ projectDir: undefined, startSends: true })
+    expect(screen.getByText(/run in new chat sends the prompt/i)).toBeInTheDocument()
+    expect(screen.getByText(/puts the prompt in your message box and sends nothing/i)).toBeInTheDocument()
+  })
+
+  it('explains on the worktree route where Start sends and that this session is left alone', () => {
+    setup({ startSends: true })
+    const footer = screen.getByText(/fresh copy of this project, in a new folder next to it/i)
+    expect(footer).toHaveTextContent(/Composer\. Run in a separate copy sends the prompt to a new session/)
+    expect(footer).toHaveTextContent(/your current files and this session stay as they are/i)
+    // The run starts in the background, so the footer says the user stays put.
+    expect(footer).toHaveTextContent(/You stay where you are, and the new session shows in the sidebar\. Add to this session/)
+    expect(footer).toHaveTextContent(/puts the prompt in your message box and sends nothing/i)
+  })
+
+  it('gives one-click Start its own verb, so it never looks like the pre-fill Start', () => {
+    setup({ startSends: true })
+    expect(screen.getByRole('button', { name: 'Run in a separate copy' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /start in a separate copy/i })).not.toBeInTheDocument()
+    setup({ projectDir: undefined, startSends: true })
+    expect(screen.getByRole('button', { name: 'Run in new chat' })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['the worktree route', {}, /^Sends right away because Send follow-ups with one click is on\. Turn it off in Settings → Chat → Composer\. Run in a separate copy sends/],
+    ['a plain new chat', { projectDir: undefined }, /^Sends right away because Send follow-ups with one click is on\. Turn it off in Settings → Chat → Composer\. Run in new chat sends/],
+    ['a project directory that is not a repository', { projectIsRepo: false }, /^Sends right away because Send follow-ups with one click is on\. Turn it off in Settings → Chat → Composer\. Run in new chat sends the prompt as the first message of a new chat in this session's project directory/],
+  ])('opens the one-click footer on %s with why it sends and where to turn it off', (_route, props, lead) => {
+    setup({ ...props, startSends: true })
+    const link = screen.getByRole('link', { name: 'Send follow-ups with one click' })
+    expect(link).toHaveAttribute('href', '/settings/chat/composer?highlight=chat.send-follow-ups-with-one-click')
+    expect(link.closest('span')).toHaveTextContent(lead)
+  })
+
+  it('shows no one-click notice or Settings link in the default pre-fill mode', () => {
     setup()
-    expect(screen.getByText(/nothing is sent until you press send/i)).toBeInTheDocument()
+    expect(screen.queryByText(/sends right away/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('passes the mode the footer described to Start', () => {
+    const off = setup()
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
+    expect(off.onStartInWorktree).toHaveBeenCalledWith(item(), 0, 'prefill')
+    off.unmount()
+    const on = setup({ startSends: true })
+    fireEvent.click(screen.getByRole('button', { name: /run in a separate copy/i }))
+    expect(on.onStartInWorktree).toHaveBeenCalledWith(item(), 0, 'send')
+  })
+
+  it('shows a short prompt in full with no toggle', () => {
+    setup()
+    // The exact text Start will send is on the card before any click.
+    expect(screen.getByTestId('followup-prompt')).toHaveTextContent('Add a token-bucket limiter to POST /api/upload.')
+    expect(screen.queryByRole('button', { name: 'Show prompt' })).not.toBeInTheDocument()
+  })
+
+  it('shows the first three lines of a longer prompt and expands the rest', () => {
+    const prompt = 'line one\nline two\nline three\nline four: the rest of the task'
+    setup({ items: [item({ prompt })] })
+    const box = screen.getByTestId('followup-prompt')
+    // The trailing ellipsis says the prompt goes on past what is shown.
+    expect(box.textContent).toBe('line one\nline two\nline three…')
+    const toggle = screen.getByRole('button', { name: 'Show prompt' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveAttribute('aria-controls', box.id)
+    fireEvent.click(toggle)
+    const hide = screen.getByRole('button', { name: 'Hide prompt' })
+    expect(hide).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('followup-prompt').textContent).toBe(prompt)
+    fireEvent.click(hide)
+    expect(screen.getByTestId('followup-prompt').textContent).toBe('line one\nline two\nline three…')
+  })
+
+  it('starts the preview at the first line with text', () => {
+    // Counting the blank lines would fill all three preview lines and show only "…".
+    setup({ items: [item({ prompt: '\n\n\nline one\nline two\nline three\nline four' })] })
+    expect(screen.getByTestId('followup-prompt').textContent).toBe('line one\nline two\nline three…')
+    expect(screen.getByRole('button', { name: 'Show prompt' })).toBeInTheDocument()
+  })
+
+  it('shows a short prompt after blank lines in full with no toggle', () => {
+    setup({ items: [item({ prompt: '\n\n\nonly line' })] })
+    expect(screen.getByTestId('followup-prompt')).toHaveTextContent('only line')
+    expect(screen.queryByRole('button', { name: 'Show prompt' })).not.toBeInTheDocument()
+  })
+
+  it('offers Show prompt for one long line that wraps past three lines', () => {
+    setup({ items: [item({ prompt: 'x'.repeat(241) })] })
+    expect(screen.getByTestId('followup-prompt').textContent).toBe(`${'x'.repeat(240)}…`)
+    expect(screen.getByRole('button', { name: 'Show prompt' })).toBeInTheDocument()
+  })
+
+  it('expands one item\'s prompt without expanding its siblings', () => {
+    render(
+      <FollowUpCard
+        items={[item({ title: 'First', prompt: 'a\nb\nc\nfirst tail' }), item({ title: 'Second', prompt: 'a\nb\nc\nsecond tail' })]}
+        projectDir="/repo"
+        onAddToSession={vi.fn()}
+        onStartInWorktree={vi.fn()}
+        onStartInNewChat={vi.fn()}
+        onSkip={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getAllByRole('button', { name: 'Show prompt' })[1])
+    const boxes = screen.getAllByTestId('followup-prompt')
+    expect(boxes[1]).toHaveTextContent('second tail')
+    expect(boxes[0]).not.toHaveTextContent('first tail')
   })
 
   it('calls onAddToSession with the item', () => {
@@ -55,8 +181,8 @@ describe('FollowUpCard', () => {
   it('passes the clicked item and its index to Start and Add', async () => {
     const items = [item({ title: 'A' }), item({ title: 'B' }), item({ title: 'C' })]
     const { onAddToSession, onStartInWorktree } = setup({ items })
-    fireEvent.click(screen.getAllByRole('button', { name: /start in new worktree/i })[1])
-    expect(onStartInWorktree).toHaveBeenCalledWith(items[1], 1)
+    fireEvent.click(screen.getAllByRole('button', { name: /start in a separate copy/i })[1])
+    expect(onStartInWorktree).toHaveBeenCalledWith(items[1], 1, 'prefill')
     // Every action is disabled while a start is pending.
     await waitFor(() => expect(screen.getAllByRole('button', { name: /add to this session/i })[2]).toBeEnabled())
     fireEvent.click(screen.getAllByRole('button', { name: /add to this session/i })[2])
@@ -79,21 +205,21 @@ describe('FollowUpCard', () => {
     expect(onSkip).toHaveBeenCalledWith(1)
   })
 
-  it('keeps the worktree action, label and footer unchanged in a git repository', () => {
+  it('keeps the worktree action and label in a git repository, with the worktree footer', () => {
     const { onStartInWorktree, onStartInNewChat } = setup({ projectIsRepo: true })
-    const worktree = screen.getByRole('button', { name: 'Start in new worktree' })
+    // The label says what it is in plain words; the git term is in the tooltip.
+    const worktree = screen.getByRole('button', { name: 'Start in a separate copy' })
     expect(worktree.className).toContain('bg-accent')
-    expect(worktree).toHaveAttribute('title', 'Create a git worktree from /repo and open a new session there')
+    expect(worktree).toHaveAttribute('title', 'Create a git worktree (a separate copy of /repo on its own branch) and open a new session there')
     expect(screen.queryByRole('button', { name: /start in new chat/i })).not.toBeInTheDocument()
-    expect(screen.getByText('Both actions pre-fill the composer — nothing is sent until you press send.')).toBeInTheDocument()
     fireEvent.click(worktree)
-    expect(onStartInWorktree).toHaveBeenCalledWith(item(), 0)
+    expect(onStartInWorktree).toHaveBeenCalledWith(item(), 0, 'prefill')
     expect(onStartInNewChat).not.toHaveBeenCalled()
   })
 
   it('offers an enabled "Start in new chat" when the session has no project dir', () => {
     const { onStartInWorktree, onStartInNewChat } = setup({ projectDir: undefined })
-    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /start in a separate copy/i })).not.toBeInTheDocument()
     const newChat = screen.getByRole('button', { name: /start in new chat/i })
     expect(newChat).not.toBeDisabled()
     // The spawn route is the primary action again, so it keeps the accent look.
@@ -101,19 +227,25 @@ describe('FollowUpCard', () => {
     // The in-session route stays available too.
     expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
     fireEvent.click(newChat)
-    expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0)
+    expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0, 'prefill')
     expect(onStartInWorktree).not.toHaveBeenCalled()
   })
 
   it('keeps the standard footer for an unscoped session, with no git terms', () => {
     setup({ projectDir: undefined })
-    expect(screen.getByText('Both actions pre-fill the composer — nothing is sent until you press send.')).toBeInTheDocument()
+    expect(screen.getByText('Start and Add to this session both put the prompt in a message box. Nothing is sent until you press send.')).toBeInTheDocument()
+    expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the one-click footer for an unscoped session free of git terms too', () => {
+    setup({ projectDir: undefined, startSends: true })
+    expect(screen.getByText(/Run in new chat sends the prompt as the first message of a new chat\. You stay where you are, and the new session shows in the sidebar\. Add to this session puts the prompt in your message box and sends nothing\.$/)).toBeInTheDocument()
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 
   it('offers an enabled "Start in new chat" when the project is not a git repo', async () => {
     const { onStartInWorktree, onStartInNewChat } = setup({ projectIsRepo: false })
-    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /start in a separate copy/i })).not.toBeInTheDocument()
     const newChat = screen.getByRole('button', { name: /start in new chat/i })
     expect(newChat).not.toBeDisabled()
     expect(newChat.className).toContain('bg-accent')
@@ -122,9 +254,9 @@ describe('FollowUpCard', () => {
     expect(newChat.getAttribute('title')).toContain('/repo')
     expect(newChat.getAttribute('title')).toMatch(/not a git repository/)
     fireEvent.click(newChat)
-    await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0))
+    await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0, 'prefill'))
     expect(onStartInWorktree).not.toHaveBeenCalled()
-    expect(screen.getByText(/the new chat opens in this session's project directory/i)).toBeInTheDocument()
+    expect(screen.getByText(/nothing is sent until you press send\. The new chat opens in this session's project directory/i)).toBeInTheDocument()
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 
@@ -134,7 +266,7 @@ describe('FollowUpCard', () => {
     const { onStartInWorktree, onStartInNewChat } = setup({
       projectDir: '/home/me/notes', projectIsRepo: true, enclosingRepoRoot: '/home/me',
     })
-    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /start in a separate copy/i })).not.toBeInTheDocument()
     const newChat = screen.getByRole('button', { name: /start in new chat/i })
     expect(newChat).not.toBeDisabled()
     expect(newChat).toHaveAttribute(
@@ -142,9 +274,14 @@ describe('FollowUpCard', () => {
       'Open a new chat in /home/me/notes without a worktree, because it is inside the git repository at /home/me, not its root',
     )
     fireEvent.click(newChat)
-    await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0))
+    await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item(), 0, 'prefill'))
     expect(onStartInWorktree).not.toHaveBeenCalled()
-    expect(screen.getByText(/the new chat opens in this session's project directory/i)).toBeInTheDocument()
+    expect(screen.getByText(/The new chat opens in this session's project directory/i)).toBeInTheDocument()
+  })
+
+  it('says where the one-click new chat opens when the project is not a git repo', () => {
+    setup({ projectIsRepo: false, startSends: true })
+    expect(screen.getByText(/sends the prompt as the first message of a new chat in this session's project directory/i)).toBeInTheDocument()
   })
 
   it('ignores an enclosing repository root when the session has no project dir', () => {
@@ -179,27 +316,27 @@ describe('FollowUpCard', () => {
   it('keeps the worktree action enabled while the repo probe is unresolved', () => {
     // The server stays the backstop; an unknown probe must not suppress a real repo.
     setup({ projectIsRepo: undefined })
-    expect(screen.getByRole('button', { name: /start in new worktree/i })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: /start in a separate copy/i })).not.toBeDisabled()
   })
 
   it('renders the worktree failure inline instead of throwing', async () => {
     const onStartInWorktree = vi.fn().mockRejectedValue(new Error('Branch already exists: feat/x'))
     setup({ onStartInWorktree })
-    fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
+    fireEvent.click(screen.getByRole('button', { name: /start in a separate copy/i }))
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('Branch already exists: feat/x')
     })
     // Button is usable again so the user can retry after fixing the branch.
-    expect(screen.getByRole('button', { name: /start in new worktree/i })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: /start in a separate copy/i })).not.toBeDisabled()
   })
 
   it('does not fire a second worktree call while one is in flight', async () => {
     let release: (() => void) | undefined
     const onStartInWorktree = vi.fn(() => new Promise<void>(res => { release = res }))
     setup({ onStartInWorktree })
-    const btn = screen.getByRole('button', { name: /start in new worktree/i })
+    const btn = screen.getByRole('button', { name: /start in a separate copy/i })
     fireEvent.click(btn)
-    await waitFor(() => expect(screen.getByText(/creating worktree/i)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/creating the copy/i)).toBeInTheDocument())
     fireEvent.click(btn)
     expect(onStartInWorktree).toHaveBeenCalledTimes(1)
     release?.()
@@ -214,7 +351,7 @@ describe('FollowUpCard', () => {
     const b = item({ title: 'B' })
     const props = { projectDir: '/repo', onAddToSession: vi.fn(), onStartInWorktree, onStartInNewChat: vi.fn(), onSkip: vi.fn() }
     const { rerender } = render(<FollowUpCard items={[a, b]} {...props} />)
-    fireEvent.click(screen.getAllByRole('button', { name: /start in new worktree/i })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /start in a separate copy/i })[0])
     await waitFor(() => expect(onStartInWorktree).toHaveBeenCalled())
     rerender(<FollowUpCard items={[b]} {...props} />)
     reject?.(new Error('Branch already exists'))
@@ -238,7 +375,7 @@ describe('FollowUpCard', () => {
         onSkip={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getAllByRole('button', { name: /start in new worktree/i })[0])
+    fireEvent.click(screen.getAllByRole('button', { name: /start in a separate copy/i })[0])
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
     rerender(
       <FollowUpCard

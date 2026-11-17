@@ -58,7 +58,8 @@ class ChannelDescriptor:
     member id, ``MessagingTransport.channel_type``, the session-key surface
     segment (except a ``dm_scope="unified"`` direct-DM key, which starts with
     ``unified``), the config section name, and the dashboard badge prefix. The
-    contract tests pin that these never diverge.
+    contract tests pin the transport ``channel_type`` and the session-key surface
+    together; the badge prefix is not pinned.
     """
 
     channel_type: str
@@ -114,8 +115,9 @@ class ChannelDescriptor:
     #: The other half of "what happens when ``<channel>.*`` changes" is that
     #: channel's ``transport.reconfigure(section)`` (its allow-list and live
     #: fields), registered from its ``transport_dispatch.py`` via
-    #: ``live.watch_section``; the two are disjoint by construction and
-    #: ``test_channel_boot_keys_contract.py`` pins that.
+    #: ``live.watch_section``; the two are disjoint by construction, and
+    #: ``test_channel_boot_keys_contract.py`` pins ``boot_keys`` against the schema's
+    #: ``restart=True`` marks.
     boot_keys: frozenset[str] = frozenset()
 
 

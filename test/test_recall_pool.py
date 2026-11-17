@@ -525,6 +525,10 @@ class TestReceiptReplay:
         from kiro_crew import injection_receipts
 
         injection_receipts.replay({"lessons": {"ids": ["lesson.a"], "omitted": 0}})
+        assert injection_receipts.current_ids("lessons") == []
+        with injection_receipts.collect() as sink:
+            pass
+        assert sink == {}
 
     def test_malformed_records_from_a_child_never_fail_a_read(
         self, monkeypatch: pytest.MonkeyPatch

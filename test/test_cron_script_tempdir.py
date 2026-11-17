@@ -111,7 +111,7 @@ class TestDefaultTempDir:
         assert resolved == live_tempdir
         # The vanished directory is never recreated: under the managed scratch
         # root that would be a directory with no owner record, which the sweep
-        # never deletes, so a skipped run would become a permanent leak.
+        # keeps for a week, so a skipped run would become a leak.
         assert not vanished_tempdir.exists()
 
 

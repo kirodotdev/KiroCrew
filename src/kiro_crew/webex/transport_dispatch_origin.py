@@ -25,11 +25,10 @@ from kiro_crew.webex.client import WebexInbound
 from kiro_crew.webex.transport import ROOM_DIRECT
 
 #: This channel's name in the shared queue-drain contract
-#: (``messaging/queue_drain.py``). ONE constant, used both to tag the entries this
-#: dispatcher produces and to register its drain, because a tag that does not match the
-#: registration cannot be woken for its own entries. The neutral key those entries carry
-#: it under is defined in that module, not here: a per-module copy of the string fails
-#: silently, making this channel's entries unowned to every drain.
+#: (``messaging/queue_drain.py``). ONE constant tags this dispatcher's entries and
+#: registers its drain, since a mismatched tag is never woken. The key the tag is
+#: stored under lives in that module; a local copy of the string would fail
+#: silently, leaving this channel's entries unowned.
 _CHANNEL = "webex"
 
 #: Prefix the queued envelope fields take on a queue entry.

@@ -62,8 +62,13 @@ def read_record(slug: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        logger.warning("page offer record for %s is unreadable; treated as asked", slug)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "page offer record for %s is unreadable (%s: %s); treated as asked",
+            slug,
+            type(exc).__name__,
+            exc,
+        )
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -199,8 +204,7 @@ WRITE_PROMPT: str = (
     + " Colour only with the variables the Dashboard tab sets (var(--bg), var(--card), "
     "var(--text), var(--muted), var(--border), var(--accent), var(--ok), var(--warn), "
     "var(--danger) and the rest the skill lists) so light and dark both read, and act on any "
-    "shape or theme warning the save reply gives before you apply. If dashboard_apply "
-    "refuses because the person locked the layout, say so in one sentence and stop. "
+    "shape or theme warning the save reply gives before you apply. "
     "Once it is live, post one short message, the only one about it: a Dashboard page "
     "is ready for the user on your Dashboard tab, open it to see it; {restore} No "
     "preview, nothing else."

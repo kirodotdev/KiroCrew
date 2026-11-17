@@ -330,6 +330,27 @@ def neutralize_background_context_frame(text: str) -> str:
     return _apply_marker_spans(text, _marker_spans(text, _BACKGROUND_CONTEXT_FRAME_RES))
 
 
+# The frame the webhook intake (``dashboard.handlers.hooks_webhook_intake``) mints
+# around a hook's saved context: ``=== Restored Context (from prior session) ===``
+# ... ``=== End Restored Context ===``. Not in ``_STRUCTURAL_MARKER_RES``, for the
+# member-marker reason above: the genuine frame rides the user turn, which that
+# scrub covers. The webhook payload and the saved context are scrubbed of it
+# instead, before the frame is minted. Two shapes, matched once each rather than
+# word by word: the phrase anywhere (any non-word run may sit between its two
+# words), and any line that opens with an ``==`` run, so a banner line cannot be
+# forged whatever words, look-alike letters or punctuation it carries. ``===``
+# inside a line (code such as ``a === b``) is left alone.
+_RESTORED_CONTEXT_FRAME_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"RESTORED[\W_]*CONTEXT", re.IGNORECASE),
+    re.compile(r"^[^\w\n]*={2,}", re.MULTILINE),
+)
+
+
+def neutralize_restored_context_frame(text: str) -> str:
+    """*text* with every look-alike restored-context frame neutralized."""
+    return _apply_marker_spans(text, _marker_spans(text, _RESTORED_CONTEXT_FRAME_RES))
+
+
 def _merge_overlapping_spans(raw: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Sort and merge overlapping/adjacent match spans (shared by both views)."""
     if not raw:

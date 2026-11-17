@@ -16,12 +16,12 @@ import os
 import stat
 import sys
 import threading
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from denied_commands_security_helpers import _interpreter_work, _linear_work
 from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
 
 from kiro_crew import security_posture
@@ -587,19 +587,23 @@ def test_many_keys_collapsing_to_one_spelling_cost_linear_work(monkeypatch):
     """A frame whose every key is a secret under ``Authorization`` collapses
     them all to ``[REDACTED: credential]``; the ``#n`` suffixing must not
     rescan every taken suffix per key, or such a frame pins the writer.
-    Rescanning from ``#2`` each time is quadratic (about n*n/2 probes: ~2e8
-    for this frame, tens of seconds); one probe per key is well under a
-    second even on a slow CI box."""
+    Rescanning from ``#2`` each time is quadratic (about n*n/2 probes); one
+    probe per key is linear. Asserted as the interpreter work the scrub costs
+    at three equally spaced frame sizes, which a rescan's probe loop grows
+    quadratically, rather than as seconds, which read the host."""
     _clean(monkeypatch)
-    n = 20000
-    frame = {"Authorization": {f"Basic blob{i} {i}": i for i in range(n)}}
-    started = time.monotonic()
-    out = json.loads(_frame_record.scrub_frame(frame))
-    elapsed = time.monotonic() - started
+
+    def frame_of(n: int) -> dict:
+        return {"Authorization": {f"Basic blob{i} {i}": i for i in range(n)}}
+
+    n = 600
+    out = json.loads(_frame_record.scrub_frame(frame_of(n)))
     inner = out["Authorization"]
     assert len(inner) == n, len(inner)
     assert all(k.startswith("[REDACTED: credential]") for k in inner), list(inner)[:3]
-    assert elapsed < 5.0, elapsed
+    frames = [frame_of(size) for size in (n, 2 * n, 3 * n)]
+    work = [_interpreter_work(lambda f=f: _frame_record.scrub_frame(f)) for f in frames]
+    assert _linear_work(work), f"suffixing rescans taken suffixes: work {work} at {n}, 2n, 3n keys"
 
 
 def test_a_name_value_pair_naming_a_plain_field_is_not_redacted(monkeypatch):
@@ -999,22 +1003,52 @@ async def test_a_burst_of_large_frames_is_bounded_by_bytes_not_count(monkeypatch
 async def test_record_frame_never_waits_on_the_byte_budget_lock(monkeypatch, tmp_path):
     """The budget lock is shared with the drain thread. If its holder is
     preempted, a reader loop must not block behind it: the frame is dropped,
-    recording stands down, and ``record_frame`` returns promptly."""
+    recording stands down, and ``record_frame`` returns promptly.
+
+    "Promptly" is asserted as what the call asks of the lock: every acquire it
+    makes is non-blocking. A blocking one is refused on the spot, so a regression
+    fails here instead of waiting out a timeout, whatever the host's speed."""
     _clean(monkeypatch)
     async with _live_writer():
         monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
         assert _frame_record.start_recorder()
         writer = _frame_record._writer
         assert writer is not None
+        real_lock = writer.lock
+        this_thread = threading.get_ident()
+        asked: list[tuple[bool, float]] = []
+
+        class _HeldLock:
+            """The real lock for the drain thread; for this thread, a record of each ask."""
+
+            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                if threading.get_ident() != this_thread:
+                    return real_lock.acquire(blocking, timeout)
+                asked.append((blocking, timeout))
+                assert not blocking, "record_frame asked the budget lock to wait"
+                return real_lock.acquire(False)
+
+            def release(self) -> None:
+                real_lock.release()
+
+            def locked(self) -> bool:
+                return real_lock.locked()
+
+            def __enter__(self) -> bool:
+                return self.acquire()
+
+            def __exit__(self, *exc: object) -> None:
+                self.release()
+
         # Hold the lock for the whole call, as a preempted holder would.
-        assert writer.lock.acquire(blocking=False)
+        assert real_lock.acquire(blocking=False)
+        monkeypatch.setattr(writer, "lock", _HeldLock())
         try:
-            started = time.monotonic()
             await _frame_record.record_frame("kas", {"jsonrpc": "2.0", "method": "x"}, 32)
-            elapsed = time.monotonic() - started
         finally:
-            writer.lock.release()
-        assert elapsed < 0.5, f"record_frame waited {elapsed:.3f}s on the budget lock"
+            monkeypatch.setattr(writer, "lock", real_lock)
+            real_lock.release()
+        assert asked == [(False, -1)], "the frame must try the busy lock once, without waiting"
         assert _frame_record.recording_destination() == "", "a busy lock must stand down, not wait"
         assert not writer.items, "the frame must be dropped, not queued behind the lock"
 

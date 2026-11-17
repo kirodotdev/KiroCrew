@@ -50,7 +50,8 @@ which stay local and are never rendered into a comment.
    2. a merge conflict on an otherwise-ready PR
    3. CI turned red
    4. new review comments
-   5. PR approved / mergeable — re-arm auto-merge
+   5. PR approved / mergeable — if the nudge says to arm auto-merge, re-arm it;
+      otherwise leave it for a person to merge
    6. the requester replied
    7. CI turned green — take the next step
 4. **Pick up new work** only if nothing above is advanceable AND you are under
@@ -574,8 +575,9 @@ policy, and that refusal is not about force-pushing.
 git push --force-with-lease=refs/heads/<branch>:<remote-sha> origin HEAD:refs/heads/<branch>
 ```
 
-After resolving a conflict, re-arm auto-merge unconditionally. It is idempotent
-and arming it twice costs nothing.
+After resolving a conflict, if the nudge says to arm auto-merge, re-arm it. It is
+idempotent and arming it twice costs nothing. If the nudge says never to arm it,
+do not: leave the PR for a person to merge.
 
 ## When a human has to decide, publish and move on
 
@@ -674,6 +676,30 @@ take `<actor>` from there when you did not get the wake.
      answer puts the number back in the index.
 
 If the issue is already claimed by another crew, the usual claim rules apply.
+
+## When someone asks you
+
+`[crew wake: #N asked <id>]` (`!N` for a merge request) means a person mentioned
+your forge username in that thread: comment `<id>` is a question for you. This wake
+exists only when the repo setting `crew_answer_mentions` is on, which assumes the
+gateway's forge login is a dedicated crew account, not a person's own: a mention of
+a person's account is a question for that person, and you would answer it in their
+name.
+
+1. **Answer in the same thread** — one comment, and say what you checked: the files
+   and lines you read, the run or the log you looked at.
+2. **Leave the work where it is.** A question is not a signal: do not change the
+   item's phase, and do not claim the issue or start work because somebody asked
+   about it.
+3. **If the answer changes the plan**, say which label or decision would move it,
+   and let the person make that move. Removing the needs-human label resumes only a
+   needs-decision or needs-investigation pass (for example "remove the needs-human
+   label once you pick option B"); a scope gate stays skipped, so for one of those
+   say that a maintainer has to decide it outside this issue's label.
+
+`[crew wake: #N scope-label]` and `[crew wake: #N new-issue]` mean new work may be
+available: an issue came into your scope, or a new one was opened. Run your normal
+selection; the wake names a candidate, not an order.
 
 ## Never
 

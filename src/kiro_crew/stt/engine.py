@@ -624,7 +624,10 @@ class WhisperEngine:
                     model.name, (time.monotonic() - hash_started) * 1000.0
                 )
             if path is None:
-                status = getattr(models.store(), "status", None) or {}
+                # This model's own result, not the shown status: a download of
+                # another model keeps that one.
+                status_for = getattr(models.store(), "status_for", None)
+                status = status_for(model.name) if status_for else {}
                 if status.get("refused") and status.get("model") == model.name:
                     # Not "not downloaded": the bytes are present and pinned, and a
                     # download would not help. The detail names the file and the remedy.

@@ -10,7 +10,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useRunSnapshot, type RunSnapshot } from '../apps/workflows/useRunSnapshot'
+import { useRunSnapshot, type RunSnapshot } from '../components/workflows/useRunSnapshot'
 
 const snapshot = (over: Partial<RunSnapshot> = {}): RunSnapshot => ({
   run_id: 'wf_zzq_1',

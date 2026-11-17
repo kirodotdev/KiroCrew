@@ -47,7 +47,6 @@ import {
   T0,
 } from '../test/GuideLayerTestUtils'
 import type { Call } from '../test/GuideLayerTestUtils'
-import { readPageFamily } from '../test/pageFamily'
 
 const L = (k: string, v?: Record<string, unknown>) => i18nT(`components.guideLayer.${k}`, v)
 let calls: Call[]
@@ -76,7 +75,9 @@ let qc: QueryClient
 /** *chatSlot* stands in for the open chat pane, whose conversation holds the
  *  offer's row (guide `g1`, the id every fixture here uses). */
 function renderGuide(path: string, extra?: ReactNode, chatSlot: string | null = 'slot-A') {
-  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // The roster read retries on its own (`retryThroughRestart`); no backoff, so
+  // a failed roster read settles at once.
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   return render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
@@ -157,7 +158,7 @@ describe('MCP: navigate to the native add form, never install', () => {
   it('resolves only with empty params and navigates to the existing MCP page', () => {
     const r = resolveGuideAction({ id: 'mcp.open_add', params: {} })
     if (!r.ok) throw new Error('expected ok')
-    expect(r.action.enter.to({ pathname: '/chat/slot-A', search: '' })).toBe('/capabilities?tab=mcp')
+    expect(r.action.enter.to({ pathname: '/chat/slot-A', search: '' })).toBe('/capabilities?tab=mcp-servers')
     // Into the form the button opens: the guide ends on its JSON box (where
     // the env variables go), and only the person's Done ends it there.
     expect(r.action.steps.map(st => st.complete.kind)).toEqual(['reach', 'reach', 'ack'])
@@ -183,7 +184,7 @@ describe('MCP: navigate to the native add form, never install', () => {
     await screen.findByTestId('guide-start')
     expect(document.querySelector('[data-guide-anchor="mcp.custom-form"]')).toBeNull()
     fireEvent.click(screen.getByTestId('guide-start'))
-    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/capabilities?tab=mcp'))
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/capabilities?tab=mcp-servers'))
 
     // Step 1: the arrow is on the existing MCP Servers tab; nothing auto-opens.
     expect(await screen.findByText(L('step_mcp_open_tab'))).toBeTruthy()
@@ -242,13 +243,13 @@ describe('MCP: navigate to the native add form, never install', () => {
 
   it('the native pages carry the registered anchors and no guide prefill', () => {
     const src = (rel: string) => readFileSync(path.join(__dirname, rel), 'utf-8')
-    const connections = readPageFamily('ConnectionsPage', path.join(__dirname, '../pages/connections'))
+    const mcpPage = src('../pages/settings/McpManagement.tsx')
     const mcpTab = src('../pages/overview/McpTab.tsx')
     const modal = src('../components/McpCustomServerModal.tsx')
-    expect(connections).toContain(`guideAnchor('${GUIDE_ANCHORS.mcpServersTab}')`)
+    expect(mcpPage).toContain(`guideAnchor('${GUIDE_ANCHORS.mcpServersTab}')`)
     expect(mcpTab).toContain(`guideAnchor('${GUIDE_ANCHORS.mcpAddCustom}')`)
     expect(modal).toContain(`'${GUIDE_ANCHORS.mcpCustomForm}'`)
-    for (const text of [connections, mcpTab, modal]) {
+    for (const text of [mcpPage, mcpTab, modal]) {
       expect(text).not.toMatch(/guide\/GuideContext|useGuide|X-Guide|draft=/)
     }
   })
@@ -492,7 +493,7 @@ describe('the way back once a guide ends', () => {
   const radarRow = { name: 'radar', kiro_agent: 'kirocrew', slug: 'radar', slot_key: 'slot-radar', running: false }
 
   beforeEach(() => {
-    server.use(http.get('/api/members', () => HttpResponse.json({ members: [pilotRow, radarRow] })))
+    server.use(http.get('/v1/crew/owner/bots', () => HttpResponse.json({ members: [pilotRow, radarRow] })))
   })
 
   /** Owns *slot*'s guide in this tab, away from every chat, and lets it end. */
@@ -664,7 +665,7 @@ describe('the way back once a guide ends', () => {
     ['the roster failed', () => HttpResponse.json({ error: 'boom' }, { status: 500 }), '/members?member=radar'],
     ['the binding moved on', () => HttpResponse.json({ members: [pilotRow, { ...radarRow, name: 'Radar', slot_key: 'member-radar.memory-radar-v2' }] }), '/members?member=Radar'],
   ])('a mate\'s guide goes back to that mate when %s', async (_why, members, to) => {
-    server.use(http.get('/api/members', members))
+    server.use(http.get('/v1/crew/owner/bots', members))
     await endOwnedGuide('member-radar', 'complete')
     const back = await screen.findByTestId('guide-back')
     expect(back.textContent).toBe(i18nT('components.meetCrewmatesFlow.back_to_chat'))
@@ -890,7 +891,7 @@ describe("the offering mate's own words in a guide", () => {
   // The guide's slot is a crewmate's pinned thread, so its words are that
   // crewmate's: the "From" line names it from the roster.
   beforeEach(() => {
-    server.use(http.get('/api/members', () => HttpResponse.json({
+    server.use(http.get('/v1/crew/owner/bots', () => HttpResponse.json({
       members: [{ name: 'radar-keeper', display_name: 'Skipper', kiro_agent: 'kirocrew', slug: 'radar-keeper', slot_key: 'slot-A', running: false }],
     })))
   })
@@ -921,7 +922,7 @@ describe("the offering mate's own words in a guide", () => {
   })
 
   it("puts the intro on the first step, under the dashboard's own line, and no note there", async () => {
-    await startCrewmate(<Target anchor={GUIDE_ANCHORS.mcpServersTab} />, noted(), '/capabilities')
+    await startCrewmate(<Target anchor={GUIDE_ANCHORS.mcpServersTab} />, noted(), '/capabilities?tab=mcp-servers')
     const template = await screen.findByTestId('guide-step-text')
     expect(template.textContent).toBe(L('step_mcp_open_tab'))
     const intro = screen.getByTestId('guide-step-intro')
@@ -931,7 +932,7 @@ describe("the offering mate's own words in a guide", () => {
   })
 
   it("shows an action's note under its final step and keeps the template line", async () => {
-    await startCrewmate(<Target anchor={GUIDE_ANCHORS.mcpCustomJson} />, noted({ step_index: 2 }), '/capabilities')
+    await startCrewmate(<Target anchor={GUIDE_ANCHORS.mcpCustomJson} />, noted({ step_index: 2 }), '/capabilities?tab=mcp-servers')
     const template = await screen.findByTestId('guide-step-text')
     expect(template.textContent).toBe(L('step_mcp_custom_json'))
     const note = screen.getByTestId('guide-step-note')

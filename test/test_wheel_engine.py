@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 from opener_helpers import answer_with, redirect_to
+from redaction_structured_cases import github_classic
 from spawn_test_helpers import (
     LONG_CHILD_WITH_GRANDCHILD,
     await_gone,
@@ -345,6 +346,15 @@ class TestSignatureVerification:
             wheel_engine._verify_signature(canonical, signature, workdir)
         assert "timed out after 0s" in str(info.value)
         assert "signature verification failed" not in str(info.value)
+
+    def test_a_missing_openssl_names_the_package_to_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(wheel_engine, "trusted_system_bin", lambda _name: None)
+        with pytest.raises(WheelUpdateError) as info:
+            wheel_engine._openssl_bin()
+        assert "'sudo apt-get install -y openssl'" in str(info.value)
+        assert "'sudo dnf install -y openssl'" in str(info.value)
 
 
 class TestEngineLockMatchesInstaller:
@@ -667,8 +677,8 @@ class TestRunHelper:
     @pytest.mark.parametrize(
         "secret",
         [
-            "AKIAIOSFODNN7EXAMPLE",
-            "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+            github_classic(seed=61),
+            github_classic(seed=98),
         ],
     )
     def test_a_credential_straddling_the_cut_is_redacted_whole(
@@ -682,7 +692,8 @@ class TestRunHelper:
         limit = wheel_engine._ERROR_DETAIL_CHARS
         for keep in range(1, len(secret)):
             # `keep` characters of the token fall inside the kept tail.
-            stderr = ("x" * (limit + 50) + secret + "y" * (limit - keep)).encode()
+            # Blanks around it: a token glued to a letter is no token.
+            stderr = ("x" * (limit + 50) + " " + secret + " " + "y" * (limit - keep - 1)).encode()
             _stub_children(monkeypatch, lambda _argv, err=stderr: (1, b"", err))
             with pytest.raises(WheelUpdateError) as info:
                 wheel_engine._run(["x"], 5, "step-x")

@@ -16,14 +16,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+# Read by no code here; the ``work_ledger`` facade serves it from this module.
+from kiro_crew.work_vocab import WORK_STORED_ITEM_LIMIT  # noqa: F401
 from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
     WORK_MAX_ARTIFACT_VALUE_CHARS,
     WORK_MAX_DEPTH_DEFAULT,
-    WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
+    coerce_ask,
+    coerce_discussion,
     coerce_retired_bindings,
 )
 
@@ -105,7 +108,18 @@ ACCEPTANCE_KINDS: frozenset[str] = frozenset(ACCEPTANCE_READ_FIELDS)
 #: ``report`` is the only kind a worker produces; ``steer`` comes from a person's
 #: Crew Mode side panel and moves no field.
 EVENT_KINDS: frozenset[str] = frozenset(
-    {"create", "bind", "report", "decision", "verdict", "close", "steer", "retire", "destroy"}
+    {
+        "create",
+        "bind",
+        "report",
+        "decision",
+        "verdict",
+        "close",
+        "steer",
+        "retire",
+        "destroy",
+        "ask",
+    }
 )
 
 #: The conductor's disjoint operations. One action per call, because the field sets
@@ -123,25 +137,17 @@ CONDUCTOR_ACTIONS: frozenset[str] = frozenset(
 #: forgets a closed item once ``work_vocab.WORK_CLOSED_WINDOW`` newer closed items sit
 #: behind it. This cache keeps every record.
 MAX_ITEMS_PER_CONDUCTOR = 32
-#: How many OPEN items one GOAL may hold at once when the user set no bound: the bound
-#: on parallel work, tighter than :data:`MAX_ITEMS_PER_CONDUCTOR`. Stored as
-#: :attr:`ConductorRecord.concurrency_cap` (``work_ledger_record action=goal
-#: concurrency_cap=N``) and enforced by :func:`_create_item` only on a board that
-#: recorded a goal; queue boards that never write one (the pipeline and security
-#: conductors) keep only the store's open bound. Closed items do not count.
-DEFAULT_GOAL_CONCURRENCY_CAP = 6
+#: How many OPEN items one GOAL may hold at once when the user set no bound: the
+#: store's own open bound, so no fixed number sits below it. Host resources size
+#: each wave instead (the conductors' ``resource_status`` rule). A bound the user
+#: sets is stored as :attr:`ConductorRecord.concurrency_cap` (``work_ledger_record
+#: action=goal concurrency_cap=N``) and enforced by :func:`_create_item` only on a
+#: board that recorded a goal; queue boards that never write one (the pipeline and
+#: security conductors) keep only the store's open bound. Closed items do not count.
+DEFAULT_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR
 #: The highest ``concurrency_cap`` a goal write accepts: a cap past the store's open
 #: bound could never be reached.
 MAX_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR
-#: How many items one GOAL is expected to create, every round and re-plan together,
-#: when the user set no budget. ADVISORY: a create past it is admitted and
-#: :attr:`ConductorRecord.cap_exceeded` turns true so the round report can say so.
-#: Refusing would stall a goal on its own finished history; the concurrency cap above
-#: bounds spend. Stored as :attr:`ConductorRecord.item_cap` (``work_ledger_record
-#: action=goal item_cap=N``), measured against :attr:`ConductorRecord.goal_items_used`.
-DEFAULT_GOAL_ITEM_CAP = 20
-#: The highest ``item_cap`` a goal write accepts.
-MAX_GOAL_ITEM_CAP = WORK_STORED_ITEM_LIMIT
 MAX_EVENTS_PER_ITEM = 200
 #: How many levels may CONDUCT: the root at depth 0 and the conductors below it, up
 #: to but not including depth :data:`MAX_DEPTH`. Depth ``MAX_DEPTH`` itself is the
@@ -182,6 +188,11 @@ MAX_RECORD_BYTES = 1_000_000
 #: passes its own window.
 DEFAULT_STALE_WINDOW_SECS = 900.0
 
+#: How far ahead a ``progress`` report's ``wake_at`` may point. A wait longer than a
+#: day is a ``blocked`` report, and the bound keeps a typo from parking an item for a
+#: week (rfc-work-report-wake-at §3.1).
+MAX_WAKE_AT_SECS = 24 * 60 * 60.0
+
 #: How long one item's acceptance may read ``pending`` on end before
 #: :func:`is_pending_overdue` flags it. Per item, and wall-clock rather than patrol
 #: cycles, because the conductor picks its own interval. A day is far past any CI run
@@ -198,6 +209,8 @@ CODE_DUPLICATE_ITEM = "duplicate_item"
 CODE_ITEM_CLOSED = "item_closed"
 CODE_ITEM_CAP_EXCEEDED = "item_cap_exceeded"
 CODE_GOAL_CONCURRENCY_CAP_REACHED = "goal_concurrency_cap_reached"
+#: A ``create`` while host memory is critical (rfc-work-ledger-resource-pressure §3.5).
+CODE_HOST_MEMORY_CRITICAL = "host_memory_critical"
 CODE_CREW_LOG_INCOMPLETE = "crew_log_incomplete"
 CODE_CACHE_DIRTY = "cache_dirty"
 CODE_DEPTH_EXCEEDED = "depth_exceeded"
@@ -206,6 +219,11 @@ CODE_INVALID_ACTION = "invalid_action"
 CODE_INVALID_STATUS = "invalid_status"
 CODE_INVALID_VALUE = "invalid_value"
 CODE_LEDGER_NOT_FINISHED = "ledger_not_finished"
+#: A ``wake_at`` refusal names which of its rules failed (rfc-work-report-wake-at §3.1).
+CODE_WAKE_AT_REQUIRES_PROGRESS = "wake_at_requires_progress"
+CODE_WAKE_AT_INVALID = "wake_at_invalid"
+CODE_WAKE_AT_IN_PAST = "wake_at_in_past"
+CODE_WAKE_AT_TOO_FAR = "wake_at_too_far"
 
 
 class WorkLedgerError(Exception):
@@ -263,10 +281,6 @@ class ConductorRecord:
     #: sets it to the count the log holds. Zero on records from before it; the
     #: first create on such a board seeds it from the records on the board.
     created_total: int = 0
-    #: How many items the current goal is expected to create --
-    #: :data:`DEFAULT_GOAL_ITEM_CAP` unless a ``goal`` write set it. Measured
-    #: against :attr:`goal_items_used` by :attr:`cap_exceeded`; advisory only.
-    item_cap: int = DEFAULT_GOAL_ITEM_CAP
     #: How many items the current goal may hold OPEN at once --
     #: :data:`DEFAULT_GOAL_CONCURRENCY_CAP` unless a ``goal`` write set it. The
     #: bound :func:`_create_item` refuses on, once the board has recorded a goal.
@@ -278,6 +292,15 @@ class ConductorRecord:
     #: current goal then counts from the upgrade, and the next header write
     #: settles it to the board's create total (:func:`_settle_goal_base`).
     goal_items_base: int = 0
+    #: A random id minted with the board and by each ``new_goal`` (and by the next
+    #: goal write on a header from before it), so every round of one goal shares it;
+    #: the tracer keys a round's trace on it. Rides no crew-log entry: a rebuild
+    #: keeps the cache's, as it does :attr:`goal_items_base`.
+    goal_id: str = ""
+    #: When the current round began: stamped with the board, and by a goal write that
+    #: changes the round or starts a new goal. The tracer rolls a round's trace over
+    #: by its age. Rides no crew-log entry: a rebuild keeps the cache's.
+    round_started_at: str = ""
 
     @property
     def goal_items_used(self) -> int:
@@ -285,18 +308,6 @@ class ConductorRecord:
         if self.goal_items_base == LEGACY_GOAL_BASE:
             return 0
         return max(0, self.created_total - self.goal_items_base)
-
-    @property
-    def cap_exceeded(self) -> bool:
-        """Whether the current goal has created more items than :attr:`item_cap`.
-
-        True from the first create past the cap, not at the cap: a goal at twenty
-        of twenty has spent what it was allowed. Advisory -- the read reports it beside
-        ``goal_items_used`` and the conductor tells the user once when it turns
-        true; nothing blocks on it. False on a board that never recorded a goal, which has no goal to
-        measure: a queue board's count is its whole history.
-        """
-        return self.goal_version > 0 and self.goal_items_used > self.item_cap
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -311,9 +322,10 @@ class ConductorRecord:
             "goal_version": self.goal_version,
             "recorded_at": self.recorded_at,
             "created_total": self.created_total,
-            "item_cap": self.item_cap,
             "concurrency_cap": self.concurrency_cap,
             "goal_items_base": self.goal_items_base,
+            "goal_id": self.goal_id,
+            "round_started_at": self.round_started_at,
         }
 
     @classmethod
@@ -338,13 +350,14 @@ class ConductorRecord:
             goal_version=_as_int(raw.get("goal_version"), 0),
             recorded_at=_as_str(raw.get("recorded_at")),
             created_total=max(0, _as_int(raw.get("created_total"), 0)),
-            item_cap=_stored_item_cap(raw.get("item_cap")),
             concurrency_cap=_stored_concurrency_cap(raw.get("concurrency_cap")),
             goal_items_base=(
                 max(0, _as_int(raw.get("goal_items_base"), 0))
                 if "goal_items_base" in raw
                 else LEGACY_GOAL_BASE
             ),
+            goal_id=_as_str(raw.get("goal_id")),
+            round_started_at=_as_str(raw.get("round_started_at")),
         )
 
 
@@ -364,14 +377,6 @@ def _settle_goal_base(record: ConductorRecord) -> None:
         record.goal_items_base = record.created_total
 
 
-def _stored_item_cap(value: Any) -> int:
-    """A stored ``item_cap``, or the default when it is absent or out of range."""
-    number = _finite_int(value)
-    if number is None or not 1 <= number <= MAX_GOAL_ITEM_CAP:
-        return DEFAULT_GOAL_ITEM_CAP
-    return number
-
-
 def _stored_concurrency_cap(value: Any) -> int:
     """A stored ``concurrency_cap``, or the default when absent or out of range.
 
@@ -389,9 +394,9 @@ class WorkItem:
     """One dispatched work item. Two writers, one per-item lock, disjoint fields.
 
     Conductor-owned: ``title``, ``acceptance``, ``state``, ``verdict``, ``decision``,
-    ``worker_session_key``, ``round``, ``fails``.
-    Worker-owned: ``status``, ``reason``, ``summary``, ``artifacts``, ``pr``,
-    ``last_report_at``.
+    ``worker_session_key``, ``round``, ``fails``, ``ask``.
+    Worker-owned: ``status``, ``reason``, ``wake_at``, ``summary``, ``artifacts``,
+    ``pr``, ``discussion``, ``last_report_at``.
     Server-owned: ``item_id``, ``created_at``, ``closed_at``, ``decided_at``,
     ``pending_since``.
 
@@ -425,6 +430,10 @@ class WorkItem:
     #: Why a ``blocked`` / ``question`` report is stuck (:data:`BLOCKED_REASONS`), or
     #: ``None``. Every report replaces it, so one without a reason clears it.
     reason: str | None = None
+    #: When a ``progress`` report's worker said it would resume, or ``None``. Every
+    #: report replaces it; :func:`quiet_since` measures the quiet window from it.
+    #: Serialized only when set, so an item that never waited is stored as before.
+    wake_at: str | None = None
     summary: str = ""
     artifacts: dict[str, str] = field(default_factory=dict)
     pr: int | None = None
@@ -439,6 +448,15 @@ class WorkItem:
     #: first ``pending`` verdict stamps it; any other verdict, or a new bar from
     #: ``accept``, clears it. See :func:`is_pending_overdue`.
     pending_since: str | None = None
+    #: What the item needs from the person, as the conductor wrote it when it relayed
+    #: the question (:func:`~kiro_crew.work_vocab.coerce_ask`), or ``None``. ``decide``
+    #: and ``close`` clear it. Serialized only when set, so an item that never asked
+    #: is stored exactly as before.
+    ask: dict[str, Any] | None = None
+    #: Where a discussion this item's worker hosts stands, from its last report
+    #: (:func:`~kiro_crew.work_vocab.coerce_discussion`), or ``None``. Every report
+    #: replaces it, so one without it clears it. Serialized only when set.
+    discussion: dict[str, Any] | None = None
     schema: int = SCHEMA_VERSION
     #: When the crew log first held this item whole (its recorded create, or the
     #: baseline its first recorded mutation carried). Empty until then: the write
@@ -453,8 +471,14 @@ class WorkItem:
         out = self._base_dict()
         if self.worker_instance_id:
             out["worker_instance_id"] = self.worker_instance_id
+        if self.wake_at:
+            out["wake_at"] = self.wake_at
         if self.retired_bindings:
             out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
+        if self.ask:
+            out["ask"] = dict(self.ask)
+        if self.discussion:
+            out["discussion"] = dict(self.discussion)
         return out
 
     def _base_dict(self) -> dict[str, Any]:
@@ -511,6 +535,7 @@ class WorkItem:
             fails=_as_int(raw.get("fails"), 0),
             status=status if status in WORKER_STATUSES else None,
             reason=reason if reason in BLOCKED_REASONS else None,
+            wake_at=_as_opt_str(raw.get("wake_at")) or None,
             summary=_as_str(raw.get("summary")),
             artifacts=artifacts,
             pr=_finite_int(raw.get("pr")),
@@ -519,6 +544,8 @@ class WorkItem:
             closed_at=_as_opt_str(raw.get("closed_at")),
             decided_at=_as_opt_str(raw.get("decided_at")),
             pending_since=_as_opt_str(raw.get("pending_since")),
+            ask=coerce_ask(raw.get("ask")),
+            discussion=coerce_discussion(raw.get("discussion")),
             recorded_at=_as_str(raw.get("recorded_at")),
             schema=_as_int(raw.get("schema"), SCHEMA_VERSION),
         )

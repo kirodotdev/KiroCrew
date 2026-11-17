@@ -33,7 +33,12 @@ from datetime import datetime
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
-from .ingestion import DUPLICATE_JOB_STATUS, ImportChunkBudgetError, IngestionPipeline
+from .ingestion import (
+    DUPLICATE_JOB_STATUS,
+    FileTooLargeError,
+    ImportChunkBudgetError,
+    IngestionPipeline,
+)
 from .store import AUTO_ADDED_PROP, KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -436,12 +441,28 @@ async def add_agent_document(
     other source gets -- and the same pre-ingest duplicate gate.
 
     Returns a result dict with ``status`` in ``added`` / ``duplicate`` /
-    ``error``.
+    ``deferred`` / ``error``.
     """
     async with _ADD_LOCK:
         return await _add_agent_document(
             pipeline, title=title, content=content, reason=reason,
             source_uri=source_uri)
+
+
+def _not_encodable(field: str, value: str) -> dict | None:
+    """The error result for a value UTF-8 cannot encode, else None.
+
+    JSON allows an escaped lone surrogate (``\\ud800``); UTF-8 does not, and the
+    slug, the content hash and the stored title all encode. Each caller checks
+    the value at the point main first encoded it, after whatever caps and
+    redaction main applied before that encode, so nothing main stored is
+    refused.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return {"status": "error", "error": f"{field} contains characters that cannot be encoded"}
+    return None
 
 
 async def _add_agent_document(
@@ -481,6 +502,9 @@ async def _add_agent_document(
                          "so without it two documents sharing a title would "
                          "overwrite each other"}
     source_uri = _redact_for_ingest(raw_uri)
+    not_encodable = _not_encodable("source_uri", raw_uri)
+    if not_encodable:
+        return not_encodable
     slug = document_slug(raw_uri)
     # Off the loop: the state read takes the guarded connection.
     prev_hash, old_item_ids = await asyncio.to_thread(get_state, store, source_id, slug)
@@ -490,6 +514,9 @@ async def _add_agent_document(
     # written from this same normalized text, so a CR in the submitted document
     # cannot make the marker hash and the chunk hash diverge.
     text = _normalize_newlines(text)
+    not_encodable = _not_encodable("content", text)
+    if not_encodable:
+        return not_encodable
     content_hash = hashlib.sha256(text.encode()).hexdigest()
     # The shortcut needs a LIVE item group, not just a matching hash. A row left
     # by a refused write records the hash with an empty group, so hash alone would
@@ -524,6 +551,12 @@ async def _add_agent_document(
         return {"status": "duplicate",
                 "reason": f"identical content is already stored as {twin[1]!r}",
                 "slug": slug, "source_id": source_id}
+
+    # Checked only here, on the paths that store the title: both duplicate
+    # returns above never encode it, and main answered them 200.
+    not_encodable = _not_encodable("title", title)
+    if not_encodable:
+        return not_encodable
 
     # Same rule as the folder and artifact paths: a row that owned nothing holds a
     # claim for its previous content, and this document's text has changed.
@@ -632,6 +665,12 @@ async def _add_agent_document(
                                     content_hash, preserve_if_orphans=True)
             return {"status": "deferred", "reason": str(exc),
                     "slug": slug, "source_id": source_id}
+        except FileTooLargeError as exc:
+            # Over ``knowledge.max_ingest_file_mb``: a refused document, not a
+            # gateway fault. The pipeline already warned and wrote nothing.
+            await asyncio.to_thread(clear_ingesting, store, source_id, slug,
+                                    content_hash, preserve_if_orphans=True)
+            return {"status": "error", "error": str(exc)}
         except BaseException:
             # Any other failure (including cancellation) before the finalize hop
             # ran leaves no ``active`` row for THIS attempt; drop its intent

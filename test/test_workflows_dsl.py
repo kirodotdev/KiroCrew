@@ -18,7 +18,8 @@ import asyncio
 
 import pytest
 
-from kiro_crew.testing.wait import finished
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
+from kiro_crew.workflows import BudgetExceeded
 from kiro_crew.workflows.dsl import parallel, pipeline
 
 pytestmark = pytest.mark.asyncio
@@ -77,6 +78,7 @@ async def test_parallel_accepts_already_created_coroutines() -> None:
     already-created coroutines — directly to parallel, instead of thunks. These
     must run, not silently become None (which would empty the result list
     and tripped scripts' 'no usable results' guards)."""
+
     async def work(n):
         await asyncio.sleep(0)
         return n * 2
@@ -145,7 +147,9 @@ async def test_pipeline_no_inter_stage_barrier_deadlock_proof() -> None:
 
     # If pipeline imposed a stage barrier, item 0 would block stage1 forever and
     # item 1 could never reach stage2 → deadlock → the bound fails by name.
-    out = await finished(pipeline([0, 1], stage1, stage2), "the pipeline without a barrier", timeout=2.0)
+    out = await finished(
+        pipeline([0, 1], stage1, stage2), "the pipeline without a barrier", timeout=2.0
+    )
     assert out == [0, 1]
 
 
@@ -230,3 +234,42 @@ async def test_pipeline_respects_limit() -> None:
 
     await pipeline(list(range(6)), stage, limit=2)
     assert peak <= 2
+
+
+# --------------------------------------------------------------------------- #
+# A run ceiling inside a fan-out still ends the run
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("combinator", ["parallel", "pipeline"])
+async def test_budget_exceeded_is_raised_after_every_task_settles(combinator: str) -> None:
+    """``BudgetExceeded`` is not resolved to ``None``, and no sibling outlives it."""
+    release = asyncio.Event()
+    stopped = asyncio.Event()
+    settled = []
+
+    async def slow(n: int):
+        await release.wait()
+        settled.append(n)
+        return n
+
+    async def capped():
+        stopped.set()
+        raise BudgetExceeded("agent-count cap reached")
+
+    if combinator == "parallel":
+        call = parallel([lambda: slow(0), capped, lambda: slow(2)])
+    else:
+
+        async def stage(prev, item, idx):
+            return await (capped() if item == 1 else slow(item))
+
+        call = pipeline([0, 1, 2], stage)
+    task = asyncio.ensure_future(call)
+    await await_until(stopped, what="the capped task")
+    # The cap has been hit, but the barrier still waits for the siblings.
+    await async_wait_until(lambda: not task.done() and not settled)
+    release.set()
+    with pytest.raises(BudgetExceeded, match="agent-count cap"):
+        await await_until(task, what=f"the {combinator} call")
+    assert sorted(settled) == [0, 2]

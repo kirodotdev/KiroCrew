@@ -12,18 +12,24 @@ Three legs, three trust classes:
   refused, like the takeover routes) -- the card's answer. Body capped at
   ``ANSWER_BODY_MAX``, each value at ``VALUE_MAX``. A fill re-checks the binding
   and writes in the gateway; the values go nowhere else: not to a log, the SEL,
-  the replay, the card's state or the agent.
+  the replay, the card's state or the agent. Under the ``secrets_vault``
+  preview a credentials answer may instead name a login the card offered
+  (``vault_item``: read from the vault here, then the same fill), or tick
+  ``save`` (the typed login is stored in the vault after the fill lands); see
+  ``browser_harness.vault_fill``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
 
 from kiro_crew.browser_harness import quick_ask as qa
+from kiro_crew.browser_harness import vault_fill
 from kiro_crew.browser_harness.budgets import ASK_WAIT_S
 from kiro_crew.browser_harness.governance import DENIED_CODE
 from kiro_crew.browser_harness.live_hub import LiveHub, get_live_hub
@@ -43,15 +49,19 @@ def _sel() -> Any:
     return sel()
 
 
-def _audit(operation: str, outcome: str, detail: str = "") -> None:
-    """SEL row: the operation and an outcome WORD. Never a value or page text."""
+def _audit(operation: str, outcome: str, detail: str = "", *, resource: str = "") -> None:
+    """SEL row: the operation and an outcome WORD. Never a value or page text.
+
+    *resource* is a vault fill's or save's ``origin=... item=<name>``: the item
+    NAME and the origin, never a value or a username.
+    """
     try:
         _sel().log_api_access(
             caller="dashboard",
             operation=operation,
             outcome=outcome,
             source="browser",
-            resources="/api/browser/ask",
+            resources="/api/browser/ask" + (f" {resource}" if resource else ""),
             error=detail or None,
         )
     except Exception:  # noqa: BLE001 - auditing never fails the request
@@ -90,6 +100,10 @@ def _record(hub: LiveHub, key: str, ask: qa.QuickAsk, action: str, outcome: str)
         logger.debug("quick ask replay event not recorded")
 
 
+def _vault_audit(operation: str, outcome: str, name: str, ask: qa.QuickAsk) -> None:
+    _audit(operation, outcome, resource=f"origin={ask.origin} item={name}")
+
+
 def _refused(code: str) -> dict[str, Any]:
     return {"ok": True, "outcome": qa.REFUSED, "code": code}
 
@@ -123,6 +137,11 @@ async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any
     except qa.AskError as exc:
         _audit("browser_ask", "refused", exc.code)
         return _refused(exc.code)
+    if spec.kind == "credentials":
+        # The vault logins for this origin (entry name and username), under the preview.
+        offered = await asyncio.to_thread(vault_fill.offer, ask.origin)
+        if offered is not None:
+            ask.vault, ask.vault_more = offered
     ask.start_clock(asyncio.get_running_loop().time())
     ask.target_id = str(stream.target_id)
     assert sess is not None
@@ -261,8 +280,30 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
     action = body.get("action")
     if action not in qa.ACTIONS[ask.spec.kind]:
         return _fail(400, "bad_action")
+    picked = body.get("vault_item")
+    save = body.get("save")
+    vault_part = "vault_item" in body or "save" in body
+    if vault_part and (
+        action != "fill" or ask.vault is None or not await asyncio.to_thread(vault_fill.enabled)
+    ):
+        return _fail(400, "bad_action")
     values: dict[str, str] | None = None
-    if action == "fill":
+    if action == "fill" and "vault_item" in body:
+        # The person's click on a login the card offered: read in the gateway,
+        # re-matched against the bound origin now, then the typed answer's path.
+        offered = {name for name, _user in ask.vault or []}
+        if not isinstance(picked, str) or picked not in offered or "values" in body or save:
+            return _fail(400, "bad_action")
+        login = await asyncio.to_thread(vault_fill.login_values, picked, ask.origin)
+        values = vault_fill.shape(ask, login) if login is not None else None
+        if login is not None:
+            login.clear()
+        if values is None:
+            _vault_audit(vault_fill.OP_FILL, "unusable", picked, ask)
+            return _fail(409, "vault_unusable")
+    elif action == "fill":
+        if save is not None and save is not True:
+            return _fail(400, "bad_action")
         raw = body.get("values")
         if isinstance(raw, dict) and any(
             isinstance(v, str) and len(v) > qa.VALUE_MAX for v in raw.values()
@@ -271,16 +312,40 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
         values = qa.check_values(ask, raw)
         if values is None:
             return _fail(400, "bad_action")
+    reserved = None
+    if save is True:
+        # The names the Secrets route would refuse this caller: a save from the
+        # card never takes one (a channel credential, a Connections or WakaTime entry).
+        from kiro_crew.dashboard.handlers.secrets import reserved_name_check
+
+        reserved = await reserved_name_check(request)
     async with ask.lock:
         if not ask.outcome and asyncio.get_running_loop().time() >= ask.deadline:
             await _finish(hub, key, ask, "timeout", qa.TIMED_OUT)
         if ask.outcome:
+            if values is not None:
+                values.clear()
             return _fail(409, "stale")
-        return await _act(hub, key, ask, str(action), values)
+        return await _act(
+            hub,
+            key,
+            ask,
+            str(action),
+            values,
+            vault_item=picked if isinstance(picked, str) else "",
+            save=reserved,
+        )
 
 
 async def _act(
-    hub: LiveHub, key: str, ask: qa.QuickAsk, action: str, values: dict[str, str] | None
+    hub: LiveHub,
+    key: str,
+    ask: qa.QuickAsk,
+    action: str,
+    values: dict[str, str] | None,
+    *,
+    vault_item: str = "",
+    save: Callable[[str], bool] | None = None,
 ) -> web.Response:
     if action == "decline":
         await _finish(hub, key, ask, action, qa.DECLINED)
@@ -308,6 +373,7 @@ async def _act(
         return _ok(outcome=qa.PASSED)
     if action == "take_over":
         return await _take_over(hub, key, ask, probe)
+    saved = False
     try:
         async with hub.op_fence(key):
             # The fence may have waited on an agent op: the ask can have ended
@@ -325,7 +391,16 @@ async def _act(
             else:  # confirm: exactly one click, then the ask is spent
                 await qa.click_once(probe, ask)
                 outcome = qa.CONFIRMED
+        if vault_item:
+            _vault_audit(vault_fill.OP_FILL, outcome, vault_item, ask)
+        if save is not None and values is not None and not ask.outcome:
+            # Only after a fill that landed, and only because the person ticked it.
+            name = await vault_fill.save_login(ask.origin, values, save)
+            saved = bool(name)
+            _vault_audit(vault_fill.OP_SAVE, "ok" if saved else "failed", name, ask)
     except qa.AskError as exc:
+        if vault_item:
+            _vault_audit(vault_fill.OP_FILL, exc.code, vault_item, ask)
         if exc.code == qa.TOO_LONG:
             # The field takes fewer characters: nothing was written, the ask stays
             # open so the person can shorten the value or take over.
@@ -353,6 +428,9 @@ async def _act(
         # answer is not reported as done on top of the settled outcome.
         return _fail(409, "stale")
     await _finish(hub, key, ask, action, outcome)
+    if save is not None:
+        # The card's own word on the save it asked for; the agent never sees it.
+        return _ok(outcome=outcome, saved=saved)
     return _ok(outcome=outcome)
 
 

@@ -36,8 +36,13 @@ def _store(tmp_path: Path, *, semantic: int = 0, opened) -> VectorMemoryStore:
 
 
 class TestCounterContract:
-    def test_a_fresh_store_exposes_every_counter_at_zero(self, tmp_path: Path, opened) -> None:
+    def test_a_fresh_store_exposes_every_counter_at_zero(
+        self, tmp_path: Path, opened, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The counter-absent assertion: no ``read_counters`` at all fails here."""
+        # With faiss installed, init builds the FAISS index, and that build's
+        # data-version read is one counted statement this zero baseline would see.
+        monkeypatch.setattr("kiro_crew.vector_memory._HAS_FAISS", False)
         store = _store(tmp_path, opened=opened)
         assert store.read_counters() == dict.fromkeys(_COUNTER_KEYS, 0)
 

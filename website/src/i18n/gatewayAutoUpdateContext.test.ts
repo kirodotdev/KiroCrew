@@ -39,11 +39,11 @@ describe('gateway auto-update desktop context note', () => {
   })
 
   it('keeps the three facts the note gives', () => {
-    // Separate from the app, updates the gateway rather than the app, and
-    // restarts only when nothing is running.
+    // Separate from the app, updates the gateway rather than the app, and the
+    // gateway never restarts by itself.
     expect(english).toMatch(/installed separately from \{\{productName\}\}/)
     expect(english).toMatch(/not this app/)
-    expect(english).toMatch(/only restarts when no work is active/)
+    expect(english).toMatch(/never restarts by itself/)
   })
 
   it('is present, with the product placeholder, in every catalog that carries it', () => {

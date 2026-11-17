@@ -278,20 +278,14 @@ class WhatsAppClient:
             raise RuntimeError(MISSING_EXTRA_HINT)
 
         # The session store IS the linked-device credential: anything that can
-        # read it can act as the operator on WhatsApp. `os.chmod(0o700)` is a
-        # silent no-op on Windows, so this goes through the shim that also sets
-        # inheritable owner-only ACLs, and it fails loud rather than warn-and-continue.
-        # FAIL LOUD, not warn-and-continue. This directory holds the linked-device
-        # session, which IS the credential: anything that can read it can act as
-        # the operator on WhatsApp, read every chat and send as them. Continuing
-        # after the restriction failed would pair the device and leave that
-        # credential readable by any other local principal, which is exactly the
-        # case a warning nobody reads does not cover.
-        # Off the loop: these are blocking filesystem calls (the Windows DACL is
-        # applied in-process), and the one event loop also carries every other
-        # channel and the liveness heartbeat. Still awaited rather than
-        # fire-and-forget, because pairing must not begin until the credential's
-        # directory is actually locked down.
+        # read it can act as the operator on WhatsApp, read every chat and send
+        # as them. `os.chmod(0o700)` is a silent no-op on Windows, so this goes
+        # through the shim that also sets inheritable owner-only ACLs.
+        # FAIL LOUD, not warn-and-continue: pairing after the restriction failed
+        # would leave the credential readable by any other local principal.
+        # Off the loop (blocking filesystem calls; the Windows DACL is applied
+        # in-process) but awaited, so pairing starts only once the directory is
+        # locked down.
         await asyncio.to_thread(self._restrict_session_store)
 
         # Loading neonize (a ~19 MB ctypes.CDLL plus protobuf modules) is
@@ -476,8 +470,15 @@ class WhatsAppClient:
         jid_str: str,
         text: str,
         on_sent: "Callable[[str], None] | None" = None,
+        *,
+        rendered: bool = False,
     ) -> list[str]:
         """Send ``text`` to a chat, chunked; returns the message IDs sent.
+
+        ``rendered`` marks ``text`` as ONE chunk :func:`render_chunks` already
+        produced (screened, converted and sized), sent as it is. Converting it
+        again is not a no-op: Markdown ``*x*`` is italic and WhatsApp's is bold, so
+        a second pass reads the first pass's bold as italic.
 
         ``on_sent`` is invoked with each message id the moment that chunk's send
         returns, before any further await. The echo tracker is what it is for:
@@ -501,7 +502,8 @@ class WhatsAppClient:
 
         jid = self._parse_jid(jid_str)
         ids: list[str] = []
-        for i, chunk in enumerate(await render_chunks_off_loop(text)):
+        chunks = [text] if rendered else await render_chunks_off_loop(text)
+        for i, chunk in enumerate(chunks):
             if i:
                 await asyncio.sleep(_INTER_CHUNK_DELAY_S)
             response = await self._client.send_message(jid, Message(conversation=chunk))
@@ -715,11 +717,21 @@ class WhatsAppClient:
             on_sent(message_id)
         return message_id
 
-    async def edit_text(self, jid_str: str, message_id: str, text: str) -> bool:
+    async def edit_text(
+        self,
+        jid_str: str,
+        message_id: str,
+        text: str,
+        on_sent: "Callable[[str], None] | None" = None,
+    ) -> bool:
         """Replace the body of a message this channel already sent.
 
         The server refuses an edit after :data:`EDIT_WINDOW_S`; the caller, which
         knows when the bubble was sent, decides when to open a new one.
+
+        An edit is itself a send with its OWN id, and it echoes back with
+        ``from_me`` set carrying the new text, so that id goes to *on_sent* like
+        every other send's: an untracked one reads as the operator typing.
 
         Returns False instead of raising: a refused edit is cosmetic (the reader
         keeps the previous text and the final send still lands) and must never
@@ -730,9 +742,12 @@ class WhatsAppClient:
         from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
 
         try:
-            await self._client.edit_message(
+            response = await self._client.edit_message(
                 self._parse_jid(jid_str), message_id, Message(conversation=text)
             )
+            edit_id = str(getattr(response, "ID", "") or "")
+            if edit_id and on_sent is not None:
+                on_sent(edit_id)
             return True
         except Exception:  # noqa: BLE001: progress rendering is best-effort
             logger.debug("whatsapp: edit of %s failed", message_id, exc_info=True)

@@ -33,7 +33,7 @@ from typing import Any, Awaitable, Callable, Optional
 from kiro_crew.llm_helpers import _extract_json_of_type
 
 # Bounded retries before ``ctx.agent(schema=)`` gives up and returns None
-# (matches ``_SCHEMA_RETRIES`` in the module spec).
+# (the module spec's ``schema.DEFAULT_SCHEMA_RETRIES``).
 DEFAULT_SCHEMA_RETRIES = 2
 
 _JSON_TYPES: dict[str, type | tuple[type, ...]] = {

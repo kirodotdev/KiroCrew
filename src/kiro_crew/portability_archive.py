@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import zipfile
 from pathlib import Path, PurePath, PurePosixPath
@@ -45,7 +46,7 @@ EXPORT_EXCLUDE = frozenset(
         # happens to share the name. They need no entry: root-level export is a
         # hard-coded allowlist (config.json, the settings documents in
         # `_SETTINGS_DOCUMENTS`, hooks.json, crons.json, notifications.jsonl,
-        # project_dir, workspace_dir, crew-teams/teams.json), so a root beacon file is
+        # folders.json, project_dir, workspace_dir, crew-teams/teams.json), so a root beacon file is
         # never selected in the first place.
         "session_map.json",
         "kiro_session_pids.txt",
@@ -66,6 +67,29 @@ _SETTINGS_DOCUMENTS: tuple[str, ...] = (
     "notification_settings.json",
 )
 
+#: Folders a tool rebuilds on its own: package installs, virtual environments and tool
+#: caches. A code checkout in the workspace carries them, and they can be most of an
+#: export's size (one measured workspace held 4 GB of them), so an export leaves them
+#: out and an import skips them, which lets an older export that carried them import too.
+#: The rule covers the ``workspace/`` tree only (`_in_rebuildable_dir`): elsewhere these
+#: names are user data, e.g. a memory store or a skill may be named ``venv``.
+REBUILDABLE_DIRS = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".nox",
+        ".gradle",
+        ".next",
+        ".turbo",
+        ".parcel-cache",
+    }
+)
+
 EXCLUDE_DIRS = frozenset(
     {
         "snapshots",
@@ -74,6 +98,19 @@ EXCLUDE_DIRS = frozenset(
         "__pycache__",
     }
 )
+
+
+def _in_rebuildable_dir(rest: tuple[str, ...]) -> bool:
+    """True for a file inside a rebuildable folder (`REBUILDABLE_DIRS`) of the workspace.
+
+    *rest* is the path below the data home (export) or below the archive's top directory
+    (import), the tree name first. Only ``workspace/`` holds code checkouts, so only it
+    is matched. Only folder names count, never the file's own name, so a file named
+    ``venv`` still travels. The export and the import both ask this, so they agree.
+    """
+    if not rest or rest[0] != "workspace":
+        return False
+    return any(part in REBUILDABLE_DIRS for part in rest[1:-1])
 
 
 def _mc_dir() -> Path:
@@ -306,7 +343,95 @@ def _is_rotation_header(first_line: bytes | None) -> bool:
 # millions of entries) is rejected before extraction rather than filling the
 # host disk.
 _MAX_IMPORT_MEMBERS = 50_000
+#: What every host accepts with no further check, and what an export budgets its chats
+#: against. It is also the most one member may unpack to, so no file an import reads
+#: whole is larger than before the checks below were added.
 _MAX_IMPORT_UNCOMPRESSED = 2 * 1024**3  # 2 GiB
+#: Above `_MAX_IMPORT_UNCOMPRESSED` an archive is still accepted when it stays under
+#: this ceiling, unpacks to at most this many times its own size (a real export
+#: compresses a few times; a zip bomb compresses hundreds or thousands of times), and
+#: the data home's disk has room for it twice (the staged copy and the installed one)
+#: plus a reserve.
+_MAX_IMPORT_UNCOMPRESSED_CEILING = 64 * 1024**3
+_MAX_IMPORT_COMPRESSION_RATIO = 100
+_IMPORT_DISK_RESERVE = 1024**3
+
+
+def _skipped_on_import(parts: tuple[str, ...]) -> bool:
+    """True for a member the import skips: `_in_rebuildable_dir` below the top directory.
+
+    *parts* is the member name split on ``/``, the archive's top directory first.
+    """
+    return _in_rebuildable_dir(parts[1:])
+
+
+def _gb(nbytes: int) -> str:
+    return f"{nbytes / 1e9:.2f} GB"
+
+
+def _largest_folders(infos: list[zipfile.ZipInfo], count: int = 3) -> str:
+    """The *count* biggest folders (two levels deep) by unpacked size, as text."""
+    sizes: dict[str, int] = {}
+    for info in infos:
+        parts = PurePosixPath(info.filename).parts[1:]
+        key = "/".join(parts[:2]) if len(parts) > 2 else (parts[0] if parts else "")
+        sizes[key] = sizes.get(key, 0) + info.file_size
+    top = sorted(sizes.items(), key=lambda kv: kv[1], reverse=True)[:count]
+    return ", ".join(f"{name} ({_gb(size)})" for name, size in top if name)
+
+
+_SHRINK_HINT = (
+    "Make a new export in Settings > Import / Export > Back up & restore configuration: "
+    "it leaves out folders that tools rebuild (node_modules, .venv, caches). If it is still "
+    "too big, move the biggest folders out of the workspace folder before you export."
+)
+
+
+def import_size_problem(infos: list[zipfile.ZipInfo], archive_bytes: int) -> str | None:
+    """Why an archive is too big to import here, in words a user can act on, or None.
+
+    *infos* is the archive's member list and *archive_bytes* the archive file's real
+    size on disk. Members in rebuildable folders are not counted, since the import skips
+    them. Declared sizes can be trusted as upper bounds: ``zipfile`` stops a member at
+    its declared size and fails on a mismatch.
+    """
+    kept = [i for i in infos if not _skipped_on_import(PurePosixPath(i.filename).parts)]
+    for info in kept:
+        if info.file_size > _MAX_IMPORT_UNCOMPRESSED:
+            return (
+                f"Rejected: {info.filename} unpacks to {_gb(info.file_size)}, more than the "
+                f"{_gb(_MAX_IMPORT_UNCOMPRESSED)} one file may hold. {_SHRINK_HINT}"
+            )
+    total = sum(i.file_size for i in kept)
+    if total <= _MAX_IMPORT_UNCOMPRESSED:
+        return None
+    if total > _MAX_IMPORT_COMPRESSION_RATIO * max(archive_bytes, 1):
+        return (
+            f"Rejected: a {_gb(archive_bytes)} archive that claims to unpack to "
+            f"{_gb(total)} (more than {_MAX_IMPORT_COMPRESSION_RATIO} times its size) is "
+            "not a Kiro Crew export (possible zip bomb)"
+        )
+    biggest = _largest_folders(kept)
+    if total > _MAX_IMPORT_UNCOMPRESSED_CEILING:
+        return (
+            f"Rejected: this backup unpacks to {_gb(total)}, more than the "
+            f"{_gb(_MAX_IMPORT_UNCOMPRESSED_CEILING)} an import accepts. Biggest folders: "
+            f"{biggest}. {_SHRINK_HINT}"
+        )
+    home = _mc_dir()
+    probe = home if home.is_dir() else home.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        free = 0
+    needed = 2 * total + _IMPORT_DISK_RESERVE
+    if free < needed:
+        return (
+            f"Rejected: this backup unpacks to {_gb(total)} and the import needs "
+            f"{_gb(needed)} of free disk space, but only {_gb(free)} is free. Free up disk "
+            f"space and try again. Biggest folders: {biggest}. {_SHRINK_HINT}"
+        )
+    return None
 
 
 def _is_link_entry(info: zipfile.ZipInfo) -> bool:

@@ -1,8 +1,8 @@
-import { Suspense, lazy, type Dispatch, type SetStateAction } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import { X } from 'lucide-react'
 
-import ErrorBoundary from '../../../components/ErrorBoundary'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { lazyRetry } from '../../../components/lazyRetry'
 import VoicePlaybackNotice from '../../../components/VoicePlaybackNotice'
 import { Btn } from '../../../components/ui'
 import { fmtDate } from '../../../i18n/format'
@@ -21,10 +21,15 @@ import type { ErrorReport } from '../../../utils/errorReport'
 
 // Lazy so the notice's code AND its fetch/poll (useUnrestoredTabs) stay out of the
 // always-loaded chat-route chunk. The notice renders nothing in the common case
-// (no tabs were dropped), so a null Suspense fallback is invisible, and an
-// ErrorBoundary keeps a chunk-load hiccup from taking the pane's other notices
-// down with it.
-const UnrestoredTabsNotice = lazy(() => import('./UnrestoredTabsNotice'))
+// (no tabs were dropped), so nothing stands in while its chunk loads. A chunk
+// that fails to load becomes one more block among the pane's notices, with the
+// same sentence as the notice's own failed read, so it neither takes the pane's
+// other notices down nor the pane's height.
+const UnrestoredTabsNotice = lazyRetry(() => import('./UnrestoredTabsNotice'), {
+  layout: 'block',
+  title: () => i18nT('pages.chatPage.could_not_check_restored_tabs'),
+  scope: 'unrestored-tabs-notice',
+})
 
 /**
  * Sentence for the unresumable-resume notice, built from the raw facts the chat
@@ -97,6 +102,7 @@ function paneCopy(_languageGeneration: number, facts: {
   const { sidMatches, switchSlotGone, unresumableResume, undeletableHistory } = facts
   return {
     dismiss: i18nT('app.dismiss'),
+    resumeChat: i18nT('components.notifications.notificationDetailPanel.resume_chat'),
     sidAlsoNames: sidMatches
       ? i18nT('pages.chatPage.short_name_also_names', {
         name: sidMatches.name,
@@ -126,6 +132,8 @@ interface ChatPaneNoticesProps {
   sidMatches: { name: string; opened: ShortNameMatch; others: ShortNameMatch[] } | null
   setSidMatches: (matches: null) => void
   openShortNameMatch: (match: ShortNameMatch) => void
+  /** Resumes the closed session a dead `?sid=` link names; null when it has no transcript. */
+  resumeSidClosed: (() => void) | null
   /** For the effort-options notice: the slot's ACP capability read failed. */
   activeSlot: string | null
   provider: ReturnType<typeof useProvider>
@@ -160,6 +168,7 @@ export default function ChatPaneNotices({
   sidMatches,
   setSidMatches,
   openShortNameMatch,
+  resumeSidClosed,
   activeSlot,
   provider,
   selectionCapabilitiesQ,
@@ -208,6 +217,7 @@ export default function ChatPaneNotices({
         message={sidError}
         onDismiss={() => setSidError('')}
         askAgent
+        footer={resumeSidClosed ? <Btn type="button" onClick={resumeSidClosed}>{copy.resumeChat}</Btn> : undefined}
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="sid-error"
       />
@@ -307,18 +317,12 @@ export default function ChatPaneNotices({
           />
         </div>
       )}
-      {/* Lazy boundary: the notice and its fetch live in their own chunk (see the
-          import above). The Suspense fallback is null because the notice itself
-          renders null in the common case, so there is nothing to stand in for
-          while the chunk loads. The ErrorBoundary carries NO fallback, so a
-          chunk-load failure renders its default error card rather than silently
-          vanishing -- hiding a notice whose whole job is to report silent data
-          loss would repeat the very defect this change exists to end. */}
-      <ErrorBoundary languageGeneration={languageGeneration}>
-        <Suspense fallback={null}>
-          <UnrestoredTabsNotice />
-        </Suspense>
-      </ErrorBoundary>
+      {/* Lazy: the notice and its fetch live in their own chunk (see the
+          import above). A chunk-load failure shows a block notice with Try
+          Again and Reload page rather than silently vanishing -- hiding a
+          notice whose whole job is to report silent data loss would repeat
+          the very defect it exists to end. */}
+      <UnrestoredTabsNotice languageGeneration={languageGeneration} />
       {undeletableHistory && (
         <div className="mx-4 mt-2 mb-0" data-testid="undeletable-history-error">
           {/* Same site and shape as the unresumable notice above: a sidebar

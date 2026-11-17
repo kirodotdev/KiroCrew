@@ -27,6 +27,7 @@ import pytest
 
 import xdist_budget as ct
 from conftest import absent_sysconf
+from kiro_crew.testing.wait import default_timeout
 
 needs_symlinks = pytest.mark.skipif(
     os.name != "posix", reason="symlink creation needs privileges on Windows"
@@ -98,10 +99,14 @@ def _deterministic_platform_reservation(monkeypatch: pytest.MonkeyPatch) -> None
 
 @pytest.fixture
 def budget_host(slot_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
-    """A deterministic 10-core / 32 GiB host, so only contention varies."""
+    """A deterministic 10-core / 64 GiB host, so only contention varies.
+
+    64 GiB backs 12 workers at the 5 GiB reservation, so the 10 cores bind.
+    """
     monkeypatch.setattr(os, "cpu_count", lambda: 10)
-    monkeypatch.setattr(ct, "_host_total_gib", lambda: 32)
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 64)
     monkeypatch.delenv(ct._MAX_WORKERS_ENV, raising=False)
+    monkeypatch.delenv(ct._EXPLICIT_BYPASS_ENV, raising=False)
     return slot_dir
 
 
@@ -538,25 +543,25 @@ def test_a_loaded_laptop_is_bounded_by_what_is_free_not_by_what_it_owns(
 ) -> None:
     """The laptop-crash case: plenty of RAM installed, almost none available.
 
-    A 16 GiB machine with 3 GiB free is an ordinary developer machine with a
-    browser and an editor open. The STATIC bound sees 16 GiB and permits 8
-    workers; only the LIVE bound knows those 8 workers would need ~12 GiB that
-    is not there. Expressed against the constants so retuning either divisor
-    does not need a test edit.
+    A 32 GiB machine with room for two workers free is an ordinary developer
+    machine with a browser and an editor open. The STATIC bound sees 32 GiB and
+    permits more; only the LIVE bound knows those workers need memory that is
+    not there. Expressed against the constants so retuning either divisor does
+    not need a test edit.
     """
-    monkeypatch.setattr(ct, "_host_total_gib", lambda: 16)
-    monkeypatch.setattr(ct, "_host_available_mib", lambda: 3 * 1024)
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 32)
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 2 * ct._GIB_PER_WORKER_AVAILABLE * 1024)
 
     resolved = ct.resolve_workers()
 
-    assert resolved == 3 // ct._GIB_PER_WORKER_AVAILABLE
-    assert resolved < 16 // ct._GIB_PER_WORKER, "the static bound alone would over-grant"
+    assert resolved == 2
+    assert resolved < 32 // ct._GIB_PER_WORKER, "the static bound alone would over-grant"
 
 
 def test_per_worker_reservation_is_platform_aware(monkeypatch: pytest.MonkeyPatch) -> None:
     """The fix's core claim: one worker's reservation is not one number.
 
-    A full-suite worker holds ~1.5 GiB on Linux but 14.9-16.1 GiB on macOS. The
+    A long-suite worker holds ~4.5 GiB on Linux but 14.9-16.1 GiB on macOS. The
     remeasured Linux/Windows divisor is fatally low for macOS -- four ``-n auto``
     workers reserve 62 GiB on a 36 GiB Mac and the kernel jetsam-kills it --
     while the macOS figure would clamp a healthy Linux host to a handful of
@@ -572,6 +577,21 @@ def test_per_worker_reservation_is_platform_aware(monkeypatch: pytest.MonkeyPatc
     # The macOS default is the wall against the overshoot: four workers must not
     # be granted against the reporter's 36 GiB host.
     assert 4 * ct._MACOS_GIB_PER_WORKER > 36
+
+
+def test_the_live_linux_reservation_is_5_gib_and_matches_the_spawn_cap() -> None:
+    """Pins the live per-worker reservation the host OOM was sized from.
+
+    A Linux worker was measured at ~4.5 GiB, so 3 GiB admits more workers than
+    the host can hold. The agent-spawn cap in ``resource_status`` sizes the
+    same worker, so the two must not drift apart.
+    """
+    from kiro_crew import resource_status
+
+    assert ct._GIB_PER_WORKER_AVAILABLE == 5
+    assert ct._GIB_PER_WORKER == ct._GIB_PER_WORKER_AVAILABLE
+    assert ct._GIB_PER_WORKER_AVAILABLE == resource_status._DEFAULT_XDIST_PER_WORKER_GB
+    assert ct._MACOS_GIB_PER_WORKER == resource_status._MACOS_XDIST_PER_WORKER_GB
 
 
 def test_a_starved_host_floors_at_one_worker_instead_of_refusing(
@@ -621,9 +641,9 @@ def test_the_xdist_env_var_is_a_ceiling_not_a_floor(
 ) -> None:
     """It may only tighten. A value above what memory allows is still clamped."""
     monkeypatch.setenv(ct._XDIST_ENV_CAP, "64")
-    monkeypatch.setattr(ct, "_host_available_mib", lambda: 4 * 1024)
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 2 * ct._GIB_PER_WORKER_AVAILABLE * 1024)
 
-    assert ct.resolve_workers() == 4 // ct._GIB_PER_WORKER_AVAILABLE
+    assert ct.resolve_workers() == 2
 
 
 @pytest.mark.parametrize("raw", ["", "not-a-number", "0", "-3"])
@@ -737,3 +757,161 @@ def test_released_capacity_is_reusable(slot_dir: pathlib.Path) -> None:
     assert ct._claim_worker_slots(4, 64) == 4
     ct.release_worker_slots()
     assert ct._claim_worker_slots(4, 64) == 4
+
+
+class _FakeOption:
+    def __init__(self, numprocesses: object) -> None:
+        self.numprocesses = numprocesses
+
+
+class _FakeConfig:
+    def __init__(self, numprocesses: object) -> None:
+        self.option = _FakeOption(numprocesses)
+
+
+def _run_cmdline_hook(numprocesses: object) -> object:
+    config = _FakeConfig(numprocesses)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ct.budget_explicit_workers(config)
+    return config.option.numprocesses
+
+
+def test_an_explicit_n_claims_slots_and_clamps_to_what_is_free(budget_host: pathlib.Path) -> None:
+    """The OOM path: an explicit ``-n 8`` beside another run that holds 7 of 10 slots.
+
+    On old code an explicit count skipped the pool, so this run spawned 8 workers on
+    top of the 7 already held -- 15 against a 10-worker host. It must get the 3 left.
+    """
+    budget_host.mkdir(parents=True, exist_ok=True)
+    with _holding_slots(budget_host, 7):
+        assert _run_cmdline_hook(8) == 3
+    assert len(ct._held_slots) == 3  # held for the run, released at sessionfinish
+
+
+def test_an_explicit_n_that_fits_is_unchanged_but_still_held(budget_host: pathlib.Path) -> None:
+    assert _run_cmdline_hook(4) == 4
+    assert len(ct._held_slots) == 4  # a later -n auto run must see these as taken
+
+
+def test_an_explicit_n_on_a_full_host_floors_at_one_and_warns(budget_host: pathlib.Path) -> None:
+    budget_host.mkdir(parents=True, exist_ok=True)
+    with _holding_slots(budget_host, 10):
+        with pytest.warns(UserWarning, match=r"-n 6 clamped to 1 ") as record:
+            assert ct.claim_explicit_workers(6) == 1
+    # The clamp fires only when other runs hold slots, so naming the bypass here
+    # would invite the uncounted oversubscription this pool exists to stop.
+    assert all(ct._EXPLICIT_BYPASS_ENV not in str(w.message) for w in record)
+
+
+def test_an_explicit_n_alone_on_a_small_host_keeps_its_workers(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CI shard's ``-n 4`` on a 16 GiB runner backs 3 by memory, but it chose 4."""
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 16)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert ct.claim_explicit_workers(4) == 4
+
+
+def test_an_explicit_n_beside_another_run_stays_inside_the_memory_range(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """16 GiB backs 3 workers. Another run holds 2, so ``-n 4`` gets the 1 left, not 2."""
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 16)
+    budget_host.mkdir(parents=True, exist_ok=True)
+    with _holding_slots(budget_host, 2):
+        with pytest.warns(UserWarning, match="other runs on this host hold the rest"):
+            assert ct.claim_explicit_workers(4) == 1
+
+
+def test_the_clamp_warning_names_the_real_cause(budget_host: pathlib.Path) -> None:
+    with pytest.warns(UserWarning, match="this host has 10 cores"):
+        assert ct.claim_explicit_workers(16) == 10
+
+
+def test_the_bypass_env_var_skips_the_pool(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ct._EXPLICIT_BYPASS_ENV, "1")
+    budget_host.mkdir(parents=True, exist_ok=True)
+    with _holding_slots(budget_host, 10):
+        assert _run_cmdline_hook(8) == 8
+    assert ct._held_slots == []
+
+
+@pytest.mark.parametrize("value", [None, 0, "auto", "logical", True])
+def test_the_hook_leaves_non_counts_alone(budget_host: pathlib.Path, value: object) -> None:
+    """``-n0``, no xdist, and ``auto`` (resolved later by the auto hook) are untouched."""
+    assert _run_cmdline_hook(value) is value
+    assert ct._held_slots == []
+
+
+def test_an_xdist_worker_claims_nothing(budget_host: pathlib.Path) -> None:
+    config = _FakeConfig(4)
+    config.workerinput = {}  # type: ignore[attr-defined]
+    ct.budget_explicit_workers(config)
+    assert config.option.numprocesses == 4
+    assert ct._held_slots == []
+
+
+def test_the_explicit_n_hook_runs_before_xdist_turns_n_into_tx(
+    request: pytest.FixtureRequest,
+) -> None:
+    """xdist's own ``tryfirst`` impl copies ``numprocesses`` into ``config.option.tx``.
+
+    A clamp applied after it changes nothing, so the rootdir conftest impl must be called
+    first. pluggy calls the hookimpl list from the END, so it must sit after xdist's.
+    """
+    rootdir_conftest = pathlib.Path(ct.__file__).parent / "conftest.py"
+    impls = request.config.pluginmanager.hook.pytest_cmdline_main.get_hookimpls()
+    files = [pathlib.Path(getattr(impl.plugin, "__file__", "") or "") for impl in impls]
+    ours = [i for i, path in enumerate(files) if path == rootdir_conftest]
+    xdist = [i for i, impl in enumerate(impls) if impl.plugin_name == "xdist"]
+    assert ours and xdist, [impl.plugin_name for impl in impls]
+    assert ours[0] > xdist[0], [impl.plugin_name for impl in impls]
+
+
+def test_a_real_explicit_n_run_is_clamped_by_held_slots(tmp_path: pathlib.Path) -> None:
+    """End to end, through pytest and xdist: ``-n 3`` on a host whose slots are all held.
+
+    Red on old code, where the explicit count skipped the pool and spawned 3 workers.
+    The parent computes the same static capacity the child will, holds every slot, and
+    the child must start exactly one worker.
+    """
+    slot_root = tmp_path / "slots"
+    slot_dir = slot_root / ct._host_key()
+    slot_dir.mkdir(parents=True)
+    cores = os.cpu_count() or 1
+    capacity = max(ct._static_memory_bounded_capacity(cores), min(3, cores))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env.pop(ct._EXPLICIT_BYPASS_ENV, None)
+    env[ct._SLOT_DIR_ENV] = str(slot_root)
+    repo = pathlib.Path(ct.__file__).parent
+    with _holding_slots(slot_dir, capacity):
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-n",
+                "3",
+                "-p",
+                "no:cacheprovider",
+                "-q",
+                "--color=no",
+                "test/test_xdist_auto_cap.py",
+                "-k",
+                "respects_overrides",
+            ],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=default_timeout(),
+        )
+    combined = out.stdout + out.stderr
+    assert out.returncode == 0, combined[-4000:]
+    assert "created: 1/1 worker" in combined, combined[-4000:]
+    assert "-n 3 clamped to 1" in combined, combined[-4000:]

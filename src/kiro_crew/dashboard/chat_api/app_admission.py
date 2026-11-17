@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _history_key_for,
         _normalize_slot_key,
         app_may_control_session,
+        app_names_bot,
         app_new_key_refusal,
         app_owns_slot_session,
         app_owns_transcript_meta,
@@ -293,6 +294,34 @@ async def _app_claim_refused(
     return False
 
 
+async def _app_send_refused(
+    state: DashboardState, request_app: str, agent: object, existing: Any, key: str
+) -> bool:
+    """True, audited, when an app's ``POST /api/chat`` may not go ahead on *key*.
+
+    Two refusals, both answered with the uniform ``slot_not_found`` 404. A slot
+    this send would auto-create must not land on a transcript the app does not
+    own (:func:`_app_claim_refused`): its first save would stamp the app onto
+    that transcript's metadata line. And the app's own session, a slot this send
+    would create or a live app-owned one, does not take a Bot's name: owning a
+    session is not being given a Bot (:func:`slot_ownership.app_names_bot`). A
+    user's session the ``sessionApproval`` grant reaches is not the app's own: a
+    Bot thread the ``memberThreads`` scope reaches keeps its pinned name, and the
+    send path's own checks decide it.
+    """
+    if (
+        key
+        and existing is None
+        and await _app_claim_refused(state, request_app, "chat_send", (_history_key_for(key),))
+    ):
+        return True
+    if existing is not None and not getattr(existing, "_app", ""):
+        return False
+    return await app_names_bot(
+        request_app, agent, getattr(existing, "agent_kind", ""), "chat_send", key
+    )
+
+
 def _app_cancel_denied(
     request: web.Request | Mapping[str, Any], slot: _ChatSlot, operation: str, target_key: str
 ) -> web.Response | None:
@@ -410,3 +439,27 @@ def _reauthorize_after_await(
             )
         return slot_not_found()
     return deny_app_slot_session_access(request_app, slot, name, operation)
+
+
+async def _loading_refusal(
+    request: web.Request, state: DashboardState, key: str
+) -> web.Response | None:
+    """The answer for a send or create naming a tab the startup restore still owes.
+
+    ``None`` when the request may go on. Authorization comes first: an app that may
+    not claim the tab's transcript gets the uniform ``slot_not_found`` it gets for any
+    session it may not see, never a ``session_loading`` that would confirm the tab.
+    """
+    # Outside the startup restore window nothing is owed: no check, no audit row.
+    window = not state.owed_slot_keys_known.is_set() and state.slot_list_rebuilding
+    if not (window or key in state.restoring_open_slot_keys):
+        return None
+    if key not in state._slots and await _app_claim_refused(
+        state, request.get("app", ""), "session_loading", (_history_key_for(key),)
+    ):
+        return slot_not_found()
+    if await state.session_still_loading(key):
+        return web.json_response(
+            {"error": "Session is still loading", "code": "session_loading"}, status=409
+        )
+    return None

@@ -169,14 +169,29 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
             # about is covered by the grant the press just made — resolving
             # first would approve this one by the button and then let the NEXT
             # tool race the write.
-            facade.add_trusted_session(session_key, self.sessions)
-            facade.sel().log_api_access(
-                caller=str(cb.user_id) or "unknown",
-                operation="telegram.trust_session",
-                outcome="allowed",
-                source="telegram",
-                resources=f"session={session_key}",
-            )
+            # ``strict``: the reply below says "Trusted", so a grant whose policy
+            # write failed is rolled back and reported, not left half-made.
+            try:
+                facade.add_trusted_session(session_key, self.sessions, strict=True)
+            except Exception as exc:
+                trust = False
+                logger.warning("telegram Trust grant failed: %s", type(exc).__name__)
+                facade.sel().log_api_access(
+                    caller=str(cb.user_id) or "unknown",
+                    operation="telegram.trust_session",
+                    outcome="error",
+                    source="telegram",
+                    resources=f"session={session_key}",
+                    error="grant_failed",
+                )
+            else:
+                facade.sel().log_api_access(
+                    caller=str(cb.user_id) or "unknown",
+                    operation="telegram.trust_session",
+                    outcome="allowed",
+                    source="telegram",
+                    resources=f"session={session_key}",
+                )
         elif trust:
             # Audited as a refusal rather than dropped: an operator pressing
             # Trust and getting nothing needs the reason to be findable.

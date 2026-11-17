@@ -264,3 +264,49 @@ class TestSupersessionIsReversible:
         mine = store.get_episodic_list(limit=50)[0]
         assert store.delete_episodic(mine["id"]) is True
         assert mine["text"] not in _texts(store.get_retired_episodic(limit=50))
+
+
+class TestConsolidationRetireScan:
+    """A consolidation rewrite retires restating episodes from a text-only scan.
+
+    The scan runs under ``_db_lock`` once per qualifying write, so loading every live
+    episode's embedding there adds up inside one lock hold. The full row is still read
+    for each match, because it is the before-image of the mutation record.
+    """
+
+    def test_the_scan_reads_text_only_and_the_before_image_stays_whole(
+        self, store: VectorMemoryStore
+    ) -> None:
+        import json
+
+        assert store.set_semantic(_KEY, _OLD_VALUE, 1.0, "user_explicit") is None
+        statements: list[str] = []
+        store.db.set_trace_callback(statements.append)
+        try:
+            with (
+                mock.patch.object(
+                    store, "_record_mutation", wraps=store._record_mutation
+                ) as recorded,
+                store._db_lock,
+            ):
+                assert (
+                    store._write_semantic(
+                        _KEY, json.dumps("blue"), 1.0, "user_explicit", _consolidation=True
+                    )
+                    is None
+                )
+            store.db.commit()
+        finally:
+            store.db.set_trace_callback(None)
+
+        scans = [s for s in statements if "FROM episodic_memories WHERE is_deleted=0" in s]
+        assert scans, "the retire scan must have run"
+        assert all(s.startswith("SELECT id, text FROM") for s in scans), scans
+
+        befores = [c.args[2] for c in recorded.call_args_list if c.args[0] == "episode"]
+        assert len(befores) == _MAX_EPISODIC_RETIRED_PER_WRITE
+        for before in befores:
+            assert before["text"] in _RESTATES
+            assert before["is_deleted"] == 0
+            assert "embedding" in before and "conversation_id" in before
+        assert len(store.get_retired_episodic(limit=50)) == _MAX_EPISODIC_RETIRED_PER_WRITE

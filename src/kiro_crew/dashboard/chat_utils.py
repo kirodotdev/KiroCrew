@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import _facade_mirror
 from kiro_crew.context_blocks import attributable_user_chars
-from kiro_crew.dashboard.chat_utils_display import redact_display_content
+from kiro_crew.dashboard.chat_utils_display import _carry_row_mid, redact_display_content
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -57,15 +57,24 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: these values against the frontend table.
 TRANSIENT_NOTICE_META_KEY = "notice"
 TRANSIENT_NOTICE_RETRYING = "transient_retrying"
+#: The same pending link when the provider answered with a throttle: the
+#: network is fine, so the row names the throttle instead of the connection.
+TRANSIENT_NOTICE_THROTTLE_RETRYING = "transient_throttle_retrying"
 TRANSIENT_NOTICE_RESUMING = "transient_resuming"
+TRANSIENT_NOTICE_THROTTLE_RESUMING = "transient_throttle_resuming"
 TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
+#: The terminal row of a throttle ladder that ends without a re-send.
+TRANSIENT_NOTICE_THROTTLE_GIVE_UP = "transient_throttle_give_up"
 
 #: English fallback text for the rows above. Plain language on purpose: the
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.
 TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
+TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ The model provider is throttling requests — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
+TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ The model provider is throttling requests — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
+TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ The model provider is throttling requests — please try again."
 
 
 # Per-turn compaction-failure backoff. See
@@ -149,7 +158,7 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
 
 
 #: Wire frame pushed onto ``slot._pending`` at a turn's end, before the queue
-#: drain or the cycle's end writes anything (``chat_runner._mark_turn_end``); a
+#: drain or the cycle's end writes anything (``chat_turn.queue_drain._mark_turn_end``); a
 #: recovery the ending turn queued for itself is the same turn and gets none.
 #: ``done`` marks the end of the whole queue cycle; this marks the end of one
 #: turn, which is where an app's stream on a user's session stops
@@ -164,6 +173,8 @@ def _build_stream_chunk(msg: dict) -> str:
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is not None:
+        meta = _carry_row_mid(meta, msg)
     if meta:
         meta = _redact_deep(meta)
     # One shared guard for content: redact recursively and hold the
@@ -617,6 +628,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew import redaction_seams  # noqa: F401
     from kiro_crew.dashboard.chat_utils_awaits import (  # noqa: F401
         drained_to_thread,
         run_config_write,
@@ -651,16 +663,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DISPLAY_REDACTION_CACHE_MAX_ENTRIES,
         _DISPLAY_REDACTION_SALT,
         _DISPLAY_REDACTION_STRINGS_PER_ROW,
+        _LEGACY_PLACEHOLDER,
         _NO_BASE,
-        BLOCKED_LINKS_ORDERED_KEY,
+        BLOCKED_LINKS_KEY,
         REDACTION_RECORD_FIELDS,
+        RETIRED_RECORD_KEYS,
         SLOT_DETAIL_MAX_LIMIT,
         UNKNOWN_ROW_FIELDS_KEY,
         _broadcast_expired_oauth_banners,
+        _cache_mark_is,
         _clean_verdict_key,
         _clear_display_redaction_cache,
         _collapse_wire_rows,
         _cut_preview,
+        _display_cache_epoch,
+        _display_cache_mark,
         _display_clean_add,
         _display_clean_old,
         _display_clean_seen,
@@ -681,6 +698,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DisplayRedactionKey,
         _expire_dead_child_oauth_meta,
         _live_child_instance,
+        _oauth_banner_row_key,
+        _open_oauth_banner_rows,
         _prepare_messages,
         _prepare_messages_scoped,
         _redact_for_display,
@@ -692,13 +711,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _remember_preview,
         _remember_preview_by_object,
         _remember_redacted,
+        _renders_links,
         _same_preview_context,
+        _sync_cache_mark,
         _variant_for_emit,
         adopt_variant_text,
+        blocked_links_for_workspace,
+        display_redaction_stamp,
         drop_records_without_placeholders,
         serialize_wire_content,
         variant_from_row,
-        with_allowed_links_restored,
+        with_blocked_links,
         with_bounded_redaction_records,
         without_unknown_row_fields,
     )
@@ -723,11 +746,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        GATEWAY_PROMPT_INJECT_KINDS,
+        HEARTBEAT_PROMPT_KIND,
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
+        MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
         MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
+        REQUEUED_STEER_ROW_MID_META,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
@@ -744,7 +771,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _dequeue_next_message,
         _dequeue_next_system_message,
         _edit_queued_by_id,
+        _queued_row_id,
         _remove_queued_by_id,
+        _reorder_queued_rows,
         _stamped_turn_actor,
         app_inject_row,
         carries_attachments,
@@ -776,11 +805,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         slack_options_slot,
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
+        _CRON_SLOT_PREFIX,
         _INCOGNITO_PREFIX,
+        _JOB_ID_HEX,
         _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
+        _cron_job_id,
         _history_key_for,
         _installed_theme_persona,
         _maybe_consolidate,
@@ -791,6 +823,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
+        crew_log_slots_for,
         cron_tab_name,
         dashboard_slot_key,
         effective_session_key,
@@ -908,6 +941,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         transcript_sort_key,
         transcript_stems,
     )
+    from kiro_crew.history_files import (  # noqa: F401
+        transcript_stem,
+    )
     from kiro_crew.hooks import (  # noqa: F401
         _HOST_READ_ONLY_BUILTIN_TOOLS,
         safe_read_file,
@@ -929,18 +965,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.security import (  # noqa: F401
         CREDENTIAL_REDACTION_TAGS,
-        EXFILTRATION_REDACTION_TAG_PREFIX,
-        _exempt_exact_hosts,
-        bounded_blocked_links,
         oauth_url_contains_credential,
+    )
+    from kiro_crew.security.blocked_links import (  # noqa: F401
+        allowed_link_hosts,
+        scoped_blocked_links,
     )
     from kiro_crew.security.credential_sources import (  # noqa: F401
         bounded_credential_records,
-    )
-    from kiro_crew.security.exfil import (  # noqa: F401
-        current_scoped_exempt_hosts,
-        restore_allowed_links,
-        scoped_exempt_hosts,
     )
     from kiro_crew.security.redaction import (  # noqa: F401
         _token_param_exempt_prefixes,

@@ -12,7 +12,8 @@ import ast
 import re
 
 import pytest
-from split_credential_boundary_helpers import HEAD, KEY, SRC, TAIL, _name_of, _on_screen
+from redaction_structured_cases import ALNUM, aws_secret, synth
+from split_credential_boundary_helpers import SRC, _name_of, _on_screen
 
 from kiro_crew.messaging.display_safety import (
     canonicalize_display,
@@ -33,6 +34,12 @@ from kiro_crew.messaging.split import (
     split_markdown_safe,
 )
 from kiro_crew.telegram.renderer import _md_to_telegram_html, _split_markdown, _strip_md
+
+# A Google API key, split in two. The shared example key is an AWS key ID, which is
+# an Identifier and stays visible with the structured detectors on. The body is
+# letters and digits only, so no markup reading drops a character from it.
+KEY = "AIza" + synth(35, ALNUM, seed=14)
+HEAD, TAIL = KEY[:10], KEY[10:]
 
 
 class TestASealedPrefixCannotBeCompletedLater:
@@ -152,10 +159,13 @@ class TestAHeadingMarkerAfterTheSeamCannotJoinAKey:
     name and the next begins with the heading marker. Telegram's HTML seal and its
     plain fallback both drop that marker, so the reader reads the name and then
     the value, while the marker keeps the two apart in every scan of the bytes.
+
+    The value is an AWS secret of the real shape: the label rule needs the name
+    right before it, and the 40-character value in the AWS alphabet.
     """
 
     NAME = "SecretAccessKey"
-    VALUE = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+    VALUE = aws_secret(seed=40)
 
     def _rotate(self, buf: str, tail: str, sent: list[str]) -> tuple[str, str]:
         pieces = _split_markdown(buf, 400)
@@ -460,8 +470,10 @@ class TestTheLastResortKeepsUnrelatedFormatting:
     """Only the span that hides the key gives up its whitespace."""
 
     def _body(self) -> str:
-        broken = f"`{HEAD}`\n`{TAIL}`"
-        return f"First paragraph.\n\n- one bullet\n- another\n\n{broken}\n\nLast **bold** line.\n"
+        broken = f"`{HEAD}`\n`{TAIL}`."
+        # The bullet ends in ``.``: the collapsed reading drops every blank, and a
+        # Google key glued to the word before it is no key by its format.
+        return f"First paragraph.\n\n- one bullet\n- another.\n\n{broken}\n\nLast **bold** line.\n"
 
     def test_the_text_needs_the_last_resort(self) -> None:
         """The premise: neither the literal nor the canonical reading closes it."""

@@ -65,10 +65,6 @@ _SUMMARY_ROW_RE = re.compile(r"^\| \[`([a-z]+/[a-z_]+)`\]\(#[a-z_]+\) \|", re.MU
 #: A fenced ``json`` block. Every one on this page is a single entry line.
 _JSON_BLOCK_RE = re.compile(r"^```json\n(.*?)\n```$", re.MULTILINE | re.DOTALL)
 
-#: The count the page's own prose claims. Pinned so adding a subsection without
-#: updating the page's opening line fails here rather than misleading a reader.
-EXPECTED_LIVE_TYPES = 51
-
 #: The only two emitters that write a session entry. Kept as a literal rather than
 #: read from ``FIXED_SOURCES``, which holds the crew-side values too.
 SESSION_SOURCES = frozenset({"gateway", "acp"})
@@ -91,9 +87,11 @@ def test_reference_page_exists() -> None:
     assert SESSION_TYPES_DOC.is_file(), f"{SESSION_TYPES_DOC} is missing"
 
 
-def test_documented_type_count() -> None:
+def test_documented_types_are_unique() -> None:
+    # No stored total: the page states none, and the set checks below pin the types
+    # exactly (testing-conventions.md § Merge-safe ratchets and counts).
     types = _documented_types()
-    assert len(types) == EXPECTED_LIVE_TYPES, f"documented types: {sorted(types)}"
+    assert types, "no `### `domain/action`` subsection parsed"
     assert len(set(types)) == len(types), "a type has two subsections"
 
 
@@ -218,7 +216,11 @@ def test_summary_emitter_cell_agrees_with_the_subsection_since_line() -> None:
     directions, because either half alone can be the stale one.
     """
     rows = _EMITTER_CELL_RE.findall(_doc_text())
-    assert len(rows) == EXPECTED_LIVE_TYPES, f"summary rows parsed: {len(rows)}"
+    parsed = [entry_type for entry_type, _cell in rows]
+    assert sorted(parsed) == sorted(_documented_types()), (
+        f"summary rows whose Emitter cell did not parse: "
+        f"{sorted(set(_documented_types()) - set(parsed))}"
+    )
     for entry_type, cell in rows:
         pending = cell.strip().startswith("#")
         since_is_pending = "emitter #" in _subsection(entry_type)

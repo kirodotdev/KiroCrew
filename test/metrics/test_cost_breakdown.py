@@ -391,3 +391,124 @@ class TestDegenerateInputs:
         monkeypatch.setattr(usage_mod, "_COST_CACHE", None)
         monkeypatch.setattr(usage_mod, "_COST_CACHE_KEY", None)
         assert usage_mod.cost_breakdown(7)["credits"] == 2.0
+
+
+def _dollar_row(*, slot, cost, model="claude-x", age_days=0.0):
+    """A turn as a dollar-billed harness records it: `cost` set, `credits` zero."""
+    row = _row(slot=slot, model=model, credits=0.0, age_days=age_days)
+    row["cost"] = cost
+    return row
+
+
+class TestSpendUnit:
+    def test_dollar_amounts_keep_four_decimals_in_every_figure(self, store):
+        """One-decimal rounding turns sub-dime dollar spend into $0.0 everywhere."""
+        store([
+            _dollar_row(slot="chat-1-1700000000", cost=0.01234),
+            {**_dollar_row(slot="chat-1-1700000000", cost=0.00456), "context_used": 250_000},
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert (out.get("priciest") or {}).get("credits") == pytest.approx(0.0123)
+        assert [r.get("credits") for r in out.get("by_category", [])] == [pytest.approx(0.0169)]
+        bands = {b.get("label"): b.get("mean_credits") for b in out.get("context_bands", [])}
+        assert bands.get("200k–400k") == pytest.approx(0.0046)
+
+    def test_a_dollar_billed_window_is_summed_from_cost(self, store):
+        """A dollar-billed harness leaves `credits` at zero on every turn, so a
+        credits-only sum reported "no spend" for a window that cost real money.
+        """
+        store([
+            _dollar_row(slot="chat-1-1700000000", cost=0.0425),
+            _dollar_row(slot="chat-1-1700000000", cost=0.0175),
+            _dollar_row(slot="chat-2-1700000000", cost=0.30, age_days=10),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert out.get("credits") == pytest.approx(0.06)
+        assert out.get("prior_credits") == pytest.approx(0.30)
+        assert out.get("per_turn") == pytest.approx(0.03)
+        assert [r.get("credits") for r in out.get("by_model", [])] == [pytest.approx(0.06)]
+        assert out.get("conversations", [{}])[0].get("credits") == pytest.approx(0.06)
+
+    def test_any_credit_row_keeps_the_window_in_credits(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=12.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.5),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "credits"
+        assert out.get("credits") == 12.5
+
+    def test_a_mixed_window_carries_the_dollar_view_beside_the_credits(self, store):
+        """A crew running both harnesses spends in both units in one window."""
+        store([
+            _row(slot="chat-1-1700000000", model="kiro-m", credits=12.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.25),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        usd = out.get("usd") or {}
+        assert usd.get("unit") == "usd"
+        assert usd.get("credits") == pytest.approx(0.75)
+        assert usd.get("turns") == 2
+        assert usd.get("per_turn") == pytest.approx(0.375)
+        assert [r.get("name") for r in usd.get("by_model", [])] == ["claude-x"]
+        assert [c.get("slot") for c in usd.get("conversations", [])] == ["chat-2-1700000000"]
+        assert "usd" not in usd
+        # Each turn is counted on one card only.
+        assert out.get("turns") == 1
+        assert [r.get("name") for r in out.get("by_model", [])] == ["kiro-m"]
+
+    def test_a_single_unit_window_carries_no_second_view(self, store):
+        store([_row(slot="chat-1-1700000000", credits=3.0)])
+        assert "usd" not in usage_mod.cost_breakdown(7)
+        store([_dollar_row(slot="chat-2-1700000000", cost=0.5)])
+        assert "usd" not in usage_mod.cost_breakdown(7)
+
+    def test_a_window_with_no_spend_at_all_stays_in_credits(self, store):
+        store([_row(slot="chat-1-1700000000", credits=0.0)])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "credits"
+        assert out.get("credits") == 0.0
+
+    def test_credits_before_a_harness_switch_do_not_hold_the_window_at_zero(self, store):
+        """The window before may predate a switch to a dollar-billed harness."""
+        store([
+            _row(slot="chat-1-1700000000", credits=40.0, age_days=10),
+            _dollar_row(slot="chat-2-1700000000", cost=0.25),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert out.get("credits") == pytest.approx(0.25)
+        assert out.get("prior_credits") == 0.0
+
+    def test_a_subagent_credit_row_does_not_decide_the_unit(self, store):
+        """A subagent row is left out of every figure, so it cannot pick the unit."""
+        store([
+            _row(slot="subagent:abc", credits=5.0),
+            _dollar_row(slot="chat-2-1700000000", cost=0.25),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert out.get("credits") == pytest.approx(0.25)
+
+
+def test_one_claude_code_model_is_one_row_across_its_id_migration(store):
+    """Rows written before and after a model-id migration name one model.
+
+    The Daily History and the stacked chart canonicalise the stored id per
+    provider; the Spend tab split the same model into two rows of half the cost.
+    """
+    from kiro_crew import model_registry
+
+    canon = model_registry.canonicalize_for_provider("opus", "claude_code")
+    assert canon != "opus"
+    rows = []
+    for mdl in ("opus", canon):
+        row = _dollar_row(slot="chat-1-1700000000", cost=1.0, model=mdl)
+        row["provider"] = "claude_code"
+        rows.append(row)
+    store(rows)
+    out = usage_mod.cost_breakdown(7)
+    assert [(r.get("name"), r.get("credits")) for r in out.get("by_model", [])] == [(canon, 2.0)]

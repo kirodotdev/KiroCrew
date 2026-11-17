@@ -1,0 +1,8 @@
+# The Strands harness project environment the Real Adapter Contract Tests lane
+# installs (pip --require-hashes from strands-requirements.txt). Versions match
+# STRANDS_PYTHON_REQUIREMENT and the strands-agents release the gate was measured
+# on (agent_sdk/backends.py). Regenerate with:
+#   uv pip compile --python-version 3.12 --generate-hashes --no-header \
+#     -o strands-requirements.txt strands-requirements.in
+strands-harness==0.3.3
+strands-agents==1.63.0

@@ -7,6 +7,7 @@ import { i18nT } from '../i18n/t'
 import { fmtBytes } from '../i18n/format'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { fileTypeIcon, fileTypeLabel } from '../lib/fileTypeIcon'
+import { getImageDims, rememberImageDims } from '../utils/imageDims'
 export interface FileData {
   filename: string
   description?: string
@@ -132,6 +133,38 @@ function ImagePreview({ file, url }: { file: FileData; url: string }) {
 
 const CARD = 'flex flex-col gap-2 bg-card ring-1 ring-inset forced-colors:border ring-border rounded-lg px-4 py-3 text-sm leading-5 animate-scale-in'
 
+/** The card's inline player. It holds its final height from the first paint:
+ *  until its metadata arrives a `<video>` is 150px tall whatever the clip, so
+ *  the card grew by up to 150px under the reader, again on every mount of its
+ *  virtualized row. The width is the card's, so a known aspect ratio is the
+ *  whole box: the size learned on an earlier load (the transcript images'
+ *  cache), else 16:9 until this load reports the clip's own. */
+function VideoPreview({ file, url }: { file: FileData; url: string }) {
+  // The url whose metadata this card has seen: the box then takes the clip's
+  // own ratio, or its natural size when the metadata carries none (a
+  // `video/*` file with no picture). A reused card handed another clip is
+  // unsized again without an effect.
+  const [sizedUrl, setSizedUrl] = useState<string | null>(null)
+  const learned = getImageDims(url)
+  return (
+    // User-uploaded media: no caption track exists to associate.
+    // eslint-disable-next-line jsx-a11y/media-has-caption
+    <video
+      controls
+      preload="metadata"
+      className={`w-full max-h-[300px] rounded${learned || sizedUrl === url ? '' : ' aspect-video'}`}
+      style={learned ? { aspectRatio: learned.w / learned.h } : undefined}
+      src={url}
+      aria-label={i18nT('components.fileCard.video', { name: file.filename })}
+      onLoadedMetadata={(e) => {
+        const el = e.currentTarget
+        rememberImageDims(url, el.videoWidth, el.videoHeight)
+        setSizedUrl(url)
+      }}
+    />
+  )
+}
+
 /** Renders a file embed card — inline audio/video/image below the header, or a download card. */
 export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -153,9 +186,7 @@ export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
     return (
       <div className={CARD}>
         <FileHeader file={file} url={url} />
-        {/* User-uploaded media: no caption track exists to associate. */}
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video controls preload="metadata" className="w-full max-h-[300px] rounded" src={url} aria-label={i18nT('components.fileCard.video', { name: file.filename })} />
+        <VideoPreview file={file} url={url} />
       </div>
     )
   }

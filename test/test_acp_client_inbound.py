@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.client import AcpClient, AcpError
 
@@ -471,7 +472,7 @@ class TestProcessMessage:
         assert client._process_message(msg, req_id=99) == "mcp_oauth_request"
 
     def test_permission_request_with_colliding_id_not_complete(self):
-        # Regression: the agent's server→client request_permission id space is
+        # The agent's server→client request_permission id space is
         # independent of our prompt req_id space, so they collide on small
         # integers.  A permission request whose id == the in-flight prompt's
         # req_id must classify as "permission", NOT "complete" — otherwise the
@@ -957,14 +958,16 @@ class TestStreamEventsExtension:
     async def test_tool_interrupted_all_paths_log_and_return_promptly(
         self, entry_point, expected_site, caplog
     ):
-        """Across all three entry points: returns in bounded time, logs WARNING
+        """Across all three entry points: returns on the marker, logs WARNING
         with the correct site tag, records one SEL audit.
 
-        The <2s bound stands in for a 2h prompt-timeout hang. On-call greps
-        ``kiro-cli cancelled tool use``, and metadata.site must match each site.
+        Returning on the marker is asserted as what the entry point asks of the
+        prompt loop: it never pulls the next event after the marker, so it cannot
+        wait out the prompt timeout for a ``complete`` kiro-cli will not send.
+        On-call greps ``kiro-cli cancelled tool use``, and metadata.site must
+        match each site.
         """
         import logging
-        import time
 
         from kiro_crew.acp.types import (
             UPDATE_AGENT_MESSAGE_CHUNK,
@@ -987,9 +990,14 @@ class TestStreamEventsExtension:
             },
         )
 
+        pulled_past_marker: list[bool] = []
+
         async def fake_prompt_loop(req_id, timeout):
             yield "update", interrupt_msg
-            # No "complete" — simulates kiro-cli leaving the prompt hanging.
+            # No "complete": kiro-cli leaves the prompt open. Reaching this line
+            # means the caller asked for the next event, which on the real loop
+            # waits out the prompt timeout.
+            pulled_past_marker.append(True)
 
         client.ensure_ready = AsyncMock()
         client._send_prompt = AsyncMock(return_value=1)
@@ -998,7 +1006,6 @@ class TestStreamEventsExtension:
 
         caplog.set_level(logging.WARNING, logger="kiro_crew.acp.client")
 
-        t0 = time.monotonic()
         with patch("kiro_crew.sel.sel") as mock_sel:
             if entry_point == "stream_events":
                 async for _ in client.stream_events("test"):
@@ -1008,10 +1015,12 @@ class TestStreamEventsExtension:
                     pass
             elif entry_point == "send_message":
                 await client.send_message("test")
-        elapsed = time.monotonic() - t0
 
-        # (1) Timing — no hang.  Generous bound; in practice this is <50ms.
-        assert elapsed < 2.0, f"entry_point={entry_point} took {elapsed:.3f}s"
+        # (1) No hang: the entry point returned on the marker itself.
+        assert pulled_past_marker == [], (
+            f"entry_point={entry_point} kept reading the prompt loop after the "
+            "tool-interrupted marker; on kiro-cli that waits out the prompt timeout"
+        )
 
         # (2) Exactly one WARNING, tagged with the originating call site.
         warns = [
@@ -1037,7 +1046,8 @@ class TestDrainStderrRedaction:
     @pytest.mark.asyncio
     async def test_raw_stored_redacted_logged(self):
         client = AcpClient()
-        raw = "Error: key=AKIAIOSFODNN7EXAMPLE connect failed"
+        secret = github_classic(seed=17)
+        raw = f"Error: key={secret} connect failed"
 
         reader = AsyncMock(spec=["readline"])
         reader.readline = AsyncMock(side_effect=[raw.encode() + b"\n", b""])
@@ -1049,7 +1059,7 @@ class TestDrainStderrRedaction:
         assert list(client._stderr_lines) == [raw]
         # Logged call used redacted text (credential replaced)
         logged_text = mock_logger.warning.call_args[0][2]
-        assert "AKIAIOSFODNN7EXAMPLE" not in logged_text
+        assert secret not in logged_text
 
 
 class TestDrainStderrSuppression:
@@ -1136,14 +1146,15 @@ class TestReadMessageStderrRedaction:
         client._process.returncode = 1
         client._process.stdout = MagicMock()
         client._process.stdout.readline = AsyncMock(return_value=b"")
-        client._stderr_lines = deque(["secret key=AKIAIOSFODNN7EXAMPLE"])
+        secret = github_classic(seed=18)
+        client._stderr_lines = deque([f"secret key={secret}"])
         client._stderr_task = MagicMock()
         client._stderr_task.done.return_value = True
 
         with pytest.raises(AcpError, match="ACP process exited") as exc_info:
             await client._read_message(timeout=1.0)
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(exc_info.value)
+        assert secret not in str(exc_info.value)
 
 
 class TestTrackMetadataCredits:

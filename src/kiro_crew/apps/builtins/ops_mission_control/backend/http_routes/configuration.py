@@ -866,9 +866,12 @@ async def _handle_rotation_arm(
             },
             status=503,
         )
-    shift = await get_registry().resolve_shift()
+    registry = get_registry()
+    shift = await registry.resolve_shift()
+    # Off the loop: `configured()` reads config.json and the secret store.
+    watching = await asyncio.to_thread(registry.may_be_watching)
     try:
-        return web.json_response(await rotation.apply_tiers(shift, cron_service))
+        return web.json_response(await rotation.apply_tiers(shift, cron_service, watching=watching))
     except CronStoreUnreadable as exc:
         # A store refusing writes fails the arm. Reported, not raised: escaping
         # here becomes a 500, and reported rather than skipped-per-job because a

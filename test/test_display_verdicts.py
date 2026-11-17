@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import chat_utils, display_battery
 from kiro_crew.dashboard import display_verdicts as dv
@@ -22,9 +23,10 @@ KEY = "dashboard_chat-1-1700000000"
 #: Storage is off on a platform with no uid to prove the directory is owned
 #: (``test_storage_stays_off_without_a_uid`` covers that branch on POSIX).
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="stored verdicts are POSIX-only")
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic GitHub token: an AWS key ID is kept visible with the structured detectors on.
+SECRET = github_classic(seed=21)
 HOST = "docs.contoso.example"
-#: Clean only while HOST is exempt: its query trips the aggregate-length heuristic.
+#: A long link with no credential in it: the battery leaves it as written.
 LINK = f"https://{HOST}/view?" + "&".join(f"p{i}=value{i}" for i in range(30))
 
 
@@ -50,22 +52,14 @@ def home(tmp_path, monkeypatch):
 def battery(monkeypatch):
     """Count battery calls (one per string the battery actually scans)."""
     calls = {"n": 0}
-    real = display_battery.redact_exfiltration_urls
+    real = display_battery.redact_credentials
 
     def counted(text, **kwargs):  # type: ignore[no-untyped-def]
         calls["n"] += 1
         return real(text, **kwargs)
 
-    monkeypatch.setattr(display_battery, "redact_exfiltration_urls", counted)
+    monkeypatch.setattr(display_battery, "redact_credentials", counted)
     return calls
-
-
-@pytest.fixture
-def allowed(monkeypatch):
-    """The workspace's allowed link hosts, as the reader set them."""
-    hosts: set[str] = set()
-    monkeypatch.setattr(chat_utils, "allowed_hosts_for", lambda _ws: frozenset(hosts))
-    return hosts
 
 
 def _rows(n: int = 40) -> list[dict]:
@@ -83,7 +77,7 @@ def _rows(n: int = 40) -> list[dict]:
 
 def _render(rows: list[dict]) -> str:
     with dv.session(KEY):
-        out = _prepare_messages(rows, running=False, live_child="", workspace="ws")
+        out = _prepare_messages(rows, running=False, live_child="")
     return json.dumps(out)
 
 
@@ -94,7 +88,7 @@ def _restart(home: Path) -> None:
     assert dv.enable(home)
 
 
-def test_a_restart_renders_from_the_stored_verdicts(home, battery, allowed):
+def test_a_restart_renders_from_the_stored_verdicts(home, battery):
     assert dv.enable(home)
     rows = _rows()
     cold = _render(rows)
@@ -107,9 +101,7 @@ def test_a_restart_renders_from_the_stored_verdicts(home, battery, allowed):
     assert battery["n"] == before, "every string was judged before the restart"
 
 
-def test_a_changed_rules_version_invalidates_every_stored_verdict(
-    home, battery, allowed, monkeypatch
-):
+def test_a_changed_rules_version_invalidates_every_stored_verdict(home, battery, monkeypatch):
     """A code change moves the rules version, and nothing judged under the old one is served.
 
     The new rules redact a word the old ones let through. Were the version not
@@ -144,7 +136,7 @@ def _sidecar_size(home: Path) -> int:
     return sum(f.stat().st_size for f in d.iterdir()) if d.is_dir() else 0
 
 
-def test_restarts_do_not_rescan_or_regrow_the_sidecar_on_save(home, battery, allowed):
+def test_restarts_do_not_rescan_or_regrow_the_sidecar_on_save(home, battery):
     """The first save after a restart offers the whole window; judged rows stay judged.
 
     Without reading the stored set first, that save re-ran the battery over every
@@ -157,7 +149,7 @@ def test_restarts_do_not_rescan_or_regrow_the_sidecar_on_save(home, battery, all
     def save() -> int:
         before = battery["n"]
         dv.note_written_lines(KEY, lines)
-        dv.submit_committed("ws")
+        dv.submit_committed()
         dv.drain_for_tests()
         return battery["n"] - before
 
@@ -202,9 +194,7 @@ def test_a_directory_swapped_after_the_check_does_not_redirect_the_sweep(
     assert (victim / "tracked.dvc").read_text(encoding="utf-8") == "keep me"
 
 
-def test_revoking_a_token_param_prefix_invalidates_its_stored_verdicts(
-    home, battery, allowed, monkeypatch
-):
+def test_revoking_a_token_param_prefix_invalidates_its_stored_verdicts(home, battery, monkeypatch):
     """The companion ``?token=`` prefix set changes the battery's output, so it is in every tag.
 
     The battery here leaves a word alone only while a prefix is exempt, the way
@@ -228,37 +218,42 @@ def test_revoking_a_token_param_prefix_invalidates_its_stored_verdicts(
     assert "codeword-5823" not in out
 
 
-def test_revoking_an_allowed_host_invalidates_its_stored_verdicts(home, battery, allowed):
-    """A user-defined rule (a workspace's allowed link host) is part of every tag."""
-    assert dv.enable(home)
-    allowed.add(HOST)
-    rows = [{"role": "assistant", "content": f"see {LINK}", "cls": "msg msg-a"}]
-    assert LINK in _render(rows), "an allowed host's link is shown"
-    allowed.clear()
-    _restart(home)
-    out = _render(rows)
-    assert LINK not in out
-    assert "[REDACTED: suspicious URL" in out
-
-
-def test_a_platform_exempt_host_change_invalidates_its_stored_verdicts(
-    home, battery, allowed, monkeypatch
+def test_a_link_host_change_reuses_the_stored_verdicts_and_moves_only_the_records(
+    home, battery, monkeypatch
 ):
+    """The blocked-link decision is no part of a stored verdict: allowing or
+    revoking a link host, or a platform exemption moving, changes which links
+    render live and never the text, so a restart still renders from the store."""
+    from kiro_crew.security import exfil
+
+    allowed: set[str] = set()
+    monkeypatch.setattr(chat_utils, "allowed_hosts_for", lambda _ws: frozenset(allowed))
     assert dv.enable(home)
-    monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: frozenset({HOST}))
     rows = [{"role": "assistant", "content": f"see {LINK}", "cls": "msg msg-a"}]
-    with dv.session(KEY):
-        from kiro_crew.security import exfil
 
-        monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: frozenset({HOST}))
-        assert LINK in json.dumps(_prepare_messages(rows, running=False, live_child=""))
-    monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: frozenset())
-    monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: frozenset())
+    def render() -> dict:
+        with dv.session(KEY):
+            [out] = _prepare_messages(rows, running=False, live_child="", workspace="ws")
+        return out
+
+    first = render()
+    assert first["content"] == f"see {LINK}"
+    assert [r["url"] for r in first["meta"][chat_utils.BLOCKED_LINKS_KEY]] == [LINK]
+    allowed.add(HOST)
+    assert chat_utils.BLOCKED_LINKS_KEY not in (render().get("meta") or {})
+    allowed.clear()
+    monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: frozenset({HOST}))
     _restart(home)
-    assert LINK not in _render(rows)
+    before = battery["n"]
+    exempt = render()
+    assert battery["n"] == before, "a link host change re-scanned a stored verdict"
+    assert exempt["content"] == f"see {LINK}"
+    assert chat_utils.BLOCKED_LINKS_KEY not in (exempt.get("meta") or {})
+    monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: frozenset())
+    assert [r["url"] for r in render()["meta"][chat_utils.BLOCKED_LINKS_KEY]] == [LINK]
 
 
-def test_forged_sidecar_entries_are_never_served(home, battery, allowed):
+def test_forged_sidecar_entries_are_never_served(home, battery):
     """The sidecar is agent-writable; only tags under the gateway's key count."""
     assert dv.enable(home)
     rows = [{"role": "assistant", "content": f"leaks {SECRET}", "cls": "msg msg-a"}]
@@ -281,7 +276,7 @@ def test_forged_sidecar_entries_are_never_served(home, battery, allowed):
     assert battery["n"] >= 1
 
 
-def test_a_torn_or_garbage_sidecar_reads_as_absent(home, battery, allowed):
+def test_a_torn_or_garbage_sidecar_reads_as_absent(home, battery):
     assert dv.enable(home)
     rows = _rows(5)
     cold = _render(rows)
@@ -296,7 +291,7 @@ def test_a_torn_or_garbage_sidecar_reads_as_absent(home, battery, allowed):
     assert SECRET not in cold
 
 
-def test_a_symlinked_sidecar_is_not_followed(home, battery, allowed, tmp_path):
+def test_a_symlinked_sidecar_is_not_followed(home, battery, tmp_path):
     assert dv.enable(home)
     target = tmp_path / "elsewhere"
     target.write_bytes(b"keep")
@@ -306,7 +301,7 @@ def test_a_symlinked_sidecar_is_not_followed(home, battery, allowed, tmp_path):
     assert target.read_bytes() == b"keep"
 
 
-def test_a_hard_linked_sidecar_never_truncates_the_other_file(home, battery, allowed, tmp_path):
+def test_a_hard_linked_sidecar_never_truncates_the_other_file(home, battery, tmp_path):
     """O_NOFOLLOW does not stop a hard link: a sidecar name linked to a transcript stays intact."""
     assert dv.enable(home)
     transcript = home / "victim.jsonl"
@@ -329,7 +324,7 @@ def test_a_hard_linked_sidecar_never_truncates_the_other_file(home, battery, all
         os.close(dir_fd)
 
 
-def test_the_owner_view_bypass_neither_reads_nor_writes(home, battery, allowed):
+def test_the_owner_view_bypass_neither_reads_nor_writes(home, battery):
     from kiro_crew.security import redaction_switch
 
     assert dv.enable(home)
@@ -341,26 +336,7 @@ def test_the_owner_view_bypass_neither_reads_nor_writes(home, battery, allowed):
             assert dv.active()[0] is None
 
 
-def test_a_text_ending_in_a_revoked_host_does_not_reuse_a_stored_verdict(home, battery, allowed):
-    """``T`` under hosts {H, Z} and ``T + NUL + H`` under {Z} feed the same bytes to the MAC.
-
-    Only the text's length tells them apart, so it is part of the stored tag.
-    """
-    other = "zz.example"
-    assert sorted([HOST, other]) == [HOST, other], "the revoked host must sort first"
-    assert dv.enable(home)
-    text = f"see {LINK}"
-    allowed.update({HOST, other})
-    assert LINK in _render([{"role": "assistant", "content": text, "cls": "msg msg-a"}])
-    allowed.discard(HOST)
-    _restart(home)
-    crafted = [{"role": "assistant", "content": text + "\0" + HOST, "cls": "msg msg-a"}]
-    out = _render(crafted)
-    assert LINK not in out
-    assert "[REDACTED: suspicious URL" in out
-
-
-def test_a_redacted_tag_copied_into_the_clean_file_is_not_a_clean_verdict(home, battery, allowed):
+def test_a_redacted_tag_copied_into_the_clean_file_is_not_a_clean_verdict(home, battery):
     """Both files are agent-writable; a tag from ``.dvr`` must not name a clean verdict."""
     assert dv.enable(home)
     rows = [{"role": "assistant", "content": f"leaks {SECRET}", "cls": "msg msg-a"}]
@@ -379,7 +355,7 @@ def test_a_redacted_tag_copied_into_the_clean_file_is_not_a_clean_verdict(home, 
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO")
-def test_a_fifo_planted_as_a_sidecar_does_not_block_the_read(home, battery, allowed):
+def test_a_fifo_planted_as_a_sidecar_does_not_block_the_read(home, battery):
     """No writer ever opens the FIFO; without O_NONBLOCK this read never returns."""
     assert dv.enable(home)
     root = home / dv.DIR_NAME
@@ -395,14 +371,14 @@ def test_a_fifo_planted_as_a_sidecar_does_not_block_the_read(home, battery, allo
     assert SECRET not in _render(_rows(3))
 
 
-def test_a_batch_past_the_queue_budget_is_left_to_the_read(home, battery, allowed, monkeypatch):
+def test_a_batch_past_the_queue_budget_is_left_to_the_read(home, battery, monkeypatch):
     assert dv.enable(home)
     monkeypatch.setattr(dv, "_QUEUE_MAX_CHARS", 100)
     rows = _rows(5)
     lines = [json.dumps(r) + "\n" for r in rows]
     assert sum(map(len, lines)) > 100
     dv.note_written_lines(KEY, lines)
-    dv.submit_committed("ws")
+    dv.submit_committed()
     dv.drain_for_tests()
     assert dv._queued_chars == 0
     assert not (home / dv.DIR_NAME / f"{KEY}.dvc").exists(), "nothing was projected"
@@ -420,12 +396,12 @@ def test_storage_stays_off_without_a_uid(home, monkeypatch):
     assert not (home / dv.DIR_NAME).exists()
 
 
-def test_rows_judged_at_write_render_without_a_scan_after_a_restart(home, battery, allowed):
+def test_rows_judged_at_write_render_without_a_scan_after_a_restart(home, battery):
     assert dv.enable(home)
     rows = _rows()
     lines = [json.dumps(r) + "\n" for r in rows]
     dv.note_written_lines(KEY, lines)
-    dv.submit_committed("ws")
+    dv.submit_committed()
     dv.drain_for_tests()
     _restart(home)
     before = battery["n"]
@@ -434,7 +410,7 @@ def test_rows_judged_at_write_render_without_a_scan_after_a_restart(home, batter
     assert battery["n"] == before, "every row was judged when it was written"
 
 
-def test_a_save_that_never_committed_leaves_its_rows_unjudged(home, battery, allowed):
+def test_a_save_that_never_committed_leaves_its_rows_unjudged(home, battery):
     assert dv.enable(home)
     lines = [json.dumps(r) + "\n" for r in _rows(3)]
     dv.note_written_lines(KEY, lines)  # the write then fails: no submit_committed
@@ -443,12 +419,12 @@ def test_a_save_that_never_committed_leaves_its_rows_unjudged(home, battery, all
     assert item is not None and len(item[1]) == 3, "the next save offers them again"
 
 
-def test_without_enable_nothing_is_stored(home, battery, allowed):
+def test_without_enable_nothing_is_stored(home, battery):
     _render(_rows(3))
     assert not (home / dv.DIR_NAME).exists()
 
 
-def test_a_render_with_few_misses_does_not_read_the_sidecar(home, battery, allowed, monkeypatch):
+def test_a_render_with_few_misses_does_not_read_the_sidecar(home, battery, monkeypatch):
     """A live session's newest rows are scanned; the long sidecar is not parsed for them."""
     assert dv.enable(home)
     rows = _rows(40)
@@ -470,7 +446,7 @@ def test_a_render_with_few_misses_does_not_read_the_sidecar(home, battery, allow
     assert SECRET not in out
 
 
-def test_a_cold_open_reads_the_sidecar_after_a_few_misses(home, battery, allowed, monkeypatch):
+def test_a_cold_open_reads_the_sidecar_after_a_few_misses(home, battery, monkeypatch):
     """After a restart nothing hits memory: the sidecar is read, not 64 strings scanned per open."""
     assert dv.enable(home)
     rows = _rows(40)
@@ -484,7 +460,7 @@ def test_a_cold_open_reads_the_sidecar_after_a_few_misses(home, battery, allowed
     assert SECRET not in out
 
 
-def test_reopening_after_a_restart_does_not_grow_the_sidecar(home, battery, allowed, monkeypatch):
+def test_reopening_after_a_restart_does_not_grow_the_sidecar(home, battery, monkeypatch):
     """The probe misses a cold open scans before reading the sidecar are already stored."""
     monkeypatch.setattr(dv, "LOAD_AFTER_MISSES", 1000)
     assert dv.enable(home)
@@ -501,9 +477,7 @@ def test_reopening_after_a_restart_does_not_grow_the_sidecar(home, battery, allo
     assert len(set(sizes)) == 1, sizes
 
 
-def test_a_small_sidecar_is_read_even_when_shared_strings_hit_memory(
-    home, battery, allowed, monkeypatch
-):
+def test_a_small_sidecar_is_read_even_when_shared_strings_hit_memory(home, battery, monkeypatch):
     """Strings other sessions share can hit memory on a restart; a small sidecar is read anyway."""
     assert dv.enable(home)
     rows = _rows(40)
@@ -517,7 +491,7 @@ def test_a_small_sidecar_is_read_even_when_shared_strings_hit_memory(
         for i in range(200)
     ]
     with dv.session("other-session"):
-        _prepare_messages(shared, running=False, live_child="", workspace="ws")
+        _prepare_messages(shared, running=False, live_child="")
     reads = []
     real = dv._load
     monkeypatch.setattr(dv, "_load", lambda p, name: reads.append(name) or real(p, name))
@@ -532,9 +506,7 @@ def test_a_small_sidecar_is_read_even_when_shared_strings_hit_memory(
     assert scans < len(rows), "far fewer scans than the session's strings"
 
 
-def test_a_render_with_many_large_redactions_keeps_its_sidecar_readable(
-    home, battery, allowed, monkeypatch
-):
+def test_a_render_with_many_large_redactions_keeps_its_sidecar_readable(home, battery, monkeypatch):
     """Redacted outputs past the file cap are dropped whole, so the file stays readable."""
     monkeypatch.setattr(dv, "MAX_FILE_BYTES", 8192)
     assert dv.enable(home)
@@ -640,34 +612,3 @@ def test_the_boot_sweep_keeps_no_per_file_list(home, monkeypatch):
     dv._sweep(root, home / "sessions")
     assert list(root.iterdir()) == []
     assert events.count("unlink") == 51
-
-
-def test_a_save_projection_audits_no_allowed_host_use(home, allowed, monkeypatch):
-    """The save-time projection restores links nobody sees: no use event, no memo.
-
-    Otherwise the event would record a display that never happened and fill the
-    per-process memo, so the reader's real first view would write nothing.
-    """
-    from kiro_crew.security import exfil
-    from kiro_crew.security.exfil import redact_exfiltration_urls_with_records
-
-    logged: list = []
-
-    class _Log:
-        def log(self, event) -> None:
-            logged.append(event)
-
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
-    monkeypatch.setattr(exfil, "_ALLOWED_HOST_AUDITED", set())
-    allowed.add(HOST)
-    url = f"https://{HOST}/page?state=" + "a" * 260
-    saved, _, records = redact_exfiltration_urls_with_records(url)
-    row = {"role": "assistant", "content": saved, "meta": {"blocked_links": records}}
-
-    dv.project(KEY, "ws1", [json.dumps(row)])
-    assert logged == []
-
-    with dv.session(KEY):
-        shown = _prepare_messages([row], False, live_child="", workspace="ws1")
-    assert url in json.dumps(shown)
-    assert [e.metadata["workspace"] for e in logged] == ["ws1"]

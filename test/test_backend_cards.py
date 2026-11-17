@@ -360,13 +360,19 @@ def test_core_counts_per_harness_are_pinned() -> None:
         for card in _every_card()
     }
     assert counts == {
+        "antigravity": 3,
         "claude": 7,
         "codex": 6,
-        "copilot": 2,
+        "copilot": 4,
         "deepseek": 5,
         "goose": 7,
         "kas": 7,
         "kiro": 6,
+        # MiMo Code: Crew tools, member thread tools, /compact and the model switch.
+        # Of its fork parent's other two, effort rides the model select rather than
+        # an option, and a second session/prompt sent mid-turn was answered at once
+        # without joining the running turn, so it is not a steer channel.
+        "mimocode": 4,
         "opencode": 6,
         "pi": 6,
         # Crew's tools, read-only side chat, and effort and model (both moved by a
@@ -711,4 +717,5 @@ def test_the_payload_is_json_native() -> None:
     import json
 
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
-        json.dumps(cards_mod.card_payload(backend))
+        payload = cards_mod.card_payload(backend)
+        assert json.loads(json.dumps(payload)) == payload, backend

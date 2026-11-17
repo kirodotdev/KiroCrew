@@ -116,7 +116,9 @@ def context_occupancy(days: float = 14, until: float | None = None) -> dict[str,
                     ts_epoch = _parse_row_ts(ts_raw)
                     if ts_epoch is None or ts_epoch < cutoff or ts_epoch >= upper:
                         continue
-                    slot = str(obj.get("slot") or "unknown")
+                    # A row with no slot belongs to no session, so it is left out of
+                    # both the spread and the list rather than pooled into one.
+                    slot = str(obj.get("slot") or "")
                     # Before the percentile sample, not after: the spread and the
                     # session list have to describe the same population, or the
                     # p90 on the card disagrees with every row beneath it.

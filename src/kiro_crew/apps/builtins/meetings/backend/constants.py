@@ -167,15 +167,16 @@ VALID_TRANSCRIPT_SOURCES = (
 #: agent's DERIVED output filename could collide with it, which is a different
 #: claim from "no agent can open it".
 #:
-#: ``apps/meetings/data/notes`` is on the shared WRITE-ONLY tier
-#: (``security.paths._WRITE_PROTECTED_HOME_PATHS``), the read-allowed /
+#: ``app.json`` declares ``notes`` in ``agentReadOnlyDirs`` (App Kit seam level 7),
+#: which puts ``apps/meetings/data/notes`` on the shared WRITE-ONLY tier of the
+#: file-tool gate and seals it read-only in every sandbox mode: the read-allowed /
 #: write-denied shape ``app-sources`` and ``~/.kiro/agents`` use — NOT on the
 #: read+write floor ``edits/`` sits on, and the asymmetry is load-bearing: the
 #: dashboard renders pasted images through ``/api/file-raw``, which applies the
 #: read floor, so a note tree on that floor answers 403 for every image. Reads
 #: stay open (the note is the user's own text in the user's own meeting); what the
-#: fence refuses is an agent file tool REWRITING it. The app backend opens the
-#: files directly and is unaffected.
+#: fence refuses is an agent REWRITING it. The app backend opens the files directly
+#: and is unaffected.
 NOTES_DIR = "notes"
 
 #: The note file inside a meeting's :data:`NOTES_DIR` entry. No agent output ever

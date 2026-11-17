@@ -39,7 +39,7 @@ from push_guard_helpers import (
     _spy_popen,
     _write_message,
 )
-from spawn_test_helpers import unblocked_signals
+from spawn_test_helpers import process_group_report, unblocked_signals
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import default_timeout, wait_until
@@ -501,7 +501,15 @@ class TestPushGuardSquash:
             assert mark.exists(), "the hook never started"
             # SIGINT to the group is what a terminal's Ctrl-C sends.
             os.killpg(proc.pid, getattr(signal, sig))
-            _, err = proc.communicate(timeout=_SUBPROCESS_TIMEOUT_S)
+            try:
+                _, err = proc.communicate(timeout=_SUBPROCESS_TIMEOUT_S)
+            except subprocess.TimeoutExpired as exc:
+                # Read the group before the SIGKILL below: which member still
+                # runs, and its blocked, ignored and pending signals, say why.
+                raise AssertionError(
+                    f"the guard outlived {sig} by {_SUBPROCESS_TIMEOUT_S} s\n"
+                    + process_group_report(proc.pid)
+                ) from exc
         finally:
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGKILL)

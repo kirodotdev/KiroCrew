@@ -6,7 +6,7 @@ OWN declared MCP server only when the app is in the gate's first-party set and t
 ``execution.builtin_app_names`` and ``execution.builtin_app_mcp_servers``, which keep
 only BUILTIN-OWNED records, so a built-in adopted onto its own repository would lose
 the grant and its calls would start asking where they did not before.
-:func:`adopted_app_own_mcp_servers` names the servers that keep it; the boot warm
+:func:`adopted_app_own_mcp_servers` names the servers that keep it; each refresh
 adds them, and their apps, to the same two sets, so the gate's rule, its tier and
 ``POLICY ∩ PROFILE`` ahead of it are unchanged.
 
@@ -36,8 +36,10 @@ the data home instead, so its grant rests on the repository trust above: the
 operator's grant to the repository the wheel pins, the same grant under which the
 record's own code is admitted to run at all.
 
-Filesystem and config reads, so boot calls this once off the event loop, like the
-builtin sets. A failure drops the app it concerns (fail-closed) and never raises.
+Filesystem and config reads, so :func:`publish_gate_app_trust` and
+:func:`refresh_gate_app_trust` run this off the event loop, like the builtin sets,
+at boot and after every app lifecycle or trust change. A failure drops the app it
+concerns (fail-closed) and never raises.
 Nothing here names an app. Owning spec: app-kit-platform.md § Former built-in
 adoption.
 """
@@ -45,6 +47,7 @@ adoption.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -125,3 +128,75 @@ def _kept_servers(name: str, wheel_root: Path) -> list[str]:
         and server
         and carried_server(server, cfg, tree_root, shipped.mcpServers)
     ]
+
+
+# One refresh publishes at a time, so a slow one that read the disk earlier can
+# never overwrite the sets a later one published.
+_publish_lock = threading.Lock()
+# Set by the boot warm. Only the full gateway warms, and only it runs the hook
+# reconciler whose tick re-reads changes made by other processes; a process that
+# never warmed (the ``--slack-only`` gateway) keeps its sets empty, so own-server
+# calls ask there instead of holding a grant nothing would re-read.
+_warmed = False
+
+
+def publish_gate_app_trust() -> None:
+    """Fill the gate's three ``app-own-server`` sets at boot; later refreshes follow.
+
+    Boot runs this once. The gateway then runs :func:`refresh_gate_app_trust` after
+    every app lifecycle or trust change (``hidden_sessions.request_hiding_refresh``'s
+    fan-in) and on the hook reconciler's tick, so after an install, uninstall,
+    replacement or adoption the grant follows the records on disk.
+    """
+    global _warmed
+    _warmed = True
+    _publish()
+
+
+def refresh_gate_app_trust() -> None:
+    """Re-read the sets after a change, in a process whose boot warm filled them.
+
+    shortcut: a change made by another process (the CLI, a hand edit of a tree) is
+    seen on the next reconciler tick (``hook_reconcile.POLL_INTERVAL_SECS`` plus the
+    reconcile pass before it, about 75s at worst), not at once.
+    """
+    if _warmed:
+        _publish()
+
+
+def _publish() -> None:
+    """Recompute the three sets from disk and install them.
+
+    The names go in first: the grant needs the app in that set, so a revoke takes
+    effect before the other two change. Blocking filesystem and config reads: call
+    it off the event loop. A failure publishes empty sets (fail-closed: own-server
+    calls ask), never the old ones.
+    """
+    from kiro_crew.hooks import (
+        set_builtin_app_agents,
+        set_builtin_app_mcp_servers,
+        set_builtin_app_names,
+    )
+
+    with _publish_lock:
+        try:
+            from kiro_crew.apps.execution import (
+                builtin_app_agents,
+                builtin_app_mcp_servers,
+                builtin_app_names,
+            )
+
+            adopted = adopted_app_own_mcp_servers()
+            # An app name holds no ":", so the key's first segment is its app.
+            adopted_apps = frozenset(key.partition(":")[0] for key in adopted)
+            names = builtin_app_names() | adopted_apps
+            servers = builtin_app_mcp_servers() | adopted
+            # Agent -> owning app, so a builtin whose UI is not an app iframe
+            # (empty Slot._app) can still auto-approve calls to its OWN server.
+            agents = builtin_app_agents(adopted_apps)
+        except Exception:  # noqa: BLE001 - a failed refresh only costs prompts
+            logger.warning("Failed to refresh the gate's builtin app sets", exc_info=True)
+            names, servers, agents = frozenset(), frozenset(), {}
+        set_builtin_app_names(names)
+        set_builtin_app_mcp_servers(servers)
+        set_builtin_app_agents(agents)

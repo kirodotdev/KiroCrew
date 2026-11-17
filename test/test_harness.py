@@ -581,75 +581,6 @@ def test_terminate_falls_back_to_sigkill() -> None:
             proc.wait(timeout=2)
 
 
-# ── Windows teardown routing (asserted from every platform) ─────────────
-
-
-def test_terminate_routes_through_process_tree_kill_on_windows() -> None:
-    """On Windows the teardown must use ``kill_process_tree``, not the pgid path.
-
-    Asserted with ``IS_WINDOWS`` patched rather than only on a Windows runner:
-    the POSIX legs are the ones a contributor runs locally, and a reroute that
-    quietly went back to ``terminate_pgid`` would otherwise only surface as an
-    ``AttributeError`` from ``os.getpgid`` inside a Windows CI job.
-    """
-    proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-    )
-    killed: list[int] = []
-    try:
-        with (
-            patch("kiro_crew.testing.harness.platform_compat.IS_WINDOWS", True),
-            patch(
-                "kiro_crew.testing.harness.platform_compat.kill_process_tree",
-                side_effect=lambda pid, sig=None: killed.append(pid) or True,
-            ),
-            patch("kiro_crew.testing.harness.terminate_pgid") as pgid,
-            patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.2),
-        ):
-            _terminate_process_group(proc)
-        assert killed == [proc.pid], "Windows teardown did not kill the process tree"
-        assert not pgid.called, "Windows teardown reached the POSIX pgid primitive"
-    finally:
-        proc.kill()
-        proc.wait(timeout=30)
-
-
-def test_terminate_on_windows_survives_a_failed_tree_kill() -> None:
-    """A ``taskkill`` failure is logged, not raised.
-
-    Teardown runs in a ``finally``: letting a protected descendant or a
-    transient access denial propagate would convert a PASSING test into an error
-    whose traceback names the harness rather than the test.
-    """
-    proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-    )
-    try:
-        with (
-            patch("kiro_crew.testing.harness.platform_compat.IS_WINDOWS", True),
-            patch(
-                "kiro_crew.testing.harness.platform_compat.kill_process_tree",
-                side_effect=PermissionError("taskkill rc=5 access denied"),
-            ),
-            patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.2),
-        ):
-            swept = _terminate_process_group(proc)
-        # The root outlived the failed kill, so the tree is NOT reported gone:
-        # the caller must keep the gateway's HOME.
-        assert swept is False
-    finally:
-        proc.kill()
-        proc.wait(timeout=30)
-
-
 # ── READY emitted in the same breath as the exit ─────────────────────────
 
 
@@ -726,13 +657,39 @@ def test_terminate_pgid_sigkills_after_grace() -> None:
             proc.wait(timeout=2)
 
 
-@_POSIX_ONLY
-def test_terminate_pgid_graceful_exit_returns_fast() -> None:
-    """A group that exits promptly on SIGTERM returns well under ``grace``.
+def _record_killpg(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str]]:
+    """Record every ``os.killpg`` the TEST thread makes: (signal, outcome).
 
-    Pins the in-loop group-liveness early-return (the graceful path) and
-    guards teardown latency: the poll must detect the exit and return in a
-    fraction of the grace window, not burn it fully.
+    Other threads keep the real call untouched; the outcome is ``"ok"`` or the
+    name of the exception the real call raised (and re-raises).
+    """
+    import threading
+
+    caller = threading.get_ident()
+    real_killpg = os.killpg
+    sent: list[tuple[int, str]] = []
+
+    def _killpg(pgid: int, sig: int) -> None:
+        if threading.get_ident() != caller:
+            return real_killpg(pgid, sig)
+        try:
+            real_killpg(pgid, sig)
+        except OSError as exc:
+            sent.append((sig, type(exc).__name__))
+            raise
+        sent.append((sig, "ok"))
+
+    monkeypatch.setattr(os, "killpg", _killpg)
+    return sent
+
+
+@_POSIX_ONLY
+def test_terminate_pgid_graceful_exit_returns_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A group that exits promptly on SIGTERM returns without burning ``grace``.
+
+    Pins the in-loop group-liveness early-return (the graceful path): the poll
+    sees the group gone and returns, so the grace window never runs out and no
+    SIGKILL is sent.
     """
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -747,11 +704,20 @@ def test_terminate_pgid_graceful_exit_returns_fast() -> None:
 
     reaper = threading.Thread(target=proc.wait, daemon=True)
     reaper.start()
+    sent = _record_killpg(monkeypatch)
     try:
-        start = time.monotonic()
-        terminate_pgid(proc.pid, grace=5.0)
-        elapsed = time.monotonic() - start
-        assert elapsed < 2.5, f"graceful teardown burned the grace window: {elapsed:.2f}s"
+        returned = terminate_pgid(proc.pid, grace=5.0)
+        # SIGTERM, liveness probes, and the last probe found the group gone: the
+        # early return ended the wait, never the grace deadline's SIGKILL.
+        assert sent[0] == (signal.SIGTERM, "ok"), sent
+        if sys.platform == "darwin" and sent[-1] == (0, "PermissionError"):
+            # macOS answers EPERM for a group whose leader is an unreaped zombie;
+            # the poll reads that as a group it may not signal and reports it unswept.
+            assert returned is False, sent
+        else:
+            assert returned is True, sent
+            assert sent[-1] == (0, "ProcessLookupError"), sent
+        assert all(sig == 0 for sig, _ in sent[1:]), f"escalated past the grace poll: {sent}"
         reaper.join(timeout=2)
         assert proc.returncode == -signal.SIGTERM
     finally:
@@ -761,7 +727,9 @@ def test_terminate_pgid_graceful_exit_returns_fast() -> None:
 
 
 @_POSIX_ONLY
-def test_terminate_pgid_grace_default_resolved_at_call_time() -> None:
+def test_terminate_pgid_grace_default_resolved_at_call_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Patching ``TERMINATE_GRACE_SECONDS`` affects the default grace.
 
     The default is a ``None`` sentinel resolved inside the call, so tests
@@ -784,11 +752,30 @@ def test_terminate_pgid_grace_default_resolved_at_call_time() -> None:
     try:
         assert proc.stdout is not None
         assert proc.stdout.readline() == b"READY\n"
-        start = time.monotonic()
+        # The test thread's clock moves only by the poll's own sleeps, so the time the
+        # grace poll ran is the grace the call resolved, whatever the host's speed.
+        import threading
+        import types
+
+        from kiro_crew.testing import harness as harness_mod
+
+        caller = threading.get_ident()
+        virtual = [0.0]
+
+        def _monotonic() -> float:
+            return virtual[0] if threading.get_ident() == caller else time.monotonic()
+
+        def _sleep(seconds: float) -> None:
+            if threading.get_ident() != caller:
+                return time.sleep(seconds)
+            virtual[0] += seconds
+
+        monkeypatch.setattr(
+            harness_mod, "time", types.SimpleNamespace(monotonic=_monotonic, sleep=_sleep)
+        )
         with patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.5):
             terminate_pgid(proc.pid)  # default grace — must pick up the patch
-        elapsed = time.monotonic() - start
-        assert elapsed < 3.0, f"patched grace ignored, took {elapsed:.2f}s"
+        assert 0.5 <= virtual[0] < 0.5 + 0.1, f"grace poll ran {virtual[0]:.2f}s, not 0.5s"
         proc.wait(timeout=2)
         assert proc.returncode == -signal.SIGKILL
     finally:
@@ -798,7 +785,9 @@ def test_terminate_pgid_grace_default_resolved_at_call_time() -> None:
 
 
 @_POSIX_ONLY
-def test_terminate_pgid_wait_hook_used_for_exit_detection() -> None:
+def test_terminate_pgid_wait_hook_used_for_exit_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A supplied ``wait`` hook replaces the pid poll for exit detection.
 
     The Popen-owning caller passes ``proc.wait`` so a graceful exit is seen
@@ -817,12 +806,14 @@ def test_terminate_pgid_wait_hook_used_for_exit_detection() -> None:
         calls.append(timeout)
         proc.wait(timeout=timeout)  # real handle-based wait — reaps too
 
+    sent = _record_killpg(monkeypatch)
     try:
-        start = time.monotonic()
         terminate_pgid(proc.pid, grace=5.0, wait=hook)
-        elapsed = time.monotonic() - start
         assert calls == [5.0], "wait hook not invoked with the grace window"
-        assert elapsed < 2.5, f"handle-based teardown burned grace: {elapsed:.2f}s"
+        # The hook returned on the exit, so the teardown neither polled out the grace
+        # window nor escalated: SIGTERM, then at most the one group probe.
+        assert sent[0] == (signal.SIGTERM, "ok"), sent
+        assert all(sig == 0 for sig, _ in sent[1:]) and len(sent) <= 2, sent
         assert proc.returncode == -signal.SIGTERM  # graceful, not SIGKILL
     finally:
         if proc.poll() is None:

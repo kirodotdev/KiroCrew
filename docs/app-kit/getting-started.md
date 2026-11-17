@@ -39,8 +39,9 @@ my-dashboard/
 
 Every app needs an `app.json`. See [Manifest Reference](manifest-reference.md) for all fields.
 
-The scaffold writes no `permissions` block. Add the one below: the sample page
-calls `api.get('/api/status')` and listens for `notification` events, and the
+The scaffold writes no `permissions` block (`--cron` writes only `"cron": true`).
+Add the one below: the page in the next section calls `api.get('/api/status')`
+and listens for `notification` events, and the
 SDK rejects a path or event the manifest does not declare.
 
 ```json
@@ -187,7 +188,7 @@ and install from a local path. The enabled app then appears in the sidebar.
 During development:
 
 1. Edit `ui/src/App.tsx`.
-2. Run `cd ui && npm run build`.
+2. Run `npm run build` in `ui/`.
 3. Use the installed app's **Update** action in the authenticated App Store UI.
 4. Refresh the dashboard.
 
@@ -205,7 +206,7 @@ Available in `@kirocrew/app-sdk`:
 | `useAppApi()` | Permission-scoped JSON-response HTTP client (`request`, GET/POST/PUT/PATCH/DELETE); request options and errors: [API reference](api-reference.md#app-sdk-hooks-dashboard-ui) |
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
-| `useAppInfo()` | App metadata (name, version, permissions, `active`, `update`) |
+| `useAppInfo()` | App metadata (name, version, permissions, `active`, `update`, `session`) |
 | `useNavigate()` | Navigate to Kiro Crew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
@@ -226,6 +227,19 @@ useEffect(() => {
   const id = setInterval(refresh, 5000)
   return () => clearInterval(id)
 }, [active])
+```
+
+`useAppInfo().session` names the chat a side-panel tab is mounted in. A tab is
+mounted per chat, so read `session.sessionKey` to show the data that belongs to
+that chat. It is the same key your `useAppApi()` requests already carry as
+`X-Session-Key`, and the same `sessionKey` a `contributes.sessionControls` control
+receives. A routed `ui.pages` page is not session-scoped, so there the field is
+absent.
+
+```tsx
+const { session } = useAppInfo()
+if (!session) return <p>Open this from a chat's side panel.</p>
+return <StreamFor sessionKey={session.sessionKey} />
 ```
 
 Treat `undefined` as `true`: the field is optional, so an app running on a host that
@@ -341,7 +355,8 @@ its message is used; the SDK does not select another session on failure.
 `memoryMode` (`'persistent'`, `'incognito'` or `'temporary'`) and
 `sessionFolder: false` shape a new session and are ignored with `slotKey`.
 Either one opens a new draft session, like `autoSend: false`, so the message is
-staged for the user to send.
+staged for the user to send. If the user leaves that draft session without having
+typed, clicked or changed anything in it, the host discards it.
 
 To tell an older host from one with these seams, read `APP_SDK_LEVEL` through a
 namespace import (`import * as sdk from '@kirocrew/app-sdk'`; an older host has

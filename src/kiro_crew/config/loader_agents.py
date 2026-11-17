@@ -48,10 +48,12 @@ def _crew_autocompact_pct(crew: "_sections.SectionReader") -> float:
     neither thrash compaction (below the minimum) nor never fire (above the
     maximum).
     """
-    value = crew.read("autocompact_pct", _safe_float, lo=0.0, hi=AUTOCOMPACT_PCT_MAX)
-    if 0.0 < value < AUTOCOMPACT_PCT_MIN:
-        return AUTOCOMPACT_PCT_MIN
-    return value
+
+    def held(raw: object, default: float) -> float:
+        value = _safe_float(raw, default, lo=0.0, hi=AUTOCOMPACT_PCT_MAX)
+        return AUTOCOMPACT_PCT_MIN if 0.0 < value < AUTOCOMPACT_PCT_MIN else value
+
+    return crew.read("autocompact_pct", held, unclamped=_safe_float)
 
 
 def crew_autocompact_pct(config: "KiroCrewConfig", crew_name: str) -> float | None:

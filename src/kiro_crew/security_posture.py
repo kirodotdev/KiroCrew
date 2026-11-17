@@ -64,10 +64,19 @@ from kiro_crew import _facade_mirror
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
+        # The output seams' table and scope: it applies no redactor and
+        # emits nothing; the call-site scan matches the seam names its prose
+        # lists (`redact(x)`, `redact_log_via_context`).
+        "redaction_seams.py",
         # Gate-side: the .crewmate reader runs `needs_redaction` on bundle text
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # Pure helper: `_run_apply_child` redacts the tail of the boot-time
+        # `kirocrew update` child's output before it is stored as the armed update's
+        # `pending_apply_error`. It emits nothing itself; the dashboard status route
+        # that serves that stored text is the egress.
+        "update_boot_apply.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -82,17 +91,27 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
         # display battery in.
         "crew_timeline.py",
+        # Pure helper: `_read_entry` redacts a participant label read back from the
+        # agent-editable metadata line and emits nothing. The egress is the slot
+        # projection and `dashboard/handlers/members_roster.py`, the registered
+        # sink that serves the Bots roster.
+        "shared_crew/participants.py",
         # Pure helper: `redact` returns the redacted string and emits nothing. Its
         # only caller is `dashboard/warm_task_brief.py`, the registered sink that
         # posts the result.
         "dashboard/warm_task_brief_inputs.py",
-        # The redaction cards' owner-only route (allowed hosts). It applies no
+        # Pure helper: `redact_whole` returns a redacted copy and emits nothing. Its
+        # only caller is `dashboard/warm_task_brief.py`, the registered sink that
+        # posts the welcome.
+        "dashboard/warm_task_brief_check.py",
+        # The blocked link cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).
         "dashboard/handlers/redaction.py",
-        # Gate-side: the link-preview route runs both redactors on the URL it was
-        # asked to fetch only to REFUSE it (`400 blocked_url`) when either would
-        # change it, so a zero-click fetch never carries what redaction removes.
+        # Gate-side: the link-preview route runs the exfiltration scan and the
+        # credential redactor on the URL it was asked to fetch only to REFUSE it
+        # (`400 blocked_url`) when either flags or changes it, so a zero-click
+        # fetch never carries what redaction removes.
         # Nothing it returns is redacted text, so it is a gate, not an egress sink.
         "dashboard/handlers/link_meta.py",
         # Gate-side, same shape as link_meta: the mediated-secret dispatcher runs
@@ -315,6 +334,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "subagent_manager/run.py",
         "subagent_manager/run_lifecycle.py",
         "subagent_manager/run_turn.py",
+        # The refined call title a Crew subagent's card shows, redacted before
+        # ``run_turn`` fires it through the same subagent output boundary.
+        "subagent_manager/card_tool_titles.py",
         "subagent_manager/run_yields.py",
         "subagent_manager/stop_hooks.py",
         "subagent_manager/terminal.py",
@@ -325,6 +347,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "subagent_parts/agent_policy.py",
         "subagent_parts/continuation_surface.py",
         "subagent_parts/monitor_surface.py",
+        "subagent_parts/spawn_allowlists.py",
         "subagent_parts/terminal_surface.py",
         # Internal partitions behind the single registered
         # ``apps/builtins/aws_control/backend/backup.py`` boundary, which keeps every
@@ -394,6 +417,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # baseline pass and finishes the text through `redact_via_context`, so a
         # loaded companion's patterns still apply to whatever the app publishes.
         "apps/scrub_sdk.py",
+        # Scrubs, through ScrubSDK, the two texts an app writes onto its own chat
+        # slot that the dashboard pushes to every client: a queued message's
+        # `queued` row and the slot title. It owns no output -- both leave only in
+        # the dashboard's slot frames, the gateway's own push path.
+        "apps/chat_slot_sdk.py",
         # Redacts artifact names/metadata at the point they are STAGED (the
         # pushable list and the S3 meta sidecar), before any response exists.
         # It owns no output of its own — every HTTP response carrying that data
@@ -462,6 +490,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # does for a dashboard turn. A hook process is not an audience: nothing is
         # emitted to a reader here.
         "messaging/tool_hooks.py",
+        # A cron turn's Stop fire scrubs the reply before a local hook script reads
+        # it on stdin, as messaging/tool_hooks.py does for a channel turn. A hook
+        # process is not an audience: nothing is emitted to a reader here.
+        "cron_service/turn_hooks.py",
         # ``autonudge_service/store_loader.py``'s ``_load`` credential-scrubs a persisted
         # ``banner`` in memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct
@@ -508,7 +540,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # can reassemble a credential that scan could not see.
         "imessage/client.py",
         "imessage/transport.py",
-        "imessage/transport_dispatch.py",
         # The WhatsApp turn lifecycle. What the scan matches here is the
         # post-answer redaction NOTICE pair -- ``count_redaction_tags`` over the
         # delivered chunks and ``redaction_notice`` to build the follow-up
@@ -541,10 +572,20 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/_dispatch_parts/surfaced_text.py",
         "acp/_dispatch_parts/tool_result_events.py",
         # The client's owners: code that was acp/client.py's own, scrubbing the
-        # same strings for the same records.
+        # same strings for the same records. The two claude owners hold the
+        # substitution-retry warning and the compaction-notice title that
+        # client_start and client_usage scrubbed before they moved there.
+        "acp/client_claude_session.py",
+        "acp/client_claude_turn.py",
         "acp/client_lifecycle.py",
         "acp/client_mcp_array.py",
         "acp/client_model_selection.py",
+        # The opencode hosted fall-back refusal's model id, scrubbed as it was in
+        # client_model_selection before it moved to the opencode client's owner; the
+        # refusal reaches the browser through the chat's own sinks.
+        "acp/client_opencode_session.py",
+        # The MiMo Code hosted fall-back refusal's model id, scrubbed the same way.
+        "acp/client_mimocode_session.py",
         "acp/client_permissions.py",
         "acp/client_start.py",
         "acp/client_tool_events.py",
@@ -559,12 +600,31 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_turn.py",
         "acp/client_turn_control.py",
         "acp/client_usage.py",
+        # Keeps a compaction's streamed summary for the compaction card, redacted as
+        # the client reads it; the card reaches the browser through the dashboard's sinks.
+        "acp/compaction_summary.py",
+        # The reason a Claude session gives for refusing Fast mode, redacted as the
+        # provider reads it; the model picker reads it through the slot's API.
+        "providers/acp_model_effort.py",
+        # Read on the client's turn, not its owners: the checklist a ``plan`` update
+        # makes, and the title, description and mode name a harness notice carries,
+        # are redacted as the parsers above redact a sub-agent's title. Their rows
+        # reach the browser through the dashboard's sinks.
+        "acp/harness_notices.py",
+        "acp/plan_checklist.py",
+        # The same, for the task description, summary and retry reason a Claude Code
+        # task-end or retry notice carries (``acp/raw_sdk_tasks.py``).
+        "acp/raw_sdk_tasks.py",
         "acp/transport_errors.py",
         # Split out of transport_errors to keep that file under the line cap; its
         # redact_text call scrubs a compaction-failure reason for the SAME
         # compaction notice, whose display sink is already registered, so it is
         # not an egress boundary of its own.
         "acp/compaction_errors.py",
+        # Split out of transport_errors with the frame readers; its redactor calls
+        # scrub the raw error frame kept for the dashboard turn's WARNING (a
+        # gate-side log line), so it is not an egress boundary of its own.
+        "acp/error_frames.py",
         "acp/runtime_frame_accounting.py",
         # Redacts the tool title in the auto-rejected-permission WARNING (a
         # gate-side log line) and defers user-facing display to the routed
@@ -709,10 +769,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # agent-switch name, the /compact summary and failure reason, the partial reply and stream
         # flushes, spec-hook notices, the stats footer). Their output reaches the runner's surfaces.
         "dashboard/chat_turn/acp_recovery.py",
+        "dashboard/chat_turn/builtin_tools_notice.py",
         "dashboard/chat_turn/deny_chokepoints.py",
         "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/elicitation_prompt.py",
         "dashboard/chat_turn/file_changes.py",
+        "dashboard/chat_turn/mcp_oauth_notice.py",
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/model_fallback.py",
         "dashboard/chat_turn/native_cards.py",
@@ -721,6 +783,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_turn/queue_drain.py",
         "dashboard/chat_turn/recipient.py",
         "dashboard/chat_turn/session_events.py",
+        # Words a harness notice as the notice row session_events appends; the row
+        # reaches the browser through the dashboard's sinks.
+        "dashboard/harness_notice_rows.py",
         "dashboard/chat_turn/slash_commands.py",
         "dashboard/chat_turn/tool_approval.py",
         "dashboard/chat_turn/tool_results.py",
@@ -758,6 +823,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # order), moved beside it so the rules version can hash it. It returns
         # the redacted string to chat_utils and emits nothing of its own.
         "dashboard/display_battery.py",
+        # The welcome page's greeting, scrubbed when it is read and kept on the slot.
+        # It reaches the browser only in the slot summary, which
+        # dashboard/slot_projection.py redacts again; it emits nothing of its own.
+        "dashboard/agent_welcome.py",
         "dashboard/chat_voice.py",
         # The grep route and its content-search engines, composed into
         # dashboard/handlers/files.py: they redact each hit row, and that facade, a
@@ -782,6 +851,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/interaction_coordinator.py",
         "dashboard/notification_coordinator.py",
         "dashboard/slot_projection.py",
+        # The slot projection's per-slot memos: it calls the redactor the
+        # projection hands it and caches the result, inside the same boundary.
+        "dashboard/slot_row_memo.py",
         "dashboard/state_parts/dashboard_services.py",
         "dashboard/state_parts/notification_log.py",
         "dashboard/state_parts/slot_directory.py",
@@ -855,6 +927,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/cron_script_source.py",
         "dashboard/handlers/cron_secret_grants.py",
         "dashboard/handlers/cron_shared.py",
+        # The Secrets usage scan redacts every place name and key it returns
+        # (a job's name and grant key, a spec's server and env key) exactly as
+        # the Schedule board (cron_board.py, above) does, for the same
+        # owner-only dashboard HTTP surface; it opens no other output path.
+        "dashboard/handlers/secrets_usage.py",
         # Same class as the dashboard handlers around it: the five debug reads
         # redact every string they return -- a gateway description, a classified
         # refusal, a process roster -- but the egress boundary is the loopback
@@ -878,7 +955,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/taskrunner.py",
         "dashboard/handlers/terminal.py",
         "dashboard/handlers/themes.py",
-        "dashboard/handlers/updates_apply.py",
         "dashboard/handlers/webapp_preview.py",
         "dashboard/handlers_project.py",
         # The spawn and Slack workspace owners composed into ``dashboard/handlers/messaging.py``:
@@ -925,6 +1001,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # route (``dashboard/handlers/remote_dispatch_routes.py``, the registered
         # sink) already scrubbed, on its way into the tool reply.
         "mcp_session_crew.py",
+        # crew_list's MCP body: re-redacts the roster the gateway route
+        # (``dashboard/handlers/remote_crew_list.py``) built from already-redacted
+        # peer reads, on its way into the tool reply. Same class as above.
+        "mcp_crew_list.py",
         "mcp_dashboard_tag_runs.py",
         # Same class again: this stdio server redacts the ledger's own
         # worker-authored prose before returning it, but the egress boundary is
@@ -971,9 +1051,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `app_tools.py` relays an app's answer to a declared agent tool and redacts it
         # before returning it, the same classification as its sibling domains.
         "mcp_tools/app_tools.py",
-        "mcp_tools/apps.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",
+        "mcp_tools/control_parts/mcp_wait.py",
         "mcp_tools/control_parts/monitor.py",
         "mcp_tools/knowledge.py",
         "mcp_tools/messaging.py",
@@ -1005,6 +1085,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "tips.py",
         "task_executor.py",
         "taskrunner_parts/run_steps.py",
+        # Redacts the status file name and the quoted reason it puts in a failed
+        # step's `task.error`, and emits nothing. The egress is the Task Runner
+        # notice sink in `slack/gateway_runtime/service_boot.py`, which redacts
+        # the notice again.
+        "task_status_file.py",
         "transcribe.py",
         "metrics/schema.py",
         # Egresses, but carries NO redactable content: the payload is a fixed
@@ -1074,6 +1159,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/handler_runtime/stream.py",
         "slack/handler_runtime/turn.py",
         "slack/handler_runtime/turn_context.py",
+        # The code-channel agent tools: every view, canvas, title and context-bar
+        # label they post goes through the redactor of slack/code_channels/wrapup.py,
+        # the registered "Slack code-channel posts" sink, so they add no egress path
+        # of their own.
+        "slack/code_channels/tools.py",
+        # The work board's block renderer: the agent-authored text it lays out was
+        # already redacted in slack/code_channels/board/model.py, the registered
+        # "Slack code-channel work board" sink, and the forge- or git-derived branch
+        # names and PR URLs it adds get the same redactor on that same message, so
+        # it adds no egress path of its own.
+        "slack/code_channels/board/render.py",
         # The owners composed into slack/gateway.py, in the same class as that
         # facade: they redact the install-repair, update and boot logs, the
         # AutoNudge notices, the nudge and heartbeat turns' posted replies, the
@@ -1089,14 +1185,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/gateway_runtime/cron_fire.py",
         "slack/gateway_runtime/heartbeat_turns.py",
         "slack/gateway_runtime/install_repair.py",
-        "slack/gateway_runtime/nudge_channel_fire.py",
         "slack/gateway_runtime/nudge_wiring.py",
         "slack/gateway_runtime/result_egress.py",
         "slack/gateway_runtime/service_boot.py",
         "slack/gateway_runtime/subagent_report.py",
         "slack/gateway_runtime/subagent_wiring.py",
         "slack/gateway_runtime/turn_approvals.py",
-        "slack/gateway_runtime/update_apply.py",
         "slack/gateway_runtime/update_schedule.py",
         # The owners composed into discord/transport_dispatch.py's class, beside the
         # registered "Discord direct send" sink (the !compact owner, which holds that
@@ -1122,7 +1216,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # warning log line carries; it returns nothing to the model or a user.
         "subagent_read_collected.py",
         # Uses the redactor as a PREDICATE, not a transform: `resolve_deck_dir`
-        # compares `redact(deck_id) != deck_id` to decide whether to refuse the deck
+        # asks `refuses(deck_id, redact)` to decide whether to refuse the deck
         # outright. A deck id cannot be scrubbed on the way out — it is the directory
         # name, the `preview/<deckId>/...` URL segment and the handle every later
         # request sends back — so the only safe answer is not to serve that deck at
@@ -1221,9 +1315,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # non-core-egress classification. `gateway_routes` is the same surface
         # served from the gateway process (the live-target cutover), redacting
         # the target path and error text bound for its SEL record and JSON reply.
+        # `release_worktree` redacts git's stderr, the worktree paths and the text
+        # of a failed git or filesystem call in the refusals it returns, which reach
+        # the route's JSON reply and its SEL record through `gateway_routes`.
         "apps/builtins/dev_fleet/runtime.py",
         "apps/builtins/dev_fleet/http_api.py",
         "apps/builtins/dev_fleet/gateway_routes.py",
+        "apps/builtins/dev_fleet/release_worktree.py",
         "apps/builtins/dev_fleet/fleet_state.py",
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",

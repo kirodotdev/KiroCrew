@@ -50,9 +50,12 @@ from kiro_crew.history_consolidation_memory import (
     _bounded_semantic_table,
     _is_plausible_memory_file,
     _refuse_oversized_semantic,
+    _refused_semantic_note,
+    _refused_semantic_notice,
     _reroute_lesson_semantic_keys,
     _semantic_snapshot_in_pages,
     _session_facets,
+    _update_refused_semantic_note,
     _withhold_unseen_deletes,
 )
 from kiro_crew.history_consolidation_span import (
@@ -521,6 +524,72 @@ async def _consolidate(
             return store_name, bool(store_name and memory_store_version(store_name) == 2)
 
         store_name, member_memory = await asyncio.to_thread(_resolve_memory_identity)
+
+        # A pending model result cannot authorize writes from a deleted or edited
+        # transcript, or outrank a newer user turn; both write paths ask this at
+        # their write boundary (Crew's own stores below, a provider's above).
+        async def _transcript_moved() -> _ConsolidationRefusedSentinel | None:
+            try:
+                (
+                    latest,
+                    latest_total,
+                    latest_generation,
+                    latest_sub_offset,
+                ) = await asyncio.to_thread(
+                    self._log.snapshot_for_consolidation, key, withhold_restricted=True
+                )
+            except TranscriptWithheld:
+                self._logger.info(
+                    "Discarding consolidation result for %s: the transcript became restricted "
+                    "during extraction",
+                    key,
+                )
+                return _CONSOLIDATION_REFUSED
+            if (
+                latest_generation != generation_at_snapshot
+                or latest_total < total
+                or latest[: len(unconsolidated)] != unconsolidated
+                or any(row.get("role") == "user" for row in latest[len(unconsolidated) :])
+                # A sub-slice this run read started at ``sub_offset_at_snapshot``.
+                # If the durable sub-offset moved while the model was thinking
+                # (another process extracted an earlier slice of the same head),
+                # this result describes a slice other than the one now at the
+                # offset, so it must not advance anything. The generation check
+                # above misses this: a sub-offset advance does not bump the
+                # generation.
+                or (is_sub_slice and latest_sub_offset != sub_offset_at_snapshot)
+            ):
+                self._logger.info(
+                    "Discarding consolidation result for %s: conversation changed during extraction",
+                    key,
+                )
+                return _CONSOLIDATION_STALE
+            return None
+
+        # A provider that replaces Crew's memory takes the span here, before any
+        # of Crew's own stores is opened (``memory_provider/consolidation.py``).
+        from kiro_crew.memory_provider.chokepoints import session_route
+
+        memory_route = await asyncio.to_thread(session_route, store_name, key)
+        if memory_route.replaces:
+            from kiro_crew.memory_provider import consolidation as _provider_pass
+
+            assert lease is not None
+            return await _provider_pass.publish(
+                self,
+                key,
+                memory_route,
+                store_name=store_name,
+                execution=execution,
+                chunk=chunk,
+                attempted=attempted,
+                lease=lease,
+                include_history=include_history,
+                commit_state=commit_state,
+                transcript_moved=_transcript_moved,
+                refused=_CONSOLIDATION_REFUSED,
+                prestripped=is_sub_slice or prefs_head_cut,
+            )
         # V2 anchors are owner-managed essentials. Extract proposed facts
         # through the revision-aware structured path; never let a legacy
         # whole-file rewrite remove their rules or age out project guides.
@@ -674,6 +743,7 @@ async def _consolidate(
         # to update and delete them. Fetching globally would show crew B the
         # operator's semantic table and let its consolidation turn delete it.
         has_vector = vector_store is not None
+        refused_note: list[dict] = []
         if has_vector and vector_store is not None:
             private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
             # Offload: each page of the fetch serializes on the store's _db_lock,
@@ -733,6 +803,10 @@ async def _consolidate(
                     total=len(current_semantic),
                     limit=_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
                 )
+            # Values an earlier pass of this session refused for size; dropped below
+            # once this pass has written its answer.
+            refused_note = await asyncio.to_thread(_refused_semantic_note, vector_store, key)
+            semantic_json += _refused_semantic_notice(refused_note)
             # The writers read every key as it was before the model call, but
             # only these fields of it: a correction is verified against all
             # three, and the V1 writer retires the old ``value_json``. The full
@@ -761,20 +835,22 @@ async def _consolidate(
             )
             from kiro_crew.memory_kind_routing import (
                 MODE_ENFORCE,
-                MODE_OFF,
                 configured_kind_routing_mode,
                 kind_rules_for,
             )
 
             routing_mode = configured_kind_routing_mode()
-            # Under off (the default) the prompt is today's, word for word.
-            kind_field = '"kind": "fact" | "event" | "state", ' if routing_mode != MODE_OFF else ""
-            # Shadow trials candidate rules; enforce asks only the adopted ones.
+            # Only enforce asks for the tag. Under off and shadow the prompt is
+            # today's, word for word; shadow labels the items in a later call.
+            kind_field = (
+                '"kind": "fact" | "event" | "state", ' if routing_mode == MODE_ENFORCE else ""
+            )
             kind_rules = kind_rules_for(routing_mode)
             # Only under enforce: in shadow the keys the model writes must stay
             # what they are today, or the shadow log would not measure today.
             key_naming = (
-                "Name keys by topic, never by PR, issue or round number. "
+                "Name keys by topic, never by the number of a code change, ticket, "
+                "issue or round. "
                 if routing_mode == MODE_ENFORCE
                 else ""
             )
@@ -837,6 +913,11 @@ async def _consolidate(
                 "full file body."
             )
 
+        # The lesson tier policy's mode, read once so the prompt and the policy
+        # agree. Only enforce changes the prompt; off and shadow ask today's text.
+        from kiro_crew import memory_tier_policy as _tier_policy
+
+        tier_mode = _tier_policy.configured_mode() if include_history else _tier_policy.MODE_OFF
         if include_history:
             keys.append(
                 '"lessons": Array of corrections the user taught '
@@ -846,7 +927,8 @@ async def _consolidate(
                 # The same instruction learn_add's schema carries, from one
                 # constant, so both writers ask the model the same question.
                 f'"applies": {LESSON_APPLIES_INSTRUCTION} '
-                '"repo_scope" is OPTIONAL: include it ONLY when the correction is '
+                + _tier_policy.prompt_rule_for(tier_mode)
+                + '"repo_scope" is OPTIONAL: include it ONLY when the correction is '
                 "genuinely specific to one codebase worked on in the chat. Give a "
                 "RELATIVE directory path inside that repository that is distinctive "
                 'of it (e.g. "src/kiro_crew") -- never an absolute path, no leading '
@@ -868,6 +950,8 @@ async def _consolidate(
         # whole session is judged as a unit. It is therefore intentionally
         # absent from this consolidation prompt's keys.
 
+        from kiro_crew.memory_extraction_guidance import configured_guidance_block
+
         numbered = "\n\n".join(f"{i + 1}. {k}" for i, k in enumerate(keys))
         prompt_parts = [
             "You are a memory consolidation agent. Process this conversation "
@@ -885,6 +969,7 @@ async def _consolidate(
                 )
             prompt_parts.append(f"\n\n## Current Preferences\n{current_prefs or '(empty)'}")
             prompt_parts.append(f"\n\n## Current Projects\n{current_projects or '(empty)'}")
+        prompt_parts.append(configured_guidance_block())
         prompt_parts.append(f"\n\n## Conversation to Process\n{conversation}")
         prompt_parts.append("\n\nRespond with ONLY valid JSON, no markdown fences.")
         prompt = "".join(prompt_parts)
@@ -913,6 +998,14 @@ async def _consolidate(
         except _ConsolidationReplyUnusable as exc:
             result = None
             failure = str(exc)
+            # The provider answered (unusable text, or an empty reply it billed or
+            # could not show as unbilled), so the host can run turns again.
+            self._release_environment_backoff()
+        else:
+            # ``None`` here is also what a turn that raised inside the stream
+            # returns, which proves nothing about the host; only an answer does.
+            if result is not None:
+                self._release_environment_backoff()
         billed = True
         if not result:
             # The turn reached the provider and produced nothing usable, so it
@@ -953,41 +1046,40 @@ async def _consolidate(
         # Same gate at the write boundary: a line tightened while the model
         # was thinking makes this result one derived from a restricted
         # transcript, so it is discarded -- nothing reaches history or memory.
-        try:
-            (
-                latest,
-                latest_total,
-                latest_generation,
-                latest_sub_offset,
-            ) = await asyncio.to_thread(
-                self._log.snapshot_for_consolidation, key, withhold_restricted=True
-            )
-        except TranscriptWithheld:
-            self._logger.info(
-                "Discarding consolidation result for %s: the transcript became restricted "
-                "during extraction",
-                key,
-            )
-            return _CONSOLIDATION_REFUSED
-        if (
-            latest_generation != generation_at_snapshot
-            or latest_total < total
-            or latest[: len(unconsolidated)] != unconsolidated
-            or any(row.get("role") == "user" for row in latest[len(unconsolidated) :])
-            # A sub-slice this run read started at ``sub_offset_at_snapshot``.
-            # If the durable sub-offset moved while the model was thinking
-            # (another process extracted an earlier slice of the same head),
-            # this result describes a slice other than the one now at the
-            # offset, so it must not advance anything. The generation check
-            # above misses this: a sub-offset advance does not bump the
-            # generation.
-            or (is_sub_slice and latest_sub_offset != sub_offset_at_snapshot)
-        ):
-            self._logger.info(
-                "Discarding consolidation result for %s: conversation changed during extraction",
-                key,
-            )
-            return _CONSOLIDATION_STALE
+        moved = await _transcript_moved()
+        if moved is not None:
+            return moved
+
+        # The lesson origin gate, once on the shared result before it branches to
+        # the V1 and V2 write paths, over the rows the model read.
+        from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
+        from kiro_crew.memory_origin_gate import gate_consolidation_lessons
+
+        origin = gate_consolidation_lessons(
+            result, _prompt_rows(chunk), _origin_mode(), session_key=key
+        )
+        result = origin.result
+        # The lesson tier policy, on the answer the origin gate returned, over the
+        # same rows.
+        tier = _tier_policy.apply_tier_policy(
+            result, _prompt_rows(chunk), tier_mode, session_key=key
+        )
+        result = tier.result
+
+        # Kind routing's shadow: the routed items and what the store held for them, read
+        # before any write. Both write paths then run as under off; the items are
+        # labelled once they are done.
+        from kiro_crew import memory_kind_routing as _kinds
+
+        shadow_kinds = None
+        # The mode the prompt was built under, so the prompt and the log agree.
+        if vector_store is not None and routing_mode == _kinds.MODE_SHADOW:
+            fenced, _ = _withhold_unseen_deletes(result, semantic_visible, None)
+            routed = _kinds.route_semantic_by_kind(fenced, _kinds.MODE_SHADOW)
+            if routed.decisions:
+                shadow_kinds = await _run_in_memory_background_pool(
+                    _kinds.capture_prior, vector_store, routed
+                )
 
         if member_memory:
             stage = "member memory"
@@ -1054,6 +1146,9 @@ async def _consolidate(
             # display-only rows carried with the head). An ordinary
             # message-aligned span keeps its receipt over ``chunk`` unchanged.
             receipt_messages = _prompt_rows(chunk) if is_sub_slice else chunk
+            from kiro_crew.memory_lesson_dedup import configured_mode as _dedup_mode
+
+            lesson_dedup_mode = _dedup_mode()
 
             def _apply_member_consolidation() -> dict:
                 with self._publication_hold_checked(key, commit_state) as publication:
@@ -1069,6 +1164,7 @@ async def _consolidate(
                         messages=receipt_messages,
                         facets=facets,
                         kind_routing=kind_routing,
+                        lesson_dedup_mode=lesson_dedup_mode,
                     )
                     publication.mark_committed()
                     return applied
@@ -1123,6 +1219,19 @@ async def _consolidate(
                 messages=unconsolidated if include_history else chunk,
                 commit_state=commit_state,
             )
+
+        # The answer to a prompt that listed refused values is written: drop them, under
+        # a hold like any write, so writes turned off before the first commit keep them.
+        if refused_note and vector_store is not None:
+            stage = "refused semantic note"
+            note_store = vector_store
+
+            def _drop_shown_refusals_under_hold() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if _update_refused_semantic_note(note_store, key, drop=refused_note):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_drop_shown_refusals_under_hold)
 
         # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
         # replaces the whole file, so a non-file answer (e.g. the literal
@@ -1211,6 +1320,45 @@ async def _consolidate(
                 facets=facets,
                 key=key,
                 commit_state=commit_state,
+            )
+
+        # The origin gate's log, once the lessons it read reached a writer, under
+        # the same hold as every other write of this pass.
+        if origin.loggable and vector_store is not None and not _lesson_extraction_disabled():
+            from kiro_crew.memory_origin_gate import record_origin_gate
+
+            origin_store = vector_store
+
+            def _record_origin() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if record_origin_gate(origin_store, origin, session_key=key):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_record_origin)
+
+        if tier.loggable and vector_store is not None and not _lesson_extraction_disabled():
+            tier_store = vector_store
+
+            def _record_tier() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if _tier_policy.record_tier_policy(tier_store, tier, session_key=key):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_record_tier)
+
+        # Kind routing's shadow labels, after the pass's last memory write so the call
+        # widens no write's window: one small call on the items already written,
+        # never the transcript, feeding only the log (memory_kind_routing.log_shadow_kinds).
+        if shadow_kinds is not None and vector_store is not None:
+            stage = "kind labels"
+            store_kw = {"memory_store": store_name} if member_memory else {}
+            await _kinds.log_shadow_kinds(
+                shadow_kinds,
+                vector_store,
+                lambda prompt: self._call_llm(prompt, session_key=key, **store_kw),
+                lambda: self._publication_hold_checked(key, commit_state),
+                f"consolidation:{key}",
+                session_key=key,
             )
 
         # Auto skill detection — a SEPARATE LLM pass over the full-session
@@ -1424,9 +1572,11 @@ async def _call_llm(
 
     Once ``stream_and_collect_json`` is entered the prompt counts as sent: a
     failure inside it may still have been billed, so it returns ``None`` and is
-    charged rather than risk an unbounded retry loop over real spend. The one
-    exception is ``AcpAuthRequired`` raised before any text streamed, on a backend
-    that reports usage and shows none billed: a signed-out kiro-cli ran no model.
+    charged rather than risk an unbounded retry loop over real spend. The
+    exceptions are ``AcpAuthRequired`` and an error tagged ``connection_failure``
+    raised before any text streamed, on a backend that reports usage and shows
+    none billed: a signed-out kiro-cli, or a host with no network path to the
+    provider, ran no model.
     """
     if not self._sessions:
         self._logger.warning("LLM consolidation skipped — no session manager")
@@ -1504,19 +1654,32 @@ async def _call_llm(
             # Matched by class name: the ACP exception type lives behind the
             # agent-SDK import boundary, which application code may not cross
             # (the same handle as ``_is_auth_required`` in dashboard/chat_threads.py).
+            # A dropped network path is the same: a Mac's DarkWake runs the timers
+            # with no usable network, so a night of sleep would otherwise spend
+            # every attempt on turns that never reached the provider. Only the
+            # ``connection_failure`` tag counts, set from the raw frame; a 5xx
+            # the provider answered with is still charged.
+            signed_out = type(exc).__name__ == "AcpAuthRequired"
+            unreachable = getattr(exc, "connection_failure", None) is True
             if (
-                type(exc).__name__ == "AcpAuthRequired"
+                (signed_out or unreachable)
                 and not reply
                 and getattr(client, "reports_turn_usage", False) is True
                 and not usage_has_billing(
                     provider_last_turn_usage(client, since=stats_before, consume=False)
                 )
             ):
+                if signed_out:
+                    self._logger.warning(
+                        "LLM consolidation turn needs a kiro-cli login after %.1fs",
+                        _time.monotonic() - t_start,
+                    )
+                    raise _ConsolidationNotDispatched("kiro-cli not logged in") from exc
                 self._logger.warning(
-                    "LLM consolidation turn needs a kiro-cli login after %.1fs",
+                    "LLM consolidation turn could not reach the model backend after %.1fs",
                     _time.monotonic() - t_start,
                 )
-                raise _ConsolidationNotDispatched("kiro-cli not logged in") from exc
+                raise _ConsolidationNotDispatched("model backend unreachable") from exc
             # The model and the prompt size are the two facts a context-window
             # overflow or a 429 is diagnosed from.
             self._logger.warning(

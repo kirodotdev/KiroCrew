@@ -149,9 +149,15 @@ export function splitOfferLabel(target: ConfiguredChannelTarget): { head: string
   return { head, detail }
 }
 
-export default function LinkedSurfacesSection({ slotKey, variant, channel }: {
+export default function LinkedSurfacesSection({ slotKey, variant, channel, withoutSessionMenu = false }: {
   slotKey: string
   variant: 'dropdown' | 'context'
+  /**
+   * The surface has no session menu (a Bot chat on the Members page), so the
+   * Unlink row's "reconnect anytime from the session menu" would point at a
+   * control that is not there: it says what stops instead.
+   */
+  withoutSessionMenu?: boolean
   /**
    * Render ONE channel's rows only. The paused header chip's menu passes the
    * channel it names: its label reads "Driven from Discord DM · replies
@@ -807,9 +813,13 @@ export default function LinkedSurfacesSection({ slotKey, variant, channel }: {
                 {i18nT('components.linkedSurfacesSection.unlink_from', { label: row.label })}
               </span>
               <span className="truncate text-[11px] text-muted">
-                {i18nT(row.driven
-                  ? 'components.linkedSurfacesSection.unlink_outcome'
-                  : 'components.linkedSurfacesSection.unlink_outcome_out', { label: row.label })}
+                {i18nT(withoutSessionMenu
+                  ? (row.driven
+                    ? 'components.linkedSurfacesSection.unlink_outcome_here'
+                    : 'components.linkedSurfacesSection.unlink_outcome_out_here')
+                  : (row.driven
+                    ? 'components.linkedSurfacesSection.unlink_outcome'
+                    : 'components.linkedSurfacesSection.unlink_outcome_out'), { label: row.label })}
               </span>
             </span>
           </Item>

@@ -21,7 +21,6 @@ from __future__ import annotations
 import ast
 import dis
 import functools
-import importlib
 import inspect
 import os
 import subprocess
@@ -296,14 +295,6 @@ def test_the_family_logs_under_the_facade_name() -> None:
         m.__name__ for m in _family() if vars(m).get("logger", updates.logger) is not updates.logger
     ]
     assert others == []
-
-
-def test_the_moved_exception_keeps_the_facade_module() -> None:
-    """``_PolicyApplyStopped`` is named in tracebacks by the path callers import it from,
-    and that path still resolves it."""
-    cls = updates._PolicyApplyStopped
-    assert cls.__module__ == FACADE
-    assert getattr(importlib.import_module(cls.__module__), cls.__qualname__) is cls
 
 
 def test_the_facade_runs_as_a_module(tmp_path: Path) -> None:

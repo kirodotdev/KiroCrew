@@ -42,6 +42,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _audit,
     _clean_origin_session_key,
     _err,
+    _is_agent_call,
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
@@ -135,7 +136,9 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     if source_path:
         store = get_default_store()
         try:
-            existing = store.find_by_source_path(source_path)
+            # Off the loop: it takes the store lock, which a write holds across
+            # its fsyncs, and then reads every meta.json in the store.
+            existing = await _run_off_loop(lambda: store.find_by_source_path(source_path))
         except (ArtifactError, OSError) as exc:
             # find_by_source_path scans meta.json files; on a corrupt store
             # we fall through to the regular create path rather than
@@ -180,12 +183,11 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
                 )
 
             # Same auth-based actor inference as api_artifact_update — if the
-            # caller is MCP (X-Internal-Secret header), the lifecycle event
-            # gets tagged 'iterated' (agent), not 'edited' (user). Without
-            # this, MCP-driven re-saves would silently misattribute on the
-            # activity timeline.
-            is_mcp = request.headers.get("X-Internal-Secret") is not None
-            actor = "agent" if is_mcp else "user"
+            # caller is the agent (``_is_agent_call``: internal secret or agent
+            # socket), the lifecycle event gets tagged 'iterated' (agent), not
+            # 'edited' (user). Without this, agent re-saves would silently
+            # misattribute on the activity timeline.
+            actor = "agent" if _is_agent_call(request) else "user"
 
             submitted_content = (
                 promoted_content if promoted_content is not None else body.get("content")
@@ -338,9 +340,6 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             # 200 OK signals "bumped existing"; the create path below returns 201.
             _notify_artifact_update(state, art.slug, art.version)
             return _json_response(_serialize(art, include_content=True), status=200)
-    # Resolve an optional folder placement (id or human path; mkdir -p missing
-    # segments) so a save can file the artifact in one call. Off the
-    # event loop — mkdir -p may persist new folders (blocking fsync).
     merr = _validate_inbound_webapp_metadata(body)
     if merr:
         _audit(tool="artifact_save", request=request, outcome="denied", error=merr)
@@ -376,10 +375,6 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             error="dashboard package binding",
         )
         return _err(refused, status=403)
-    folder_id, ferr = await _resolve_folder_ref_off_loop(body.get("folder"), create_missing=True)
-    if ferr:
-        _audit(tool="artifact_save", request=request, outcome="denied", error=ferr)
-        return _err(ferr)
     # A new package always declares a binding for the first time, so there is no
     # previous one to compare against and every create is checked. Gated on the
     # DECLARED kind, which is also what makes the store validate the content as a
@@ -400,27 +395,39 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # authorizes later reads is recorded with it. source_path is validated here
     # rather than stored as a raw string: an unvalidated project file outside
     # $HOME yields a pointer the store then refuses to read.
+    fields: dict[str, Any] = {
+        "name": body.get("name", ""),
+        "content": promoted_content if promoted_content is not None else body.get("content", ""),
+        "slug": body.get("slug"),
+        "kind": body.get("kind"),
+        # Honor an explicitly-supplied source (MCP tool / import path); for
+        # UI saves that omit it, derive the ACTUAL session origin
+        # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
+        "source": body.get("source") or _artifact_source_for_request(request),
+        "description": body.get("description", ""),
+        "tags": body.get("tags") or [],
+        "source_path": link_source_path,
+        "source_root": link_source_root,
+    }
     try:
+        # An optional folder placement (id or human path) files the artifact in
+        # one call. Its mkdir -p saves every new segment at once, so what the
+        # create refuses (a 400, a taken slug) is refused before it.
+        if body.get("folder"):
+            await _run_off_loop(lambda: get_default_store().check_create(**fields))
+        folder_id, ferr = await _resolve_folder_ref_off_loop(
+            body.get("folder"), create_missing=True
+        )
+        if ferr:
+            _audit(tool="artifact_save", request=request, outcome="denied", error=ferr)
+            return _err(ferr)
         # Off the loop: a create writes the record, its first version and the
         # index, and each of those syncs its bytes to the device before it
         # renames. On slow or busy storage that is long enough to stall chat
         # turns and heartbeats if it runs here.
         art = await _run_off_loop(
             lambda: get_default_store().create(
-                name=body.get("name", ""),
-                content=(
-                    promoted_content if promoted_content is not None else body.get("content", "")
-                ),
-                slug=body.get("slug"),
-                kind=body.get("kind"),
-                # Honor an explicitly-supplied source (MCP tool / import path); for
-                # UI saves that omit it, derive the ACTUAL session origin
-                # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
-                source=(body.get("source") or _artifact_source_for_request(request)),
-                description=body.get("description", ""),
-                tags=body.get("tags") or [],
-                source_path=link_source_path,
-                source_root=link_source_root,
+                **fields,
                 source_copy_only=link_copy_only,
                 folder_id=folder_id,
                 # Originating chat session for the Source column. Only a real slot
@@ -511,12 +518,13 @@ async def api_artifact_update(request: web.Request) -> web.Response:
         return _err(str(exc))
     try:
         # Determine actor authoritatively from how the request was authed,
-        # NOT from the body. MCP-originated calls carry X-Internal-Secret
-        # (validated by upstream middleware before we see them); browser
-        # dashboard calls don't. Tagging by auth method is both more
+        # NOT from the body. Agent calls carry X-Internal-Secret or come over
+        # the agent socket (``_is_agent_call``; both verified by upstream
+        # middleware before we see them); browser dashboard calls carry
+        # neither. Tagging by auth method is both more
         # accurate (the agent's MCP layer doesn't have to remember to set
         # actor='agent') and more secure (a body field could be spoofed).
-        is_mcp = request.headers.get("X-Internal-Secret") is not None
+        is_mcp = _is_agent_call(request)
         actor = "agent" if is_mcp else "user"
         # Session correlation: MCP calls carry X-Session-Key with a real
         # chat-slot key; the dashboard's browser client sets it to the

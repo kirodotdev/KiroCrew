@@ -7,9 +7,10 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, Compass, Webhook, BookOpen, Library, MessageSquareText, Workflow, ScrollText, Bot, Server } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
+import AppIcon from '../components/AppIcon'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { CrewMemberMark } from '../components/CrewMemberMark'
 import { registerBuiltinSurface } from './registry'
@@ -17,6 +18,12 @@ import { BUILTIN_SURFACE_NAV, CAPABILITY_SUB_ITEM_NAV, capabilitySubItemNav } fr
 import { selectSubagentActivityCount } from '../store/chatSlice'
 import { isSilencedNote } from '../store/notificationsSlice'
 import type { RootState } from '../store'
+
+/** Task Runner's rail mark: a theme-painted SVG, inlined by `AppIcon` like an app's. */
+const TASK_RUNNER_ICON_URL = '/app-assets/projects/icon.svg'
+
+/** Channels' rail mark, the one its app row showed, inlined the same way. */
+const CHANNELS_ICON_URL = '/app-assets/channels/icon.svg'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
@@ -39,13 +46,15 @@ registerBuiltinSurface({
   // Slot-bearing: default chat slots have surface === '' (or no mode set).
   icon: <MessageSquare size={16} />,
   badgeLabel: 'unread conversations',
+  badgeLabelKey: 'nav.badge_unread_conversations',
   // Expanded-rail activity stays separate from unread attention: sub-agents
   // in flight are not unread conversations, and folding them into that count
   // would corrupt both the number and the tab-title attention sum. The
   // collapsed rail omits this context-poor signal; session rows identify the
   // specific work when the user opens Sessions.
   activitySelector: selectSubagentActivityCount,
-  activityLabel: 'subagents in flight',
+  // No `activityLabel`: the rail's own fallback is the catalog key for
+  // "subagents in flight", resolved per render, where a string here is English.
 })
 
 // Crewmates — one durable, pinned DM thread per crew member. Sits directly
@@ -58,6 +67,7 @@ registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.members,
   icon: <CrewMemberMark />,
   badgeLabel: 'unread member threads',
+  badgeLabelKey: 'nav.badge_unread_member_threads',
 })
 
 registerBuiltinSurface({
@@ -66,6 +76,7 @@ registerBuiltinSurface({
   // Non-slot: count comes from the notifications panel.
   unreadSelector: selectUnacknowledgedNotificationCount,
   badgeLabel: 'notifications',
+  badgeLabelKey: 'nav.badge_notifications',
   // Surfaced as the topbar bell (shellHeader.tsx NotificationsBellButton), not a rail
   // item. Route + badge + tab-title attention count stay wired via the
   // selectors above; only the left-rail entry is suppressed.
@@ -73,13 +84,22 @@ registerBuiltinSurface({
 
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.projects,
-  icon: <ClipboardCheck size={16} />,
+  // A theme-painted app mark at the rail's app-row size, so this row matches the
+  // app rows it sits among in the Apps group.
+  icon: <AppIcon iconUrl={TASK_RUNNER_ICON_URL} icon="ClipboardCheck" size={20} />,
   // Stub surface — no slotMode and no unreadSelector. The Projects badge
   // (global task-gate approval count) comes from a React Query result that
   // lives outside Redux; shell/nav/railBadges.ts mirrors it into `appBadges['projects']`
   // and `NavBadge` picks it up via the appBadges fallback. The label here
   // is what the fallback path's aria-label uses.
   badgeLabel: 'approvals needed',
+  badgeLabelKey: 'nav.badge_approvals_needed',
+})
+
+registerBuiltinSurface({
+  ...BUILTIN_SURFACE_NAV.channels,
+  // The mark and size its app row had, so the row looks as it did among the apps.
+  icon: <AppIcon iconUrl={CHANNELS_ICON_URL} icon="Users" size={20} />,
 })
 
 registerBuiltinSurface({
@@ -183,7 +203,7 @@ registerBuiltinSurface({
 const CAPABILITY_SUB_ITEM_ICONS: Record<string, ReactElement> = {
   crews: <Bot size={16} />,
   skills: <BookOpen size={16} />,
-  mcp: <Link2 size={16} />,
+  'mcp-servers': <Server size={16} />,
   knowledge: <Library size={16} />,
   prompts: <MessageSquareText size={16} />,
   steering: <ScrollText size={16} />,
@@ -198,7 +218,7 @@ for (const s of CAPABILITY_SUB_ITEM_NAV) {
 // ── Bottom ─────────────────────────────────────────────────────────────────
 // Agents + Capabilities merged into one bottom-pinned "Customize"
 // destination. The /capabilities secondary panel hosts Crewmates (bindings),
-// Custom agents, Connections, Skills, Hooks, and Prompts;
+// Custom agents, Skills, Hooks, and Prompts;
 // /agents redirects there (see App.tsx routes).
 //
 // Icon: the Kiro ghost brand mark (not a Lucide glyph) — this row is the
@@ -208,6 +228,11 @@ for (const s of CAPABILITY_SUB_ITEM_NAV) {
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.capabilities,
   icon: <KiroGhostMark size={16} />,
+  // Stub surface, like Projects: shell/nav/railBadges.ts mirrors the count of
+  // shared servers waiting for an approval into `appBadges['capabilities']`,
+  // because MCP Servers is a Customize tab. The key here is what the fallback
+  // path's aria-label and tooltip read.
+  badgeLabelKey: 'nav.mcp_servers_waiting_badge',
 })
 
 registerBuiltinSurface({

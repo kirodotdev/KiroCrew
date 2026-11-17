@@ -4,13 +4,16 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   DEFAULT_GATEWAY_WAIT_MS,
-  WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+  LOCAL_GATEWAY_WAIT_MS,
   gatewayWaitTimeoutMs,
   waitForGateway,
   describeGatewayFailure,
   tailLines,
+  readLogTail,
+  rotateLaunchLog,
   isPortInUse,
 } = require("../gateway-wait");
+const os = require("node:os");
 
 // Synchronous fake clock + timer so poll loops resolve instantly and
 // deterministically (no real waiting). setTimeoutFn advances the clock by the
@@ -54,9 +57,9 @@ test("waitForGateway resolves after a few unhealthy polls", async () => {
   assert.strictEqual(n, 3);
 });
 
-test("Windows local cold start stays on the splash past the ordinary deadline", async () => {
+test("a local cold start stays on the splash past the ordinary deadline", async () => {
   let polls = 0;
-  const maxWaitMs = gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: true });
+  const maxWaitMs = gatewayWaitTimeoutMs({ watchSpawn: true });
   const { p } = harness({
     // 110 failed 500ms polls model a 55-second packaged cold start.
     checkBackend: () => (++polls <= 110
@@ -70,22 +73,18 @@ test("Windows local cold start stays on the splash past the ordinary deadline", 
   assert.ok(maxWaitMs > DEFAULT_GATEWAY_WAIT_MS);
 });
 
-test("gateway wait policy extends only the primary Windows gateway", () => {
+test("gateway wait policy extends only the primary local gateway", () => {
   assert.strictEqual(
-    gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: true }),
-    WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+    gatewayWaitTimeoutMs({ watchSpawn: true }),
+    LOCAL_GATEWAY_WAIT_MS,
   );
   assert.strictEqual(
-    gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: false }),
-    DEFAULT_GATEWAY_WAIT_MS,
-  );
-  assert.strictEqual(
-    gatewayWaitTimeoutMs({ platform: "darwin", watchSpawn: true }),
+    gatewayWaitTimeoutMs({ watchSpawn: false }),
     DEFAULT_GATEWAY_WAIT_MS,
   );
 });
 
-test("the supervisor extends the Windows deadline only for a gateway it spawned", () => {
+test("the supervisor extends the deadline only for a gateway it spawned", () => {
   const supervisor = fs.readFileSync(
     path.join(__dirname, "..", "gateway-supervisor.js"),
     "utf8",
@@ -513,6 +512,66 @@ test("describeGatewayFailure: a foreign holder asks only for the thing that free
   assert.doesNotMatch(s, /set not to start a gateway/, "the setting is on");
 });
 
+test("describeGatewayFailure: a foreign holder is named, with the command that ends it", () => {
+  // "Quit it" is no remedy when nothing says which program "it" is: a stale ssh
+  // forward looks like any other program from here, so the owner probe's pid
+  // and command are the only way the reader finds it.
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    holders: [{ pid: 1234, command: "ssh -N -L 5476:localhost:5476 build-host" }],
+  });
+  assert.match(s, /It is held by process 1234 \(ssh -N -L 5476:localhost:5476 build-host\)\./);
+  assert.match(s, /SSH tunnel left running from an earlier connection, for example across a VPN reconnect/);
+  assert.match(s, /\n\nTo end it from a terminal, run this, then retry:\nkill -TERM 1234$/);
+  assert.doesNotMatch(s, /taskkill/, "a POSIX host is not given the Windows command");
+});
+
+test("describeGatewayFailure: on Windows each holder is ended with taskkill", () => {
+  // Without /F taskkill only asks a program's own windows to close, and ssh.exe
+  // has none, so /F is part of the command. One command covers every holder.
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    isWindows: true,
+    holders: [
+      { pid: 1234, command: "C:\\Windows\\System32\\OpenSSH\\ssh.exe -L 5476:localhost:5476 build-host" },
+      { pid: 5678, command: null },
+    ],
+  });
+  assert.match(s, /process 1234 \(C:\\Windows\\System32\\OpenSSH\\ssh\.exe -L 5476:localhost:5476 build-host\); process 5678, whose command could not be read\./);
+  assert.match(s, /To end them from a terminal, run this, then retry:\ntaskkill \/PID 1234 \/PID 5678 \/F$/);
+  assert.doesNotMatch(s, /kill -TERM/);
+});
+
+test("describeGatewayFailure: a holder whose command could not be read is still named by pid", () => {
+  // A ps that failed or ran past its budget leaves the pid lsof found. That pid
+  // is what the reader needs to look the program up or end it.
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    holders: [{ pid: 1234, command: null }],
+  });
+  assert.match(s, /It is held by process 1234, whose command could not be read\./);
+  assert.match(s, /kill -TERM 1234$/);
+});
+
+test("describeGatewayFailure: a long holder command is shown on one line and cut", () => {
+  const command = `/usr/bin/python3 ${"x".repeat(200)}\n\n--flag`;
+  const s = describeGatewayFailure({
+    port: 5476,
+    localStartBlocked: "foreign-holder",
+    holders: [{ pid: 1234, command }],
+  });
+  const named = s.match(/process 1234 \(([^)]*)\)/);
+  assert.ok(named, "the holder is named with its command");
+  const shown = named[1];
+  assert.strictEqual(shown.length, 120);
+  assert.ok(shown.startsWith("/usr/bin/python3 x"));
+  assert.ok(shown.endsWith("..."));
+  assert.doesNotMatch(shown, /\n/, "a holder's command cannot add a paragraph to the message");
+});
+
 test("describeGatewayFailure: an unreadable probe is not reported as a successor that never served", () => {
   // The restart ran and answered; what failed was this app's check of who holds
   // the port, and that outcome is a property of the host, so the same click
@@ -591,3 +650,109 @@ test("isPortInUse is false for unrelated logs / empty input", () => {
   assert.strictEqual(isPortInUse(""), false);
   assert.strictEqual(isPortInUse(null), false);
 });
+// ── readLogTail: bounded tail read, not the whole file ──
+
+function tmpLogFile(contents) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-launchlog-"));
+  const file = path.join(dir, "gateway-launch.log");
+  fs.writeFileSync(file, contents);
+  return { dir, file };
+}
+
+test("readLogTail returns the same 60-line tail as a whole read for a small log", () => {
+  const lines = Array.from({ length: 200 }, (_, i) => `line ${i}`);
+  const { dir, file } = tmpLogFile(lines.join("\n") + "\n");
+  try {
+    const got = readLogTail(file, { fs, lines: 60 });
+    assert.strictEqual(got, tailLines(lines.join("\n"), 60));
+    assert.strictEqual(got.split("\n").length, 60);
+    assert.strictEqual(got.split("\n")[0], "line 140");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("readLogTail reads only the file's tail for a log far over the byte cap", () => {
+  // A file much larger than the 256 KiB cap: filler bytes, then the real tail.
+  const filler = "x".repeat(2 * 1024 * 1024);
+  const tail = Array.from({ length: 80 }, (_, i) => `entry ${i}`).join("\n") + "\n";
+  const { dir, file } = tmpLogFile(filler + "\n" + tail);
+  try {
+    // A tiny maxBytes proves the read is positioned at the end, not the start:
+    // with the whole-file bug the first line would be filler "xxxx...".
+    const got = readLogTail(file, { fs, lines: 60, maxBytes: 4096 });
+    const gotLines = got.split("\n");
+    assert.strictEqual(gotLines.length, 60);
+    assert.strictEqual(gotLines[gotLines.length - 1], "entry 79");
+    assert.ok(!got.includes("x".repeat(100)), "tail read must not include head filler");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("readLogTail returns empty string when the file does not exist", () => {
+  const missing = path.join(os.tmpdir(), "kc-no-such-launchlog-xyz.log");
+  assert.strictEqual(readLogTail(missing, { fs, lines: 60 }), "");
+}
+);
+
+// ── rotateLaunchLog: one-generation size-gated rotation ──
+
+test("rotateLaunchLog renames the log aside when it is over the cap", () => {
+  const { dir, file } = tmpLogFile("A".repeat(2048));
+  try {
+    const out = rotateLaunchLog(file, { fs, capBytes: 1024 });
+    assert.strictEqual(out.rotated, true);
+    const prev = path.join(dir, "gateway-launch.previous.log");
+    assert.strictEqual(out.previousPath, prev);
+    assert.strictEqual(fs.existsSync(file), false, "current log renamed away");
+    assert.strictEqual(fs.readFileSync(prev, "utf8"), "A".repeat(2048));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("rotateLaunchLog overwrites an existing previous generation (two files, not N)", () => {
+  const { dir, file } = tmpLogFile("new".repeat(1024));
+  const prev = path.join(dir, "gateway-launch.previous.log");
+  fs.writeFileSync(prev, "stale previous generation");
+  try {
+    const out = rotateLaunchLog(file, { fs, capBytes: 1024 });
+    assert.strictEqual(out.rotated, true);
+    assert.strictEqual(fs.readFileSync(prev, "utf8"), "new".repeat(1024));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("rotateLaunchLog leaves a log under the cap untouched", () => {
+  const { dir, file } = tmpLogFile("short log\n");
+  try {
+    const out = rotateLaunchLog(file, { fs, capBytes: 10 * 1024 * 1024 });
+    assert.strictEqual(out.rotated, false);
+    assert.strictEqual(fs.existsSync(file), true);
+    assert.strictEqual(fs.readFileSync(file, "utf8"), "short log\n");
+    assert.strictEqual(fs.existsSync(path.join(dir, "gateway-launch.previous.log")), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);
+
+test("rotateLaunchLog is a no-op on first launch when the file does not exist", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-launchlog-"));
+  const file = path.join(dir, "gateway-launch.log");
+  try {
+    const out = rotateLaunchLog(file, { fs });
+    assert.strictEqual(out.rotated, false);
+    assert.strictEqual(out.previousPath, null);
+    assert.strictEqual(fs.existsSync(file), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+);

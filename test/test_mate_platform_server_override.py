@@ -99,6 +99,21 @@ def test_a_crewmate_file_holding_the_bare_override_is_repaired_at_start(home):
     assert repair_partial_platform_servers() == []
 
 
+def test_an_owner_edit_made_while_the_platform_repair_runs_is_kept(home, monkeypatch):
+    from test_mate_policy_repair import owner_edit_lands_as_the_lock_is_taken
+
+    from kiro_crew.mate_config_migration import repair_partial_platform_servers
+
+    mates = home / "mates" / "agents"
+    path = mates / "Briar.json"
+    path.write_text(json.dumps(BRIAR), encoding="utf-8")
+    owner_edit_lands_as_the_lock_is_taken(monkeypatch, mates, "Briar")
+
+    assert repair_partial_platform_servers() == ["Briar"]
+    assert json.loads(path.read_text(encoding="utf-8"))["description"] == "owner edit"
+    assert _servers(path) == {"notes": NOTES}
+
+
 def test_the_startup_migration_runs_the_repair(home):
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.mate_config_migration import migrate_existing_crewmates

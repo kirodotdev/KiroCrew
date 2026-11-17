@@ -4,7 +4,6 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import { createTestStore, renderWithProviders } from './helpers'
 import SessionDashboardsPage from '../pages/chat/command-center/SessionDashboardsPage'
-import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../hooks/useSandboxDoc', () => ({
   useSandboxDoc: (html: string | null) => ({ url: html ? '/sandbox/card' : null, pending: false, failed: false, retry: vi.fn() }),
@@ -38,7 +37,7 @@ describe('all session dashboards', () => {
 
   it('surfaces exact-session inputs first with saved summaries and no automatic writes', async () => {
     const answer = vi.spyOn(api, 'answerQuestion').mockResolvedValue({})
-    const approve = vi.spyOn(api, 'resolveApproval').mockResolvedValue({})
+    const approve = vi.spyOn(api, 'decideApproval').mockResolvedValue({})
     const generate = vi.spyOn(api, 'generateSessionSummary')
     renderWithProviders(<SessionDashboardsPage />, { store: store() })
     await screen.findByText('Summary for slot-1')
@@ -60,7 +59,7 @@ describe('all session dashboards', () => {
     expect(approve).not.toHaveBeenCalled()
     expect(generate).not.toHaveBeenCalled()
     fireEvent.click(within(inbox).getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
+    await waitFor(() => expect(approve).toHaveBeenCalledWith({ origin: 'coordinator', id: 'approval-2', slot: 'slot-2', instance: 'inst-2' }, 'approve'))
   })
 
   it('keeps cards in place on live activity and re-sorts on a filter change', async () => {
@@ -352,6 +351,3 @@ describe('all session dashboards', () => {
   })
 
 })
-
-// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
-crewModePreviewOn()

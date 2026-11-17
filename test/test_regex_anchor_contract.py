@@ -41,8 +41,26 @@ from types import ModuleType
 import pytest
 
 from kiro_crew import cloud, crew_log, skill_providers
+from kiro_crew.apps.builtins import mochi
+from kiro_crew.apps.builtins.aws_control import backend as aws_control_backend
+from kiro_crew.apps.builtins.aws_control.backend import storage as aws_control_storage
+from kiro_crew.apps.builtins.aws_control.backend.backup_parts import (
+    identity as aws_control_identity,
+)
+from kiro_crew.apps.builtins.design_tweak import backend as design_tweak_backend
+from kiro_crew.apps.builtins.design_tweak.backend import request_state as design_tweak_request_state
+from kiro_crew.apps.builtins.design_tweak.backend import server as design_tweak_server
+from kiro_crew.apps.builtins.meetings import backend as meetings_backend
+from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
+from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle as meetings_lifecycle
+from kiro_crew.apps.builtins.mochi import appearance_store, petdex_import
+from kiro_crew.apps.builtins.mochi import settings as mochi_settings
 from kiro_crew.apps.builtins.papyrus import backend as papyrus_backend
 from kiro_crew.apps.builtins.papyrus.backend import gitops, store
+from kiro_crew.apps.builtins.pptx_maker import backend as pptx_maker_backend
+from kiro_crew.apps.builtins.pptx_maker.backend import paths as pptx_maker_paths
+from kiro_crew.apps.builtins.spec_builder import backend as spec_builder_backend
+from kiro_crew.apps.builtins.spec_builder.backend import parsers as spec_builder_parsers
 from kiro_crew.cloud import config as cloud_config
 from kiro_crew.cloud import ec2, fargate_engine, login_target, ssm
 from kiro_crew.cloud.fargate import identity, runtask, taskdef
@@ -54,7 +72,18 @@ from kiro_crew.skill_providers import github as skill_provider_github
 #: The structural walk imports every module in each -- recursively, so a
 #: sub-package (``cloud/fargate/``) and any package added under a registered
 #: root later are covered without editing this file.
-_REQUEST_PATH_PACKAGES = (papyrus_backend, cloud, skill_providers, crew_log)
+_REQUEST_PATH_PACKAGES = (
+    papyrus_backend,
+    cloud,
+    skill_providers,
+    crew_log,
+    mochi,
+    pptx_maker_backend,
+    meetings_backend,
+    design_tweak_backend,
+    spec_builder_backend,
+    aws_control_backend,
+)
 
 #: (pattern, canonical valid input) for every request-path validator. The
 #: behavioral half of the contract runs each through accept and reject cases.
@@ -99,6 +128,34 @@ _VALIDATORS = (
     pytest.param(skill_provider_github._SEGMENT_RE, "SKILL.md", id="skill-provider-path-segment"),
     pytest.param(skill_provider_github._REF_RE, "release/1.2", id="skill-provider-ref"),
     pytest.param(crew_log_schema._SEGMENT_RE, "activity", id="crew-log-name-segment"),
+    pytest.param(appearance_store._SAFE_ID, "idle", id="mochi-pack-id-or-slot"),
+    pytest.param(petdex_import._SLUG_RE, "space-cat.v2", id="mochi-petdex-slug"),
+    pytest.param(mochi_settings._LANGUAGE_TAG_RE, "zh-Hant-TW", id="mochi-language-tag"),
+    pytest.param(pptx_maker_paths.SEGMENT_RE, "deck-1", id="pptx-maker-path-segment"),
+    pytest.param(meetings_store._SAFE_ID_RE, "sprint-standup", id="meetings-meeting-id"),
+    pytest.param(meetings_store._SAFE_AGENT_ID_RE, "note-taker", id="meetings-agent-id"),
+    pytest.param(
+        meetings_store._SAFE_NOTE_IMAGE_RE, "0" * 32 + ".png", id="meetings-note-image-name"
+    ),
+    pytest.param(meetings_lifecycle._NOTE_EDITOR_RE, "tab-a", id="meetings-note-editor"),
+    pytest.param(
+        design_tweak_request_state.REQUEST_ID_RE,
+        "1700000000000-abc123",
+        id="design-tweak-request-id",
+    ),
+    pytest.param(
+        design_tweak_server._HEADER_NAME_RE, "X-Powered-By", id="design-tweak-header-name"
+    ),
+    pytest.param(spec_builder_parsers._NAME_RE, "my-spec_1", id="spec-builder-spec-name"),
+    pytest.param(
+        spec_builder_parsers._SLOT_KEY_RE, "spec-builder-my-spec_1", id="spec-builder-slot-key"
+    ),
+    pytest.param(spec_builder_parsers._SLOT_SUFFIX_RE, "0123abcd", id="spec-builder-slot-suffix"),
+    pytest.param(spec_builder_parsers._SHA256_RE, "0" * 64, id="spec-builder-sha256"),
+    pytest.param(
+        aws_control_storage._KEY_SEGMENT_RE, "photos 2026", id="aws-control-drive-key-segment"
+    ),
+    pytest.param(aws_control_identity._INSTALL_ID_RE, "0" * 32, id="aws-control-install-id"),
     # The dashboard artifact handler's two raw ``.match`` validators.
     # Behavioral half only: the handlers package is not in
     # ``_REQUEST_PATH_PACKAGES``, since other modules in it still carry the

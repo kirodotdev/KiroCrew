@@ -138,18 +138,18 @@ function buildGatewayEnvironment(
  * Decide where a packaged gateway's bytecode may go — and on macOS, that it may
  * not be written at all.
  *
- * Both desktop bundles ship hash-based pycs beside their sources, so a
- * packaged runtime finds its modules already compiled and has no reason to write
- * one. That is what lets this consume adjacent `__pycache__` instead of
- * redirecting to a per-user cache the first launch would have to populate.
- * macOS compiles the WHOLE tree as CHECKED-hash
- * (`compileall --invalidation-mode checked-hash` in
- * `packaging/build-desktop.sh`); Windows ships the narrower traced startup
- * closure as UNCHECKED-hash, which is enough there because a later write is
- * harmless. Both ignore mtime, which is the property that survives extraction
- * restamping; they differ only in whether the loader re-reads and re-hashes the
- * `.py` on every import, which on Windows measured a median 12.5 s per cold boot
- * across the closure's 1639 modules.
+ * Both desktop bundles ship hash-based pycs beside their sources for the
+ * modules a packaged runtime starts with, so it finds them already compiled.
+ * That is what lets this consume adjacent `__pycache__` instead of redirecting
+ * to a per-user cache the first launch would have to populate. Both ship a
+ * traced startup closure (`packaging/precompile_windows.py`), not the whole
+ * tree. macOS ships it as CHECKED-hash, together with the whole standard
+ * library and the whole kiro_crew package
+ * (`precompile_macos_backend` in `packaging/desktop-bytecode.sh`); Windows ships
+ * it as UNCHECKED-hash. Both ignore mtime, which is the property that survives
+ * extraction restamping; they differ only in whether the loader re-reads and
+ * re-hashes the `.py` on every import, which on Windows measured a median
+ * 12.5 s per cold boot across the closure's 1639 modules.
  *
  * macOS additionally FORBIDS the write. `codesign` seals every file under a
  * `.app`'s `Contents/`, so bytecode written there after signing invalidates the
@@ -161,7 +161,11 @@ function buildGatewayEnvironment(
  * (measured 3.95s cold vs 0.84s warm). Forbidding the write keeps the shipped
  * caches readable — `PYTHONDONTWRITEBYTECODE` disables writing only — so a
  * module inside the closure loads from disk and one outside it compiles in
- * memory and leaves no file behind.
+ * memory and leaves no file behind. This variable reaches only the gateway's
+ * own process tree; the bundled interpreter also refuses the write by itself
+ * (a `.pth` the build drops into its site-packages), which covers the MCP
+ * stubs the agent runtime starts with the Python variables stripped and a
+ * `kirocrew` typed into a terminal.
  *
  * Windows is not locked down, deliberately: Authenticode does not seal resource
  * trees, so a write there is harmless, and letting modules outside the traced

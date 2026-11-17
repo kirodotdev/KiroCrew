@@ -69,10 +69,15 @@ class TestCrossProcessLock:
         rewrite in the holder could clobber it → silent transcript loss).
         Instead it polls up to a bounded deadline, then raises
         ``HistoryLockTimeout`` and leaves the file untouched.
+
+        The deadline is asserted on an injected clock that only the poll's own
+        sleeps advance: the append gives up on the first poll at or past
+        ``_FLOCK_ACQUIRE_TIMEOUT_S``, whatever the host's speed.
         """
         if not platform_compat.IS_POSIX:
             pytest.skip("advisory flock semantics are POSIX-specific")
         import kiro_crew.history as history_mod
+        import kiro_crew.history_locks as locks_mod
 
         monkeypatch.setattr(history_mod, "_FLOCK_ACQUIRE_TIMEOUT_S", 0.2)
         monkeypatch.setattr(history_mod, "_FLOCK_POLL_INTERVAL_S", 0.02)
@@ -80,16 +85,47 @@ class TestCrossProcessLock:
         log.append("k", "user", "seed")
         lock_path = log._lock_path("k")
 
+        real_time = locks_mod._time
+        this_thread = threading.get_ident()
+
+        class _PollClock:
+            """This thread's clock for the poll: only its sleeps move it."""
+
+            def __init__(self) -> None:
+                self.now = 0.0
+                self.sleeps: list[float] = []
+
+            def monotonic(self) -> float:
+                if threading.get_ident() != this_thread:
+                    return real_time.monotonic()
+                return self.now
+
+            def sleep(self, secs: float) -> None:
+                if threading.get_ident() != this_thread:
+                    real_time.sleep(secs)
+                    return
+                self.sleeps.append(secs)
+                # Lost-run guard: an acquire that ignores its deadline fails here
+                # by name instead of polling forever.
+                assert len(self.sleeps) <= 1000, "the acquire polled past any deadline"
+                self.now += secs
+
+        clock = _PollClock()
+
         # Simulate another process holding the exclusive advisory lock.
         holder = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             assert platform_compat.try_acquire_lock(holder, exclusive=True)
-            start = time.monotonic()
-            with pytest.raises(history_mod.HistoryLockTimeout):
-                log.append("k", "user", "under-contention")
-            elapsed = time.monotonic() - start
-            # Bounded (not unbounded), and it did fail rather than spin forever.
-            assert elapsed < 2.0, f"append blocked {elapsed:.2f}s despite bounded acquire"
+            with monkeypatch.context() as mp:
+                mp.setattr(history_mod, "_time", clock)
+                with pytest.raises(history_mod.HistoryLockTimeout):
+                    log.append("k", "user", "under-contention")
+            # It polled at the configured interval and gave up on the first poll
+            # at or past the deadline: bounded, and it failed rather than spun.
+            assert clock.sleeps and set(clock.sleeps) == {0.02}, clock.sleeps
+            assert (
+                0.2 - 1e-9 <= clock.now <= 0.2 + 0.02 + 1e-9
+            ), f"append gave up at {clock.now:.3f}s on its clock; the deadline is 0.2s"
         finally:
             platform_compat.release_lock(holder)
             os.close(holder)
@@ -124,14 +160,49 @@ class TestCrossProcessLock:
         def _no_sleep_on_loop(_secs: float) -> None:
             raise AssertionError("on-loop acquire must never sleep/poll (blocks the event loop)")
 
-        monkeypatch.setattr(history_mod._time, "sleep", _no_sleep_on_loop)
+        # The loop thread's sleep is refused through ``_LoopTime`` below, on the
+        # defining module's own binding: patching ``time.sleep`` itself would hand
+        # every other thread in the worker this refusal too.
         log = ConversationLog(base_dir=tmp_path)
         log.append("k", "user", "seed")
         holder = os.open(str(log._lock_path("k")), os.O_RDWR | os.O_CREAT, 0o600)
 
-        async def _run() -> float:
+        import kiro_crew.history_locks as locks_mod
+
+        # Count the flock attempts, and refuse the off-loop deadline clock: the
+        # only reader of ``_time.monotonic`` in the defining module is the
+        # patient poll, so reaching it means the loop path used the long budget.
+        # Only the loop thread (this one: ``asyncio.run`` runs here) is counted and
+        # refused; any other thread in the worker gets the real functions.
+        loop_thread = threading.get_ident()
+        attempts: list[int] = []
+        real_try = locks_mod._try_acquire_named_sidecar
+        real_time = locks_mod._time
+
+        def _counted_try(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if threading.get_ident() == loop_thread:
+                attempts.append(1)
+            return real_try(*args, **kwargs)
+
+        class _LoopTime:
+            def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+                return getattr(real_time, name)
+
+            def monotonic(self) -> float:
+                if threading.get_ident() == loop_thread:
+                    raise AssertionError("on-loop acquire started the off-loop deadline poll")
+                return real_time.monotonic()
+
+            def sleep(self, secs: float) -> None:
+                if threading.get_ident() == loop_thread:
+                    _no_sleep_on_loop(secs)
+                real_time.sleep(secs)
+
+        monkeypatch.setattr(locks_mod, "_try_acquire_named_sidecar", _counted_try)
+        monkeypatch.setattr(history_mod, "_time", _LoopTime())
+
+        async def _run() -> None:
             assert platform_compat.try_acquire_lock(holder, exclusive=True)
-            start = time.monotonic()
             # This test exercises the low-level on-loop acquire primitive
             # directly, so it deliberately bypasses the strict off-loop
             # discipline guard (which would otherwise raise OnLoopPersistError
@@ -140,13 +211,11 @@ class TestCrossProcessLock:
                 with pytest.raises(history_mod.HistoryLockTimeout):
                     # append runs synchronously on THIS loop thread.
                     log.append("k", "user", "under-contention")
-            return time.monotonic() - start
 
         try:
-            elapsed = _asyncio.run(_run())
-            # Single non-blocking attempt: returns effectively immediately and
-            # never used the long off-loop budget.
-            assert elapsed < 1.0, f"on-loop acquire blocked ({elapsed:.2f}s)"
+            _asyncio.run(_run())
+            # Single non-blocking attempt, and never the long off-loop budget.
+            assert attempts == [1], f"on-loop acquire made {len(attempts)} flock attempts"
         finally:
             platform_compat.release_lock(holder)
             os.close(holder)
@@ -200,6 +269,28 @@ class TestCrossProcessLock:
 class TestMessageCacheRewriteSerialization:
     """The cache FILL is ordered against writers, but a warm read is not, and
     an on-loop read never blocks on one."""
+
+    class _RefuseBlocking:
+        """Wrap the writer lock: record every acquire, refuse any that can block."""
+
+        def __init__(self, lock) -> None:  # type: ignore[no-untyped-def]
+            self._lock = lock
+            self.calls: list[tuple[bool, float]] = []
+
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            self.calls.append((blocking, timeout))
+            if blocking:
+                raise AssertionError(f"read blocked on the writer lock (timeout={timeout})")
+            return self._lock.acquire(blocking=False)
+
+        def release(self) -> None:
+            self._lock.release()
+
+        def __enter__(self) -> bool:
+            return self.acquire()
+
+        def __exit__(self, *_exc: object) -> None:
+            self.release()
 
     @staticmethod
     def _hold(lock, acquired, release):  # type: ignore[no-untyped-def]
@@ -263,10 +354,11 @@ class TestMessageCacheRewriteSerialization:
 
         acquired, release = threading.Event(), threading.Event()
         t = self._hold(log._file_lock("k"), acquired, release)
+        spy = self._RefuseBlocking(log._file_lock("k"))
+        log._file_lock = lambda _key: spy  # type: ignore[method-assign]
         try:
-            started = time.monotonic()
             assert len(log._read_messages("k")) == 1
-            assert time.monotonic() - started < 1.0, "warm hit blocked on the writer lock"
+            assert spy.calls == [], "warm hit tried the writer lock"
         finally:
             release.set()
             t.join(5)
@@ -280,14 +372,16 @@ class TestMessageCacheRewriteSerialization:
 
         acquired, release = threading.Event(), threading.Event()
         t = self._hold(log._file_lock("k"), acquired, release)
+        spy = self._RefuseBlocking(log._file_lock("k"))
+        log._file_lock = lambda _key: spy  # type: ignore[method-assign]
         try:
 
             async def on_loop() -> list[dict]:
                 return log._read_messages("k")
 
-            started = time.monotonic()
             assert len(asyncio.run(on_loop())) == 1
-            assert time.monotonic() - started < 1.0, "on-loop fill blocked on the writer"
+            # One non-blocking try that the writer refused, then an unlocked fill.
+            assert spy.calls == [(False, -1)], "on-loop fill blocked on the writer"
         finally:
             release.set()
             t.join(5)
@@ -364,7 +458,10 @@ class TestMessageCacheRewriteSerialization:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A wedged holder must not hang the reader: the off-loop acquire is
-        capped at the writer's own ceiling and then fills unlocked."""
+        capped at the writer's own ceiling and then fills unlocked.
+
+        The cap is asserted as the timeout the fill passes to the writer lock;
+        an acquire without one is refused on the spot instead of waiting."""
         import kiro_crew.history as history_mod
 
         monkeypatch.setattr(history_mod, "_FLOCK_ACQUIRE_TIMEOUT_S", 0.1)
@@ -373,13 +470,27 @@ class TestMessageCacheRewriteSerialization:
         log._invalidate_cache("k")
 
         acquired, release = threading.Event(), threading.Event()
-        t = self._hold(log._file_lock("k"), acquired, release)
+        real_lock = log._file_lock("k")
+        t = self._hold(real_lock, acquired, release)
+        asks: list[tuple[bool, float]] = []
+
+        class _RecordedLock:
+            """The real writer lock, with each acquire's arguments recorded."""
+
+            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                asks.append((blocking, timeout))
+                assert not (blocking and timeout < 0), "the fill waited on the writer unbounded"
+                return real_lock.acquire(blocking, timeout)
+
+            def release(self) -> None:
+                real_lock.release()
+
         try:
-            started = time.monotonic()
-            with log._cache_fill_lock("k") as held:
-                assert held is False, "reader claimed a lock the holder still owns"
-            elapsed = time.monotonic() - started
-            assert elapsed < 3.0, f"off-loop acquire was not bounded (waited {elapsed:.1f}s)"
+            with monkeypatch.context() as mp:
+                mp.setattr(log, "_file_lock", lambda key: _RecordedLock())
+                with log._cache_fill_lock("k") as held:
+                    assert held is False, "reader claimed a lock the holder still owns"
+            assert asks == [(True, 0.1)], f"off-loop acquire was not capped at the ceiling: {asks}"
             assert len(log._read_messages("k")) == 1
         finally:
             release.set()
@@ -846,7 +957,7 @@ class TestConsolidationOffsetAfterRotation:
             log.append("k", "user", f"{i}:{body}")
 
         # --- OLD PAIRING (simulated): read offset, then a rotation fires, then
-        # read generation. This is what the pre-fix consolidator did. ---
+        # read generation: the racy order a consolidator must not use. ---
         stale_offset = len(log._read_messages("k"))  # PRE-rotation total = 100
         for i in range(100, 300):
             log.append("k", "user", f"{i}:{body}")  # triggers a real rotation

@@ -9,6 +9,7 @@ import { api } from '../../api/client'
 import { createTestStore } from '../../test/helpers'
 
 import { SidePanelDockContext } from '../../components/SidePanelLayout'
+import { __setFeaturePreviewLockKnownForTests } from '../../utils/editionLocks'
 import SettingsSearch from './SettingsSearch'
 
 /**
@@ -62,6 +63,15 @@ const input = () => screen.getByRole('combobox')
 describe('SettingsSearch', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('offers Start New Chats in conductor mode in an open search once the edition lock is known', () => {
+    __setFeaturePreviewLockKnownForTests(false)
+    setup()
+    fireEvent.change(input(), { target: { value: 'Start New Chats in conductor mode' } })
+    expect(screen.queryByText('Start New Chats in conductor mode')).toBeNull()
+    act(() => { __setFeaturePreviewLockKnownForTests(true) })
+    expect(screen.getByText('Start New Chats in conductor mode')).toBeInTheDocument()
   })
 
   it('shows matching rows for a query against a stable registry entry', () => {

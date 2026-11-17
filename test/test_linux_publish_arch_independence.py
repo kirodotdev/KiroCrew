@@ -117,7 +117,7 @@ def test_nightly_relaxes_the_arm64_build_and_the_release_lane_does_not() -> None
         "a release run records the stable promotion candidate, where all three "
         "arm64 Linux roles are REQUIRED (scripts/release_promotion.py), so "
         "publishing x64 alone would burn immutable keys for an unpromotable "
-        "version -- that trade is #1030's to settle"
+        "version, so the release lane must keep the arm64 build required"
     )
 
 
@@ -141,7 +141,7 @@ def test_the_release_lane_still_requires_the_aggregate_build_result() -> None:
     for name, job in _linux_publishers("release.yml").items():
         assert "needs.build-desktop.result == 'success'" in str(job["if"]), (
             f"{name} no longer requires the aggregate build result. That is the "
-            "coupling #1030 has to decide before it is loosened, because this "
+            "coupling that must stay until a maintainer loosens it, because this "
             "lane's run is what records the promotion candidate."
         )
 

@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import type { HeightIndex } from './HeightIndex'
-import type { PaintedHeights } from './measurement'
+import type { FiredAnchor, PaintedHeights } from './measurement'
 import type { RetainedVirtualRange } from './types'
 import {
   computeJumpWindow,
@@ -283,10 +283,12 @@ export function useWindowOperations<T>(ctx: {
   elIndexRef: Ref<Map<Element, number>>
   /** What the committed spacers were rendered from (see PaintedHeights). */
   paintedHeightsRef: Ref<PaintedHeights | null>
+  /** The reader's row the last fire measured; a recompute keeps it mounted. */
+  firedAnchorRef: Ref<FiredAnchor | null>
   view: Pick<WindowState, 'setWindowRange' | 'windowRangeRef'>
   follow: Pick<FollowState, 'stickRef'>
 }): WindowOperations {
-  const { overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef } = ctx
+  const { overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, firedAnchorRef } = ctx
   const { setWindowRange, windowRangeRef } = ctx.view
   const { stickRef } = ctx.follow
 
@@ -372,12 +374,20 @@ export function useWindowOperations<T>(ctx: {
           start: Math.max(0, firstVisible - overscanN),
           end: Math.min(count, lastVisible + 1 + overscanN),
         }
+        // Keep the reader's row the last fire measured mounted (see
+        // FiredAnchor): this recompute can run before the fire that pays a
+        // reflow, against a scrollTop that still holds the reflow.
+        const held = firedAnchorRef.current
+        const heldIndex = held ? elIndexRef.current.get(held.node) : undefined
+        if (heldIndex !== undefined) {
+          next = { start: Math.min(next.start, heldIndex), end: Math.max(next.end, heldIndex + 1) }
+        }
         const cap = leadingCapRef.current
         if (cap !== null && cap < overscanN) {
           // Staged landing: mount at most `cap` rows above the reader now. A
           // row above that is already mounted stays mounted -- unmounting it
           // only to mount it again a frame later is the cost being split.
-          const cappedStart = Math.max(0, firstVisible - cap)
+          const cappedStart = Math.min(Math.max(0, firstVisible - cap), heldIndex ?? count)
           const fullStart = next.start
           const end = next.end
           setWindowRange((prev) => mergeWindowRange(prev, {
@@ -395,7 +405,7 @@ export function useWindowOperations<T>(ctx: {
     // which cannot strand an anchor when this recompute's own update is merged
     // away to a no-op.
     setWindowRange((prev) => mergeWindowRange(prev, next, grow))
-  }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, stickRef, setWindowRange])
+  }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, firedAnchorRef, stickRef, setWindowRange])
 
   // Each step lands on a LATER frame: a frame callback requested from this
   // task runs before this frame paints, so the step waits for the callback

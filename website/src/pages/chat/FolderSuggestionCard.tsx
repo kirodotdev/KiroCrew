@@ -8,6 +8,7 @@ import { orderFoldersWithPaths, type FolderSortMode } from '../../utils/folderTr
 import { isMateManaged } from '../../utils/mateFolders'
 import { NativeSelect, NativeSelectOption } from '../../components/ui/native-select'
 import { Glass } from '../../components/Glass'
+import { COMPOSER_RADIUS } from '../../components/composerRadius'
 
 export interface FolderSuggestionCardProps {
   /** The folder the backend suggested — preselected in the dropdown. */
@@ -114,8 +115,8 @@ export default function FolderSuggestionCard({
         Glass card, same material and primitive as TipCard (components/Glass.tsx). */}
     <Glass
       variant="chip"
-      radius={6}
-      className="glass-accent glass-shadow w-full flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-4 py-2 rounded-md text-xs"
+      radius={COMPOSER_RADIUS}
+      className="glass-accent glass-shadow w-full flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-4 py-2 text-xs"
       role="complementary"
       aria-label={i18nT('components.folderSuggestionCard.folder_suggestion')}
       data-testid="folder-suggestion-card"

@@ -1,7 +1,7 @@
 /** The chat state's shape: `ChatState`, the entity types it is built from, the
  *  initial value, and the one persisted key family it seeds from
  *  (`mc-activity-open:<slot>`). */
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import type { PhaseDetail, ToolPhaseDetail } from '../../utils/toolStatusLabel'
 import type { ChatMessage, SessionInfo, SubagentActivity, ToolActivity } from '../../types'
 import type { SubagentQueuedReason } from '../../pages/chat/subagentQueuedReason'
@@ -38,6 +38,9 @@ export const persistActivityOpen = (slot: string | null, open: boolean): void =>
   if (!slot) return
   safeSetItem(ACTIVITY_OPEN_PREFIX + slot, String(open))
 }
+/** Whether `slot` has a saved panel open/closed choice: the panel was opened or
+ *  closed in that chat at least once. */
+export const hasSavedActivityOpen = (slot: string): boolean => safeGetItem(ACTIVITY_OPEN_PREFIX + slot) !== null
 /** The panel state a chat is entered with: its own saved choice (closed when it
  *  has none), or open while Keep side panel open is on and the entry CHANGES the
  *  chat. Re-entering the chat already shown (a return to the chat page, a switch
@@ -92,6 +95,10 @@ export interface SideMessage {
   is_error?: boolean
   /** Injected into a turn that was already running, not asked from idle. */
   steer?: boolean
+  /** A finished answer's blocked-link records, raw from its final frame or the
+   *  restore read (`link_blocks`): the links its bubble draws as a Blocked link
+   *  card. Validated where they are drawn. */
+  link_blocks?: unknown
   /** Shown before the server confirmed it, so it can be found again by identity.
    *  Position is not usable: an in-flight turn's frames interleave, and both the
    *  reconcile and the rollback used to guess this row was simply the last one. */
@@ -247,6 +254,8 @@ export interface ChatState {
    *  sets it. Read by `useAckCronNotesInView`: opening a cron run's chat is
    *  what marks its bell note read (#23564). */
   userOpen?: { key: string; seq: number; landed: boolean }
+  /** Bumped when a slot switch asks the chat page to leave Split View. */
+  leaveSplitSeq?: number
   /** Forks started in this window that will open their child when they
    *  succeed and `forkMayOpen` allows it. Creates are tracked by
    *  `foregroundCreateId`. While either is pending, the chat page does not
@@ -463,6 +472,8 @@ export interface ChatState {
   voicePlaying: boolean
   /** A speech request for the active slot is waiting for its first audio. */
   voicePreparing: boolean
+  /** The listener paused the reading; the position is held until they resume or stop. */
+  voicePaused: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
   /** Aggregate "waiting to start" count per slot — agents accepted but queued
@@ -661,8 +672,9 @@ export interface ChatState {
    *  consumed the tick would make a NEWER snapshot read as stale. Warm
    *  against warm is ordered by `runWarmSeq`, the `warmSeq` of the newest
    *  warm whose run-state verdict was applied; an older warm landing after
-   *  it declines. */
-  slotRun: Record<string, { state: SlotState; lastChunkSeq?: number; lastChunkGen?: string; tick?: number; runWarmSeq?: number }>
+   *  it declines. `pendingTurn` is `pendingTurnSlot` for a slot that is not
+   *  on screen: a local send still awaiting server confirmation. */
+  slotRun: Record<string, { state: SlotState; lastChunkSeq?: number; lastChunkGen?: string; tick?: number; runWarmSeq?: number; pendingTurn?: true }>
   /** Path B: per-slot one-time hydration guard so the server history is
    *  prepended exactly once even if a WS frame seeds slotMessages first. */
   slotHydrated: Record<string, boolean>
@@ -749,9 +761,12 @@ export interface ChatState {
   // IS an answer — the user who keeps typing has declined by conduct — and the
   // backend needs no telling because it never re-offers this slot anyway.
   folderSuggestions: Record<string, { folderId: string; folderName: string; breadcrumb: string; ts: number; turns: number }>
-  // Slot with a locally-started turn awaiting server confirmation. While set,
-  // the slots-sync ignores a server running=false for it (the snapshot may
-  // predate the send). Cleared on server confirmation or turn end.
+  // The active slot, while it has a locally-started turn awaiting server
+  // confirmation. While set, the slots-sync ignores a server running=false for
+  // it (the snapshot may predate the send). Cleared on server confirmation or
+  // turn end. Leaving the slot parks the mark on its `slotRun` entry
+  // (`pendingTurn`) and entering it brings the mark back (`enterActiveSlot`),
+  // so each slot keeps its own; `selectPendingTurn` reads either place.
   pendingTurnSlot: string | null
   // The last close the server refused, so the row that came back is explained.
   // Set by `deleteSlot` itself, so every close path (sidebar X, any session
@@ -810,6 +825,7 @@ export const initialState: ChatState = {
   slotContextTokens: {},
   voicePlaying: false,
   voicePreparing: false,
+  voicePaused: false,
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},

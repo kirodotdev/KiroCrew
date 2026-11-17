@@ -47,6 +47,16 @@ const mockNavigate = vi.hoisted(() => vi.fn())
 const mockCreateSlot = vi.hoisted(() => vi.fn((opts: unknown) => ({ type: 'chat/createSlot', payload: opts })))
 
 vi.mock('../api/client', () => ({ api: mockApi, ApiError: StubApiError }))
+// The Enroll dialog's second step is the bot editor's reviewed add.
+const mockKit = vi.hoisted(() => ({
+  get: vi.fn(() => Promise.resolve({ member: 'reviewer-bot', revision: 'r0' })),
+  preview: vi.fn(() => Promise.resolve({ member: 'reviewer-bot', template: 'reviewer', revision: 'rev-1', runs_unasked: false, changes: [] })),
+  apply: vi.fn(),
+}))
+vi.mock('../api/crewCapabilities', async (orig) => ({
+  ...(await orig<typeof import('../api/crewCapabilities')>()),
+  crewWorkerKitApi: mockKit,
+}))
 vi.mock('../store', () => ({ useAppDispatch: () => mockDispatch, useAppSelector: () => [] }))
 vi.mock('../store/chatSlice', () => ({ createSlot: mockCreateSlot }))
 vi.mock('react-router-dom', async () => {
@@ -78,6 +88,7 @@ import { i18next } from '../i18n/all'
 import { defaultAgentQuery, type DefaultAgentReadout } from '../api/defaultAgentQuery'
 import type { TemplateRow } from '../pages/overview/AgentTemplatesTab'
 import { MORE_BELOW_MASK } from '../components/ModelEffortDropdown'
+import { namedCeiling } from './namedCeiling'
 
 const row = (over: Partial<TemplateRow>): TemplateRow => ({
   name: 'x', filename: 'x.json', description: '', model: '', skills: [], mcp_servers: [],
@@ -201,7 +212,7 @@ describe('AgentTemplatesTab roster', () => {
     expect(locked).toHaveTextContent('prompt of atlas')
   })
 
-  it('names a chat folder among the references, and an enrolled template says so', async () => {
+  it('names a chat folder among the references, and still offers Enroll on a template a bot runs', async () => {
     mockApi.agentTemplates.mockResolvedValue({
       templates: [row({ name: 'reviewer', filename: 'reviewer.json', used_by: [
         { kind: 'folder', id: 'f-1', label: 'Reviews' }, { kind: 'crew', id: 'reviewer', label: 'reviewer' },
@@ -224,8 +235,15 @@ describe('AgentTemplatesTab roster', () => {
     fireEvent.click(screen.getByRole('button', { name: '1 webhook' }))
     expect(mockNavigate).toHaveBeenLastCalledWith('/webhooks')
     const items = await openMore()
-    expect(items[0]).toHaveTextContent('Already enrolled as a bot.')
-    expect(items[0]).toHaveAttribute('data-disabled')
+    // A bot never carries the template's name, so no holder means "already
+    // enrolled": the row stays available and the dialog picks a free name.
+    // The row promises what enrolling gives: the agent's abilities, which
+    // later changes to the agent do not reach. It never says "copy": on this
+    // page that word counts bots that forked the agent's file.
+    expect(items[0]).toHaveTextContent('its own memory and this agent\'s abilities')
+    expect(items[0]).not.toHaveTextContent(/cop(y|ies)/i)
+    expect(items[0]).toHaveTextContent('Later changes to this agent do not reach that bot')
+    expect(items[0]).not.toHaveAttribute('data-disabled')
     fireEvent.click(items.find(i => i.textContent === 'Delete')!)
     // The row already shows holders, so the "nothing points at it" confirm is
     // never asked and no request is sent: the reference list opens directly.
@@ -712,6 +730,84 @@ describe('AgentTemplatesTab actions', () => {
     expect(screen.queryByRole('button', { name: /Allow background agents/ })).toBeNull()
   })
 
+  it.each([false, true])('offers every tool without auto-approval when session_lists_tools is %s', async (session_lists_tools) => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: [], allowedTools: [],
+      resources: [], mcpServers: {}, skills: [], session_lists_tools,
+    }))
+    renderTab()
+    const add = await screen.findByTestId('tpl-allow-every-tool', {}, EDITOR_CHAIN)
+    expect(add).toHaveTextContent(/^Allow every tool$/)
+    const noToolsHint = "This agent lists no tools, so it can't run commands or work with files."
+    const addedToolsHint = 'This agent file lists no tools of its own. Its sessions still get tools from added MCP servers.'
+    expect(screen.getByText(session_lists_tools ? addedToolsHint : noToolsHint)).toBeInTheDocument()
+    expect(screen.queryByText(session_lists_tools ? noToolsHint : addedToolsHint)).toBeNull()
+    fireEvent.click(add)
+    const toggle = screen.getByRole('button', { name: '*: not auto-approved', pressed: false })
+    expect(toggle).toHaveTextContent('not auto-approved')
+    expect(toggle).toHaveAttribute('title', 'not auto-approved')
+    expect(screen.queryByTestId('tpl-allow-every-tool')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['*'],
+      allowedTools: [],
+    }), EDITOR_CHAIN)
+  })
+
+  it.each([
+    ['a named tool', ['execute_bash'], '*: not auto-approved', 'not auto-approved'],
+    ['every tool', ['*'], '*: auto-approve ✓', 'Auto-approved — click to ask first'],
+  ])('preserves existing auto-approval for %s when allowing every tool', async (_name, allowedTools, stateLabel, title) => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: [], allowedTools,
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    renderTab()
+    const add = await screen.findByTestId('tpl-allow-every-tool', {}, EDITOR_CHAIN)
+    expect(add).toHaveTextContent(/^Allow every tool$/)
+    fireEvent.click(add)
+    const toggle = screen.getByRole('button', { name: /^\*:/ })
+    expect(toggle).toHaveAccessibleName(stateLabel)
+    expect(toggle).toHaveAttribute('title', title)
+    expect(toggle).toHaveAttribute('aria-pressed', String(allowedTools.includes('*')))
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['*'],
+      allowedTools,
+    }), EDITOR_CHAIN)
+  })
+
+  // The hint follows the backend's `spec_lists_tools`: `"*"` as the whole value
+  // lists every tool, and a list lists tools only with a non-empty name in it.
+  it.each([
+    ['the whole-value "*"', '*', false],
+    ['a list holding only an empty name', [''], true],
+    ['a malformed value', { fs_read: true }, true],
+  ])('reads %s the way the chat notice does', async (_name, tools, hinted) => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools, allowedTools: [],
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    renderTab()
+    await screen.findByRole('button', { name: 'Add tool' }, EDITOR_CHAIN)
+    expect(screen.queryByTestId('tpl-allow-every-tool') !== null).toBe(hinted)
+  })
+
+  it('keeps a whole-value "*" through an edit to the tool list', async () => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: '*', allowedTools: [],
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    renderTab()
+    expect(await screen.findByRole('button', { name: '*: not auto-approved' }, EDITOR_CHAIN)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Allow background agents/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['*', ...SPAWN_FAMILY],
+      allowedTools: [],
+    }), EDITOR_CHAIN)
+  })
+
   it('reports a spawn grant the server cannot declare in the save bar', async () => {
     const reason = "Could not add kirocrew-core: the MCP servers section of this agent's file is malformed, so the tool would never load. Fix that section in the file, then save again."
     mockApi.agentPatch.mockRejectedValue(new StubApiError(409, reason, { error: reason, code: 'control_plane_not_declarable' }))
@@ -862,8 +958,9 @@ describe('AgentTemplatesTab — enrolling reaches the crew registry', () => {
     // read can reach the crewmate the enroll just created (#12740's idiom).
     mockApi.kirocrewAgents
       .mockResolvedValueOnce({ agents: [{ name: 'pr-bot' }], default_agent: 'kirocrew' })
-      .mockResolvedValue({ agents: [{ name: 'pr-bot' }, { name: 'reviewer' }], default_agent: 'kirocrew' })
+      .mockResolvedValue({ agents: [{ name: 'pr-bot' }, { name: 'reviewer-bot' }], default_agent: 'kirocrew' })
     mockApi.agentTemplates.mockResolvedValue({ templates: [FREE, PKG, RUNTIME, COPY] })
+    mockApi.createKirocrewAgent.mockResolvedValue({ ok: true, name: 'reviewer-bot' })
 
     renderWithCrews()
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
@@ -871,16 +968,30 @@ describe('AgentTemplatesTab — enrolling reaches the crew registry', () => {
 
     const items = await openMore()
     fireEvent.click(items[0])
+    // Enroll asks for the bot's name first, with a free one filled in: a bot
+    // cannot be created under the template's own name (409
+    // `template_name_in_use`), nor from any template but the built-in worker.
+    const dialog = await screen.findByRole('dialog', { name: 'Enroll reviewer as a bot' })
+    expect(within(dialog).getByLabelText('Bot name')).toHaveValue('reviewer-bot')
+    expect(mockApi.createKirocrewAgent).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByTestId('enroll-create'))
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
     // Enrolling defaults the crewmate to a name-seeded ICON, the same default
     // the New-crewmate dialog applies — never the trait ghost a missing avatar
     // falls back to on render (#18616). Headless create paths (CLI, raw API)
     // are tracked separately for backend seeding.
     expect(mockApi.createKirocrewAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'reviewer', avatar: expect.objectContaining({ kind: 'icon' }) }),
+      expect.objectContaining({ name: 'reviewer-bot', kiro_agent: 'kirocrew', avatar: expect.objectContaining({ kind: 'icon' }) }),
     )
 
-    await waitFor(() => expect(screen.getByTestId('crews-roster')).toHaveTextContent('reviewer'))
+    await waitFor(() => expect(screen.getByTestId('crews-roster')).toHaveTextContent('reviewer-bot'))
+    // The second step: the template's abilities, previewed for the new bot.
+    // Behind a real chain (create settles, the pane reads the kit, its effect
+    // picks the agent, the preview request goes out), so the wait is named.
+    await waitFor(
+      () => expect(mockKit.preview).toHaveBeenCalledWith('reviewer-bot', { template: 'reviewer' }),
+      namedCeiling('ENROLL_PREVIEW_REQUESTED', 5000),
+    )
   })
 })
 

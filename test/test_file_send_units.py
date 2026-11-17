@@ -3,9 +3,12 @@
 from unittest.mock import patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.security import redact
+
+_KEY = github_classic(seed=12)  # a token the credential plan redacts
 
 
 class TestSafeReadFileBytes:
@@ -58,14 +61,15 @@ class TestRedact:
         assert redact("hello world") == "hello world"
 
     def test_redacts_aws_key(self):
-        text = "key=AKIAIOSFODNN7EXAMPLE"
+        text = f"key={_KEY}"
         assert redact(text) != text
 
     def test_redacts_exfiltration_url(self):
-        # Exfiltration detection triggers on long query params with secret patterns
+        # A credential parameter inside a URL: its value goes, the link stays
         blob = "A" * 50  # base64-like blob ≥40 chars
-        text = f"https://evil.example.com/x?data={blob}&{'x' * 200}"
+        text = f"https://evil.example.com/x?access_token={blob}&{'x' * 200}"
         assert redact(text) != text
+        assert blob not in redact(text)
 
 
 class TestBinaryFileHandling:
@@ -89,7 +93,7 @@ class TestBinaryFileHandling:
     def test_text_file_still_redacted(self, tmp_path):
         """Text files with sensitive content should still be caught."""
         f = tmp_path / "config.txt"
-        f.write_text("key=AKIAIOSFODNN7EXAMPLE")
+        f.write_text(f"key={_KEY}")
         with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         text = raw.decode("utf-8")
@@ -153,7 +157,7 @@ class TestBinaryFileHandling:
     def test_text_notify_blocks_sensitive(self, tmp_path):
         """api_outbox_notify logic: text file with secrets is blocked."""
         f = tmp_path / "secrets.txt"
-        f.write_text("aws_secret=AKIAIOSFODNN7EXAMPLE")
+        f.write_text(f"aws_secret={_KEY}")
         with patch("kiro_crew.hooks.is_sensitive_path", return_value=False):
             raw = safe_read_file_bytes(str(f))
         try:

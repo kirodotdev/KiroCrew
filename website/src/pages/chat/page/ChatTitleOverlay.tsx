@@ -22,7 +22,7 @@ import Clickable from '../../../components/Clickable'
 import { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
-import { crewRootOf, hiddenMateRootOf } from '../../../lib/crewMode'
+import { crewRootOf, mateRootOf } from '../../../lib/crewMode'
 
 interface ChatTitleOverlayProps {
   embedMode?: 'chat' | 'sessions'
@@ -105,9 +105,9 @@ export default function ChatTitleOverlay({
   sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, onPromote, promoting,
 }: ChatTitleOverlayProps) {
   const currentCrewRoot = crewRootOf(currentSlot)
-  // A crewmate's session the mate sessions preview keeps out of the person's
-  // lists, opened from History, search or a link: the same breadcrumb, back to the mate.
-  const currentMateRoot = currentCrewRoot ? '' : hiddenMateRootOf(currentSlot)
+  // A crewmate's session, which its Bot's Sessions tab lists: the same
+  // breadcrumb, back to the mate.
+  const currentMateRoot = currentCrewRoot ? '' : mateRootOf(currentSlot)
   const breadcrumbRoot = currentCrewRoot || currentMateRoot
   return (
     <>

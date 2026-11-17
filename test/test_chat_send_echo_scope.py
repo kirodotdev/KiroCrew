@@ -9,17 +9,22 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard import revocation_gen, token_auth, ws_event_scope
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import finished
 
 _SLOT = "echo-scope-slot"
 _APP = "echo-scope-observer"
 _FENCE = "send-echo-test-finished"
-_PROMPT = "Keep this credential private: ghp_" + "x" * 36
+# A GitHub token with a valid checksum: the redactor reads it as a credential,
+# where a ``ghp_`` run without one is a benign placeholder it leaves alone.
+_TOKEN = github_classic()
+_PROMPT = "Keep this credential private: " + _TOKEN
 
 
 @pytest.fixture
@@ -28,8 +33,11 @@ def echo_state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr(token_auth, "_get_secret", lambda: b"echo-scope-test-signing-key")
+    mark_apps_live(monkeypatch)
     monkeypatch.setattr(token_auth, "_state", token_auth.TokenStateManager())
     monkeypatch.setattr(token_auth, "_app_perms_cache", {})
+    # The app tokens here stand for owner-enabled apps (the sealed marker).
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
     monkeypatch.setattr(token_auth, "_revoked_store_singleton", None)
     monkeypatch.setattr(revocation_gen, "_gen", 0)
     for name in ("_declared_cache", "_exposeto_cache", "_sel_last_audit"):
@@ -139,7 +147,7 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
                 json={"slot": _SLOT, "message": _PROMPT},
             )
             assert response.status == 200
-            assert _PROMPT not in await finished(response.text(), "response.text", timeout=5)
+            assert _TOKEN not in await finished(response.text(), "response.text", timeout=5)
         else:
             response = await client.post(
                 "/api/chat?ws=1",
@@ -183,14 +191,19 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
         for frame in owner_frames
         if frame.get("type") == "chat_message" and frame["data"].get("slot") == _SLOT
     ] == (["user"] if bare else ["user", "assistant"])
-    assert user_rows(app_frames) == (owner_rows if can_read_user_slots else [])
+    # A non-owner socket reads the row masked whatever the owner's setting:
+    # the credential value is gone and the rest of the message stays.
+    masked = [
+        {**row, "content": _PROMPT.replace(_TOKEN, "[REDACTED: credential]")} for row in owner_rows
+    ]
+    assert user_rows(app_frames) == (masked if can_read_user_slots else [])
     stream_rows = [
         json.loads(frame.split("data: ", 1)[1])
         for frame in sse_frames
         if frame.startswith("event: chat_message")
     ]
     assert all(row["role"] != "user" for row in stream_rows)
-    assert _PROMPT not in "".join(sse_frames)
+    assert _TOKEN not in "".join(sse_frames)
 
 
 @pytest.mark.asyncio

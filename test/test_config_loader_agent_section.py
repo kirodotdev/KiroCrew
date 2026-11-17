@@ -18,13 +18,7 @@ import unittest.mock
 import pytest
 from config_loader_helpers import _load_from_dict, _load_from_dict_with_logs
 
-from kiro_crew.config.loader import _HAS_JSONSCHEMA, AgentConfig, KiroCrewConfig
-
-# Skip marker for tests that require jsonschema validation
-_requires_jsonschema = pytest.mark.skipif(
-    not _HAS_JSONSCHEMA,
-    reason="jsonschema not available — validation tests require it",
-)
+from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
 
 
 def test_max_subagents_defaults_to_auto_sentinel() -> None:
@@ -207,6 +201,22 @@ def test_agent_spawn_min_memory_gb_parsed_and_round_trips():
     assert reloaded.agent.spawn_min_memory_gb == 9.5
 
 
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param({"agent": {"orchestrator_memory": True}}, True, id="enabled"),
+        pytest.param({"agent": {"orchestrator_memory": False}}, False, id="disabled"),
+        pytest.param({"agent": {}}, False, id="absent-default"),
+    ],
+)
+def test_orchestrator_memory_loads_from_disk_and_round_trips(document, expected) -> None:
+    loaded = _load_from_dict(document)
+    assert loaded.agent.orchestrator_memory is expected
+
+    reloaded = _load_from_dict(loaded.to_dict())
+    assert reloaded.agent.orchestrator_memory is expected
+
+
 class TestSessionControlLoad:
     """agent.session_control load-time coercion.
 
@@ -355,6 +365,35 @@ class TestCrewPanelLoad:
         assert cfg.agent.crew_panel is False
 
 
+class TestDenyOverrideLoad:
+    """agent.deny_override load-time coercion.
+
+    A missing key defaults to true; a malformed value coerces to FALSE, so a
+    botched opt-out still turns the override card off.
+    """
+
+    def test_missing_key_defaults_true(self) -> None:
+        assert _load_from_dict({}).agent.deny_override is True
+
+    def test_explicit_true_and_false(self) -> None:
+        assert _load_from_dict({"agent": {"deny_override": True}}).agent.deny_override is True
+        assert _load_from_dict({"agent": {"deny_override": False}}).agent.deny_override is False
+
+    def test_any_present_non_bool_coerces_to_false(self) -> None:
+        for bad in ("false", "true", 1, 0, None):
+            loaded = _load_from_dict({"agent": {"deny_override": bad}})
+            assert loaded.agent.deny_override is False, bad
+
+    def test_round_trips_through_to_dict(self) -> None:
+        loaded = _load_from_dict({"agent": {"deny_override": False}})
+        assert _load_from_dict(loaded.to_dict()).agent.deny_override is False
+
+    def test_coercion_says_so_in_the_log(self) -> None:
+        cfg, logs = _load_from_dict_with_logs({"agent": {"deny_override": "true"}})
+        assert cfg.agent.deny_override is False
+        assert [m for m in logs if "agent.deny_override" in m and "not a boolean" in m], logs
+
+
 class TestFallbackModelLoad:
     """agent.fallback_model flows through the explicit load() kwargs."""
 
@@ -484,7 +523,6 @@ class TestDynamicSubagentSizingFields:
         assert a.max_subagents == 0  # auto-size sentinel (0 = auto; Stage 2)
         assert a.subagent_mem_buffer_pct == 20
         assert a.subagent_cost_gb == 0.5
-        assert a.subagent_cpu_cost_cores == 1.0
         assert a.subagent_auto_max == 32
         assert a.subagent_spawn_stagger_secs == 0.25
 
@@ -495,7 +533,6 @@ class TestDynamicSubagentSizingFields:
                     "max_subagents": 0,  # auto sentinel
                     "subagent_mem_buffer_pct": 30,
                     "subagent_cost_gb": 0.4,
-                    "subagent_cpu_cost_cores": 0.8,
                     "subagent_auto_max": 24,
                     "subagent_spawn_stagger_secs": 1.5,
                 }
@@ -505,11 +542,9 @@ class TestDynamicSubagentSizingFields:
         assert a.max_subagents == 0
         assert a.subagent_mem_buffer_pct == 30
         assert a.subagent_cost_gb == 0.4
-        assert a.subagent_cpu_cost_cores == 0.8
         assert a.subagent_auto_max == 24
         assert a.subagent_spawn_stagger_secs == 1.5
 
-    @_requires_jsonschema
     def test_deprecated_warning_is_once_per_value(self, monkeypatch, caplog) -> None:
         from kiro_crew.config import validation
 
@@ -520,40 +555,37 @@ class TestDynamicSubagentSizingFields:
                 record.getMessage()
                 for record in caplog.records
                 if record.name == "kiro_crew.config.loader"
-                and "deprecated field 'agent.subagent_cpu_cost_cores'" in record.getMessage()
+                and "deprecated field 'agent.provider'" in record.getMessage()
             ]
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
-            _load_from_dict({"agent": {"subagent_cpu_cost_cores": 0.8}})
+            _load_from_dict({"agent": {"provider": "claude_code"}})
             assert len(notices()) == 1
 
             caplog.clear()
-            _load_from_dict({"agent": {"subagent_cpu_cost_cores": 0.8}})
+            _load_from_dict({"agent": {"provider": "claude_code"}})
             assert notices() == []
 
-            _load_from_dict({"agent": {"subagent_cpu_cost_cores": 0.9}})
+            _load_from_dict({"agent": {"provider": "other"}})
             assert len(notices()) == 1
 
             caplog.clear()
-            _load_from_dict({"agent": {"subagent_cpu_cost_cores": 0.9}})
+            _load_from_dict({"agent": {"provider": "other"}})
             assert notices() == []
 
-            _load_from_dict({"agent": {"subagent_cpu_cost_cores": 0.8}})
+            _load_from_dict({"agent": {"provider": "claude_code"}})
             assert notices() == []
 
-    @_requires_jsonschema
-    @pytest.mark.parametrize("value", [1.0, 1], ids=["float", "int"])
-    def test_the_fields_own_default_is_not_announced(self, monkeypatch, caplog, value) -> None:
+    def test_the_fields_own_default_is_not_announced(self, monkeypatch, caplog) -> None:
         """A config Kiro Crew just created carries the default; warning on it is
         the loader scolding its own write."""
         from kiro_crew.config import validation
 
         monkeypatch.setattr(validation, "_REPORTED_DEPRECATED_FIELDS", set())
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
-            _load_from_dict({"agent": {"subagent_cpu_cost_cores": value}})
+            _load_from_dict({"agent": {"provider": "acp"}})
         assert not [r for r in caplog.records if "deprecated field" in r.getMessage()]
 
-    @_requires_jsonschema
     def test_a_fresh_default_config_loads_without_a_deprecation_notice(
         self, monkeypatch, caplog
     ) -> None:
@@ -562,7 +594,7 @@ class TestDynamicSubagentSizingFields:
 
         monkeypatch.setattr(validation, "_REPORTED_DEPRECATED_FIELDS", set())
         fresh = KiroCrewConfig().to_dict()
-        assert fresh["agent"]["subagent_cpu_cost_cores"] == 1.0
+        assert fresh["agent"]["provider"] == "acp"
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
             _load_from_dict(fresh)
         assert not [r for r in caplog.records if "deprecated field" in r.getMessage()]
@@ -584,7 +616,6 @@ class TestDynamicSubagentSizingFields:
                     "max_subagents": 0,
                     "subagent_mem_buffer_pct": 25,
                     "subagent_cost_gb": 0.6,
-                    "subagent_cpu_cost_cores": 0.9,
                     "subagent_auto_max": 12,
                     "subagent_spawn_stagger_secs": 3.0,
                 }
@@ -594,7 +625,6 @@ class TestDynamicSubagentSizingFields:
         for key in (
             "subagent_mem_buffer_pct",
             "subagent_cost_gb",
-            "subagent_cpu_cost_cores",
             "subagent_auto_max",
             "subagent_spawn_stagger_secs",
         ):
@@ -606,7 +636,6 @@ class TestDynamicSubagentSizingFields:
         assert a.max_subagents == 0
         assert a.subagent_mem_buffer_pct == 25
         assert a.subagent_cost_gb == 0.6
-        assert a.subagent_cpu_cost_cores == 0.9
         assert a.subagent_auto_max == 12
         assert a.subagent_spawn_stagger_secs == 3.0
 

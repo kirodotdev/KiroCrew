@@ -160,6 +160,7 @@ custom-rules:
       - "src/kiro_crew/cli_server_*.py"
       - "src/kiro_crew/dashboard/routes/**/*.py"
       - "src/kiro_crew/deploy/handlers.py"
+      - "src/kiro_crew/deploy/handlers_*.py"
     rule: |
       Do NOT add work to the gateway boot path. Everything between process
       start and the moment the dashboard socket accepts requests runs once, in
@@ -348,14 +349,19 @@ custom-rules:
       accumulate across runs, exhausting inodes — and inode exhaustion returns
       ENOSPC to every other process on the machine while 90% of the BYTES are
       still free, so it does not look like a disk problem. Use pytest's
-      `tmp_path` fixture, or pair every `mkdtemp()` with
-      `self.addCleanup(shutil.rmtree, path, ignore_errors=True)` ON THE LINE
-      AFTER IT. An `rmtree` in `tearDown` is NOT equivalent and is the shape that
-      actually leaks: `unittest` skips `tearDown` entirely when `setUp` raises,
-      so it leaks on every setUp failure — the failing run nobody is watching
-      closely. The rule is: if you create it, you must register its destruction
-      in the same scope. `ignore_errors=True` also SWALLOWS a cleanup that could
-      not finish, so it is not evidence the directory is gone.
+      `tmp_path` (or `tmp_path_factory.mktemp`); in a `unittest.TestCase`, an
+      autouse fixture method that sets `self.root = tmp_path / ...`
+      (`test_issue_radar_deps.py::_per_test_dirs`). A `with
+      tempfile.TemporaryDirectory()` block is fine only when nothing it starts
+      (a thread, a child, a store that mkdirs on read) can outlive the block.
+      `semgrep/test-determinism.yaml`'s `kirocrew.test-shared-tmp-dir` refuses a
+      new `mkdtemp()` or a `TemporaryDirectory()` held outside a `with`. An
+      `rmtree` in `tearDown` is the shape that actually leaks: `unittest` skips
+      `tearDown` entirely when `setUp` raises, so it leaks on every setUp
+      failure — the failing run nobody is watching closely. `addCleanup` does
+      not help when a late reader re-creates the directory after it ran, and
+      `ignore_errors=True` SWALLOWS a cleanup that could not finish, so it is not
+      evidence the directory is gone.
 
       NEVER use relative `Path("src/...")` or bare string paths to read source
       files from a test. Under pytest-xdist, workers may change CWD, making
@@ -414,11 +420,23 @@ custom-rules:
          local time is correct; do not flag it.
       5. (D7) An UPPER bound on a measured wall or CPU duration, a rate or a
          sample count (`assert elapsed < 0.5`, "about 125 samples"). Assert the
-         work, the schedule or the order. Do not flag: a LOWER bound that proves
-         a deadline or backoff was honoured ("did not fire early") with a margin
+         work, the schedule or the order. A CPU clock (`time.thread_time`,
+         `time.process_time`) is no exception: coverage's tracer multiplies
+         the CPU of every traced line about fivefold on the instrumented
+         shards, so a budget the code meets bare fails there on every rerun.
+         For a complexity guard, count the work and bound its growth between
+         input sizes (`_interpreter_work` / `_linear_work` in
+         `test/denied_commands_security_helpers.py`). For a "returns at once"
+         bound, which says a call never waits, assert the wait was never taken:
+         spy the lock, sleep or join and refuse a blocking call
+         (testing-conventions § Determinism 5). Also FLAG a change that
+         keeps an existing budget alive by reshaping its reading (the minimum
+         of N readings, the tracer paused around it, a larger constant): each
+         still asserts seconds. Do not flag: a LOWER bound that proves a
+         deadline or backoff was honoured ("did not fire early") with a margin
          of at least one clock tick; a bound relative to a span the test
-         measured itself; an existing complexity guard's thread-CPU budget kept
-         at its original constant.
+         measured itself; an existing complexity guard's thread-CPU budget
+         left untouched at its original constant.
       6. (D8) An await, `join` or `communicate` the test itself must unblock,
          with no timeout. On Windows a hang kills the xdist worker and aborts
          the run; bound it so a miss fails by name at that line. A literal bound
@@ -426,14 +444,26 @@ custom-rules:
          deadline) is NOT flagged when its expiry fails the test loudly. Flag a
          timeout only when the diff RAISES a literal, raises a named ceiling
          without a cited measurement, or makes the pass depend on time elapsing
-         (a sleep standing in for a sync).
+         (a sleep standing in for a sync). Also FLAG a subprocess deadline at or
+         above the test's own timeout (the suite's 120 s unless the module sets
+         a larger `pytest.mark.timeout`): pytest-timeout fires first, so the
+         child's own deadline never fails by name; size it at half that
+         timeout. And FLAG a new test that starts its own real `node`
+         or interpreter child when its module's other tests do the same: four
+         such children on four workers cold-started in one second and stalled a
+         whole Linux shard; one module-scoped child in its own `xdist_group`
+         serves every case.
       7. (D4) Sequence equality over a `set`, a dict built from one, `listdir` /
          `iterdir` / `glob`, `as_completed` iteration, or side effects appended
          in completion order, without `sorted()` or a `set` / `Counter`
          comparison. `gather`'s return list is in argument order; do not flag
          it.
       8. (D6) `os.urandom` or the module-level `random.*` feeding an assertion,
-         instead of `random.Random(SEED)`.
+         instead of `random.Random(SEED)`. Also a `not in` check of a short
+         fragment (under about 12 characters) over a serialized payload that
+         carries random ids (a reveal handle, a uuid, a `token_urlsafe` value)
+         without first replacing each id, matched by its exact shape, with a
+         fixed stand-in: the fragment turns up inside an id by chance.
       9. (D9) A literal TCP port passed to a real bind or listen, or a
          bind-close-return port handed to a listener that could bind port 0 and
          report the port it got. A port number used only as data (a config
@@ -457,6 +487,27 @@ custom-rules:
           `monkeypatch` (use `_floor_monkeypatch`), or a bare
           `monkeypatch.undo()` in a test body (scope the patch with
           `monkeypatch.context()`).
+      13. A host probe that picks which result a live test requires (runs vs
+          fails closed) but asks a different program or binary than the one the
+          test drives (Crew's `userns_available()` deciding for codex's
+          bubblewrap), or lets such a stand-in short-circuit ahead of the
+          program's own check. The kernel and its LSMs judge per binary, so the
+          two disagree on some runner images and the test reds every PR routed
+          there. Use the program's own preflight with the binary it runs; a
+          stand-in answers only where that check gives no verdict
+          (testing-conventions § A host probe that asks a different program
+          than the one under test).
+
+      14. A test that lets the HOST answer what the code reads: a real tool
+          found on the inherited `PATH` or in a fixed install directory (the
+          operator's kiro-cli, a version-manager shim, a launcher), a system
+          tool's own shape (`sleep` can be a shebang script), an inherited
+          signal disposition (`nohup` ignores SIGHUP), host data files
+          (tzdata), or the layout and ownership of the real home. CI's runner
+          has none of these, so the test is green there and red on a
+          developer host. Pin the probe, give the test its own `HOME`, or spawn
+          through the helper that fixes the trait (testing-conventions § What
+          the host lends the suite, and must not).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
@@ -934,6 +985,13 @@ custom-rules:
         assertion: when a diff adds or edits such a list alongside prose
         (docstring, spec, comment) enumerating its members, expect a test
         asserting each documented member is actually in the list.
+      - A new module-level global that the gateway boot fills, directly or
+        from a job it hands to an executor and never joins, with no matching
+        change in `test/integration/conftest.py` (`_reset_home_bound_globals`,
+        plus a teardown wait when an unjoined job writes it) or in
+        `test_boot_smoke.py`'s `_KNOWN_SECOND_BOOT_CHANGES` with its reason.
+        The second-boot witness sees it only when the job lands late, so the
+        PR that adds it usually passes and later PRs go red.
 
       This rule is maintained by the pattern-harvest loop (fix PRs propose
       candidates in their "Pattern harvest" section; accepted ones land
@@ -1006,10 +1064,11 @@ custom-rules:
         generic seam every app can use, never the app in core. An explicit
         maintainer decision recorded on the PR (the /ai-review override flow)
         is the only exception — the default is closed.
-      - FLAG restoring a withdrawn built-in (the Board app) or un-hiding the
-        Channels app from the App Store (flipping "hidden": true in
-        src/kiro_crew/apps/builtins/channels/app.json). Both are deliberate
-        fork divergences an upstream sync must not undo.
+      - FLAG restoring a withdrawn built-in (the Board app), restoring the
+        Channels app, or offering Channels where it was not offered (it is the
+        default-off core setting dashboard.channels_enabled, whose Settings
+        row is drawn only while it is on). Both are deliberate fork
+        divergences an upstream sync must not undo.
 
       Allowed (do NOT flag):
       - Changes inside an EXISTING built-in app directory or its existing
@@ -1137,6 +1196,35 @@ custom-rules:
       is applied before it lands. FLAG a boolean success returned on a path where
       the write raised or returned falsy.
 
+  - id: no-implicit-state-machines
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+      - "website/src/**/*.ts"
+      - "website/src/**/*.tsx"
+    rule: |
+      When a change adds or changes a value that moves between states (a status
+      string, a phase field, a pair of boolean flags, a progress file), the
+      states and the allowed moves must live in ONE place: an enum plus a
+      transition table, or a single transition function. Not spread across
+      flags and writers.
+
+      A state machine nobody owns reaches states nobody designed: it gets
+      stuck, shows two states at once, reopens finished work, keeps copies
+      that drift, and loses state on restart.
+
+      Real defects this rule exists for, all found on main:
+      - the update popup stuck on "restarting", every exit disabled (#34434);
+      - chat showing Resume and Stop together on one turn (#34409);
+      - a closed work item reopened from a torn record;
+      - channel approvals kept in nine separate stores;
+      - "Resume all" losing paused members across a restart (#33467).
+
+      FLAG only new or changed code in the diff, never code that was already
+      there. Each flag names its fix: one owner for the value, a timeout or an
+      exit for a middle state, or one combined state value in place of two
+      flags.
+
   - id: a-ratchet-may-only-tighten
     blocking: true
     file-patterns:
@@ -1196,6 +1284,26 @@ custom-rules:
       can supply instead (a CLI the shell script under test runs, such as
       `jq`; a link, via `make_dir_link` or `make_escaping_link`) stays
       flagged: supply it.
+
+      A ratchet must also survive two changes merging without a test of the
+      combined tree: two edits that turn one line into the same new text merge
+      cleanly, so a record that is ONE shared number goes red on main when two
+      changes each add a site (both write `9` over `8`). FLAG, in a ratchet the
+      diff adds or rewrites: a module-level total the scan is compared with
+      when the sites could be recorded one line per file, site or change; a
+      hand-kept total asserted beside an exact table or set that already
+      decides it; a message that tells the author to record "the amount over"
+      a shared budget instead of the change's own delta. Do NOT flag a frozen
+      snapshot of a one-time event no later change edits. Moving a shared
+      number to a keyed record whose every key stays exact is tightening, not
+      loosening (testing-conventions.md § Merge-safe ratchets and counts).
+      `test/test_flake_pattern_ratchet.py` (K21) already refuses a new count
+      pinned `==` an integer literal of 10 or more, or `==` / `!=` an ALL-CAPS
+      `BASELINE` / `COUNT` / `TOTAL` / `EXPECTED` / `ROWS` constant, in a test
+      module that walks the product tree; flag what it cannot see: a pin held
+      by two one-sided `if total > X` / `if total < X` checks, a count in a
+      doc or registry compared with a constant, and a `# flake-ok` on such a
+      pin whose reason is not a frozen snapshot.
 
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.

@@ -21,6 +21,7 @@ from kiro_crew.slack.events import (
     _normalize_message_blocks,
     _route_message,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class TestRenderRichTextElements:
@@ -1631,7 +1632,7 @@ class TestRouteMessageForwardFiles:
         assert routed == expected
 
 
-_FAKE_TOKEN = "ghp_" + "a1B2" * 9
+_FAKE_TOKEN = github_classic(seed=324)
 
 
 class TestForwardFenceBoundsAndRedaction:

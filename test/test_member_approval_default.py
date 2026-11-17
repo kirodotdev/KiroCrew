@@ -8,6 +8,8 @@ choice wins, and a grant already on the live slot is never overwritten.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -346,3 +348,63 @@ class TestCompareAndSetHoldsAcrossProcesses:
             assert (await resp.json())["approval_mode"] == "normal"
         assert KiroCrewConfig.load().agents[seeded_mate].approval_mode == "normal"
         assert slot._trust is True
+
+
+def _hold_shell(name: str, member_id: str = ""):
+    """Record one held shell limit for *name*, as the upgrade does (``mate_held_rules``).
+
+    With *member_id*, the Bot gets that id and the entry is recorded under its
+    old name, so only the id ties the two.
+    """
+    import json
+
+    from kiro_crew.config import paths as paths_mod
+
+    key = name
+    if member_id:
+        cfg = KiroCrewConfig.load()
+        cfg.agents[name].member_id = member_id
+        cfg.save()
+        key = "its-old-name"
+    ledger = paths_mod.mate_agents_dir().parent / "migrated.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    rules = [{"text": "its permissions rule to deny shell", "capability": "shell"}]
+    held = {"held_rules": {key: {"member_id": member_id, "rules": rules}}}
+    ledger.write_text(json.dumps({"migrated": [name], **held}), encoding="utf-8")
+    return member_id, ledger
+
+
+def _shell_call():
+    from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+    return LLMEvent(kind=EVENT_PERMISSION_REQUEST, title="ls", request_id="r1", tool_kind="execute")
+
+
+class TestSavingThePermissionKeepsHeldLimits:
+    """A Bot's approval mode does not decide an ``auto`` cron's approvals, so no pick
+    of it, the strictest included, may end the limits the upgrade held for a person."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["normal", "trust_reads", "trust"])
+    async def test_a_saved_permission_keeps_the_hold_for_an_auto_cron(self, seeded_mate, mode):
+        from kiro_crew import mate_held_rules
+        from kiro_crew.cron_service.fields import auto_job_approver
+
+        member_id, _ledger = _hold_shell(seeded_mate, "m-zxc")
+        async with TestClient(TestServer(_update_app())) as client:
+            resp = await client.put(
+                f"/api/agents/{seeded_mate}",
+                json={"approval_mode": mode, "expected_approval_mode": ""},
+            )
+            assert resp.status == 200, await resp.text()
+
+        held = mate_held_rules.held_for(_shell_call(), agent=seeded_mate)
+        assert held
+        spec = {"allowedTools": ["execute_bash", "fs_read"]}
+        kept = mate_held_rules.strip_held_approvals(spec, member_id, seeded_mate)
+        assert "execute_bash" not in kept["allowedTools"]
+        # The cron's own approver, asked inside the held mark, does not approve.
+        fallback = AsyncMock(return_value=False)
+        with mate_held_rules.held_call(held):
+            assert await auto_job_approver(fallback)(_shell_call()) is False
+        fallback.assert_awaited_once()

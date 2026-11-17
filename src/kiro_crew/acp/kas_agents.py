@@ -59,20 +59,59 @@ ceiling and appended -- see :func:`kiro_crew.acp.kas_permissions.merge_user_perm
 for the four rules. Dropping the author's block entirely would leave a pure-KAS
 agent -- ``permissions`` authored, no ``allowedTools`` -- reaching the backend with
 the field absent, which is the all-``ask`` case above.
+
+The ``mcpServers`` projection lives in :mod:`kiro_crew.acp.kas_agents_mcp_servers`,
+the session-level hoist in :mod:`kiro_crew.acp.kas_agents_session_hoist` and the
+registered-entry reads in :mod:`kiro_crew.acp.kas_agents_registered`. This module
+imports every name they define and stays their import path and patch surface, as a
+:mod:`kiro_crew._facade_mirror` facade.
 """
 
 from __future__ import annotations
 
+import importlib as _importlib
+import json
 import logging
 import secrets
-from collections.abc import Mapping
+import sys as _sys
+from collections.abc import Callable, Mapping  # noqa: F401
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_engine_features as engine
-from kiro_crew.acp import kas_env_launch, session_label
-from kiro_crew.acp.kas_app_identity import TOKENED_ENV_KEYS_KEPT as _TOKENED_ENV_KEYS_KEPT
-from kiro_crew.acp.kas_app_identity import (
+from kiro_crew import mcp_cleanup  # noqa: F401
+from kiro_crew import _facade_mirror
+from kiro_crew.acp import kas_engine_features as engine  # noqa: F401
+from kiro_crew.acp import kas_env_launch, session_label  # noqa: F401
+from kiro_crew.acp.kas_agents_mcp_servers import (  # noqa: F401 - re-exported
+    MANAGED_MCP_SERVER_NAMES,
+    NOT_RUN_INSECURE_URL,
+    NOT_RUN_REGISTRY,
+    NOT_RUN_REGISTRY_IF_GOVERNED,
+    WithheldOut,
+    _project_mcp_servers,
+)
+from kiro_crew.acp.kas_agents_registered import (  # noqa: F401 - re-exported
+    _registered_entry,
+    _switched_entry,
+    active_registered_entry,
+    projected_auto_approved,
+    projected_crew_answered,
+    projected_crew_answered_commands,
+    projected_shell_allowlist,
+    projected_shell_readonly,
+    switched_auto_approved,
+    switched_crew_answered,
+    switched_crew_answered_commands,
+    switched_shell_allowlist,
+    switched_shell_readonly,
+)
+from kiro_crew.acp.kas_agents_session_hoist import (  # noqa: F401 - re-exported
+    hoist_servers_for_session,
+)
+from kiro_crew.acp.kas_app_identity import (  # noqa: F401
+    TOKENED_ENV_KEYS_KEPT as _TOKENED_ENV_KEYS_KEPT,
+)
+from kiro_crew.acp.kas_app_identity import (  # noqa: F401
     gateway_bound_port,
     tokened_app_element,
     without_noop_restrictions,
@@ -94,13 +133,14 @@ from kiro_crew.acp.kas_grant_only_settings import (
     without_shell_grant_keys,
     without_write_grant_keys,
 )
-from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation
+from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation  # noqa: F401
 from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for the KAS harness
     resolve_managed_entries,
 )
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
+    CREW_ANSWERED_HOOK_HELD_KEY,
     CREW_ANSWERED_PATHS_KEY,
     CREW_ANSWERED_READ_PATHS_KEY,
     CREW_ANSWERED_WRITES_KEY,
@@ -108,28 +148,25 @@ from kiro_crew.acp.kas_permissions import (
     CREW_SHELL_READONLY_KEY,
     CREW_SPEC_DENIES_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
-    HOOK_GATEABLE_CAPABILITIES,
-    _entry_crew_answered,
-    _entry_crew_answered_commands,
-    _entry_shell_allowlist,
     allowed_tools_to_permissions,
     canonical_tools_settings,
     crew_answered_builtins,
     crew_answered_commands,
     crew_answered_paths,
     crew_answered_read_paths,
+    hook_held_grants,
     merge_user_permissions,
     projection_accepts,
+    projection_dropped_rules,
     shell_denies_carried,
     spec_shell_allowlist,
     spec_write_allowlist,
     tools_settings_to_permissions,
     trusted_agents_withheld,
-    unprompted_capabilities,
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
 )
-from kiro_crew.acp.kas_projection_reads import (
+from kiro_crew.acp.kas_projection_reads import (  # noqa: F401
     _gated_off_managed_servers,
     _registry_governed,
     _relayed_env_references,
@@ -144,15 +181,22 @@ from kiro_crew.acp.kas_prompt import (
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
 from kiro_crew.acp.kas_settings_mcp import include_mcp_json
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
-from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
+from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases, with_use_aws_denies
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
-from kiro_crew.acp.kas_spec_denies import spec_denies_record, web_fetch_carried, web_fetch_gate
-from kiro_crew.acp.kas_spec_grants import _entry_shell_readonly, shell_auto_allows_readonly
-from kiro_crew.acp.kas_tool_limits import (
+from kiro_crew.acp.kas_spec_denies import (
+    denied_command_items,
+    spec_denies_record,
+    uncarried_denied_commands,
+    web_fetch_carried,
+    web_fetch_gate,
+)
+from kiro_crew.acp.kas_spec_grants import SHELL_SETTINGS_KEYS, shell_auto_allows_readonly
+from kiro_crew.acp.kas_tool_limits import (  # noqa: F401
     _KAS_CARRIED_ELSEWHERE,
     _KAS_DISCARDED_ENTRY_KEYS,
 )
 from kiro_crew.acp.kas_tool_limits import disabled_tool_exclusions as _disabled_tool_exclusions
+from kiro_crew.acp.kas_unread_commands import name_unreadable_entries, trusted_over_limit_items
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
@@ -161,25 +205,29 @@ from kiro_crew.agent_discovery import (
     spec_by_declared_name,
     spec_welcome_message,
 )
-from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS  # noqa: F401
 from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
-from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
+from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK, tools_settings_unapplied
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.agent_spec_pins import pinned_memo_key
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, persisted_hook_store
-from kiro_crew.mcp_cleanup import (
+from kiro_crew.mcp_cleanup import (  # noqa: F401
     KIROCREW_BIN_MCP_SERVERS,
     MCP_REGISTRY_TYPE,
     mcp_entry_is_registry_governed,
     mcp_server_muted_in_any_store,
 )
-from kiro_crew.mcp_oauth_projection import (
+from kiro_crew.mcp_oauth_projection import (  # noqa: F401
     oauth_lost_keys,
     registry_withheld,
     servers_with_discarded_oauth,
-    withhold_oauth,
 )
-from kiro_crew.platform.governance import may_grant_builtin_at_gate_now, may_skip_gate_now
+from kiro_crew.platform.governance import (
+    may_grant_builtin_at_gate_now,
+    may_skip_gate_for_session,
+    may_skip_gate_now,
+)
 from kiro_crew.platform.tool_names import (
     canonical_kiro_cli_tool_name,
     expand_kiro_cli_allowed_tools,
@@ -194,39 +242,6 @@ logger = logging.getLogger(__name__)
 
 #: Cap KAS enforces on ``_meta.kiro.customAgents`` (``z.array(...).max(50)``).
 KAS_MAX_CUSTOM_AGENTS = 50
-
-#: Kiro Crew's OWN managed MCP servers — the ones whose ``env`` may retain a
-#: single Crew-authored key through projection (see :func:`_project_mcp_servers`).
-#:
-#: Imported from :mod:`kiro_crew.mcp_cleanup`, which already pins this set to
-#: ``agent._MANAGED_MCP_SERVERS`` with a ratchet test and imports nothing heavier
-#: than ``config.paths`` — so this projection leaf stays off the config-loader /
-#: aiohttp import chain without spelling the four names a third time.
-MANAGED_MCP_SERVER_NAMES = frozenset(KIROCREW_BIN_MCP_SERVERS)
-
-#: Fields that carry a secret. ``env`` "routinely holds tokens and API keys"
-#: (``mcp_gateway.session_servers``) and a remote entry's ``headers`` can hold a
-#: static ``Authorization`` value, so neither crosses the wire intact.
-_CREDENTIAL_BEARING_FIELDS = ("env", "headers")
-
-#: Per server: the withheld ``env`` key names, the fields anything went from, and
-#: whether it is a stdio server (one with a ``command``, the kind the gateway routes).
-#: Two field values say the server does not run at all rather than run without a
-#: setting: :data:`NOT_RUN_REGISTRY` and :data:`NOT_RUN_INSECURE_URL`.
-WithheldOut = dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]]
-
-#: Registry mode is on, so Crew withholds a server it did not author.
-NOT_RUN_REGISTRY = "registry"
-#: One of Crew's own servers in registry mode: declared, and dropped by KAS only
-#: when the Kiro profile is registry-governed (KAS reads that mode itself).
-NOT_RUN_REGISTRY_IF_GOVERNED = "registry-if-governed"
-#: A plain ``http`` url to a non-loopback host, which KAS refuses.
-NOT_RUN_INSECURE_URL = "insecure-url"
-
-
-#: Crew-internal bookkeeping on a rewritten entry. Never belongs on the wire: an
-#: unknown field can fail a strict schema, and it means nothing to the backend.
-_WRAPPER_MARKERS = ("_kirocrew_mcp_gateway_wrapped", "_mc_mcp_gateway_wrapped")
 
 #: Spec keys with no slot in KAS's ``ClientCustomAgent`` wire schema.
 #:
@@ -263,6 +278,9 @@ def spec_keys_without_carrier(
     *,
     translates_tools_settings: bool = False,
     discards_mcp_oauth: bool = False,
+    withholds_oauth_secret: bool = False,
+    session_key: str = "",
+    governance_app: str | None = None,
 ) -> list[str]:
     """What *spec* sets that the session runs without, sorted.
 
@@ -272,18 +290,29 @@ def spec_keys_without_carrier(
     names it (whole, or each entry beside a ``subagent.availableAgents`` the spawn
     gate applies), unless *translates_tools_settings* says this session receives its
     ``permissions`` translation (KAS only); then each ``toolsSettings.<tool>.<key>``
-    the translation cannot carry is named instead, and ``permissions`` when the merge refuses it.
+    the translation cannot carry is named instead, each ``allowedCommands`` or
+    ``allowedPaths`` entry Kiro Crew cannot read on its own (``kas_unread_commands.name_unreadable_entries``),
+    ``permissions`` when the merge refuses it, and ``permissions.rules[<i>]`` for each
+    ``allow`` it leaves out alone. A ``trustedAgents`` allow is judged for
+    *session_key* and *governance_app* as projected.
 
     *discards_mcp_oauth* says this session's backend drops a remote MCP server's
     ``oauth`` block (KAS only); each declared server that sets one is then named
-    as ``mcpServers.<name>.oauth``.
+    as ``mcpServers.<name>.oauth``. *withholds_oauth_secret* says the session is
+    on KAS, whose projection sends nothing from a block that names a
+    ``clientSecret`` or keeps no key it can send
+    (``mcp_oauth_projection.oauth_withheld``); each declared server with such a
+    block is then named the same way, whatever the engine keeps.
     """
     lost = [k for k in SPEC_KEYS_WITHOUT_CARRIER if spec.get(k)]
     lost.extend(projected_resources(spec.get("resources"))[1])
     if user_tool_aliases(spec.get("toolAliases")):
         lost.append("toolAliases")
-    if discards_mcp_oauth:
-        lost.extend(oauth_lost_keys(servers_with_discarded_oauth(spec, _registry_governed)))
+    if discards_mcp_oauth or withholds_oauth_secret:
+        servers = servers_with_discarded_oauth(
+            spec, _registry_governed, withheld_only=not discards_mcp_oauth
+        )
+        lost.extend(oauth_lost_keys(servers))
     raw = spec.get("toolsSettings")
     if not translates_tools_settings:
         lost.extend(tools_settings_unapplied(raw))
@@ -291,19 +320,38 @@ def spec_keys_without_carrier(
     # kiro-cli reads one spelling per alias group; each name is the one the spec wrote.
     tools_settings, dropped = canonical_tools_settings(raw)
     lost.extend(f"toolsSettings.{key}" for key in dropped)
-    _, not_carried = tools_settings_to_permissions(tools_settings)
+    translated, not_carried = tools_settings_to_permissions(tools_settings)
+    authored = spec.get("permissions")
     # A `web_fetch.trusted` KAS cannot carry, Crew's gate may (`web_fetch_carried`).
-    gate_carried = web_fetch_carried(tools_settings, spec.get("permissions"))
-    lost.extend(
-        f"toolsSettings.{as_authored(raw, path)}"
-        for path in not_carried
-        if path not in gate_carried
+    gate_carried = web_fetch_carried(tools_settings, authored)
+    named = name_unreadable_entries(
+        tools_settings, [path for path in not_carried if path not in gate_carried]
     )
-    if spec.get("permissions") is not None and not projection_accepts(spec["permissions"]):
+    if "web_fetch.trusted" in gate_carried:
+        named += trusted_over_limit_items(tools_settings)
+    # A `deniedCommands` KAS did not carry is enforced at Crew's gate
+    # (`uncarried_denied_commands`): only the entries neither enforces are lost.
+    deny_items = denied_command_items(tools_settings, translated)
+    deny_keys = {f"{key}.deniedCommands" for key in SHELL_SETTINGS_KEYS}
+    # JSON preserves structured facts across the existing list[str] notice API.
+    # Only the final notice renderer formats the raw rule for a person.
+    deny_notices = [
+        json.dumps(
+            {"deniedCommand": {**item, "key": f"toolsSettings.{as_authored(raw, item['key'])}"}}
+        )
+        for item in deny_items
+        if item["key"] in named
+    ]
+    lost.extend(
+        f"toolsSettings.{as_authored(raw, path)}" for path in named if path not in deny_keys
+    )
+    if authored is not None and not projection_accepts(authored):
         lost.append("permissions")
+    lost.extend(f"permissions.rules[{i}]" for i in projection_dropped_rules(authored))
+    gate = may_skip_gate_for_session(session_key, governance_app)
     lost.extend(
         f"toolsSettings.{as_authored(raw, path)}"
-        for path in trusted_agents_withheld(tools_settings, may_skip_gate_now)
+        for path in trusted_agents_withheld(tools_settings, gate)
     )
     if (
         isinstance(tools_settings, dict)
@@ -334,7 +382,23 @@ def spec_keys_without_carrier(
                 if isinstance(tools_settings.get(key), dict)
                 and tools_settings[key].get("allowedPaths")
             )
-    return sorted(set(lost))
+    # An allowlist the gate's own readers enforce is marked, so the notice never
+    # says it has no effect.
+    gate_read = set()
+    if isinstance(tools_settings, dict):
+        if spec_shell_allowlist(tools_settings, spec.get("allowedTools"), translated) is not None:
+            gate_read |= {
+                f"toolsSettings.{as_authored(raw, key)}.allowedCommands"
+                for key in ("execute_bash", "shell")
+            }
+        if spec_write_allowlist(tools_settings) is not None:
+            gate_read |= {
+                f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
+                for key in ("fs_write", "write")
+            }
+    return sorted(
+        {f"{key}{GATE_READ_MARK}" if key in gate_read else key for key in lost} | set(deny_notices)
+    )
 
 
 def _allowed_commands_withheld(
@@ -412,9 +476,11 @@ def resolve_prompt(
 
     * A RELATIVE path is anchored to *agents_dir* (where the agent config lives,
       the documented base for ``file://./prompts/x.md``), never the gateway cwd.
-      It may use ``..`` (``file://../prompts/x.md``), as on kiro-cli: an absolute
-      path reaches the same files, so a containment rule on the relative form
-      fenced nothing.
+      It may use ``..`` (``file://../prompts/x.md``), as on kiro-cli's v2 engine:
+      an absolute path reaches the same files, so a containment rule on the
+      relative form fenced nothing.
+    * An ABSOLUTE or ``~`` path is accepted, though kiro-cli's v3 on-disk loader
+      refuses it, because the app bridge writes an app agent's prompt that way.
     * Relative or absolute, the RESOLVED path (symlinks followed) must not be a
       credential/governance location or a pseudo-filesystem
       (:func:`kiro_crew.acp.kas_prompt_paths.is_unsafe_prompt_path`).
@@ -451,7 +517,7 @@ def resolve_prompt(
         )
     if not raw.startswith(_PROMPT_FILE_SCHEME):
         return raw
-    ref = raw[len(_PROMPT_FILE_SCHEME) :]
+    ref = file_uri_path_text(raw)
     try:
         path = prompt_file_path(ref, agents_dir)
     except (OSError, RuntimeError) as exc:  # ``~nosuchuser``, a symlink loop
@@ -529,7 +595,24 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
     return []
 
 
-def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
+def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callable[[str], bool]:
+    """The ceiling predicate for the spec's own allows (``allowedTools``, ``permissions``).
+
+    ``may_skip_gate_now``, except for the sub-agent tool, whose grant meets only the
+    profiles that govern this session (``may_skip_gate_for_session``), as a translated
+    ``trustedAgents`` allow does. Both fail closed.
+    """
+    for_session = may_skip_gate_for_session(session_key, governance_app)
+
+    def permits(ref: str) -> bool:
+        return for_session(ref) if ref == "use_subagent" else may_skip_gate_now(ref)
+
+    return permits
+
+
+def _ceiling_permitted(
+    allowed_tools: Any, agent_id: str, permits: Callable[[str], bool]
+) -> list[str]:
     """``allowedTools`` with every entry the governance ceiling withholds removed.
 
     Every writer of an ``allowedTools`` list already consults the ceiling when
@@ -539,8 +622,8 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
     edited by hand carries grants nobody ever cleared. Re-asking at projection, like
     ``rebuild_agent_config``'s last sanitizer pass over ``mcpServers``, is deliberate.
 
-    Each entry is asked under Crew's name for it (``subagent`` as ``use_subagent``).
-    ``may_skip_gate_now`` fails closed: what is dropped here keeps prompting.
+    Each entry is asked of *permits* under Crew's name for it (``subagent`` as
+    ``use_subagent``). It fails closed: what is dropped here keeps prompting.
     """
     if not isinstance(allowed_tools, list):
         return []
@@ -550,7 +633,7 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
         if not isinstance(raw, str) or not raw.strip():
             continue
         entry = canonical_kiro_cli_tool_name(raw.strip())
-        if may_skip_gate_now(entry):
+        if permits(entry):
             permitted.append(entry)
         else:
             withheld.append(entry)
@@ -639,320 +722,6 @@ def _audit_skill_scope(rules: tuple[dict[str, Any], ...], agent_id: str) -> None
         logger.debug("SEL audit unavailable for KAS skill scope", exc_info=True)
 
 
-def _project_mcp_servers(
-    spec: dict[str, Any],
-    agent_id: str,
-    stub_server_names: frozenset[str],
-    session_key: str = "",
-    withheld_out: WithheldOut | None = None,
-    launch_key: str = "",
-    engine_features: frozenset[str] = frozenset(),
-    forward_ssh_auth_sock: bool = False,
-) -> dict[str, dict[str, Any]]:
-    """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
-
-    *launch_key* names the local launch snapshots (:mod:`kas_env_launch`); it is
-    *session_key* unless the caller passes one. With neither, nothing is relayed.
-    *forward_ssh_auth_sock* is whether the engine's own spawn kept the gateway's
-    ssh-agent socket, which alone decides whether a launched server gets it.
-    *engine_features* (:mod:`kas_engine_features`) sends ``oauth`` and registry
-    pointers to an engine that announced it accepts them.
-
-    *withheld_out*, when given, maps each declared server Crew did not author that
-    lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
-    only, never a value, for :mod:`kiro_crew.acp.kas_withheld_notice`.
-
-    Six subtractions, each load-bearing:
-
-    * **stubbed names** — those arrive as the session-level ``mcpServers`` param,
-      which outranks an agent-declared entry. Emitting both is the double
-      registration this block exists to avoid. Applied LAST: the withholds below
-      are decisions about whether the server may run at all, and a name handed to
-      the injection escapes every one of them.
-    * **``autoApprove``** — an auto-approved MCP tool is approved by the host and
-      emits no permission request, so ``hooks.on_tool_call`` (the always-on deny
-      floor, the sensitive-path check, the governance ceiling) never runs for it.
-      ``agent.py`` states the rule for Crew's own servers ("DELIBERATELY NO
-      ``autoApprove`` KEY, and none may ever be added"); relaying one copied from
-      a spec would grant through this path what that rule refuses on the other,
-      and on KAS there is no wire slot for hooks at all. Auto-approve reaches KAS
-      only as ``permissions``, derived from the ceiling-filtered ``allowedTools``;
-      the verbs the kiro-cli route keeps join that input in
-      :func:`to_client_custom_agent` (:mod:`kiro_crew.acp.kas_auto_approve`).
-    * **``env`` and ``headers``** — projection puts these on the wire, and a
-      declared server's env routinely holds tokens. Every server is filtered; the
-      classes differ only in what survives. A server Crew did not author loses
-      ``headers`` and every env value except a reference to a name the edition
-      relays (:data:`_ENV_REFERENCE`), which carries no value, and a boolean
-      literal :func:`_relayable_literal` allows. One of Crew's
-      OWN managed servers additionally keeps ``KIROCREW_HOME``, because that key is the only
-      reason managed env is projected at all: without it the shims read a
-      different data home than the gateway. A managed entry still lives in a
-      user-editable agent file, so a hand-added literal under a managed name is
-      withheld like any other. An opted-in entry gains only the session label.
-
-    * **a muted server** — an entry carrying ``disabled: true`` is not declared at
-      all. KAS's wire schema accepts the field and its mapper then drops it
-      (:data:`_KAS_DISCARDED_ENTRY_KEYS`), so projecting a muted entry launches
-      the very server the user silenced. Omitting the declaration is the only
-      Crew-side way to say "do not launch this" that the backend cannot discard,
-      and it says the same thing: a server KAS was never told about does not run.
-      The mute is the user's own decision about a server they can un-mute, so
-      honouring it costs no capability — unlike the credential strip above, it has
-      no residue.
-    * **a managed server whose ``spec_gate`` is closed** (``kirocrew-computer``
-      while Computer Use is off or unsupported). Both spec writers withhold the
-      entry, but a spec they did not write (a legacy or hand-written agent file)
-      can still declare it. Declared, the engine launches a backend that
-      advertises no tools, and the readiness barrier waits for every managed
-      server it was sent (``mcp_session_report.required_managed_servers``), so
-      the session fails on the timeout. The gate is read with the writers' own
-      fail-closed snapshot (:func:`_gated_off_managed_servers`); the
-      ``@server`` ref in ``tools`` stays, as on a spec Crew writes.
-    * **a registry-governed entry** — see :func:`_registry_governed`. The filter
-      mirrors kiro-cli's, which is SYMMETRIC: in registry mode an entry survives
-      only by resolving its ``"type": "registry"`` marker against the admin's
-      catalog, and OUTSIDE registry mode a marked entry is the one that is
-      dropped. So a non-managed entry is withheld when registry mode is on
-      (marked or not) and also when it is marked while the mode is off. Both
-      cases are ones KAS would get wrong rather than merely differently: it has no
-      slot for ``type``, so it sees every entry as unmarked — dropping all of them
-      under an admin's catalog, and mounting a marked one outside it that kiro-cli
-      would have dropped. Withholding here makes the first case diagnosable and
-      the second correct.
-
-    Crew's OWN managed servers are exempt from that filter and keep their marker,
-    which is the same exemption :mod:`kiro_crew.acp.session_mcp` makes for the
-    control plane and for the same reason: they are the host's own processes, and
-    a session that loses them cannot report back to its channel at all. On today's
-    KAS the marker does not reach the registry filter, so under registry mode the
-    host drops them anyway and the session comes up with no Crew tools — which is
-    why that case is WARNED about once rather than left silent, and why the
-    exemption is still right: the day the wire carries ``type``, a governed
-    session keeps its control plane with no further change here.
-
-    A non-managed server therefore starts with its boolean flags but without any
-    other literal, and may fail to authenticate or miss a setting. The drop is logged with KEY NAMES
-    ONLY so an operator can see why, without the value reaching a log.
-
-    Hoisting the entry into the session-level array would not keep its env
-    local: :func:`hoist_servers_for_session` puts it in ``session/new``'s own
-    ``mcpServers``, the same wire, and hoists the entry as projected here. The
-    filter is therefore the one place the env is decided.
-
-    Note what this canNOT reach: ``command``, ``args`` and ``url`` are how the
-    server is launched or addressed, so a secret embedded THERE (an ``--api-key``
-    argv, a signed query string) still crosses the wire. Stripping them would not
-    withhold a credential, it would unmake the server — the exact "declared but
-    absent" state this function exists to end — so the residue is accepted and
-    stated rather than papered over.
-    """
-    servers = spec.get("mcpServers")
-    if not isinstance(servers, dict):
-        return {}
-
-    out: dict[str, dict[str, Any]] = {}
-    registry_mode = _registry_governed()
-    gated_off = _gated_off_managed_servers()
-    relayed = _relayed_env_references()
-    warned_about_the_marker = False
-    launch_key = launch_key or session_key
-    for name, entry in servers.items():
-        if not isinstance(name, str) or not name or not isinstance(entry, dict):
-            continue
-        managed = name in MANAGED_MCP_SERVER_NAMES
-        if mcp_server_muted_in_any_store(name, entry):
-            # ``mcp_server_muted_in_any_store`` is ``mcp_entry_is_muted`` plus the config scopes
-            # (why, for a spec that DECLARES the server: see it), so this stays the shared
-            # launch-decision reading and the gateway rewriter still cannot wrap an entry this
-            # function would withhold -- a wrapped name arrives as a stubbed name and is subtracted
-            # below, before any check here. A non-boolean is not forwarded either: ``disabled:
-            # z.boolean()`` fails the wire schema, and a client agent that fails it is dropped WHOLE
-            # (``validateAndConvertClientCustomAgents`` logs ``client.agent.drop.invalid``), costing
-            # the session every Crew tool. Arm two tests ``in``, because ``get`` reads an absent key
-            # and a ``null`` alike and only the second mutes; arm three means a scope did.
-            disabled = entry.get("disabled")
-            if disabled is True:
-                why = (
-                    "the entry is disabled, and the customAgents wire schema accepts "
-                    "that flag and then discards it, so a declared entry would launch "
-                    "the server anyway"
-                )
-            elif "disabled" in entry and disabled is not False:
-                why = (
-                    "its 'disabled' value is not a boolean, so it is read as a mute "
-                    "rather than coerced; forwarding it would fail the wire schema and "
-                    "cost the session the whole injected agent"
-                )
-            else:
-                why = "an MCP config scope disables it, so the user switched it off"
-            logger.info("agent %r: not declaring MCP server %r — %s", agent_id, name, why)
-            continue
-        if name in gated_off:
-            logger.info(
-                "agent %r: not declaring MCP server %r: its spec_gate is closed, so a "
-                "fresh spec would not declare it, and its backend would advertise no "
-                "tools and hold the session's MCP readiness until it times out",
-                agent_id,
-                name,
-            )
-            continue
-        if (
-            engine.MCP_REGISTRY_POINTERS in engine_features
-            and not managed
-            and mcp_entry_is_registry_governed(entry)
-        ):
-            # User servers only. Crew's own stay stdio so the session-level hoist
-            # still stamps their session token; a pointer has no slot for it.
-            out[name] = engine.registry_pointer(entry)
-            continue
-        if registry_mode and withheld_out is not None:
-            # Crew withholds every server it did not author in registry mode. Its
-            # own are declared, and KAS drops them only if the Kiro profile it
-            # reads is registry-governed too, so the notice says so conditionally.
-            reason = NOT_RUN_REGISTRY_IF_GOVERNED if managed else NOT_RUN_REGISTRY
-            withheld_out[name] = ((), (reason,), bool(entry.get("command")))
-        if registry_withheld(name, entry, registry_mode):
-            logger.info(
-                "agent %r: withholding MCP server %r — %s",
-                agent_id,
-                name,
-                (
-                    "registry mode is on and the wire schema has no slot for the "
-                    "registry marker, so the host's catalog filter drops this "
-                    "entry whether or not it is marked"
-                    if registry_mode
-                    else "registry mode is off and the entry carries the registry "
-                    "marker, so kiro-cli drops it too"
-                ),
-            )
-            continue
-        if managed and registry_mode and not warned_about_the_marker:
-            # Deliberately NOT conditional on the entry carrying the marker. A
-            # spec materialized while the mode was off has unmarked managed
-            # entries, and that install loses its control plane in exactly the
-            # same way — requiring the stamp would keep the one case that cannot
-            # self-diagnose silent.
-            warned_about_the_marker = True
-            logger.warning(
-                "agent %r: registry mode is on, and this backend's customAgents "
-                "wire schema has no slot for the %r marker Crew stamps on its own "
-                "MCP servers. The host therefore sees them as unmarked and its "
-                "catalog filter drops them, so this session starts with no Crew "
-                "control plane: spawn_run, cron_add, learn_add, artifacts, "
-                "knowledge and monitoring are all absent, with no error from the "
-                "host. Nothing on this side can carry the marker; the workaround "
-                "is `kirocrew config set agent.mcp_registry_mode false` on an "
-                "install whose profile is not actually registry-governed.",
-                agent_id,
-                MCP_REGISTRY_TYPE,
-            )
-        if name in stub_server_names:
-            # LAST of the subtractions, deliberately. A stubbed name is declared by
-            # the session-level injection instead of here, and that path answers
-            # none of the questions above -- so a name subtracted before them is a
-            # server admitted without them. The gateway declines to wrap a muted or
-            # catalog-governed entry, which keeps such a name out of this set in the
-            # first place; this ordering is what makes the answer here true on its
-            # own rather than by trusting that. It is the order
-            # :func:`kiro_crew.acp.session_mcp.session_mcp_servers` uses.
-            continue
-        projected = {k: v for k, v in entry.items() if k not in _WRAPPER_MARKERS}
-        projected.pop("autoApprove", None)
-        labelled, relay_env = session_label.take_kas_marker(projected, entry.get("env"), managed)
-        for key in _KAS_CARRIED_ELSEWHERE:
-            # Carried in the agent's ``excludedTools`` (``to_client_custom_agent``),
-            # so the entry drops it: left on, it would keep a managed server off
-            # the session-level array and so without its session token.
-            projected.pop(key, None)
-        if engine.MCP_SERVER_OAUTH in engine_features:
-            engine.carry_oauth(projected, agent_id=agent_id, name=name, logger=logger)
-        else:
-            withhold_oauth(projected, agent_id=agent_id, name=name, logger=logger)
-        discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
-        if discarded:
-            # Read off the PROJECTED entry, not the spec's: a key this function
-            # already removed never reaches the backend, so naming it here would
-            # report Crew's own subtraction as the backend's. Debug, because the
-            # server is still declared and still runs — this explains a
-            # restriction that had no effect, not a lost capability. ``disabled``
-            # cannot appear: that entry returned above.
-            logger.debug(
-                "agent %r: MCP server %r declares %s, which the customAgents wire "
-                "schema accepts and then discards, so the restriction has no "
-                "effect on this backend.",
-                agent_id,
-                name,
-                "/".join(discarded),
-            )
-        dropped_env: list[str] = []
-        withheld = _withhold_credential_fields(
-            projected, managed=managed, relayed=relayed, dropped_env=dropped_env
-        )
-        stdio = bool(projected.get("command"))
-        if managed:
-            # Native MCP children do not inherit the gateway's environment.
-            # Take the live listener from the gateway, never from an editable
-            # spec or process discovery.
-            bound_port = gateway_bound_port()
-            if bound_port:
-                projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port
-            if session_key:
-                projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
-        elif session_key and (
-            crew := kas_env_launch.crew_entry(projected, name, entry, session_key, agent_id)
-        ):
-            projected, withheld = crew, []
-        elif launch_key:
-            # The withheld env values stay on this machine: the engine is handed
-            # Crew's launcher and a reference, never the values (kas_env_launch).
-            relayable = kas_env_launch.withheld_env(relay_env, projected.get("env"))
-            projected, launched, complete = kas_env_launch.relay_withheld_env(
-                projected,
-                relay_env,
-                session_key=launch_key,
-                agent_id=agent_id,
-                server=name,
-                forward_ssh_auth_sock=forward_ssh_auth_sock,
-            )
-            if complete:
-                withheld = [w for w in withheld if not w.startswith("env")]
-            if launched:
-                # The launcher started the server with these values on this
-                # machine, so the notice names only what is still missing.
-                dropped_env = [k for k in dropped_env if k not in relayable]
-            projected, bridged = kas_env_launch.relay_withheld_headers(
-                projected,
-                entry.get("headers"),
-                session_key=launch_key,
-                agent_id=agent_id,
-                server=name,
-            )
-            if bridged:
-                withheld = [w for w in withheld if w != "headers"]
-        if (
-            withheld_out is not None
-            and projected.get("url")
-            and not projected.get("command")
-            and not kas_env_launch.kas_accepts_url(projected["url"])
-        ):
-            withheld_out[name] = ((), (NOT_RUN_INSECURE_URL,), False)
-        elif withheld_out is not None and withheld and not managed:
-            fields = tuple(field.split(" ", 1)[0] for field in withheld)
-            withheld_out[name] = (tuple(sorted(dropped_env)), fields, stdio)
-        if withheld:
-            logger.info(
-                "agent %r: not relaying %s for MCP server %r — the field can carry "
-                "a credential. The server is still declared; it may need its "
-                "credentials supplied another way.",
-                agent_id,
-                "/".join(withheld),
-                name,
-            )
-        out[name] = session_label.with_kas_label(projected, session_key if labelled else None)
-    return out
-
-
 def to_client_custom_agent(
     agent_id: str,
     spec: dict[str, Any],
@@ -968,6 +737,8 @@ def to_client_custom_agent(
     launch_key: str = "",
     engine_features: frozenset[str] = frozenset(),
     forward_ssh_auth_sock: bool = False,
+    governance_app: str | None = None,
+    scope_muted: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -997,12 +768,17 @@ def to_client_custom_agent(
     *pre_tool_hook_matchers* are the matchers of every PreToolUse hook this
     session's calls meet on Crew's permission path (the spec's own and the Hooks
     page's). A capability one of them covers is not auto-approved, so its calls
-    reach that path; see
+    reach that path, where a surface that fires the hooks has Crew answer an MCP grant
+    one held; see
     :func:`kiro_crew.acp.kas_permissions.withhold_hook_gated_auto_approval`.
 
     *skill_scope_rules* are the ``skill`` deny rules that hold the session to the
     skills its kiro-cli twin loads (:func:`kiro_crew.acp.kas_skill_scope.skill_scope_rules`);
     they join ``permissions`` after every merge. Empty adds nothing.
+
+    A translated ``toolsSettings`` allow, and the spec's own sub-agent allow
+    (:func:`_authored_allow_gate`), meet only the profiles the gate could resolve for
+    *session_key* and *governance_app* (``governance.may_skip_gate_for_session``).
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
@@ -1088,8 +864,9 @@ def to_client_custom_agent(
     # `permissions` and no `allowedTools` reaches KAS with the field absent, and
     # absent resolves every request to `ask`, so the author's policy becomes a
     # prompt for each of the calls it described.
+    authored_gate = _authored_allow_gate(session_key, governance_app)
     permissions = allowed_tools_to_permissions(
-        _ceiling_permitted(allowed_tools_input, agent_id), agent_id=agent_id
+        _ceiling_permitted(allowed_tools_input, agent_id, authored_gate), agent_id=agent_id
     )
     # The built-ins the projection keeps at ``ask`` that the spec still granted:
     # Crew answers their permission requests itself, after its own checks. Kept
@@ -1106,7 +883,7 @@ def to_client_custom_agent(
     permissions = merge_user_permissions(
         permissions,
         spec.get("permissions"),
-        ceiling_permits=may_skip_gate_now,
+        ceiling_permits=authored_gate,
         audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
             refs, outcome, reason, agent_id
         ),
@@ -1115,17 +892,17 @@ def to_client_custom_agent(
         allowlist_present=allowlist_present,
         agent_id=agent_id,
     )
-    # `toolsSettings` has no wire slot, but KAS's `permissions` is its
-    # replacement. The translated block goes through the same merge as an
-    # authored one: its denies travel, its allows meet the ceiling. Every reader
-    # below sees one key per kiro-cli alias group, the one kiro-cli itself keeps.
+    # `toolsSettings` has no wire slot, but KAS's `permissions` is its replacement. The
+    # translated block goes through the same merge as an authored one: its denies travel,
+    # its allows meet the ceiling and this session's profiles. Every reader below sees one
+    # key per kiro-cli alias group, the one kiro-cli itself keeps.
     tools_settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
     translated, _ = tools_settings_to_permissions(tools_settings)
     untranslated_policy = permissions  # what a checked deny is lifted against
     permissions = merge_user_permissions(
         permissions,
         translated,
-        ceiling_permits=may_skip_gate_now,
+        ceiling_permits=may_skip_gate_for_session(session_key, governance_app),
         audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
             refs, outcome, reason, agent_id
         ),
@@ -1134,6 +911,9 @@ def to_client_custom_agent(
         source="translated `toolsSettings`",
     )
     authored_policy = permissions  # before the hooks' asks, which restrict nothing
+    permissions = with_use_aws_denies(
+        permissions, tools_settings, agent_id, _audit_permission_decision, may_skip_gate_now
+    )
     # With the batch write guard on, a write-class MCP tool the policy allows gets
     # an exact ``ask`` so its call reaches the guard; the refs are answered by
     # Crew's gate (``batch-guard-grant``), so a write alone still runs unprompted.
@@ -1152,6 +932,7 @@ def to_client_custom_agent(
     except Exception:  # noqa: BLE001 - the guard never refuses more
         logger.debug("batch guard projection step failed for %s", agent_id, exc_info=True)
         guard_answered = []
+    unhooked = permissions
     permissions = withhold_hook_gated_auto_approval(
         permissions,
         pre_tool_hook_matchers,
@@ -1160,6 +941,9 @@ def to_client_custom_agent(
         ),
         agent_id=agent_id,
     )
+    # The MCP grants those asks took from KAS: Crew's gate answers them instead, on
+    # a surface that fires the hooks (``kas_hook_coverage.projected_hook_held``).
+    hook_held = hook_held_grants(unhooked, permissions)
     if skill_scope_rules:
         # Denies only, so they narrow and need no pass through the ceiling. KAS
         # loads the default skill trees on top of ``resources``; these rules hold
@@ -1185,6 +969,8 @@ def to_client_custom_agent(
         out[CREW_ANSWERED_BUILTINS_KEY] = sorted(crew_answered)
     if guard_answered:
         out[CREW_ANSWERED_WRITES_KEY] = sorted(guard_answered)
+    if hook_held:
+        out[CREW_ANSWERED_HOOK_HELD_KEY] = hook_held
     # `toolsSettings.shell.allowedCommands` and `permissions` shell globs, answered alike: the gate
     # approves a shell request whose command fullmatches one, after its checks.
     # Asked of the ceiling as the shell tool, which is what the call runs, and
@@ -1208,6 +994,13 @@ def to_client_custom_agent(
     if web_fetch:
         base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
         denies = {**base, **web_fetch}
+    # A `deniedCommands` entry KAS received no rule for: the gate refuses what it
+    # names on every approval policy, so an auto-approved call cannot run it. It
+    # grants nothing (a record with no lifted grant only refuses).
+    uncarried = uncarried_denied_commands(tools_settings, permissions)
+    if uncarried and not (denies and denies["deniedCommands"]):
+        base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
+        denies = {**base, "deniedCommands": uncarried}
     if denies:
         out[CREW_SPEC_DENIES_KEY] = denies
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
@@ -1283,8 +1076,13 @@ def to_client_custom_agent(
     # (``tools/tool-filter.ts`` destructures ``includeMcpJson = false``) both read
     # absent as false. kiro-cli also takes the ``useLegacyMcpJson`` spelling, which
     # the wire lacks, so it travels as ``includeMcpJson`` (``include_mcp_json``).
-    # What an absent or false flag still lets KAS start from the mcp.json files is
-    # excluded after the hoist (``kas_settings_mcp.finish_settings_mcp``).
+    #
+    # ``includeMcpJson`` travels only as ``false``. On KAS ``true`` adds every MCP
+    # tool on top of ``tools``, where on kiro-cli it only lets ``tools`` name the
+    # ``mcp.json`` servers. The opt-in still decides which of those servers KAS
+    # may start: the harness stamps it (``kas_settings_mcp.stamp_settings_mcp``),
+    # and the exclusion after the hoist reads it there, so a ref in ``tools``
+    # still reaches its server.
     #
     # A non-bool is dropped rather than coerced: ``z.boolean()`` rejects it, and a
     # client agent that fails the wire schema is dropped WHOLE, costing the
@@ -1293,7 +1091,7 @@ def to_client_custom_agent(
         ("includeMcpJson", include_mcp_json(spec)),
         ("includePowers", spec.get("includePowers")),
     ):
-        if isinstance(value, bool):
+        if isinstance(value, bool) and not (flag == "includeMcpJson" and value):
             out[flag] = value
 
     # Knowledge-base objects too, checked; the session notice names a dropped one.
@@ -1310,6 +1108,7 @@ def to_client_custom_agent(
         launch_key=launch_key,
         engine_features=engine_features,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        scope_muted=scope_muted,
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
@@ -1501,130 +1300,6 @@ def pre_tool_hook_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ..
     )
 
 
-def projected_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str] | None:
-    """What the projection sent for *agent_id* lets KAS decide without Crew
-    (``unprompted_capabilities``), or ``None`` with no projection (spawn-time agent).
-
-    Recorded on the session when the batch is handed over, because a live session
-    keeps the batch it registered: ``set_mode`` activates, it does not re-send. The
-    turn loop compares this with what the PreToolUse hooks cover NOW (see
-    :func:`kiro_crew.agent_sdk.spec_hooks.hook_projection_stale`).
-    """
-    if not isinstance(custom_agents, list) or not custom_agents:
-        return None
-    entries = [a for a in custom_agents if isinstance(a, dict)]
-    if not entries:
-        return None
-    entry = next((a for a in entries if a.get("id") == agent_id), entries[0])
-    return unprompted_capabilities(entry.get("permissions"))
-
-
-def _registered_entry(custom_agents: Any, agent_id: str) -> Any:
-    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
-    return next((a for a in entries if a.get("id") == agent_id), None)
-
-
-def _switched_entry(custom_agents: Any, mode_id: str) -> Any:
-    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
-    return next((a for a in entries if kas_wire_agent_id(str(a.get("id") or "")) == mode_id), None)
-
-
-def active_registered_entry(
-    custom_agents: Any, agent_id: str, mode_id: str
-) -> dict[str, Any] | None:
-    """The registered entry the session runs now, or ``None`` when Crew registered none for it.
-
-    *mode_id* is the last mode KAS reported (``""`` before any switch); it is
-    matched by wire id, as :func:`switched_auto_approved` matches it, so a KAS
-    built-in mode never reads a crewmate's entry of the same name. Before any
-    switch the entry is the batch's own *agent_id*, matched exactly.
-    """
-    entry = (
-        _switched_entry(custom_agents, mode_id)
-        if mode_id
-        else _registered_entry(custom_agents, agent_id)
-    )
-    return entry if isinstance(entry, dict) else None
-
-
-def projected_crew_answered_commands(custom_agents: Any, agent_id: str) -> tuple[str, ...]:
-    """The ``allowedCommands`` patterns Crew answers for *agent_id*'s registered
-    entry, matched like :func:`projected_crew_answered`."""
-    return _entry_crew_answered_commands(_registered_entry(custom_agents, agent_id))
-
-
-def switched_crew_answered_commands(custom_agents: Any, mode_id: str) -> tuple[str, ...]:
-    """Those patterns once a KAS mode switch moves the session to *mode_id*,
-    matched like :func:`switched_crew_answered`."""
-    return _entry_crew_answered_commands(_switched_entry(custom_agents, mode_id))
-
-
-def projected_shell_allowlist(custom_agents: Any, agent_id: str) -> tuple[str, ...] | None:
-    """The ``denyByDefault`` shell allowlist of *agent_id*'s registered entry, or
-    ``None``, matched like :func:`projected_crew_answered_commands`."""
-    return _entry_shell_allowlist(_registered_entry(custom_agents, agent_id))
-
-
-def switched_shell_allowlist(custom_agents: Any, mode_id: str) -> tuple[str, ...] | None:
-    """That allowlist once a KAS mode switch moves the session to *mode_id*."""
-    return _entry_shell_allowlist(_switched_entry(custom_agents, mode_id))
-
-
-def projected_shell_readonly(custom_agents: Any, agent_id: str) -> bool:
-    """Whether *agent_id*'s registered entry lets a read-only command past its
-    ``denyByDefault`` allowlist, matched like :func:`projected_shell_allowlist`."""
-    return _entry_shell_readonly(_registered_entry(custom_agents, agent_id))
-
-
-def switched_shell_readonly(custom_agents: Any, mode_id: str) -> bool:
-    """That once a KAS mode switch moves the session to *mode_id*."""
-    return _entry_shell_readonly(_switched_entry(custom_agents, mode_id))
-
-
-def projected_crew_answered(custom_agents: Any, agent_id: str) -> frozenset[str]:
-    """The built-ins Crew answers itself for *agent_id*'s registered entry.
-
-    Matched by the crewmate id exactly. Unlike :func:`projected_auto_approved` there
-    is no fallback to the first entry: a session whose active agent is not in the
-    batch has nothing Crew may answer for it, and empty keeps every call prompting.
-    """
-    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
-    entry = next((a for a in entries if a.get("id") == agent_id), None)
-    return _entry_crew_answered(entry)
-
-
-def switched_crew_answered(custom_agents: Any, mode_id: str) -> frozenset[str]:
-    """What Crew answers itself once a KAS mode switch moves the session to *mode_id*.
-
-    *mode_id* is the engine's wire id, matched like :func:`switched_auto_approved`
-    so a KAS built-in mode of the same name never inherits a crewmate's grants. A
-    mode the batch does not carry answers empty: Crew never projected it.
-    """
-    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
-    entry = next((a for a in entries if kas_wire_agent_id(str(a.get("id") or "")) == mode_id), None)
-    return _entry_crew_answered(entry)
-
-
-def switched_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str]:
-    """What the session auto-approves once a KAS mode switch moves it to *agent_id*.
-
-    *agent_id* is the mode id the engine reported, so entries are matched by the
-    id they were sent under (``kas_wire_agent_id``). ``set_mode`` activates a
-    definition KAS already holds, so the answer is the registered entry for
-    *agent_id* when the batch carries one. A mode the batch
-    does not carry (a KAS built-in) runs permissions Crew never projected, so every
-    gateable capability is assumed approved: any PreToolUse hook then reads the
-    session as stale, which is the side that re-projects.
-    """
-    entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
-    entry = next(
-        (a for a in entries if kas_wire_agent_id(str(a.get("id") or "")) == agent_id), None
-    )
-    if entry is None:
-        return frozenset(HOOK_GATEABLE_CAPABILITIES)
-    return unprompted_capabilities(entry.get("permissions"))
-
-
 def build_kas_custom_agents(
     agents_dir: Path,
     agent_id: str,
@@ -1639,10 +1314,12 @@ def build_kas_custom_agents(
     prompt_unread_out: list[Path] | None = None,
     engine_features: frozenset[str] = frozenset(),
     forward_ssh_auth_sock: bool = False,
+    governance_app: str | None = None,
+    scope_muted: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
-    *withheld_out*, *engine_features* and *forward_ssh_auth_sock* are handed to
+    *withheld_out*, *engine_features*, *forward_ssh_auth_sock* and *scope_muted* are handed to
     :func:`_project_mcp_servers`.
 
     A ``file://`` prompt that is missing, unreadable or empty
@@ -1650,10 +1327,10 @@ def build_kas_custom_agents(
     with no prompt, and its path is appended to *prompt_unread_out* for the
     session-start notice.
 
-    One entry: KAS registers the injected agent, it then surfaces as a mode, and
-    the ordinary ``session/set_mode`` activation can select it. Without this the
-    session stays on KAS's own default mode and the operator's prompt and tool
-    configuration have no effect.
+    One entry, *agent_id*'s: KAS registers it, it surfaces as a mode, and the
+    ordinary ``session/set_mode`` activation selects it; the harness appends the
+    agents its sub-agent tool may name (:mod:`kiro_crew.acp.kas_subagent_targets`).
+    Without this the session stays on KAS's own default mode.
 
     A prompt-less spec is projected with ``"prompt": ""``, so it runs on KAS's
     own default prompt as it does on kiro-cli; only ``kirocrew-lite`` gets the
@@ -1694,295 +1371,71 @@ def build_kas_custom_agents(
             withheld_out=withheld_out,
             engine_features=engine_features,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
-            # The key only names the launch snapshot files, so a session with none
-            # yet (a background or pooled runtime) still relays env and headers.
+            governance_app=governance_app,
+            scope_muted=scope_muted,
+            # Any key turns the relay on (its reference is shared), so a session
+            # with none yet (a background or pooled runtime) still relays env.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",
         )
     ]
 
 
-#: The keys a projected stdio declaration may carry and still be reproduced
-#: exactly by :func:`kiro_crew.acp.session_mcp.acp_server_element`. Anything
-#: else on a managed entry is a user customization with no session-level
-#: carrier -- ``timeout``, for one -- so an entry carrying one stays in the
-#: block. ``disabledTools`` never reaches here: the projection carries it in the
-#: agent's ``excludedTools`` and drops it from the entry. ``disabled`` is absent from that list of
-#: examples for a reason worth stating: a disabled entry never reaches this
-#: function, because :func:`_project_mcp_servers` declines to declare it at all.
-_HOISTABLE_ENTRY_KEYS = frozenset({"command", "args", "env", "type"})
-
-
-def _managed_first(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*servers* with Crew's own entries moved to the front, each group in its order.
-
-    KAS starts a session's servers in array order, a few at a time, and a server
-    that never answers ``initialize`` holds its place until the engine gives up on
-    it. Session start waits for Crew's servers (``wait_mcp_ready``), so behind slow
-    user servers they would delay the first prompt for nothing. Only the start
-    order moves: the same entries are sent.
-    """
-
-    def is_managed(element: Any) -> bool:
-        # The same ownership test as _pin_legacy_negotiation: a same-named entry
-        # with no command (a remote server) is not Crew's launch.
-        return (
-            isinstance(element, dict)
-            and element.get("name") in MANAGED_MCP_SERVER_NAMES
-            and bool(element.get("command"))
-        )
-
-    return [e for e in servers if is_managed(e)] + [e for e in servers if not is_managed(e)]
-
-
-def hoist_servers_for_session(
-    custom_agents: list[dict[str, Any]] | None,
-    agent_id: str,
-    session_servers: list[dict[str, Any]],
-    session_token: str = "",
-    *,
-    managed_entries: Mapping[str, Any] | None = None,
-    app_launches: Mapping[str, Mapping[str, Any]] | None = None,
-) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
-    """Carry the ACTIVE agent's servers for this session in the session-level array.
-
-    *app_launches* (from :func:`kas_app_identity.resolve_app_identity_launches`)
-    names the builtin app servers that run Crew's own code. Each is hoisted like a
-    managed server and, with a token, relaunched from its shipped manifest launch
-    and stamped (:func:`kas_app_identity.tokened_app_element`).
-
-    Only managed declarations move; user-declared ones stay in the block on
-    ``session/new`` and ``session/load`` alike, where KAS launches them and reads
-    their ``timeout`` (a session-level element has no ``timeout`` slot, so it
-    would get KAS's 60 s).
-
-    Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
-    entry over a same-named global or workspace ``mcp.json`` server on
-    ``session/new`` and ``session/load`` alike. The array stamps no status
-    provenance. The
-    retained 2.20.0 capture proves a session-level injection reports
-    ``origin: client`` and reaches readiness; its same-name collision behaviour
-    was not probed. The session-level array is therefore the one declaration site
-    whose connected report is positively the session's own on both, and Crew's
-    managed servers -- the ones whose env carries this session's key -- belong
-    there rather than in the block, exactly as the member dispatch server already
-    travels.
-
-    Pure and non-mutating: returns a new agents list (the active descriptor
-    shallow-copied with the hoisted names removed from ``mcpServers``) and a new
-    array (Crew's own servers first, then the caller's other entries, then the
-    other hoisted elements by name). The
-    entries hoisted are the ALREADY projected ones -- credential fields withheld,
-    ``autoApprove`` dropped, ``KIROCREW_PORT``/``KIROCREW_SESSION_KEY`` applied
-    -- so no spec is re-read and the source snapshot is untouched.
-
-    What is NOT hoisted, each deliberately:
-
-    * a name the caller's array already carries -- a broker stub or the member
-      dispatch entry is authoritative and a name must appear once;
-    * a non-managed server -- third-party declarations are not this seam's;
-    * an inactive agent's block -- it must not widen the active session's tool
-      surface or carry another identity's key;
-    * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
-      other than ``stdio``, or no usable command -- a restriction, a registry
-      marker or a malformed entry keeps the block path, where it is honoured.
-
-    A managed entry such a key keeps in the block still launches the managed
-    invocation: its ``command`` and ``args`` come from *managed_entries*
-    (:func:`~kiro_crew.agent.with_managed_launch`) and every other key stays as
-    projected, so a user spec copied from ``kirocrew.json`` does not start the
-    payload an upgrade has since removed. It gets no session token.
-
-    *session_token* is this session's signed identity token, and every hoisted
-    element carries it (``KIROCREW_STUB_SESSION_TOKEN``). The runtime stamps the
-    token onto its session-level array BEFORE this hoist runs, so the elements
-    added here would otherwise be the only managed servers launched without it:
-    each one reads the session's tool policy behind an attestation, and without
-    the token ``kirocrew-core`` comes up present-but-unusable, refusing every call
-    as ``identity_unattested``. Only the hoisted elements receive it -- a caller
-    entry already carries its own identity, and a third-party server is not
-    Crew's to hand a session credential. Empty leaves the elements as projected.
-
-    A tokened element never launches what the spec says. KAS spawns the hoisted
-    element itself, so ``gatewayd._spawns_own_control_plane`` -- the check that
-    refuses the token to any binary that is not the managed one -- never sees it,
-    and a hand-edited spec naming another program ``kirocrew-core`` would
-    otherwise be handed this session's identity. So the launch is re-derived from
-    :func:`~kiro_crew.agent.managed_mcp_spec_entry` (``include_opt_in=True``, the
-    form the daemon compares against), exactly as
-    ``mcp_gateway.rewriter._repair_control_plane_entry`` and the native-mount
-    path in :mod:`kiro_crew.acp.session_mcp` do. The env is composed outward
-    too: only ``KIROCREW_PORT`` / ``KIROCREW_SESSION_KEY``, which the projection
-    set from the gateway's own values, then the managed env pinned last; the
-    spec's ``KIROCREW_HOME`` does not survive onto a tokened launch. A name
-    whose managed invocation does not resolve is still hoisted as projected,
-    WITHOUT the token -- the daemon would deny it anyway, and a session with an
-    unattested control plane is better than one with none.
-
-    *managed_entries* is the managed invocation per name, already resolved by
-    :func:`resolve_managed_entries` off the event loop (the KAS harness's
-    ``session_extras`` thread). Resolving it here would run the launcher's
-    ``is_file`` / ``os.access`` / ``shutil.which`` probes on the loop at every
-    session start. ``None`` resolves in place, for a caller that is
-    already off the loop.
-
-    The agent's ``tools`` / ``excludedTools`` / ``permissions`` are untouched:
-    ``@server`` refs resolve wherever the server was declared, which is the same
-    property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
-
-    Every managed element in the returned array, caller entries included, is
-    pinned to legacy version negotiation (:func:`_pin_legacy_negotiation`) and
-    placed ahead of every other entry (:func:`_managed_first`), because KAS
-    starts servers in array order and session start waits for Crew's own.
-    """
-    if not custom_agents:
-        # The kiro path (no wire payload) returns here without importing the
-        # agent/config translation machinery below as a side effect.
-        return custom_agents, session_servers
-    from kiro_crew.acp.session_mcp import acp_server_element
-    from kiro_crew.agent import with_managed_launch
-
-    apps = app_launches or {}
-    taken = {
-        str(entry.get("name"))
-        for entry in session_servers
-        if isinstance(entry, dict) and entry.get("name")
+# The owners hold the ``mcpServers`` projection (``kas_agents_mcp_servers``), the
+# session-level hoist (``kas_agents_session_hoist``) and the registered-entry reads
+# (``kas_agents_registered``). Every name this module bound before they existed stays
+# readable as ``kiro_crew.acp.kas_agents.<name>``:
+#
+# * Every import of this module stays bound here, so a patch of
+#   ``kiro_crew.acp.kas_agents.<name>`` reaches every owner that binds the same object
+#   (``_facade_mirror``), as it reached this module's own code.
+# * A moved name that callers or this module's own code read is an ordinary import above.
+# * Every other moved name is SERVED: absent from this namespace on purpose, read from
+#   its owner through the mirror, and a write or delete through this module lands on
+#   every owner binding it.
+#
+# ``test/test_kas_agents_facade.py`` pins the reach.
+#: Owner modules, lowest layer first: an owner imports only owners listed before it.
+_KAS_AGENTS_OWNERS: tuple[str, ...] = (
+    "kiro_crew.acp.kas_agents_registered",
+    "kiro_crew.acp.kas_agents_mcp_servers",
+    "kiro_crew.acp.kas_agents_session_hoist",
+)
+for _owner in _KAS_AGENTS_OWNERS:
+    _importlib.import_module(_owner)
+#: Module-level names this module bound before the split that only owner code reads.
+_SERVED: frozenset[str] = frozenset(
+    {
+        "_CREDENTIAL_BEARING_FIELDS",
+        "_HOISTABLE_ENTRY_KEYS",
+        "_WRAPPER_MARKERS",
+        "_managed_entry",
+        "_managed_first",
+        "_tokened_managed_element",
     }
-    hoisted: list[dict[str, Any]] = []
-    out_agents: list[dict[str, Any]] = []
-    relaunched_in_block = False
-    for descriptor in custom_agents:
-        declared = descriptor.get("mcpServers") if descriptor.get("id") == agent_id else None
-        if not isinstance(declared, dict):
-            out_agents.append(descriptor)
-            continue
-        remaining: dict[str, Any] = {}
-        relaunched = False
-        for name, entry in declared.items():
-            keep = True
-            managed = name in MANAGED_MCP_SERVER_NAMES or name in apps
-            if name in apps:
-                # The shipped manifest declares ``disabled: false``; the resolver
-                # already refused a restricted entry, so only no-op keys drop here.
-                entry = without_noop_restrictions(entry)
-            if (
-                managed
-                and name not in taken
-                and isinstance(entry, dict)
-                and set(entry) <= _HOISTABLE_ENTRY_KEYS
-                and entry.get("type", "stdio") == "stdio"
-            ):
-                element = acp_server_element(name, entry)
-                if element is not None:
-                    hoisted.append(element)
-                    taken.add(name)
-                    keep = False
-            if not keep:
-                continue
-            if (
-                name in MANAGED_MCP_SERVER_NAMES
-                and name not in taken
-                and isinstance(entry, dict)
-                and "command" in entry
-            ):
-                # KAS launches a block entry as declared, so a restriction that
-                # keeps it here must not also keep a launcher an upgrade removed.
-                # A name the caller's array carries is launched from there.
-                kept = with_managed_launch(entry, _managed_entry(name, managed_entries))
-                relaunched = relaunched or kept is not entry
-                entry = kept
-            remaining[name] = entry
-        if len(remaining) == len(declared) and not relaunched:
-            out_agents.append(descriptor)
-            continue
-        relaunched_in_block = relaunched_in_block or relaunched
-        copied = dict(descriptor)
-        if remaining:
-            copied["mcpServers"] = remaining
-        else:
-            del copied["mcpServers"]
-        out_agents.append(copied)
-    if not hoisted:
-        agents = out_agents if relaunched_in_block else custom_agents
-        return agents, _pin_legacy_negotiation(_managed_first(session_servers))
-    hoisted.sort(key=lambda element: element["name"])
-    if session_token:
-        # Deferred like session_mcp above: the kiro path returns before this, and
-        # the token is per SESSION while the projection is per agent.
-        # Only managed and app entries are hoisted, and each is tokened below.
-        from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
+)
+#: Name this module serves but does not bind -> the owner that answers a read of it.
+_EXPORTS: dict[str, str] = {}
+_MIRROR = _facade_mirror.install(
+    _sys.modules[__name__],
+    _KAS_AGENTS_OWNERS,
+    excluded=(),
+    surface=frozenset(globals()) | _SERVED,
+)
+_EXPORTS.update(_MIRROR.served)
+_sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
+#: What a star import binds: every public name the module and its owners bind.
+__all__ = sorted(
+    n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_") and n != "TYPE_CHECKING"
+)
 
-        tokened: list[dict[str, Any]] = []
-        for element in hoisted:
-            name = element["name"]
-            if name in MANAGED_MCP_SERVER_NAMES:
-                element = _tokened_managed_element(
-                    element, session_token, attach_stub_session_token, managed_entries
-                )
-            elif name in apps:
-                element = tokened_app_element(
-                    element, apps[name], session_token, attach_stub_session_token
-                )
-            tokened.append(element)
-        hoisted = tokened
-    return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
-
-
-def _managed_entry(name: str, managed_entries: Mapping[str, Any] | None) -> Any:
-    """*name*'s managed invocation: the one resolved off the loop, else resolved here."""
-    if managed_entries is not None and name in managed_entries:
-        return managed_entries[name]
-    from kiro_crew.agent import managed_mcp_spec_entry
-
-    return managed_mcp_spec_entry(name, include_opt_in=True)
-
-
-def _tokened_managed_element(
-    element: dict[str, Any],
-    session_token: str,
-    attach: Any,
-    managed_entries: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """*element* relaunched as the managed invocation and stamped with the token.
-
-    ``None`` from the managed source (name not managed, closed ``spec_gate``,
-    unresolvable invocation) returns *element* untouched and untokened: that is
-    the verdict ``gatewayd._spawns_own_control_plane`` reaches for the same name,
-    so nothing here hands out a token the daemon would refuse.
-    """
-    from kiro_crew.agent import _managed_mcp_env
-
-    name = str(element.get("name", ""))
-    managed = _managed_entry(name, managed_entries)
-    if not isinstance(managed, dict) or not managed.get("command"):
-        logger.warning(
-            "hoisted MCP server %r gets no session token: its managed invocation does"
-            " not resolve, so the launch the spec declares cannot be attested",
-            name,
-        )
-        return element
-    managed_cmd = str(managed["command"])
-    managed_args = [str(a) for a in managed.get("args", [])]
-    declared_args = element.get("args")
-    if element.get("command") != managed_cmd or declared_args != managed_args:
-        # Neither value is logged: the declared args may carry a secret, and the
-        # managed invocation is enough to find the entry.
-        logger.warning(
-            "hoisted MCP server %r declares a launch that is not the managed"
-            " invocation; launching the managed one so the session token only"
-            " reaches Kiro Crew's own binary",
-            name,
-        )
-    raw_env = element.get("env")
-    pairs: list[Any] = raw_env if isinstance(raw_env, list) else []
-    env = {
-        str(pair["name"]): str(pair.get("value", ""))
-        for pair in pairs
-        if isinstance(pair, dict) and pair.get("name") in _TOKENED_ENV_KEYS_KEPT
-    }
-    env.update(_managed_mcp_env())
-    relaunched = dict(element)
-    relaunched["command"] = managed_cmd
-    relaunched["args"] = managed_args
-    relaunched["env"] = [{"name": k, "value": v} for k, v in env.items()]
-    (stamped,) = attach([relaunched], session_token)
-    return stamped
+if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.acp.kas_agents_mcp_servers import (  # noqa: F401
+        _CREDENTIAL_BEARING_FIELDS,
+        _WRAPPER_MARKERS,
+    )
+    from kiro_crew.acp.kas_agents_session_hoist import (  # noqa: F401
+        _HOISTABLE_ENTRY_KEYS,
+        _managed_entry,
+        _managed_first,
+        _tokened_managed_element,
+    )

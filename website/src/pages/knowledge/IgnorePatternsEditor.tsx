@@ -36,7 +36,13 @@ export default function IgnorePatternsEditor({ source }: { source: Source }) {
         rows={3} className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text resize-none" />
       <div className="flex items-center gap-2">
         <span className="flex-1 text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.ignore_patterns_keep_indexed_files')}</span>
-        <Btn onClick={() => saveMutation.mutate(patterns)} disabled={saveMutation.isPending || patterns.join('\n') === saved}>
+        {/* Busy uses `aria-disabled` plus the guard, NOT `disabled`, which leaves
+            the tab order and drops a keyboard user's focus while the save runs.
+            The unchanged state stays native-disabled: it is inert, not in flight. */}
+        <Btn onClick={() => { if (!saveMutation.isPending) saveMutation.mutate(patterns) }}
+          aria-disabled={saveMutation.isPending || undefined} aria-busy={saveMutation.isPending || undefined}
+          disabled={!saveMutation.isPending && patterns.join('\n') === saved}
+          className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed">
           {i18nT('pages.knowledge.sourcesList.save_ignore_patterns')}
         </Btn>
       </div>

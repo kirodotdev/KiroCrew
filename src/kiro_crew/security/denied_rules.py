@@ -343,6 +343,10 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
       uses for provider names;
     * a duplicate ``id`` within the edition's own list (first occurrence wins).
 
+    A kept entry's ``note`` is carried through as text. It is not checked here,
+    because it never takes part in matching; :mod:`kiro_crew.deny_guidance`, which
+    renders it, drops a note it cannot show safely.
+
     Fail-soft: an ungoverned/standalone host, a provider that does not implement the
     protocol, or one that raises all yield ``[]`` — the built-in catalog stands on
     its own and the un-weakenable overlay floor is untouched either way, so
@@ -418,6 +422,7 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
                 pattern=pattern,
                 category=str(getattr(rule, "category", "") or "edition"),
                 description=str(getattr(rule, "description", "") or ""),
+                note=str(getattr(rule, "note", "") or ""),
             )
         )
     return out

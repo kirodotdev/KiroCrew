@@ -31,6 +31,7 @@ from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 MOD = "kiro_crew.dashboard.chat_handlers"
 
@@ -244,6 +245,27 @@ class TestHasConversation:
         slot.messages.append({"role": "user", "content": "hi"})
         assert ch._has_conversation(slot) is True
 
+    def test_a_heartbeat_prompt_is_a_floor_to_resume_from(self):
+        # A heartbeat prompt delivered to an unused chat is its only request, so a
+        # first turn that fails to start can still be resumed.
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {
+                "role": "inject",
+                "content": "💓 Heartbeat\n\nreport",
+                "meta": {"injectKind": "heartbeat"},
+            }
+        )
+        slot.messages.append({"role": "error", "content": "session start timed out"})
+        assert ch._has_conversation(slot) is True
+
+    def test_another_inject_row_is_not_a_floor(self):
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {"role": "inject", "content": "resume", "meta": {"injectKind": "recovery"}}
+        )
+        assert ch._has_conversation(slot) is False
+
 
 # ── _wire_model_id ───────────────────────────────────────────────────────────
 
@@ -321,6 +343,20 @@ class TestReapplyEffortAfterLiveSwitch:
         )
 
         assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is False
+
+    @pytest.mark.asyncio
+    async def test_a_level_kiro_cli_refuses_keeps_the_live_session(self):
+        from kiro_crew.acp.command_refused import AcpCommandRefused
+
+        slot = _ChatSlot("s1")
+        slot.reasoning_effort = "max"
+        refused = AcpCommandRefused("invalid effort level 'max'")
+        provider = _acp(
+            supports_effort=MagicMock(return_value=True),
+            change_effort=AsyncMock(side_effect=refused),
+        )
+
+        assert await ch._reapply_effort_after_live_switch("s1", slot, provider) is True
 
 
 # ── _try_live_model_switch ───────────────────────────────────────────────────
@@ -473,7 +509,7 @@ class TestRedactFollowupItem:
         assert ch._redact_followup_item({}) == {"title": "", "description": "", "prompt": ""}
 
     def test_text_fields_are_redacted(self):
-        secret = "ghp_" + "A" * 36
+        secret = github_classic(seed=86)
         out = ch._redact_followup_item({"title": f"use {secret}", "prompt": "ok"})
         assert secret not in out["title"]
         assert "REDACTED" in out["title"]
@@ -485,7 +521,7 @@ class TestRedactFollowupItem:
 
     def test_branch_is_dropped_when_redaction_changes_it(self):
         # A mangled ref is worse than no ref: the frontend derives one instead.
-        out = ch._redact_followup_item({"title": "t", "branch": "feat/" + "ghp_" + "A" * 36})
+        out = ch._redact_followup_item({"title": "t", "branch": "feat/" + github_classic(seed=86)})
         assert "branch" not in out
 
     def test_non_string_branch_is_ignored(self):

@@ -22,7 +22,7 @@ import { ACTIVE, LINES, lum, mix, tokenRgb } from './statusTextTint'
 /** Large-text / UI-component floor (WCAG 1.4.11): the match is a highlight
  *  the reader has just searched for, and prose matches read 2.50:1 today. */
 const MIN_MATCH_TEXT = 3
-const GLOBAL = '::highlight(mc-find-current)'
+const GLOBAL = ['[data-hl-scope]::highlight(mc-find-current)', '[data-hl-scope] ::highlight(mc-find-current)']
 const SCOPED = ['.code-block::highlight(mc-find-current)', '.diff-block::highlight(mc-find-current)']
 
 interface Rule { selectors: string[]; decls: Map<string, string> }
@@ -39,15 +39,15 @@ const RULES: Rule[] = [...ACTIVE.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => {
 })
 
 const findRules = RULES.filter((r) => r.selectors.some((s) => s.includes('::highlight(mc-find')))
-const globalRule = () => RULES.filter((r) => r.selectors.length === 1 && r.selectors[0] === GLOBAL)
+const globalRule = () => RULES.filter((r) => r.selectors.length === GLOBAL.length && GLOBAL.every((s) => r.selectors.includes(s)))
 const scopedRule = () => RULES.filter((r) => SCOPED.every((s) => r.selectors.includes(s)))
 
 describe('current preview-find match in code and diff blocks', () => {
   it('anchors the premise: the global current-match rule sets a fill and no text colour', () => {
     const rules = globalRule()
-    expect(rules, `expected exactly one \`${GLOBAL} { … }\` rule`).toHaveLength(1)
+    expect(rules, `expected exactly one \`${GLOBAL.join(', ')} { … }\` rule`).toHaveLength(1)
     expect(rules[0].decls.get('background-color')).toMatch(/^var\(--[\w-]+\)$/)
-    expect(rules[0].decls.has('color'), `${GLOBAL} must not set color: prose matches keep their text colour`).toBe(false)
+    expect(rules[0].decls.has('color'), `${GLOBAL.join(', ')} must not set color: prose matches keep their text colour`).toBe(false)
   })
 
   it('scopes one text colour to the current match in .code-block and .diff-block', () => {

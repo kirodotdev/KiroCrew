@@ -1,0 +1,84 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Read File",
+        "tool_call_id": "toolu_read_image_1",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "/work/website/public/icon-192.png"
+        },
+        "title": "Read /work/website/public/icon-192.png",
+        "tool_call_id": "toolu_read_image_1",
+        "tool_input": "{\n  \"file_path\": \"/work/website/public/icon-192.png\"\n}",
+        "wire_title": "Read /work/website/public/icon-192.png"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_read_image_1",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_read_image_1",
+        "text": "Three white ghosts on"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Three white ghosts on",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_read_image_1",
+        "text": " purple."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " purple.",
+      "thinking": false
+    }
+  }
+]

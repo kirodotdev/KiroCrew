@@ -39,7 +39,9 @@ rather than editing this one.
 ## 1. Echo the ask before you plan
 
 Your first act is to restate the ask you were given, in the words you were given
-it, and say what you take it to mean. Then plan.
+it, and say what you take it to mean. Then plan. When you keep a ledger, the
+plan is your goal text (Outcome, Done when, Plan, Parked, Changed), and you
+rewrite its Plan and Changed lines as soon as a finding moves it.
 
 A paraphrase that drops a clause is how a fleet spends a whole round building the
 wrong thing with nothing on the board looking wrong, because every child is
@@ -47,9 +49,11 @@ executing your summary faithfully. Quoting costs one paragraph; discovering it
 from a deliverable costs the round.
 
 Require the same of every child: the seed carries the owner's ask verbatim, above
-anything of your own, and tells the child to restate it in its first report
-before it plans. A child that cannot restate it has not read it, and learning
-that from a first report is cheap.
+anything of your own, and tells the child to make its first report five lines:
+the ask restated, State (what main, the issue and open PRs already have), its
+items with acceptance, what it will not do, and risks. Then it keeps going; the
+plan is never a stop. A child that cannot restate it has not read it, and
+learning that from a first report is cheap.
 
 ## 2. Register the work before you start it
 
@@ -131,6 +135,11 @@ And never leave `agent` unset on a dispatch. An omitted `agent` inherits YOURS,
 so a leaf comes up as a second lead that dispatches instead of fixing, and the
 item reads as stalled rather than as misconfigured.
 
+A dispatch never passes `message` to `session_create`: the seed follows the
+bind. Where a `message` would be refused outright, your prompt says so:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`."
+
 ## 5. Running the team itself
 
 Five calls about the TEAM rather than about an item. Each one is decided by a
@@ -138,21 +147,12 @@ mechanism that already exists, so none of them is a judgement you make from
 feel. Where a rule above already says WHAT to do, the paragraph here names only
 the mechanism that decides it.
 
-**Capacity decides the wave, not your plan.** `resource_status` before every
-wave, and again before a reseed wave -- a reseed stands up as many sessions as
-a first dispatch. Its posture is one of four words -- `ample`, `tight`,
-`critical`, `unknown` -- and on any of the last three, queue the rest of the
-wave instead of
-dispatching it and say so in the plan. **`unknown` is the posture of a reading
-that FAILED, and it queues like `tight`** -- a probe that could not answer is
-the one place where a lead decides from feel, which is the thing this section
-exists to stop. Then give the capacity back: `work_ledger_record`
-`action=close` the item once it is terminal and its result is read, and
-`session_close` the child. Carry no number of your own -- the server's
-`MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` in
-`dashboard/state_parts/slot_directory.py` are the
-real ceiling, and a count in your head is a second ceiling that disagrees with
-it.
+**Size waves by capacity, then give it back.** Size every wave, reseed waves
+included, by `resource_status` as goal-conductor's "Capacity decides the wave"
+says; that rule owns the per-posture counts. Then give the capacity back:
+`work_ledger_record` `action=close` the item once it is terminal and its result
+is read, and `session_close` the child, so the server's
+`MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` ceiling frees a seat.
 
 **What refuses a conducting level past the cap is `MAX_DEPTH` in
 `work_ledger_records.py`, which is the default of the `work_ledger.max_depth`
@@ -191,6 +191,11 @@ queue, a deployer, a published artifact -- has exactly one child that lands it.
 Testing and review are their own item, dispatched to a different child than the
 author: an author grading its own work reports the result it already believes.
 
+**Fix a routine incident yourself when it fits one turn.** goal-conductor's
+Patrol lists the routine incidents a conductor handles without its manager. A
+conductor dispatches the fix. You may do it in this turn when it passes the
+do-it-yourself test in section 3.
+
 ## 6. When another conductor dispatched you
 
 Everything above still holds, and `goal-conductor`'s "When a conductor dispatched
@@ -210,7 +215,6 @@ Two lead-only additions:
 - The ledger nests two levels by default. Width is where the parallelism lives,
   not depth; an operator who wants more levels sets `work_ledger.max_depth` and
   accepts that each level multiplies sessions.
-- Run the evaluator and the budget check as the `accept_eval` and
-  `patrol_budget` tools; they do not prompt. `execute_bash` is never
+- Run the evaluator as the `accept_eval` tool; it does not prompt. `execute_bash` is never
   auto-approved, so the shell fallback costs one approval per run. Batch every
   `done` item into ONE call, as `goal-conductor` directs.

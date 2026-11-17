@@ -40,6 +40,7 @@ from kiro_crew._sqlite_compat import (
 )
 from kiro_crew.config.loader import config_dir
 from kiro_crew.context_assembly.budget import _MEMORY_PROJECTS_CAP
+from kiro_crew.memory_history_stamps import is_history_day_header, is_history_stamp
 from kiro_crew.memory_recall import recall_terms
 from kiro_crew.memory_startup import require_memory_ready
 from kiro_crew.memory_stores import named_store_operation
@@ -79,6 +80,24 @@ _DEFAULT_PROJECTS = "# Active Projects\n\n<!-- Current work context -->\n"
 # staying fresh; the cache key includes the day so the decay window shifting at
 # midnight invalidates naturally, and append/prune invalidate explicitly.
 _HISTORY_CACHE_TTL_SECS = 5.0
+# How long a recent-history window may be reused past that TTL, and only while the
+# history directory's ``lstat`` signature is unchanged. Long enough to carry the
+# read a new chat's pre-warm makes to that chat's first message, which a person
+# usually sends seconds to a minute later. The bound is on what a read can miss
+# that no file stat shows: the sensitive-path policy the hardened read applies
+# (a protected directory added, a home symlink repointed) is re-applied no later
+# than this.
+_HISTORY_REUSE_MAX_SECS = 60.0
+# Reuse needs the signature, and the signature is POSIX-only. On Windows,
+# ``DirEntry.stat`` reports 0 for inode and link count, so a gained hard link
+# would not show; and an ``lstat`` through a linked ancestor is itself the SMB
+# probe that ``LocalMemoryFiles._read_root_guard`` exists to refuse, so no
+# probe may run ahead of that guard. Windows keeps the plain TTL and no reuse.
+HISTORY_REUSE_SUPPORTED = os.name != "nt"
+# Most history-directory entries a signature holds. Pruning keeps a year of
+# dated files; a directory past this cap gets no signature (no reuse, no
+# prefetch match) rather than one that grows with whatever was planted there.
+_HISTORY_SIGNATURE_MAX_ENTRIES = 2048
 
 # How long a sqlite connection waits out 'database is locked' contention before
 # giving up. Applied both as connect(timeout=) and PRAGMA busy_timeout so a
@@ -287,6 +306,10 @@ class MemoryStore:
         # different windows (context build=14, suggestions=2, dashboard=30) don't
         # evict each other. Value: (monotonic_deadline, day_iso, result).
         self._history_cache: dict[int, tuple[float, str, str]] = {}
+        # Past that TTL, a window read within ``_HISTORY_REUSE_MAX_SECS`` is
+        # reused while no entry of the history directory moved (see
+        # ``_history_signature``). Value: (signature, day_iso, read_at, result).
+        self._history_reuse: dict[int, tuple[tuple, str, float, str]] = {}
         self._files_cache: "MemoryFiles | None" = None
 
     @property
@@ -617,6 +640,11 @@ class MemoryStore:
                     # stale, so make the caller's next read observe the winner.
                     self._invalidate_history_cache()
                     return False
+                from kiro_crew.memory_history_edit import today_part_of_aggregate_edit
+
+                content = today_part_of_aggregate_edit(
+                    content, current, _normalize_newlines(current_today).strip()
+                )
                 self._atomic_write_text(path, content)
                 self._index_file(path, content)
                 wrote = True
@@ -655,6 +683,10 @@ class MemoryStore:
 
         TTL-cached (keyed on ``days`` + today's date) for explicit readers.
         ``append_history``/``prune_history`` invalidate the cache on write.
+        A window :meth:`warm_recent_history` read in the last
+        ``_HISTORY_REUSE_MAX_SECS`` is handed to the next read once, and only
+        while no entry of the history directory moved since that read
+        (:meth:`_history_signature`); anything else reads every file again.
         """
         require_memory_ready(self._memory_store_name)
         if days <= 0:
@@ -665,22 +697,105 @@ class MemoryStore:
                 for entry in reversed(self.read_history_entries())
                 if entry["content"].strip()
             )
+        return self._read_recent_history_v1(days, warm=False)
+
+    @named_store_operation
+    def warm_recent_history(self, days: int = 14) -> None:
+        """Read the window now, for the next :meth:`read_recent_history` to reuse once.
+
+        Kept apart from the plain TTL cache: a TTL hit checks nothing, and the
+        read this warms must see a day file another process changed in between.
+        Other readers never reuse it past their TTL. Nothing to warm where there
+        is no reuse (Windows) or no V1 history.
+        """
+        require_memory_ready(self._memory_store_name)
+        if not HISTORY_REUSE_SUPPORTED or days <= 0 or self._memory_version == 2:
+            return
+        self._read_recent_history_v1(days, warm=True)
+
+    def _read_recent_history_v1(self, days: int, *, warm: bool) -> str:
         today = datetime.now().date()
         today_iso = today.strftime("%Y-%m-%d")
-        cached = self._history_cache.get(days)
-        if cached is not None and time.monotonic() < cached[0] and cached[1] == today_iso:
-            return cached[2]
+        if not warm:
+            cached = self._history_cache.get(days)
+            if cached is not None and time.monotonic() < cached[0] and cached[1] == today_iso:
+                return cached[2]
+        # One use per warm: whatever this read does, the warmed text is spent.
+        kept = self._history_reuse.pop(days, None)
+        if not warm and kept is not None:
+            now = self._history_signature()
+            if (
+                now is not None
+                and kept[0] == now
+                and kept[1] == today_iso
+                and time.monotonic() - kept[2] < _HISTORY_REUSE_MAX_SECS
+            ):
+                return kept[3]
+        before = self._history_signature() if warm else None
+        read_at = time.monotonic()
         result = self._read_recent_history_uncached(days, today)
-        self._history_cache[days] = (
-            time.monotonic() + _HISTORY_CACHE_TTL_SECS,
-            today_iso,
-            result,
-        )
+        if not warm:
+            self._history_cache[days] = (
+                time.monotonic() + _HISTORY_CACHE_TTL_SECS,
+                today_iso,
+                result,
+            )
+        # Kept for reuse only when nothing moved across the whole read, so the
+        # text is the one the signature describes.
+        elif before is not None and self._history_signature() == before:
+            self._history_reuse[days] = (before, today_iso, read_at, result)
         return result
+
+    def _history_signature(self) -> tuple | None:
+        """What the history directory holds, by ``lstat``: one row per entry.
+
+        Name, type and mode, inode, size, mtime, ctime and link count, plus the
+        directory's own inode, mtime and ctime. A rewritten, added, removed,
+        renamed or relinked file -- a file swapped for a symlink included --
+        changes it. ``None`` when the directory cannot be listed, holds more
+        than ``_HISTORY_SIGNATURE_MAX_ENTRIES`` entries, or the store's files
+        are not on the local disk. The one signature of this directory: the
+        recent-history reuse and the session memory prefetch
+        (``store_admission._admitted_file_stats``) both compare it. On Windows
+        it is taken only behind the file seam's root guard, which the reuse
+        does not run, so the reuse is off there (:data:`HISTORY_REUSE_SUPPORTED`).
+        """
+        from kiro_crew.memory_files import LocalMemoryFiles
+
+        if not isinstance(self._files, LocalMemoryFiles):
+            return None
+        try:
+            try:
+                folder = os.lstat(self._history_dir)
+            except FileNotFoundError:
+                return ("absent",)  # no history yet: unchanged until one is written
+            if not _stat.S_ISDIR(folder.st_mode):
+                return None
+            rows: list[tuple[str, int, int, int, int, int, int]] = []
+            with os.scandir(self._history_dir) as entries:
+                for entry in entries:
+                    if len(rows) >= _HISTORY_SIGNATURE_MAX_ENTRIES:
+                        return None
+                    st = entry.stat(follow_symlinks=False)
+                    rows.append(
+                        (
+                            entry.name,
+                            st.st_mode,
+                            st.st_ino,
+                            st.st_size,
+                            st.st_mtime_ns,
+                            st.st_ctime_ns,
+                            st.st_nlink,
+                        )
+                    )
+        except OSError:
+            return None
+        return (folder.st_ino, folder.st_mtime_ns, folder.st_ctime_ns, tuple(sorted(rows)))
 
     def _invalidate_history_cache(self) -> None:
         """Drop all cached recent-history windows (after append/prune)."""
         self._history_cache.clear()
+        self._history_reuse.clear()
 
     def _read_recent_history_uncached(
         self, days: int, today: _date, *, lookback_days: int = 181
@@ -925,16 +1040,19 @@ class MemoryStore:
             source_remaining = share
             candidates = []
             first_line = True
+            history_day = label != "Projects"
             for line in body.splitlines():
                 if not line.strip():
                     first_line = True
+                elif history_day and (is_history_day_header(line) or is_history_stamp(line)):
+                    first_line = True  # the entry's own first line takes the slot
                 elif line.startswith(("#", "- ", "* ")):
                     candidates.append(line.strip())
                     first_line = line.startswith("#")
                 elif first_line:
                     candidates.append(line.strip())
                     first_line = False
-            if label != "Projects":
+            if history_day:
                 candidates.reverse()
             for title in candidates:
                 line = f"- {label}: {title[:160]}\n"
@@ -1041,8 +1159,13 @@ class MemoryStore:
     # Each activity section is spelled once here; get_context and
     # get_activity_context both assemble their block from these.
 
-    def _projects_section(self, cap: int) -> str:
+    def _projects_section(
+        self, cap: int, gate: Callable[[str, str, int], str] | None = None
+    ) -> str:
         """The ``## Active Projects`` section, or "" when the file is default.
+
+        *gate* is the activity block's relevance gate (``get_activity_context``):
+        it takes ``("projects", text, cap)`` and returns the text to cap.
 
         This is a startup INJECTION read, not a read-modify-write baseline, so
         it goes through :meth:`_guarded_entry` rather than :meth:`read_projects`:
@@ -1064,14 +1187,21 @@ class MemoryStore:
             return ""
         if not projects.strip() or projects.strip() == _DEFAULT_PROJECTS.strip():
             return ""
+        if gate is not None:
+            projects = gate("projects", projects, cap)
+            if not projects.strip():
+                return ""
         return (
             f"## Active Projects\n"
             f"_[source: {self._projects_file}]_\n"
             f"{_cap_text(projects, cap)}"
         )
 
-    def _history_section(self, cap: int) -> str:
-        """The ``## Recent History`` section over 14 days, or "" when empty."""
+    def _history_section(self, cap: int, gate: Callable[[str, str, int], str] | None = None) -> str:
+        """The ``## Recent History`` section over 14 days, or "" when empty.
+
+        *gate* works as in :meth:`_projects_section`, named ``"history"``.
+        """
         try:
             history = self.read_recent_history(days=14)
         except OSError:
@@ -1083,6 +1213,10 @@ class MemoryStore:
             return ""
         if not history.strip():
             return ""
+        if gate is not None:
+            history = gate("history", history, cap)
+            if not history.strip():
+                return ""
         history_scope = (
             "retained full entries, bounded read"
             if self._memory_version == 2
@@ -1116,6 +1250,7 @@ class MemoryStore:
         semantic_cap: int = 12_000,
         episodic_cap: int = 12_000,
         query: str = "",
+        relevance_rule: str = "off",
     ) -> str:
         """Build the recent-activity block a new session carries as background.
 
@@ -1124,15 +1259,51 @@ class MemoryStore:
         path serves those complete as protected context through
         :meth:`get_context`, so this block is the budgeted complement that the
         admission loop may drop whole when the background pool is full.
+
+        *relevance_rule* is ``memory.relevance_rule``
+        (:mod:`kiro_crew.memory_relevance_rule`). With a request, ``enforce``
+        keeps only the projects and history sections that share a significant
+        token with it, and gates task facts the same way the private store
+        does; ``shadow`` keeps today's block and records the section ids and
+        fact keys that would change. Without a request nothing is gated.
         """
+        from kiro_crew import injection_receipts
+        from kiro_crew import memory_relevance_rule as _relevance_rule
+        from kiro_crew.config.memory_sections import relevance_rule_mode_from
+
+        mode = relevance_rule_mode_from(relevance_rule)
+        gate: Callable[[str, str, int], str] | None = None
+        add: list[str] = []
+        drop: list[str] = []
+        if mode != _relevance_rule.MODE_OFF and query:
+            tokens = _relevance_rule.request_tokens(query)
+
+            def _gate(name: str, text: str, cap: int) -> str:
+                kept, would_add, would_drop = _relevance_rule.gate_document(name, text, tokens, cap)
+                add.extend(would_add)
+                drop.extend(would_drop)
+                return kept if mode == _relevance_rule.MODE_ENFORCE else text
+
+            gate = _gate
+
         parts = [
             section
             for section in (
-                self._projects_section(projects_cap),
-                self._history_section(history_cap),
+                self._projects_section(projects_cap, gate),
+                self._history_section(history_cap, gate),
             )
             if section
         ]
+        if gate is not None:
+            shadow = mode == _relevance_rule.MODE_SHADOW
+            injection_receipts.record_stage(
+                injection_receipts.RELEVANCE_RULE,
+                mode=mode,
+                policy=_relevance_rule.POLICY_VERSION,
+                would_add=add if shadow else (),
+                would_drop=drop if shadow else (),
+                part=_relevance_rule.PART_ACTIVITY,
+            )
 
         # Facts and episodes are relevance-ranked against the request. Without a
         # request (the eval runner, a bare session open) there is nothing to rank
@@ -1140,8 +1311,9 @@ class MemoryStore:
         if self.ranks_activity_against(query):
             vector_store = self._vector_store
             assert vector_store is not None
+            gated: dict[str, str] = {} if gate is None else {"relevance_rule": mode}
             semantic_ctx = vector_store.get_semantic_context(
-                query_text=query, cap=semantic_cap, facts_only=True
+                query_text=query, cap=semantic_cap, facts_only=True, **gated
             )
             if semantic_ctx:
                 parts.append(semantic_ctx)
@@ -1433,7 +1605,10 @@ class MemoryStore:
 
     @named_store_operation
     def rebuild_index(self) -> int:
-        """Rebuild the full FTS index from all memory files. Returns file count."""
+        """Rebuild the full FTS index from all memory files.
+
+        Returns the number of files indexed, or 0 when the rebuild failed.
+        """
         require_memory_ready(self._memory_store_name)
         if self._memory_version == 2:
             return self._member_store().rebuild_memory_index()
@@ -1499,11 +1674,14 @@ class MemoryStore:
                 indexed += 1
             conn.commit()
         except Exception:
+            # Nothing was committed, so report no files indexed rather than
+            # every source file: callers log this count as the rebuild result.
+            indexed = 0
             logger.warning("FTS rebuild failed", exc_info=True)
         finally:
             if conn is not None:
                 conn.close()
-        return len(files)
+        return indexed
 
     @named_store_operation
     def index_row_count(self) -> int | None:

@@ -25,7 +25,7 @@ import { OverlayPortal } from '../../components/overlayRoot'
 import { useDndSensors } from '../../hooks/useDndSensors'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { railWidthFor } from '../../hooks/useRailWidth'
-import { busySlotKeys, mateNeedsYouByKey } from '../../lib/crewMode'
+import { busySlotKeys } from '../../lib/crewMode'
 import { haptic } from '../../lib/haptic'
 import { DOCK_MATES_LIMIT, dockMateOrder, starOrderWrites } from '../../lib/dockMates'
 import { i18nT } from '../../i18n/t'
@@ -58,7 +58,7 @@ function useOpenMember(): string | null {
  * Mates page row never has to stand in for it (`openIsDocked`).
  */
 export function useDockMates() {
-  const { data, isError, error, errorUpdatedAt } = useQuery(membersRosterQuery)
+  const { data, isError, error, errorUpdatedAt, dataUpdatedAt } = useQuery(membersRosterQuery)
   // A guest session (Shared Crew, a presigned link) is refused the owner's roster.
   // That is "no mates to dock", not a failure: no rows, no notice. The client does
   // not journal it either (`jMembers`). A session-expiry 403 still shows the notice.
@@ -67,7 +67,7 @@ export function useDockMates() {
   const open = useOpenMember()
   const top = ordered.slice(0, DOCK_MATES_LIMIT)
   const pulledIn = open && !top.some(m => m.name === open) ? ordered.filter(m => m.name === open) : []
-  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner, loadError: error, errorUpdatedAt }
+  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner, loadError: error, errorUpdatedAt, dataUpdatedAt }
 }
 
 function isNotOwnerRefusal(error: unknown): boolean {
@@ -78,8 +78,12 @@ type LoadNoticeState = { listeners: Map<symbol, () => void>; dismissedAt: number
 const loadNoticeStates = new WeakMap<QueryClient, LoadNoticeState>()
 
 /** The first mounted rail owns the notice until it leaves. Sharing dismissal
- *  per query client prevents the other drawer from repeating the same error. */
-function useDockMatesLoadNotice(errorUpdatedAt: number) {
+ *  per query client prevents the other drawer from repeating the same error.
+ *  A dismiss holds for the outage: a failed roster read re-reads every 30s
+ *  (`refetchWhileFailed`), each failure with a new `errorUpdatedAt`, so the
+ *  notice stays away until a read lands after the dismissed failure
+ *  (`dataUpdatedAt` past it), and only a failure after that shows it again. */
+function useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt }: { errorUpdatedAt: number; dataUpdatedAt: number }) {
   const client = useQueryClient()
   const state = useMemo(() => {
     const shared: LoadNoticeState = loadNoticeStates.get(client) ?? { listeners: new Map(), dismissedAt: null }
@@ -99,8 +103,8 @@ function useDockMatesLoadNotice(errorUpdatedAt: number) {
     }
   }, [id, notify, state])
   const getSnapshot = useCallback(() =>
-    state.listeners.keys().next().value === id && state.dismissedAt !== errorUpdatedAt,
-  [errorUpdatedAt, id, state])
+    state.listeners.keys().next().value === id && (state.dismissedAt === null || state.dismissedAt < dataUpdatedAt),
+  [dataUpdatedAt, id, state])
   const visible = useSyncExternalStore(subscribe, getSnapshot)
   const dismiss = () => {
     state.dismissedAt = errorUpdatedAt
@@ -109,18 +113,12 @@ function useDockMatesLoadNotice(errorUpdatedAt: number) {
   return { visible, dismiss }
 }
 
-/** Why a dock mate row carries its dot, most pressing first. The dot itself is
- *  the same one mark for every reason; the reason only names it. */
-type MateDot = 'needs_you' | 'unread' | 'working'
-const MATE_DOT_LABEL: Record<MateDot, string> = {
-  needs_you: 'pages.membersPage.filter_status_needs_you',
-  unread: 'pages.membersPage.unread_message',
-  working: 'pages.membersPage.drawer_working',
-}
-
-/** A per-mate live reading drives both the face and dot on either rail. */
+/** A per-mate live reading drives the face (working) and the dot (unread) on
+ *  either rail. The dot means one thing only: a message the person has not
+ *  read yet, so it clears the moment the thread is read. Working shows on the
+ *  face, never as a dot. */
 function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentProps<typeof NavItem>, 'navId' | 'path' | 'label' | 'icon' | 'badge'>) {
-  const { running, dot } = useAppSelector(s => {
+  const { running, unread } = useAppSelector(s => {
     const slot = (m.slot_key ? slotRowByKey(s.dashboard.slots, m.slot_key) : undefined)
       ?? s.dashboard.slots.find(row => row.mode === 'member' && row.agent === m.name)
     // Match the Mates page: live idle overrides the HTTP snapshot, while
@@ -128,13 +126,9 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
     // still count as working.
     const key = slot?.key || m.slot_key
     const working = key && busySlotKeys(s.dashboard.slots, s.chat.subagentQueued).has(key) ? true : (slot ? false : !!m.running)
-    // Needs you and unread read the Mates page row's own sources.
-    const needsYou = !!key && !!mateNeedsYouByKey(s.dashboard.slots)[key]
-    const unread = !!key && s.dashboard.unreadSlots.includes(key)
-    const d: MateDot | null = needsYou ? 'needs_you' : unread ? 'unread' : working ? 'working' : null
-    return { running: working, dot: d }
+    // Unread reads the Mates page row's own source.
+    return { running: !!working, unread: !!key && s.dashboard.unreadSlots.includes(key) }
   }, shallowEqual)
-  const dotLabel = dot ? i18nT(MATE_DOT_LABEL[dot]) : ''
   return (
     <NavItem
       {...props}
@@ -142,8 +136,9 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
       path={`/members?member=${encodeURIComponent(m.name)}`}
       label={crewDisplayName(m)}
       icon={<CrewAvatar seed={m.name} avatar={(m as { avatar?: unknown }).avatar} size={20} working={running ? 'subtle' : undefined} />}
-      badge={dot
-        ? <span role="status" aria-label={dotLabel} className={props.touch ? 'absolute top-1 right-2 w-2 h-2 bg-accent rounded-full z-10' : props.collapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} />
+      badge={unread
+        ? <span role="status" aria-label={i18nT('pages.membersPage.unread_message')} className={props.touch ? 'absolute top-1 right-2 w-2 h-2 bg-accent rounded-full z-10' : props.collapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'shrink-0 w-2 h-2 bg-accent rounded-full'} />
+
         : undefined}
     />
   )
@@ -182,9 +177,9 @@ function DockMatesNotice({ collapsed, isMobile, message, report, testId, onDismi
  * wider screen, and press-and-hold on a phone tile already means "scroll".
  */
 export function DockMatesTiles({ onActivate }: { onActivate: () => void }) {
-  const { top, pulledIn, open, loadFailed, loadError, errorUpdatedAt } = useDockMates()
+  const { top, pulledIn, open, loadFailed, loadError, errorUpdatedAt, dataUpdatedAt } = useDockMates()
   const shown = [...top, ...pulledIn]
-  const loadNotice = useDockMatesLoadNotice(errorUpdatedAt)
+  const loadNotice = useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt })
   const notice = loadFailed && loadNotice.visible
     ? <DockMatesNotice collapsed isMobile message={i18nT('components.matesDock.load_failed')} report={reportForError(loadError)} testId="dock-mates-load-error" onDismiss={loadNotice.dismiss} />
     : null
@@ -211,7 +206,7 @@ export function DockMatesTiles({ onActivate }: { onActivate: () => void }) {
 
 export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapsed: boolean; isMobile: boolean; onNavigate?: () => void }) {
   const queryClient = useQueryClient()
-  const { ordered, top, pulledIn, open, loadFailed, loadError, errorUpdatedAt } = useDockMates()
+  const { ordered, top, pulledIn, open, loadFailed, loadError, errorUpdatedAt, dataUpdatedAt } = useDockMates()
   // Folded behind the same "N more" / "Show less" toggle as the Apps list.
   // Unfolded, every starred mate is on screen and every row is sortable, so a
   // mate starred late (sorted to the bottom) can be dragged into the top.
@@ -232,7 +227,7 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
   useLayoutEffect(() => { remeasure() }, [remeasure, sortableRows.length, staticRows.length, collapsed])
   const sensors = useDndSensors({ distance: 8 })
   const [dragId, setDragId] = useState<string | null>(null)
-  const loadNotice = useDockMatesLoadNotice(errorUpdatedAt)
+  const loadNotice = useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt })
   // Also closes the gap before React publishes the pending mutation state.
   const reorderInFlight = useRef(false)
 

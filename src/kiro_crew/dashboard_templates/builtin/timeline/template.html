@@ -358,7 +358,11 @@
       if (state === 'rejected') return 'bad';
       if (state === 'abandoned') return 'gone';
       var status = text(task.status);
-      if (status === 'blocked' || status === 'question') return 'need';
+      // The fold's `awaits_person`, when sent: a report naming a person that no
+      // decide or steer answered. An answered question reads by its age instead.
+      var asks = typeof task.awaits_person === 'boolean' ? task.awaits_person :
+        (status === 'blocked' || status === 'question');
+      if (asks) return 'need';
       var last = stamp(task.last_report_at);
       if (last === null) return 'mute';
       var quiet = now - last;

@@ -38,7 +38,8 @@ project agent after launch has no target the daemon can resolve.
 
 Precedence caveat: same-name override is verified against the shipped binary
 (``test_mcp_gateway_session_inject.py`` pins it, including a live check when
-kiro-cli is on PATH) but is NOT documented by kiro-cli. The documented
+kiro-cli is on PATH and ``KIROCREW_E2E_REAL_KIRO_CLI=1`` is set) but is NOT
+documented by kiro-cli. The documented
 hierarchy covers only the three *file* tiers (agent config > workspace
 ``mcp.json`` > global ``mcp.json``). If a future release made injection purely
 additive, an agent's own copy would launch alongside the stub, which is worse
@@ -58,6 +59,7 @@ from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, e
 from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT, worker_overlay_spec
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 from kiro_crew.mcp_gateway.rewriter_spec import is_unpoolable
+from kiro_crew.start_priority import START_PRIORITY_ENV, StartPriority
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,32 @@ def attach_stub_session_token(entries: list[dict[str, Any]], token: str) -> list
         env = [e for e in raw_env if isinstance(e, dict)] if isinstance(raw_env, list) else []
         env = [e for e in env if e.get("name") != STUB_SESSION_TOKEN_ENV]
         env.append({"name": STUB_SESSION_TOKEN_ENV, "value": token})
+        shaped["env"] = env
+        out.append(shaped)
+    return out
+
+
+def attach_stub_start_priority(
+    entries: list[dict[str, Any]], priority: StartPriority
+) -> list[dict[str, Any]]:
+    """Return *entries* naming *priority* in each element's ACP ``env`` array.
+
+    The stub reports it on its Register frame and the gateway daemon's spawn
+    gate queues the server's start by it (``kiro_crew.start_priority``), so the
+    MCP servers of a session a person is waiting on are not started behind
+    every background session's. Only ``FOREGROUND`` is written: a background
+    start returns the input unchanged, the wire shape it had before this field.
+    Copies each element, as :func:`attach_stub_session_token` does.
+    """
+    if priority is not StartPriority.FOREGROUND:
+        return entries
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        shaped = dict(entry)
+        raw_env = shaped.get("env")
+        env = [e for e in raw_env if isinstance(e, dict)] if isinstance(raw_env, list) else []
+        env = [e for e in env if e.get("name") != START_PRIORITY_ENV]
+        env.append({"name": START_PRIORITY_ENV, "value": priority.value})
         shaped["env"] = env
         out.append(shaped)
     return out
@@ -345,7 +373,13 @@ def _load_overlay_for_agent(
     Fail-soft: an unreadable/malformed overlay yields ``None`` (unpooled), never
     an exception.
     """
-    if kas_worker_session_key and agent == MATE_WORKER_AGENT:
+    if agent == MATE_WORKER_AGENT:
+        # A worker's stubs are its own session's (KAS, keyed by the session). The
+        # stock worker overlay is also written under this name, and a lookup by
+        # name would hand it to any session that runs the worker spec without
+        # that session's merged limits, so no other host reads it.
+        if not kas_worker_session_key:
+            return None
         return worker_overlay_spec(overlay_dir, kas_worker_session_key)
     project = _project_spec_for_agent(agent, work_dir, markdown_specs, dispatchable_only)
     if project is not None:

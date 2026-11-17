@@ -18,12 +18,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from test_chat_slack import _make_slack_app
 
 from kiro_crew.dashboard import chat_slack
 from kiro_crew.dashboard.chat_backfill import select_backfill_messages
 from kiro_crew.dashboard.chat_slack import drain_slack_backfill
 from kiro_crew.slack.format import SLACK_MAX_TEXT, SLACK_MSG_LIMIT
+
+# A GitHub token with a valid checksum: the plan redacts it, while an AWS key ID
+# stays visible as an identifier.
+_SECRET = github_classic(seed=41)
 
 
 def _state(tmp_path):
@@ -224,7 +229,7 @@ class TestBackfillFormatting:
         answer_parts = [text for text in posted if "line 0 " in text or "line 119 " in text]
         assert len(posted) >= 3, f"expected the answer to span parts, got {len(posted)}"
         assert all(len(text) <= SLACK_MSG_LIMIT for text in posted)
-        # Every line survives somewhere — the old 2,000-char cap dropped the rest.
+        # Every line survives somewhere; a fixed 2,000-char cap would drop the rest.
         body = "\n".join(posted)
         for i in (0, 60, 119):
             assert f"line {i} " in body, f"line {i} lost"
@@ -247,7 +252,7 @@ class TestBackfillFormatting:
     async def test_credentials_are_redacted(self, tmp_path):
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         _seed(slot, [("user", "here are creds"), ("assistant", f"key is {secret}")])
 
         posted = await _drain(state, slot)
@@ -327,15 +332,17 @@ class TestBackfillFormatting:
 
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         split_secret = secret[:6] + "\x1b[0m" + secret[6:]
 
         # split_message reserves room for CONTINUATION and, with no newline to
         # snap to, cuts exactly there.
         boundary = SLACK_MAX_TEXT // 2
         cut = boundary - len(CONTINUATION)
-        filler = "q" * (cut - 12)
-        content = filler + split_secret + ("z" * 200)
+        filler = (
+            "q" * (cut - 13) + " "
+        )  # a blank: a token glued to a letter is no token by its format
+        content = filler + split_secret + " " + ("z" * 199)
 
         assert len(content) > boundary, "no split would happen at all"
         assert len(filler) < cut < len(filler) + len(split_secret), (
@@ -359,7 +366,7 @@ class TestBackfillFormatting:
         """
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         # An ANSI reset dropped into the middle of the key: invisible to the
         # credential regex, removed entirely by the ANSI strip.
         split_secret = secret[:4] + "\x1b[0m" + secret[4:]
@@ -379,8 +386,10 @@ class TestBackfillFormatting:
         """
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
-        filler = "x" * (SLACK_MAX_TEXT - 10)
+        secret = _SECRET
+        filler = (
+            "x" * (SLACK_MAX_TEXT - 11) + " "
+        )  # a blank: a token glued to a letter is no token by its format
         content = filler + secret
         assert len(content) > SLACK_MAX_TEXT
         assert "\n" not in filler

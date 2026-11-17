@@ -15,9 +15,11 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from collections.abc import Mapping
 
 from kiro_crew import platform_compat
+from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
 from kiro_crew.platform.update_governance import (
     _OID_RE,
     _git,
@@ -66,13 +68,42 @@ def _scratch_http_auth_pairs(proj: str) -> list[tuple[str, str]]:
     return pairs
 
 
+class _ScratchHandoff:
+    """Who removes the throwaway git dir when the fetch is cancelled mid-prepare.
+
+    The prepare step runs on a worker thread that a cancel cannot stop, and the
+    dir carries no scratch owner record and no allocator's name, so the scratch
+    sweep never reclaims it.
+    Under :attr:`lock`, the worker either sees :attr:`abandoned` and removes the
+    dir itself, or records it in :attr:`scratch` for the cancelled caller to
+    remove. Neither side waits on the other, so a cancel returns at once.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.abandoned = False
+        self.scratch = ""
+
+
+def _abandon(handoff: _ScratchHandoff) -> None:
+    """Mark *handoff* abandoned; remove the dir off-loop if the worker already handed it over."""
+    with handoff.lock:
+        handoff.abandoned = True
+        built = handoff.scratch
+    if built:
+        # Submitted now and never awaited: it runs to the end however often the
+        # caller is cancelled after this.
+        asyncio.get_running_loop().run_in_executor(None, shutil.rmtree, built, True)
+
+
 def _prepare_isolated_fetch(
-    proj: str, remote: str, branch: str
+    proj: str, remote: str, branch: str, handoff: _ScratchHandoff | None = None
 ) -> tuple[str, str, str, list[tuple[str, str]]] | None:
     """Resolve the URL and build the throwaway git dir, off the event loop.
 
     Returns ``(url, objects_dir, scratch, http_auth_pairs)`` or ``None`` when the
-    remote has no usable URL or the object store cannot be located.
+    remote has no usable URL or the object store cannot be located, or when
+    *handoff* was abandoned while the dir was built (the dir is then removed).
 
     The object store is asked of git (``rev-parse --git-path objects``), not
     hard-coded to ``proj/.git``, so a linked worktree or a submodule -- whose
@@ -102,6 +133,38 @@ def _prepare_isolated_fetch(
     root = agent_scratch.scratch_root()
     os.makedirs(root, exist_ok=True)
     scratch = tempfile.mkdtemp(prefix="kirocrew-update-fetch-", dir=str(root))
+    try:
+        prepared = _fill_isolated_fetch(
+            proj, remote, branch, url, objects_dir, object_format, scratch
+        )
+    except BaseException:
+        # The scratch sweep leaves a directory with no owner record and no
+        # allocator's name in place, and this one has neither, so a dir left
+        # here would stay for good.
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
+    if prepared is None or handoff is None:
+        return prepared
+    with handoff.lock:
+        abandoned = handoff.abandoned
+        if not abandoned:
+            handoff.scratch = scratch
+    if abandoned:
+        shutil.rmtree(scratch, ignore_errors=True)
+        return None
+    return prepared
+
+
+def _fill_isolated_fetch(
+    proj: str,
+    remote: str,
+    branch: str,
+    url: str,
+    objects_dir: str,
+    object_format: str,
+    scratch: str,
+) -> tuple[str, str, str, list[tuple[str, str]]] | None:
+    """Write the throwaway git dir's files into *scratch*; see :func:`_prepare_isolated_fetch`."""
     for sub in ("objects/info", "objects/pack", "refs/heads", "refs/tags", "refs/kirocrew-have"):
         os.makedirs(os.path.join(scratch, sub), exist_ok=True)
     with open(os.path.join(scratch, "HEAD"), "w", encoding="utf-8") as handle:
@@ -208,9 +271,16 @@ async def fetch_and_pin_upstream(
 
     The scratch dir is assembled in Python with no ``git`` subprocess, so the
     only child this spawns is the network fetch itself -- the process a timeout
-    or a shutdown cancellation must kill and reap.
+    or a shutdown cancellation must kill and reap. A killed fetch keeps none of
+    its download, so *timeout* must cover the whole transfer; after every fetch
+    the stale ``tmp_pack_*`` that earlier killed fetches left are reaped.
     """
-    prepared = await asyncio.to_thread(_prepare_isolated_fetch, proj, remote, branch)
+    handoff = _ScratchHandoff()
+    try:
+        prepared = await asyncio.to_thread(_prepare_isolated_fetch, proj, remote, branch, handoff)
+    except asyncio.CancelledError:
+        _abandon(handoff)
+        raise
     if prepared is None:
         return None
     url, objects_dir, scratch, http_auth_pairs = prepared
@@ -276,7 +346,21 @@ async def fetch_and_pin_upstream(
             return None
         return commit
     finally:
-        await asyncio.to_thread(shutil.rmtree, scratch, ignore_errors=True)
+        await asyncio.to_thread(_cleanup_after_fetch, proj, scratch)
+
+
+def _cleanup_after_fetch(proj: str, scratch: str) -> None:
+    """Drop the scratch git dir and reap stale ``tmp_pack_*`` in *proj*'s object store.
+
+    A fetch killed by its deadline leaves its partial pack behind, and the update
+    check runs periodically, so the orphans would pile up without bound. The reap
+    runs after EVERY fetch, the timed-out ones included; its mtime threshold
+    (``git_tmp_packs.TMP_PACK_MAX_AGE_S``) is what keeps it off a pack another
+    fetch is still writing, including the one just killed, which the next check
+    reaps once it is old enough.
+    """
+    shutil.rmtree(scratch, ignore_errors=True)
+    reap_stale_tmp_packs(proj)
 
 
 __all__ = ["fetch_and_pin_upstream"]

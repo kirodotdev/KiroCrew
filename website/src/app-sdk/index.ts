@@ -34,7 +34,7 @@ import { chatLaunchMemoryMode, chatLaunchOpensDraft, type ChatLaunchMemoryMode }
 // Re-exported as TYPES: the barrel<->vendor-stub parity gate counts value
 // exports, and a type vanishes at runtime, so an app author keeps these names
 // without the stub needing an entry it could not provide.
-export type { AppApi, AppApiError, AppInfo, AppPermissions, AppUpdate } from './scopedApi'
+export type { AppApi, AppApiError, AppInfo, AppPermissions, AppSession, AppUpdate } from './scopedApi'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -603,6 +603,19 @@ export { default as ChatMessageList } from './ChatMessageList'
 export { default as PullRequestPanel } from './PullRequestPanel'
 export type { AppPullRequestPanelProps } from './PullRequestPanel'
 export type { PullRequestLink } from '../utils/pullRequestLinks'
+// Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
+// `/api/source/issues` (see ./issues/useIssues).
+export { useIssues, IssueList, IssueCard } from './issues'
+export type { UseIssuesOptions, UseIssuesResult, IssueCardProps, IssueListProps, IssueView } from './issues'
+export type { IssueSearchRequest, IssueSearchResponse, IssueSummary, IssuePerson, IssueLabel, IssueLinkedChange } from '../types'
+// The dashboard's project picker behind the app's declared listing paths (see
+// ./ProjectPicker).
+export { default as ProjectPicker } from './ProjectPicker'
+export type { AppProjectPickerProps } from './ProjectPicker'
+// The dashboard's live session list and the acts a person takes on a session
+// from it, behind the app's declared chat paths (see ./hostSessions).
+export { useHostSessions } from './hostSessions'
+export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecision, HostSessionSendResult } from './hostSessions'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {
@@ -625,5 +638,7 @@ export { useImeGuard } from '../hooks/useImeGuard'
 export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
+// An app's own origin on the dashboard's port, for a backend that frames its own pages (level 8).
+export { appWebOrigin } from './webOrigin'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'

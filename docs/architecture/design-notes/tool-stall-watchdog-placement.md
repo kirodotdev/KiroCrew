@@ -5,7 +5,7 @@ supposed to be watching. `AcpSessionHandle._dispatch_events` is an async
 generator; its watchdog logic is the `except asyncio.TimeoutError` arm of
 
 ```python
-msg = await asyncio.wait_for(self._queue.get(), timeout=min(remaining, 5.0))
+msg = await asyncio.wait_for(self._queue.get(), timeout=min(remaining, QUEUE_POLL_SECS))
 ```
 
 An async generator advances only when a consumer pulls it. When the consumer
@@ -256,8 +256,8 @@ In-band recovery already exists end to end. `_end_stalled_tool`
 never the process, because co-tenant sessions share the runtime — and yields one
 terminal `EVENT_COMPLETE` carrying `STOP_REASON_TOOL_STALL` plus the tool title,
 redacted command, and evidence. The consumer's `STOP_REASON_TOOL_STALL` branch
-in `_turn_stop_recovery` (`chat_turn/stop_recovery.py`) then, for `_prompt_depth == 0 and
-slot._tool_stall_retries < 3`, increments the
+in `_turn_stop_recovery` (`chat_turn/stop_recovery.py`) then, for `_prompt_depth == 0`, `not turn._agent_started` and
+`slot._tool_stall_retries < STOP_RECOVERY_MAX_RETRIES` (3), increments the
 budget and `queue_insert`s a continue-nudge (`SYNTHETIC_RECOVERY_KIND` /
 `RecoveryPayload.CONTINUATION`) naming the stalled tool. It no longer replays the
 original message verbatim — that older routing re-ran the stalling command and
@@ -278,13 +278,13 @@ terminator would either double-emit or land a cancel ack on a turn that has
 already completed and get misclassified. For the parked-consumer class the thing
 to unblock is the consumer's await, not the generator — and at the approval site
 that resolution path already exists and already has three callers (HTTP
-slot-approve, the Slack click, the 7200s timeout). Resolving the pending future
+slot-approve, the Slack click, the approval timeout). Resolving the pending future
 lets the existing flow resume on its own. The out-of-band hook's job is to make
 the frozen await finish, after which the in-band machinery works again.
 
 **Recovery must not spend a budget it does not own.** `_tool_stall_retries` is
 the in-band budget. An unblock consumes none of it, because it produces no
-re-prompt: the user-visible outcome is the one the 7200s timeout already
+re-prompt: the user-visible outcome is the one the approval timeout already
 produces (the approval is auto-declined and the turn proceeds), just sooner. If
 some future class genuinely must end a turn from out of band, it routes through
 the same stop-reason seam and therefore the same budget check — never a direct

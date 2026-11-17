@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { X, Check } from 'lucide-react'
+import { X, Check, Plus, CornerDownLeft, Search } from 'lucide-react'
 import type { ChatTag } from '../types'
 import { api } from '../api/client'
 import { useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { usePointerMotion } from '../hooks/usePointerMotion'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { offlineProps } from '../utils/offline'
 import { Input } from './ui'
@@ -27,6 +28,10 @@ export function elementBeneath(backdrop: Element, x: number, y: number): Element
   if (typeof document.elementsFromPoint !== 'function') return null
   return document.elementsFromPoint(x, y).find(el => !backdrop.contains(el)) ?? null
 }
+
+/** Row key of the "Create" row. A symbol, so it can never equal a tag id. */
+const CREATE_ROW: unique symbol = Symbol()
+type RowKey = string | typeof CREATE_ROW
 
 const sameTagIds = (left: string[], right: string[]) => left.length === right.length
   && left.every((tag, i) => tag === right[i])
@@ -139,6 +144,19 @@ export default function SlotTagPopover() {
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const listRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const listId = useId()
+  // The search box doubles as the create field: it filters the list, and Enter
+  // on text no tag name contains creates that tag and assigns it to this chat.
+  const [query, setQuery] = useState('')
+  // The row the user moved to with the arrow keys or the pointer: a tag id, or
+  // CREATE_ROW. Null means the highlight follows the typed text instead.
+  const [picked, setPicked] = useState<RowKey | null>(null)
+  const setSearch = (value: string) => { setQuery(value); setPicked(null) }
+  const pointerMoved = usePointerMotion(!!slotKey)
+  // The latest render's add-only path, so a create that resolves after
+  // re-renders assigns through the current overlay and write queue.
+  const addRef = useRef<(tagId: string) => void>(() => {})
   const { data: tags = [] } = useQuery<ChatTag[]>({ queryKey: ['chat-tags'], queryFn: () => api.chatTags(), enabled: !!slotKey })
 
   const setSlotTagsMutation = useMutation({
@@ -146,12 +164,23 @@ export default function SlotTagPopover() {
       baseRevision ? api.setSlotTags(slot, nextTags, baseRevision) : api.setSlotTags(slot, nextTags),
   })
   const createTagMutation = useMutation({
-    mutationFn: ({ name }: { name: string; input: HTMLInputElement | null; draft: string }) => api.createChatTag(name),
+    mutationFn: ({ name }: { name: string; slot: string; draft: string }) => api.createChatTag(name),
     onMutate: () => setWriteError(null),
-    onSuccess: (_data, { input, draft }) => {
-      // Clear the draft only once the tag exists, and only if the user has not
-      // typed something else meanwhile. A refused create keeps the text.
-      if (input && input.value === draft) input.value = ''
+    onSuccess: (created: unknown, { slot, draft }) => {
+      // Clear the draft only once the tag exists, only on the chat it was typed
+      // for, and only if the user has not typed something else meanwhile. A
+      // refused create keeps the text.
+      if (slotKeyRef.current === slot) setQuery(current => (current === draft ? '' : current))
+      const tag = created as Partial<ChatTag> | null | undefined
+      if (tag && typeof tag.id === 'string') {
+        const id = tag.id
+        // Show the new row before the refetch lands, so its checkmark has a row.
+        queryClient.setQueryData<ChatTag[]>(['chat-tags'], old =>
+          old && !old.some(t => t.id === id) ? [...old, tag as ChatTag] : old)
+        // Assign only while the picker is still open on the chat it was typed
+        // for; a dismissed or retargeted picker keeps the tag unassigned.
+        if (slotKeyRef.current === slot) addRef.current(id)
+      }
       return queryClient.invalidateQueries({ queryKey: ['chat-tags'] })
     },
     onError: (error: unknown) => setWriteError(crudErrorMessage(error)),
@@ -298,14 +327,15 @@ export default function SlotTagPopover() {
     setConfirmation(null)
   }, [confirmation, slotKey, slot?.tags, slot?.tags_revision])
 
-  // Move focus into the tag list on open so keyboard users can operate it
-  // (skip on touch to avoid hijacking focus). Deferred a tick so the list has
-  // painted its options.
+  // Every open starts with an empty search, including a switch to another chat.
+  useEffect(() => { setQuery(''); setPicked(null) }, [slotKey])
+
+  // Focus the search box on open so typing filters straight away (skip on
+  // touch, where focusing raises the on-screen keyboard over the list).
+  // Deferred a tick so the dialog has painted.
   useEffect(() => {
     if (!slotKey || isTouchDevice()) return
-    const t = window.setTimeout(() => {
-      listRef.current?.querySelector<HTMLElement>('[data-option]')?.focus()
-    }, 0)
+    const t = window.setTimeout(() => { searchRef.current?.focus() }, 0)
     return () => clearTimeout(t)
   }, [slotKey])
 
@@ -316,7 +346,7 @@ export default function SlotTagPopover() {
   // So: suppress the native menu, dismiss the picker, and re-issue the same
   // gesture to the element under the pointer so its own Kiro Crew context menu
   // opens fresh. Only the backdrop itself does this — a right-click inside the
-  // dialog (e.g. on the "New tag" input) keeps its native menu.
+  // dialog (e.g. on the search input) keeps its native menu.
   const onBackdropContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget) return
     e.preventDefault()
@@ -622,6 +652,91 @@ export default function SlotTagPopover() {
     })
     writeQueuesRef.current.set(targetSlot, queuedWrite)
   }
+  const add = (tagId: string) => {
+    const base = pendingRef.current ?? slot?.tags ?? []
+    if (base.includes(tagId)) return
+    toggle(tagId)
+  }
+  addRef.current = add
+
+  const sortedTags = [...tags].sort((a, b) => a.order - b.order)
+  const needle = query.trim().toLowerCase()
+  const visibleTags = needle ? sortedTags.filter(t => t.name.toLowerCase().includes(needle)) : sortedTags
+  // A name that is already a tag applies that tag instead of minting a twin.
+  const exactMatch = needle ? sortedTags.find(t => t.name.trim().toLowerCase() === needle) : undefined
+  const createName = needle && !exactMatch ? query.trim() : ''
+  // Row order on screen, which is also the arrow-key order.
+  const rowKeys: RowKey[] = [...(createName ? [CREATE_ROW] as const : []), ...visibleTags.map(t => t.id)]
+  // Until the user picks a row, the highlight follows the typed text, and only
+  // to a row where Enter adds something: the tag with exactly that name, else
+  // the first matching tag, else the Create row. Tags the chat already has are
+  // skipped, so the Enter mark never sits beside a checkmark that Enter keeps.
+  // Typing part of a name and pressing Enter adds that tag instead of creating
+  // one named after the fragment. The Create row stays at the top, and Up
+  // steps through any checked tags above the highlight to reach it. A
+  // blank search, or the exact name of a tag the chat has, highlights nothing,
+  // so Enter changes nothing there. A tag the chat has is highlighted only when
+  // the user moves to it, and Enter on it then removes it, like a click.
+  const typedKey: RowKey | null = !needle ? null
+    : exactMatch ? (currentTags.has(exactMatch.id) ? null : exactMatch.id)
+      : visibleTags.find(t => !currentTags.has(t.id))?.id
+        ?? (createName ? CREATE_ROW : null)
+  const pickedVisible = picked !== null && rowKeys.includes(picked)
+  const activeKey = pickedVisible ? picked : typedKey
+  const rowId = (key: RowKey) => `${listId}-${rowKeys.indexOf(key)}`
+  const createTag = (name: string) => {
+    if (!connected || !name || createTagMutation.isPending) return
+    createTagMutation.mutate({ name, slot: slotKey, draft: query })
+  }
+  // Enter acts on the highlighted row, the one carrying the Enter hint. The
+  // highlight that follows the typed text is on a tag the chat does not have,
+  // and Enter only adds it: a second Enter before the next render must not take
+  // it off again. A row the user picked behaves like a click on it, so a tag
+  // can be removed from the keyboard.
+  const submitSearch = () => {
+    if (!connected || !activeKey) return
+    if (activeKey === CREATE_ROW) { createTag(createName); return }
+    if (!pickedVisible) {
+      add(activeKey)
+      setSearch('')
+      return
+    }
+    toggle(activeKey)
+  }
+  const moveHighlight = (step: 1 | -1) => {
+    const n = rowKeys.length
+    if (n === 0) return
+    const at = activeKey ? rowKeys.indexOf(activeKey) : -1
+    const next = at < 0 ? (step > 0 ? 0 : n - 1) : (at + step + n) % n
+    setPicked(rowKeys[next])
+    // The rows themselves do not change on an arrow key, so the target row is
+    // already in the DOM; bring it into the list's scrolled view.
+    const row = listRef.current?.querySelectorAll<HTMLElement>('[data-option]')[next]
+    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' })
+  }
+  const searchKeys = ime.bindEnter<HTMLInputElement>({ onEnter: submitSearch, onEscape: close, onBlur: () => {} })
+  // Offline, Enter is refused, so no row carries the Enter hint.
+  const enterHint = <CornerDownLeft size={11} className="text-muted shrink-0" aria-hidden="true" />
+  // Shared by every row. Pressing a row must not take focus out of the search
+  // box, or the arrow keys and typing would stop reaching it; the click still
+  // fires. Hover moves the highlight only on real pointer motion, so a resting
+  // pointer cannot take it over while the list re-filters under it.
+  const rowProps = (key: RowKey) => ({
+    id: rowId(key),
+    type: 'button' as const,
+    tabIndex: -1,
+    'data-option': true,
+    onMouseDown: (e: React.MouseEvent) => e.preventDefault(),
+    onMouseMove: (e: React.MouseEvent) => { if (pointerMoved(e)) setPicked(key) },
+  })
+  // Exactly one background utility per row. `bg-transparent` (which clears the
+  // native button fill) is emitted after the colour utilities in the built CSS
+  // at equal specificity, so beside one of them it would win and hide it. Only
+  // the highlight is filled; a checked row is marked by its checkmark, so the
+  // fill always means "Enter acts here".
+  const rowTone = (key: RowKey, on: boolean) => activeKey === key
+    ? 'bg-bg-hover text-text-strong'
+    : `bg-transparent hover:bg-bg-hover ${on ? 'text-text-strong' : 'text-text'}`
 
   return (
     <div role="button" tabIndex={0} aria-label={i18nT('components.slotTagPopover.close_tag_picker')}
@@ -638,7 +753,7 @@ export default function SlotTagPopover() {
           user activates: `stopPropagation` keeps a click inside the dialog from
           reaching the backdrop's dismiss, and `onKeyDown` gives Escape a home
           when focus sits on an inner button whose events the backdrop ignores. */}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- dialog-level dismissal plumbing; the operable controls are the menuitems and the input inside */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- dialog-level dismissal plumbing; the operable controls are the search combobox and its options */}
       <div role="dialog" aria-modal="true" aria-label={i18nT('components.slotTagPopover.assign_tags')} data-testid="slot-tag-picker"
         className="absolute bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px]"
         style={{ left: '50%', top: '30%', transform: 'translate(-50%, 0)' }}
@@ -648,66 +763,78 @@ export default function SlotTagPopover() {
           <span className="text-[11px] font-semibold text-muted uppercase tracking-wider px-1">{i18nT('components.slotTagPopover.assign_tags')}</span>
           <button type="button" className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none" onClick={close} aria-label={i18nT('components.slotTagPopover.close')}><X size={13} /></button>
         </div>
-        {/* tabIndex=-1: the roving-focus menu owns the arrow keys, so it must be
-            able to hold focus itself (and be a focus target when it has no
-            options yet) without ever joining the tab order — the menuitems are
-            reached with the arrows, not with Tab. */}
-        <div ref={listRef} role="menu" tabIndex={-1} aria-label={i18nT('components.slotTagPopover.tags')} className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto"
-          onKeyDown={e => {
-            // Roving focus across the tag options. Deliberately does NOT handle
-            // Tab (keeps the "New tag" input reachable) or Escape (the dialog
-            // handles that); Enter/Space activate the focused button natively.
-            const opts = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-option]') ?? [])
-            if (opts.length === 0) return
-            const i = opts.indexOf(document.activeElement as HTMLElement)
-            if (e.key === 'ArrowDown') { e.preventDefault(); (opts[i + 1] ?? opts[0]).focus() }
-            else if (e.key === 'ArrowUp') { e.preventDefault(); (opts[i - 1] ?? opts[opts.length - 1]).focus() }
-            else if (e.key === 'Home') { e.preventDefault(); opts[0].focus() }
-            else if (e.key === 'End') { e.preventDefault(); opts[opts.length - 1].focus() }
-          }}>
-          {tags.length === 0 && <div className="text-muted px-2 py-1 text-[12px]">{i18nT('components.slotTagPopover.no_tags_yet_create_one_below')}</div>}
-          {[...tags].sort((a, b) => a.order - b.order).map(t => {
+        {/* Searching is a local read, so the box stays usable offline; only the
+            create it can trigger is refused, on the Create row and on Enter. */}
+        <div className="relative mb-1.5">
+          <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden="true" />
+          {/* Focus stays here while the arrow keys move the highlight through the
+              list; `aria-activedescendant` tells assistive technology which row
+              that is. */}
+          <Input
+            ref={searchRef}
+            role="combobox"
+            aria-expanded={true}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-activedescendant={activeKey ? rowId(activeKey) : undefined}
+            className="w-full text-[12px] py-1 pl-7"
+            placeholder={i18nT('components.slotTagPopover.find_or_create_tag')}
+            aria-label={i18nT('components.slotTagPopover.find_or_create_tag')}
+            value={query}
+            onChange={e => setSearch(e.target.value)}
+            {...searchKeys}
+            onKeyDown={e => {
+              // The arrows move the highlight, wrapping at both ends, except
+              // while an IME composition owns them for its candidate list. Home
+              // and End keep moving the caret. Enter and Escape keep the
+              // IME-guarded handling.
+              if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !ime.isComposing(e)) {
+                e.preventDefault()
+                moveHighlight(e.key === 'ArrowDown' ? 1 : -1)
+                return
+              }
+              searchKeys.onKeyDown(e)
+            }}
+          />
+        </div>
+        <div ref={listRef} id={listId} role="listbox" aria-multiselectable="true" aria-label={i18nT('components.slotTagPopover.tags')} className="flex flex-col gap-0.5 max-h-[260px] overflow-y-auto">
+          {tags.length === 0 && !createName && <div className="text-muted px-2 py-1 text-[12px]">{i18nT('components.slotTagPopover.no_tags_yet_type_a_name')}</div>}
+          {createName && (
+            <button role="option" aria-selected={false} data-testid="slot-tag-create" {...rowProps(CREATE_ROW)}
+              className={`flex items-center gap-2 px-2 py-1 rounded text-left cursor-pointer border-none transition-all ${rowTone(CREATE_ROW, false)} ${connected ? '' : 'opacity-40'}`}
+              {...offlineProps(connected, offlineVerb, i18nT('components.slotTagPopover.create_tag_named', { name: createName }))}
+              onClick={() => createTag(createName)}>
+              <Plus size={12} className="text-accent shrink-0" aria-hidden="true" />
+              {/* Inline-size containment keeps a long draft from widening the
+                  dialog as it is typed; the label truncates to the width the
+                  tag rows already set. */}
+              <span className="flex-1 truncate [contain:inline-size]">{i18nT('components.slotTagPopover.create_tag_named', { name: createName })}</span>
+              {connected && activeKey === CREATE_ROW && enterHint}
+            </button>
+          )}
+          {visibleTags.map(t => {
             const on = currentTags.has(t.id)
             return (
-              <button key={t.id} role="menuitemcheckbox" aria-checked={on} type="button" data-option tabIndex={-1}
-                className={`flex items-center gap-2 px-2 py-1 rounded text-left cursor-pointer bg-transparent border-none transition-all ${on ? 'bg-accent-subtle text-text-strong' : 'text-text hover:bg-bg-hover'} ${connected ? '' : 'opacity-40'}`}
+              <button key={t.id} role="option" aria-selected={on} {...rowProps(t.id)}
+                className={`flex items-center gap-2 px-2 py-1 rounded text-left cursor-pointer border-none transition-all ${rowTone(t.id, on)} ${connected ? '' : 'opacity-40'}`}
                 {...offlineProps(connected, offlineVerb, t.name)}
                 onClick={() => toggle(t.id)}>
                 <span className="w-3 h-3 rounded-sm border border-border shrink-0" style={{ background: t.color }} />
                 <span className="flex-1 truncate">{t.name}</span>
+                {connected && activeKey === t.id && enterHint}
                 {on && <span className="text-accent"><Check size={11} /></span>}
               </button>
             )
           })}
         </div>
-        {/* No hand-off: the adjacent new-tag input is an uncontrolled draft, so
-            navigating away for agent hand-off would discard unsaved text. */}
+        {/* No hand-off: the search box holds an unsaved draft, so navigating
+            away for agent hand-off would discard the text. */}
         <ErrorNotice
           message={writeError}
           variant="inline"
           onDismiss={() => setWriteError(null)}
           className="mt-2 px-1"
         />
-        <div className="mt-2 border-t border-border pt-2 flex items-center gap-1">
-          <Input
-            className={`flex-1 text-[12px] py-1 ${connected ? '' : 'opacity-40'}`}
-            placeholder={i18nT('components.slotTagPopover.new_tag')}
-            readOnly={!connected}
-            {...offlineProps(connected, offlineVerb, i18nT('components.slotTagPopover.new_tag'))}
-            {...ime.bindEnter<HTMLInputElement>({
-              onEnter: () => {
-                if (!connected) return
-                const el = document.activeElement as HTMLInputElement | null
-                const draft = el?.value || ''
-                const name = draft.trim()
-                if (!name) return
-                createTagMutation.mutate({ name, input: el, draft })
-              },
-              onEscape: close,
-              onBlur: () => {},
-            })}
-          />
-        </div>
         {!connected && (
           <OfflineReasonRow
             testId="tag-offline-reason"

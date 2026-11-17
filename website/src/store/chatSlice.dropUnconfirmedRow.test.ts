@@ -7,7 +7,6 @@
  */
 import { describe, it, expect } from 'vitest'
 import reducer, { appendMessage, appendSlotMessage, confirmOptimisticSend, dropUnconfirmedRow, switchSlot } from '../store/chatSlice'
-import { RECONCILE_WINDOW } from './chat/transcript'
 import type { ChatMessage } from '../types'
 
 const SLOT = 'slot-a'
@@ -106,10 +105,10 @@ describe('dropUnconfirmedRow', () => {
     expect(state.messages.filter(m => m.role === 'notice')).toHaveLength(1)
   })
 
-  it('reaches a row and its notice older than the reconcile window', () => {
+  it('reaches a row and its notice behind many newer rows', () => {
     let state = withBubble('drop-8')
     state = reducer(state, appendMessage({ role: 'notice', content: 'in doubt', cls: '', ts: FIXED_TS, meta: { deliveryNoticeFor: 'drop-8' } }))
-    for (let i = 0; i < RECONCILE_WINDOW + 5; i++) {
+    for (let i = 0; i < 55; i++) {
       state = reducer(state, appendMessage({ role: 'assistant', content: `reply ${i}`, cls: '', ts: FIXED_TS }))
     }
     state = reducer(state, dropUnconfirmedRow({ slot: SLOT, sendId: 'drop-8' }))

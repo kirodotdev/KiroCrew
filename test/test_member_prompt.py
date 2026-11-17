@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-import time
 from unittest.mock import patch
 
 import pytest
@@ -282,16 +281,44 @@ class TestMemberBriefing:
         assert read_member_briefing_bounded(CREW) == ("", None, False)
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
-    def test_fifo_briefing_is_refused_without_blocking(self):
+    def test_fifo_briefing_is_refused_without_blocking(self, monkeypatch):
         """An agent-planted FIFO must not hang the member's turn: a plain open
         on a writerless FIFO blocks forever. O_NONBLOCK + the fstat regularity
-        check make it read as 'no briefing yet' immediately."""
+        check make it read as 'no briefing yet' immediately.
+
+        Asserted as the calls this thread makes on the FIFO: every open of it
+        asks for O_NONBLOCK (one without it is refused on the spot instead of
+        hanging) and nothing reads from it."""
         path = member_briefing_path(CREW)
         path.parent.mkdir(parents=True, exist_ok=True)
         os.mkfifo(path)
-        start = time.monotonic()
-        assert read_member_briefing(CREW) == ""
-        assert time.monotonic() - start < 5.0  # returned, not blocked
+        real_open, real_read = os.open, os.read
+        this_thread = threading.get_ident()
+        fifo_fds: list[int] = []
+        fifo_reads: list[int] = []
+
+        def recorded_open(name, flags, *args, **kwargs):
+            # The pinned-parent walk opens the leaf by its bare name under a dir_fd.
+            if threading.get_ident() == this_thread and os.path.basename(name) == path.name:
+                assert flags & os.O_NONBLOCK, "the briefing FIFO was opened without O_NONBLOCK"
+                fd = real_open(name, flags, *args, **kwargs)
+                fifo_fds.append(fd)
+                return fd
+            return real_open(name, flags, *args, **kwargs)
+
+        def recorded_read(fd, n):
+            if threading.get_ident() == this_thread and fd in fifo_fds:
+                fifo_reads.append(n)
+            return real_read(fd, n)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "open", recorded_open)
+            # The pinned walk opens by dir_fd only where os.open is listed as taking one.
+            mp.setattr(os, "supports_dir_fd", os.supports_dir_fd | {recorded_open})
+            mp.setattr(os, "read", recorded_read)
+            assert read_member_briefing(CREW) == ""
+        assert fifo_fds, "the briefing was never opened"
+        assert fifo_reads == [], "the FIFO was read instead of refused by its shape"
 
     def test_without_o_nofollow_the_read_fails_closed(self):
         """No O_NOFOLLOW (Windows) means no race-free symlink refusal on an
@@ -843,7 +870,7 @@ class TestMemberSectionInjection:
         for needle in (
             "not a Q&A bot",
             "front desk",
-            "escalate ONLY at a true wall",
+            "escalate ONLY for an ask case",
             "ZERO context",
             "quiet cycle is a successful cycle",
             "Every word you write as text is shown to the user",

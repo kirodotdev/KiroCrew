@@ -1660,8 +1660,8 @@ class TestNothingResolvesGovernanceOffTheInstallPath:
 
         snap = state.status_snapshot()
 
-        # ``["trust", "yolo"]`` was the shape an earlier revision asserted here; the
-        # backend can never emit it, because those modes are non-deniable.
+        # Never ``["trust", "yolo"]``: the backend cannot emit that shape, because
+        # those modes are non-deniable.
         assert snap["disabled_approval_modes"] == ["yolo"]
         assert so.yolo_policy_permits() is False
 

@@ -28,10 +28,18 @@ from kiro_crew.auth.login.endpoints import (
     social_service_url,
 )
 from kiro_crew.auth.store import KasToken, TokenStore
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import acquire_lock, release_lock
 
 logger = logging.getLogger(__name__)
+
+# Every request to the sign-in service is bounded. aiohttp's own default is five
+# minutes, which on a black-holed route leaves a poll or a renewal hanging many
+# times longer than the dashboard's poll cadence or the engine's wait for a token;
+# 30s is longer than any healthy auth call and short enough that a dead route is
+# visible inside one login.
+HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
 # Per-identity in-process locks, so concurrent coroutines in THIS process serialize
 # on the asyncio lock (cooperative, no event-loop block) before contending the
@@ -226,7 +234,10 @@ async def _refresh(token: KasToken, *, session: aiohttp.ClientSession) -> KasTok
 async def _refresh_social(token: KasToken, *, session: aiohttp.ClientSession) -> KasToken:
     url = f"{social_service_url()}/refreshToken"
     async with session.post(
-        url, json={"refreshToken": token.refresh_token}, headers=_JSON_HEADERS
+        url,
+        json={"refreshToken": token.refresh_token},
+        headers=_JSON_HEADERS,
+        proxy=resolve_proxy(url),
     ) as resp:
         if resp.status != 200:
             body = await resp.text()
@@ -256,7 +267,9 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
         "grantType": "refresh_token",
         "refreshToken": token.refresh_token,
     }
-    async with session.post(url, json=payload, headers=_AMZ_HEADERS) as resp:
+    async with session.post(
+        url, json=payload, headers=_AMZ_HEADERS, proxy=resolve_proxy(url)
+    ) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise _http_failure("SSO-OIDC", resp.status, body)
@@ -287,7 +300,12 @@ async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSessi
     }
     if token.client_id:
         form["client_id"] = token.client_id
-    async with session.post(endpoint, data=form, headers={"User-Agent": USER_AGENT}) as resp:
+    async with session.post(
+        endpoint,
+        data=form,
+        headers={"User-Agent": USER_AGENT},
+        proxy=resolve_proxy(endpoint),
+    ) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise _http_failure("external IdP", resp.status, body)

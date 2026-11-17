@@ -20,6 +20,7 @@ from typing import Any
 
 from kiro_crew.apps.app_hosts import HOST_RE as _HOST_RE
 from kiro_crew.apps.app_hosts import host_list_errors, normalize_host
+from kiro_crew.apps.manifest_memory_providers import MemoryProvidersConfig
 
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
@@ -1553,6 +1554,10 @@ class Contributes:
     #: serialized.
     bad_link_open: bool = False
     dropped_link_open: int = 0
+    #: Memory providers the app's backend serves (``manifest_memory_providers``).
+    memoryProviders: MemoryProvidersConfig = field(  # noqa: N815
+        default_factory=MemoryProvidersConfig
+    )
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1588,6 +1593,8 @@ class Contributes:
         kept_opens = [o for o in opens if o]
         if kept_opens:
             d["linkOpen"] = kept_opens
+        if self.memoryProviders.providers:
+            d["memoryProviders"] = self.memoryProviders.to_list()
         return d
 
     @classmethod
@@ -1667,6 +1674,7 @@ class Contributes:
             dropped_panel_tabs=sum(1 for t in tab_entries if not isinstance(t, dict)),
             bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
             dropped_file_menu_items=sum(1 for i in item_entries if not isinstance(i, dict)),
+            memoryProviders=MemoryProvidersConfig.from_value(data.get("memoryProviders")),
         )
 
     def validate(self) -> list[str]:

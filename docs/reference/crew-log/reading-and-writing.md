@@ -47,8 +47,8 @@ Read-only helpers at module level: `crew_log_root(kind)`, `crew_log_dir(kind, un
 
 ### `iter_from`
 
-`iter_from(seq=1, *, known=None, strict_seq=True) -> Iterator[Entry]` yields every
-entry from `seq` onward, oldest first, across segments.
+`iter_from(seq=1, *, known=None, strict_seq=True, resume=None, cursor=None, contains=None) -> Iterator[Entry]`
+yields every entry from `seq` onward, oldest first, across segments.
 
 `known` is the whole point of the call. It declares the types this reader
 understands, and it changes what happens when the reader meets one it does not:
@@ -70,6 +70,14 @@ previous one. A duplicate or backward `seq` raises
 [`bad_data`](errors.md#bad_data); a forward gap inside one segment remains tolerated
 because it can be a damaged line the low-level reader skipped. Rendering-only callers
 may pass `strict_seq=False`, but a state fold must keep the default.
+
+`resume` and `cursor` make a tail read cost the tail: `cursor` (a `ReadCursor`) is
+filled with the last yielded entry's `ResumePoint`, and passing that point back as
+`resume` opens the file at that record instead of decoding everything below it. A
+point is ignored when `seq` is below it, or when the store's cut count or the record
+at its offset no longer match, so it never changes which entries are yielded.
+`contains` is a raw-bytes prefilter for a caller that filters by type itself; it
+requires `strict_seq=False` and raises `ValueError` otherwise.
 
 Crossing segments can also refuse: [`bad_segment`](errors.md#bad_segment) for a
 segment whose header or declared first `seq` does not match, and

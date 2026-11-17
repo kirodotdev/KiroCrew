@@ -44,6 +44,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TOKEN = "bot-secret"
 _CHANNEL = "9111222333"
 _SEND_PATH = f"/channels/{_CHANNEL}/messages"
+#: An edit of a sent message: the 5xx and connection-error waits are retried for it,
+#: while a message create is never re-sent after either (it may have landed).
+_EDIT_PATH = f"/channels/{_CHANNEL}/messages/1"
 #: Longer than the client's literal-segment ceiling, like a real one.
 _INTERACTION_TOKEN = "t" * 40
 _CALLBACK_PATH = f"/interactions/1234567890/{_INTERACTION_TOKEN}/callback"
@@ -404,9 +407,10 @@ class TestRecheckAcrossEveryWait:
     async def test_a_5xx_backoff_that_loses_the_roster_abandons_the_retry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # An edit: a message create is not re-sent after a 5xx or a dropped connection.
         harness = _harness(monkeypatch, [_Resp(503, {}), _Resp(200, {"id": "2"})])
         harness.revoke_during_next_wait()
-        result = await harness.client.api_json("POST", _SEND_PATH, {})
+        result = await harness.client.api_json("PATCH", _EDIT_PATH, {})
         assert result.outcome == DISCORD_BLOCKED
         assert result.detail == _REVOKED_DETAIL
         assert len(harness.requests) == 1
@@ -415,12 +419,13 @@ class TestRecheckAcrossEveryWait:
     async def test_a_connector_backoff_that_loses_the_roster_abandons_the_retry(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # An edit: a message create is not re-sent after a 5xx or a dropped connection.
         harness = _harness(
             monkeypatch,
             [aiohttp.ClientConnectionError("boom"), _Resp(200, {"id": "2"})],
         )
         harness.revoke_during_next_wait()
-        result = await harness.client.api_json("POST", _SEND_PATH, {})
+        result = await harness.client.api_json("PATCH", _EDIT_PATH, {})
         assert result.outcome == DISCORD_BLOCKED
         assert result.detail == _REVOKED_DETAIL
         assert len(harness.requests) == 1
@@ -714,15 +719,16 @@ class TestRefusalNamesItsOwnGround:
             "5xx": [_Resp(503, {}), _Resp(200, {"id": "2"})],
             "connector": [aiohttp.ClientConnectionError("boom"), _Resp(200, {"id": "2"})],
         }
+        # An edit: a message create is not re-sent after a 5xx or a dropped connection.
         harness = _harness(monkeypatch, sequences[wait])
         if wait == "preemptive-hold":
             # This wait is only reached on the SECOND call: the first one is what
             # exhausts the bucket it then holds against.
-            assert await harness.client.api_json("POST", _SEND_PATH, {})
+            assert await harness.client.api_json("PATCH", _EDIT_PATH, {})
         harness.refusal = SendPermission.unattributable()
         harness.roster.clear()
 
-        result = await harness.client.api_json("POST", _SEND_PATH, {})
+        result = await harness.client.api_json("PATCH", _EDIT_PATH, {})
 
         assert result.outcome == DISCORD_BLOCKED
         assert result.detail == _UNATTRIBUTABLE_DETAIL
@@ -859,9 +865,10 @@ class TestFailsClosed:
     ) -> None:
         """A withdrawal must not read as "try again later": re-driving it is
         exactly what the operator asked to stop."""
+        # An edit: a message create is not re-sent after a 5xx or a dropped connection.
         harness = _harness(monkeypatch, [_Resp(503, {}), _Resp(200, {"id": "2"})])
         harness.revoke_during_next_wait()
-        result = await harness.client.api_json("POST", _SEND_PATH, {})
+        result = await harness.client.api_json("PATCH", _EDIT_PATH, {})
         assert result.outcome != DISCORD_TRANSIENT
         assert result.data is None
         assert not result

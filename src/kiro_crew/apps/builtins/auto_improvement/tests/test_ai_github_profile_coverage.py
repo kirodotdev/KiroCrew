@@ -159,20 +159,26 @@ def test_repo_root_returns_the_tree_when_nothing_exists(tmp_path):
     assert gh._repo_root(missing) == missing
 
 
-# ── _write_protected_targets ─────────────────────────────────────────────────
+# ── write_protected_targets ──────────────────────────────────────────────────
 
 
 def test_write_protected_targets_masks_existing_parent_dirs(tmp_path, monkeypatch):
-    """PARENT directories are returned, and only ones that exist."""
+    """Existing parents are masked without hiding all of ``~/.kiro``."""
     fake_home = tmp_path / "h"
     (fake_home / ".kiro" / "crew").mkdir(parents=True)
+    (fake_home / ".kiro" / "workspace-roots").touch()
     monkeypatch.setattr(gh.Path, "home", staticmethod(lambda: fake_home))
     monkeypatch.setattr(
         security,
         "write_protected_home_paths",
-        lambda: (".kiro/crew/config.json", ".absent/dir/file.json"),
+        lambda: (
+            ".kiro/crew/config.json",
+            ".kiro/workspace-roots",
+            ".absent/dir/file.json",
+        ),
     )
-    out = gh._write_protected_targets()
+    out = gh.write_protected_targets()
+    assert str(fake_home / ".kiro") not in out
     assert out == (str(fake_home / ".kiro" / "crew"),)
 
 
@@ -183,7 +189,7 @@ def test_write_protected_targets_fails_soft(monkeypatch):
         raise RuntimeError("no platform list")
 
     monkeypatch.setattr(security, "write_protected_home_paths", _boom)
-    assert gh._write_protected_targets() == ()
+    assert gh.write_protected_targets() == ()
 
 
 # ── _measure_env ─────────────────────────────────────────────────────────────

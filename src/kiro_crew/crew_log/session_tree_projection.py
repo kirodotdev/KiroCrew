@@ -142,6 +142,10 @@ class SessionTreeProjection:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: dict[str, OpenedRecord] = {}
+        #: Answers the unit ids of the sessions live right now, or None when no caller
+        #: registered one. Asked at eviction time, so the pins follow the roster as it is
+        #: and not as it was when the seed ran.
+        self._live_roster: Any = None
         #: The newest DECISION per slot -- an adoption, or a release. Keyed by slot
         #: because that is the tree's key, while ``_records`` is keyed by unit id: one
         #: slot can write several logs, and every one of them speaks for the same
@@ -155,19 +159,16 @@ class SessionTreeProjection:
         #: deleted unit leave the slot with the surviving log's decision instead of with
         #: none.
         self._edges: dict[tuple[str, str], EdgeRecord] = {}
-        #: Per unit, the identity its log had when a COMPLETE tree-edge read last found
-        #: no decision (:func:`~kiro_crew.crew_log.store.tree_edge_scan_identity`).
+        #: Per unit, where the last boot's read of its log stopped
+        #: (``session_tree_projection_seed._read_unit``). The decisions and spawns
+        #: held for the unit cover its log up to that point, so the next boot reads only
+        #: the bytes after it. A unit with no mark is read in full, so dropping one is
+        #: always safe: every path that removes held evidence for a unit drops its mark.
         #:
-        #: A CACHE, and only ever of a negative verdict. The complete read is
-        #: proportional to a unit's whole log and a unit that records no decision is the
-        #: only case that reads all of it, so without this every process start re-reads
-        #: the entire store to re-learn what it already knew. An entry here lets the
-        #: decision pass skip that read while the identity still matches.
-        #:
-        #: Never produces an edge. A stale or missing entry costs one re-read, which is
-        #: the pass's ordinary cost; the one thing it cannot do is assert a decision,
-        #: because no read of the current bytes stands behind it.
-        self._scans: dict[str, ScanIdentity] = {}
+        #: Set only by a boot. A live apply does not move it, because this process is
+        #: not the only writer: bytes another process wrote after the mark must still be
+        #: read, and a live apply re-read from the mark is a no-op.
+        self._marks: dict[str, ScanIdentity] = {}
         #: Every ``session/spawned`` held, keyed ``(child_slot, creator_sid)``. The
         #: creators' own record of a ``session_create``, which is the only durable
         #: creating edge a child has before its first turn writes a log of its own.
@@ -175,12 +176,6 @@ class SessionTreeProjection:
         #: parent, so it never competes with the child's ``session/opened.parent``,
         #: and the decisions above still replace it.
         self._spawned: dict[tuple[str, str], EdgeRecord] = {}
-        #: Per creator unit, the identity its log had when its ``session/spawned``
-        #: entries were last read COMPLETELY -- found or not. The entries held for that
-        #: unit in ``_spawned`` are its whole answer while the identity still matches,
-        #: so a boot skips re-reading a log that has not changed. A cache: a mismatch
-        #: costs one re-read and never asserts an edge.
-        self._spawn_scans: dict[str, ScanIdentity] = {}
         #: The cached fold. ``None`` marks it owed, so :meth:`nodes` recomputes once and
         #: then hands out the same object until something actually changes.
         self._nodes: Optional[dict[str, TreeNode]] = None
@@ -491,7 +486,10 @@ class SessionTreeProjection:
         """Fold ONE newly-committed record in. Pure with respect to the disk.
 
         Called by the emitter right after the ``session/opened`` append succeeded, so
-        the memory never runs ahead of durability. Idempotent by identity: a record
+        the memory never runs ahead of durability. Admitting a unit not held before reads
+        that unit's own ``session/spawned`` entries, the one disk read this method makes.
+
+        Idempotent by identity: a record
         equal to the one already held is not a change, so it neither invalidates the
         cached fold nor dirties the checkpoint -- which is what keeps a re-attach in
         the same process from costing a rewrite.
@@ -531,9 +529,17 @@ class SessionTreeProjection:
             if held == record:
                 return
             self._records[record.sid] = record
-            self._evict_to_cap_locked()
+            # The admitted record is held back from eviction: its own spawns are read
+            # just below, and a top-level session that has not spawned yet has none to
+            # protect it.
+            self._evict_to_cap_locked(keep=record.sid)
             self._nodes = None
             self._dirty = True
+            admitted = held is None and record.sid in self._records
+        if admitted and record.slot:
+            # A unit admitted now may have recorded spawns before this process held it
+            # (a seed drops the spawns of a unit it holds no record for).
+            self._reconcile_spawned(record.sid, record.slot, force=True)
         self._changed()
 
     def apply_edge(self, edge: EdgeRecord) -> None:
@@ -594,10 +600,6 @@ class SessionTreeProjection:
                 # stepped backward between two appends cannot make the newer one lose.
                 return
             self._edges[key] = edge
-            # This unit HAS a decision, so a cached "no decision" verdict for it is void.
-            # The identity would have changed anyway -- the append moved the bytes -- but
-            # a cache that can be dropped at the moment it is known wrong should be.
-            self._scans.pop(edge.sid, None)
             self._evict_edges_to_cap_locked()
             self._nodes = None
             self._dirty = True
@@ -624,8 +626,6 @@ class SessionTreeProjection:
             if self._spawned.get(key) == spawn:
                 return
             self._spawned[key] = spawn
-            # The creator's log just grew, so its cached read is void.
-            self._spawn_scans.pop(spawn.sid, None)
             self._evict_spawned_to_cap_locked()
             self._nodes = None
             self._dirty = True
@@ -636,7 +636,7 @@ class SessionTreeProjection:
 
         Oldest-first by ``(at, slot, sid)``, the shape the decisions use. An evicted
         spawn may be a child's only edge, so both flags are set and the creator's unit
-        is marked suspect, and its cached read is dropped so the next boot re-reads it.
+        is marked suspect, and its mark is dropped so the next boot reads it in full.
         """
         surplus = len(self._spawned) - TREE_UNIT_CAP
         if surplus <= 0:
@@ -644,7 +644,7 @@ class SessionTreeProjection:
         doomed = sorted(self._spawned.values(), key=lambda e: (e.at, e.slot, e.sid))
         for spawn in doomed[:surplus]:
             self._spawned.pop((spawn.slot, spawn.sid), None)
-            self._spawn_scans.pop(spawn.sid, None)
+            self._marks.pop(spawn.sid, None)
             if spawn.sid in self._records:
                 self._suspect_sids.add(spawn.sid)
         self._incomplete = True
@@ -683,6 +683,8 @@ class SessionTreeProjection:
         doomed = sorted(self._edges.values(), key=lambda e: (e.at, e.slot, e.sid))
         for edge in doomed[:surplus]:
             self._edges.pop((edge.slot, edge.sid), None)
+            # Read in full next boot: the delta after its mark would not hold this one.
+            self._marks.pop(edge.sid, None)
             # Only for a unit still held: a unit with no record already stops the
             # walk, so remembering it would only grow the set with history.
             if edge.sid in self._records:
@@ -691,13 +693,38 @@ class SessionTreeProjection:
         self._over_cap = True
         self._prune_faults_locked()
 
-    def _evict_to_cap_locked(self) -> None:
+    def set_live_roster(self, roster: Any) -> None:
+        """Register the callable that names the live sessions' unit ids (or clear it)."""
+        self._live_roster = roster
+
+    def _live_now(self) -> frozenset[str]:
+        """The live sessions' unit ids at this moment; empty when there is no roster or
+        it fails. A fault costs the pins, never the eviction."""
+        roster = self._live_roster
+        if roster is None:
+            return frozenset()
+        try:
+            return frozenset(roster())
+        except Exception:
+            log_exception_text(
+                logger, logging.DEBUG, "session tree projection could not read the live roster"
+            )
+            return frozenset()
+
+    def _evict_to_cap_locked(self, keep: str = "") -> None:
         """Bring the records back within :data:`TREE_UNIT_CAP`. Caller holds the lock.
 
-        Evicts oldest-first by ``(created_at, sid)``. The ``sid`` tiebreak is what makes
-        the eviction deterministic: records sharing a timestamp are common (a burst of
-        sessions opened in the same second), and without it which one goes would depend
-        on dictionary order.
+        *keep* (the record just admitted) and the live sessions' units go last: when the
+        other units run out, the oldest of the held-back tiers goes before they do.
+
+        Evicts oldest-first by ``(created_at, sid)``, keeping the units that hold spawns,
+        the units of spawn-cited children, and the units whose own opening names a
+        parent, until every other unit is gone: a long-lived creator is the unit whose
+        loss floats the most children to the top level, and a child's unit is what keeps
+        its release or adoption from being undone by the creator's spawn. The ``sid``
+        tiebreak is what makes the eviction deterministic: records sharing a timestamp are
+        common (a burst of sessions opened in the same second), and without it which one
+        goes would depend on dictionary order.
 
         Sets ``incomplete`` AND ``over_cap`` when it evicts. Both, because both
         questions now have the same answer: a reader deciding on an edge must know the
@@ -708,9 +735,23 @@ class SessionTreeProjection:
         surplus = len(self._records) - TREE_UNIT_CAP
         if surplus <= 0:
             return
-        doomed = sorted(self._records.values(), key=lambda r: (r.created_at, r.sid))
+        creators = {spawn.sid for spawn in self._spawned.values()}
+        live = self._live_now()
+        # A spawn-cited child's own unit is what stops a retained spawn from placing it
+        # under its creator again, so it is held back from eviction like a creator is.
+        cited = {spawn.slot for spawn in self._spawned.values()}
+        doomed = sorted(
+            self._records.values(),
+            key=lambda r: (
+                r.sid == keep or r.sid in live,
+                r.sid in creators or r.slot in cited or bool(r.parent_slot),
+                r.created_at,
+                r.sid,
+            ),
+        )
         for record in doomed[:surplus]:
             self._records.pop(record.sid, None)
+            self._marks.pop(record.sid, None)
             self._suspect_sids.discard(record.sid)
         self._incomplete = True
         self._over_cap = True
@@ -835,10 +876,8 @@ class SessionTreeProjection:
                 return
             if found is None:
                 del self._edges[key]
-                # NOT recorded as a cached negative verdict: this read is of a unit whose
-                # segments were being removed as it ran, so the identity it would be
-                # keyed by is not one a later boot should trust to skip its own read.
-                self._scans.pop(sid, None)
+                # Segments were removed under this unit, so the next boot reads it whole.
+                self._marks.pop(sid, None)
             elif held == found:
                 # Already the disk's answer: the removal took segments this decision was
                 # not in. Same-reference, like every other no-op path here.
@@ -849,7 +888,7 @@ class SessionTreeProjection:
             self._dirty = True
         self._changed()
 
-    def _reconcile_spawned(self, sid: str, slot: str) -> None:
+    def _reconcile_spawned(self, sid: str, slot: str, *, force: bool = False) -> None:
         """Re-read creator unit *sid*'s spawns after a partial removal. The disk
         decides: a complete read replaces what is held, a read that raises leaves it
         and marks the reading incomplete. No I/O when nothing is held for the unit."""
@@ -857,7 +896,7 @@ class SessionTreeProjection:
         from kiro_crew.crew_log.store import _checked_crew_log_root, find_spawned_entries
 
         with self._lock:
-            if not any(spawn.sid == sid for spawn in self._spawned.values()):
+            if not force and not any(spawn.sid == sid for spawn in self._spawned.values()):
                 return
             # Children whose own log already names a parent: the fold applies that over
             # any spawn, so dropping such a spawn past the cap costs nothing and must
@@ -867,6 +906,9 @@ class SessionTreeProjection:
             }
         try:
             root = _checked_crew_log_root(KIND_SESSION)
+            if force and not (root / _store_name(sid)).is_dir():
+                # A unit admitted with no log on disk has no spawns to read.
+                return
             entries, cut, _hit_cap = find_spawned_entries(
                 root / _store_name(sid), SPAWNED_PER_UNIT_CAP, self_parented
             )
@@ -884,10 +926,9 @@ class SessionTreeProjection:
             if ("spawn", sid) in self._fault_sids:
                 self._fault_sids.discard(("spawn", sid))
                 self._nodes = None
-            # This path never caches a scan identity for the unit (it pops it), so a
-            # hit_cap-but-not-cut scan needs no extra guard here -- the next read is a
-            # fresh reconcile. Only a load-bearing cut makes the projection incomplete.
-            self._spawn_scans.pop(sid, None)
+            # Segments were removed under this unit, so the next boot reads it whole.
+            # Only a load-bearing cut makes the projection incomplete.
+            self._marks.pop(sid, None)
             if cut:
                 # The newest spawns are installed, and the unit is reported as cut.
                 self._incomplete = True
@@ -935,11 +976,9 @@ class SessionTreeProjection:
             for key in dropped_spawns:
                 self._spawned.pop(key, None)
             dropped_edges = dropped_edges + dropped_spawns
-            self._spawn_scans.pop(sid, None)
-            # The cached "this unit records no decision" verdict goes too: it is keyed by
-            # a unit that is gone, so the only thing it could still answer about is a
-            # directory some later session happens to be given the same name.
-            self._scans.pop(sid, None)
+            # The mark goes too: it is keyed by a unit that is gone, so the only thing it
+            # could still answer about is a directory a later session is given.
+            self._marks.pop(sid, None)
             self._suspect_sids.discard(sid)
             faulted = bool({("edge", sid), ("spawn", sid)} & self._fault_sids)
             self._fault_sids -= {("edge", sid), ("spawn", sid)}
@@ -960,7 +999,6 @@ class SessionTreeProjection:
     _seed = _stp_seed._seed
     _seed_inner = _stp_seed._seed_inner
     _replay_tail = _stp_seed._replay_tail
-    _replay_spawned = _stp_seed._replay_spawned
     _arm_seed_retry = _stp_seed._arm_seed_retry
     _start_seed_retry_timer = _stp_seed._start_seed_retry_timer
 
@@ -1418,12 +1456,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _edge_to_json,
         _load_checkpoint,
         _LoadedCheckpoint,
+        _marks_from_json,
         _record_from_json,
         _record_to_json,
         _ReplayResult,
         _save_checkpoint,
-        _scans_from_json,
     )
     from kiro_crew.crew_log.session_tree_projection_seed import (  # noqa: F401
         SEED_RETRY_COOLDOWN_SECS,
+        _read_unit,
+        _read_whole,
+        _until_skipped,
     )

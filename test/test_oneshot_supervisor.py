@@ -45,22 +45,32 @@ reaping = pytest.mark.skipif(not supervisor.can_reap(), reason="reaping needs Li
 # credential-helper shape: same group, parent about to exit) and then returns at once.
 # The helper records its pid so the test can check whether it survived.
 # The pid file is published atomically (write, then rename), so a reader that sees
-# it can always parse it.
+# it can always parse it. With ``ready``, the command returns only once the helper
+# has written ``ready`` to its stdout (bounded; exit 4 if it never does), so the
+# supervisor's cleanup starts after the helper's setup, however slowly it starts.
 _LEAKY_COMMAND = """
-import os, subprocess, sys
+import os, select, subprocess, sys
 helper = subprocess.Popen(
     [sys.executable, "-c", {helper!r}],
-    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.PIPE if {ready!r} else subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
 )
 with open({pid_file!r} + ".tmp", "w") as out:
     out.write(str(helper.pid))
 os.replace({pid_file!r} + ".tmp", {pid_file!r})
+if {ready!r} and not (
+    select.select([helper.stdout], [], [], 30)[0] and helper.stdout.readline() == b"ready\\n"
+):
+    sys.exit(4)
 sys.exit(3)
 """
 
 _HELPER_SLEEPS = "import time; time.sleep(120)"
+# Reports ``ready`` only after SIGTERM is ignored (pass ``ready=True``).
 _HELPER_IGNORES_TERM = (
-    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)"
+    "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "os.write(1, b'ready\\n'); time.sleep(120)"
 )
 
 
@@ -81,8 +91,49 @@ def _wait_gone(pid: int, timeout: float = 10.0) -> bool:
     )
 
 
+# Runs the supervisor's own source with a clock that moves only by the supervisor's
+# own sleeps (each still sleeps for real), and appends one JSON line per signal round
+# ``[signal, clock, members signalled]`` to the log. Only the supervisor process runs
+# this; the command it forks is exec'd and does not inherit it.
+_SIGNAL_RECORDING_SUPERVISOR = """
+import json, time as _real_time
+_ns = {{"__name__": "_supervisor_under_test"}}
+exec(compile({code!r}, "<supervisor>", "exec"), _ns)
+
+class _OwnSleepClock:
+    now = 0.0
+
+    @staticmethod
+    def monotonic():
+        return _OwnSleepClock.now
+
+    @staticmethod
+    def sleep(seconds):
+        _real_time.sleep(seconds)
+        _OwnSleepClock.now += seconds
+
+_ns["time"] = _OwnSleepClock
+_signal_members = _ns["_signal_members"]
+
+def _recorded(pgid, own_pid, sig):
+    members = _signal_members(pgid, own_pid, sig)
+    with open({log!r}, "a", encoding="utf-8") as out:
+        out.write(json.dumps([int(sig), _OwnSleepClock.now, len(members)]) + "\\n")
+    return members
+
+_ns["_signal_members"] = _recorded
+_ns["main"]()
+"""
+
+
 @contextlib.contextmanager
-def _supervised(tmp_path: Path, helper: str, *flags: str) -> Iterator[tuple[int, int, float]]:
+def _supervised(
+    tmp_path: Path,
+    helper: str,
+    *flags: str,
+    signal_log: Path | None = None,
+    ready: bool = False,
+) -> Iterator[tuple[int, int, float]]:
     """Run the supervisor over a command that leaves a helper behind.
 
     Yields ``(exit code, helper pid, seconds)`` while the supervisor has exited
@@ -90,10 +141,16 @@ def _supervised(tmp_path: Path, helper: str, *flags: str) -> Iterator[tuple[int,
     being reissued. Cleanup of anything left in the group happens then, through
     the pinned signal, and only afterwards is the supervisor reaped. Nothing here
     ever signals a group number the test does not hold a handle on.
+
+    With *signal_log*, the supervisor records its signal rounds there
+    (``_SIGNAL_RECORDING_SUPERVISOR``). With *ready*, the command waits for the
+    helper's ``ready`` line before it exits (``_LEAKY_COMMAND``).
     """
     pid_file = tmp_path / "helper.pid"
     code = Path(supervisor.__file__).read_text(encoding="utf-8")
-    command = _LEAKY_COMMAND.format(helper=helper, pid_file=str(pid_file))
+    if signal_log is not None:
+        code = _SIGNAL_RECORDING_SUPERVISOR.format(code=code, log=str(signal_log))
+    command = _LEAKY_COMMAND.format(helper=helper, pid_file=str(pid_file), ready=ready)
     started = time.monotonic()
     proc = subprocess.Popen(  # noqa: S603 - fixed argv, test-local
         [
@@ -140,13 +197,38 @@ def _supervised(tmp_path: Path, helper: str, *flags: str) -> Iterator[tuple[int,
     ids=["exits-on-term", "ignores-term"],
 )
 def test_reap_survivors_ends_what_the_command_left_behind(tmp_path: Path, helper: str) -> None:
-    with _supervised(tmp_path, helper, "--reap-survivors") as (returncode, helper_pid, elapsed):
+    signal_log = tmp_path / "signals.jsonl"
+    with _supervised(
+        tmp_path,
+        helper,
+        "--reap-survivors",
+        signal_log=signal_log,
+        ready=helper == _HELPER_IGNORES_TERM,
+    ) as (returncode, helper_pid, _elapsed):
         # The command's own exit status comes back, not the supervisor's.
+        assert returncode != 4, "the helper never reported that it ignores SIGTERM"
         assert returncode == 3
         # The helper is gone: SIGTERM, or SIGKILL after the grace for one that
-        # ignores SIGTERM. The call returns in about that grace, not 120s.
+        # ignores SIGTERM. The call ends it rather than waiting out its 120s.
         assert _wait_gone(helper_pid), "helper survived the supervised call"
-        assert elapsed < 20
+    assert signal_log.exists(), "the supervisor sent no signal round to the survivors"
+    rounds = [json.loads(line) for line in signal_log.read_text(encoding="utf-8").splitlines()]
+    assert rounds and rounds[0][0] == signal.SIGTERM and rounds[0][2] >= 1, rounds
+    if helper == _HELPER_IGNORES_TERM:
+        assert [r[0] for r in rounds] == [
+            signal.SIGTERM,
+            signal.SIGKILL,
+        ], f"a helper that ignores SIGTERM was not escalated to SIGKILL: {rounds}"
+    # SIGKILL follows SIGTERM after the grace, on the supervisor's own clock: no
+    # sooner, and no later than one poll past it.
+    grace = supervisor._REAP_GRACE_SECONDS
+    for sig, at, _members in rounds[1:]:
+        assert sig == signal.SIGKILL, rounds
+        waited = at - rounds[0][1]
+        assert grace - 1e-6 <= waited <= grace + supervisor._POLL_SECONDS + 1e-6, (
+            f"SIGKILL came {waited:g}s after SIGTERM on the supervisor's clock, "
+            f"not after its {grace:g}s grace: {rounds}"
+        )
 
 
 @pytest.mark.skipif(not hasattr(os, "waitid"), reason="needs os.waitid (not on macOS)")
@@ -208,7 +290,9 @@ def test_reap_is_skipped_when_the_supervisor_does_not_lead_its_group(tmp_path: P
     pid_file = tmp_path / "helper.pid"
     verdict_file = tmp_path / "verdict"
     code = Path(supervisor.__file__).read_text(encoding="utf-8")
-    command = _LEAKY_COMMAND.format(helper="import time; time.sleep(30)", pid_file=str(pid_file))
+    command = _LEAKY_COMMAND.format(
+        helper="import time; time.sleep(30)", pid_file=str(pid_file), ready=False
+    )
     parent = subprocess.Popen(  # noqa: S603 - fixed argv, test-local
         [
             sys.executable,

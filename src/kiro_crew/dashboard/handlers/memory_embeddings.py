@@ -400,7 +400,7 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
                 progress=_store_progress_adapter(prog, completed, total), pace=False
             )
             after = target.embedding_repair_state(generation)[1]  # type: ignore[attr-defined]
-            # Reconcile against the store's own NULL count, exactly as before: the
+            # Reconcile against the store's own NULL count: the
             # adapter cannot see semantic-KV rows (that phase reports no progress)
             # and must not count rows a concurrent writer resolved.
             completed += max(0, before - after)
@@ -861,6 +861,9 @@ async def _ensure_pip_available() -> tuple[bool, str]:
             await kill_and_reap(proc)
             logger.warning("ensurepip bootstrap timed out")
             return False, "pip bootstrap (ensurepip) timed out"
+        except asyncio.CancelledError:
+            await kill_and_reap(proc)
+            raise
         if proc.returncode != 0:
             logger.warning("ensurepip bootstrap failed: %s", _redact_pip_stderr(stderr))
             return False, "pip bootstrap (ensurepip) failed"
@@ -1040,6 +1043,9 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                             {"error": "faiss-cpu install timed out."},
                             status=500,
                         )
+                    except asyncio.CancelledError:
+                        await kill_and_reap(proc)
+                        raise
                     if proc.returncode != 0:
                         # Same fall-through as the no-sandbox branch; the reason
                         # reaches the card via embedding-status's setup_warning.

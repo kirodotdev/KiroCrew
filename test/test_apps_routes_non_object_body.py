@@ -71,3 +71,42 @@ async def test_an_object_body_passes_the_guard(tmp_path, monkeypatch, method, pa
     status, payload = await _send(tmp_path, monkeypatch, method, path, {})
     assert status != 500, payload
     assert not (isinstance(payload, dict) and payload.get("code") == "body_not_object")
+
+
+#: Routes that parse with ``await request.json()``. aiohttp decodes the body with
+#: the declared charset before parsing, so an undecodable body or an unknown
+#: charset raises ``UnicodeDecodeError`` / ``LookupError``, not ``JSONDecodeError``.
+_DECODE_ROUTES = [
+    (f"/api/apps/{APP}/update", None),
+    ("/api/apps/register", "invalid JSON"),
+    ("/api/apps/install", "invalid JSON"),
+    ("/api/apps/registry/install", "invalid JSON"),
+    ("/api/apps/registry/install-stream", "invalid JSON"),
+]
+
+_UNDECODABLE = [
+    (b'\xff\xfe{"a": 1}', "application/json"),
+    (b'{"a": 1}', "application/json; charset=bogus-codec"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data,content_type", _UNDECODABLE, ids=["bad-utf8", "unknown-charset"])
+@pytest.mark.parametrize("path,error", _DECODE_ROUTES)
+async def test_an_undecodable_body_is_not_a_500(
+    tmp_path, monkeypatch, path, error, data, content_type
+) -> None:
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    client = TestClient(TestServer(_make_app(dashboard_user="owner")))
+    await client.start_server()
+    try:
+        resp = await client.post(path, data=data, headers={"Content-Type": content_type})
+        text = await resp.text()
+    finally:
+        await client.close()
+    assert resp.status != 500, text
+    if error is not None:
+        # The same answer as any other unparsable body on these routes.
+        assert resp.status == 400, text
+        assert json.loads(text)["error"] == error

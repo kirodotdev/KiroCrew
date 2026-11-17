@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -27,6 +28,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -219,6 +221,18 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset(
 # request answered ``stopReason: cancelled`` the moment the second arrived, and only
 # the second ran -- so it interrupts rather than joins. It is in no steer set:
 # ``_session/steering`` answered ``-32601``, and it advertises no other channel.
+#
+# mimocode is not a member, measured on MiMo Code 0.1.15 both on its own ``xiaomi``
+# provider and on Bedrock behind an openai-compatible proxy: a ``session/prompt``
+# sent while a bash call ran was answered ``end_turn`` in 0.03 s with no usage, and
+# the harness's message store never held it. Its ``POST /session/:id/message``
+# route refuses a busy session with 409 before storing anything, and its ACP prompt
+# step reads that refusal as an empty reply, so the drop is the harness's whatever
+# the provider. The harness's own composer sends ``prompt_async`` on its loopback
+# listener instead, and the running loop reads that message at its next step; that
+# listener is not ACP, so nothing here speaks it. Membership would also misreport:
+# the empty ``end_turn`` arrives before the turn's own terminal, and the settle
+# counts such an answer as consumed when the turn ends cleanly.
 ACP_BACKENDS_STEER_CONCURRENT_PROMPT = frozenset({ACP_BACKEND_OPENCODE})
 
 # Backends whose ``_session/steer/clear`` drops the steers the running turn has not
@@ -253,8 +267,8 @@ ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 # sends. They do not all answer it the same way, and that split is
 # ``ACP_BACKENDS_INLINE_COMPACTION``: kiro-cli ACKs the prompt then emits
 # ``_kiro.dev/compaction/status``, which ``wait_for_compaction()`` picks up, while
-# claude-agent-acp, codex-acp, opencode, goose and pi finish the whole compaction inside
-# the ``session/prompt`` turn.
+# claude-agent-acp, codex-acp, opencode, mimocode, goose and pi finish the whole compaction
+# inside the ``session/prompt`` turn.
 #
 # opencode is a member on a LIVE capture although its ``available_commands_update``
 # lists no ``compact``: it serves ``/compact`` from its PROMPT handler, so the command
@@ -333,6 +347,15 @@ ACP_BACKENDS_STEER_RETRACT = frozenset({ACP_BACKEND_KIRO})
 # ``available_commands_update`` and in ``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST``, so
 # the prompt guard lets it through.
 #
+# mimocode is a member on a LIVE capture against MiMo Code 0.1.15:
+# ``test/fixtures/acp_frames/mimocode/compact-live.jsonl``. The harness serves ``/compact``
+# itself (its ACP prompt handler runs the session summarizer). Four ordinary turns
+# of ~2.5k tokens each read 33578 -> 48430, the ``/compact`` turn streamed the
+# summary and read 48708, and the next ordinary turn read 34571. The history has to
+# be that large to show it: the harness's fixed prompt is ~28.7k tokens, and a first
+# drive with one-word turns added ~23 tokens each, so its summary was longer than the
+# history it replaced and ``used`` rose.
+#
 # deepseek is the one non-member:
 # :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
 # reports no compaction at all, so a decline leaves its context unbounded.
@@ -346,6 +369,7 @@ ACP_BACKENDS_COMPACT = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -431,7 +455,8 @@ ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 # compaction ``tool_call_update`` arrives BEFORE the ``session/prompt`` response;
 # opencode, which sends no status frame at all; goose (``Compaction complete``
 # chunk); pi (``Compaction completed`` chunk); copilot, whose chunk and
-# ``usage_update`` land before its ``end_turn``.
+# ``usage_update`` land before its ``end_turn``; mimocode, whose turn streams the
+# summary and ends ``end_turn`` (``test/fixtures/acp_frames/mimocode/compact-live.jsonl``).
 ACP_BACKENDS_INLINE_COMPACTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -440,6 +465,7 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
     }
 )
 
@@ -450,6 +476,48 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
 # Every other member is read by the marker alone, so its own ``think`` call with
 # that title is never taken for a compaction.
 ACP_BACKENDS_UNMARKED_COMPACTION_PAIR = frozenset({ACP_BACKEND_CODEX})
+
+# The harnesses whose sessions keep a ``prompt_blocks.SentImageLedger``: the ones
+# whose compaction, started by Crew or by the harness itself, sends a frame this
+# client reads, so the record is forgotten whenever the conversation drops its
+# pictures. A harness not shown to report its own compaction stays out and inlines
+# a named picture on every turn, so the model is never told it holds a picture a
+# silent compaction dropped (harness-parity H6).
+#
+# - kiro: ``_kiro.dev/compaction/status`` (``acp_frames/kiro/compaction-live.jsonl``).
+# - kas: ``summarization_started`` / ``summarization_completed`` on its own
+#   (``acp_frames/kas/auto-compaction-live.jsonl``).
+# - codex: the marked compaction ``tool_call_update`` on a manual ``/compact``
+#   and on a native auto-compaction alike (``acp_frames/codex/compact-live.jsonl``).
+# - claude: the standard ACP ``compaction_update`` the adapter sends because Crew
+#   declares ``session.compaction`` (acp-client spec, "Native adapter compaction
+#   lifecycle"), and the ``Compacting...`` text notice of an adapter that sends none.
+#
+# Out: opencode, goose and pi send nothing this client reads for a compaction
+# they start on their own; copilot, strands and deepseek have no capture of one.
+ACP_BACKENDS_SENT_IMAGE_RECORD = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE}
+)
+
+# The harnesses whose compaction Kiro Crew sees: whether Crew or the harness
+# itself starts it, a frame this client reads arrives. Anything Crew sends once
+# per conversation and sends again after a compaction rests on that, so this is
+# the name such a send gates on. It IS the set above, under the name of what
+# it means, never a second list: a harness joins both by joining that one, on
+# the evidence written there
+# (``acp_frames/kiro/compaction-live.jsonl``,
+# ``acp_frames/kas/auto-compaction-live.jsonl``,
+# ``acp_frames/codex/compact-live.jsonl``, and claude's standard ACP
+# ``compaction_update``).
+#
+# Its one reader is the reply-format rules block (``build_message`` in
+# ``context_assembly.turn_message``, through ``LLMProvider.reports_compaction``):
+# in the set the block is bound as the provider's delivery envelope, so the
+# engine is sent it once per conversation and again after a compaction; outside
+# it, and on a harness that is not known, it is sent on every message, so a
+# compaction the harness ran on its own can never leave a conversation without
+# the rules (harness-parity H6).
+ACP_BACKENDS_COMPACTION_REPORTED = ACP_BACKENDS_SENT_IMAGE_RECORD
 
 # How long each backend's provider keeps a conversation's prompt prefix cached
 # after the last request, in seconds, for ``session.idle_compaction``. A backend
@@ -561,6 +629,150 @@ ACP_BACKENDS_KIRO_FAMILY = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # it may interpret as an ordinary user request.
 ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose ACP ``plan`` session update IS the agent's own checklist, so
+# ``AcpClient`` reads it into the ``EVENT_TODO_UPDATE`` kiro-cli's ``todo_list``
+# tool result produces (``acp.plan_checklist``) and the dashboard's task progress
+# bar shows it, read-only: the harness keeps the list, so the dashboard sends it no
+# ``todo_list`` sync or recovery block (``SessionCapabilities.keeps_own_checklist``).
+# claude is the member: claude-agent-acp sends Claude Code's TodoWrite list and its
+# Task* task list as a legacy ``plan`` (``content``, ``status``, ``priority``
+# entries, the whole list each time, an empty list when it is gone) to a client
+# that declares no ``clientCapabilities.plan``, which Crew does not (claude-agent-acp
+# 0.107.0 ``plans.js`` ``checklistPlanUpdate``), and its launch turns Claude Code's
+# checklist tools on (``acp.harness.claude.CLAUDE_TODO_TOOLS_ENV``). The shapes are
+# pinned by ``test/fixtures/acp_frames/claude/plan-checklist.jsonl`` (TodoWrite) and
+# ``plan-checklist-tasks.jsonl`` (the Task* tools). kiro-cli never sends ``plan``
+# (its list is a tool result), and a harness whose ``plan`` is not a checklist, or
+# whose shape no capture shows, stays out.
+ACP_BACKENDS_PLAN_CHECKLIST = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends told that the client presents notices (``clientCapabilities.session
+# .notices``), whose ``notice`` and ``current_mode_update`` session updates
+# ``AcpClient`` reads as the dashboard's notice rows (``acp.harness_notices``): a
+# notice keeps the adapter's title and severity, and a mode change names the mode
+# by the name the session advertised for it. A ``notice`` read between prompts
+# starts an agent-started turn, as an ``agent_message_chunk`` does
+# (``client_transport._starts_agent_turn``), and a native child's reaches its card
+# as the child's text. claude is the member: claude-agent-acp 0.107.0 sends a client
+# with the capability its advisories (a hook's informational message, a model
+# fallback, an MCP server that did not start, Auto mode falling back) as ``notice``
+# updates and a client without it each advisory as a blockquote
+# ``agent_message_chunk`` (``session-notices.js`` ``noticeOrTranscriptUpdate``), and
+# it reports each mode the session moves to, EnterPlanMode's included, as a
+# ``current_mode_update`` (``session-mode.js`` ``publishCurrent``). Both are standard
+# ACP frames; their shapes are pinned by
+# ``test/fixtures/acp_frames/claude/harness-notices.jsonl``. kiro-cli and KAS stay
+# out: their advisories are frames of their own and their modes are agents, which the
+# agent switch already reports. So do goose and copilot, whose ``current_mode_update``
+# is a routing tripwire.
+ACP_BACKENDS_HARNESS_NOTICES = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose session asks the harness for its raw agent SDK messages about
+# background tasks and API retries, and whose ``AcpClient`` reads them
+# (``acp.raw_sdk_tasks``): each agent of a Claude Code Workflow run becomes a native
+# Subagents card, the end of a background shell or Monitor task a notice row, and the
+# first API retry of a turn a warning notice row. claude is the member: the
+# ``session/new`` and ``session/load`` envelope carries
+# ``_meta.claudeCode.emitRawSDKMessages``, a filter list beside ``options``, and
+# claude-agent-acp forwards each Claude Code system message it matches as the
+# extension notification ``_claude/sdkMessage`` ``{sessionId, message}`` (0.107.0
+# ``v1/acp-agent.js`` 7857 and 2899-2905, ``shouldEmitRawMessage`` 8109; 0.94.0
+# ``acp-agent.js`` 8868 and 3922). That opt-in and notification are X, so the
+# membership rests on the live capture
+# ``test/fixtures/acp_frames/claude/raw-sdk-tasks-live.jsonl``. No other harness
+# sends Claude Code's SDK messages; kiro-cli and KAS report their own sub-agents and
+# background work in frames of their own.
+ACP_BACKENDS_RAW_SDK_TASKS = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose read tool names the one file it reads in a ``file_path`` argument,
+# so ``AcpClient`` marks a ``read``-kind ``tool_call`` with that argument's name
+# (``acp.read_path_arg``, ``AcpEvent.read_path_arg``), the dashboard keeps the mark on
+# the call's tool row (``meta.read_path_arg``), and the row's thumbnail strip previews
+# the file when its name is an image's, as it previews kiro-cli's image-mode read.
+# claude is the member: claude-agent-acp 0.107.0 reports Claude Code's Read as kind
+# ``read`` with ``rawInput`` ``{file_path, offset?, limit?}``
+# (``tool-calls/reporters/read.js`` ``ReadReporter.toolUse``), the kind on the first
+# ``tool_call`` and the arguments on the ``tool_call_update`` after it; its other
+# ``read``-kind frame, a memory recall (``tool-calls/renderer.js`` ``memoryRecall``),
+# carries no ``file_path`` and previews nothing. Both are standard ACP fields; the
+# shapes are pinned by ``test/fixtures/acp_frames/claude/read-image.jsonl``. kiro-cli
+# and KAS stay out: their read names its images in ``operations[].image_paths``,
+# which the strip reads on any row. So does every harness whose read tool's input no
+# capture shows.
+ACP_BACKENDS_READ_PATH_ARG = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose launch asks the harness for a readable summary of the model's
+# thinking, so its ``agent_thought_chunk`` updates carry text the chat's thinking
+# rows show. claude is the member: Claude Code's recent models default the thinking
+# display to ``omitted``, which streams thinking blocks with empty text, and
+# claude-agent-acp sends no ``agent_thought_chunk`` for an empty one (0.107.0
+# ``sdk-to-acp.js`` 218-232). It reads ``CLAUDE_CODE_THINKING_DISPLAY`` from its own
+# environment at ``session/new`` (``session-env.js`` ``resolveThinkingConfig``,
+# ``v1/acp-agent.js`` 7354), so the claude launch sets it to ``summarized`` when the
+# spawn environment does not name it and no Claude Code settings file decides
+# thinking (``acp.harness.claude.CLAUDE_THINKING_DISPLAY_ENV``). claude-agent-acp
+# 0.94.0 reads only ``MAX_THINKING_TOKENS``, so the variable is inert there. Off the
+# wire: the membership decides one variable of the adapter's process environment. A
+# harness that streams its thinking text already, or reads no such variable, stays
+# out.
+ACP_BACKENDS_SUMMARIZED_THINKING = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends that stop one native child when the client sends ``session/cancel``
+# naming the child's session, so a Stop on that child's Subagents card is sent to the
+# harness (``AcpClient.cancel_native_child``) rather than only closing the card, and
+# the card closes on the end the harness reports. claude is the member:
+# claude-agent-acp announces each Agent-tool child with ``capabilities.cancel`` to a
+# client that declares ``clientCapabilities.subagents`` (0.107.0
+# ``native-subagents.js`` ``announceNativeSubagent`` 1443-1460, 0.94.0 945), withdraws
+# it with ``capabilities: null`` when it loses track of the child (0.107.0
+# 601), and answers a ``session/cancel`` on a child id by stopping that child's task
+# alone (``v1/acp-agent.js`` ``cancel`` / ``cancelChildSession`` 5185-5205,
+# ``NativeSubagentRuntime.cancelChild`` 706-717; 0.94.0 ``acp-agent.js`` 6142-6160,
+# ``native-subagents.js`` 431-442), whose end it reports as ``subagent_update``
+# ``idle`` with ``cancelled`` (0.107.0 ``rfdEndState`` 1698-1705). ``session/cancel``
+# is standard ACP and the grant is the subagents form's own field; the announce with
+# the grant is in the live capture
+# ``test/fixtures/claude_native_subagents/agent-task-0.94.0.jsonl``. A Claude Code
+# Workflow agent is no such child: it has no session, and the adapter offers no
+# per-agent stop. kiro-cli, KAS and codex stay out: no capture shows a per-child
+# cancel there.
+ACP_BACKENDS_NATIVE_CHILD_CANCEL = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose ``tool_call_update`` carries a call's real title after a first
+# ``tool_call`` that named it before its input had streamed, so a Crew-spawned
+# subagent's Subagents card takes the refined title for that call's row, as the
+# dashboard's own tool row does (``SessionCapabilities.refines_tool_call_titles``,
+# read by ``subagent_manager.card_tool_titles``). claude is the member:
+# claude-agent-acp reports each call first at the stream's start, with an empty
+# ``rawInput`` and the tool's generic title ("Terminal", "Edit", "Read File",
+# "Task"), and then as a ``tool_call_update`` with the call's ``title``, ``kind``
+# and ``rawInput`` once its input is known (0.107.0 ``sdk-to-acp.js`` 296-316,
+# ``tool-calls/renderer.js`` ``toolCall`` 134, ``refinement`` 160,
+# ``partialRefinement`` 178). Both are standard ACP frames; the shapes are pinned by
+# ``test/fixtures/acp_frames/claude/builtins-bash-edit-webfetch-live.jsonl`` and
+# ``read-image.jsonl``. kiro-cli stays out: its first ``tool_call`` already names
+# the call, and the ``tool_call_update`` that ends a failed call titles it with the
+# bare tool name (``write``, ``use_aws``, ``knowledge`` in the
+# ``acp_frames/kiro/`` captures), which would replace the better title on the card.
+# So does every harness no capture shows refining a generic first title.
+ACP_BACKENDS_TOOL_TITLE_REFINEMENT = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose native compaction reports the summary the harness kept, so
+# ``AcpClient`` carries it on the ``completed`` compaction event
+# (``acp.compaction_summary``) and the dashboard's compaction card folds it, as it
+# folds kiro-cli's ``_kiro.dev/compaction/status`` summary. claude is the member:
+# to a client that declares ``session.compaction``, claude-agent-acp streams the
+# API's compaction block as ``compaction_summary_chunk`` updates ``{compactionId,
+# content: {type: "text", text}}`` and sends Claude Code's PostCompact summary on the
+# first ``completed`` ``compaction_update`` as ``summary: [{type: "text", text}]``,
+# leaving it out when the chunks carried that same text (0.107.0
+# ``context-compaction.js`` ``heartbeat`` 231-243, ``recordSummary`` 264-280,
+# ``finish`` 281-313). Both are standard ACP frames; the shapes are pinned by
+# ``test/fixtures/acp_frames/claude/compaction-summary.jsonl``. codex stays out: its
+# native compaction runs on ``AcpRuntime`` and no capture shows it carrying a
+# summary. So does every harness that does not report compaction this way.
+ACP_BACKENDS_COMPACTION_SUMMARY = frozenset({ACP_BACKEND_CLAUDE})
+
 # Backends whose adapter runs ANY leading-slash ``session/prompt`` as one of its own
 # commands, so the dashboard forwards every leading-slash word raw (no context
 # prefix) rather than only the kiro-cli names in ``_SLASH_COMMANDS``. claude is the
@@ -600,12 +812,19 @@ ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS = frozenset({ACP_BACKEND_CLAUDE})
 #   and its ACP reference says a command it does not list is sent to the model as
 #   an ordinary prompt. ``clear`` is also outside its prompt-command allowlist, so a
 #   ``/clear`` that reached the client would be refused rather than sent.
+# - antigravity: its prompt-command allowlist
+#   (``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`` in ``agent_sdk.backends_routing``)
+#   admits only ``plan`` and ``usage``, so a ``/clear`` that reached the client
+#   would be refused rather than sent.
 #
 # goose is NOT a member: its prompt handler runs ``/clear`` itself
 # (``CompactionOperation.run_command`` returns an empty conversation), so it keeps
 # the prompt path. kiro is not a member: it runs ``/clear`` natively over
 # ``_kiro.dev/commands/execute``. A harness added later stays out until its
 # ``/clear`` is checked.
+# mimocode is a member on opencode's ground, read off its 0.1.15 prompt step: only
+# ``compact`` is special-cased, and the advertised command catalog carries no
+# ``clear``, so a ``/clear`` sent there would reach the model as text.
 ACP_BACKENDS_LOCAL_CLEAR = frozenset(
     {
         ACP_BACKEND_KAS,
@@ -618,12 +837,14 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         # strands sends every prompt to its model as text in project mode, ``/clear``
         # included, so the dashboard answers it.
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -647,11 +868,63 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 #
 # kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
 # claude is not a member: its harness owns its own command set. codex, opencode,
-# pi, deepseek, goose and copilot are not members: each serves the commands it
-# knows from its own prompt handler, so their other commands keep the prompt
-# path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the ``/clear`` most of them lack). A
-# harness added later stays out until its command handling is checked.
+# mimocode, pi, deepseek, goose, copilot and antigravity are not members: each runs
+# some commands from its own prompt handler, so each has an
+# ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS`` row and the dashboard answers its other
+# commands. A harness added later stays out until its command handling is checked.
 ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_STRANDS})
+
+# Harness id -> the harness commands (``_SLASH_COMMANDS`` names) that the
+# harness's own prompt handler runs. The dashboard answers every other harness
+# command of a member itself, as it does for ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``:
+# ``/clear`` is dropped the way ``reset_conversation`` does, and any other command
+# gets a notice instead of reaching the model as text. ``GET /api/slash-commands``
+# lists only the row's commands and the commands the dashboard serves without the
+# harness.
+#
+# - codex: codex-acp 2.3.0's ``classifyPrompt`` runs plan, mcp, skills, status,
+#   review, review-branch, review-commit, compact, goal, rename and logout, and
+#   sends any other name to the model. Of Crew's harness commands only ``/compact``
+#   and ``/mcp`` are in that list, so a ``/help``, ``/context`` or ``/tools`` sent
+#   as prompt text reached the model as a bare word. The row does not forward
+#   Codex's other built-ins: they are not Crew harness commands, so they stay text.
+# - opencode: opencode 1.19.1's ACP prompt step runs a name from its own command
+#   catalog (``init``, ``review``, ``customize-opencode``) and ``compact``; any other
+#   slash name ends the turn with no text. Of Crew's harness commands only
+#   ``/compact`` is in that list.
+# - mimocode: the same prompt step as opencode (read off 0.1.15), so the same row.
+# - pi: pi-acp 0.0.34's prompt handler runs compact, session, name, steering,
+#   follow-up, changelog, export and autocompact, and sends anything else to the
+#   model. Of Crew's harness commands ``/compact`` and ``/changelog`` are in it.
+# - deepseek: the ``dsh-acp`` bridge parses no slash; every prompt is a user message.
+#   ``/compact`` goes through its own gate first, which answers it here.
+# - goose: 1.50.1's ``execute_command`` runs prompts, prompt, compact, clear, skills,
+#   doctor, goal, grind and status. Of Crew's harness commands ``/clear`` and
+#   ``/compact`` are in it (``/goal`` and ``/prompts`` are answered by the dashboard
+#   first).
+# - copilot: Crew lets a prompt start only with a command in
+#   ``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`` and refuses the rest before the wire. Of
+#   Crew's harness commands ``/compact``, ``/context`` and ``/usage`` are in it.
+# - antigravity: the same allowlist admits only ``plan`` and ``usage``, and of Crew's
+#   harness commands only ``/usage`` is in it.
+#
+# kiro-cli has no row, because it runs every command over its own command channel.
+# claude has no row, because it owns its command set
+# (``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``). A member of
+# ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` has no row, because it runs no command.
+# A harness added later gets a row once its prompt handler is read.
+ACP_BACKEND_PROMPT_HANDLER_COMMANDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"}),
+        ACP_BACKEND_OPENCODE: frozenset({"/compact"}),
+        ACP_BACKEND_MIMOCODE: frozenset({"/compact"}),
+        ACP_BACKEND_PI: frozenset({"/changelog", "/compact"}),
+        ACP_BACKEND_DEEPSEEK: frozenset({"/compact"}),
+        ACP_BACKEND_GOOSE: frozenset({"/clear", "/compact"}),
+        ACP_BACKEND_COPILOT: frozenset({"/compact", "/context", "/usage"}),
+        ACP_BACKEND_ANTIGRAVITY: frozenset({"/usage"}),
+    }
+)
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

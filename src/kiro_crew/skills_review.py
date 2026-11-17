@@ -25,6 +25,7 @@ from pathlib import Path
 
 from kiro_crew import pinned_fs, skill_trust
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.platform_compat import pinned_directory
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -565,7 +566,7 @@ def _pending_scripts_verdict_at(self, root_fd: int) -> tuple[bool, dict] | None:
                             "invalid layout: entry changed during scan"
                         )
                         continue
-                    raw = os.read(rfd, MAX_SCRIPT_BYTES + 1)
+                    raw = bounded_read_fd(rfd, MAX_SCRIPT_BYTES + 1)
                 except OSError:
                     extra.setdefault(rel, []).append("unreadable script: read failed")
                     continue

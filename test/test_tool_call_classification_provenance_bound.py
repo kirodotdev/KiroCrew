@@ -612,6 +612,12 @@ class TestTheProvenanceCachesShareOneBound:
         )
 
         handle, sent = self._handle()
+
+        async def _send_request(method, params, **_kw):
+            sent.append((method, params))
+            return 1
+
+        handle._runtime.send_request = _send_request
         for i in range(TOOL_CALL_CACHE_MAX_ENTRIES + 1):
             handle._handle_update(self._frame(self._call(i)))
         over = f"tc-{TOOL_CALL_CACHE_MAX_ENTRIES}"
@@ -620,7 +626,12 @@ class TestTheProvenanceCachesShareOneBound:
         assert event is not None and event.raw_params_trusted is False
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
             assert await handle._refuse_unretained_provenance(msg, event) is True
-        assert sent == [(21, {"outcome": {"outcome": "selected", "optionId": "reject"}})]
+        # The host notice is steered first: the reject alone reads as a user's no.
+        assert [entry[0] for entry in sent] == ["_session/steer", 21], sent
+        assert sent[1] == (21, {"outcome": {"outcome": "selected", "optionId": "reject"}})
+        notice = sent[0][1]["message"]
+        assert "[Kiro Crew host notice]" in notice and "NOT a user action" in notice
+        assert "could not keep the details it needs to check the call" in notice
         refusal = [r.getMessage() for r in caplog.records if "did not retain" in r.getMessage()]
         assert len(refusal) == 1
         assert str(TOOL_CALL_CACHE_MAX_ENTRIES) in refusal[0]

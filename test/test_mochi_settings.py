@@ -280,12 +280,16 @@ class TestLanguage:
     def test_malformed_tag_is_rejected(self, tmp_path: Path) -> None:
         # Still validated: a value that cannot be a language tag is a client bug,
         # and persisting it would put an unresolvable code in front of i18next.
-        for bad in ("not a tag", "e", "en_US", "../etc/passwd", "en-"):
+        for bad in ("not a tag", "e", "en_US", "../etc/passwd", "en-", "en\n"):
             with pytest.raises(ValueError):
                 save_settings(tmp_path, {"language": bad})
 
     def test_unreadable_stored_value_falls_back(self, tmp_path: Path) -> None:
         (tmp_path / "mochi-settings.json").write_text('{"language": 7}')
+        assert load_settings(tmp_path)["language"] == ""
+
+    def test_a_stored_tag_with_a_trailing_newline_falls_back(self, tmp_path: Path) -> None:
+        (tmp_path / "mochi-settings.json").write_text(json.dumps({"language": "en\n"}))
         assert load_settings(tmp_path)["language"] == ""
 
     def test_malformed_stored_value_falls_back(self, tmp_path: Path) -> None:

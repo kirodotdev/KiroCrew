@@ -630,9 +630,11 @@ class TestEmbedTokenEndpoint:
         def __init__(self, result):
             self.result = result
             self.calls: list[tuple[str, int]] = []
+            self.own_pages: list[bool] = []
 
-        async def mint_embed_token(self, iid, port):
+        async def mint_embed_token(self, iid, port, *, own_page=False):
             self.calls.append((iid, port))
+            self.own_pages.append(own_page)
             return self.result
 
     def test_it_hands_back_the_token_and_the_hop_port(self, tmp_path, monkeypatch):
@@ -665,6 +667,42 @@ class TestEmbedTokenEndpoint:
                 )
             )
             assert resp.status == 400, f"accepted embed_parent_port={bad!r}"
+            assert mgr.calls == []
+
+    def test_own_page_reaches_the_manager_only_as_a_strict_bool(self, tmp_path, monkeypatch):
+        """The flag lifts the depth refusal for a page of our own, so a value that
+        merely looks true is refused rather than read as one; a peer's request,
+        which never sends it, keeps the refusal."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        for body, expected in (
+            ({"embed_parent_port": 5477, "own_page": True}, [True]),
+            ({"embed_parent_port": 5477, "own_page": False}, [False]),
+            ({"embed_parent_port": 9191}, [False]),
+        ):
+            mgr = self._Mgr((True, {"token": "TOK", "port": 53999}))
+            resp = asyncio.run(
+                handlers.api_instances_embed_token(
+                    _FakeReq(_State(reg, mgr), match={"id": "c"}, body=body)
+                )
+            )
+            assert resp.status == 200
+            assert mgr.own_pages == expected, f"own_page from {body!r}"
+        for bad in (1, "true", None, [True]):
+            mgr = self._Mgr((True, {"token": "TOK", "port": 53999}))
+            resp = asyncio.run(
+                handlers.api_instances_embed_token(
+                    _FakeReq(
+                        _State(reg, mgr),
+                        match={"id": "c"},
+                        body={"embed_parent_port": 5477, "own_page": bad},
+                    )
+                )
+            )
+            assert resp.status == 400, f"accepted own_page={bad!r}"
+            assert _resp_body(resp)["code"] == "invalid_field"
             assert mgr.calls == []
 
     def test_a_refusal_carries_the_managers_status(self, tmp_path, monkeypatch):

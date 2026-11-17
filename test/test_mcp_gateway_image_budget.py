@@ -50,7 +50,7 @@ def enforce_image_budget(line: bytes, server_name: str) -> bytes:
 def _png_bytes(w: int, h: int) -> bytes:
     """A solid-colour PNG of exactly ``w``x``h`` (tiny encoding, so the
     dimension cap -- not the byte ceiling -- is what a test exercises)."""
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     buf = io.BytesIO()
     pil.new("RGB", (w, h), (123, 200, 60)).save(buf, format="PNG")
     return buf.getvalue()
@@ -59,7 +59,7 @@ def _png_bytes(w: int, h: int) -> bytes:
 def _mpo_bytes(w: int, h: int) -> bytes:
     """A two-frame MPO (what Pillow reports for a phone photo carrying MPF
     data): a ``w``x``h`` primary frame plus a half-size second frame."""
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     buf = io.BytesIO()
     primary = pil.new("RGB", (w, h), (10, 20, 30))
     second = pil.new("RGB", (max(1, w // 2), max(1, h // 2)), (40, 50, 60))
@@ -77,7 +77,7 @@ def _noise_png_bytes(w: int, h: int) -> bytes:
     bytes per pixel of transient peak, which is what a worker's high-water mark
     -- and so the xdist memory budget's per-worker reservation -- has to cover.
     """
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     rnd = random.Random(1234)
     img = pil.frombytes("RGB", (w, h), rnd.randbytes(w * h * 3))
     buf = io.BytesIO()
@@ -95,7 +95,7 @@ def _result_line(content: list, msg_id: str = "gw-1") -> bytes:
 
 
 def _decoded_size(block: dict) -> tuple[int, int]:
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
     with pil.open(io.BytesIO(base64.b64decode(block["data"]))) as im:
         return im.size
 
@@ -174,7 +174,7 @@ class TestOversizedImageDownscaled:
         """An oversized image whose mime has no dedicated save format (TIFF)
         re-encodes as PNG -- the emitted mimeType must say so, not repeat the
         source mime, which does not describe the re-encoded bytes."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         buf = io.BytesIO()
         pil.new("RGB", (4000, 3000), (10, 20, 30)).save(buf, format="TIFF")
         block = {
@@ -283,7 +283,7 @@ class TestFailClosed:
         """An oversized raster Pillow refuses to decode (decompression-bomb
         guard) has no compliant rendition -- text fallback, never the original
         >2000px payload."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         raw = _png_bytes(2001, 2001)  # over the edge cap
         # Force a decompression-bomb ERROR on decode (pixels > 2 x limit) while
         # keeping the header read (and the source-pixel ceiling) permissive.
@@ -455,7 +455,7 @@ class TestDownscaleImageBlock:
     def test_within_cap_gif_keeps_its_gif_label(self):
         """The GIF->PNG mime swap belongs to the RE-ENCODE only; a compliant
         GIF passes through byte-identical with its own label."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         buf = io.BytesIO()
         pil.new("P", (40, 40)).save(buf, format="GIF")
         raw = buf.getvalue()
@@ -466,7 +466,7 @@ class TestDownscaleImageBlock:
         must not pass through: the backend rejects the format on every
         replay, the same wedge as an oversized image. It converts to PNG at
         its original dimensions instead."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         buf = io.BytesIO()
         pil.new("RGB", (300, 200), (9, 8, 7)).save(buf, format="TIFF")
         fitted = downscale_image_block(buf.getvalue(), "image/tiff")
@@ -489,7 +489,7 @@ class TestDownscaleImageBlock:
         """The other direction: an over-cap MPO shrinks and is WRITTEN as JPEG
         (single frame), not as the far larger PNG a format outside the table
         converts to, which costs extra encoded-budget shrink passes."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         fitted = downscale_image_block(_mpo_bytes(3000, 1000), "image/jpeg")
         assert fitted is not None
         out_bytes, out_mime = fitted
@@ -509,7 +509,7 @@ class TestDownscaleImageBlock:
         ``long_edge > max_edge`` holds for every edge <= 0 and floors the
         image to 1x1. Tested with formats that are NOT MPO, so MPO's own
         table entry cannot mask the re-encode branch's guard."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         buf = io.BytesIO()
         pil.new("RGB", (300, 200), (9, 8, 7)).save(buf, format=fmt)
         fitted = downscale_image_block(buf.getvalue(), "image/x-test", max_edge=max_edge)
@@ -524,7 +524,7 @@ class TestDownscaleImageBlock:
         at once (table membership AND the re-encode branch's non-positive
         edge). Missing either yields a PNG; missing both yields a 1x1 PNG. It
         must ride through untouched."""
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         raw = _mpo_bytes(800, 600)
         fitted = downscale_image_block(raw, "image/jpeg", max_edge=0)
         assert fitted == (raw, "image/jpeg")
@@ -532,7 +532,7 @@ class TestDownscaleImageBlock:
             assert im.size == (800, 600)
 
     def test_oversized_is_downscaled(self):
-        pil = pytest.importorskip("PIL.Image")
+        import PIL.Image as pil
         fitted = downscale_image_block(_png_bytes(4000, 3000), "image/png")
         assert fitted is not None
         out_bytes, out_mime = fitted

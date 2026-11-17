@@ -2,12 +2,11 @@
 
 Three contracts, asserted separately because they fail differently:
 
-1. ``forget_cache()`` clears BOTH things the cache file can hold -- a stale
+1. ``forget_cache()`` clears BOTH things a document module remembers -- a stale
    document (``CACHE_TTL`` not yet expired) and a ``_fetchFailedAt`` failure
    sentinel (``FAILURE_TTL`` back-off). The sentinel case is the one that
-   motivated the feature: a failed fetch overwrites the good cache and the
-   store silently degrades to the seed listing with nothing the user can do
-   about it from the UI.
+   motivated the feature: while it lasts, a store with no fresh copy answers
+   from the seed listing with nothing the user can do about it from the UI.
 
 2. The refresh handler drops all three published-document caches and never
    fetches: the follow-up ``GET /api/apps/registry`` pays the fetch on the
@@ -24,7 +23,7 @@ Three contracts, asserted separately because they fail differently:
 from __future__ import annotations
 
 import json
-import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -52,15 +51,18 @@ class TestForgetCache:
         # The case the feature exists for: the back-off memory must not survive
         # an explicit refresh, or the refresh would answer from the seed for up
         # to FAILURE_TTL and look like it did nothing.
-        path = tmp_path / "doc.json"
-        monkeypatch.setattr(mod, "_cache_path", lambda: path)
-        path.write_text(json.dumps({mod._FAILED_KEY: time.time()}), encoding="utf-8")
+        monkeypatch.setattr(mod, "_cache_path", lambda: tmp_path / "doc.json")
+        mod._write_failure()
+        assert list(tmp_path.iterdir()), "the failure memory was written"
         mod.forget_cache()
-        assert not path.exists()
+        assert list(tmp_path.iterdir()) == []
 
     def test_missing_cache_is_a_no_op(self, mod, monkeypatch, tmp_path):
         monkeypatch.setattr(mod, "_cache_path", lambda: tmp_path / "absent.json")
+        neighbour = tmp_path / "other.json"
+        neighbour.write_text("{}", encoding="utf-8")
         mod.forget_cache()  # must not raise
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["other.json"]
 
     def test_an_unlink_error_never_raises(self, mod, monkeypatch, tmp_path):
         # Same degrade-don't-500 contract as every other disk touch in these
@@ -68,6 +70,9 @@ class TestForgetCache:
         class _Boom:
             def unlink(self, missing_ok=False):
                 raise OSError("locked")
+
+            def with_suffix(self, suffix):
+                return self
 
         monkeypatch.setattr(mod, "_cache_path", lambda: _Boom())
         mod.forget_cache()  # must not raise
@@ -79,7 +84,18 @@ class TestForgetCache:
 
 
 class _FakeRequest:
-    """Minimal stand-in: neither handler reads anything off the request."""
+    """Minimal stand-in: the listing reads only ``app`` (no ``state``) off the request."""
+
+    app: dict[str, Any] = {}
+
+
+class _OwnerRequest(dict):
+    """The dashboard owner's request: the refresh is owner-only."""
+
+    app: dict[str, Any] = {"state": SimpleNamespace(owner_id="owner")}
+
+    def __init__(self) -> None:
+        super().__init__(user="owner", app="")
 
 
 @pytest.fixture()
@@ -119,7 +135,7 @@ def _body(resp: Any) -> dict[str, Any]:
 @pytest.mark.asyncio
 class TestRegistryRefreshEndpoint:
     async def test_refresh_drops_all_three_document_caches(self, _forget_counter):
-        resp = await routes.handle_registry_refresh(_FakeRequest())  # type: ignore[arg-type]
+        resp = await routes.handle_registry_refresh(_OwnerRequest())  # type: ignore[arg-type]
         assert resp.status == 200
         assert _body(resp) == {"ok": True}
         assert sorted(_forget_counter) == ["catalog", "editorial", "order"]

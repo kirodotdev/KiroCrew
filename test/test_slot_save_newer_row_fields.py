@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
+from redaction_structured_cases import github_classic
 from windows_sim import same_tick_file_stat
 
 from kiro_crew.dashboard.chat_persistence import (
@@ -98,7 +99,8 @@ def test_a_row_from_this_version_round_trips_unchanged(tmp_path, monkeypatch):
 def test_a_field_this_build_changes_is_written_with_its_new_value(tmp_path, monkeypatch):
     """Restore redacts assistant content; the flush writes the redacted value, not the disk one."""
     state, path = _saved_slot(tmp_path, monkeypatch, ("user", "q1"), ("assistant", "a1"))
-    leaked = "key AKIAIOSFODNN7EXAMPLE here"
+    key = github_classic(seed=1)
+    leaked = f"key {key} here"
 
     def with_secret(rows):
         for row in rows:
@@ -111,7 +113,7 @@ def test_a_field_this_build_changes_is_written_with_its_new_value(tmp_path, monk
     restored.drain()
     _save_slot_to_history(state, restored, closed=False)
     written = [r["content"] for r in _rows(path) if r["role"] == "assistant"]
-    assert written and written != [leaked] and "AKIAIOSFODNN7EXAMPLE" not in written[0], written
+    assert written and written != [leaked] and key not in written[0], written
 
 
 def test_the_live_window_size_limit_is_unchanged(tmp_path, monkeypatch):
@@ -152,7 +154,7 @@ def test_the_websocket_chat_message_frame_never_carries_the_private_key(tmp_path
 
     _state, restored = _restored_with_newer_field(tmp_path, monkeypatch)
     row = next(m for m in restored.messages if UNKNOWN_ROW_FIELDS_KEY in m)
-    frame = chat_message_note("s1", row, workspace=None)
+    frame = chat_message_note("s1", row)
     assert UNKNOWN_ROW_FIELDS_KEY not in json.dumps(frame, default=str)
     assert "thumbs_up" not in json.dumps(frame, default=str)
 

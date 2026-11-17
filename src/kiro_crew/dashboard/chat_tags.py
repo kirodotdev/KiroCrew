@@ -425,7 +425,9 @@ def _normalize_column(
             return None
         if not all(isinstance(t, str) and t in valid_ids for t in tag_ids):
             return None
-        cleaned["tag_ids"] = [str(t) for t in tag_ids]
+        # A repeated id keeps its first place, as the slot and folder tag
+        # writers dedupe: a doubled id would also miss the ensure twin match.
+        cleaned["tag_ids"] = list(dict.fromkeys(str(t) for t in tag_ids))
     if "mode" in raw:
         mode = str(raw.get("mode") or "any")
         if mode not in _VALID_MODES:
@@ -445,7 +447,14 @@ def _normalize_column(
                 # refused as an invalid payload rather than raised as a 500.
                 return None
     if "include_untagged" in raw:
-        cleaned["include_untagged"] = bool(raw.get("include_untagged"))
+        # A spelled "false"/"0"/"no"/"off" means False, as in the folder
+        # route; any other value keeps the truthiness it was always saved with.
+        # Imported here: this module is facade-mirrored and takes no new
+        # top-level name.
+        from kiro_crew.config.fields import _coerce_bool
+
+        include = raw.get("include_untagged")
+        cleaned["include_untagged"] = _coerce_bool(include, bool(include))
     if "source" in raw:
         source = str(raw.get("source") or "tags")
         if source not in _VALID_SOURCES:
@@ -768,7 +777,9 @@ async def api_chat_tag_columns_reorder(request: web.Request) -> web.Response:
                     status=409,
                 )
         original_order = [(col.get("id"), col.get("order", 0)) for col in state._tag_boards]
-        order_map = {str(cid): i for i, cid in enumerate(ids)}
+        # A repeated id keeps its first place, like the pinned-order writer's
+        # dedupe: positions then run 0..n-1 with no gap and no shared value.
+        order_map = {cid: i for i, cid in enumerate(dict.fromkeys(str(c) for c in ids))}
         # Push columns not present in the reorder payload past the explicit
         # ordering so they don't collide with the new sequential indices.
         next_order = len(order_map)

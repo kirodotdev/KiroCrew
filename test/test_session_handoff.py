@@ -23,7 +23,7 @@ from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import session_managers
 
 #: Spelled out rather than read from the production set, so a change to it fails here.
-WIDENED = ("send", "read", "summary", "stop", "close", "adopt", "release", "handoff")
+WIDENED = ("send", "read", "summary", "queue", "stop", "close", "adopt", "release", "handoff")
 #: Verbs that stay with the creator after a handoff.
 CREATOR_ONLY = ("fork", "rename", "set_model")
 
@@ -529,7 +529,7 @@ def test_a_handoff_to_a_receiver_at_the_slot_cap_is_refused(tmp_path, monkeypatc
     lead, conductor, worker = _team(state)
     own = _slot(state, "chat-own")
     own._created_by = conductor.key
-    monkeypatch.setattr(sc, "MAX_SLOTS_PER_CREATOR", 1)
+    monkeypatch.setattr("kiro_crew.dashboard.state.max_slots_per_creator", lambda: 1)
 
     with pytest.raises(sc.SessionControlError) as err:
         _hand(state, lead, worker, conductor)

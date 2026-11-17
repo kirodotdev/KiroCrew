@@ -53,6 +53,8 @@ _OPEN_SCOPES: dict[str, str] = {
     "capabilities.theme_persona": "",
     "capabilities.milestones": "",
     "capabilities.decisions_local": "",
+    # Discover keeps querying every registry until a policy names the key.
+    "external_access.registry_hosts": "skills.sh",
 }
 
 # scope -> (items the baseline permits, items it denies). One row per catalog scope.
@@ -67,8 +69,15 @@ _BASELINE_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "agent_backend": (("kas",), ("claude", "kiro")),
     "webhooks": ((), ("agent", "ops-mission-control")),
     "capabilities.publish": (
-        ("", "destinations:default"),
-        ("destinations:s3", "regions:us-east-1", "audience:private", "accounts:123456789012"),
+        (),
+        (
+            "",
+            "destinations:default",
+            "destinations:s3",
+            "regions:us-east-1",
+            "audience:private",
+            "accounts:123456789012",
+        ),
     ),
     "bind_address": (("127.0.0.1",), ("0.0.0.0", "::", "10.0.0.5")),
     "dashboard_origins": ((), ("https://crew.example.com", "http://localhost:3000")),
@@ -167,6 +176,9 @@ _OPEN_DENIES: dict[str, dict[str, object]] = {
     "capabilities.theme_persona": {"capabilities": {"theme_persona": {"enabled": False}}},
     "capabilities.milestones": {"capabilities": {"milestones": {"enabled": False}}},
     "capabilities.decisions_local": {"capabilities": {"decisions_local": {"enabled": False}}},
+    "external_access.registry_hosts": {
+        "external_access": {"registry_hosts": {"mode": "deny", "deny": ["skills.sh"]}}
+    },
 }
 
 

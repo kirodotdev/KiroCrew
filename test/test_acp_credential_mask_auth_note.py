@@ -1,9 +1,10 @@
 """A masked harness's startup auth failure names the credential mask.
 
 An enforced adapter that re-exposes ``~/.aws/config`` runs with the rest of
-``~/.aws`` hidden on purpose. When such a child fails ``initialize``,
-``session/new`` or its first turn because the AWS SDK could not load a
-credential, the surfaced error says so once, so the deliberate layout is not
+``~/.aws`` hidden on purpose, along with every other credential store on the
+read-gate floor. When such a child fails ``initialize``, ``session/new`` or its
+first turn because the AWS SDK could not load a credential, the surfaced error
+says so once and names the stores the mask hid, so the deliberate layout is not
 reported as a broken control.
 """
 
@@ -20,24 +21,32 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.transport_errors import _raise_acp_error
 from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO, ACP_BACKEND_OPENCODE
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.agent_sdk.tool_gate import label_for
+from kiro_crew.agent_sdk.tool_gate import adapter_hidden_credential_dirs
+from kiro_crew.providers import acp_runtime_start
 from kiro_crew.providers.acp import AcpProvider
-from kiro_crew.providers.acp_runtime_start import (
-    CREDENTIAL_MASK_AUTH_NOTE,
-    _with_credential_mask_note,
-)
+from kiro_crew.providers.acp_runtime_start import _with_credential_mask_note
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 _AUTH_RPC_ERROR = "RPC error: {'code': -32000, 'message': 'Authentication required'}"
 _AWS_STDERR = "ERROR codex: failed to load AWS credentials"
 
 
-def _note(backend: str = ACP_BACKEND_CODEX) -> str:
-    return CREDENTIAL_MASK_AUTH_NOTE.format(label=label_for(backend))
+def _home(*leaf: str) -> str:
+    return os.path.join(os.path.expanduser("~"), *leaf)
 
 
 def _aws_mask() -> tuple[str, ...]:
-    return (os.path.join(os.path.expanduser("~"), ".aws"),)
+    return (_home(".aws"),)
+
+
+def _note(backend: str = ACP_BACKEND_CODEX, hidden: tuple[str, ...] | None = None) -> str:
+    mask = _aws_mask() if hidden is None else hidden
+    return acp_runtime_start.credential_mask_auth_note(backend, mask)
+
+
+# Shaped like the codex mask: the AWS store, a sign-in cookie store, the SSH key
+# store, and a deeper leaf of Kiro Crew's own data home.
+_COOKIE_MASK = (_home(".aws"), _home(".midway"), _home(".ssh"), _home(".kiro", "crew", ".env"))
 
 
 def _runtime(
@@ -58,6 +67,7 @@ def _runtime(
     runtime.saw_not_logged_in = MagicMock(return_value=signed_out)
     runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
     runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+    runtime.kas_extract_broken_message = MagicMock(return_value="")
     runtime.settle_stderr = AsyncMock()
     runtime.kill = AsyncMock()
     handle = MagicMock(session_id="codex-sess-1", set_model=AsyncMock())
@@ -175,6 +185,28 @@ async def test_a_harness_without_the_config_exposure_gets_no_note():
     assert str(error) == _AUTH_RPC_ERROR
 
 
+@pytest.mark.asyncio
+async def test_a_startup_auth_failure_names_every_top_level_store_the_mask_hides():
+    runtime = _runtime(
+        hidden=_COOKIE_MASK, stderr=_AWS_STDERR, spawn_exc=AcpRuntimeError(_AUTH_RPC_ERROR)
+    )
+    text = str(await _start_error(runtime))
+    for store in ("~/.midway", "~/.ssh", "~/.aws,"):
+        assert store in text
+    assert ".kiro" not in text
+    assert text.count(_note(hidden=_COOKIE_MASK)) == 1
+
+
+def test_the_note_for_the_real_codex_mask_names_the_cookie_and_key_stores():
+    hidden = adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
+    runtime = _runtime(hidden=hidden, stderr=_AWS_STDERR)
+    cause = AcpRuntimeError(_AUTH_RPC_ERROR)
+    text = _with_credential_mask_note(runtime, _AUTH_RPC_ERROR, cause)
+    for store in (".aws", ".midway", ".ssh", ".gnupg"):
+        assert _home(store) in hidden
+        assert f"~/{store}" in text
+
+
 def test_the_note_is_never_added_twice():
     runtime = _runtime(stderr=_AWS_STDERR)
     cause = AcpRuntimeError(_AUTH_RPC_ERROR)
@@ -267,6 +299,14 @@ async def test_an_aws_auth_failure_at_the_first_turn_names_the_mask_once():
     assert text.count(_note()) == 1
     # Only the text changes: the classifier's verdict rides on the same object.
     assert error.transient is False
+
+
+@pytest.mark.asyncio
+async def test_an_aws_auth_failure_at_a_turn_names_the_cookie_store_the_mask_hides():
+    error = await _turn_error(_turn_provider(_TURN_AWS_FRAME, hidden=_COOKIE_MASK))
+    text = str(error)
+    assert "~/.midway" in text
+    assert text.count(_note(hidden=_COOKIE_MASK)) == 1
 
 
 @pytest.mark.asyncio

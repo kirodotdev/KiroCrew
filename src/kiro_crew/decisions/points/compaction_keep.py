@@ -176,7 +176,7 @@ CHARS_PER_TOKEN = 4
 STATE_ROLES = frozenset({"user", "assistant", "tool"})
 
 #: The one role a tool call arrives under, whose ``meta`` carries the join key, the
-#: input and the result (``chat_runner._tool_call_meta``).
+#: input and the result (``chat_turn.tool_rows._tool_meta``).
 TOOL_ROLE = "tool"
 
 #: Rows pinned into the state without a question: the FIRST row of the transcript

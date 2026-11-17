@@ -363,6 +363,36 @@ class TestCronChannelDelivery:
         # The Slack branch owns the same anchor write, through the same helper.
         assert job.last_posted_hash == gw._result_hash("slack bound")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("created_by", "dm_user"),
+        [
+            pytest.param("U_ALICE", "U_ALICE", id="person_who_scheduled_it"),
+            pytest.param("app:standup-digest", "U_OWNER", id="app_owned_job"),
+            pytest.param("import:sched-7", "U_OWNER", id="imported_job"),
+            pytest.param("", "U_OWNER", id="no_creator"),
+        ],
+    )
+    async def test_the_result_dm_opens_to_a_person_never_an_owner_tag(
+        self, created_by: str, dm_user: str
+    ):
+        """An app's or an import's ``created_by`` is a tag, not a Slack user id.
+
+        Opening a DM to ``app:standup-digest`` fails with ``user_not_found`` on every run,
+        so the result reached nobody. The owner gets it instead.
+        """
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jc5", name="app probe", session_key="", created_by=created_by)
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, result_text="digest") as callback:
+                assert await callback(job) == "digest"
+
+        orch.slack.open_dm.assert_awaited_once_with(dm_user)
+        orch.slack.post_blocks.assert_awaited_once()
+        assert job.last_posted_hash == gw._result_hash("digest")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Cron FAILURE delivery to a non-Slack channel
@@ -500,6 +530,30 @@ class TestCronFailureChannelDelivery:
         channel, text = orch.slack.post_message.await_args.args
         assert channel == "D1"
         assert "*Cron: cmd probe*" in text
+
+    @pytest.mark.asyncio
+    async def test_an_app_owned_cron_failure_alert_reaches_the_owner(self):
+        """The failure alert resolves its DM the way the result does: an
+        ``app:<name>`` creator is a tag, so the owner is alerted instead of the
+        alert dying on ``user_not_found``."""
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(
+            id="jf6",
+            name="app probe",
+            command="false",
+            session_key="",
+            created_by="app:standup-digest",
+        )
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_cb(orch, command_result={"status": "error", "output": ""}) as cb:
+                assert await cb(job) is None
+
+        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
+        channel, text = orch.slack.post_message.await_args.args
+        assert channel == "D1"
+        assert "*Cron: app probe*" in text
 
 
 # ═══════════════════════════════════════════════════════════════════════════

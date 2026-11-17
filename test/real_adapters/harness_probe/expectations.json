@@ -1,0 +1,52 @@
+{
+  "description": "What test_real_adapter_harness_probe.py measured on each pinned harness. Every check asserts the run matches its entry EXACTLY, then marks itself xfail where the entry records a known defect. A change that moves a measurement updates this file in the same PR. literal / expansion cells: Y = the server started with the real value, L = with the literal reference, 0 = without the variable, - = never started. ambient: the harness's own user/project config servers that started in the Crew session. crew_tool_bytes_ceiling: the most bytes of Crew's own tool specs one model request may carry on that harness; above crew_tool_bytes_target the ceiling is today's measurement plus headroom, held until deferral lands.",
+  "issues": {
+    "env_expansion": "https://github.com/kirodotdev/KiroCrew/pull/30616",
+    "ambient_config": "https://github.com/kirodotdev/KiroCrew/issues/30601",
+    "tool_specs": "https://github.com/kirodotdev/KiroCrew/issues/30603",
+    "pi_spec_servers": "https://github.com/kirodotdev/KiroCrew/issues/29635"
+  },
+  "crew_tool_bytes_target": 40000,
+  "backends": {
+    "claude": {
+      "literal": "Y",
+      "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
+      "ambient": ["claude-project", "claude-user"],
+      "crew_tool_bytes_ceiling": 155000,
+      "note": "claude-agent-acp 0.94.0 (agent SDK 0.3.303) sends Crew's tool specs in full to the loopback model, about 127 KB; 0.100.0 (agent SDK 0.3.316) deferred them behind ToolSearch in the same setup. Re-measure on the bump."
+    },
+    "codex": {
+      "literal": "Y",
+      "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
+      "ambient": ["codex-project", "codex-user"],
+      "crew_tool_bytes_ceiling": 140000
+    },
+    "opencode": {
+      "literal": "Y",
+      "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
+      "ambient": ["opencode-project", "opencode-user"],
+      "crew_tool_bytes_ceiling": 160000
+    },
+    "goose": {
+      "literal": "Y",
+      "expansion": {"p-dollar": "L", "p-envprefix": "L"},
+      "ambient": ["goose-user"],
+      "crew_tool_bytes_ceiling": 160000
+    },
+    "pi": {
+      "literal": "-",
+      "ambient": ["pi-user"],
+      "crew_tool_bytes_ceiling": 40000
+    },
+    "deepseek": {
+      "literal": "Y",
+      "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
+      "ambient": []
+    },
+    "strands": {
+      "literal": "Y",
+      "expansion": {"p-dollar": "Y", "p-envprefix": "Y"},
+      "ambient": []
+    }
+  }
+}

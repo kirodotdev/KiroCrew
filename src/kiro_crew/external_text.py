@@ -44,5 +44,7 @@ def redact_external_text(text: str) -> str:
 
 
 def external_text_requires_redaction(text: str) -> bool:
-    """Return whether operator-visible text would require redaction."""
-    return redact_external_text(text) != text
+    """Return whether operator-visible text would require redaction or holds a flagged URL."""
+    from kiro_crew.security import refuses
+
+    return refuses(text, redact_external_text)

@@ -51,7 +51,7 @@ DNS rebinding, unauthenticated remote access, and the rest) is in
 | Boundary | Trusted side | Untrusted side | Enforced by |
 |---|---|---|---|
 | Gateway process ↔ agent subprocess | Kiro Crew gateway | `kiro-cli` + every tool/MCP descendant | OS sandbox (`sandbox.py`), env scrub, cgroup scope |
-| Agent tool request ↔ execution | the PreToolUse gate's decision | the tool call as the model phrased it | `hooks.py:HookManager.on_tool_call` |
+| Agent tool request ↔ execution | the PreToolUse gate's decision | the tool call as the model phrased it | `hook_runtime/hook_manager.py:HookManager.on_tool_call` |
 | Operator ceiling ↔ agent | keystone files under the data home | every agent read/write path | `security.is_sensitive_path` / `is_sensitive_write_path` |
 | Agent output ↔ any human or external service | nothing | all agent-derived text | `redact_credentials` / `redact_exfiltration_urls` / `StreamRedactor` |
 | Browser ↔ dashboard | authenticated session | any other origin or host | token auth, CSRF Origin check, Host allowlist |
@@ -215,7 +215,10 @@ this document names what the default leaves open so that choice is informed.
 (`off`, `standard`, `cc`) and whose harness mask does not hide it, so the
 agent can use the operator's ssh-agent there, including a forwarded one. Under
 `strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
-records consent in the keystone leaf `ssh_auth_sock_consent.json`.
+records consent in the keystone leaf `ssh_auth_sock_consent.json`. A shared MCP
+gateway backend never gets it unless the operator names that backend in the
+same leaf (`mcp_gateway_backends`), and then only the socket the gateway was
+started with.
 
 To grant that consent, write `{"enabled": true}` to
 `<config_dir>/ssh_auth_sock_consent.json` from a terminal outside Kiro Crew;
@@ -350,10 +353,10 @@ model's title **and** the raw command:
 
 - **Denied-command rules** (`BUILTIN_DENIED_RULES`): first-class
   `DeniedCommandRule` records (stable `id`, regex `pattern`, `category`,
-  human `description`) covering credential exfiltration, destructive
-  infrastructure and data operations, publishing to a protected branch, and
-  self-protection (the agent disabling Kiro Crew or minting its own dashboard
-  token). Default-ON, user-configurable from Settings → Security; the governance
+  human `description`, optional agent-facing refusal `note`) covering
+  credential exfiltration, destructive infrastructure and data operations,
+  publishing to a protected branch, and self-protection (the agent disabling
+  Kiro Crew or minting its own dashboard token). Default-ON, user-configurable from Settings → Security; the governance
   `commands` scope is the enterprise force-pin that cannot be opted out of
   (tightest-wins).
 - **Sensitive-bash detection** (`is_sensitive_bash_command`): refuses commands
@@ -429,42 +432,55 @@ someone deciding which bucket it belongs in.
 
 The memory recovery, record editor, and member recall/copy APIs each register
 their own output boundary. Their response fields pass through the shared
-credential and exfiltration-URL chain before reaching the dashboard or MCP caller.
+credential redaction, inside URLs too, before reaching the dashboard or MCP caller.
 
-- `redact_credentials()` runs four passes:
-  1. Fixed patterns: cloud access key IDs and secret keys, private-key blocks,
-     chat and forge tokens, package-registry tokens, JWTs, `Authorization: Bearer`
-     headers, and database connection URIs carrying embedded credentials.
-  2. Base64: it decodes base64-looking chunks and re-runs pass 1 on the bytes.
-  3. Bare secret key: an entropy and shape heuristic for an unlabelled
-     40-character cloud secret key, with exemptions for shapes it would otherwise
-     misread (digests, document links, code literals and others).
-  4. Token parameter: the value of a `token` URL parameter, keyed on the name.
+- `redact_credentials()` masks what the rule table decides is a credential, then
+  the few classes no table row reads yet (Telegram and Discord bot tokens, npm and
+  PyPI tokens, OpenAI `sk-proj-` keys, the `Authorization: Bearer` token) by fixed
+  pattern, then the value of a `token` URL parameter, keyed on the name. The table
+  (`security/redaction_structured/`) reads vendor tokens by published format
+  (checksums where published), private-key blocks, signed JWTs, a cloud secret key
+  beside its key ID or after its label, session tokens after their label,
+  passwords in URL userinfo, Basic-auth and API-key header values, session cookies,
+  labelled values such as `password=`, credential-type URL parameters, webhook URL
+  secrets, and base64 or hex runs that decode to one of these. It never masks an
+  identifier (a cloud access key ID, an account ID, an ARN, a request id, a UUID, a
+  git object name), a documentation example key, a public certificate or SSH key,
+  an image data URI, an OAuth `code` or `state`, an unsigned JWT or a token that
+  fails its format check, and it does not guess a secret from a run's entropy.
 
-  Key-value matching is JSON-aware and value classes stop at JSON structural
-  delimiters, so a match in compact JSON does not run into the next field. A
-  labelled match replaces the label together with the value, so
-  `{"AccessKeyId": "..."}` becomes `{"[REDACTED: credential]"}`.
-- `redact_exfiltration_urls()` / `scan_exfiltration_urls()` judge the payload
-  first. A credential in a URL is an unconditional floor; long query strings,
-  base64 blobs and heavy URL-encoding are heuristics. A flagged URL is replaced
-  with a redaction marker. Some destinations get narrower treatment: a valid S3
+  Only the value is replaced: the label, header name, URL scheme, host, path and
+  other parameters stay, so `{"Authorization": "Bearer <tok>"}` becomes
+  `{"Authorization": "Bearer [REDACTED: credential]"}`.
+- `redact_exfiltration_urls()` masks the credential values inside a URL the same
+  way and leaves the rest of the URL as written; a URL is never replaced whole.
+  `scan_exfiltration_urls()` is a request-blocking decision: it judges the payload
+  of a URL in a command. A credential in a URL is an unconditional floor; long
+  query strings, base64 blobs and heavy URL-encoding are heuristics, and a flagged
+  URL refuses the request. Some destinations get narrower treatment: a valid S3
   presigned URL is exempt; the ACP OAuth banner path spares standard OAuth
   parameters at approved authorization endpoints; Kiro Crew's own Slack app-create
-  link keeps only its alias under the heuristics; and a companion's exact hosts and
-  a reader's allowed hosts (*Allow for this host*, kept per workspace in a
-  read-only leaf) skip only the length and base64 heuristics. The credential
-  checks still run on those last three.
-- The owner's switch (Settings → Security) applies only inside the Files view,
-  and there it turns all credential redaction off. A code-text scope spares two
-  source-code shapes from pass 3 and nothing else.
+  link keeps only its alias under the heuristics; and a companion's exact hosts
+  skip only the length and base64 heuristics. The credential checks still run on
+  those last two. The dashboard never loads a remote markdown image on its own: it
+  draws a click-to-load placeholder.
+- The owner's one setting (Settings → Security → Redaction) turns credential
+  redaction on or off on the output paths that open a seam (chat, the saved
+  transcript, channel egress, the conversation replayed into the agent's prompt,
+  the log-record filter) and in the owner's Files view. It is off by default; a
+  host whose policy governs any scope keeps it on unless the top policy tier names
+  `capabilities.credential_redaction_off`. Every blocking gate, and every
+  redaction call outside a seam, redacts whichever way it is set.
 - `redact()` composes both in order for a single call site.
 - `StreamRedactor` handles the case per-chunk redaction structurally cannot: a
   credential split across a streaming boundary, where neither fragment matches on
   its own. It withholds the trailing run of credential-class characters until a
   non-credential terminator arrives or the stream ends, emitting only the
   confirmed-safe prefix, with a bounded hold-back so latency and memory stay
-  bounded on a pathologically long unbroken run.
+  bounded on a pathologically long unbroken run. The dashboard lets one kind of
+  held run go at once: a plain word ending a sentence, which no later text can
+  make part of a credential (security.md, "When the dashboard lets a held tail
+  go").
 
 Two ordering rules generalize beyond this layer and are worth stating once:
 **screen after decode, not before** (screening an encoded form and then writing
@@ -688,7 +704,7 @@ text is framed as explicitly untrusted data with a SEL event on every drop.
 | HTML/SVG sanitization | Model-authored Markdown, highlighted code, Mermaid, SVG and icon markup pass through DOMPurify before a controlled HTML sink |
 | Executable document isolation | Widgets and other executable `srcdoc` content use sandboxed iframes plus restrictive CSP rather than DOMPurify, which would strip their scripts |
 | Safe DOM APIs | Ordinary text and error fallbacks use React text children or `createElement` + `textContent` |
-| Mermaid | `securityLevel: 'strict'`, followed by sanitization, so an injected diagram cannot execute JS |
+| Mermaid | `securityLevel: 'strict'`, followed by sanitization, so an injected diagram cannot execute JS; the sanitizer config (`mermaidSanitize.ts`) also strips images and other self-loading URLs from HTML labels, so a label cannot make a zero-click request either; mermaid's `img:` node shape loads its URL during render and is not covered by that config |
 | No regex linkification | React elements via `.split()` |
 
 ## Credential file handling
@@ -735,14 +751,14 @@ process that confinement actually took effect (for example by attempting to read
 a canary that should be hidden). A confinement that loads but does not enforce
 would not be noticed.
 
-**Base64 credential detection has a floor.** Only base64 chunks at or above the
-minimum length are decoded and re-checked, so a shorter encoded fragment, or one
-split across messages, can pass. Cross-message correlation would extend it.
+**Encoded credential detection has a floor.** Only an encoded run at or above the
+`encoded_credential` row's minimum length is decoded and re-read, so a shorter
+encoded fragment, or one split across messages, can pass.
 
-**A bare secret key is a guess.** Pass 3 judges an unlabelled 40-character run by
-entropy and shape, which cannot tell a random secret from a random digest, so it
-carries exemptions and still misreads some benign values. The recorded direction
-replaces it with case-insensitive labels and key-ID pairing; see
+**A credential no table row reads stays as written.** The rule table masks
+values that are credentials by their published format or their label, never a run
+judged by its entropy, so an unlabelled secret in a format the table does not
+know reaches the output; see
 [the redaction tier decision](../decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md).
 
 **Write protection covers Kiro Crew's own trust root, not the user's shell
@@ -819,3 +835,23 @@ userland forward proxy that validates the socket after connect. Choosing the
 mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
 privilege model, and fail-open vs fail-closed when the layer is unavailable), so
 it is tracked as a design item on #17748 rather than shipped here.
+
+**A sandboxed command's detached descendants are not bound to its lifetime
+([#5883](https://github.com/kirodotdev/KiroCrew/issues/5883)).** The Linux
+launcher unshares only the user and mount namespaces. It deliberately adds no
+PID namespace: an earlier PID-namespace version broke session identity, which is
+keyed on host pids, and seccomp denies the host-wide `kill(-1)` broadcast
+instead. A process that detaches from a sandboxed command, such as a build
+daemon (the Gradle or Kotlin daemon, `mvnd`, the Bazel server), keeps running
+after the command and can outlive its agent runtime's teardown, under the
+confinement it was spawned with (on Linux, inside the sandbox's mount
+namespace). A later `agent.sandbox` change does not re-confine it. On Linux
+with systemd, the agent-scope reaper keeps an intentional detached server left
+after its agent runtime exits
+([session.md § Reaping abandoned agent scopes](../system-specs/modules/session.md#reaping-abandoned-agent-scopes)).
+A later build that connects to it runs under that confinement, not its own.
+Only Gradle has a guard, on Linux: the launcher adds
+`-Dorg.gradle.daemon=false` to `GRADLE_OPTS`. No other tool has one and the
+macOS path has none, because each guard covers one tool and the class is
+open-ended. Stopping the daemon (`gradle --stop`, `mvnd --stop`,
+`bazel shutdown`) ends it. **Status: ACCEPTED.**

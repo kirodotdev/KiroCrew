@@ -94,6 +94,23 @@ class TestCoalescer:
         assert "attempt" not in entry
 
     @pytest.mark.asyncio
+    async def test_merge_keeps_only_the_later_health_state(self):
+        """Retrying and stalled are one health state: the merged entry
+        carries only the later one, since the frontend applies `attempt` before
+        `stalled` and would show the stall whichever came last."""
+        c, all_frames, _ = _coalescer(active=50)
+        c.handle("subagent_retrying", {"id": "a1", "slot": "s", "attempt": 1})
+        c.handle("subagent_stalled", {"id": "a1", "slot": "s", "stalled": True, "idle_secs": 9})
+        c.handle("subagent_stalled", {"id": "a2", "slot": "s", "stalled": True, "idle_secs": 9})
+        c.handle("subagent_retrying", {"id": "a2", "slot": "s", "attempt": 1})
+        await _wait_for_tick_flush(c)
+        ((etype, data),) = all_frames
+        by_id = {u["id"]: u for u in data["updates"]}
+        assert by_id["a1"]["stalled"] is True and "attempt" not in by_id["a1"]
+        assert by_id["a2"]["attempt"] == 1
+        assert "stalled" not in by_id["a2"] and "idle_secs" not in by_id["a2"]
+
+    @pytest.mark.asyncio
     async def test_above_threshold_absorbs_and_flushes_one_frame(self):
         c, all_frames, _ = _coalescer(active=50)
         assert (

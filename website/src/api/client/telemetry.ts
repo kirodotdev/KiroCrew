@@ -38,6 +38,14 @@ export type WakaTimeStats = {
   }
 }
 
+/** WakaTime OAuth connection state (GET /api/wakatime/oauth/status). `connected`
+ *  gates the Disconnect control; `client_configured` tells the UI whether an
+ *  OAuth app client id is set so it can prompt for setup before offering Connect. */
+export type WakaTimeOauthStatus = {
+  connected: boolean
+  client_configured: boolean
+}
+
 /** Stacking dimensions `GET /api/usage/series` accepts. */
 export type UsageSeriesDimension = 'channel' | 'agent' | 'model' | 'cohort'
 
@@ -53,6 +61,10 @@ export type UsageSeriesLayer = {
   members?: number
 }
 
+/** What the series stacks: each turn's credits (kiro-cli, KAS) or its dollar
+ *  cost (a harness that bills in dollars, such as Claude Code). */
+export type UsageSeriesMetric = 'credits' | 'cost'
+
 /** Dense local-day axis plus layers in stack order, bottom first. `truncated`
  *  says the window held more turns than the server retains; `dropped_rows` is
  *  how many of the oldest it left out and `complete_from` the first day it kept
@@ -60,6 +72,8 @@ export type UsageSeriesLayer = {
  *  shortened window as the whole one. */
 export type UsageSeriesPayload = {
   dates: string[]
+  /** The value stacked; a server that predates the field stacks credits. */
+  metric?: UsageSeriesMetric
   series: UsageSeriesLayer[]
   total: number
   truncated: boolean
@@ -158,8 +172,8 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
     /** The Usage tab's stacked spend-over-time series: whole-install credits by
      *  one dimension; the same always-written row store as `usageTurns`, with no
      *  slot filter, which is why the route refuses app tokens. */
-    usageSeries: (by: UsageSeriesDimension) =>
-      get(`/api/usage/series?by=${encodeURIComponent(by)}`).then(j) as Promise<UsageSeriesPayload>,
+    usageSeries: (by: UsageSeriesDimension, metric: UsageSeriesMetric = 'credits') =>
+      get(`/api/usage/series?by=${encodeURIComponent(by)}${metric === 'credits' ? '' : `&metric=${metric}`}`).then(j) as Promise<UsageSeriesPayload>,
     /** WakaTime coding stats for a named range. Returns { configured: false }
      *  when the integration is off; a 502 body carries { code: 'upstream_unavailable' }. */
     wakatimeStats: (range: string) =>
@@ -168,6 +182,16 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
      *  the CSV/JSON arrives via the endpoint's own Content-Disposition. */
     wakatimeExportUrl: (start: string, end: string, format: 'csv' | 'json') =>
       `/api/wakatime/export?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&format=${format}`,
+    /** OAuth connection state for the settings Connect/Disconnect control. */
+    wakatimeOauthStatus: () =>
+      fetch('/api/wakatime/oauth/status').then(j) as Promise<WakaTimeOauthStatus>,
+    /** Start the OAuth read-auth flow. Returns the WakaTime authorize URL the
+     *  browser navigates to; the backend sets the CSRF state cookie on this call. */
+    wakatimeOauthAuthorize: () =>
+      post('/api/wakatime/oauth/authorize').then(j) as Promise<{ authorize_url: string }>,
+    /** Revoke and clear the stored tokens, returning the integration to API-key auth. */
+    wakatimeOauthDisconnect: () =>
+      post('/api/wakatime/oauth/disconnect').then(j) as Promise<{ disconnected: boolean }>,
   }
 
   const privacyPosture = {
@@ -178,7 +202,8 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
   }
 
   const creditUsage = {
-    sessionsUsage: () => fetch('/api/sessions/usage').then(j) as Promise<{ usage?: KiroUsagePayload }>,
+    /** `account` is an opaque tag of the signed-in account (absent when unknown). */
+    sessionsUsage: () => fetch('/api/sessions/usage').then(j) as Promise<{ usage?: KiroUsagePayload; account?: string }>,
     /**
      * Refresh the credit reading now (the account modal's Refresh button). Same
      * `{usage}` envelope as `sessionsUsage`, so `parseKiroUsagePayload` reads

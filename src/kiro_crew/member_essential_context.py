@@ -23,9 +23,11 @@ from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
+from kiro_crew.file_uri import file_uri_path_text, is_windows_drive_uri
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.session_work_dir import DERIVED_NAME_RE
 from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,11 @@ _LAUNCH_RECORD_MAX_BYTES = 128_000
 # A resources entry is a URI string this reader may open, or an object whose
 # keys are kiro-cli's schema. The alias records the shape, not those keys.
 ResourceDeclaration = str | dict[str, object]
+
+
+def _file_uri_path(uri: str) -> Path:
+    """The path a ``file://`` declaration names, ``~`` expanded."""
+    return Path(file_uri_path_text(uri)).expanduser()
 
 
 class MemberEssentialContextError(ValueError):
@@ -173,6 +180,19 @@ def _is_prefix_collision(name: str) -> bool:
     return folded not in _MANAGED_EXACT_NAMES and not folded.startswith(_MANAGED_NAME_STEMS)
 
 
+def _is_consolidation_run_dir(name: str) -> bool:
+    """Whether a top-level workspace *name* is the directory one memory pass runs in.
+
+    A member's consolidation call is keyed ``memory-consolidation:<store>:<call id>``
+    and runs in that key's directory under the workspace root, so its project IS this
+    name and starts with ``memory``. It is not the store: the store's own entries are
+    ``memory``, ``memory.db*``, ``memory_index.db*`` and the lessons files, none of which
+    has this shape. The name is judged by the exact pattern ``session_work_dir`` mints
+    (lowercase store, 32 hex call id, nothing after it), so a near miss stays managed.
+    """
+    return name.startswith("memory-consolidation_") and DERIVED_NAME_RE.match(name) is not None
+
+
 _RootTable = tuple[list[Path], list[Path], dict[Path, Path]]
 #: The root table of the one :func:`documents_for_member` read running on this
 #: context, or ``None`` outside one.
@@ -220,7 +240,7 @@ def _managed_roots_scope() -> Iterator[None]:
         _managed_roots.reset(token)
 
 
-def _refuse_managed_source(path: Path) -> None:
+def _refuse_managed_source(path: Path, *, discovery: bool = False) -> None:
     """Resources cannot reopen Global V1 or a peer's managed member state.
 
     The ROOTS are compared in their realpath spelling; the CANDIDATE is only
@@ -242,11 +262,19 @@ def _refuse_managed_source(path: Path) -> None:
     resolving anything. Callers that hold a validated path pass it already
     resolved, so those comparisons are exact; ``_read`` additionally re-checks the
     validated path, so the pre-validation call never has to be the deciding one.
+
+    *discovery* is set only where a wildcard walk decides whether to descend into an
+    entry it found. There a consolidation run directory is still pruned like any other
+    ``memory*`` name: leftovers from finished calls hold no guide, and descending
+    into them would spend the walk's entry cap on residue. Everywhere else the path
+    was named, so it is the exact run-directory name that is allowed, not the prefix.
     """
-    _refuse_managed_candidate(path, _managed_roots.get() or _managed_root_table())
+    _refuse_managed_candidate(
+        path, _managed_roots.get() or _managed_root_table(), discovery=discovery
+    )
 
 
-def _refuse_managed_candidate(path: Path, table: _RootTable) -> None:
+def _refuse_managed_candidate(path: Path, table: _RootTable, *, discovery: bool = False) -> None:
     """:func:`_refuse_managed_source` against one already-read root *table*."""
     roots, workspaces, resolved_roots = table
     candidate = Path(os.path.abspath(path))
@@ -272,7 +300,11 @@ def _refuse_managed_candidate(path: Path, table: _RootTable) -> None:
             continue
         if candidate.is_relative_to(workspace):
             parts = candidate.relative_to(workspace).parts
-            if parts and parts[0].casefold().startswith(("memory", "lessons", ".lessons")):
+            if (
+                parts
+                and parts[0].casefold().startswith(("memory", "lessons", ".lessons"))
+                and (discovery or not _is_consolidation_run_dir(parts[0]))
+            ):
                 raise _ManagedEssentialSourceError(
                     f"Essential source {path}: managed memory/member state cannot be a project resource",
                     workspace_entry=parts[0],
@@ -803,7 +835,7 @@ def _matches(
                     # Wildcards discover project guides, not managed state. Prune
                     # before descent; literal prefixes and reads still refuse it.
                     try:
-                        _refuse_managed_source(path)
+                        _refuse_managed_source(path, discovery=True)
                     except _ManagedEssentialSourceError as exc:
                         # The prune keeps the name-prefix heuristic fail-safe, so
                         # an ordinary project entry can be caught by it: say so
@@ -1090,6 +1122,7 @@ def documents_for_member(
     inherits_default_resources: bool = True,
     core_sources_out: set[str] | None = None,
     template_dir: str | None = None,
+    drive_uri_resources: bool = True,
 ) -> list[tuple[str, str]]:
     """Read actual project instructions and the owner's declared template sources.
 
@@ -1113,6 +1146,10 @@ def documents_for_member(
     *template_dir*, used only when *project* is ``None``, is searched for the
     template under its ``.kiro/agents`` (and anchors that template's relative
     prompt). No guide, steering or resource is read from it.
+
+    *drive_uri_resources* ``False`` leaves out every resource declared in the
+    Windows ``file:///C:/...`` spelling (:func:`is_windows_drive_uri`), which
+    kiro-cli does not load.
     """
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
@@ -1384,7 +1421,7 @@ def documents_for_member(
     # install directory (see is_managed_prompt).
     if prompt and not agent_mod.is_managed_prompt(prompt):
         if prompt.startswith("file://"):
-            path = Path(prompt[7:]).expanduser()
+            path = _file_uri_path(prompt)
             if path.is_absolute():
                 # An absolute persona is also contained by the template_dir
                 # that stood in for a missing project. Declared resources keep
@@ -1442,6 +1479,8 @@ def documents_for_member(
         raise MemberEssentialContextError(
             f"Essential template {spec_path}: resources must be a list of declarations"
         )
+    if include_project and not drive_uri_resources:
+        resources = [r for r in resources if not (isinstance(r, str) and is_windows_drive_uri(r))]
     if include_project and isinstance(resources, list):
         if _declared_document_count(resources) > _MAX_DOCUMENTS:
             raise MemberEssentialContextError(f"Essential template {spec_path}: too many resources")
@@ -1556,7 +1595,7 @@ def _resource_paths(
     for resource in resources:
         if not isinstance(resource, str) or not resource.startswith("file://"):
             continue
-        path = Path(resource[7:]).expanduser()
+        path = _file_uri_path(resource)
         root = absolute_root if path.is_absolute() else source_root
         if path.is_absolute():
             pattern = _resource_pattern(path, root)
@@ -1731,12 +1770,16 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
     version, so this responsibility includes only default/always steering. The
     implicit scan applies only while the workspace inherits kiro-cli's default
     resources, as it does natively; this model is kiro-cli's by construction, so
-    it takes that verdict itself, once.
+    it takes that verdict itself, once. A resource declared ``file:///C:/...`` on
+    Windows is not counted: kiro-cli does not load that spelling, so the member
+    receives it from Crew instead.
     """
     inherits = member_inherits_default_resources(project)
-    declared = dict(documents_for_member(template, project, native_only=True))
+    declared = dict(
+        documents_for_member(template, project, native_only=True, drive_uri_resources=False)
+    )
     for source, body in documents_for_member(
-        template, project, inherits_default_resources=inherits
+        template, project, inherits_default_resources=inherits, drive_uri_resources=False
     ):
         path = Path(source)
         if path.name == "AGENTS.md" or "steering" in path.parts:

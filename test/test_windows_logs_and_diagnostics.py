@@ -169,7 +169,7 @@ def test_follow_allows_real_writer_rollover(windows_log, monkeypatch, capsys, du
     errors = []
     monkeypatch.setattr(handler, "handleError", errors.append)
     opens = []
-    real_open = platform_compat.open_log_file_for_tail
+    real_open = platform_compat.open_file_for_shared_read
 
     def rotate():
         # The seed fills the file; these two short records fit in one new file.
@@ -183,7 +183,7 @@ def test_follow_allows_real_writer_rollover(windows_log, monkeypatch, capsys, du
             rotate()
         return fd
 
-    monkeypatch.setattr(platform_compat, "open_log_file_for_tail", read_open)
+    monkeypatch.setattr(platform_compat, "open_file_for_shared_read", read_open)
     emitted = ""
     ticks = []
 
@@ -275,7 +275,7 @@ def test_nonfollow_flushes_incomplete_utf8(windows_log, capsys):
 
 def test_no_data_polls_close_read_descriptors(windows_log, monkeypatch):
     windows_log.write_bytes(b"")
-    real_open = platform_compat.open_log_file_for_tail
+    real_open = platform_compat.open_file_for_shared_read
     descriptors = []
 
     def read_open(path):
@@ -289,7 +289,7 @@ def test_no_data_polls_close_read_descriptors(windows_log, monkeypatch):
         if len(descriptors) == 3:
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(platform_compat, "open_log_file_for_tail", read_open)
+    monkeypatch.setattr(platform_compat, "open_file_for_shared_read", read_open)
     _pin_sleep(monkeypatch, tick)
     cli_server._tail_log_file(windows_log, 1, True)
     assert len(descriptors) == 3
@@ -308,7 +308,7 @@ def test_logs_read_failure_has_guidance(windows_log, monkeypatch, capsys, error)
     def cannot_open(_path):
         raise error
 
-    monkeypatch.setattr(platform_compat, "open_log_file_for_tail", cannot_open)
+    monkeypatch.setattr(platform_compat, "open_file_for_shared_read", cannot_open)
     with pytest.raises(SystemExit) as result:
         cli_server._logs_cmd(argparse.Namespace(lines=1, follow=False))
     assert result.value.code == 1

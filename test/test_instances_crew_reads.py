@@ -124,6 +124,28 @@ class TestCrewScopedSessionReads(CrewReadsCase):
         msgs = _body(r)["messages"]
         assert [m["content"] for m in msgs] == ["two", "three"]  # tail-capped
 
+    def test_read_asks_the_peer_for_only_the_rows_it_keeps(self, tmp_path, monkeypatch):
+        """The hub keeps ``max_messages`` rows, so it asks the peer for that many:
+        a peer that reads from the end of its transcript then never sends the rest."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        # What a peer that honours the count answers: role and content only.
+        body = json.dumps(
+            [{"role": "assistant", "content": "two"}, {"role": "user", "content": "three"}]
+        ).encode()
+        mgr = self._mgr_with(read_body=body)
+        r = asyncio.run(
+            handlers.api_crew_sessions_read(
+                self._internal_req(_State(reg, mgr), crew="cd-1", key="k1", max_messages="2")
+            )
+        )
+        assert r.status == 200
+        assert mgr.last_params == {"exclude_incognito": "1", "max_messages": "2"}
+        assert [m["content"] for m in _body(r)["messages"]] == ["two", "three"]
+
     def test_read_rejects_traversal_key(self, tmp_path, monkeypatch):
         """A refused key is a denied crew read and is audited as one, with the
         caller's key: the audit middleware skips GETs, so without the handler's own
@@ -680,7 +702,7 @@ class TestCrewScopedSessionReads(CrewReadsCase):
         )
         assert r.status == 200
         # read enforces incognito peer-side (not just the search/list discovery filter).
-        assert mgr.last_params == {"exclude_incognito": "1"}
+        assert mgr.last_params["exclude_incognito"] == "1"
 
     def test_read_refuses_a_peer_that_does_not_confirm_the_exclusion(self, tmp_path, monkeypatch):
         """An older peer is refused UNREAD, not trusted.

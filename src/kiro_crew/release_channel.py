@@ -126,8 +126,30 @@ UNKNOWN_CHANNEL_FORM_OPTION = "Not sure"
 #: The installed distribution whose metadata version is the second copy of the
 #: release pipeline's spelling. ``pyproject.toml`` names it, and
 #: ``build-wheel.yml`` stamps its ``version`` with the same string it writes
-#: into ``__version__``, so the two agree on a build nobody re-stamped.
+#: into ``__version__``, so the two agree on a build nobody re-stamped. The LTS
+#: edition is built as its own distribution, ``kirocrew-lts``
+#: (``build-wheel.yml``).
 _DISTRIBUTION_NAME = "kirocrew"
+_LTS_DISTRIBUTION_NAME = "kirocrew-lts"
+
+
+def distribution_name() -> str:
+    """The distribution this build installs as, from its baked edition.
+
+    An LTS build is ``kirocrew-lts`` only where that distribution is installed.
+    The desktop backend and ``make wheel EDITION=lts`` install the source tree,
+    whose ``pyproject.toml`` still says ``kirocrew``, so there the name stays
+    ``kirocrew``.
+    """
+    from kiro_crew.edition import is_lts
+
+    if is_lts():
+        try:
+            importlib.metadata.distribution(_LTS_DISTRIBUTION_NAME)
+        except importlib.metadata.PackageNotFoundError:
+            return _DISTRIBUTION_NAME
+        return _LTS_DISTRIBUTION_NAME
+    return _DISTRIBUTION_NAME
 
 
 def channel(version: str | None = None) -> str:
@@ -225,7 +247,7 @@ def distribution_version() -> str | None:
     on a broken install.
     """
     try:
-        raw = _metadata_version(_DISTRIBUTION_NAME)
+        raw = _metadata_version(distribution_name())
     except Exception:
         return None
     value = str(raw or "").strip()

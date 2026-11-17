@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.always_allow_tool import ACTION as _ALWAYS_ALLOW_TOOL
 from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_ACTIONS, is_deny_override_card
 
 if TYPE_CHECKING:
@@ -35,12 +36,14 @@ if TYPE_CHECKING:
         exact_trust_pattern,
         grant_deadline,
         logger,
+        native_resolution_target,
         parse_grant_ttl,
         read_bounded_json,
         record_trust_grant,
         row_mid,
         safety_override,
         sel,
+        session_approval_refusal,
         session_grant,
         session_mode_permitted,
         slot_not_found,
@@ -129,13 +132,63 @@ async def deny_session_approval_caller(request: web.Request, operation: str) -> 
         )
     except Exception:  # pragma: no cover - audit is best-effort
         logger.debug("SEL audit failed for %s denial", operation, exc_info=True)
-    return web.json_response(
-        {
-            "error": "app cannot manage session approvals",
-            "code": "session_approval_not_granted",
-        },
-        status=403,
-    )
+    return await session_approval_refusal(request_app)
+
+
+#: What a Shared Crew teammate may answer on a session's own approval card. Every
+#: trust verb and ``yolo`` changes the session's approval mode rather than deciding
+#: one request, and a deny-rule override is the owner's alone, so those stay with
+#: the owner gate.
+_TEAMMATE_DECISIONS = frozenset({"approved", "rejected", "rejected_once"})
+
+
+def _shared_crew_teammate(request: web.Request) -> bool:
+    """Whether *request* is a Shared Crew teammate's own dashboard session, not the owner's.
+
+    A teammate is a person a sharing path admitted by its own check: a team Crew
+    teammate the Kiro relay verified (``routes_identity._relay_teammate``), or a
+    collaborator a membership boundary admitted (``is_collaborator_request``: the
+    Tailscale paths and an SSM invite). Teammates already open and run turns in
+    every session, so they decide that session's tool approvals too. App tokens,
+    internal callers and any other non-owner dashboard session are not teammates,
+    and nobody is one while the Shared Crew preview is off.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.shared_crew.collaborators import is_collaborator_request
+    from kiro_crew.shared_crew.preview import preview_enabled
+    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+
+    if request.get("internal_auth") is True or request.get("app", None) != "":
+        return False
+    if not preview_enabled() or is_owner_dashboard_request(request):
+        return False
+    return _relay_teammate(request) or is_collaborator_request(request)
+
+
+def _teammate_decision_refusal(
+    request: web.Request, slot_name: str, request_id: Any, action: Any
+) -> web.Response | None:
+    """Admit a teammate's decision on *slot_name*, or refuse an owner-only action.
+
+    Either way the outcome is recorded in the SEL under the teammate's subject.
+    """
+    allowed = isinstance(action, str) and action in _TEAMMATE_DECISIONS
+    try:
+        sel().log_api_access(
+            caller=str(request.get("user") or "anonymous"),
+            operation=f"tool_approval:{action if isinstance(action, str) else 'invalid'}",
+            outcome="allowed" if allowed else "denied",
+            source="shared_crew_teammate",
+            resources=f"slot={slot_name} request={request_id if isinstance(request_id, str) else ''}",
+            error="" if allowed else "approval mode and override decisions are owner-only",
+        )
+    except Exception:  # pragma: no cover - audit is best-effort
+        logger.debug("SEL audit failed for teammate approval decision", exc_info=True)
+    if allowed:
+        return None
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+
+    return _owner_denial_response(request, "forbidden")
 
 
 def bare_approval_decide_allowed(request: web.Request) -> bool:
@@ -402,6 +455,8 @@ async def apply_approval_mode(
     request_app: str,
     cron_creator: str,
     audit_caller: Callable[[str], str],
+    still_live: Callable[[], bool] | None = None,
+    cascade_may_raise: bool = True,
 ) -> web.Response:
     """Apply an approval mode to ONE resolved slot (or every slot when ``slot`` is None).
 
@@ -409,6 +464,18 @@ async def apply_approval_mode(
     passed. Shared with the crewmate profile write (``PUT /api/agents/{name}``),
     which applies the stored permission to the crewmate's live DM slot through
     this same path rather than a copy of it.
+
+    *still_live* ties the change to one approval prompt (a Slack Code channel's
+    "Trust this channel"): it is asked after the override deactivation (this
+    function's only await before a ``trust`` grant) and before any mode flag or
+    policy is written -- for ``trust`` with no yield between, and for
+    ``trust_reads`` on one slot again after its trust-scope ending -- and a
+    prompt that has stopped waiting gets a 409 and no mode change.
+
+    *cascade_may_raise* False keeps the creator-mode cascade lower-only for a
+    change that only takes a grant away from *slot* (a Slack Code channel
+    lowering one of its workers): *slot*'s tie to the caller may be unverified,
+    so its children are never raised on its behalf.
     """
     # Every caller reaches the mutation through here, so the session-mode policy is
     # checked here too, not only in ``api_chat_mode``.
@@ -464,6 +531,16 @@ async def apply_approval_mode(
         # re-indexing state._slots.
         await asyncio.to_thread(safety_override().deactivate, "dashboard")
 
+    if still_live is not None and mode != "yolo" and not still_live():
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "the approval is no longer waiting",
+                "code": "approval_not_waiting",
+            },
+            status=409,
+        )
+
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
@@ -498,6 +575,17 @@ async def apply_approval_mode(
                 s for s in list(state._slots.values()) if effective_session_key(s) == _reads_key
             ]
             await _end_trust_scopes(_reads_sharing, audit_caller)
+            # Asked again past that await: no yield between it and the writes
+            # (the flags, the policy, then the creator-mode cascade).
+            if still_live is not None and not still_live():
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "error": "the approval is no longer waiting",
+                        "code": "approval_not_waiting",
+                    },
+                    status=409,
+                )
             _reads_live = _still_owning(state, _reads_sharing, _reads_key)
             for _sharing in _reads_live:
                 _sharing._trust = False
@@ -670,7 +758,7 @@ async def apply_approval_mode(
         inherited_slots = _apply_inherited_postures(
             state,
             slot,
-            may_raise=not request_app and not cron_creator,
+            may_raise=not request_app and not cron_creator and cascade_may_raise,
             audit_caller=audit_caller,
         )
 
@@ -757,6 +845,25 @@ async def apply_approval_mode(
     return web.json_response({"ok": True, "mode": mode})
 
 
+def _strict_native_owner(
+    state: DashboardState, slot: _ChatSlot, request_id: str, request_mid: str
+) -> _ChatSlot | None:
+    """The slot holding the live native request *request_id* stamped *request_mid*.
+
+    That is *slot* itself or a slot sharing its session identity (the owner scan
+    the decide uses), and only while its future under the id is pending and
+    still carries that mid. ``None`` means the card's request is gone.
+    """
+    want_session = effective_session_key(slot)
+    for cand in (slot, *state._slots.values()):
+        if cand is not slot and effective_session_key(cand) != want_session:
+            continue
+        fut = cand._approval_futures.get(request_id)
+        if fut is not None and not fut.done() and cand.approval_instance(request_id) == request_mid:
+            return cand
+    return None
+
+
 def _sweep_pending_approvals(
     state: DashboardState, slot: _ChatSlot, mode: str, audit_caller: Callable[[str], str]
 ) -> None:
@@ -776,6 +883,8 @@ def _sweep_pending_approvals(
             # stays open.
             continue
         if not fut.done():
+            # Read while still pending: names the row the frame settles.
+            _mid = slot.approval_instance(aid) or ""
             fut.set_result("approved")
             # Persist resolved state into the permission message. The
             # periodic flush skips non-dirty slots, so the mark must
@@ -785,7 +894,12 @@ def _sweep_pending_approvals(
             # ``slot`` keys the frame for the slot-scoped WS gate.
             state.broadcast_ws(
                 "approval_resolved",
-                {"id": aid, "approved": True, "slot": slot.key},
+                {
+                    "id": aid,
+                    "approved": True,
+                    "slot": slot.key,
+                    **native_resolution_target(_mid),
+                },
             )
             try:
                 sel().log_api_access(
@@ -1026,12 +1140,36 @@ def _elicitation_not_an_approval() -> web.Response:
     )
 
 
+# What a strict native decide may carry. Trust verbs are included so a pending
+# card's standing grant is bound to the exact request (``request_mid``) the card
+# showed; ``yolo`` widens the whole session rather than one request and stays
+# off the strict path.
+_STRICT_NATIVE_ACTIONS = frozenset(
+    {"approved", "rejected", "rejected_once", "trust", "trust_reads", "trust_command", "trust_base"}
+    | {_ALWAYS_ALLOW_TOOL}
+)
+
+
+def _state_approval_pending(state: DashboardState, request_id: Any) -> bool:
+    """Whether *request_id* names a background approval that is still open."""
+    state_fut = state._approval_futures.get(request_id) if request_id else None
+    return state_fut is not None and not state_fut.done()
+
+
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval."""
+    """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval.
+
+    The owner, an app with the session approval grant, or a Shared Crew teammate
+    (:func:`_shared_crew_teammate`), who may approve or reject the live card the
+    decide names (``origin: "native"`` with its ``request_mid``) but not change the
+    approval mode or answer a deny-rule override.
+    """
     state: DashboardState = request.app["state"]
-    denied = await deny_session_approval_caller(request, "chat_slot_approve")
-    if denied is not None:
-        return denied
+    teammate = _shared_crew_teammate(request)
+    if not teammate:
+        denied = await deny_session_approval_caller(request, "chat_slot_approve")
+        if denied is not None:
+            return denied
     request_app = str(request.get("app") or "")
     # A Crew Mode conductor's approval card decides a WORKER's request through this
     # same route (``crew_workers.api_crew_worker_approve``): that route gates the
@@ -1068,6 +1206,10 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "invalid response_id", "code": "invalid_response_id"}, status=400
         )
+    if teammate:
+        refused = _teammate_decision_refusal(request, name, request_id, original_action)
+        if refused is not None:
+            return refused
     if request_app and original_action == "yolo":
         return _deny_app_yolo(request_app, "tool_approval:yolo")
     # A FRESH grant read: the body upload above can take long enough for the
@@ -1080,10 +1222,18 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     if isinstance(request_id, str) and request_id in _pending_elicitation_ids(slot):
         return _elicitation_not_an_approval()
     strict_native = "origin" in body
-    if not strict_native and not request_app and not bare_approval_decide_allowed(request):
+    # The one owner a strict native decide resolves on (``_strict_native_owner``).
+    strict_owner: _ChatSlot | None = None
+    if (
+        not strict_native
+        and not request_app
+        and (teammate or not bare_approval_decide_allowed(request))
+    ):
         # A decide by request id alone, from a caller that is not the dashboard
         # owner's browser session: refuse it rather than resolve whichever
-        # request now holds the id.
+        # request now holds the id. A teammate always names the card it was
+        # clicked on, so the strict check below confines them to a live card in
+        # this slot's session.
         return _approval_target_required()
     if strict_native:
         request_mid = body.get("request_mid")
@@ -1093,24 +1243,21 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             or not request_id
             or not isinstance(request_mid, str)
             or not request_mid
+            # A non-string action (a list, an object) is unhashable: test the
+            # type first so it is refused as a bad target, not raised as a 500.
+            or not isinstance(action, str)
             # A security-rule override's two decisions are instance-bound by
             # design (``_deny_override_answer_refusal`` requires it).
-            or (
-                action not in ("approved", "rejected", "rejected_once")
-                and not (isinstance(action, str) and action in DENY_OVERRIDE_ACTIONS)
-            )
+            or (action not in _STRICT_NATIVE_ACTIONS and action not in DENY_OVERRIDE_ACTIONS)
         ):
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
-        # This caller displayed a native request from this exact slot. A stale
-        # card must not select a same-id coordinator or another slot's future.
-        native_future = slot._approval_futures.get(request_id)
-        if (
-            not native_future
-            or native_future.done()
-            or slot.approval_instance(request_id) != request_mid
-        ):
+        # This caller displayed a native request from this slot or one sharing
+        # its session identity. A stale card must not select a same-id
+        # coordinator approval or an unrelated slot's future.
+        strict_owner = _strict_native_owner(state, slot, request_id, request_mid)
+        if strict_owner is None:
             settled = shared_decisions.settled_reply(
                 state,
                 slot.key,
@@ -1157,10 +1304,21 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # and the resolved outcome MUST land on the OWNER slot — the one whose
     # session loop consumes the future and gates subsequent tools — or the trust
     # opt-in silently fails on the running session while the UI reports success.
+    if request_id and isinstance(request_id, (list, dict)):
+        # A non-empty one is unhashable and would raise in the lookups below; an
+        # empty one stays the implicit single-pending pick it has always been.
+        return web.json_response(
+            {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
+        )
     owner = slot
-    if request_id:
+    if strict_owner is not None:
+        # The strict check above already chose the owner by the card's mid:
+        # the generic scan below picks by id alone and could land elsewhere.
+        owner = strict_owner
+        fut = owner._approval_futures.get(request_id)
+    elif request_id:
         fut = slot._approval_futures.get(request_id)
-        if (not fut or fut.done()) and not strict_native:
+        if not fut or fut.done():
             # The future can live on a DIFFERENT slot object only under
             # session-sharing / rehydration — i.e. a slot that resolves to the
             # SAME session identity as the addressed one. ACP request_ids are
@@ -1204,6 +1362,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         )
         if denied is not None:
             return denied
+    if strict_native and (not fut or fut.done()):
+        # The card's request settled while this decide was being read (the
+        # ttl and pattern checks above can await).
+        return web.json_response(
+            {"error": "no pending approval", "code": "approval_not_pending"}, status=404
+        )
     if request_app and (not fut or fut.done()):
         # No slot-level future means the id names (at most) a STATE-level
         # approval. Those are raised only by background sources -- cron,
@@ -1331,6 +1495,44 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 _grant_deadline(grant_ttl),
             )
         action = "approved"
+    # YOLO on a card whose request is pending nowhere (settled, expired, or never
+    # this id): the reply below is unchanged, but a stale card must not switch on
+    # global auto-approval.
+    elif (
+        action == "yolo"
+        and (not fut or fut.done())
+        and not _state_approval_pending(state, request_id)
+    ):
+        if not yolo_policy_permits():
+            # A policy that denies yolo still answers, and audits, the denial: the
+            # same two entries main writes (the override's own refusal, then this
+            # route's), without the activation attempt itself.
+            await asyncio.to_thread(safety_override()._log_policy_refusal, "dashboard", scope="")
+            return _deny_approval_mode(
+                caller=audit_caller(),
+                operation="tool_approval:yolo",
+                mode="yolo",
+                resource=request_id,
+            )
+        action = "approved"
+    # Always allow this tool: the verified ``@server/tool`` the pending card
+    # carries, written before this call is approved (``always_allow_tool``).
+    elif action == "always_allow_tool":
+        # Imported here: this body runs on the chat handlers facade's globals.
+        from kiro_crew.dashboard import always_allow_tool as _always_allow
+
+        refused = await _always_allow.grant_from_card(
+            request,
+            fut=fut,
+            card=lambda field: _get_pattern_from_pending(owner, request_id, field),
+            body=body,
+            from_app=bool(request_app),
+            delegated=bool(delegated),
+            strict_native=strict_native,
+        )
+        if refused is not None:
+            return refused
+        action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
@@ -1420,6 +1622,8 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         if settled is not None:
             return shared_decisions.respond(settled)
         return web.json_response({"error": "no pending approval"}, status=404)
+    # Read while still pending: names the row the frame below settles.
+    resolved_mid = (owner.approval_instance(request_id) or "") if request_id else ""
     if request_id:
         if rejection_reason:
             # Kept before the future settles (nothing awaits in between), so the
@@ -1470,9 +1674,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 # Keys the frame for the slot-scoped WS gate (see
                 # ws_event_scope._SLOT_SCOPED_EVENTS).
                 "slot": owner.key,
-                # An instance-bound answer names the card row it settled:
-                # request ids recur, so every window stamps that row alone.
-                **({"mid": request_mid} if strict_native else {}),
+                **native_resolution_target(resolved_mid),
             },
         )
     if resolution is not None and resolution.decision is not None:

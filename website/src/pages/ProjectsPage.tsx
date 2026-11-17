@@ -23,7 +23,9 @@ import { i18nT } from '../i18n/t'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
+import StatusNotice from '../components/StatusNotice'
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
+import { pollWhileVisible } from '../lib/pollWhileVisible'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 /** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
@@ -64,6 +66,23 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
       <ErrorNotice message={planError} className="mt-2" testId="projects-plan-error" />
     </div>
   )
+}
+
+/** The run's state in the app language. A status the runner adds later still
+ *  shows, verbatim, rather than disappearing. */
+export function runStatusLabel(run: Pick<ProjectRun, 'running' | 'status'>): string {
+  if (run.running) return i18nT('pages.projectsPage.running')
+  switch (run.status) {
+    case 'completed': return i18nT('pages.projectsPage.status_completed')
+    case 'failed': return i18nT('pages.projectsPage.status_failed')
+    case 'cancelled': return i18nT('pages.projectsPage.status_cancelled')
+    case 'planned': return i18nT('pages.projectsPage.status_planned')
+    case 'planning': return i18nT('pages.projectsPage.planning')
+    case 'running': return i18nT('pages.projectsPage.running')
+    case 'paused': return i18nT('pages.projectsPage.status_paused')
+    case 'pausing': return i18nT('pages.projectsPage.status_pausing')
+    default: return run.status
+  }
 }
 
 export default function ProjectsPage() {
@@ -140,6 +159,7 @@ export default function ProjectsPage() {
   // drop its rejection or its `{ ok: false }` body on the floor, so a refused
   // action was indistinguishable from a slow one.
   const [actionError, setActionError] = useState('')
+  const [statusNotice, setStatusNotice] = useState<{ message: string; tone: 'warn' | 'info'; runId: string | null } | null>(null)
   const mountedRef = useRef(true)
   const loadingRef = useRef(false)
   const appliedRef = useRef<string | null>(null)
@@ -234,6 +254,7 @@ export default function ProjectsPage() {
       setBusyRuns(new Set(busyRunsRef.current))
     }
     setActionError('')
+    setStatusNotice(null)
     try {
       const r = await request()
       if (r && r.ok === false) { setActionError(r.error || i18nT('pages.projectsPage.action_failed')); return }
@@ -248,8 +269,7 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     load()
-    const iv = setInterval(load, 3000)
-    return () => clearInterval(iv)
+    return pollWhileVisible(load, 3000)
   }, [load, refreshTrigger])
 
   // Recovery: poll for planned run if isPlanning was restored from sessionStorage
@@ -380,7 +400,12 @@ export default function ProjectsPage() {
   }
 
   const cancelPlan = async () => {
-    try { await api.cancelPlan() } finally { setIsPlanning(false); sessionStorage.removeItem('tr-planning') }
+    // A refused cancel leaves the plan running, so the banner stays and says why.
+    setPlanError('')
+    let r: ActionResult
+    try { r = await api.cancelPlan() } catch (e) { setPlanError(errText(e)); return }
+    if (r && r.ok === false) { setPlanError(r.error || i18nT('pages.projectsPage.action_failed')); return }
+    setIsPlanning(false); sessionStorage.removeItem('tr-planning')
   }
 
   const handleRun = (input: string, source: string) => {
@@ -400,7 +425,8 @@ export default function ProjectsPage() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.yaml_files_should_be_uploaded_via_the_from_yaml')); e.target.value = ''; return }
+    setStatusNotice(null)
+    if (/\.ya?ml$/i.test(file.name)) { setStatusNotice({ message: i18nT('pages.projectsPage.yaml_files_should_be_uploaded_via_the_from_yaml'), tone: 'warn', runId: null }); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setSpecText(reader.result as string)
     reader.readAsText(file)
@@ -410,7 +436,8 @@ export default function ProjectsPage() {
   const handleYamlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.only_yaml_yml_files_are_accepted_here_use_the_fr')); e.target.value = ''; return }
+    setStatusNotice(null)
+    if (!/\.ya?ml$/i.test(file.name)) { setStatusNotice({ message: i18nT('pages.projectsPage.only_yaml_yml_files_are_accepted_here_use_the_fr'), tone: 'warn', runId: null }); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setYamlText(reader.result as string)
     reader.readAsText(file)
@@ -473,7 +500,13 @@ export default function ProjectsPage() {
             <span className="text-[14px]">{icon}</span>
             <div className="flex-1 min-w-0">
               <div className="text-[13px] font-semibold text-text-strong truncate">{name}</div>
-              <div className="text-[11px] text-muted">{r.task_id} · {r.completed}/{r.tasks} · {r.running ? 'running' : r.status}</div>
+              {/* Count and state first and never truncated: they wrap (before the
+                  "·", which stays with the state) where a long label cannot fit
+                  the rail. The id after them gives way first and drops out. */}
+              <div className="flex min-w-0 text-[11px] text-muted" title={`${r.task_id} · ${r.completed}/${r.tasks} · ${runStatusLabel(r)}`}>
+                <span className="min-w-0 break-words">{r.completed}/{r.tasks} {'·\u00a0'}{runStatusLabel(r)}</span>
+                <span className="truncate whitespace-pre basis-0 grow"> · {r.task_id}</span>
+              </div>
             </div>
             {/* Auto-approve indicator. Gated on the LIVE grant (matches the
                 run-detail toggle sync effect at line 225: "Reflect only a
@@ -676,6 +709,7 @@ export default function ProjectsPage() {
             edits (compose) or the run's task-edit drafts (`pendingEdits` in the
             detail pane) — unsaved local state the hand-off would unmount. */}
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
+        <StatusNotice message={statusNotice?.runId === (selectedRun?.task_id ?? null) ? statusNotice?.message : undefined} tone={statusNotice?.tone} onDismiss={() => setStatusNotice(null)} className="mx-4 mt-2 shrink-0" testId="projects-status-notice" />
         {/* Project rename announcement — always mounted so it is present before any run is selected. */}
         <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
         {selectedRun ? (
@@ -746,7 +780,7 @@ export default function ProjectsPage() {
                 onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') } }}
               ><Pencil className="lucide-inline" /></span>}
-              <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> {i18nT('pages.projectsPage.planning')}</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> {i18nT('pages.projectsPage.running')}</> : selectedRun.status}</span>
+              <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> {i18nT('pages.projectsPage.planning')}</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> {i18nT('pages.projectsPage.running')}</> : runStatusLabel(selectedRun)}</span>
               <div className="flex-1" />
               {selectedRun.status === 'planned' && <>
                 <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title={i18nT('pages.projectsPage.run_unattended_auto_approve_this_run_s_tool_call')}>
@@ -791,10 +825,15 @@ export default function ProjectsPage() {
                 <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => {
                   const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
                   const spec = selectedRun.spec_content || selectedRun.original_input || ''
-                  if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }
+                  const runId = selectedRun.task_id
+                  if (!spec) { setStatusNotice({ message: i18nT('pages.projectsPage.no_spec_idea_to_schedule'), tone: 'warn', runId }); return }
                   void runAction(
                     () => api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 }),
-                    () => alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job')),
+                    () => {
+                      if (mountedRef.current && selectedRunIdRef.current === runId) {
+                        setStatusNotice({ message: i18nT('pages.projectsPage.scheduled_as_daily_cron_job'), tone: 'info', runId })
+                      }
+                    },
                   )
                 }}><Clock className="lucide-inline" /> {i18nT('pages.projectsPage.schedule')}</button>
               </>}

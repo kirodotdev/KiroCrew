@@ -12,7 +12,7 @@ hostname, or open port to manage.
 > only specified through a vendor SDK (handshake, tenant-token refresh, and
 > frame envelope), so it needs `lark-oapi`. It is **not** part of core, so install
 > it directly into the environment that runs the gateway:
-> `pip install 'lark-oapi>=1.4,<2'`. Without it the gateway logs a line and skips
+> `pip install "lark-oapi>=1.4,<2"`. Without it the gateway logs a line and skips
 > the channel — nothing else is affected.
 >
 > **Desktop app: nothing to install.** The app bundles `lark-oapi`, and every
@@ -230,8 +230,13 @@ Known gaps, all follow-up work rather than defects:
   edit-in-place streaming is a natural next step.
 - **No images in group answers.** A group answer keeps printing an image's
   path, because not every member of the group is on the allow-list.
-- **Replies only.** The bot answers an inbound message and cannot start a
-  conversation, so it is not a proactive-notification target.
+- **Notifications are read-only.** Settings → Notifications → Sources can send
+  a channel's notifications to your Feishu DM. A waiting tool approval comes
+  through the approval channel, so route that row to Feishu and turn on the
+  **Send pending approvals to chat apps** preview. Notes go only while exactly
+  one `open_id` is in `allowed_open_ids`, which is how the gateway knows the DM
+  is yours. Answer an approval in the dashboard: a reply in Feishu does not
+  answer it.
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
   optional extra, and running `pip` from a dashboard action would be a new way to
   execute code in the gateway's own environment. When the SDK is missing, Settings reports whether installation is supported for this gateway interpreter and shows its exact install command only when it is; you run that command yourself.

@@ -23,10 +23,12 @@ import logging
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import acp_backends
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
+from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.agent_sdk import backends as sdk_backends
 from kiro_crew.agent_sdk import tool_gate as gate
 
@@ -133,14 +135,15 @@ def test_goose_serves_session_load_so_it_needs_no_load_workaround() -> None:
 
 
 def _stub(backend: str = GOOSE) -> AcpClient:
-    """An ``AcpClient`` whose backend answers, without a spawn or a transport.
+    """The client class that serves *backend*, without a spawn or a transport.
 
     Built through ``__new__`` because the real ``__init__`` resolves a binary and builds
     a transport, and the method under test reads neither -- it reads one response dict
     and the backend id. ``backend`` is a read-only property over ``_acp_backend``, so the
-    attribute it reads is what gets set.
+    attribute it reads is what gets set. goose's own members live on ``GooseAcpClient``.
     """
-    client = AcpClient.__new__(AcpClient)
+    cls = AcpClient._client_class_by_backend.get(backend, AcpClient)
+    client = cls.__new__(cls)
     client._acp_backend = backend
     client._available_mode_ids = []
     client._modes_advertised = False
@@ -224,7 +227,26 @@ def test_the_read_back_is_scoped_to_goose() -> None:
     refused by a rule that is not about it.
     """
     for other in (acp_backends.ACP_BACKEND_KIRO, acp_backends.ACP_BACKEND_OPENCODE):
-        _stub(other)._verify_goose_routing(_session_response("auto"))
+        client = _stub(other)
+        assert client._reads_back_session_mode is False, other
+        assert not hasattr(client, "_verify_goose_routing"), other
+        client._verify_session_mode(_session_response("auto"))
+    assert _stub()._reads_back_session_mode is True
+
+
+def test_a_class_that_reads_no_mode_back_refuses_goose() -> None:
+    """goose's session contract is its client class: a class without it refuses.
+
+    An edition's subclass of ``AcpClient``, or the goose class not imported, would
+    otherwise start a goose session whose mode nothing reads back.
+    """
+
+    class _Edition(AcpClient):
+        pass
+
+    with pytest.raises(AcpError, match="reads back the session mode"):
+        _Edition(acp_backend=GOOSE)
+    assert type(AcpClient(acp_backend=GOOSE)).__name__ == "GooseAcpClient"
 
 
 @pytest.mark.parametrize("path", ["session/new", "session/load"])
@@ -246,7 +268,7 @@ def test_both_session_paths_call_the_read_back(path: str) -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_verify_goose_routing"
+        and node.func.attr == "_verify_session_mode"
     ]
     assert len(calls) == 2, (
         "the routing read-back must run on the session/new response AND on the "
@@ -287,7 +309,7 @@ def test_the_restore_read_back_is_not_inside_the_load_try() -> None:
         return any(
             isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "_verify_goose_routing"
+            and n.func.attr == "_verify_session_mode"
             for n in ast.walk(node)
         )
 
@@ -316,9 +338,12 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
     import inspect
     import textwrap
 
-    # Three arrays are composed across two methods: the initial session/new and
-    # its substitution retry live in ``_new_session_following_substitution``;
-    # session/load lives in ``_initialize_session``.
+    # Two arrays are composed for a goose session: the initial session/new in
+    # ``_new_session_following_substitution`` and session/load in
+    # ``_initialize_session``. Each splices the client class's own servers
+    # (``_harness_session_mcp_servers``), which ``GooseAcpClient`` fills.
+    from kiro_crew.acp.client import GooseAcpClient
+
     splices = 0
     for method in (
         AcpClient._new_session_following_substitution,
@@ -330,13 +355,18 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_goose_session_mcp_servers"
+            and node.func.attr == "_harness_session_mcp_servers"
         )
-    assert splices == 3, (
-        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so its array must be spliced into "
-        "the initial session/new, the substitution retry, and session/load; "
-        f"found {splices}"
+    assert splices == 2, (
+        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so its client class's array must be "
+        f"spliced into the initial session/new and session/load; found {splices}"
     )
+    # The goose client class answers that hook with goose's own array.
+    client = GooseAcpClient.__new__(GooseAcpClient)
+    placed = [{"name": "kirocrew-core", "command": "x", "args": [], "env": []}]
+    client._goose_session_mcp_servers = lambda: placed  # type: ignore[method-assign]
+    assert client._harness_session_mcp_servers() == placed
+    assert AcpClient.__new__(AcpClient)._harness_session_mcp_servers() == []
 
 
 def test_the_model_channel_matches_what_the_mirror_rules() -> None:
@@ -1141,9 +1171,9 @@ def test_the_mode_tripwire_is_gated_on_the_read_back_predicate() -> None:
     for backend in sorted(acp_backends.ACP_BACKENDS_KNOWN - {GOOSE}):
         client = _stub(backend)
         client._kill_process = AsyncMock()  # type: ignore[method-assign]
-        assert client._is_goose is False, backend
+        assert client._reads_back_session_mode is False, backend
         asyncio.run(
-            client._tripwire_goose_mode(
+            client._tripwire_session_mode(
                 JsonRpcMessage(**{k: auto[k] for k in ("method", "params")})
             )
         )
@@ -1156,7 +1186,7 @@ def test_the_mode_tripwire_log_scrubs_the_reported_mode(caplog) -> None:
 
     from kiro_crew.acp.types import JsonRpcMessage
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=16)
     client = _stub()
     client._session_id = "goose-session-1"
 
@@ -1370,14 +1400,21 @@ class TestAReleaseOutsideTheVerifiedRangeIsNamedAtHandshake:
 
     def test_other_harnesses_are_untouched(self, tmp_path, caplog):
         with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
-            self._client(tmp_path, "9.9.9", sdk_backends.ACP_BACKEND_PI)._note_goose_version()
-            self._client(tmp_path, "9.9.9", sdk_backends.ACP_BACKEND_KIRO)._note_goose_version()
+            for backend in (sdk_backends.ACP_BACKEND_PI, sdk_backends.ACP_BACKEND_KIRO):
+                client = self._client(tmp_path, "9.9.9", backend)
+                assert not hasattr(client, "_note_goose_version"), backend
+                client._note_harness_adapter_version()
         assert not caplog.records
 
     def test_it_runs_at_the_handshake(self):
+        from kiro_crew.acp import client_goose_session
+
         source = inspect.getsource(AcpClient._initialize_session)
         assert "self._agent_version = agent_version_from_init(init_resp)" in source
-        assert "self._note_goose_version()" in source
+        assert "self._note_harness_adapter_version()" in source
+        assert acp_client.GooseAcpClient._note_harness_adapter_version is (
+            client_goose_session._note_harness_adapter_version
+        )
 
     def test_the_verified_prefix_is_the_recorded_handshake(self):
         """The range is anchored on the version the corpus binary actually reported."""

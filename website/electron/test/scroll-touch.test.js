@@ -93,6 +93,7 @@ describe("preload onScrollTouch", () => {
       ipcRenderer: {
         send: () => {},
         invoke: () => Promise.resolve(),
+        sendSync: () => false,
         on: (channel, fn) => {
           if (!listeners.has(channel)) listeners.set(channel, new Set());
           listeners.get(channel).add(fn);

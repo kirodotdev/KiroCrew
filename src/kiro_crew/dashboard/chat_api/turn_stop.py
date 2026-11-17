@@ -65,17 +65,28 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
             # resolved value stays a plain "rejected" so no caller of this future
             # has to learn a new one.
             slot._approval_stopped.add(aid)
-            fut.set_result("rejected")
-            if _mark_permission_resolved(slot.messages, aid, "rejected"):
-                slot._dirty = True
-            sel().log_tool_invocation(
-                session_key=effective_session_key(slot),
-                agent=getattr(slot, "agent", "") or "kirocrew",
-                source="dashboard",
-                tool_name=f"approval_reject:{aid}",
-                tool_kind="permission",
-                outcome="rejected_on_stop",
-            )
+            _settle_approval_rejected(slot, aid, fut, "rejected_on_stop")
+
+
+def _settle_approval_rejected(
+    slot: _ChatSlot, aid: str, fut: asyncio.Future[str], outcome: str, *, result: str = "rejected"
+) -> None:
+    """Reject the pending approval *aid*, mark its card resolved and audit *outcome*.
+
+    *result* is what the future resolves to: ``rejected``, or ``rejected_once`` for a
+    rejection the runner must not carry to the rest of the tool batch.
+    """
+    fut.set_result(result)
+    if _mark_permission_resolved(slot.messages, aid, "rejected"):
+        slot._dirty = True
+    sel().log_tool_invocation(
+        session_key=effective_session_key(slot),
+        agent=getattr(slot, "agent", "") or "kirocrew",
+        source="dashboard",
+        tool_name=f"approval_reject:{aid}",
+        tool_kind="permission",
+        outcome=outcome,
+    )
 
 
 def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
@@ -846,6 +857,10 @@ async def stop_slot_turn(
 
     # First press: soft stop
     slot._stop_state = "soft_pending"
+    # This press's identity across the ``stop_turn`` await below. A turn end
+    # can reset the posture mid-await and a LATER press can claim a fresh one;
+    # this press's outcome may then settle only its own claim, never that one.
+    stop_generation = slot._stop_generation
     # NOTE: Do NOT clear the queue here — stop should only cancel the
     # currently running turn, leaving queued messages intact for the user
     # to process or dismiss individually.
@@ -882,11 +897,15 @@ async def stop_slot_turn(
     # is resolved and the reply names the honest state -- there is no running
     # provider turn here to report as "stopped", and no provider turn to kill.
     _idle_running = outcome == "idle" and slot.running
-    if outcome == "idle" and slot._stop_event_id:
+    # A newer press owns the card and the posture now: settling either here
+    # would idle its stop, and its next press would start over instead of
+    # escalating to the hard kill.
+    _owns_posture = slot._stop_generation == stop_generation
+    if outcome == "idle" and slot._stop_event_id and _owns_posture:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
-    elif outcome == "compacting":
+    elif outcome == "compacting" and _owns_posture:
         # The race the pre-check above cannot close: the compaction committed
         # between that read and the cancel. Same answer, and the soft-stop side
         # effects taken above are undone: ``_stop_state`` back to idle (nothing
@@ -1129,6 +1148,18 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "queue_id required for idle interrupt", "code": "invalid_queue_id"},
                 status=400,
+            )
+        if linked_turn and not any(
+            isinstance(item, dict) and item.get("id") == queue_id for item in slot._queue
+        ):
+            # The card is gone (sent, cancelled or edited away): refuse before the
+            # cancel below, so a refused interrupt never stops the channel turn.
+            return web.json_response(
+                {
+                    "error": "queued message is no longer available",
+                    "code": "queue_item_unavailable",
+                },
+                status=409,
             )
         if linked_turn:
             # Validated: cancel the channel-path turn, then dispatch the selected
@@ -1393,8 +1424,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    # Same ownership rule as ``stop_slot_turn``: a later press that claimed a
+    # new generation during the await owns the card and the posture.
+    _owns_posture = slot._stop_generation == claim_generation
     # Resolve orphaned card when provider reports no active turn
-    if outcome == "idle" and slot._stop_event_id:
+    if outcome == "idle" and slot._stop_event_id and _owns_posture:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
@@ -1413,9 +1447,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         # ``_unblock_pending_waits`` rejected cannot be un-rejected, which is
         # why both probes run first. ``_stop_state`` goes back to idle; no
         # escalation marker, for the reason the pre-check gives.
-        _resolve_stop_event(slot, "compacting")
-        slot._stop_event_id = None
-        slot._stop_state = "idle"
+        if _owns_posture:
+            _resolve_stop_event(slot, "compacting")
+            slot._stop_event_id = None
+            slot._stop_state = "idle"
         # Same as the second probe: a restored card's choice is undone and the
         # answer below releases it.
         if chosen_restored:

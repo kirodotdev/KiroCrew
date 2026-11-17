@@ -28,11 +28,14 @@ from kiro_crew.platform.governance_parts.archetypes import (
 )
 from kiro_crew.platform.governance_parts.baseline import BASELINE_UNGATED
 from kiro_crew.platform.governance_parts.carriers import GovernanceCeiling, Profile
-from kiro_crew.platform.governance_parts.catalog import _SCOPE_ALIASES
+from kiro_crew.platform.governance_parts.catalog import _SCOPE_ALIASES, COMMANDS_SCOPE
 from kiro_crew.platform.governance_parts.parsing import baseline_controls, with_inner_baseline
 from kiro_crew.platform.governance_parts.tool_calls import (
     _NO_TARGET_ITEM,
+    _RUNNING_PREFIX,
+    _UNSPLITTABLE_COMMAND_ITEM,
     _governed_targets,
+    classify_image_reads,
     classify_tool_args,
     classify_tool_title,
 )
@@ -70,8 +73,8 @@ def _every_operation_names_a_path(raw_params: object) -> bool:
 
     Each entry (each of a batch's ``operations``, or the params themselves)
     must name a ``TARGET_PATH_KEYS`` path and carry no Image target: an Image
-    read's ``image_paths`` is not scanned, decoy ``path`` or not, so its title's
-    read pair cannot be replaced.
+    entry keeps its title's read pair, decoy ``path`` or not, and a batched one's
+    ``image_paths`` / ``paths`` are judged beside it (:func:`classify_image_reads`).
     shortcut: knows the Image shape only; widen it when another read shape
     carries its target under a key ``TARGET_PATH_KEYS`` lacks.
     """
@@ -258,6 +261,7 @@ def gate_decision(
     alias_groups: Tuple[Tuple[str, ...], ...] = (),
     deny_aliases: Tuple[str, ...] = (),
     own_scopes: Tuple[str, ...] = (),
+    shell_command: str = "",
 ) -> Decision:
     """Resolve a PreToolUse gate title against the governance ceiling ∩ profile.
 
@@ -325,6 +329,17 @@ def gate_decision(
     the arguments name no target in is asked about :data:`_NO_TARGET_ITEM`, so an
     allow-mode confinement refuses a pathless search or a non-edit write rather
     than never being asked. Empty keeps the old reading.
+
+    ``shell_command`` is a shell call's host-recovered command. When set and the
+    title's own ``commands`` item is not already that command, the call is first
+    judged as the gate judged it before (the title and ``Running: <command>``),
+    and admitted if that admits it. Otherwise it and
+    each part of its chain (``chain_commands``) are the call's ``commands`` items,
+    judged like any other pair, so an allow-mode ``commands`` set admits a listed
+    command only when every chained part is listed too; a command that does not
+    split is asked about ``_UNSPLITTABLE_COMMAND_ITEM``, which no allow list holds.
+    Every other ``commands`` pair (the display title, a tool name) may refuse the
+    call only by an explicit deny.
     """
     builtin = "tools" in own_scopes
     if (builtin and not (extra_titles or alias_groups)) or ("mcp" in own_scopes and not mcp_ref):
@@ -377,9 +392,13 @@ def gate_decision(
             )
         ]
     arg_pairs = classify_tool_args(tool_kind, raw_params, diff_path)
+    # An Image read's files are judged beside what the argument scan yields,
+    # never in its place: they join after the marker and the title are decided.
+    image_pairs = classify_image_reads(raw_params)
     if builtin:
-        off_scope.extend(p for p in arg_pairs if p[0] not in own_scopes)
+        off_scope.extend(p for p in (*arg_pairs, *image_pairs) if p[0] not in own_scopes)
         arg_pairs = tuple(p for p in arg_pairs if p[0] in own_scopes)
+        image_pairs = tuple(p for p in image_pairs if p[0] in own_scopes)
         named = {scope for scope, _ in arg_pairs}
         arg_pairs += tuple(
             (scope, _NO_TARGET_ITEM)
@@ -392,9 +411,8 @@ def gate_decision(
     # when EVERY argument read target is anchored, though: a relative local
     # path is anchored at the gateway's working directory too, not where the
     # session reads it, and a marker (no target, truncated scan) names no file,
-    # so in those cases the title's pair is kept beside them. A batch entry
-    # that names no path (an Image read's ``image_paths``) has a target the
-    # scan does not list, so the title's pair is kept for it too.
+    # so in those cases the title's pair is kept beside them. An Image entry
+    # keeps the title's pair too; a batched one's images are judged beside it.
     arg_reads = [item for scope, item in arg_pairs if scope == "filesystem.read"]
     if (
         arg_reads
@@ -403,6 +421,7 @@ def gate_decision(
     ):
         pairs = [pair for pair in pairs if pair[0] != "filesystem.read"]
     pairs.extend(arg_pairs)
+    pairs.extend(image_pairs)
     if mcp_ref:
         pairs.append(("mcp", mcp_ref))
     # Order-preserving dedupe -- a caller whose title already equals its trusted
@@ -416,6 +435,50 @@ def gate_decision(
         for spelling in group
         if spelling
     }
+    if shell_command and (COMMANDS_SCOPE, shell_command) not in pairs:
+        # A shell call whose title does not carry its command (KAS titles it
+        # ``Run Command``). First the reading the gate had before this branch: the
+        # title and ``Running: <command>`` both judged in full. Whatever that
+        # admits stays admitted, so nothing it permitted is newly refused.
+        as_before = gate_decision(
+            ceiling,
+            profile,
+            tool_title,
+            tool_kind=tool_kind,
+            raw_params=raw_params,
+            diff_path=diff_path,
+            mcp_ref=mcp_ref,
+            extra_titles=(*extra_titles, f"{_RUNNING_PREFIX}{shell_command}"),
+            alias_groups=alias_groups,
+            deny_aliases=deny_aliases,
+            own_scopes=own_scopes,
+        )
+        if as_before.permitted:
+            return as_before
+        # Otherwise the call is judged under ``commands`` on its recovered
+        # command, strictly, since anything admitted here is new permission. A
+        # title that does carry the command (kiro-cli's ``Running: <command>``)
+        # never reaches this branch and is judged as before. Every other
+        # ``commands`` item (the title, a tool name read as a command body) names
+        # no command, so it may refuse only by an explicit deny.
+        off_scope.extend(p for p in pairs if p[0] == COMMANDS_SCOPE)
+        pairs = [p for p in pairs if p[0] != COMMANDS_SCOPE]
+        for spelling, found in group_pairs.items():
+            off_scope.extend(p for p in found if p[0] == COMMANDS_SCOPE)
+            group_pairs[spelling] = [p for p in found if p[0] != COMMANDS_SCOPE]
+        # The whole command, so a deny glob meets every byte of it; and each part
+        # of the chain, because ``*`` in an allow glob also matches ``&&``, ``;``
+        # and ``|``, so ``git *`` alone would admit ``git status && <anything>``.
+        # A command that does not split into plain commands is asked about a
+        # marker no allow pattern lists, so an allow-mode set refuses it.
+        from kiro_crew.platform.allowed_commands import chain_commands
+
+        pairs.append((COMMANDS_SCOPE, shell_command))
+        parts = chain_commands(shell_command)
+        if parts is None:
+            pairs.append((COMMANDS_SCOPE, _UNSPLITTABLE_COMMAND_ITEM))
+        else:
+            pairs.extend((COMMANDS_SCOPE, part) for part in parts if part != shell_command)
     if not pairs and not alias_groups and not deny_aliases and not off_scope:
         return Decision(True, "title not name-gate-governed", rule="default")
     # Off-scope pairs of a proven non-shell call bind by explicit deny only.

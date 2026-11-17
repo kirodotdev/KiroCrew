@@ -34,6 +34,7 @@ from kiro_crew.apps.registry_pipeline.caches import (
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _FETCH_CAUSE_OTHER,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_url_host,
@@ -46,12 +47,13 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _apply_configured_branch,
     _fetch_and_cache_external_registry,
     _load_external_registries,
-    _registry_sign_in_refused,
+    _registry_fetch_failure,
 )
 from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
 from kiro_crew.apps.registry_pipeline.sources import (
     _edition_registry_rows,
     _effective_registries,
+    _is_pinned_registry_move,
     _load_registry_file,
 )
 from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store_assets
@@ -64,6 +66,20 @@ from kiro_crew.sandbox import (
 )
 
 logger = logging.getLogger(_FACADE)
+
+# A manifest cache miss spawns a ``git clone``; on Windows asyncio's CreateProcess
+# runs on the loop thread, so an unbounded burst stalls the loop past its watchdog.
+_MANIFEST_RESOLVE_CONCURRENCY = 8
+
+
+async def _gather_bounded(entries: list[Any], resolve: Any) -> list[Any]:
+    gate = asyncio.Semaphore(_MANIFEST_RESOLVE_CONCURRENCY)
+
+    async def _one(entry: Any) -> Any:
+        async with gate:
+            return await resolve(entry)
+
+    return await asyncio.gather(*[_one(e) for e in entries], return_exceptions=True)
 
 
 # Source type prefix for registry-installed apps.
@@ -465,9 +481,13 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     Returns ``{ok, refreshed, failed, results, apps, lastSyncedAt}`` where
     ``ok`` is True only if every matched registry refreshed successfully and
     ``results`` carries the per-registry outcome so the UI can distinguish
-    "synced" from "sync failed, serving stale"; a failed row whose clone git
-    refused for credentials also carries ``reason: "auth"`` and the ``host`` from
-    its configured URL, so the UI can name the fix and where it applies. When *repo* is supplied but
+    "synced" from "sync failed, serving stale". Every failed row carries
+    ``cached``: whether an index cache from an earlier successful fetch is still
+    there for the listing to serve, so the UI can tell a registry shown as last
+    synced from one whose apps are missing. A failed row whose failure was
+    classified also carries ``reason`` (``auth``, ``dns``, ``host_key``,
+    ``network`` or ``timeout``) and the ``host`` from its configured URL, so the
+    UI can name the fix and where it applies. When *repo* is supplied but
     matches no configured registry, returns ``ok: False`` with
     ``not_found: True`` so the route can map it to HTTP 404.
     """
@@ -511,9 +531,12 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         entries = await _fetch_and_cache_external_registry(reg)
         if entries is None:
             failed.append(display_name)
-            row: dict[str, Any] = {"name": display_name, "ok": False}
-            if _registry_sign_in_refused(reg.repo, reg.branch):
-                row["reason"] = "auth"
+            # The fetch never touches the cache on failure, so the copy read
+            # above is the one the listing serves from.
+            row: dict[str, Any] = {"name": display_name, "ok": False, "cached": prior is not None}
+            cause = _registry_fetch_failure(reg.repo, reg.branch)
+            if cause and cause != _FETCH_CAUSE_OTHER:
+                row["reason"] = cause
                 host = _git_url_host(reg.repo)
                 if host:
                     row["host"] = host
@@ -724,10 +747,7 @@ async def _append_external_registry_apps(
     # installed version until that checkout moves. The index is then the only
     # listing input that has seen the registry's newer release.
     index_versions = [e.get("version") for e in kept]
-    resolved = await asyncio.gather(
-        *[_resolve_manifest(e) for e in kept],
-        return_exceptions=True,
-    )
+    resolved = await _gather_bounded(kept, _resolve_manifest)
     kept = [r if isinstance(r, dict) else kept[i] for i, r in enumerate(resolved)]
     for row, index_version in zip(kept, index_versions, strict=True):
         # The index may only RAISE the version: a manifest fetched from the remote
@@ -802,6 +822,8 @@ async def list_registry() -> list[dict[str, Any]]:
                         _entry_git_url(row),
                         _entry_git_url(entries[idx]),
                     )
+    except official_catalog.CatalogUnavailable as exc:
+        official_catalog.log_unavailable(logger, "no official catalog inventory this listing", exc)
     except Exception:  # noqa: BLE001 - degrade, never 500 the store
         # No catalog inventory this listing. That is the behaviour the store had
         # before this module existed (seed + built-ins discovered on disk), and it
@@ -834,9 +856,8 @@ async def list_registry() -> list[dict[str, Any]]:
     # what the catalog already told us is the per-app network cost this document
     # exists to remove -- and it is O(N) in the number of third-party apps, which
     # is exactly the number the store is meant to grow.
-    resolved = await asyncio.gather(
-        *[_identity(e) if _is_catalog_row(e) else _resolve_manifest(e) for e in entries],
-        return_exceptions=True,
+    resolved = await _gather_bounded(
+        entries, lambda e: _identity(e) if _is_catalog_row(e) else _resolve_manifest(e)
     )
     entries = [r if isinstance(r, dict) else entries[i] for i, r in enumerate(resolved)]
 
@@ -921,6 +942,9 @@ def _catalog_installable_rows() -> dict[str, dict[str, Any]]:
             for row in official_catalog.inventory(entries)
             if isinstance(row.get("name"), str)
         }
+    except official_catalog.CatalogUnavailable as exc:
+        official_catalog.log_unavailable(logger, "cannot confirm catalog install coordinates", exc)
+        return {}
     except Exception:  # noqa: BLE001 - degrade to the seed, never 500 the store
         logger.warning("cannot confirm the catalog's install coordinates", exc_info=True)
         return {}
@@ -1001,10 +1025,7 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         # ``version`` come from the app's own app.json.
         for row in edition_rows:
             row["_index_author"] = row.get("author")
-        resolved_edition = await asyncio.gather(
-            *[_resolve_manifest(row) for row in edition_rows],
-            return_exceptions=True,
-        )
+        resolved_edition = await _gather_bounded(edition_rows, _resolve_manifest)
         edition_rows = [
             r if isinstance(r, dict) else edition_rows[i] for i, r in enumerate(resolved_edition)
         ]
@@ -1372,7 +1393,11 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
                 _apply_configured_branch([entry], reg)
-                candidates.append(entry)
+                # The registry a row came from is decided here, by which index it
+                # was read out of. A tag the cache file carries is not evidence:
+                # the file is agent-writable, and provenance matching would read
+                # a forged tag as the row's source.
+                candidates.append({**entry, "_registry": _public_registry_name(reg)})
     return candidates
 
 
@@ -1382,13 +1407,16 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
     A row matches only when BOTH the clone URL and the originating registry id
     equal what was recorded at install time, so neither a row that reuses the
     name on a different repo nor a different registry publishing the same
-    name/URL pair can stand in for the pinned source.  Returns None when no
-    candidate matches; raises :class:`official_catalog.CatalogUnavailable` when
-    the official catalog could not be consulted to build the candidate set.
+    name/URL pair can stand in for the pinned source.  The one exception is an
+    app that moved between two build-pinned registries; see
+    :func:`_moved_between_pinned_registries`.  Returns None when no candidate
+    matches; raises :class:`official_catalog.CatalogUnavailable` when the
+    official catalog could not be consulted to build the candidate set.
     """
     want_url = str(meta.get("sourceUrl", "") or "")
     want_registry = str(meta.get("sourceRegistry", "") or "")
-    for entry in _registry_app_candidates(name):
+    candidates = _registry_app_candidates(name)
+    for entry in candidates:
         # Credentials select how git fetches the source; they are not the source
         # identity. Rotation from one userinfo value to another must neither
         # rebind the grant nor strand an update of the same repository.
@@ -1399,6 +1427,42 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
             current_registry, want_registry
         ):
             continue
+        return entry
+    return _moved_between_pinned_registries(name, candidates, want_url, want_registry)
+
+
+def _moved_between_pinned_registries(
+    name: str,
+    candidates: list[dict[str, Any]],
+    want_url: str,
+    want_registry: str,
+) -> dict[str, Any] | None:
+    """The row for an app whose listing moved from one build-pinned registry to another.
+
+    Only reached when no row matches the recorded source exactly. Without it,
+    every existing install of a moved app refuses all later updates, and
+    installing it again is refused for the same reason, so the only way out is
+    uninstall and reinstall. :func:`_is_pinned_registry_move` decides which moves
+    qualify; each candidate's ``_registry`` is stamped from the index it was read
+    from, so a cache file cannot claim to be a pinned registry. The repository
+    must still match exactly. Execution trust is bound to the repository, so it
+    carries over.
+
+    The install that consumes this row records the new registry as the app's
+    source, so the move is accepted once and the record then matches exactly.
+    """
+    for entry in candidates:
+        current = str(entry.get("_registry", "") or "")
+        if not _is_pinned_registry_move(want_registry, current):
+            continue
+        if not _same_git_target(_entry_git_url(entry), want_url):
+            continue
+        logger.info(
+            "app %r: recorded registry %r no longer lists it; resolving to pinned registry %r",
+            name,
+            want_registry,
+            current,
+        )
         return entry
     return None
 

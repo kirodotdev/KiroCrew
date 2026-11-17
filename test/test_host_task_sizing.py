@@ -316,6 +316,18 @@ class TestDoctorRow:
         assert "close to the ceiling" in out
         assert "raise resource_limits.max_total_processes toward 411648" in out
 
+    def test_idle_scopes_keep_the_section_and_skip_only_the_headroom(self, tmp_path, monkeypatch):
+        """Scopes left behind by exited runtimes average 0 tasks; dividing by that
+        must not blank every other row of the section."""
+        slice_dir = self._slice(tmp_path, 10, 32768, [0, 0])
+        try:
+            out = self._run(monkeypatch, slice_dir, {})
+        except ZeroDivisionError as exc:  # doctor prints "check skipped" for this
+            out = repr(exc)
+        assert "2 scopes, 0 tasks each on average, largest 0" in out
+        assert "headroom:" not in out
+        assert "10 of 32768 tasks" in out
+
     def test_pool_values_follow_spawn_precedence(self, monkeypatch):
         """agent.env is laid over the inherited environment before the
         set-if-unset defaults run, so doctor must report it first. The gateway's

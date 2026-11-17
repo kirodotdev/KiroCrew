@@ -1,10 +1,10 @@
 ---
 title: A plain session is the default template, never the default crewmate
-status: accepted
+status: implemented
 author: CrysisDeu
 created: 2026-10-09
-last-audited: 2026-10-09
-audited-at: 96ebc9736f
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [18342]
 tracking-issues: [18328]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: A plain session is the default template, never the default crewmate
 
-- Status: accepted. This is the product owner's decision, given 2026-10-09 in
+- Status: implemented by [#18342](https://github.com/kirodotdev/KiroCrew/pull/18342), merged 2026-10-13. This is the product owner's decision, given 2026-10-09 in
   the Crewmates work ("一个 chat 是 template 还是 crewmate 应该是非常 specific 的
   … session 的默认就应该是 default template，都不该是 default crewmate"). It amends
   one sentence each of [rfc-crewmates-chatted-list.md](rfc-crewmates-chatted-list.md)

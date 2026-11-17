@@ -36,7 +36,7 @@ from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import slot_switch_session_lock
 from kiro_crew.members import select_provider_backend
 from kiro_crew.messaging.link import is_channel_session_key
-from kiro_crew.security import redact
+from kiro_crew.security import redact, refuses
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -73,7 +73,7 @@ async def set_model_target(
     to force it stops the target first (``session_stop``) and retries. A later
     pick replaces an earlier one that has not been applied yet.
 
-    Two picks the picker allows are refused here. "Auto (Jev)" arms per-turn
+    Two picks the picker allows are refused here. "Auto (decision model)" arms per-turn
     routing, which the model route keeps owner-only. A crew-bound (remote)
     target runs its turns on the peer, where this pick would never be applied.
 
@@ -140,13 +140,13 @@ async def set_model_target(
             or folded in _JEV_ROUTE_SPELLINGS
         ):
             raise SessionControlError(
-                "Auto and Auto (Jev) can only be picked by the owner from the model picker",
+                "Auto and Auto (decision model) can only be picked by the owner from the model picker",
                 code="model_owner_only",
                 status=403,
             )
         if not model:
             raise SessionControlError("model is required", code="model_rejected", status=400)
-        if redact(model) != model:
+        if refuses(model, redact):
             # The pick is stored on the slot and broadcast to every dashboard, so a
             # credential-shaped argument is refused rather than persisted.
             raise SessionControlError(
@@ -981,10 +981,11 @@ def landing_holds_lease(key: str) -> bool:
     return key in _LANDING_LEASES
 
 
-#: Lowercased spellings of the picker's Jev entry that ``session_set_model``
-#: refuses alongside the exact sentinel: its display label and any case of the
-#: sentinel id. Owner-only, like the sentinel itself.
-_JEV_ROUTE_SPELLINGS = frozenset({"auto (jev)", "auto:jev"})
+#: Lowercased spellings of the picker's decision-model entry that
+#: ``session_set_model`` refuses alongside the exact sentinel: its display
+#: label (the current one and the one older clients still show) and any case of
+#: the sentinel id. Owner-only, like the sentinel itself.
+_JEV_ROUTE_SPELLINGS = frozenset({"auto (decision model)", "auto (jev)", "auto:jev"})
 
 
 def _target_busy_error(body: dict[str, Any] | None = None) -> SessionControlError:

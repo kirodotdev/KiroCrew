@@ -7,7 +7,6 @@ decision model's release.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -271,8 +270,13 @@ def _register_stt_hooks(app: web.Application) -> None:
             if task is None:
                 continue
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+                # The prewarm's own failure was already logged by its done callback.
+                logger.debug("speech task %s ended with an error", key, exc_info=True)
         # Gated on the engine module having been imported AT ALL, which is the cheap
         # and exact test for "could a model be resident". `stt.close()` resolves
         # through `stt.session`, which imports numpy at module scope and whose
@@ -283,7 +287,10 @@ def _register_stt_hooks(app: web.Application) -> None:
             return
         from kiro_crew import stt
 
-        await stt.close()
+        try:
+            await stt.close()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Speech model release failed during shutdown", exc_info=True)
 
     app.on_startup.append(_stt_startup)
     app.on_cleanup.append(_stt_shutdown)
@@ -297,7 +304,10 @@ def _register_stt_hooks(app: web.Application) -> None:
             return
         from kiro_crew.decisions import local_runtime
 
-        await asyncio.to_thread(local_runtime.get_runtime().deactivate, wait=True)
+        try:
+            await asyncio.to_thread(local_runtime.get_runtime().deactivate, wait=True)
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Local decision model stop failed during shutdown", exc_info=True)
 
     app.on_cleanup.append(_local_decision_model_shutdown)
 
@@ -309,6 +319,9 @@ def _register_stt_hooks(app: web.Application) -> None:
             return
         from kiro_crew.decisions import impl_systemone
 
-        await impl_systemone.close_sessions()
+        try:
+            await impl_systemone.close_sessions()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Decision HTTP session close failed during shutdown", exc_info=True)
 
     app.on_cleanup.append(_decision_http_shutdown)

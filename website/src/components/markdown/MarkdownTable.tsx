@@ -1,12 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Check, Copy, FileSpreadsheet, FoldHorizontal, UnfoldHorizontal } from 'lucide-react'
 import type { Element as HastElement } from 'hast'
 import { copyToClipboard } from '../../utils/clipboard'
 import { hastTableToCsv, hastTableToMarkdown } from '../../utils/tableClipboard'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { FOCUSABLE } from '../../hooks/useDialogFocusTrap'
 import ErrorNotice from '../ErrorNotice'
 import { i18nT } from '../../i18n/t'
+import { loadChatConfig, saveChatConfig } from '../../pages/chat/ChatSettings'
 import { sp } from './elements'
 import { useMarkdownTableColumns } from './useMarkdownTableColumns'
 
@@ -16,6 +18,12 @@ import { useMarkdownTableColumns } from './useMarkdownTableColumns'
 const TABLE_WRAPPER_CLS = 'mt-[1.25em] mb-0'
 
 const TABLE_ACTION_BTN_CLS = 'flex items-center gap-1 px-1.5 py-1 rounded text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer'
+
+/** The chat config's `widenTables`, read live: `saveChatConfig` announces every
+ *  write with `mc-config-changed`, so one table's Widen / Narrow press reaches
+ *  every table on screen, and the stored value seeds the next one rendered. */
+const subscribeChatConfig = (cb: () => void) => { window.addEventListener('mc-config-changed', cb); return () => window.removeEventListener('mc-config-changed', cb) }
+const readWidenTables = () => loadChatConfig().widenTables
 
 /** A markdown table plus the row of copy actions beneath it.
  *
@@ -73,9 +81,35 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
     attachTable(el)
   }, [attachTable])
   const columns = useMarkdownTableColumns(tableRef)
+  // A table wider than its column hides columns past the edge. A mouse or a
+  // finger scrolls it; a keyboard needs something to focus first. On a desktop
+  // the column grips are that stop (moving along them brings each column into
+  // view), and a link in a cell is one too. With neither -- a touch screen
+  // has no grips -- the scroller itself becomes the stop, with a name, so the
+  // arrow keys scroll it. Never both: a second stop would cost every reader a
+  // Tab press per wide table.
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const setScroller = useCallback((el: HTMLDivElement | null) => {
+    scrollerRef.current = el
+    attachScroller(el)
+  }, [attachScroller])
+  const clipped = edges.left || edges.right
+  const [keyboardStop, setKeyboardStop] = useState(false)
+  // Re-read whenever what sits inside the scroller can change: the streamed
+  // rows (`children`) and the grips, which arrive after layout.
+  useEffect(() => {
+    setKeyboardStop(clipped && scrollerRef.current?.querySelector(FOCUSABLE) == null)
+  }, [clipped, children, columns.grips])
   // Off by default: a transcript table sits in the reading column like the
-  // prose around it, and widens into the pane only when the reader asks.
-  const [expanded, setExpanded] = useState(false)
+  // prose around it, and widens into the pane only when the reader asks. The
+  // choice is one chat setting every table follows. A press the storage
+  // refused changes nothing and says so, as every chat setting does: showing
+  // the width would promise a choice a reload discards.
+  const expanded = useSyncExternalStore(subscribeChatConfig, readWidenTables)
+  const [widthSaveFailed, setWidthSaveFailed] = useState(false)
+  const toggleExpanded = () => {
+    setWidthSaveFailed(!saveChatConfig({ ...loadChatConfig(), widenTables: !expanded }))
+  }
 
   const copy = (target: CopyTarget) => {
     if (!node) return
@@ -136,10 +170,14 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
           unit test, exactly as ThinkingBlock mirrors its fade with
           `data-clipped`. */}
       <div
-        ref={attachScroller}
+        ref={setScroller}
         data-testid="table-scroller"
         data-overflow={edges.left && edges.right ? 'both' : edges.left ? 'left' : edges.right ? 'right' : ''}
         className="relative overflow-x-auto"
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop IS the fix (see `keyboardStop` above): a scroller that hides columns and holds nothing focusable cannot be reached by keyboard outside Chromium, and axe's scrollable-region-focusable asks for the explicit stop.
+        tabIndex={keyboardStop ? 0 : undefined}
+        role={keyboardStop ? 'region' : undefined}
+        aria-label={keyboardStop ? i18nT('components.markdownRenderer.table_region') : undefined}
       ><table {...sp(node)} ref={setTable} style={columns.tableStyle} className={columns.resized
         // A narrowed fixed-layout column clips its content instead of painting
         // it over the neighbour; a header label ellipsizes (it never wraps).
@@ -153,7 +191,7 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
             (a voice-control user says the word they see); `aria-expanded`
             still carries the state. */}
         <button type="button" data-testid="table-expand" className={`markdown-table-expand ${TABLE_ACTION_BTN_CLS}`}
-          onClick={() => setExpanded(v => !v)} aria-expanded={expanded}
+          onClick={toggleExpanded} aria-expanded={expanded}
           title={expanded ? i18nT('components.markdownRenderer.narrow_table') : i18nT('components.markdownRenderer.expand_table')}
           aria-label={expanded ? i18nT('components.markdownRenderer.narrow_table') : i18nT('components.markdownRenderer.expand_table')}>
           {expanded ? <FoldHorizontal size={13} aria-hidden="true" /> : <UnfoldHorizontal size={13} aria-hidden="true" />}
@@ -168,14 +206,17 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
           <span aria-hidden="true">{word('csv')}</span>
         </button>
       </div>
-      {/* No hand-off, for the same reason as `MermaidBlock`'s notices: this
-          renderer is embedded in hosts holding unsaved drafts it cannot
+      {/* No hand-off on either notice, for the same reason as `MermaidBlock`'s:
+          this renderer is embedded in hosts holding unsaved drafts it cannot
           identify -- MarkdownPanel's editable preview, the chat composer -- so
           navigating to the chat could discard what the user typed. Dismissable,
-          like the mermaid copy notice: one refused clipboard write must not
-          leave a permanent red line under the table in the transcript. */}
+          like the mermaid copy notice: one refused clipboard or storage write
+          must not leave a permanent red line under the table in the transcript. */}
       {outcome.state === 'failed' && (
         <ErrorNotice variant="inline" className="mt-1" message={i18nT('components.markdownRenderer.copy_failed')} onDismiss={() => setOutcome({ state: 'idle' })} />
+      )}
+      {widthSaveFailed && (
+        <ErrorNotice variant="inline" className="mt-1" message={i18nT('components.markdownRenderer.table_width_not_saved')} onDismiss={() => setWidthSaveFailed(false)} />
       )}
     </div>
   )

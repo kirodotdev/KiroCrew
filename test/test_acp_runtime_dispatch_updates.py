@@ -22,6 +22,7 @@ from acp_runtime_helpers import (
 
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND, METHOD_SESSION_UPDATE, JsonRpcMessage
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import await_until
 
 
@@ -439,6 +440,7 @@ def test_handle_update_malformed_cost_is_noop(cost):
         (10**400, 10000),  # bignum: math.isfinite itself raises OverflowError
         ([5000], {"n": 1}),
         (True, True),
+        (-5000, 10000),  # a negative count would read as a negative context_pct
     ],
 )
 def test_handle_update_malformed_usage_is_noop(used, size):
@@ -794,7 +796,7 @@ async def test_dispatch_subagent_activity_text_is_redacted():
                         "sessionId": "sub-3",
                         "update": {
                             "sessionUpdate": "agent_message_chunk",
-                            "text": "leaked AKIAIOSFODNN7EXAMPLE key",
+                            "text": f"leaked aws_secret_access_key={SAMPLE_AWS_SECRET} key",
                         },
                     },
                 }
@@ -804,7 +806,7 @@ async def test_dispatch_subagent_activity_text_is_redacted():
         await await_until(driver, what="the driver finishing its turn")
         sa = [e for e in events if e.kind == EVENT_SUBAGENT_ACTIVITY]
         assert len(sa) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in sa[0].text
+        assert SAMPLE_AWS_SECRET not in sa[0].text
         assert "[REDACTED: credential]" in sa[0].text
     finally:
         await _stop_reader(task)

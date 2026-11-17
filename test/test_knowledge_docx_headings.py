@@ -2,12 +2,10 @@
 
 from pathlib import Path
 
-import pytest
+import docx
 
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.readers import FileReader
-
-docx = pytest.importorskip("docx")
 
 
 def test_word_heading_7_to_9_stay_markdown_headings(tmp_path: Path) -> None:

@@ -89,7 +89,8 @@ BASE_NAMES = frozenset("""
     _flag_unclassified_near_expiry _fmt_delta _guard _heal_eligible_shape _is_watched
     _iter_actionable_runs _iter_repo_runs _label _latest_queue _mark_heal_exempt
     _may_hold_jobs _md _md_link _open_pull_request_heads _orphan _orphan_queue _out_of_time
-    _pull_request_numbers _rate_limit_hints _rerun _rerun_attempt_may_be_cancelled
+    _pull_request_numbers _rate_limit_hints _rate_limit_reset rate_limit_abort_detail
+    _rerun _rerun_attempt_may_be_cancelled
     _rerun_cancelled_successor _restore_successor _runs_path _safe_text _status_or_unknown
     _supersession_is_answerable _withdraw _workflow_of _workflow_without_full_line_comments
     _yaml_mapping_entries annotations argparse base64 build_parser classify_cancelled_run

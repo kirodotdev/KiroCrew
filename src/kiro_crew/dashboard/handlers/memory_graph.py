@@ -15,6 +15,7 @@ from typing import Any
 
 from kiro_crew._sqlite_compat import is_cjk_char
 from kiro_crew.dashboard.handlers._shared import _redact_memory_field
+from kiro_crew.memory_history_stamps import is_history_day_header, is_history_stamp
 
 #: Most semantic rows one graph request reads, in key order with lessons excluded
 #: (they are drawn from ``get_lessons``), through the key index so the read stops
@@ -59,6 +60,8 @@ def _build_memory_graph(
             node_ids[f"{prefix}:{label}"] = nid
         return nid
 
+    # Each section below is optional: a store that fails to read stops adding its nodes, and the
+    # rest of the graph still draws.
     # --- Preferences ---
     try:
         pref_text = mem.read_preferences() or ""
@@ -108,6 +111,7 @@ def _build_memory_graph(
                     try:
                         val = json.loads(val)
                     except Exception:
+                        # A value that is not JSON is shown as its raw text.
                         pass
                 val_str = str(val) if not isinstance(val, str) else val
                 _add("sem", key, "semantic", f"{key} = {val_str[:120]}")
@@ -120,6 +124,7 @@ def _build_memory_graph(
         try:
             lessons_data = vs.get_lessons(limit=GRAPH_LESSON_LIMIT + 1) if vs else None
         except Exception:
+            # A failed read leaves no rows, so the lessons list passed in is used below.
             pass
         if lessons_data:
             # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
@@ -134,6 +139,7 @@ def _build_memory_graph(
                     try:
                         rule = json.loads(rule)
                     except Exception:
+                        # A rule that is not JSON is shown as its raw text.
                         pass
                 # Rendered text for either storage shape; fall back to str() so a
                 # malformed row still surfaces in search rather than vanishing.
@@ -150,22 +156,13 @@ def _build_memory_graph(
     # --- History (recent days only) ---
     try:
         hist = mem.read_recent_history(days=14) or ""
-        # ``append_history`` writes a ``# YYYY-MM-DD`` file header and a
-        # ``#### HH:MM <%Z>`` header above each entry. They carry no content of
-        # their own, so drawing them only adds empty nodes. ``%Z`` is an
-        # abbreviation ("UTC", "CST"), a numeric offset ("+08") or, on Windows,
-        # a full name ("China Standard Time").
-        timestamp_re = re.compile(
-            r"^#{1,4}\s+\d{1,2}:\d{2}"
-            r"(?:\s+(?:[A-Z]{2,5}|[+-]\d{2}(?::?\d{2})?|(?:[A-Z][a-z]+\s+)+Time))?$"
-        )
-        date_re = re.compile(r"^#{1,4}\s+\d{4}-\d{2}-\d{2}$")
         for line in hist.splitlines():
             stripped = line.strip()
             m = re.match(r"^#{1,4}\s+(.+)", stripped)
             if m:
-                # Skip timestamp and date headers
-                if timestamp_re.match(stripped) or date_re.match(stripped):
+                # ``append_history``'s day header and per-entry time stamp carry
+                # no content of their own, so drawing them only adds empty nodes.
+                if is_history_day_header(stripped) or is_history_stamp(stripped):
                     continue
                 raw = str(_redact_memory_field(m.group(1).strip()))
                 _add("hist", raw[:80], "history", raw)

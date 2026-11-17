@@ -26,6 +26,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes as r
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 def _can_create_symlink() -> bool:
@@ -49,8 +50,9 @@ requires_symlinks = pytest.mark.skipif(
 )
 
 # A name that satisfies _NAME_RE yet does NOT survive _redact -- the exact shape
-# _usable_name exists to reject (a description can slugify into one).
-CRED_NAME = "ghp_" + "a" * 36
+# _usable_name exists to reject (a description can slugify into one). A GitHub
+# token with a valid checksum: one that fails its published format is no token.
+CRED_NAME = github_classic(seed=90)
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +148,7 @@ class _Slot:
         self._queue: list[Any] = []
         self._pending_steers: list[str] = []
         self._pending_synthesis = False
+        self._deferred_notes: list[dict] = []
         self.queued: list[str] = []
 
     def queue_append(self, message: str, *, meta=None, directive_user_origin: bool) -> None:

@@ -36,7 +36,11 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
 )
 from kiro_crew.agent_sdk import spec_hooks
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
+)
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.hooks import ScriptHookResult, ScriptHookStore
 from kiro_crew.providers.base import LLMEvent
@@ -84,13 +88,13 @@ def _write_spec(tmp_path, hooks) -> None:
     refresh_materialized_agents()
 
 
-def _kas_turn(tmp_path, *, is_new: bool, context_builder=None):
+def _kas_turn(tmp_path, *, is_new: bool, context_builder=None, backend: str = ACP_BACKEND_KAS):
     state, client = _runner_state(
         tmp_path,
         hook_store=ScriptHookStore(tmp_path / "hooks"),
         context_builder=context_builder,
     )
-    client.capabilities = capabilities_for(ACP_BACKEND_KAS)
+    client.capabilities = capabilities_for(backend)
     client.cwd = str(tmp_path)
     client.session_id = "sess_kas_1"
     client.kas_projected_agent = _AGENT
@@ -328,3 +332,63 @@ async def test_a_post_tool_use_matcher_meets_an_auto_approved_shell_call(tmp_pat
     _set_stream(client, _shell_call(with_request=False))
     await _drive(state, slot)
     assert [cmd for _, cmd in fired] == ["post"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_kas_session_keeps_its_agent_spawn_output(tmp_path, fired):
+    """The first turn's agentSpawn output is kept for the turn after a compaction."""
+    _write_spec(tmp_path, {"agentSpawn": [{"command": "spawn"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=True)
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    await _drive(state, slot)
+    assert [cmd for _, cmd in fired] == ["spawn"]
+    state.sessions.remember_agent_spawn_context.assert_called_once()
+
+
+#: Every harness where Crew, not the harness, fires the spec's ``agentSpawn``.
+_CREW_FIRED = sorted(ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", _CREW_FIRED)
+async def test_the_turn_after_a_compaction_resends_agent_spawn_output_unrun(
+    tmp_path, fired, backend
+):
+    """kiro-cli sends agentSpawn output with every request; where Crew fires the
+    hook a compaction drops it, so the first turn after one sends the kept output
+    again, and the hook does not run a second time."""
+    _write_spec(tmp_path, {"agentSpawn": [{"command": "spawn"}]})
+    state, client, slot = _kas_turn(
+        tmp_path, is_new=False, context_builder=_context_builder(), backend=backend
+    )
+    state.sessions.consume_needs_reinjection = MagicMock(return_value=True)
+    state.sessions.agent_spawn_context = MagicMock(return_value=("SPAWN-CONTEXT",))
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    await _drive(state, slot)
+    assert fired == []
+    sent = str(client.stream.call_args_list[0])
+    assert "[Hook context]\\nSPAWN-CONTEXT\\n[End hook context]" in sent
+
+
+@pytest.mark.asyncio
+async def test_kiro_cli_gets_no_resent_agent_spawn_output_after_a_compaction(tmp_path, fired):
+    """kiro-cli runs the spec's hooks itself, so Crew adds nothing after a compaction."""
+    _write_spec(tmp_path, {"agentSpawn": [{"command": "spawn"}]})
+    state, client, slot = _kas_turn(
+        tmp_path, is_new=False, context_builder=_context_builder(), backend=ACP_BACKEND_KIRO
+    )
+    state.sessions.consume_needs_reinjection = MagicMock(return_value=True)
+    state.sessions.agent_spawn_context = MagicMock(return_value=("SPAWN-CONTEXT",))
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    await _drive(state, slot)
+    assert "SPAWN-CONTEXT" not in str(client.stream.call_args_list[0])
+
+
+@pytest.mark.asyncio
+async def test_a_warm_turn_without_a_compaction_does_not_resend_it(tmp_path, fired):
+    _write_spec(tmp_path, {"agentSpawn": [{"command": "spawn"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=False, context_builder=_context_builder())
+    state.sessions.agent_spawn_context = MagicMock(return_value=("SPAWN-CONTEXT",))
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    await _drive(state, slot)
+    assert "SPAWN-CONTEXT" not in str(client.stream.call_args_list[0])

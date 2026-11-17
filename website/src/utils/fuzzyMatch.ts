@@ -22,6 +22,8 @@
  * penalizing leading and interior gaps.
  */
 
+import { compareText } from '../i18n/format'
+
 export interface FuzzyMatchResult {
   /** Higher is a better match. Exact (case-insensitive) equality scores highest. */
   score: number;
@@ -156,7 +158,7 @@ export function compareByScoreThenName(a: ScoredNamed, b: ScoredNamed): number {
   if (b.score !== a.score) {
     return b.score - a.score;
   }
-  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  return compareText(a.name, b.name);
 }
 
 /**
@@ -173,7 +175,7 @@ export function makeScoreThenNameComparator<T>(
     if (sb !== sa) {
       return sb - sa;
     }
-    return getName(a).localeCompare(getName(b), undefined, { sensitivity: 'base' });
+    return compareText(getName(a), getName(b));
   };
 }
 

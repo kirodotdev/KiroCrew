@@ -69,9 +69,10 @@ def _rows_to_read(
     A row qualifies when it is this registry's (``_registry`` is its public
     name), it carries no publishable version, an installed app recorded this
     row as its source (same name, ``registry:`` source, same ``sourceRegistry``
-    and the same repository as the row's clone URL), and its source manifest
-    cache is not fresh. A fresh one already answers the listing and
-    ``update_status`` with a tip read within the cache's life, so the
+    or another build-pinned one, and the same repository as the row's clone
+    URL), and its source manifest cache is not fresh. A fresh one already
+    answers the listing and ``update_status`` with a tip read within the
+    cache's life, so the
     listing's hourly index fetch clones each tip at most once per manifest TTL.
     ``refresh_registries`` expires that cache first, so an explicit refresh
     reads every row that otherwise qualifies. Reads the cache files, so it
@@ -104,7 +105,9 @@ def _rows_to_read(
         if not any(
             _git_targets._same_git_target(git_url, url)
             and (
-                registry == registry_name or _git_targets._same_git_target(registry, registry_name)
+                registry == registry_name
+                or _git_targets._same_git_target(registry, registry_name)
+                or _sources._is_pinned_registry_move(registry, registry_name)
             )
             for url, registry in sources.get(name, [])
         ):

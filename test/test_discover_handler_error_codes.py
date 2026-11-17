@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -174,7 +175,7 @@ _INSTALL_CASES = [
     (
         "bundle-too-large",
         _OK,
-        _Provider(bundle=[("SKILL.md", "x" * _TOO_BIG)]),
+        lambda: _Provider(bundle=[("SKILL.md", "x" * _TOO_BIG)]),
         413,
         "Skill bundle exceeds size limit (5 MiB)",
         "skill_too_large",
@@ -182,7 +183,7 @@ _INSTALL_CASES = [
     (
         "content-too-large",
         _OK,
-        _Provider(bundle=None, content="y" * _TOO_BIG),
+        lambda: _Provider(bundle=None, content="y" * _TOO_BIG),
         413,
         "Skill content exceeds size limit",
         "skill_too_large",
@@ -200,11 +201,15 @@ async def test_install_refusal_carries_its_code(
     state: MagicMock,
     registry: ProviderRegistry,
     body: Any,
-    provider: _Provider | None,
+    provider: _Provider | Callable[[], _Provider] | None,
     status: int,
     error: str,
     code: str,
 ) -> None:
+    # The two oversized providers are built here: a module-level 5 MiB payload is held
+    # by every xdist worker for the whole run.
+    if callable(provider):
+        provider = provider()
     if provider is not None:
         registry.register(provider)
     response = await h.api_skills_discover_install(_request("POST", "/i", state, body))

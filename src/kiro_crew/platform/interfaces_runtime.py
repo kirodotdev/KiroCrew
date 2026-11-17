@@ -226,15 +226,17 @@ class CloudInstancePolicy:
 
     Some organizations require each EC2 instance to run a host agent (monitoring,
     inventory, patch compliance) whose permissions come from a managed policy that
-    already exists in every account. The built-in launcher attaches only Session
-    Manager's policy, and its permissions boundary caps the role to that, so such
-    an instance is non-compliant from the moment it boots. This descriptor is how
+    the organization puts into its accounts. The built-in launcher attaches only
+    Session Manager's policy, and its permissions boundary caps the role to that,
+    so such an instance is non-compliant from the moment it boots. This descriptor is how
     an edition says what those organizations need, without the public build naming
     any one of them.
 
     ``managed_policy_arns`` are attached to the instance role beside Session
     Manager's. Each is a full IAM policy ARN; ``{account}`` stands for the launch
-    account's id, for a policy that exists at the same path in every account.
+    account's id, for a policy kept at the same path in each account. A launch
+    into an account that holds no policy at one of these ARNs is refused before
+    its stack is deployed (``host_policy.require_managed_policies``).
 
     ``boundary_statements`` are ``Allow`` statements appended to the instance
     permissions boundary. A boundary is a ceiling, so without them an attached
@@ -686,6 +688,14 @@ class SttProvider(Protocol):
     mixed-language picker for it; the provider reads the candidates from
     ``stt_config.transcribe_language_identification`` itself.
 
+    :meth:`transcribe_file` gets the clip as it was recorded (webm from the
+    dashboard, ogg/Opus from Slack). A provider that reads only 16 kHz mono 16-bit
+    PCM WAV may set an optional ``needs_pcm_wav = True``. Core then converts any
+    other clip with its own audio decoder and passes the copy; with no decoder, a
+    container that decoder does not recognize by file suffix, or a clip over
+    ``transcribe._MAX_AUDIO_SECS`` (an hour), the transcription fails without
+    calling the provider.
+
     A streaming provider whose backend decides how long one session runs may set
     an optional ``owns_session_limit = True``. Core then applies no duration cap
     to its sessions and advertises no ``max_duration_ms``: the backend's limit is
@@ -806,7 +816,9 @@ class TelemetryProvider(Protocol):
         ``telemetry.otlp_endpoint`` first when it is a non-empty string (with no
         narrowing, byte-identical to the endpoint-only exporter this replaced),
         then each enabled ``telemetry.otlp_endpoints`` entry
-        (``metrics/otlp_endpoints.py``).  Nothing when neither is set.
+        (``metrics/otlp_endpoints.py``), then the built-in ``kiro-telemetry``
+        destination (``metrics/kiro_export.py``) once its privacy notice is
+        acknowledged.  Nothing when none of these applies.
 
         An edition that overrides it and should keep the operator's entries
         returns ``metrics.otlp_endpoints.config_destinations(cfg)`` first and its
@@ -876,6 +888,18 @@ class DashboardContributor(Protocol):
 
     def sso_login_handler(self) -> Optional[Callable]:
         """Return the SSO-login WS handler, or ``None`` to keep the core stub."""
+        ...
+
+    def company_sign_in_defaults(self) -> Dict[str, str]:
+        """The start URL and region the Company SSO sign-in form starts with.
+
+        ``{"start_url": ..., "region": ...}``; either may be omitted. WIRED:
+        ``auth/company_sign_in.py`` reads it for ``GET /api/kas-login`` only when
+        the person has not saved ``agent.kas_sso_start_url``, and drops a URL or
+        region that sign-in would refuse. The form stays editable. ``{}`` (the
+        Default) leaves the field empty. v1 method addition (no
+        ``CONTRACT_VERSION`` bump); a contributor without it supplies nothing.
+        """
         ...
 
     def mixed_internal_api_paths(self) -> "frozenset[str]":

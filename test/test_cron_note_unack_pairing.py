@@ -188,7 +188,7 @@ def test_a_summary_ending_in_half_an_emoji_acks_and_unacks(tmp_path) -> None:
     assert _items(CronService(base_dir=tmp_path), job.id) == []
 
 
-@pytest.mark.xfail(strict=True, reason="#29223: equal summaries keep the digest matching")
+@pytest.mark.xfail(strict=True, reason="equal summaries keep the digest matching")
 def test_an_older_rewrite_of_identical_summaries_invalidates_the_ids(tmp_path) -> None:
     svc = CronService(base_dir=tmp_path)
     job = svc.add_job(name="digest", message="m", every_secs=3600)

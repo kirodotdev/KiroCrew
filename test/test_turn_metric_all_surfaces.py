@@ -299,7 +299,7 @@ def test_the_emit_has_exactly_one_site_per_owner() -> None:
     )
     # BOTH persists opt out. EVENT_COMPLETE opts out because it emits its own
     # sample separately (keyed on the effective session_key). The seam opts out
-    # because it emits NOTHING — abnormal-turn sampling is out of this change's
+    # because it emits NOTHING — abnormal-turn sampling is out of this test's
     # scope, and letting its persist emit would file a linked-channel abnormal turn
     # under the slot's `dashboard` key. Pinning the SITE, not just the count,
     # catches an opt-out moved onto a third persist.

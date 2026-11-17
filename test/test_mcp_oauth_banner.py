@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from oauth_url_corpus import LEGIT_OAUTH_URLS
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_discovery
 from kiro_crew.connections import get_all_registry_providers, get_visible_providers
@@ -44,6 +45,8 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import oauth_url_contains_credential
+
+SECRET = github_classic(seed=145)
 
 # ── _is_safe_oauth_url ──
 
@@ -124,13 +127,13 @@ class TestRedactMetaForRole:
                 {
                     "server_name": "ex",
                     "oauth_url": url,
-                    "error": "AKIAIOSFODNN7EXAMPLE leaked",
+                    "error": f"{SECRET} leaked",
                 }
             ),
         )
         assert out["oauth_url"] == url
-        # _redact_value is invoked for non-preserved fields, so AKIA pattern is scrubbed.
-        assert "AKIAIOSFODNN7EXAMPLE" not in out["error"]
+        # _redact_value is invoked for non-preserved fields, so the token is scrubbed.
+        assert SECRET not in out["error"]
 
     def test_other_role_uses_default_redaction(self):
         # An assistant-meta URL pointing at an exfil-eligible domain should
@@ -475,16 +478,16 @@ class TestEmitMcpOAuthRequest:
         and the meta.server_name (used as the dedupe correlation key)."""
         slot = _ChatSlot("s1")
         state = MagicMock()
-        # AKIA pattern is on the credential-redaction list.
+        # A GitHub token is on the credential-redaction list.
         _emit_mcp_oauth_request(
             state,
             slot,
-            "evil-AKIAIOSFODNN7EXAMPLE",
+            f"evil-{SECRET}",
             "https://mcp.example.com/authorize",
         )
         m = slot.messages[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in m["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in m["meta"]["server_name"]
+        assert SECRET not in m["content"]
+        assert SECRET not in m["meta"]["server_name"]
 
     def test_completed_path_redacts_error_string(self):
         """error string is also kiro-cli-controlled and lands in the live WS
@@ -497,13 +500,13 @@ class TestEmitMcpOAuthRequest:
             slot,
             "linear",
             success=False,
-            error="leaked AKIAIOSFODNN7EXAMPLE in error",
+            error=f"leaked {SECRET} in error",
         )
         m = slot.messages[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in (m["meta"].get("error") or "")
+        assert SECRET not in (m["meta"].get("error") or "")
         # The broadcast payload also went through redacted meta.
         payload = state.broadcast_ws.call_args[0][1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in (payload["meta"].get("error") or "")
+        assert SECRET not in (payload["meta"].get("error") or "")
 
 
 # ── _mark_mcp_oauth_completed ──
@@ -666,8 +669,8 @@ class TestSupersededOAuthBanners:
         retiring on the stored name could pop a live `oauth_url`. Nothing is retired
         once redaction fired: a digest of the raw name would leak a credential verifier.
         """
-        name_a = "ghp_" + "A" * 36
-        name_b = "ghp_" + "B" * 36
+        name_a = github_classic(seed=146)
+        name_b = github_classic(seed=147)
         # Precondition: the redaction really does collapse both onto one value,
         # otherwise this test would pass for the wrong reason.
         assert chat_runner._redact_acp_string(name_a) == chat_runner._redact_acp_string(name_b)
@@ -699,7 +702,7 @@ class TestSupersededOAuthBanners:
         banner stays. Documented in the PR body and on the issue: narrow, confined
         to credential-shaped names, and no worse than main.
         """
-        name = "ghp_" + "C" * 36
+        name = github_classic(seed=148)
         slot = _ChatSlot("s1")
         _emit_mcp_oauth_request(MagicMock(), slot, name, "https://mcp.c.example/a?port=1")
         state = MagicMock()

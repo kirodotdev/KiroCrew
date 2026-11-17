@@ -17,6 +17,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     ACTION_COMMENT,
     ACTION_RESOLVE,
@@ -34,6 +36,11 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import (
 from kiro_crew.apps.builtins.ops_mission_control.backend.registry import (
     OpsProviderRegistry,
 )
+from kiro_crew.testing.synthetic_credentials import synth
+
+#: A GitLab personal access token in its published form (``glpat-`` and 20 or more
+#: characters); a shorter body is no token and stays visible.
+_GLPAT = "glpat-" + synth(20, seed=89)
 
 
 def _signal(source="test", native_id="x", title="broke") -> Signal:
@@ -444,10 +451,15 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
     ``test/conftest.py`` fixture — the sibling classes here isolate the same way.)
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
 
-        self._tmp = Path(tempfile.mkdtemp())
+        self._tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self._tmp)
 
@@ -458,7 +470,6 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
-        shutil.rmtree(self._tmp, ignore_errors=True)
 
     async def test_tokens_are_redacted_centrally(self):
         """An adapter author cannot leak a credential by forgetting to redact."""
@@ -482,12 +493,12 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
         leaky = Evidence(
             source="x",
             kind="logs",
-            title="alarm glpat-IOSFODNN7EXAMPLE tripped",
+            title=f"alarm {_GLPAT} tripped",
             body="ok",
         )
         registry.register_evidence_source(_FakeEvidence("x", [leaky]))
         out = await registry.gather_evidence(_signal(), EvidenceBudget())
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", out[0].title)
+        self.assertNotIn(_GLPAT, out[0].title)
         self.assertIn("tripped", out[0].title)  # redaction, not truncation
 
     async def test_body_is_truncated_to_budget(self):
@@ -504,11 +515,11 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
             source="x",
             kind="logs",
             title="t",
-            body="AccessDenied for glpat-IOSFODNN7EXAMPLE calling sts:AssumeRole",
+            body=f"AccessDenied for {_GLPAT} calling sts:AssumeRole",
         )
         registry.register_evidence_source(_FakeEvidence("x", [leaky]))
         out = await registry.gather_evidence(_signal(), EvidenceBudget())
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", out[0].body)
+        self.assertNotIn(_GLPAT, out[0].body)
 
     async def test_budget_holds_even_when_redaction_expands_the_body(self):
         """Redaction runs BEFORE the cap, so markers cannot push past the budget.
@@ -519,13 +530,13 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
         model's context, so it has to bound the text actually emitted.
         """
         registry = OpsProviderRegistry()
-        body = " ".join(["glpat-IOSFODNN7EXAMPLE"] * 200)
+        body = " ".join([_GLPAT] * 200)
         registry.register_evidence_source(
             _FakeEvidence("x", [Evidence(source="x", kind="logs", title="t", body=body)])
         )
         out = await registry.gather_evidence(_signal(), EvidenceBudget(max_bytes=1000))
         self.assertLessEqual(len(out[0].body), 1000)
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", out[0].body)
+        self.assertNotIn(_GLPAT, out[0].body)
 
     async def test_config_flag_accepts_what_an_operator_would_type(self):
         """`include_insufficient_data` compared against the literal string "true".
@@ -894,25 +905,27 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
     a fresh install.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
         import os
-        import tempfile
 
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self._prev_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
         self._clear_config_cache()
 
     def tearDown(self):
         import os
-        import shutil as _shutil
 
         if self._prev_home is None:
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev_home
         self._clear_config_cache()
-        _shutil.rmtree(self.tmp, ignore_errors=True)
 
     @staticmethod
     def _clear_config_cache():

@@ -180,6 +180,26 @@ def test_every_scrub_class_name_crew_writes_on_the_child_is_reserved() -> None:
             client_module._validate_deepseek_env_mapping({name: "secret://dsh-proof"})
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "kirocrew_session_key",
+        "Kirocrew_Session_Key",
+        "kirocrew_stub_session_token",
+        "kiro_api_key",
+        "dsh_api_key",
+    ],
+)
+def test_on_windows_a_case_variant_of_a_reserved_name_is_refused(monkeypatch, name: str) -> None:
+    """Windows treats this spelling as the reserved name itself."""
+    from kiro_crew.acp import client as client_module
+
+    monkeypatch.setattr(deepseek_mod.os, "name", "nt")
+    with pytest.raises(ValueError, match="sets on this child itself") as refused:
+        client_module._validate_deepseek_env_mapping({name: "secret://dsh-proof"})
+    assert repr(name) in str(refused.value)
+
+
 def test_a_provider_key_mapping_the_harness_honours_is_accepted() -> None:
     """The happy shape passes every rule, so the refusals are not vacuous."""
     from kiro_crew.acp import client as client_module

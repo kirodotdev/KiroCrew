@@ -16,6 +16,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.runtime import (
     _MCP_PROGRESS_NAME_CAP,
@@ -292,16 +293,15 @@ async def test_a_credential_shaped_server_name_is_scrubbed():
     """Uses the failed bucket: a name only in `ready` is never printed at all,
     so asserting on it would pass whether or not the scrub runs."""
     rt = _runtime()
-    _stage(
-        rt, METHOD_MCP_SERVER_INIT_FAILURE, "svc-AKIAIOSFODNN7EXAMPLE", error="nope"
-    )
+    secret = github_classic(seed=49)
+    _stage(rt, METHOD_MCP_SERVER_INIT_FAILURE, f"svc-{secret}", error="nope")
     _timeout(rt)
 
     with pytest.raises(AcpRequestTimeout) as caught:
         await rt.create_session(mcp_servers=_roster("alpha"))
 
     text = str(caught.value)
-    assert "AKIAIOSFODNN7EXAMPLE" not in text
+    assert secret not in text
     assert "svc-" in text  # scrubbed, not dropped -- the name stays identifiable
 
 

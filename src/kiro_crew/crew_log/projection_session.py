@@ -153,35 +153,40 @@ def fold_session(
     folding from seq 1.
     """
     wanted = tuple(require_name(name) for name in names)
-    bundle, stable, handle, prefix, owes_point = _fold_attempt(
-        session_id, wanted, since=since, log=log, resume=True
-    )
-    if stable:
-        return _persisted(bundle, handle=handle, prefix=prefix, owes_point=owes_point)
-    # The file's identity changed WHILE it was being folded: the unit was removed
-    # and recreated between the identity read and the pass, so the entries just
-    # consumed may belong to a different file than the state they were folded onto.
-    # One more attempt, from scratch -- no cached bundle, no savepoint, and a freshly
-    # opened handle, since the one this call was given does not name the file it was
-    # opened on.
-    bundle, stable, handle, prefix, _owes = _fold_attempt(
-        session_id, wanted, since=None, log=None, resume=False
-    )
-    if stable:
-        return _persisted(bundle, handle=handle, prefix=prefix)
-    # Twice in a row, so the unit is being recreated faster than it can be read.
-    # The value is served, because the alternative is refusing to render a session
-    # that exists, but its identity is reported as UNKNOWN: that is what stops a
-    # caller from reusing it and stops it from being written to disk, both of which
-    # compare against this field and neither of which accepts ``None``.
-    logger.debug("crew log %s changed identity twice while folding it", session_id)
-    return SessionProjections(
-        session_id=session_id,
-        last_seq=bundle.last_seq,
-        checkpoints=bundle.checkpoints,
-        origin=None,
-        saved_seq=0,
-    )
+    from kiro_crew.crew_log import read_budget
+
+    # One session fold is one call to the read budget: every record it decodes counts,
+    # the savepoint's prefix check included, and a cold fold has delta 0.
+    with read_budget.fold_scope(session_id, "session"):
+        bundle, stable, handle, prefix, owes_point = _fold_attempt(
+            session_id, wanted, since=since, log=log, resume=True
+        )
+        if stable:
+            return _persisted(bundle, handle=handle, prefix=prefix, owes_point=owes_point)
+        # The file's identity changed WHILE it was being folded: the unit was removed
+        # and recreated between the identity read and the pass, so the entries just
+        # consumed may belong to a different file than the state they were folded onto.
+        # One more attempt, from scratch -- no cached bundle, no savepoint, and a freshly
+        # opened handle, since the one this call was given does not name the file it was
+        # opened on.
+        bundle, stable, handle, prefix, _owes = _fold_attempt(
+            session_id, wanted, since=None, log=None, resume=False
+        )
+        if stable:
+            return _persisted(bundle, handle=handle, prefix=prefix)
+        # Twice in a row, so the unit is being recreated faster than it can be read.
+        # The value is served, because the alternative is refusing to render a session
+        # that exists, but its identity is reported as UNKNOWN: that is what stops a
+        # caller from reusing it and stops it from being written to disk, both of which
+        # compare against this field and neither of which accepts ``None``.
+        logger.debug("crew log %s changed identity twice while folding it", session_id)
+        return SessionProjections(
+            session_id=session_id,
+            last_seq=bundle.last_seq,
+            checkpoints=bundle.checkpoints,
+            origin=None,
+            saved_seq=0,
+        )
 
 
 def _note_session_fold_origin(origin: str) -> None:
@@ -199,6 +204,9 @@ def _note_session_fold_origin(origin: str) -> None:
     the stamp itself is a no-op, so a dashboard read pays one attribute lookup.
     No ``exc_info``: this module's frames bind open ``CrewLog`` handles.
     """
+    from kiro_crew.crew_log import read_budget
+
+    read_budget.note_origin(origin)
     try:
         from kiro_crew.metrics.crew_log_health import SCOPE_SESSION, note_fold_origin
 
@@ -424,6 +432,21 @@ def _fold_attempt(
     )
     reached = max((cp.last_seq for cp in grown.values()), default=last_seq)
     point = _reached_point(cursor, reached, since if reused_cached_state else None, points)
+    if isinstance(prefix_seen, savepoints.CutWitness):
+        # The file may have GROWN during the pass. A cut count vouches for every record
+        # the pass read, not only those below the seq sampled before it, so when the
+        # files are larger than before the pass and the count still reads the same, the
+        # witness names what was FOLDED and the fingerprint the write compares against
+        # is the file as this pass left it. Without that, any append while the pass ran
+        # cost the savepoint. A file that moved WITHOUT growing (rewritten in place)
+        # keeps the pre-pass fingerprint, so the write refuses it. A digest covers only
+        # what it hashed, so a digest witness keeps both, and a grown pass writes nothing.
+        _origin, live_size, live_mtime = _log_identity(handle)
+        grew = size is not None and live_size is not None and live_size > size
+        if grew and savepoints.cuts_unchanged(handle, prefix_seen):
+            if reached > prefix_seen.seq:
+                prefix_seen = savepoints.CutWitness(seq=reached, cuts=prefix_seen.cuts)
+            size, mtime_ns = live_size, live_mtime
     if prefix_seen is not None and cursor.at is not None and cursor.at.seq == prefix_seen.seq:
         # The position of the record the witness ends at, from THIS pass's own walk, so
         # the savepoint it is written into lets the next resume seek there.
@@ -511,6 +534,33 @@ def _persisted(
     from kiro_crew.crew_log import checkpoint as savepoints
 
     return savepoints.save(handle, bundle, prefix=prefix, owes_point=owes_point)
+
+
+def seal_session_bundle(bundle: SessionProjections) -> None:
+    """Write *bundle*'s savepoint at its seq, however few entries it advanced.
+
+    The write :func:`~kiro_crew.crew_log.projection_session_memo.seal_session_folds`
+    makes when a session closes; the caller holds the session's fold lock. Kept in this
+    module so the savepoint writers are reached from the fold surface only. The witness is
+    the cut count the bundle has custody under, re-read here, so a cut since the bundle
+    was folded writes nothing. A bundle with no custody (no cut counter) writes nothing:
+    only a pass that folds its prefix can vouch for it.
+    """
+    if bundle.cuts is None or bundle.last_seq <= bundle.saved_seq:
+        return
+    handle = open_session_log(bundle.session_id)
+    if handle is None:
+        return
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    point = bundle.resume
+    witness = savepoints.CutWitness(
+        seq=bundle.last_seq,
+        cuts=bundle.cuts,
+        resume=point if point is not None and point.seq == bundle.last_seq else None,
+    )
+    if savepoints.cuts_unchanged(handle, witness):
+        savepoints.save(handle, bundle, prefix=witness, final=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -708,6 +758,12 @@ def _tail_reader(
         # The kernel's empty watermark is -1 and a checkpoint's is 0; both mean
         # nothing consumed, and the log's own first seq is 1.
         floor = max(watermark, 0)
+        if floor == 0:
+            # A walk from the first record reads the whole unit, whatever else this
+            # pass resumed: to the read budget it is cold, with delta 0.
+            from kiro_crew.crew_log import read_budget
+
+            read_budget.note_origin("cold")
         resume = points.get(floor) if points else None
         if cursor is None or floor == 0 or resume is not None:
             return handle.iter_from(floor + 1, known=KNOWN_TYPES, resume=resume, cursor=cursor)

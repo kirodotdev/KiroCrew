@@ -55,11 +55,16 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
     from kiro_crew.connections import get_provider, is_preregistered
     from kiro_crew.connections.oauth_clients import (
         apply_preregistered_oauth_client,
+        keeps_user_client,
         provider_for_server,
         resolve_oauth_client,
         strip_preregistered_oauth_client,
     )
 
+    if keeps_user_client(name):
+        # This provider's client stays in the vault and is never written here, so
+        # a client on the entry is the user's own: nothing to bind, nothing to strip.
+        return entry
     provider = provider_for_server(name, entry)
     if provider is None:
         # A managed entry NAMED for a pre-registered provider whose URL does not
@@ -75,9 +80,9 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
         return entry
     from kiro_crew.connections import crew_oauth
 
-    if crew_oauth.manages(str(provider["slug"])):
-        # Crew signs in with the vault's copy and KAS discards the oauth block,
-        # so the plaintext secret here would be read by nobody.
+    if crew_oauth.strips_spec_secret(str(provider["slug"])):
+        # Crew signs in with the vault's copy and no kiro-cli session reads the
+        # oauth block, so the plaintext secret here would be read by nobody.
         return strip_preregistered_oauth_client(entry)
     from kiro_crew.secrets import SecretVault
 
@@ -449,8 +454,32 @@ def write_default_spec(
                         # retain unverifiable tools.
                         return False
 
-                on_disk_app = {_k for _k in on_disk if ":" in _k and _k not in managed_names}
-                for _k in [k for k in servers if ":" in k and k not in managed_names]:
+                # A colon is not app ownership: a global or Kiro Crew mcp.json
+                # server keyed ``npm:foo`` keeps its colon through the merge. Such a
+                # key is the user's when a source this rebuild read declares it and
+                # no installed app's manifest (enabled or not) mints it, so it is
+                # neither deleted here nor pinned to the copy already on disk.
+                _app_claimed = set(app_owned_at_start) | set(mcp_sources._app_owned_mcp_keys())
+                _user_keys = {
+                    _n
+                    for scope in (extra_shared_mcp, shared_mcp, kirocrew_mcp)
+                    for _n, _decl in scope.items()
+                    # Only a real declaration vouches: the merge skips a non-dict
+                    # value, so a ``null`` or string entry declares nothing.
+                    if isinstance(_decl, dict)
+                    and ":" in _n
+                    and mcp_server_alias(_n) not in _app_claimed
+                }
+                on_disk_app = {
+                    _k
+                    for _k in on_disk
+                    if ":" in _k and _k not in managed_names and _k not in _user_keys
+                }
+                for _k in [
+                    k
+                    for k in servers
+                    if ":" in k and k not in managed_names and k not in _user_keys
+                ]:
                     if not _app_of_key_enabled(_k):
                         del servers[_k]
                 for _k, _v in on_disk.items():

@@ -30,6 +30,7 @@ import { Badge, Btn, Card, CardTitle } from './ui'
 import Clickable from './Clickable'
 import { SettingRef } from './settingRef/SettingRef'
 import { i18nT } from '../i18n/t'
+import { WorkConfirmDeclined } from '../utils/workInFlight'
 import { copyToClipboard } from '../utils/clipboard'
 import { useAppSelector } from '../store'
 
@@ -383,7 +384,11 @@ export function TailnetMobileCard() {
       setQr(res)
       invalidate()
     },
-    onError: (err: Error) => setActionError(setupErrorMessage(err)),
+    onError: (err: Error) => {
+      // Declining the "work is running" confirmation stops the setup quietly.
+      if (err instanceof WorkConfirmDeclined) return
+      setActionError(setupErrorMessage(err))
+    },
     onSettled: () => setSetupRestarting(false),
   })
 

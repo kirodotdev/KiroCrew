@@ -611,7 +611,11 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 candidate.relative_to(skills_root)
             except ValueError:
                 logger.warning("Refusing bundle install outside skills root: %s", skill_dir)
-                return 0
+                # Raised, not returned: the caller turns an OSError into a failed
+                # install, and a plain return would report success with nothing written.
+                raise PermissionError(
+                    errno.EPERM, "the install path is outside the skills folder", key
+                ) from None
             # Link defense: if the skill dir itself is a link, every containment
             # check below resolves against the link TARGET, so a pre-planted one
             # would redirect the whole bundle write outside the skills root
@@ -628,9 +632,12 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             # `unlink_link_or_junction` detaches a junction with `rmdir`, so the
             # target's contents are left alone exactly as `unlink` leaves a
             # symlink's.
-            if platform_compat.is_link_or_junction(skill_dir):
-                logger.warning("Replacing linked skill dir: %s", skill_dir)
-                platform_compat.unlink_link_or_junction(skill_dir)
+            #
+            # The link is moved aside only once the new bundle has verified (below,
+            # just before the swap): the bundle is built in a sibling stage that
+            # never passes through it, and an install that fails, at the bundle or
+            # at the publish, must leave the existing install in place, linked or
+            # not. Only after the publish is the old link itself detached.
             # Build the new bundle in a dot-prefixed sibling (the loader skips
             # dot dirs); the old install is only swapped out once it verifies.
             skill_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -638,6 +645,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             stage = skill_dir.with_name(f".{skill_dir.name}.{secrets.token_hex(6)}")
             stage.mkdir()
             aside: Path | None = None
+            aside_is_link = False
             try:
                 resolved_root = stage.resolve()
                 # Belt-and-suspenders: the staging dir must itself land under
@@ -646,8 +654,9 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     resolved_root.relative_to(skills_root)
                 except ValueError:
                     logger.warning("Refusing bundle write outside skills root: %s", skill_dir)
-                    stage.rmdir()
-                    return 0
+                    raise PermissionError(
+                        errno.EPERM, "the install path is outside the skills folder", key
+                    ) from None
                 written = 0
                 for rel_path, file_content in bundle:
                     if ".." in rel_path or rel_path.startswith("/") or rel_path.startswith("./.."):
@@ -677,9 +686,16 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     (stage / "SKILL.md").write_text(agents_content, encoding="utf-8", newline="")
                 if not (stage / "SKILL.md").is_file():
                     raise FileNotFoundError(errno.ENOENT, "bundle has no SKILL.md", "SKILL.md")
+                old = stage.with_name(stage.name + ".old")
+                aside_is_link = platform_compat.is_link_or_junction(skill_dir)
+                if aside_is_link:
+                    # Moved aside, never followed: os.rename renames the link
+                    # itself, so a failed publish below puts it back unchanged.
+                    logger.warning("Replacing linked skill dir: %s", skill_dir)
+                    os.rename(skill_dir, old)
+                    aside = old
                 # No-replace publish: without consent an existing install (even empty) stays.
-                if overwrite and skill_dir.exists():
-                    old = stage.with_name(stage.name + ".old")
+                elif overwrite and skill_dir.exists():
                     os.rename(skill_dir, old)
                     aside = old
                 platform_compat.publish_dir_noreplace(stage, skill_dir)
@@ -694,7 +710,14 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     shutil.rmtree(stage, ignore_errors=True)
                 raise
             if aside is not None:
-                shutil.rmtree(aside, ignore_errors=True)
+                if aside_is_link:
+                    # Detach the old link only; its target is the user's own folder.
+                    try:
+                        platform_compat.unlink_link_or_junction(aside)
+                    except OSError:
+                        logger.warning("Could not remove the old link for %s", key)
+                else:
+                    shutil.rmtree(aside, ignore_errors=True)
             return written
 
         try:

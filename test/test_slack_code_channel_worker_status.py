@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 import test_slack_code_channel_workspace as _ws
+from slack_code_channels_helpers import store_channel_binding
 
 from kiro_crew.slack.code_channels import binding as cc_binding
 from kiro_crew.slack.code_channels import status
@@ -62,6 +63,7 @@ def slack():
 def _channel_with_a_running_worker(tmp_path, repo, monkeypatch):
     h = _ws.Harness(tmp_path)
     dash = _ws.FakeDashboard()
+    store_channel_binding(tmp_path, monkeypatch)
 
     async def create_folder(state, parent_id, name, project_dir):
         return state.add_folder(f"F{len(state._folders)}", name, parent_id, project_dir)

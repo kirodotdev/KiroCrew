@@ -24,9 +24,9 @@ that rebinds ``kiro_crew.acp.client.wrap_argv`` (or the runtime's) reaching the
 launch it drives, and it is the seam a test of this module fills with fakes.
 
 The rest of this module is what several per-process hosts share before the tail:
-the Node-adapter resolution ladder (claude-agent-acp, codex-acp, pi-acp), the
-self-served binary ladder (opencode, goose, DeepSeek Harness), the per-gateway
-resolution caches' generation fence, the enforced-host credential-mask preflight,
+the Node-adapter resolution ladder (claude-agent-acp, codex-acp, pi-acp) and the
+reader of such an adapter's npm manifest version, the self-served binary ladder
+(opencode, goose, DeepSeek Harness), the per-gateway resolution caches' generation fence, the enforced-host credential-mask preflight,
 and the plumbing of a host's read-back child. A host's own knowledge lives in its
 adapter module under :mod:`kiro_crew.acp.harness`; nothing here names one host.
 """
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import os
 import re
@@ -46,11 +47,18 @@ from types import ModuleType
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Protocol, Sequence
 
 from kiro_crew import acp_tool_gate, platform_compat
+from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, is_windows_spawn_blocked
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import append_mcp_path_dirs, describe_search_path, mise_data_dir
+
+# Re-exported: the launcher was these helpers' first home, and their callers and
+# tests still import them from here (``acp.kas_app_identity`` reads the port gate).
+# They live in port_resolution now so the MCP gateway daemon can apply them
+# without importing the launcher.
+from kiro_crew.port_resolution import _well_formed_port, drop_foreign_inherited_port  # noqa: F401
 from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
 
 # The client's logger name, because the helpers below were the client's and every
@@ -421,6 +429,42 @@ def _vendored_adapter_entry(
             real_entry.parent,
         )
     return None
+
+
+def _node_adapter_manifest_version(argv: list[str], package: str) -> str:
+    """The ``version`` in the npm manifest of *package* that *argv* runs, or ``""``.
+
+    One reader for the Node adapters whose version is read off disk, never by
+    running the adapter, which enters stdio-server mode on any argv. Each argv
+    element that is a file is followed to its real path. The manifest is looked for
+    in a Windows ``.cmd`` shim's ``node_modules`` (the npm prefix, or beside the
+    package from ``node_modules/.bin``) and in the four directories above the
+    element. Only a manifest named *package* counts, so a wrapper script or an
+    override that names some other file answers ``""``. Blocking (small file reads).
+    """
+    for element in argv:
+        try:
+            here = Path(os.path.realpath(element))
+        except (OSError, ValueError):
+            continue
+        if not here.is_file():
+            continue
+        shim_roots = [here.parent / "node_modules"]
+        if here.parent.name == ".bin":
+            shim_roots.append(here.parent.parent)
+        candidates = [root / package / "package.json" for root in shim_roots]
+        candidates += [d / "package.json" for d in list(here.parents)[:4]]
+        for manifest in candidates:
+            try:
+                if manifest.stat().st_size > 1 << 20:
+                    continue
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError, RecursionError):
+                continue
+            if isinstance(data, dict) and data.get("name") == package:
+                version = data.get("version")
+                return version.strip() if isinstance(version, str) else ""
+    return ""
 
 
 # ── The per-gateway resolution caches' generation fence, and the self-served ladder ──
@@ -913,6 +957,10 @@ class LaunchRequest:
     pod_home_remap: bool = False
     #: The runtime allocates scratch through its guarded hop; the client never has.
     guard_scratch_hops: bool = False
+    #: A frozen SSH_AUTH_SOCK-forward request the caller resolved earlier (the
+    #: chat-sharing placement keys on it before it spawns). ``None`` means resolve
+    #: it here via ``tools.forward_ssh_auth_sock`` like every other launch.
+    forward_ssh_auth_sock_override: bool | None = None
     env_after_scrub: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     env_after_marker: Callable[[dict[str, str]], None] = field(default=_no_env_step)
     env_after_scratch: Callable[[dict[str, str]], None] = field(default=_no_env_step)
@@ -972,47 +1020,6 @@ async def _note_ssh_auth_sock_withheld(
     if not notice:
         return
     tools.logger.warning("%s", notice)
-
-
-def _well_formed_port(value: str) -> bool:
-    """1-5 ASCII decimal digits naming a port in 1..65535 (the KAS projection's gate)."""
-    return 1 <= len(value) <= 5 and value.isascii() and value.isdecimal() and 0 < int(value) < 65536
-
-
-def drop_foreign_inherited_port(env: dict[str, str]) -> None:
-    """Remove an inherited ``KIROCREW_PORT`` that names a gateway other than this one.
-
-    A gateway started from a shell that already exports ``KIROCREW_PORT`` (an
-    agent shell of ANOTHER gateway carries one) keeps that value in its own
-    environment beside the ``KIROCREW_BOUND_PORT`` its listener exports
-    (``dashboard.server_runtime.listener._export_bound_port``). Every child it
-    spawns -- the agent CLI and the managed MCP servers that CLI starts --
-    inherits both, and ``port_resolution.resolve_client_port_src`` reads
-    ``KIROCREW_PORT`` first. The child then dials the OTHER gateway with THIS
-    gateway's credential and every tool call fails ``internal_auth_mismatch``.
-
-    Dropping the foreign value, rather than overwriting it with the bound port,
-    is deliberate: the listener keeps the two variables apart so the transient
-    bound port is never written under the operator-intent name (which
-    ``service_environment()`` would bake into a unit file), and nothing here is
-    persisted -- it shapes one child's environment at spawn time. With the
-    foreign value gone the child's chain falls to ``KIROCREW_BOUND_PORT``, the
-    gateway that spawned it.
-
-    A no-op when no well-formed bound port is exported (nothing to prove the
-    inherited value foreign) or when the inherited value already equals it (the
-    operator's own ``KIROCREW_PORT`` that this gateway bound). Mutates *env*.
-    """
-    bound = env.get("KIROCREW_BOUND_PORT", "")
-    if not _well_formed_port(bound):
-        return
-    inherited = env.get("KIROCREW_PORT")
-    if inherited is None:
-        return
-    value = inherited.strip()
-    if value.isascii() and value.isdecimal() and int(value) == int(bound):
-        return
-    env.pop("KIROCREW_PORT", None)
 
 
 def process_directory(host: LaunchHost) -> tuple[str, int | None]:
@@ -1134,9 +1141,16 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # decide whether ~/.ssh is readable to the child, which is what makes the
     # forward a default rather than a consent. Scoped to this agent spawn:
     # generic launchers default the flag off and keep scrubbing the socket.
-    forward_ssh_auth_sock = await asyncio.to_thread(
-        tools.forward_ssh_auth_sock, request.sandbox_mode, tuple(request.extra_hidden_dirs)
-    )
+    #
+    # A frozen request (the chat-sharing placement, which read the consent
+    # before it keyed on it) is used as the request; the wrap still judges it on
+    # the tier it applies. Every other caller resolves it here.
+    if request.forward_ssh_auth_sock_override is not None:
+        forward_ssh_auth_sock = request.forward_ssh_auth_sock_override
+    else:
+        forward_ssh_auth_sock = await asyncio.to_thread(
+            tools.forward_ssh_auth_sock, request.sandbox_mode, tuple(request.extra_hidden_dirs)
+        )
     forward_applied = [forward_ssh_auth_sock]
     argv, host._sandbox_cleanup = await tools.wrap_argv_async(
         argv,
@@ -1224,6 +1238,15 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     env = tools.scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
     if had_ssh_auth_sock and not forward_ssh_auth_sock:
         await _note_ssh_auth_sock_withheld(host, tools, request)
+    # ACP harnesses can start their own managed MCP children, which boot an
+    # independent platform context. When this gateway installed its ceiling
+    # from central distribution, let those children inherit the verified local
+    # cache without exposing the control-plane URL or headers that the scrub
+    # above deliberately removed. The wrap above already showed this tree the
+    # cache read-only (``sandbox_tiers.enterprise_policy_cache_view``).
+    from kiro_crew.agent import policy_cache_only_env
+
+    env.update(policy_cache_only_env())
     # Bundled skill scripts must not depend on a system ``python`` name. The
     # desktop bundles carry their interpreter outside the user's PATH, while this
     # path is already running under the exact environment that can import
@@ -1304,7 +1327,11 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         factory = functools.partial(tools.retrying_spawn_factory, factory)
     try:
         process = await tools.platform_compat.create_windows_cleanup_owned_process(factory)
-    except BaseException:
+    except BaseException as exc:
+        if is_windows_spawn_blocked(exc):
+            # Marked here, at process creation, so the client reads only this
+            # refusal as a policy block, never a later access denied (a cleanup).
+            setattr(exc, SPAWN_BLOCKED_BINARY_ATTR, getattr(exc, "filename", None) or argv[0])
         await host._discard_bound_workspace()
         host._discard_sandbox_cleanup()
         raise

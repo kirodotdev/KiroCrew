@@ -93,6 +93,7 @@ agent loads only the one it needs.
 |---|---|
 | [app-kit-platform.md](app-kit-platform.md) | App contracts: MCP scoping, agent JSON composition, permissions, and dependencies. |
 | [plugin-import.md](plugin-import.md) | Converting a manifest-declared plugin package into an installable app: manifest discovery, per-kind mapping, root containment, and what is reported instead of converted. |
+| [agent-plugins.md](agent-plugins.md) | Discovering and validating installed Agent Plugins (agent-plugins.org 1.0.0) from the shared `~/.kiro/powers` tree: states, manifest, skills and `mcp.json` rules; the converter; the owner's read-only list, and what is held until the rulings. |
 | [harness-plugin-mapping.md](harness-plugin-mapping.md) | Where other harnesses' plugin contribution kinds land -- an existing extension point, a converter, or nowhere -- and the reason per kind. |
 | [mcp-apps.md](mcp-apps.md) | Apps that surface as MCP servers. |
 | [mcp-shareability.md](mcp-shareability.md) | Predicting which MCP servers can share one backend, from local evidence. |
@@ -118,7 +119,7 @@ agent loads only the one it needs.
 |---|---|
 | [papyrus.md](papyrus.md) | The Papyrus writing app. |
 | [aws-control.md](aws-control.md) | The AWS account portal and S3-backed cloud drive app: accounts, Drive/Library/Backup, consent and confirmation guards, sharing, the crew bundle builder, and the crew container runtime a remote crew runs as. |
-| [command-bar.md](command-bar.md) | The opt-in launcher that replaces quick-search: the overlay seam, the request-free root, ranking and scopes. |
+| [command-bar.md](command-bar.md) | The dashboard's quick-search launcher and its on/off setting: the request-free root, ranking, scopes, and the fold of the former Command Bar app. |
 | [pptx-maker.md](pptx-maker.md) | Deck generation. |
 | [meetings.md](meetings.md) | Meeting capture and summarization. |
 | [issue-radar.md](issue-radar.md) | Issue triage and grouping. |

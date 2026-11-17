@@ -94,8 +94,10 @@ PRESIGN_MAX_SECS = 7 * 24 * 3600
 #: Object keys are user-derived (file and folder names). One conservative
 #: shape: printable segments joined by ``/``, no empty / dot / dot-dot
 #: segment, no leading slash, bounded length. S3 allows far more; the drive
-#: does not need to.
-_KEY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]{0,254}$")
+#: does not need to. The segment ends at ``\Z``, not ``$``: ``$`` also matches
+#: before a trailing newline, which would let "a.txt\n" through as a second,
+#: look-alike object key.
+_KEY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]{0,254}\Z")
 
 
 def validate_key(key: str) -> Optional[str]:

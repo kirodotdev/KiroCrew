@@ -518,23 +518,16 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
         if _latest is not None:
             _age_s = cli_doctor.dump_age_seconds(_latest)
             # Every gateway start pre-creates its own dump file, so a dump WITH
-            # stacks that a later local session's header file sits after was
-            # written by a session another one has already replaced without
-            # wedging. That is a past incident: counting it as something to fix
-            # makes `doctor` report a fault for a week after one stall, on a
-            # gateway that has been healthy the whole time — and the real
-            # finding in that run gets read as one more line of the same noise.
+            # stacks followed by a later session's header file came from a
+            # session since replaced without wedging: a past stall. Counting it
+            # would make `doctor` report a fault for a week after one stall and
+            # bury the real finding in noise.
             #
-            # Ordering alone is not enough to conclude it, though. Under the
-            # shipped `Restart=always` unit a wedged gateway is replaced within
-            # seconds, so the successor supersedes the stall almost at once and
-            # a gateway wedging hourly would downgrade every stall forever —
-            # under-reporting exactly the chronic case an operator needs. Two
-            # further terms keep that case visible: a stall inside
-            # `_STALL_CURRENT_SECS` is still current news whatever restarted
-            # since, and two or more stalls on record is a gateway wedging
-            # repeatedly, which no amount of successful restarting makes
-            # historical.
+            # Ordering alone is not enough. Under the shipped `Restart=always`
+            # unit a wedged gateway is replaced in seconds, so an hourly wedge
+            # would always look past. Two terms keep that chronic case visible:
+            # a stall inside `_STALL_CURRENT_SECS` is still current, and two or
+            # more stalls on record mean a gateway that keeps wedging.
             #
             # The stacks are printed either way, because they are what anyone
             # investigating that stall needs; only the issue verdict changes.
@@ -546,8 +539,17 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
             )
             if _age_s < 7 * 86400:  # Less than 7 days old
                 _age_h = _age_s / 3600
-                _icon = "ℹ️ " if _superseded else "⚠️ "
-                print(f"  last dump:   {_icon} {_latest.name} ({_age_h:.1f}h ago)")
+                # The name is when that gateway STARTED (the file is opened at
+                # startup); when the alarm fired is the file's last write.
+                _attribution = cli_doctor.attribute_dump(_latest, cli_doctor.config_dir())
+                # A host-wide pause is a fault of the host, not of the gateway:
+                # shown, never counted as an issue to fix here.
+                _host_pause = _attribution.host_pause_secs is not None
+                _icon = "ℹ️ " if _superseded or _host_pause else "⚠️ "
+                print(
+                    f"  last dump:   {_icon} {_latest.name} "
+                    f"(fired {cli_doctor.dump_fired_at(_latest)}, {_age_h:.1f}h ago)"
+                )
                 if _superseded:
                     print(
                         "               a later gateway session started after it and did "
@@ -565,7 +567,6 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                 # stack and the cron in-flight markers on disk -- no gateway
                 # needed -- and phrased as evidence plus the one action it
                 # supports, or the statement that it supports none.
-                _attribution = cli_doctor.attribute_dump(_latest, cli_doctor.config_dir())
                 print("  attribution:")
                 for _line in cli_doctor.describe(_attribution):
                     print(f"    {_line}")
@@ -575,13 +576,13 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                     _paused_job = cli_doctor.job_pause_state_from_disk(_attribution.job.job_id)
                     if _paused_job is not None:
                         print(f"    job is currently {_paused_job}")
-                    if not _superseded:
+                    if not _superseded and not _host_pause:
                         issues.append(
                             "loop-stall dump attributed to cron job "
                             f"{render._safe_display(_attribution.job.name)} "
                             f"({render._safe_display(_attribution.job.job_id)})"
                         )
-                if not _superseded:
+                if not _superseded and not _host_pause:
                     issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
             else:
                 print(
@@ -600,7 +601,7 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                 "without a clean shutdown and left no stacks"
             )
             print(
-                f"               newest started {_newest_h:.1f}h ago: "
+                f"               newest last written {_newest_h:.1f}h ago: "
                 f"{render._safe_display(_unclean[-1].name)}"
             )
         print(f"  dump dir:    {dumps_dir}")

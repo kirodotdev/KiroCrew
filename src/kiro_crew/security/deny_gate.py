@@ -34,11 +34,23 @@ from kiro_crew.executors import maintenance_executor
 from kiro_crew.security import _submodule, logger
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
+from .redaction_switch import always_scan
 from .shell_commands import sharing_views
 from .text_redaction import redact_and_truncate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def _audit_clip(text: str) -> str:
+    """*text* for an SEL row: scanned in full, then clipped to 200 characters.
+
+    The security event log stays redacted whatever the owner's setting, and a clip
+    of text a seam left unscanned can cut a credential into a fragment that the
+    writer's own pass cannot recognise.
+    """
+    with always_scan():
+        return redact_and_truncate(text, 200)
 
 
 def _schedule_push_allow_audit(command: str) -> None:
@@ -78,7 +90,7 @@ def _emit_push_allow_event(command: str) -> None:
                 outcome="allowed",
                 resources="feature_branch_push",
                 metadata={
-                    "command": redact_and_truncate(command, 200),
+                    "command": _audit_clip(command),
                     "mechanism": "BRANCH_GATE",
                 },
             )
@@ -88,6 +100,59 @@ def _emit_push_allow_event(command: str) -> None:
             "SEL audit failed for push_allowed (allow stands)",
             exc_info=True,
         )
+
+
+def _strip_win_program_suffix(word: str) -> str:
+    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
+
+
+def _cmd_line_args(args: "list[str]") -> "list[str] | None":
+    """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
+
+    cmd.exe also takes the switch glued to another switch or to the line (``/s/c``,
+    ``/c"dir"``); the rest of that word is then the first word of the line.
+    """
+    for i, arg in enumerate(args):
+        if not arg.startswith("/"):
+            return None
+        low = arg.lower()
+        for switch in ("/c", "/k"):
+            at = low.find(switch)
+            if at != -1:
+                tail = arg[at + 2 :]
+                return ([tail] if tail else []) + args[i + 1 :]
+    return None
+
+
+def _win_program_index(tokens: "list[str]") -> "int | None":
+    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
+    start = 0
+    while (found := _submodule("argv_rules")._program_args(tokens[start:])) is not None:
+        program, args = found
+        rest = _cmd_line_args(args) if _strip_win_program_suffix(program) == "cmd" else None
+        if not rest:
+            return len(tokens) - len(args) - 1
+        start = len(tokens) - len(rest)
+    return None
+
+
+def _cmd_c_payload(tokens: "list[str]") -> "list[str]":
+    """The quoted line of ``cmd /c "<line>"`` (or ``/k``), read as a nested command."""
+    found = _submodule("argv_rules")._program_args(tokens)
+    if found is None or _strip_win_program_suffix(found[0]) != "cmd":
+        return []
+    rest = _cmd_line_args(found[1])
+    return rest if rest is not None and len(rest) == 1 and " " in rest[0].strip() else []
+
+
+# An escape INSIDE a word (cmd ``a^w^s``, PowerShell ``a`w`s``) that the shell drops.
+# Only between two ASCII alphanumerics, so a PowerShell line continuation, ``git^``,
+# ``$(...)`` and POSIX command substitution (`` `date` ``) are left alone.
+def _fold_win_in_word_escapes(text: str) -> str:
+    sides = zip(text, " " + text[:-1], text[1:] + " ")  # (char, before, after)
+    return "".join(
+        c for c, b, a in sides if c not in "^`" or not (b + a).isascii() or not (b + a).isalnum()
+    )
 
 
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
@@ -266,6 +331,12 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             stripped = " ".join(token for token in tokens if token.strip())
             if stripped and stripped not in candidates:
                 candidates.append(stripped)
+            # Windows resolves ``aws.exe`` / ``aws.cmd`` / ``aws.bat`` to the same
+            # program as ``aws``; the program word only, appended, never substituted.
+            at = _win_program_index(tokens)
+            if at is not None and _strip_win_program_suffix(tokens[at]) != tokens[at]:
+                words = [*tokens[:at], _strip_win_program_suffix(tokens[at]), *tokens[at + 1 :]]
+                candidates.append(" ".join(words))
             for candidate in candidates:
                 if not (is_root and not emit_self) and candidate not in seen_views:
                     seen_views.add(candidate)
@@ -276,6 +347,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             )
             # A redirect before the ``-c`` operand hides the script from the payloads.
             payloads = [*payloads, *_submodule("shell_commands").redirect_hidden_payloads(source)]
+            payloads += _cmd_c_payload(tokens)
             programs = _shell_normalizer._argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -375,6 +447,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
 # ``print('<name>'); log('<verb>')``, which mints nothing.
 _INTERP_BINDING_RE = re.compile(r"\b([a-z_]\w*)\s*=\s*('[^']*'|\"[^\"]*\")")
 _INTERP_IDENT_RE = re.compile(r"\b[a-z_]\w*\b")
+_INTERP_ROW_NEEDS = "crew"  # every alternative of both rows needs it: without it, no copy is built
 
 
 # ``"<name> %s" % "<verb>"`` -- printf-style formatting is the same evasion as adjacent
@@ -454,6 +527,115 @@ class _DenyWaiver:
             verdict = _emit_deny_exception_event(self._tool_name, key, SESSION_OVERRIDE_MECHANISM)
             self._used[key] = verdict
         return verdict
+
+
+# Matches the ssh floor's _MAX_SSH_READING_DEPTH; unify the two once both are on main.
+_MAX_SUBSTITUTION_DEPTH = 32
+# Where a shell word starts, for a ``#`` comment and the ``case`` / ``esac`` words.
+_WORD_BREAK = frozenset(" \t\n;&|()<>`")
+_DEPTH_REFUSAL = f"substitution nesting deeper than {_MAX_SUBSTITUTION_DEPTH}"
+_DEPTH_NOTE = (
+    f"a command nested more than {_MAX_SUBSTITUTION_DEPTH} substitutions deep is refused;"
+    " flatten it"
+)
+
+
+def _nested_past_cap(text: str) -> bool:
+    """True once *text* nests command text more than ``_MAX_SUBSTITUTION_DEPTH`` deep.
+
+    One pass, linear in *text*. The floors re-walk every substitution body as its own
+    string, so their cost grows with depth times length; past the cap the command is
+    refused before any floor runs. Bash opens a FRESH quoting context inside each
+    ``$(``, so ``"$(echo "$(``... nests even though the quotes alternate: the scan keeps
+    a stack of contexts rather than one flat quote state. Only ``$(``, ``<(`` and
+    ``>(`` count. A bare ``(`` is tracked, so its ``)`` closes it, and so is a backtick
+    span, so a ``)`` or quote inside it reads right, but neither counts. An unescaped
+    backtick cannot open inside a backtick span (it closes it, even from inside a
+    double-quoted string there), so between two counted levels sits at most one
+    backtick level and the floors' work stays within about twice the cap. Not counting
+    them also keeps strings that are not posix shell from tripping the cap: PowerShell
+    escapes with a backtick (a backtick before a quote), and a non-shell tool string may nest parens.
+    A ``#`` comment runs to its newline, and between ``case`` and ``esac`` a ``)`` ends
+    a pattern rather than a frame, as the floors' own walk reads them.
+    """
+    stack = ["c"]  # c: substitution body, p: bare ( group, d: double quotes, b: backtick body
+    cases = [0]  # open ``case`` words per frame: a pattern's ``)`` closes nothing there
+    depth = 0  # open $( <( >( frames above the outermost command
+    escaped = -1  # index of the last character a backslash escaped
+    i, n = 0, len(text)
+    while i < n:
+        ch, top = text[i], stack[-1]
+        if ch == "\\":
+            escaped = i + 1
+            i += 2
+            continue
+        if top == "d":
+            if ch == '"':
+                stack.pop()
+                cases.pop()
+            elif ch == "$" and text.startswith("(", i + 1):
+                stack.append("c")
+                cases.append(0)
+                depth += 1
+                i += 1
+            elif ch == "`":
+                if stack[-2] == "b":  # bash closes the enclosing backtick span here
+                    del stack[-2:]
+                    del cases[-2:]
+                else:
+                    stack.append("b")
+                    cases.append(0)
+        elif ch == "'":
+            ansi = i > 0 and text[i - 1] == "$"
+            j = i + 1
+            while j < n and text[j] != "'":
+                j += 2 if ansi and text[j] == "\\" else 1
+            i = j + 1
+            continue
+        elif ch == "#" and (i == 0 or text[i - 1] in _WORD_BREAK):
+            newline = text.find("\n", i)
+            if newline < 0:
+                break
+            i = newline  # the comment's own quotes and parens are text
+            continue
+        elif ch in "ce" and (i == 0 or text[i - 1] in _WORD_BREAK):
+            word = text[i : i + 4]
+            j = i - 1  # each blank run is walked only by the word after it: linear
+            while j >= 0 and text[j] in " \t":
+                j -= 1
+            before = text[j] if j >= 0 else ""  # shortcut: reads no reserved-word chain
+            if (
+                word in ("case", "esac")
+                and text[i + 4 : i + 5] in _WORD_BREAK
+                and before in ("", "\n", ";", "&", "|", "(", "`")
+            ):
+                cases[-1] = cases[-1] + 1 if word == "case" else max(0, cases[-1] - 1)
+                i += 4
+                continue
+        elif ch == '"':
+            stack.append("d")
+            cases.append(0)
+        elif ch == "(":
+            if i > 0 and text[i - 1] in "$<>" and escaped != i - 1:
+                stack.append("c")
+                depth += 1
+            else:
+                stack.append("p")
+            cases.append(0)
+        elif ch == ")" and top in "cp" and len(stack) > 1 and not cases[-1]:
+            depth -= stack.pop() == "c"
+            cases.pop()
+        elif ch == "`":
+            if top == "b":
+                stack.pop()
+                cases.pop()
+            else:
+                stack.append("b")
+                cases.append(0)
+        if depth > _MAX_SUBSTITUTION_DEPTH:
+            return True
+        i += 1
+    return False
 
 
 @sharing_views
@@ -564,6 +746,7 @@ def is_denied(
         *,
         rule: str = "",
         component: str = "",
+        span: "tuple[int, int] | None" = None,
     ) -> str:
         """Refusal text for *matched* -- see :func:`_deny_reason`, the shared producer.
 
@@ -576,17 +759,27 @@ def is_denied(
         denial's first line already names the pattern that matched the input, so a
         diagnostic would repeat it on every ordinary refusal, while a floor denial
         reports a pattern the input provably cannot match and is the refusal an
-        agent cannot diagnose at all. The span is the whole subject because a floor
-        decides on the argv's SHAPE rather than at an offset.
+        agent cannot diagnose at all.
+
+        *span* points the diagnostic at the offsets a floor read as the cause (the
+        kill floor names its target); omitted, it is the whole subject -- the
+        honest reading for a shape-level floor or an unlocatable match.
         """
         diagnostic = (
-            _diag.refusal_diagnostic(rule, component, tool_name) if rule and component else None
+            _diag.refusal_diagnostic(rule, component, tool_name, span)
+            if rule and component
+            else None
         )
         return _rules._deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )
 
     glob_patterns = list(extra_patterns or [])
+    # Before any floor: each floor re-walks every nested body, so depth times length.
+    # Never waived: past the cap no floor can read the command in bounded time.
+    if _nested_past_cap(tool_name):
+        _emit_deny_event(tool_name, _DEPTH_REFUSAL, lower)
+        return _reason(_DEPTH_REFUSAL, _DEPTH_NOTE)
     if denied_regexes is None:
         denied_regexes = _rules.compute_effective_denied(
             _rules.BUILTIN_DENIED_RULES, (), False, (), ()
@@ -630,9 +823,8 @@ def is_denied(
     # therefore also matched against a copy with those joins collapsed.  Scoped to those
     # two patterns on purpose: collapsing text for all the other rules would change
     # inputs they were never measured against.
-    joined = _inline_interpreter_bindings(
-        _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
-    )
+    collapsed = _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
+    joined = _inline_interpreter_bindings(collapsed) if _INTERP_ROW_NEEDS in collapsed else lower
     if joined != lower:
         for interpreter_pattern in regex_patterns:
             if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
@@ -774,7 +966,7 @@ def is_denied(
         ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
         ("self-protection-kill", _argv._is_self_kill),
         ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
-        ("sandbox-escape-ssh-self", _argv._is_ssh_to_self),
+        ("sandbox-escape-ssh-self", _argv._reaches_self_over_ssh),
     ):
         pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
@@ -782,11 +974,26 @@ def is_denied(
         # The mint predicate also gets the command AS SUBMITTED: it decodes base64
         # literals to read the name they hide, and base64 does not survive the
         # lower-casing every other predicate reads.
-        hit = (
-            _argv._is_credential_mint(lower, raw_text=tool_name)
-            if predicate is _argv._is_credential_mint
-            else predicate(lower)
-        )
+        #
+        # The kill floor derives its matched target's offsets in the same walk that
+        # decides the verdict (``_self_kill_span``), so the diagnostic points at the
+        # token not the whole command. The verdict is unchanged -- a self-kill
+        # always yields a span, so ``hit`` is exactly ``_is_self_kill``; other
+        # floors report no offsets and span the whole subject.
+        span: "tuple[int, int] | None" = None
+        if predicate is _argv._is_credential_mint:
+            hit = _argv._is_credential_mint(lower, raw_text=tool_name)
+        elif predicate is _argv._is_self_kill:
+            span = _argv._self_kill_span(lower)
+            hit = span is not None
+            # Offsets index ``lower``; the diagnostic renders ``tool_name``. They
+            # align only while ``str.lower`` kept the length -- a width-changing
+            # lowercase (``İ`` U+0130 -> two) would land them on the wrong raw
+            # bytes, so drop to the whole-command span.
+            if span is not None and len(lower) != len(tool_name):
+                span = None
+        else:
+            hit = predicate(lower)
         if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id —
@@ -799,6 +1006,7 @@ def is_denied(
                 _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
                 rule=rule_id,
                 component="argv-floor",
+                span=span,
             )
     # The self-management SUBCOMMAND floors have no catalog row (their
     # product-name-anywhere regex rows were deleted, see
@@ -824,7 +1032,34 @@ def is_denied(
             )
 
     # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
-    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason, shipped, waive)
+    # The shipped ``rm -rf /.*`` row matches every absolute path. It reads a view where
+    # each plain ``rm`` of scratch entries only (``rm -rf /tmp/build``) is blanked, so it
+    # still judges every other rm and every other mention of the text. An operator's
+    # own copy of the pattern is not shipped-only and keeps reading the full text.
+    _rm = _submodule("rm_floor")
+    rm_root = (_rm._RM_FLOOR_BY_KIND.get("root", ("", ""))[1], True)
+    scratch_view = (
+        _rm.scratch_rm_view(tool_name)
+        if rm_root in all_patterns and rm_root[0] in shipped
+        else None
+    )
+    if scratch_view is None:
+        pattern_denial = _deny_pattern_passes(
+            tool_name, lower, all_patterns, _reason, shipped, waive
+        )
+    else:
+        # Matched on the view; every event still records the command as submitted.
+        pattern_denial = _deny_pattern_passes(
+            tool_name,
+            scratch_view.lower(),
+            [rm_root],
+            _reason,
+            shipped,
+            waive,
+            match_text=scratch_view,
+        ) or _deny_pattern_passes(
+            tool_name, lower, [p for p in all_patterns if p != rm_root], _reason, shipped, waive
+        )
     if pattern_denial is not None:
         return pattern_denial
     # ── Recursive-force rm floor (argv-structural, UNION with the regex) ──
@@ -833,7 +1068,6 @@ def is_denied(
     # for recursive + force in any spelling against the root or home dir itself,
     # only for a row still in the effective set, and only when the text could
     # hold an rm at all, so a command with none is never refused by it.
-    _rm = _submodule("rm_floor")
     rm_enabled = {
         kind: rule for kind, rule in _rm._RM_FLOOR_BY_KIND.items() if rule[1] in regex_patterns
     }
@@ -899,16 +1133,21 @@ def _deny_pattern_passes(
     reason: "Callable[[str], str]",
     shipped: frozenset[str] = frozenset(),
     waive: "Callable[[str], bool] | None" = None,
+    *,
+    match_text: "str | None" = None,
 ) -> str | None:
     """Run :func:`is_denied`'s whole-string and per-segment passes over *all_patterns*.
 
     Exceptions and the s3 download narrowing apply as there; no floor runs here.
     *shipped* gates the s3 download narrowing to shipped-only patterns. *waive* is
     the caller's :class:`_DenyWaiver`: a pattern it answers True for is skipped
-    where it would refuse, and every other pattern is still judged.
+    where it would refuse, and every other pattern is still judged. *match_text*, when
+    given, is the text the segments are cut from (*lower* is its lowercase); every
+    event still records *tool_name*, the command as submitted.
     """
     _rules = _submodule("denied_rules")
     _shell = _submodule("shell_normalizer")
+    text = tool_name if match_text is None else match_text
 
     # Memoizes the s3 download reading per command: the same command is asked
     # about once per matching segment.
@@ -979,7 +1218,7 @@ def _deny_pattern_passes(
     # ``bash -c 'r\`` and ``m -rf /'`` and the ``-c`` script is never seen.
     # Emitting no view for the command itself is what keeps
     # this from fabricating one across its separators.
-    folded = _shell._fold_line_continuations(tool_name)
+    folded = _shell._fold_line_continuations(text)
     segments = [seg.strip() for seg in _split_segments(folded)]
     segments = [seg for seg in segments if seg]
     work: list[tuple[str, tuple[str, ...]]] = []
@@ -990,7 +1229,13 @@ def _deny_pattern_passes(
     # not already produce.  Measured: skipping the duplicate halves the cost on a
     # command padded with thousands of interpreter tokens (a stall risk).
     if len(segments) != 1 or segments[0] != folded.strip():
-        work.append(("", _deny_segment_views(tool_name, False)))
+        work.append(("", _deny_segment_views(text, False)))
+    # cmd/PowerShell in-word escapes, folded BEFORE the split (which cuts on
+    # backticks).  Extra segments only: the unfolded ones above still run first.
+    win_folded = _fold_win_in_word_escapes(folded)
+    if win_folded != folded:
+        extra = [s.strip() for s in _split_segments(win_folded)]
+        segments += [s for s in extra if s and s not in segments]
     for seg_raw in segments:
         work.append((seg_raw.lower(), _deny_segment_views(seg_raw)))
     for seg_lower, segment_views in work:
@@ -1171,11 +1416,11 @@ def _emit_deny_event(
         # same hazard in either one.
         metadata = {
             "deny_pattern": deny_pattern,
-            "segment": redact_and_truncate(segment, 200) if segment else "",
+            "segment": _audit_clip(segment) if segment else "",
             "mechanism": "BUILTIN_DENY_PATTERNS",
         }
         if raw_segment and raw_segment != segment:
-            metadata["raw_segment"] = redact_and_truncate(raw_segment, 200)
+            metadata["raw_segment"] = _audit_clip(raw_segment)
         sel.log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
@@ -1224,12 +1469,14 @@ def _s3_download_narrows(
 ) -> bool:
     """Whether an ``aws s3 cp|mv|sync`` row is narrowed away on *view*.
 
-    True only for one plain download command :func:`~.s3_direction._s3_download_only`
-    read in full, so a command it cannot read stays denied. It gets *raw*, the
-    command before case folding, to refuse any non-ASCII, and narrows only a
-    pattern in *shipped*, so an operator's own copy stays denied. Returns False
-    for every other pattern. The verdict is cached per command: every matching
-    segment would otherwise re-read the whole command.
+    True only when :func:`~.s3_direction._s3_download_only` reads *view* as a
+    sequence of statements whose every ``aws s3`` transfer is a plain download, so
+    a command it cannot read in full -- an upload anywhere on the line, an
+    unresolvable variable, a pipe, a subshell or a command substitution -- stays
+    denied. It gets *raw*, the command before case folding, to refuse any non-ASCII,
+    and narrows only a pattern in *shipped*, so an operator's own copy stays denied.
+    Returns False for every other pattern. The verdict is cached per command: every
+    matching segment would otherwise re-read the whole command.
     """
     s3 = _submodule("s3_direction")
     if pattern not in s3._S3_TRANSFER_PATTERNS or pattern not in shipped:
@@ -1321,7 +1568,7 @@ def audit_injection_dropped(
                     "surface": surface,
                     "channel_id": channel_id,
                     "thread_ts": thread_ts,
-                    "sample": redact_and_truncate(sample, 200),
+                    "sample": _audit_clip(sample),
                     "mechanism": "contains_injection",
                 },
             )

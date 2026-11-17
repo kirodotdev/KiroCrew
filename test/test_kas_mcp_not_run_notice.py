@@ -166,7 +166,7 @@ def test_headers_reach_the_bridge_without_a_session_key(tmp_path):
     batch = build_kas_custom_agents(tmp_path, "a", spec, session_key="", withheld_out=withheld)
     args = batch[0]["mcpServers"]["remote"]["args"]
     assert SHIM_MODULE in args
-    assert args[args.index("--session") + 1].startswith("unkeyed-")
+    assert args[args.index("--session") + 1] == "shared", "the header bridge reference is shared"
     assert withheld == {}
 
 

@@ -665,6 +665,19 @@ describe('useSteerRetract', () => {
     expect(hook.result.current.refusals).toEqual({})
   })
 
+  it.each(['edit', 'queue'] as const)('takes nothing back for a %s whose requeued row already ran as its own turn', (action) => {
+    retractSteer.mockImplementation(() => new Promise(() => {}))
+    const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
+    act(() => { hook.result.current.onSteerAction('m-1', action) })
+
+    // The turn ended, the drain ran the requeued steer as its own turn and hid this row.
+    hook.rerender({ slotRunning: false, messages: [row({ steerState: 'superseded' })] })
+
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(hook.result.current.pending).toEqual({})
+    expect(hook.result.current.refusals).toEqual({})
+  })
+
   it('reports an agent that refused to take it back', () => {
     const { hook, restoreDraft } = setup([row({ steerState: 'written' })])
     act(() => { hook.result.current.onSteerAction('m-1', 'unsend') })

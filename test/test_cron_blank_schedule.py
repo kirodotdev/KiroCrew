@@ -136,3 +136,13 @@ def test_add_names_the_blank_schedule_flag(
     err = capsys.readouterr().err
     assert exit_info.value.code == 1
     assert err.splitlines()[-1] == expected
+
+
+@pytest.mark.parametrize("field", ["name", "message"])
+def test_an_empty_name_or_message_warns_and_the_update_still_runs(field, capsys):
+    """The store keeps a job's name or message when given an empty one: say so."""
+    with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
+        mock_svc_cls.return_value.update_job.return_value = MagicMock(id="abc123")
+        _cron(_update_args(**{field: ""}))
+        mock_svc_cls.return_value.update_job.assert_called_once()
+    assert f"Warning: an empty --{field} leaves the {field} unchanged" in capsys.readouterr().err

@@ -57,7 +57,7 @@ omit the policy.
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
-| `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
+| `credentials` | adapter | `DefaultCredentialPolicy` (the core credential redaction, `security.redact`; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `governance` | **concrete carrier** | `load_security_policy()` result or `None` | bundled Level-1 ceiling |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
@@ -80,11 +80,11 @@ omit the policy.
 | `memory_files` | adapter | `DefaultMemoryFilesProvider` (memory's markdown source text on local disk) | a non-local `MemoryFiles` for memory's markdown source. `memory_files_for` does not catch a provider error: `PlatformCompositionError` propagates and nothing falls back to local disk. Memory's derived state (the FTS index, the SQLite stores, the FAISS vectors) stays local and does not travel through this seam |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op); the Kiro relay client (`relay_client.provider.RelayTunnelProvider`) instead when `tunnel.relay_enabled` is on (off by default) | internal tunnel supervisor, which the relay client never replaces |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destinations from `telemetry.otlp_endpoint` and `telemetry.otlp_endpoints`) | RUM/Cognito config + its own OTLP collector |
-| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths) | secretary/taskkeeper routes + enterprise SSO PTY login |
+| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths, no company sign-in default) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
 | `mobile_connect` | adapter | `DefaultMobileConnectProvider` (personal-install pair: `tailnet_qr` + `login_link` (id == kind by design)) | edition-specific phone-connection methods (descriptor-only `{id, kind}`; minting stays on each method's own endpoint; an empty list hides the dashboard entry; list + mint governed by `capabilities.mobile_connect`) |
 | `remote_provisioners` | adapter | `DefaultRemoteProvisionerProvider` (the built-in `aws_ec2` lane backed by `RealLaunchEngine`, **plus a conditional `aws_fargate` lane** backed by `FargateLaunchEngine` that is offered only when `cloud.json` carries a complete `fargate` block; id == kind by design for both) | edition-specific ways to CREATE a remote instance (a managed dev environment, a container task): descriptor-only `{id, kind, label, posix_only, step_labels, confirm_before_launch}` plus a `LaunchEngine` per id (`confirm_before_launch` carries what the operator must see and confirm before that lane may launch -- `POST /api/cloud/launch` requires `confirm_recipient` to equal it, so the requirement is derived from the row rather than hard-coded to one id, and a lane with nothing to confirm leaves it empty); the core's durable launch job still drives every launch, so cancel, rollback and orphan reaping are inherited rather than reimplemented |
-| `cloud_instance_policy` | adapter | `DefaultCloudInstancePolicyProvider` (empty `CloudInstancePolicy`: nothing attached, boundary unchanged) | managed policies an organization requires on every EC2 crew's instance role, plus the `Allow` statements its permissions boundary needs so they are not capped away. Read and validated only by `cloud/host_policy.py`; a descriptor that fails validation refuses the launch. See `cloud.md` § Security model |
+| `cloud_instance_policy` | adapter | `DefaultCloudInstancePolicyProvider` (empty `CloudInstancePolicy`: nothing attached, boundary unchanged) | managed policies an organization requires on every EC2 crew's instance role, plus the `Allow` statements its permissions boundary needs so they are not capped away. Read and validated only by `cloud/host_policy.py`; a descriptor that fails validation refuses the launch, and so does a launch account that holds no policy at one of the ARNs. See `cloud.md` § Security model |
 | `feedback` | adapter | `DefaultFeedbackTrackerProvider` (`report_issue_url()` → `None`) | the edition's issue tracker behind **Report a Problem** and `kirocrew doctor`. **REPLACE-capable** like `tips`: a supplied URL takes over from the public pre-filled GitHub bug-report link rather than being appended to it, because that link's query string is GitHub's form. The backend half of the dashboard's `setFeedbackTracker` seam (`website/docs/extension-seams.md` § "Feedback tracker"): the frontend-built links live there; this one is built by the gateway because it carries the bundle's facts |
 | `browser_credentials` | adapter | `DefaultBrowserCredentialProvider` (`name()` → `None`; nothing else is called) | session cookies for Kiro's own Chromium on the edition's own domains; applied by the gateway's browser supervisor at every start and when the source or the settings changed before a navigation, never to the person's own Chrome ([browser](browser.md) § Credentials) |
 | `speech` | adapter | `DefaultSpeechProviderRegistry` (no STT or TTS providers, `default_stt()` / `default_tts()` → `None`) | edition-registered speech-to-text and text-to-speech providers and the edition's default choice. **ADD-only**: a registered name joins the built-in `stt.provider` / `voice_reply.provider` sets and can never shadow a built-in, a retired STT name or `off` (boot raises `PlatformCompositionError`). The edition default applies only to an absent key; a stored value always wins. Validation, defaults, STT/TTS dispatch, live dictation and the capability lists route through it (pluggable speech providers RFC, [#22982](https://github.com/kirodotdev/KiroCrew/issues/22982)) |
@@ -118,6 +118,14 @@ omit the policy.
 > `capabilities.remote_provisioners` row mirroring `capabilities.mobile_connect`
 > is the natural follow-up once a second lane exists to narrow on.
 >
+> The listing has one reader, `platform/provisioner_listing.py::offered_provisioners`:
+> the Set-up tab (`handlers_cloud._provisioners`) and `kirocrew setup`'s cloud
+> step both call it, so the two cannot disagree about whether the `aws_ec2` lane
+> is offered. A degraded seam read falls back to the built-in descriptor alone,
+> rows with a blank `id` or `kind` are dropped, and `PlatformCompositionError`
+> still propagates. It lives outside the dashboard handler module so the wizard
+> can read it mid-prompt without importing the aiohttp and cloud-engine graph.
+>
 > Contributor walkthrough: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md).
 
 > `external_access` note — three surfaces the core offers unconditionally, none of
@@ -148,6 +156,10 @@ omit the policy.
 > operator intended to restrict something), let `PlatformCompositionError`
 > propagate, and SEL-audit **both** outcomes — a log carrying only denials cannot
 > show whether the permitted path was ever taken.
+> `admits_registry` also asks the governance key `external_access.registry_hosts`
+> first, on the host of `api_base`, and the edition's adapter only when the key
+> admits, so an edition cannot loosen what the operator's policy refuses
+> ([governance.md](governance.md#discovery-registries--external_accessregistry_hosts)).
 
 > `registry` note — the public `DefaultAppRegistryPolicy` encodes the
 > public-forge baseline and ships no internal-host set. The enterprise companion
@@ -603,14 +615,16 @@ Runtime code reads only the module constant, never the build variable or a confi
 | `tunnel` | `tunnel.enabled`, `tunnel.relay_enabled`, `slack.use_tunnel_url` | `dashboard/server_runtime/tunnel.py::_start_aea_tunnel` (the edition's own `TunnelProvider` is not a local source); `dashboard/server.py::start_dashboard`, which builds the app's `RelayIngress` off there; `platform/bootstrap.py::_public_tunnel_provider`, which never selects or imports the relay client there; all three read the relay switch through `edition_locks.py::relay_selected`; `dashboard/urls.py::slack_tunnel_opt_in`, read by `tunnel_origin_if_opted_in` and by `send_dashboard_link` before its on-demand `ensure_available()` door, so Slack links stay on the local origin | `GET /api/config/schema` marks all three paths `lockedByPolicy` |
 | `telemetry.otlp_hosts` | `telemetry.otlp_endpoint`, `telemetry.otlp_endpoints` | `metrics/provider.py::_edition_locked_view`, read by `_otlp_destinations` and `otlp_egress_active` before any provider sees the config (an edition provider's own destinations stay) | `GET /api/config/schema` marks the path `lockedByPolicy` |
 | `developer_mode` | `KIROCREW_DEV_MODE` (and the `-dev` home suffix for the update simulator) | `session_environment.py::session_environments_enabled` (remote placement stays off) and `dashboard/routes/system.py` (`POST /api/update/simulate` is not registered) | none; an environment variable has no setting API. The flag's on-loop persistence strictness only raises more, so it is left as is |
+| `feature_previews` | `dashboard.feature_previews` and every path under it (RFC D12) | `edition_locks.py::feature_previews`, read by `connections/crew_oauth.py::enabled` and `dashboard_agentic.py::stale_fields_enabled`; `dashboard/handlers/core_config_view.py::_config_body` reports them `{}` on `GET /api/config/kirocrew` and every PATCH reply; the dashboard reads every `mc-preview-*` flag off and refuses to set one (`website/src/utils/previewFlags.ts`), and keeps conductor mode off, as it was while a preview, including before the lock is known on an uncached browser (`website/src/lib/crewMode.ts::crewModeEnabled`, `website/src/utils/editionLocks.ts::featurePreviewLockKnown`) | `GET /api/config/schema` marks every preview path `lockedByPolicy`; the dashboard takes its preview lock from that (`hooks/usePreviewFlagServerSync.ts::applyConfigLocks`) |
+| `debug_tools` | Settings > Developer > Debug tools and its `mc-scroll-inspector` and `mc-slow-frame-log` keys (RFC D12) | dashboard only: `pages/settings/DeveloperPanel.tsx` drops the page, `pages/DeveloperPage.tsx` sends the old link to the first page, `dev/scrollInspector.ts` and `dev/slowFrameLog.ts` read off. No gateway route | `locked_controls: ["debug_tools"]` on `GET /api/config/kirocrew` and every PATCH reply, a field only an LTS build sends |
 
-The update channel left this table when it gained its key, `updates.channel` (see governance.md, "Update pins"): an LTS build follows the policy's channel, or `stable` with none, and still ignores `$KIROCREW_HOME/channel`.
+The update channel left this table when it gained its key, `updates.channel` (see governance.md, "Update pins"): an LTS build follows `lts`, its own channel, whatever the policy pins (RFC crew-lts-edition D11), and still ignores `$KIROCREW_HOME/channel`.
 
-Each locked config path is in `CONFIG_PATH_LOCKS`, which the schema endpoint reads. The dashboard shows a "Locked by policy" badge beside a schema setting reference with `lockedByPolicy` (`settingRef/SettingRef.tsx`) and beside the computer-use toggle, which it greys out, when its GET carries `locked_by_policy` (`settings/ComputerUsePanel.tsx`). A write of a locked value is still stored and is ignored on read, so a saved setting never loops on an error. Tests: `test/test_lts_unkeyed_locks.py`.
+Each locked config path is in `CONFIG_PATH_LOCKS`, or (for the preview switches) matched by its `dashboard.feature_previews` prefix in `config_path_locked`, which the schema endpoint reads. The dashboard shows a "Locked by policy" badge beside a schema setting reference with `lockedByPolicy` (`settingRef/SettingRef.tsx`) and beside the computer-use toggle, which it greys out, when its GET carries `locked_by_policy` (`settings/ComputerUsePanel.tsx`). A write of a `CONFIG_PATH_LOCKS` value is still stored and is ignored on read, so a saved setting never loops on an error. A preview path is refused instead: `PATCH /api/config/kirocrew` answers 409 `locked_by_policy` and a change card does not offer it, because the dashboard draws no switch for it to save from. A value written another way is still read as off. Tests: `test/test_lts_unkeyed_locks.py`, `test/test_lts_feature_previews_off.py`, `website/src/test/ltsFeaturePreviewsOff.test.tsx`.
 
 ### LTS gate (login half)
 
-The second reader of `is_lts()` is the LTS gate ([RFC](../../request-for-change/rfc-crew-lts-edition.md), "LTS gate"). `kiro_crew/lts_gate.py` holds `LtsGate`: open, or closed while any reason holds it (`close(reason)` / `clear(reason)`, each concern clearing only its own reason; `status()` returns `open` plus the reasons). An LTS build does not start without a login or without its governance rules (`kiro_crew/lts_boot.py`). Every check reads one sign-in (RFC D4, `kiro_crew/lts_sign_in.py` `select`): Crew's own vault sign-in, the only source today. No vault entry is not signed in; a lapsed entry is not signed in but still names its account. `kiro-cli whoami` is not the LTS gate. The resolver does not read the edition; the enterprise wiring calls it. The rules fetch reads it first, so in `cli.main` the sign-in check and the fetch are one step inside `boot_platform`, before any port binds. A `PlatformCompositionError` from `boot_platform` in `cli.main` or `run_gateway` goes to `refuse_policy_boot`, which prints what failed and a fix sentence picked from the recorded cause (no sign-in names `kirocrew kas login --provider idc ...`; unusable, unreachable, refused, not eligible, account changed, bad rules) and exits 1. `GatewayOrchestrator.run` and both server entrypoints call `require_kiro_login`, which re-checks the same resolver (a plain store read) and does the same on a refusal. Both run before the HTTP server binds, so a failed boot never serves the gateway (the one exception, a signed-out `gateway` start, is the sign-in-only app below); the desktop app shows that stderr in its start-failure window's log pane. Those checks run before the bind with their own limits (vault refresh 30 s, policy fetch 10 s), so an LTS desktop build waits that much longer for its local gateway: `packaging/build-desktop.sh` stages `website/electron/EDITION` from the same `KIROCREW_BUILD_EDITION` stamp (LTS only), `website/electron/edition.js` reads it, and `gatewayWaitTimeoutMs` adds 80 s for a spawned local gateway. An `oss` desktop build stages nothing and keeps its 30 s (120 s on Windows) wait. Both gateway entrypoints then call `install_lts_gate` (`dashboard/lts_gate_middleware.py`), whose login source is `SignInLoginSource`, the same resolver; in an LTS build it puts a gate on the app that starts OPEN, refuses to install when the resolver finds no sign-in, and an `oss` build gets nothing. `LoginWatch` keeps `login_required` in step with the sign-in while the gateway runs: `SignInLoginSource.login_verified` re-reads the vault store off the loop, and a refusal or a read that raises answers signed out. It checks at once on startup, then every 5 s while closed and every 60 s while open (a close wakes a watch sleeping its open interval, so it moves to the closed cadence at once), so a new sign-in reopens the gate within one 5 s check. A check also fails when the sign-in names an account other than the one the account lock pinned. While signed out the source reads the store on every check; while signed in it reads again once the last read is 60 s old, whatever the watch's budget. Each request also reads the latched `authenticated` verdict, which only ever closes the gate. An ACP auth failure (`mark_signed_out`) no longer reaches the gate directly: the resolver reads stores, not the issuer. A vault sign-in whose access token has expired and whose refresh the issuer refused (`TokenStore.refresh_rejected`) is unusable, so the gate closes on it; saving a new sign-in clears the marker. Only the watch's check reopens it. An LTS build never assumes readiness: `KiroPrerequisiteService` drops `assume_ready` (`--test-mode`) there, so test mode cannot open the gate without a probe. `kirocrew doctor` prints a `sign-in:` row in the Platform block of an LTS build (`lts_sign_in.describe()`), a refusal counting as a blocking issue. A signed-out `gateway` start serves the sign-in-only app instead (below).
+The second reader of `is_lts()` is the LTS gate ([RFC](../../request-for-change/rfc-crew-lts-edition.md), "LTS gate"). `kiro_crew/lts_gate.py` holds `LtsGate`: open, or closed while any reason holds it (`close(reason)` / `clear(reason)`, each concern clearing only its own reason; `status()` returns `open` plus the reasons). An LTS build does not start without a login or without its governance rules (`kiro_crew/lts_boot.py`). Every check reads one sign-in (RFC D4, `kiro_crew/lts_sign_in.py` `select`): Crew's own vault sign-in, the only source today. No vault entry is not signed in; a lapsed entry is not signed in but still names its account. `kiro-cli whoami` is not the LTS gate. The resolver does not read the edition; the enterprise wiring calls it. The rules fetch reads it first, so in `cli.main` the sign-in check and the fetch are one step inside `boot_platform`, before any port binds. A `PlatformCompositionError` from `boot_platform` in `cli.main` or `run_gateway` goes to `refuse_policy_boot`, which prints what failed and a fix sentence picked from the recorded cause (no sign-in names `kirocrew kas login --provider idc ...`; unusable, unreachable, refused, not eligible, account changed, bad rules) and exits 1. `GatewayOrchestrator.run` and both server entrypoints call `require_kiro_login`, which re-checks the same resolver (a plain store read) and does the same on a refusal. Both run before the HTTP server binds, so a failed boot never serves the gateway (the one exception, a signed-out `gateway` start, is the sign-in-only app below); the desktop app shows that stderr in its start-failure window's log pane. Those checks run before the bind with their own limits (vault refresh 30 s, policy fetch 10 s), so an LTS desktop build waits that much longer for its local gateway: `packaging/build-desktop.sh` stages `website/electron/EDITION` from the same `KIROCREW_BUILD_EDITION` stamp (LTS only), `website/electron/edition.js` reads it, and `gatewayWaitTimeoutMs` adds 80 s for a spawned local gateway. An `oss` desktop build stages nothing and keeps its 120 s wait for a spawned local gateway (30 s for a connection tab). Both gateway entrypoints then call `install_lts_gate` (`dashboard/lts_gate_middleware.py`), whose login source is `SignInLoginSource`, the same resolver; in an LTS build it puts a gate on the app that starts OPEN, refuses to install when the resolver finds no sign-in, and an `oss` build gets nothing. `LoginWatch` keeps `login_required` in step with the sign-in while the gateway runs: `SignInLoginSource.login_verified` re-reads the vault store off the loop, and a refusal or a read that raises answers signed out. It checks at once on startup, then every 5 s while closed and every 60 s while open (a close wakes a watch sleeping its open interval, so it moves to the closed cadence at once), so a new sign-in reopens the gate within one 5 s check. A check also fails when the sign-in names an account other than the one the account lock pinned. While signed out the source reads the store on every check; while signed in it reads again once the last read is 60 s old, whatever the watch's budget. Each request also reads the latched `authenticated` verdict, which only ever closes the gate. An ACP auth failure (`mark_signed_out`) no longer reaches the gate directly: the resolver reads stores, not the issuer. A vault sign-in whose access token has expired and whose refresh the issuer refused (`TokenStore.refresh_rejected`) is unusable, so the gate closes on it; saving a new sign-in clears the marker. Only the watch's check reopens it. An LTS build never assumes readiness: `KiroPrerequisiteService` drops `assume_ready` (`--test-mode`) there, so test mode cannot open the gate without a probe. `kirocrew doctor` prints a `sign-in:` row in the Platform block of an LTS build (`lts_sign_in.describe()`), a refusal counting as a blocking issue. A signed-out `gateway` start serves the sign-in-only app instead (below).
 
 While closed (a login lost or expired while running), the gate middleware (inserted right after token auth in both chains) serves only `ALLOWED_WHILE_CLOSED` (method-scoped: the login status `GET /api/kiro-prerequisite` and its two owner-only remedies `POST /api/kiro-prerequisite/repair-specs` and `/update-cli`, the session-cookie routes `GET /api/auth/me` and `POST /api/auth/refresh`, session revocation `POST /api/auth/logout` and `POST /api/logout`, `GET /api/token/local`, the `/api/health|live|ready` probes, `POST /api/shutdown`, and the shell's static files) and answers a SPA document navigation with the static shell. Every other request, an unknown route and any WebSocket upgrade included, is refused 403 `lts_gate_closed` with the `reason`. Closing the gate also closes every connection that carried a gated request while it was open (tracked per connection until it closes, since aiohttp sends a returned response such as a download after the middleware returns). While closed, `GET /api/kiro-prerequisite` and both remedy POSTs (the dashboard caches each as its status) report `lts_login_required: true` and `initial_setup_complete: false`, and `KiroPrerequisiteGate` skips every bypass that would render the app (`ready`, an established install, another usable harness), so its first-run screens run in order: a missing CLI or a sandbox refusal shows its own remedy, then the sign-in step; the other-agents picker, which writes config, is hidden. That applies until the app has first been shown: a relock of a dashboard already in use keeps the app mounted and on screen, its requests refused until sign-in, and adds `KiroPrerequisiteRelockNotice` beside it: a display-only card (`pointer-events-none`, nothing focusable, no handlers, so it cannot reach an open dialog or popover) in the local pane's overlay container, saying to run the gateway's `lts_sign_in_command` in a terminal: the status carries it while the gate is closed, and it is `kirocrew kas login --provider idc ...`, because the gate reads Crew's vault sign-in (a non-owner is told to ask the owner). A first-run (never shown) closed gate renders `LtsSignInRequired`, the same command with a copy button and Check again, and no kiro-cli install or sign-in step. The dashboard's own vault sign-in routes (`/api/kas-login/*`) stay outside `ALLOWED_WHILE_CLOSED`, so recovery is that CLI command; on-screen sign-in is the signed-out sign-in screen task. A gateway that sends no `lts_sign_in_command` keeps the older `kiro-cli login` notice. The status poll clears it once the gate reopens. A managed MCP server whose tool-policy read meets that 403 records `gateway_locked`, which is in `mcp_shared_policy._UNRESOLVED_REFUSES_CALL`, so its tools refuse the call rather than drop the operator's exclusions. The on-disk marker is untouched. `test/test_lts_gate.py` walks the dashboard and MCP route tables and pins which registered routes stay open. A governance fetch failure at boot exits (above); a failed refresh while running is meant to close the same gate under its own reason, and that is not wired yet. Tests: `test/test_lts_boot.py`.
 
@@ -625,7 +639,7 @@ The LTS edition RFC ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lt
 | Red control | LTS behaviour | Where |
 |---|---|---|
 | Hooks by name | Follows `capabilities.script_hooks`, off by default: no script hook runs and no user kiro hook is installed (asked on the host key) until the policy enables it; once on, its `events` list (if named) also drops the user kiro hooks of each refused event | `hook_runtime/governance_gate.py::_script_hooks_capability_denied`, `agent_materialization/kiro_hooks.py::_user_kiro_hooks_locked` and `_drop_refused_kiro_hook_events` |
-| Webhooks by source | Follows the `webhooks` scope, off by default (baseline): a source runs only when the policy names it, whatever the stored switch says | `webhook_sources.py::source_refusal`, asked by `webhooks.py::WebhookTokenStore.is_switch_on` (`/api/hooks/agent`, source `agent`) and `apps/builtins/ops_mission_control/backend/providers/webhook.py::enqueue` (the app's `/webhook` ingress, source `ops-mission-control`) |
+| Webhooks by source | Follows the `webhooks` scope, off by default (baseline): a source runs only when the policy names it, whatever the stored switch says | `webhook_sources.py::source_refusal`, asked by `webhooks.py::WebhookTokenStore.is_switch_on` (`/api/hooks/agent`, source `agent`) and `webhook_sources.py::app_source_refusal` for an app declaring `permissions.webhookSource` (source: the app's name; Ops Mission Control's `/webhook` ingress is `ops-mission-control`) |
 | Signed extensions only, Extension versions | Follow install: `capabilities.extension_install`, off in the baseline, so both are off until a policy turns install on (see `docs/system-specs/modules/governance.md`, "Extensions, app versions and developer mode") | `platform/capability_bound.py::BoundedCapabilityManager` install ops and `sync_plugins` |
 | Workload identity, Identity settings | `capabilities.agentcore` off: no posture, Gateway URL or workload name | `platform/governance_parts/carriers.py::agentcore_posture` |
 | Content sent to external decisions | Follows `capabilities.decisions`, off by default: nothing is sent until the policy enables it; the local row holds that deny, as for any hosted deny, and the denial is audited | `decisions/capability.py::_row_denied` |
@@ -678,23 +692,20 @@ existing is a real state: an `apply_command` that installs into a new versioned
 tree and prunes the old one deletes the interpreter the running gateway was
 launched from.
 
-What made that state costly was the ORDERING, not the missing file. The
-orchestrator saved, fenced, closed every session and only then raised `ENOENT`
-from `os.execv`. Admission itself does come back —
-`_finish_auto_update_apply` calls `resume_turn_admission_after_update()` — but the
-sessions `close_all()` tore down do not, and `_pending_update_respawn` is cleared
-immediately before the exec, so `_retry_pending_update_restart` can never fire.
-What survived was a gateway with no sessions, running a different version from the
-install on disk. The dashboard's own path is worse by one step: its `close_all()`
-sets the closing flag without owning the update pause, so `resume_...` returns
-early and admission stays shut as well.
+What made that state costly was the ORDERING, not the missing file. A restart
+saved, fenced, closed every session and only then raised `ENOENT` from
+`os.execv`. Admission itself can come back (`_finish_auto_update_apply` calls
+`resume_turn_admission_after_update()`) but the sessions `close_all()` tore down
+do not. What survived was a gateway with no sessions, running a different version
+from the install on disk. The dashboard's path is worse by one step: its
+`close_all()` sets the closing flag without owning the update pause, so
+`resume_...` returns early and admission stays shut as well.
 
-Both consumers therefore ask before the point of no return. The dashboard's
-`_restart_gateway` refuses with `Cannot restart: invalid Python executable path`
-while every session is still answerable. The orchestrator defers, retaining
-`_pending_update_respawn` so `_retry_pending_update_restart` completes the update
-once the install is repaired. Neither drains on the chance that a restart might
-still work.
+The dashboard's `_restart_gateway`, the only in-app restart, therefore asks before
+the point of no return: it refuses with `Cannot restart: invalid Python executable
+path` while every session is still answerable, and does not drain on the chance
+that a restart might still work. The boot-time apply (`update_boot_apply`) asks
+the same question before it execs, with no session to lose.
 
 Asking early narrows that failure; it cannot remove it. The target can be
 replaced between the check and the call, and a file that is present and carries
@@ -778,8 +789,9 @@ Wired sites:
   cannot disable or weaken the outer sandbox. A transient adapter error falls
   back to the original executable (outer sandbox still applies); a
   `PlatformCompositionError` propagates fail-closed.
-  `kiro_cli.mandatory_mcps_drop_allowed` resolves both the spawned path and the
-  pinned install through the same seam before its checks, so the Tool Search
+  `kiro_cli.mandatory_mcps_drop_allowed` resolves the spawned path and the
+  install it is compared with (the pin, or the `PATH`-only install) through the
+  same seam before its checks, so the Tool Search
   deferral gate judges the executable that will run, not the launcher.
 - `hooks.py` — the deny check routes through `current_context().security.is_denied`;
   the kiro-hooks egress (`dashboard/handlers/hooks_scripts.py`) scrubs command/matcher
@@ -797,15 +809,6 @@ Wired sites:
   exfil-then-credential two-pass (the Default `CredentialPolicy.redact` delegates
   to `security.redact`); a loaded companion adds its internal-token regexes
   uniformly across every egress surface.
-- Code text (`kiro_crew.platform.context.redact_code_via_context`) — `redact_via_context` run
-  inside a `security.redaction_switch.code_text()` scope, where pass 3 of the core credential pass
-  (the entropy-and-shape guess at a secret key) spares an ordered alphabet and a data URI payload of
-  64 characters or more and judges every other run as it does anywhere, while every other pass, the
-  exfiltration-URL pass and a loaded companion's patterns run as they do for `redact_via_context`.
-  Its one caller is the member dashboard page scrub, which takes `redact_via_context` over the whole
-  page as its baseline and puts what this returns in place of the baseline's for the text of the
-  page's `<script>` and `<style>` elements. Like `redact_owner_view_via_context` it is a scope the
-  caller must open, so a sink that does not call it keeps the full pass.
 - Content scans (`binary_content_is_flagged`, `wide_content_is_flagged`) are serialized
   behind one re-entrant lock (`_SCAN_LOCK`) and their verdicts are kept in a 256-entry LRU
   (`_SCAN_VERDICTS`) keyed by (scan kind, SHA-256 of the bytes, `governance_generation()`),
@@ -866,7 +869,7 @@ Wired sites:
   correct there. A count that has fallen must be lowered, so a converted module
   does not leave free slots behind.
 - Exfil exact-host heuristic exemption (`CredentialPolicy.exempt_exact_hosts()`) —
-  `security.scan_exfiltration_urls` / `redact_exfiltration_urls` read the
+  `security.scan_exfiltration_urls` (the request-blocking URL scan) reads the
   companion-supplied exact-host set and, for a URL whose domain is an EXACT
   member, skip ONLY the base64-blob / query-length heuristics (which
   false-positive on legitimate long base64 document pointers, e.g. SharePoint
@@ -875,23 +878,22 @@ Wired sites:
   fast-path and the unconditional `_HARD_CREDENTIAL_RE` path+query scan run FIRST
   (before the exemption is consulted), so a real AWS key / SSH-or-PEM header /
   Slack token on an exempted host — including one embedded in the URL PATH — is
-  still flagged and redacted. Matched EXACTLY (not by suffix) so a shared
+  still flagged. Matched EXACTLY (not by suffix) so a shared
   multi-tenant domain does not exempt every tenant. The set is guarded with
   `getattr(policy, "exempt_exact_hosts", None)` (a pre-method companion adapter
   degrades to the empty set) and is NEVER sourced from `config.json` — an
-  agent-writable exemption would be a hole in the redaction ceiling, so the
+  agent-writable exemption would be a hole in the blocking ceiling, so the
   companion adapter is the only supplier. EVERY failure degrades to
-  `frozenset()` — the empty set means MORE redaction (every host runs the
+  `frozenset()` — the empty set means MORE flagging (every host runs the
   heuristics), the safe direction, and stricter than any companion-supplied list
   could be; NO logging on the degrade path (runs inside the stdio MCP servers).
-- Pass-4 token-parameter URL prefixes
-  (`CredentialPolicy.token_param_exempt_url_prefixes()`) — redaction pass 4
-  redacts every `token=` URL value by name. It skips only a literal `?token=`
+- Token-parameter URL prefixes
+  (`CredentialPolicy.token_param_exempt_url_prefixes()`): the token-parameter
+  pass redacts every `token=` URL value by name. It skips only a literal `?token=`
   immediately after a companion-supplied `https://host/path` prefix whose local
   boundary and preceding text prove it is not nested in another destination,
-  whose value is one URL-safe/base64 run plus closers, and which no earlier pass
-  claimed. The companion must list the host in `exempt_exact_hosts()` too, or
-  earlier base64/query heuristics can redact the URL before pass 4. The
+  whose value is one URL-safe/base64 run plus closers, and which no rule-table hit
+  claimed. The
   preceding-text guard rejects URL, backslash, scheme and HTML
   destination signals — any `&` (character reference) or `<` (tag) counts, scanned
   over the raw text and never decoded — after blanking earlier links that already
@@ -900,18 +902,18 @@ Wired sites:
   Context-incomplete streaming windows never apply the exemption; the complete
   stored message may apply it when the destination guards can inspect all prior text.
   While the prefix set is non-empty, the dashboard's per-delta redaction of the text
-  it accumulates for that stored message leaves pass 4 to the whole-segment run
-  (`redact_credentials(..., defer_token_param=True)`), so a delta cut inside the
-  link cannot redact a value the whole text would exempt; every other pass still
-  runs per delta, and the live wire window still redacts the value.
+  it accumulates for that stored message leaves the `token` parameter row to the
+  whole-segment run (`redact_credentials(..., defer_token_param=True)`), so a delta
+  cut inside the link cannot redact a value the whole text would exempt; the rule
+  table still runs per delta, and the live wire window still redacts the value.
   For links the user must open whose token is a lookup key, e.g. a one-time
-  approval workflow. Read lazily on the first pass-4 match via
+  approval workflow. Read lazily on the first token-parameter match via
   `installed_context()` (declared in `PEEK_CALLERS`) with the same degrade
   contract as `exempt_exact_hosts`: no context, a pre-method adapter, an
   exception or a member without a path all mean MORE redaction. The display
   redaction memo reads the prefix set once per render and hands that one snapshot
-  to its key and to pass 4 (`redact_credentials(..., token_param_prefixes=...)`,
-  the nested scan of a diagram's source included), so a cached entry is always
+  to its key and to the `token` parameter row
+  (`redact_credentials(..., token_param_prefixes=...)`), so a cached entry is always
   judged under the set its key names. Public default:
   `frozenset()`; never sourced from `config.json`.
   The set is read via `installed_context()`, so a process with no installed
@@ -934,7 +936,9 @@ Wired sites:
   returns `frozenset()` so standalone redaction is byte-identical.
 - `agent_parts/spec_build.py` and `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
   additively into the agent config build; the dynamic refresh also re-pins an
-  existing entry's `command`/`args` and keeps its other keys. A server first
+  existing entry's `command`/`args`, puts back any `env` key the edition ships
+  that the entry lacks (a key the user set keeps the user's value), and keeps its
+  other keys. A server first
   supplied on an existing spec gains its `@name` ref in `tools` once
   (`agent_materialization/guide_platform.py`, `grant_edition_refs_once`).
 - `slack/events.py` / `slack/handler_runtime/dispatch.py` / `dashboard/handlers_system.py` —
@@ -1116,7 +1120,9 @@ Wired sites:
   `relay_client/lease.py::LeaseHostTokenSource`: it calls `RenewCrewLease` on the
   answer's schedule with the credential `tunnel.relay_lease_credential` points at
   (`secret://NAME` or a file, never the value), and hands each new host token to
-  the client. Each call's `connectedCount` is `RelayClient.connected_people()`:
+  the client. With `kiro-sign-in` instead, a personal Crew leases with the Crew's
+  own Kiro sign-in (`relay_client/lease_signin.py::read_lease_sign_in`), refreshed
+  as needed, and sends that sign-in's `profileArn`. Each call's `connectedCount` is `RelayClient.connected_people()`:
   the distinct relayed callers with a WebSocket open on a serving connection, so
   one person on two tabs counts once. It is display-only, so a count that cannot
   be read is sent as 0 and never fails the renewal. When the relay stops, it
@@ -1236,7 +1242,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 - `AgentRuntime.works_in_place(repo: str) -> bool`: asked by
   `crewmate_worktree.ensure` with the real path of a repository's checkout root,
   before it makes a Bot worktree of it. Exactly `True` means the repository's build
-  needs its checkout where it is: the Bot gets no worktree of it (no `crew/` branch
+  needs its checkout where it is: the Bot gets no worktree of it (no branch
   is cut, no folder is made) and the worker's project is left where it was, as for
   a path in no repository (crew-mode.md, "Each Bot works in a git worktree of its
   own"). Asked off the event loop, so it may read the filesystem. Default `False`
@@ -1383,7 +1389,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   (structured entries — the manager parses its own output; the core keeps no
   text grammar; **`list_skills()` containment invariant:** every skill row MUST
   live under an `McpToolingProvider.extra_skills()` root, because the skill
-  browser (`/api/skills/package/<name>/tree` + detail) resolves paths by
+  browser (`/api/skills/<name>/-/tree` + detail) resolves paths by
   searching those roots — a row outside them lists but 404s on tree/detail, so an
   edition satisfying both Protocols MUST keep them consistent; the core enforces
   this at runtime — `collect_skills_blocking` logs a loud warning for any listed
@@ -1399,9 +1405,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `package/<name>` request prefers `<root>/<name>/SKILL.md` over a nested
   `<root>/<Pkg>/<name>/SKILL.md`, and when two DISTINCT files tie within a tier
   it resolves to `None` — HTTP 404, with the competing candidates logged — rather
-  than picking one, because the key cannot express which was meant (paths that
-  merely symlink to the same file are not a tie). An edition that wants both of
-  two same-named skills reachable MUST therefore key them distinguishably);
+  than picking one (paths that merely symlink to the same file are not a tie).
+  **Each copy stays addressable by a qualified key:** `package/<qualifier>:<rel>`,
+  where `<qualifier>` (`package_root_qualifier`) is 16 lowercase hex of a blake2b
+  digest of the resolved package root, so a symlink alias of a root shares its
+  qualifier, and the resolver searches only the root it names
+  (`split_package_key` accepts that exact shape only, so a directory whose own
+  name holds `:` still resolves unqualified). The catalog walks each package
+  root on its own and `fold_package_keys` qualifies only a relative path that two
+  distinct files claim; every other key stays `package/<rel>`. `/api/skills`
+  rekeys each package row that shares its key with a different file to the
+  catalog's key for that file (`_qualify_colliding_package_rows`), so an edition
+  need not key same-named skills apart. The bare key two distinct files claim
+  still resolves to `None` and 404s on detail. The `$` picker and a skills-only
+  hook's directive both emit the qualifier-free leaf, because the `$` token
+  grammar stops at `:`);
   `async install_mcp/uninstall_mcp(server_id)`,
   `async install_skill/uninstall_skill(package)`,
   `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`
@@ -1483,7 +1501,13 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 
   `async registry(query: str | None = None) -> List[Dict]` (the manager parses its
   own registry output into entries; the core passes them through as
-  `{"servers": [...]}`). The public
+  `{"servers": [...]}`). MCP discovery reads each row's `id`, `title`,
+  `description`, `installed` and an optional `featured`: a row whose `featured`
+  is literally `true` joins the Add Server dialog's starting list after the
+  bundled rows (`CapabilityProvider.featured`), and is all an edition that
+  withholds the official registry shows there. That list reads the unfiltered
+  listing, so a featured row must fall within its first `_LIST_LIMIT_GUARD`
+  rows. The public
   `DefaultCapabilityManager.available()` is `False` → the handlers return HTTP 503;
   a companion implements registry-backed management. This is the operations-based
   Protocol the prior binary-name seam's contract note anticipated — chosen now,
@@ -1605,9 +1629,8 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   print (`terminal_issue_url`, `prefill=False`). `None` (the Default) keeps the
   public pre-filled GitHub link byte-for-byte; a string REPLACES it. `prefill`
   names the surface: the dashboard renders the URL from a JSON field no redactor
-  scans, while a terminal print crosses `redact_exfiltration_urls`, which
-  replaces any URL whose query is 200 characters or longer, so an edition keeps
-  that variant's query short. Read through `safe_context_call` (fallback `None`):
+  scans, while a terminal print crosses `redact_exfiltration_urls`, which masks
+  the credential values inside a URL and leaves the rest of it as written. Read through `safe_context_call` (fallback `None`):
   diagnostics catches `PlatformCompositionError`, logs a warning and returns an
   empty issue link while keeping the bundle usable, without a standalone fallback.
   `kirocrew doctor --bundle` prints the bundle path and explains why the link is
@@ -1615,7 +1638,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   link. The wire field keeps its `github_issue_url` name (a rename is a take-away
   change). v1
   addition; the second half of the frontend `setFeedbackTracker` seam.
-- `SpeechProviderRegistry.stt_providers()` / `tts_providers()` / `default_stt()` / `default_tts()` -- WIRED through `kiro_crew.speech_providers`: `config.sections_stt.valid_stt_providers()` (the `stt.provider` loader, `stt_provider_is_coerced`, `kirocrew config set stt.provider`) and `voice_reply.valid_providers()` / `default_provider()` (`resolve_configured_provider`) union the registered names with the built-ins, and an absent key takes the edition default. An unusable stored value keeps its built-in fallback (STT fails closed to `off`, TTS falls back to `system`), so an edition default is never reached through a typo. Read through `installed_context()` (declared in `PEEK_CALLERS`): the STT half runs inside `KiroCrewConfig.load()`, where `current_context()` would re-enter the load; the no-context answer is the built-in sets. Because the boot config is loaded before any context exists, `bootstrap_context` re-reads `stt` once after install when the registry adds an STT provider or default (a no-op for the Default). The schema's `stt.provider` enum still lists only the built-ins; validation holds a registered value aside across the enum check. `validate_speech_registry` refuses, at boot, a name that collides with a built-in, retired or `off` provider, a duplicate or blank name, or a default naming no provider. Dispatch: every site keeps its built-in branches first and asks the registry only for a name that is not a built-in (`speech_providers.stt_provider()` / `tts_provider()` answer `None` for every built-in). `transcribe.availability_detail` / `is_available` answer through the provider's `check()`, `transcribe_audio` calls `transcribe_file`, `voice_reply.is_available` calls `check()`, `voice_reply.synthesize_speech` and `/api/voice/synthesize` call `synthesize` (one format per stream, `audio/mpeg` or `audio/wav`, at most 64 MiB, joined into one replay clip), and `/api/ws/stt` grants `stt_stream.streaming_providers()`: the built-ins plus a registered provider whose `streaming` is exactly `True`, whose `open_stream()` session runs through the same loop as `apple`. A registered STT provider may also set an optional `identifies_languages`; when it is exactly `True`, `speech_providers.language_identifying_stt_names` adds it after the built-in `transcribe` to the `language_identification_providers` list `GET /api/config/stt` serves, so the Settings page offers it the Mixed languages picker, and the provider reads `SttConfig.transcribe_language_identification` itself. Core calls every provider method on the caller's own event loop and pins none. Provider rule: a provider must not keep a loop-bound client (an aiohttp or httpx session) across calls; it creates one per call or keeps one per loop, because the gateway, a channel and a blocking caller may each call it from a different loop. Blocking callers (`transcribe.is_available`, `voice_reply.is_available`, run off-loop by Slack, Discord, Telegram, meetings and voice replies) use `check_status_sync`, which runs the check on a fresh loop in a daemon thread and waits at most `CHECK_TIMEOUT_SECS` plus a one-second grace, so a provider that ignores cancellation holds only that thread. A `check()` is bounded by `CHECK_TIMEOUT_SECS` and fail-closed: a timeout, a raise or a malformed status reads as unavailable, and an `action` survives only as `{kind: "login", label}`. Capabilities: `GET /api/config/stt` and `GET /api/voice/config` each serve `providers`, one row per selectable provider (a built-in is `{name, builtin: true}` with no probe; a registered one is `{name, label, builtin, available, reason, action, error}`; `error` is true only when the check timed out or raised, never for an answered "not available"), built-ins first in the picker's order, then the registered ones (STT keeps `off` last). Saving: `KiroCrewConfig.save()` writes a stored, non-built-in `stt.provider` back as stored when the snapshot degraded it to `off` and the registry is still pending or registers the name (`_restore_stored_stt_provider`), so a config loaded before boot never persists `off` over an edition choice; standalone still saves an unknown name as `off`. v1 addition; `Default` registers nothing.
+- `SpeechProviderRegistry.stt_providers()` / `tts_providers()` / `default_stt()` / `default_tts()` -- WIRED through `kiro_crew.speech_providers`: `config.sections_stt.valid_stt_providers()` (the `stt.provider` loader, `stt_provider_is_coerced`, `kirocrew config set stt.provider`) and `voice_reply.valid_providers()` / `default_provider()` (`resolve_configured_provider`) union the registered names with the built-ins, and an absent key takes the edition default. An unusable stored value keeps its built-in fallback (STT fails closed to `off`, TTS falls back to `system`), so an edition default is never reached through a typo. Read through `installed_context()` (declared in `PEEK_CALLERS`): the STT half runs inside `KiroCrewConfig.load()`, where `current_context()` would re-enter the load; the no-context answer is the built-in sets. Because the boot config is loaded before any context exists, `bootstrap_context` re-reads `stt` once after install when the registry adds an STT provider or default (a no-op for the Default). The schema's `stt.provider` enum still lists only the built-ins; validation holds a registered value aside across the enum check. `validate_speech_registry` refuses, at boot, a name that collides with a built-in, retired or `off` provider, a duplicate or blank name, or a default naming no provider. Dispatch: every site keeps its built-in branches first and asks the registry only for a name that is not a built-in (`speech_providers.stt_provider()` / `tts_provider()` answer `None` for every built-in). `transcribe.availability_detail` / `is_available` answer through the provider's `check()`, `transcribe_audio` calls `transcribe_file`, `voice_reply.is_available` calls `check()`, `voice_reply.synthesize_speech` and `/api/voice/synthesize` call `synthesize` (one format per stream, `audio/mpeg` or `audio/wav`, at most 64 MiB, joined into one replay clip), and `/api/ws/stt` grants `stt_stream.streaming_providers()`: the built-ins plus a registered provider whose `streaming` is exactly `True`, whose `open_stream()` session runs through the same loop as `apple`. A registered STT provider may also set an optional `identifies_languages`; when it is exactly `True`, `speech_providers.language_identifying_stt_names` adds it after the built-in `transcribe` to the `language_identification_providers` list `GET /api/config/stt` serves, so the Settings page offers it the Mixed languages picker, and the provider reads `SttConfig.transcribe_language_identification` itself. A registered STT provider that reads only 16 kHz mono 16-bit PCM WAV may set an optional `needs_pcm_wav`; when it is exactly `True`, `transcribe_audio` converts any other clip with core's audio decoder before `transcribe_file` sees it (see stt-streaming.md, Registered providers). Core calls every provider method on the caller's own event loop and pins none. Provider rule: a provider must not keep a loop-bound client (an aiohttp or httpx session) across calls; it creates one per call or keeps one per loop, because the gateway, a channel and a blocking caller may each call it from a different loop. Blocking callers (`transcribe.is_available`, `voice_reply.is_available`, run off-loop by Slack, Discord, Telegram, meetings and voice replies) use `check_status_sync`, which runs the check on a fresh loop in a daemon thread and waits at most `CHECK_TIMEOUT_SECS` plus a one-second grace, so a provider that ignores cancellation holds only that thread. A `check()` is bounded by `CHECK_TIMEOUT_SECS` and fail-closed: a timeout, a raise or a malformed status reads as unavailable, and an `action` survives only as `{kind: "login", label}`. Capabilities: `GET /api/config/stt` and `GET /api/voice/config` each serve `providers`, one row per selectable provider (a built-in is `{name, builtin: true}` with no probe; a registered one is `{name, label, builtin, available, reason, action, error}`; `error` is true only when the check timed out or raised, never for an answered "not available"), built-ins first in the picker's order, then the registered ones (STT keeps `off` last). Saving: `KiroCrewConfig.save()` writes a stored, non-built-in `stt.provider` back as stored when the snapshot degraded it to `off` and the registry is still pending or registers the name (`_restore_stored_stt_provider`), so a config loaded before boot never persists `off` over an edition choice; standalone still saves an unknown name as `off`. v1 addition; `Default` registers nothing.
 - `speech` capability `providers` list -- the dashboard half of the slot. `GET /api/config/stt` and `GET /api/voice/config` each serve `providers`: one entry per selectable provider, built-ins first in today's order. A built-in entry is `{name, builtin: true}` and runs no probe; a registered entry is `{name, label, builtin, available, reason, action, error}`, where `available` / `reason` come from the provider's `check()`, `action` is `{"kind": "login", "label": <account>}` or null, and `error` is true only when `check_status` timed out or raised (false for a missing login or install). The Settings pickers (`SttSettings`, `VoicePanel`) render their options from it through `website/src/lib/speechProviders.ts`, and fall back to their hardcoded built-in options when an older gateway serves no list. An unavailable registered provider stays selectable and shows its `reason` under the picker (`SpeechProviderNotice`): an `error` row through `ErrorNotice`, any other as status text with its sign-in hint; built-ins keep their existing availability UI, so a standalone install shows no new text. Field contract: `stt-streaming.md` § "The capability `providers` list"; TTS precedence: `voice-streaming.md` § "Registered providers".
 
 - `BrowserCredentialProvider` — `name() -> Optional[str]`, `domains() -> Sequence[str]`,
@@ -1673,8 +1696,25 @@ representative rather than exhaustive.
   exact entry another tool injects into every agent spec, so the knowledge spec
   repair leaves a file carrying only that injection alone and its view is built from
   the template. A filter's answer counts only when its output equals the template
-  exactly, and the view is the template, so a filter grants nothing. The public core
+  exactly, and the view is the template, so a filter grants nothing. The same filters
+  let the dashboard-author installer confirm a file as its own when the filtered spec
+  reproduces the recorded ownership digest, so the rebuild still rewrites it from
+  the template. Every managed writer of that spec records its digest over the
+  filtered spec (`worker_agent.dashboard_author_ownership_digest`), so an injected
+  identifier that changes per launch never enters the record. The public core
   registers none.
+- `config.overlay_owners.register_overlay_owner(key_path, owner)`: claims a
+  `config.local.json` key the edition enforces, such as an `auto_update` value it
+  writes back on every boot. When the overlay sets the key, `overlay_pin(*key_path)`
+  asks the owner with the value it holds; a mapping with a non-empty `label` (and an
+  optional `detail`) makes the pin `overlay_source: "policy"` with that
+  `overlay_policy`, and `None` leaves it the person's own (`"user"`). A surface that
+  reports the pin then names the policy instead of advising a removal the edition
+  undoes ([cli](cli.md), the `auto_update` paragraph). An owner changes only what a
+  surface says, never the overlay or the merged value; one that raises or answers
+  without a usable label counts as no policy, and label and detail are cut to 120
+  and 400 characters. Asked off the event loop on each pin read, so it may read a
+  file. The public core registers none.
 - `security._SENSITIVE_HOME_DIRS` gains the SSO cookie directory (live SSO
   bearer cookie; inert on a host without it).
 - `config.knowledge.doc_ingest_hosts` (list) — SSRF-safe allowlist for the
@@ -1733,8 +1773,8 @@ representative rather than exhaustive.
     default `slack/renderer.py::SlackRenderer.on_done` (the `handle_message_transport`
     path that normal non-review traffic uses — `SlackRenderer` takes a `user_id`
     kwarg for it). Decorator-introduced text is re-scanned (`redact_exfiltration_urls`
-    + `redact_credentials`) on both paths so a decorator cannot smuggle a URL/
-    credential past redaction; the native path logs only the redaction COUNT
+    + `redact_credentials`) on both paths so a decorator cannot smuggle a credential, inside a URL or
+    not, past redaction; the native path logs only the redaction COUNT
     (never the warning strings, which embed a truncated credential prefix).
 
   Interceptor ordering + dedup + audit (security-critical, all in `_route_message`):

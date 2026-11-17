@@ -21,6 +21,7 @@ from kiro_crew.shared_crew.admission import (
     OperationState,
     ReasonCode,
 )
+from kiro_crew.tracing import turns as trace_turns
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,14 @@ CHAT_PROMPT_PAYLOAD_KEY = "prompt"
 CHAT_AUTHOR_PAYLOAD_KEY = "author"
 #: Work payload key identifying the accepted user row independently of its text.
 CHAT_SEND_ID_PAYLOAD_KEY = "sendId"
+#: Work payload flag marking a Dashboard card's reply, so a crash-recovery that
+#: rebuilds the user row stamps it back as a card turn rather than a trusted one.
+CHAT_CARD_ORIGIN_PAYLOAD_KEY = "cardOrigin"
 
 
-def _chat_payload(request: Any, message: str, send_id: str = "") -> dict[str, Any]:
+def _chat_payload(
+    request: Any, message: str, send_id: str = "", card_origin: bool = False
+) -> dict[str, Any]:
     from kiro_crew.shared_crew.attribution import author_meta
 
     payload: dict[str, Any] = {CHAT_PROMPT_PAYLOAD_KEY: message}
@@ -73,18 +79,28 @@ def _chat_payload(request: Any, message: str, send_id: str = "") -> dict[str, An
     actor = _gate.actor_of(request)
     if actor is not None:
         payload[CHAT_AUTHOR_PAYLOAD_KEY] = author_meta(actor)
+    if card_origin:
+        payload[CHAT_CARD_ORIGIN_PAYLOAD_KEY] = True
     return payload
 
 
 async def admit_chat_turn(
-    request: Any, *, session_key: str, slot_key: str, message: str, send_id: str = ""
+    request: Any,
+    *,
+    session_key: str,
+    slot_key: str,
+    message: str,
+    send_id: str = "",
+    card_origin: bool = False,
 ) -> _gate.Admission:
     """Admit one chat turn charged to the request's initiator.
 
     The prompt is stored with the work (``CHAT_PROMPT_PAYLOAD_KEY``) until the
     work ends, so a crash before the session saves its user row still leaves
     the accepted text for reconciliation to put back in the session. No chat
-    relauncher exists, so the payload is never replayed.
+    relauncher exists, so the payload is never replayed. ``card_origin`` rides the
+    payload too, so a recovered card row keeps its card marker and a later Continue
+    stays untrusted.
     """
     service = await _gate.current_service()
     return await service.admit(
@@ -94,7 +110,7 @@ async def admit_chat_turn(
         idempotency_key=_gate.idempotency_key_of(request),
         digest=chat_digest(slot_key, message),
         request_bytes=len(message.encode("utf-8", "replace")),
-        payload=_chat_payload(request, message, send_id),
+        payload=_chat_payload(request, message, send_id, card_origin),
     )
 
 
@@ -470,9 +486,18 @@ async def admitted_cron_dispatch(job: Any, dispatch: Coroutine[Any, Any, Any]) -
 
     if admitted_work():
         return await dispatch
+    started = False
+
+    async def handed_over() -> Any:
+        # Admitted work runs in a task of its own; the run's trace root stays its.
+        nonlocal started
+        started = True
+        trace_turns.adopt_root()
+        return await dispatch
+
     try:
         return await _gate.admit_and_run(
-            dispatch,
+            handed_over(),
             budget_key=_gate.recorded_principal(getattr(job, "created_by_principal", "")),
             session_key=f"cron:{job.id}",
             operation=OperationKind.CRON,
@@ -488,6 +513,9 @@ async def admitted_cron_dispatch(job: Any, dispatch: Coroutine[Any, Any, Any]) -
         job.last_error = (
             f"fair admission ended this run before it started ({ended.work.state.value})"
         )
+    finally:
+        if not started:
+            dispatch.close()
     logger.info("cron %s: %s", getattr(job, "id", "?"), job.last_error)
     return None
 
@@ -635,6 +663,7 @@ def background_replay_response(admission: _gate.Admission, *, execution_key: str
 __all__ = [
     "background_replay_response",
     "CHAT_AUTHOR_PAYLOAD_KEY",
+    "CHAT_CARD_ORIGIN_PAYLOAD_KEY",
     "CHAT_PROMPT_PAYLOAD_KEY",
     "CHAT_SEND_ID_PAYLOAD_KEY",
     "QUEUED_WORK_META_KEY",

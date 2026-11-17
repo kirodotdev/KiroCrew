@@ -36,9 +36,9 @@ from kiro_crew.acp.client import ACP_BACKEND_CLAUDE, AcpClient
 
 def _claude_client(tmp_path):
     """A client whose reset has one plainly observable effect on disk."""
-    client = AcpClient(work_dir=tmp_path, permission_mode="bypassPermissions")
-    # `_is_claude` is a read-only property over the backend seam.
-    client._acp_backend = ACP_BACKEND_CLAUDE
+    client = AcpClient(
+        work_dir=tmp_path, permission_mode="bypassPermissions", acp_backend=ACP_BACKEND_CLAUDE
+    )
     client._write_claude_local_settings()
     settings = tmp_path / ".claude" / "settings.local.json"
     assert settings.exists()

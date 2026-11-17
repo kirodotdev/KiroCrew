@@ -12,6 +12,7 @@ the corpus does and does not prove.
 | `permission-request-live.jsonl` | live | `tool_call`, the `session/request_permission` the harness sends with Kiro Crew's gate plugin composed, and the `tool_call_update` through `completed` |
 | `tool-call-id-reuse-live.jsonl` | live | the SAME `toolCallId` (`call_0`) across two consecutive turns of one session: `tool_call`, `session/request_permission` and a terminal `tool_call_update` for each, with the first turn's `session/prompt` result between them |
 | `side-read-only-live.jsonl` | live | six calls in one turn with Kiro Crew's gate plugin composed (dsh 0.2.0-rc.2): `read`, `grep`, `glob`, `write`, `bash` and an unknown `mcp__probe__read`, each a `tool_call` naming the tool in `title`, the `session/request_permission` it raised, and its terminal `tool_call_update` (the three reads `completed` on allow-once, the rest `failed` on reject-once). The evidence `ACP_BACKENDS_SIDE_READONLY` admits deepseek on |
+| `crew-oauth-bridge-args-live.jsonl` | live | dsh 0.2.0-rc.2 with Crew's gate composed: an MCP `tool_call` titled `mcp__probe__lookup` whose `rawInput` equals the arguments the stub server received, and the `session/request_permission` naming only its call id; the evidence deepseek joins `ACP_BACKENDS_CREW_OAUTH_BRIDGE` on |
 
 ## What the MCP mount captures establish
 

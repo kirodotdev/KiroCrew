@@ -14,7 +14,6 @@ let a concurrent first caller write to the old file mid-copy.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import sys
@@ -26,7 +25,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp import web
 
-from kiro_crew.apps import builtin_adoption_pins
+from kiro_crew.apps import builtin_adoption_apply, manager
 from kiro_crew.apps.builtins.auto_research import handlers as h
 from kiro_crew.apps.builtins.auto_research.campaign import storage
 from kiro_crew.apps.manager import app_data_dir, app_dir
@@ -226,14 +225,42 @@ def test_a_locked_old_database_does_not_hold_up_the_start(monkeypatch: pytest.Mo
     assert _count(storage.db_path()) == 2
 
 
-def test_auto_research_is_not_pinned_while_the_swap_can_retire_its_old_database():
-    """The adoption swap keeps only ``data/``; nothing at the swap refuses an old
-    ``campaigns.db`` beside ``app.json``. A user who never started a release that
-    carries the copy would lose every campaign the first time the swap ran, so a
-    pin row for this app must land with a swap-side refusal (or a carry) for that
-    file, and this test is replaced by that refusal's own test."""
-    table = json.loads(builtin_adoption_pins._PINS_PATH.read_text(encoding="utf-8"))
-    assert "auto-research" not in {row["name"] for row in table["pins"]}
+def _builtin_record() -> None:
+    """The record ``register_builtin_apps`` leaves for Research Lab."""
+    dest = app_dir("auto-research")
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "app.json").write_text("{}", encoding="utf-8")
+    manager._write_installed(
+        "auto-research",
+        manager.InstalledApp(
+            name="auto-research",
+            version="0.1.0",
+            displayName="Research Lab",
+            enabled=True,
+            source="builtin",
+            origin="builtin",
+            resources="gateway",
+            lifecycle="locked",
+        ),
+    )
+
+
+def test_the_adoption_swap_waits_while_the_old_database_is_beside_app_json(tmp_path: Path):
+    """The adoption swap keeps only ``data/``, so a user who never started a release
+    carrying the copy would lose every campaign to it. The swap refuses the record
+    while ``campaigns.db`` is beside ``app.json``; the startup copy moves it, and
+    the next start may adopt."""
+    _builtin_record()
+    _seed_legacy(2).close()
+    pinned = tmp_path / "pinned"
+    for rel in ("app.json", "backend/routes.py", "ui/dist/index.mjs"):
+        (pinned / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pinned / rel).write_text("{}", encoding="utf-8")
+    swap_ok = builtin_adoption_apply._nothing_beside_the_manifest
+    assert swap_ok("auto-research", pinned) is False
+    assert storage.migrate_legacy_db() is True
+    assert swap_ok("auto-research", pinned) is True
+    assert _count(storage.data_db_path()) == 2
 
 
 def test_the_rows_survive_removing_everything_but_data():

@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers._shared_skill_roots import (
     _leaf_is_contained,
     _path_at_or_under,
     _resolved_set,
+    fold_package_keys,
 )
 from kiro_crew.dashboard.handlers._shared_workspace import active_project_dir
 from kiro_crew.dashboard.state import DashboardState
@@ -214,31 +215,73 @@ def walk_skill_catalog(state: DashboardState, session_key: str = "") -> SkillCat
     (``test/skill_catalog_walk_bench.py`` measures both).
     """
     catalog: dict[str, Path] = {}
+    package_roots: list[Path] = []
     mtimes: dict[Path, int | None] = {}
     walked_at_ns = time.time_ns()
     for prefix, root in _skill_key_roots(state, session_key):
-        if is_sensitive_path(str(root)):
-            continue
-        if not root.is_dir():
-            # Recorded as absent so a root created later reads as a change.
-            mtimes[root] = None
-            continue
-        try:
-            root_resolved = root.resolve(strict=True)
-        except OSError:
-            mtimes[root] = None
-            continue
-        _collect_skills_under(
-            root,
-            root,
-            root_resolved,
-            prefix,
-            catalog,
-            _SKILL_NEST_DEPTH,
-            prefix == LEAF_SYMLINK_PREFIX,
-            mtimes,
-        )
+        if prefix == "package/":
+            package_roots.append(root)
+        else:
+            _walk_skill_root(prefix, root, catalog, mtimes)
+    for key, skill_md in _walk_package_roots(package_roots, mtimes).items():
+        catalog.setdefault(key, skill_md)
     return SkillCatalogSnapshot(catalog, mtimes, walked_at_ns)
+
+
+def _walk_skill_root(
+    prefix: str, root: Path, out: dict[str, Path], mtimes: dict[Path, int | None]
+) -> None:
+    if is_sensitive_path(str(root)):
+        return
+    if not root.is_dir():
+        # Recorded as absent so a root created later reads as a change.
+        mtimes[root] = None
+        return
+    try:
+        root_resolved = root.resolve(strict=True)
+    except OSError:
+        mtimes[root] = None
+        return
+    _collect_skills_under(
+        root,
+        root,
+        root_resolved,
+        prefix,
+        out,
+        _SKILL_NEST_DEPTH,
+        prefix == LEAF_SYMLINK_PREFIX,
+        mtimes,
+    )
+
+
+def _walk_package_roots(roots: list[Path], mtimes: dict[Path, int | None]) -> dict[str, Path]:
+    """Walk each package root on its own, then fold colliding keys per copy."""
+    per_root: list[tuple[Path, dict[str, Path]]] = []
+    for root in roots:
+        entries: dict[str, Path] = {}
+        _walk_skill_root("package/", root, entries, mtimes)
+        per_root.append((root, entries))
+    return fold_package_keys(per_root)
+
+
+def package_skill_catalog(project_dir: Path | None = None) -> dict[str, Path]:
+    """The ``package/`` part of :func:`enumerate_skill_catalog`, needing no state.
+
+    *project_dir* is the project whose ``.kiro/skills`` the core keys as
+    ``kiro-workspace/``, so it is excluded from the package roots as the full
+    catalog excludes it. A ``package/`` key an unprefixed core root already
+    claims is left out, since the full catalog maps it to that root's file.
+    """
+    core_roots = _canonical_skill_roots()
+    canonical = None
+    if project_dir is not None:
+        canonical = _resolved_set([*core_roots, project_dir / ".kiro" / "skills"])
+    claimed: dict[str, Path] = {}
+    for root in core_roots[1:]:
+        if (root / "package").is_dir():
+            _walk_skill_root("", root, claimed, {})
+    folded = _walk_package_roots(_edition_package_roots(canonical), {})
+    return {key: skill_md for key, skill_md in folded.items() if key not in claimed}
 
 
 def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dict[str, Path]:

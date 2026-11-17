@@ -5,6 +5,7 @@ import { store, useAppSelector } from '../../../store'
 import type { ChatMessage } from '../../../types'
 import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../../../utils/searchScroll'
 import { resolveMsgIndex } from '../../../utils/shareUrl'
+import { drawnSuccessorIdx } from './transcriptPins'
 
 interface TranscriptJumpsOptions {
   search: ReturnType<typeof useMessageSearch>
@@ -141,7 +142,9 @@ export function useTranscriptJumps({
     const resolved = resolveMsgIndex(messages, targetTs, targetMid)
     // A mid that is merely OFF-PAGE falls back to ts in the helper, and that is a
     // DIFFERENT row of the same tick -- treat it as unresolved so the hand-off runs.
-    const msgIdx = targetMid && messages[resolved]?.meta?.mid !== targetMid ? -1 : resolved
+    const exactIdx = targetMid && messages[resolved]?.meta?.mid !== targetMid ? -1 : resolved
+    // A link to a superseded steer lands on the row drawn in its place.
+    const msgIdx = exactIdx < 0 ? exactIdx : drawnSuccessorIdx(messages, exactIdx)
     if (msgIdx < 0) {
       // A bounded first page need not contain the target; the jump path already
       // gates on the cursor and reports a dead link, so the decision lives there.
@@ -157,7 +160,7 @@ export function useTranscriptJumps({
     initialMidRef.current = null
     setTimeout(() => {
       navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
-      setHighlightTs(targetTs)
+      setHighlightTs(messages[msgIdx].ts ?? targetTs)
       setTimeout(() => setHighlightTs(null), 3000)
     }, 500)
   }, [messages, messageToDisplayIdx, slotHasMore, slotOldestIndex, handleJumpToPinnedMessage, activeSlot, cursorIsForActiveSlot]) // eslint-disable-line react-hooks/exhaustive-deps

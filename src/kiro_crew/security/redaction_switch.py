@@ -1,74 +1,37 @@
-"""The owner's switch for credential redaction: ON by default, OFF on request.
+"""The owner's one setting for credential redaction.
 
-Why a switch exists
--------------------
-Every output surface -- the chat stream, the file viewer, the outbox download,
-Slack and channel egress -- runs :func:`security.redaction.redact_credentials`
-over what the agent produced before the owner sees it. The scrubber is
-shape-based and deliberately over-inclusive (redacting a lookalike is the safe
-direction for a secret), so it also swallows values the owner legitimately
-needs to read back: the ``?token=`` value of a one-time approval-workflow link,
-a base64 blob the owner generated on purpose, a test fixture that happens to
-look like a key. Piping such a value to a file did not help inside the
-dashboard, because the Files view runs the same pass (the built-in Terminal
-streams live command output unredacted, so ``cat`` there always worked; this
-switch is for the rendered Files view, where a written file is read back as a
-document). It reaches the CREDENTIAL pass only: a URL the exfiltration-URL pass
-classifies as carrying data out is still replaced whole, on this surface as on
-every other, unless a loaded companion's own host exemptions
-(``CredentialPolicy.exempt_exact_hosts``) admit its host -- so whether a given
-approval link becomes readable depends on that classification, not on this
-switch.
+The setting
+-----------
+``enabled`` in the keystone record (:func:`config.loader.credential_redaction_path`) is
+the ONE owner setting: credential redaction on or off. Its default is
+:data:`DEFAULT_REDACTION_ENABLED`, the only place that default is written. With it off:
 
-Where the switch applies: OWNER-VIEW surfaces only
--------------------------------------------------
-The switch is honoured ONLY inside an explicit :func:`owner_view` scope, which
-the caller enters at a seam whose audience is the owner reading their own
-dashboard, and only after that caller has verified the REQUESTER is the owner
-(``owner_view_for_request``): the file viewer, fed by two ``handlers/files.py``
-handlers that take ONE verdict per request (``_owner_view_bypasses_credential_pass``):
-``api_file_read`` (the buffer) and ``api_file_diff`` (the ``original`` the buffer
-is compared against -- one side raw and the other masked would render an
-unchanged credential line as a hunk). The ``api_file_watch`` stream is NOT a
-seam -- it also serves artifact live reload, and no consumer renders its frame.
-That is the whole surface, and it is the one the motivating workflow needs: ask the agent to
-write the value to a file, open the file. Chat is deliberately NOT a seam:
-``chat_runner._flush_segment`` redacts the assistant text BEFORE ``slot.append``,
-so the transcript holds the redacted bytes and no display-time scope could
-restore them, and the live wire streams fan one chunk to every connected client
-besides. Outside that scope ``redact_credentials`` is unconditional, exactly as
-before: the chat, Slack, Webex, Discord, Telegram and every other channel egress,
-the ACP prompt the model reads, the persisted-history load pass (whose bytes
-also feed the model prompt), and every ADMISSION predicate that decides whether
-a file may reach a third party (``_gate_upload_file``, a non-owner's outbox
-download) keep scanning whatever the owner chose. The owner's own delivery
-surfaces (``file_send``, the outbox card, the owner's downloads) do not scan
-content at all, so the switch has nothing to govern there. The design is the
-opposite of a global bypass on purpose: a scope a caller must open cannot be
-inherited by a third-party sink that forgot to opt out, so adding a channel
-keeps the backend rule "scan before posting to any external surface" without
-that channel knowing the switch exists.
+* the owner's Files view and its diff skip the credential plan (:func:`owner_view`,
+  entered by ``handlers/files.py`` after the requester is verified as the owner);
+* every other path :data:`kiro_crew.redaction_seams.OUTPUT_SEAMS` lists (the chat turn,
+  the saved transcript, channel egress, the conversation replayed into the agent's
+  prompt, and the credential pass over log lines) opens :func:`redaction_seams.output_seam`
+  and skips it too;
+* in all of them the rule table (``security/redaction_structured/``) is skipped with the
+  plan, so every value, a credential inside a URL included, stays as written.
 
-What the switch does NOT do
----------------------------
-* It never touches a request-BLOCKING decision. ``exfil.py`` decides whether a
-  command or URL is refused through ``_contains_fixed_credential`` and its
-  siblings, which read the pattern table directly and never call the redaction
-  pass; those gates keep firing with the switch off.
-* It never touches exfiltration-URL redaction. ``redact_exfiltration_urls`` is
-  the control that stops a prompt-injected agent from carrying secrets out in a
-  URL the dashboard would render and the browser would fetch; that pass has its
-  own exemption seam (``CredentialPolicy.exempt_exact_hosts``) and stays
-  unconditional.
-* It never touches the diagnostics bundle, logs, the SEL, or any persisted
-  copy: none of those paths opens the scope, so they are scrubbed whatever the
-  owner chose for their own screen.
+Outside those scopes ``redact_credentials`` is unconditional: a refusal gate that
+decides by comparing ``redact(x)`` with ``x`` (an upload, a file name, a memory write) never
+opens a seam, so a path nobody listed keeps redacting. The design is the opposite of a
+global bypass on purpose: a scope a caller must open cannot be inherited by a sink that
+forgot to opt out.
+
+What the setting does NOT do: it never touches a request-BLOCKING decision. ``exfil.py``
+refuses a command or URL through ``_contains_fixed_credential`` and its siblings, which read
+the pattern table directly and never call the redaction pass; those gates and the scan that
+gates a command (``scan_exfiltration_urls``) keep firing with the setting off.
+:data:`kiro_crew.redaction_seams.ALWAYS_REDACTED` is the list.
 
 Why the record is a keystone file and not ``config.json``
 ---------------------------------------------------------
 Switching the scrubber off is an authorization, not a preference, and the party
 it constrains is the agent. ``config.json`` is writable by any auto-approved
-agent shell, so a switch stored there could be flipped by a prompt-injected
+agent shell, so a setting stored there could be flipped by a prompt-injected
 agent that then prints the secrets it can read. The record therefore lives at
 :func:`config.loader.credential_redaction_path`, on the read+write KEYSTONE
 floor (``security._CREW_SECRET_LEAVES``) beside ``aws_service_consent.json``:
@@ -78,30 +41,38 @@ is the owner-gated dashboard handler.
 
 Fail direction
 --------------
-Every read that cannot positively establish ``enabled: false`` -- a missing
-file, an unreadable one, malformed JSON, a non-boolean value -- answers
-``True``. A switch whose record cannot be read is a switch that is ON.
+A missing record reads :data:`DEFAULT_REDACTION_ENABLED`. Every other read that cannot
+positively establish a boolean ``enabled`` -- an unreadable file, malformed JSON, a
+non-boolean value -- answers ``True``: a record that cannot be read is redaction ON.
+
+Earlier records
+---------------
+A field an earlier record carried (``seams_enabled``, ``engine``, ``engine_changed_at``)
+is not read and is dropped on the next write: one setting decides, and the rule table
+(``security/redaction_structured/``) is the one engine.
 
 On a governed host
 ------------------
 Where a governance policy governs any scope, turning redaction off is the
 administrator's call, not the owner's: only a top-tier policy that names
-:data:`DISABLE_SCOPE` with ``enabled: true`` allows it (:func:`owner_may_disable`);
-a lower tier folded beneath it cannot supply that opt-in.
-Without that, the PUT refuses OFF and :func:`read_state` reads a stored OFF as ON.
-A host with no governed scope is unchanged.
+:data:`DISABLE_SCOPE` with ``enabled: true`` lets the setting be off
+(:func:`owner_may_disable`). The state in force (:func:`read_state`, and what every
+setter returns) is computed under that rule, so a stored or default OFF that a policy
+forbids reads, and is published, as ON; the PUT refuses OFF there. A lower tier folded
+beneath the top one cannot supply the opt-in. A host with no governed scope is unchanged.
 
 Read cost
 ---------
-There is no cache. The one seam that consults the switch is a request handler
-that already does its file I/O off the event loop, so it reads the keystone
-with ``asyncio.to_thread(read_state)`` once per request and hands the verdict to
-:func:`owner_view`. A verdict is therefore never older than the request it
-serves, and the loop never touches the filesystem for it.
+There is no cache. The one seam that consults the record per request is a handler that
+already does its file I/O off the event loop, so it reads the keystone with
+``asyncio.to_thread(read_state)`` once per request and hands the verdict to
+:func:`owner_view`. Every other seam reads the process value the gateway publishes
+(:func:`publish_verdict`).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import threading
@@ -110,6 +81,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
+
+from kiro_crew import redaction_seams
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +99,7 @@ _OWNER_VIEW_BYPASS: ContextVar[bool] = ContextVar(
 
 @contextmanager
 def owner_view() -> Iterator[None]:
-    """Mark the enclosed redaction calls as the OWNER'S OWN VIEW with the switch OFF.
+    """Mark the enclosed redaction calls as the OWNER'S OWN VIEW with redaction OFF.
 
     Enter this ONLY at a seam whose audience is the dashboard owner reading their
     own disk, after the requester has been verified as the owner AND the switch
@@ -146,43 +119,51 @@ def owner_view() -> Iterator[None]:
 def credential_pass_bypassed() -> bool:
     """Whether ``redact_credentials`` should stand down for THIS call.
 
-    True only inside an :func:`owner_view` scope. Constant for the whole scope by
-    construction; outside any scope it is always False and reads nothing.
+    True only inside an :func:`owner_view` scope, or inside a
+    ``redaction_seams.output_seam`` scope opened while redaction is off, and never
+    inside :func:`always_scan`. Outside them it is always False and reads nothing.
     """
-    return _OWNER_VIEW_BYPASS.get()
+    if _ALWAYS_SCAN.get():
+        return False
+    return _OWNER_VIEW_BYPASS.get() or redaction_seams.in_bypassed_seam()
 
 
-#: Whether the calling context is redacting CODE rather than prose. A ContextVar for
-#: :func:`owner_view`'s reason: a scope the caller must open cannot be inherited by a
-#: sink that forgot to opt out.
-_CODE_TEXT: ContextVar[bool] = ContextVar("kirocrew_redaction_code_text", default=False)
+def bypassed_in(seam: str) -> bool:
+    """Whether a credential pass run inside ``output_seam(seam)`` from here stands down.
+
+    For a cache whose fill runs such a pass (the display battery opens the CHAT seam
+    itself): the caller's own context does not say, so a key read out here must ask
+    this, or a pass that stood down for the owner fills an entry another reader hits.
+    Answered without opening the seam: the seam names its own audience
+    (``redaction_seams.SEAM_AUDIENCE``), whatever seam the caller is in.
+    """
+    if _ALWAYS_SCAN.get():
+        return False
+    return _OWNER_VIEW_BYPASS.get() or (
+        redaction_seams.published_off()
+        and redaction_seams.owner_alone(redaction_seams.SEAM_AUDIENCE[seam])
+    )
+
+
+#: Whether the calling context is a SAFETY decision inside a seam. A ContextVar for
+#: :func:`owner_view`'s reason: the scope is task-local and cannot leak to another task.
+_ALWAYS_SCAN: ContextVar[bool] = ContextVar("kirocrew_redaction_always_scan", default=False)
 
 
 @contextmanager
-def code_text() -> Iterator[None]:
-    """Mark the enclosed redaction calls as running over CODE, so pass 3 spares two shapes.
+def always_scan() -> Iterator[None]:
+    """Run the enclosed credential passes in full, inside a seam or an owner view alike.
 
-    Pass 3 reads a run of base64-alphabet characters as a bare secret key by its entropy
-    and shape, a guess about PROSE. In code it rewrites what the author wrote on purpose
-    and the program then runs on the redaction marker with no error. Inside this scope it
-    leaves a run alone only when the run is an ordered alphabet (``abc...xyz``) or a payload
-    of 64 characters or more behind a ``data:<type>;base64,`` header; any other run is judged
-    exactly as outside. Every other pass keys on a fixed format and runs unchanged, as does
-    the exfiltration-URL pass. A scope rather than an argument because
-    ``platform.context.redact_via_context`` takes none; open it only through
-    ``platform.context.redact_code_via_context``. Re-entrant and task-local.
+    For a check that decides whether something is SAFE to hand out (whether a blocked
+    address can be opened without sending a credential), where a pass that stood down
+    would answer "clean" because the owner chose not to redact what they read.
+    Re-entrant and task-local.
     """
-    token = _CODE_TEXT.set(True)
+    token = _ALWAYS_SCAN.set(True)
     try:
         yield
     finally:
-        _CODE_TEXT.reset(token)
-
-
-def bare_secret_pass_enabled() -> bool:
-    """Whether pass 3 judges every run for THIS call: false only inside :func:`code_text`,
-    where it spares an ordered alphabet and a data URI payload."""
-    return not _CODE_TEXT.get()
+        _ALWAYS_SCAN.reset(token)
 
 
 #: Serialises the read-modify-write in :func:`set_enabled`. An in-process lock,
@@ -208,9 +189,19 @@ def transaction() -> threading.RLock:
     return _STORE_LOCK
 
 
+#: Whether credential redaction is ON when the owner has not chosen. THE ONE place the
+#: default is written: flipping it is this one line. OFF is the maintainer's order; a
+#: governed host reads it as ON regardless (:func:`read_state`).
+DEFAULT_REDACTION_ENABLED = False
+
+
 @dataclass(frozen=True)
 class RedactionState:
-    """The recorded switch position and when it was last changed."""
+    """The owner's setting and when it last changed.
+
+    ``enabled`` is the one owner setting: False means credential redaction is off on
+    every path :mod:`kiro_crew.redaction_seams` lists.
+    """
 
     enabled: bool
     changed_at: str
@@ -228,26 +219,40 @@ def _path():
 
 
 def _parse(raw: object) -> RedactionState:
-    """Interpret a decoded store; anything not positively ``false`` is ON."""
+    """Interpret a decoded store: an absent ``enabled`` is the default, a non-boolean is ON."""
     if not isinstance(raw, dict):
         return RedactionState(enabled=True, changed_at="")
-    enabled = raw.get("enabled")
-    if enabled is not False:
-        return RedactionState(enabled=True, changed_at=str(raw.get("changed_at", "")))
-    return RedactionState(enabled=False, changed_at=str(raw.get("changed_at", "")))
+    enabled = raw.get("enabled", DEFAULT_REDACTION_ENABLED)
+    return RedactionState(
+        enabled=enabled if isinstance(enabled, bool) else True,
+        changed_at=str(raw.get("changed_at", "")),
+    )
 
 
-#: The governance capability that lets the owner turn redaction off on a governed host.
+#: The governance capability that lets the owner turn credential redaction off on a
+#: governed host: the one row for the one setting, whatever path the setting reaches.
+#: A grant of it lets the owner turn off every path, the Files view included.
 DISABLE_SCOPE = "capabilities.credential_redaction_off"
 
 
-def owner_may_disable() -> bool:
-    """Whether this host lets the owner turn credential redaction off.
+def missing_opt_in() -> str | None:
+    """The governance scope that keeps credential redaction on for this host, or None.
 
-    True on an ``oss`` host whose policy governs no scope. Otherwise only when the
-    top policy tier itself enables :data:`DISABLE_SCOPE`; an LTS build
-    always governs, and its baseline keeps the row off. A ceiling that cannot be
-    read answers False.
+    None on an ``oss`` host whose policy governs no scope. Otherwise None only when the
+    top policy tier itself enables :data:`DISABLE_SCOPE`; an LTS build always governs,
+    and its baseline keeps the row off. A ceiling that cannot be read names the scope.
+    See :func:`_policy_allows` for the folded-ceiling rule.
+    """
+    return None if _policy_allows(DISABLE_SCOPE) else DISABLE_SCOPE
+
+
+def owner_may_disable() -> bool:
+    """Whether this host lets the owner turn credential redaction off."""
+    return missing_opt_in() is None
+
+
+def _policy_allows(scope: str) -> bool:
+    """Whether the policy layer lets the owner turn off the switch *scope* governs.
 
     The tier ladder lets a lower tier add a scope its authority leaves unnamed, so
     in a folded ceiling (``lower_tier_folded``) the opt-in may come from the lower
@@ -266,51 +271,90 @@ def owner_may_disable() -> bool:
         )
 
         ceiling = current_context().governance
-        gate = policy_level_control(ceiling, DISABLE_SCOPE)
+        gate = policy_level_control(ceiling, scope)
     except Exception:
         logger.warning("governance is unreadable; credential redaction stays ON")
         return False
     if gate is None:
-        # The reserved sandbox boot flags are inert, not a governed scope.
-        return ceiling is None or not set(ceiling.controls) - {_SANDBOX_FLAGS_SCOPE}
+        # The reserved sandbox boot flags are inert, not a governed scope. A policy that
+        # names only retired rows still governs: their grant grants nothing.
+        if ceiling is None:
+            return True
+        return not (set(ceiling.controls) - {_SANDBOX_FLAGS_SCOPE} or ceiling.retired_rows)
     folded = ceiling is not None and ceiling.lower_tier_folded
     return isinstance(gate, CapabilityGate) and gate.enabled and not folded
 
 
-def read_state() -> RedactionState:
-    """The switch in force, read fresh from disk. Fails soft to ENABLED.
+def _read_stored() -> RedactionState:
+    """The record on disk, before the governance rule. A missing record is the default."""
+    try:
+        raw = json.loads(_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return RedactionState(enabled=DEFAULT_REDACTION_ENABLED, changed_at="")
+    except (OSError, ValueError):
+        # ValueError covers JSONDecodeError AND UnicodeDecodeError (non-UTF-8 bytes).
+        logger.warning("credential-redaction record is unreadable; redaction stays ON")
+        return RedactionState(enabled=True, changed_at="")
+    return _parse(raw)
 
-    A stored OFF reads as ON when :func:`owner_may_disable` says no.
+
+def reads_the_default() -> bool:
+    """Whether no stored choice decides the setting: no record, or one without ``enabled``.
+
+    An unreadable record is not the default: it reads as ON.
     """
     try:
         raw = json.loads(_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return RedactionState(enabled=True, changed_at="")
+        return True
     except (OSError, ValueError):
-        # ValueError covers JSONDecodeError AND UnicodeDecodeError (non-UTF-8 bytes).
-        logger.warning("credential-redaction switch is unreadable; redaction stays ON")
-        return RedactionState(enabled=True, changed_at="")
-    state = _parse(raw)
+        return False
+    return isinstance(raw, dict) and "enabled" not in raw
+
+
+def _in_force(state: RedactionState) -> RedactionState:
+    """*state* under the governance rule; every setter returns this, not the stored record.
+
+    An OFF with no administrator opt-in reads as ON.
+    """
     if not state.enabled and not owner_may_disable():
-        return RedactionState(enabled=True, changed_at=state.changed_at)
+        state = dataclasses.replace(state, enabled=True)
     return state
+
+
+def read_state() -> RedactionState:
+    """The setting in force, read fresh from disk.
+
+    A stored (or default) OFF reads as ON when :func:`owner_may_disable` says no.
+    """
+    return _in_force(_read_stored())
+
+
+def _write(state: RedactionState) -> None:
+    """Persist *state*; the caller holds :data:`_STORE_LOCK`.
+
+    Rewritten in place, so a running Linux sandbox's read-only mount of it stays
+    sealed; a torn read during the rewrite reads as ON. ``restrict_to_owner=True``
+    is the fail-loud lockdown the sibling keystone stores use: the owner-only mode
+    lands before any content, and a record it cannot protect is not written.
+    """
+    from kiro_crew.atomic_write import rewrite_in_place
+
+    rewrite_in_place(
+        _path(),
+        json.dumps(state.to_dict(), indent=2, sort_keys=True),
+        restrict_to_owner=True,
+    )
 
 
 def set_enabled(enabled: bool, *, changed_at: str) -> RedactionState:
-    """Persist the owner's switch position.
-
-    Fail-loud lockdown BEFORE any content lands, as the sibling keystone stores
-    do: ``restrict_to_owner=True`` applies the owner-only mode to the temp file
-    before the payload reaches it, and the default ``restrict_on_error="raise"``
-    refuses to write a record it cannot protect.
-    """
-    from kiro_crew.atomic_write import atomic_write
-
-    state = RedactionState(enabled=bool(enabled), changed_at=changed_at)
+    """Persist the owner's setting; returns the state in force under the governance rule."""
     with _STORE_LOCK:
-        atomic_write(
-            _path(),
-            json.dumps(state.to_dict(), indent=2, sort_keys=True),
-            restrict_to_owner=True,
-        )
-    return state
+        state = RedactionState(enabled=bool(enabled), changed_at=changed_at)
+        _write(state)
+    return _in_force(state)
+
+
+def publish_verdict(state: RedactionState) -> None:
+    """Tell this process's output seams the setting *state* holds (the gateway only)."""
+    redaction_seams.publish(not state.enabled)

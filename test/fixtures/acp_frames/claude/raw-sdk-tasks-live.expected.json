@@ -1,0 +1,983 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
+      }
+    },
+    "agent_version": "0.94.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "Terminal",
+        "tool_call_id": "toolu_probe_1",
+        "tool_kind": "execute",
+        "wire_title": "Terminal"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 8; echo bg-finished"
+        },
+        "title": "sleep 8; echo bg-finished",
+        "tool_call_id": "toolu_probe_1",
+        "tool_input": "{\n  \"command\": \"sleep 8; echo bg-finished\"\n}",
+        "wire_title": "sleep 8; echo bg-finished"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 8; echo bg-finished",
+          "description": "Sleep 8 seconds then print a message"
+        },
+        "title": "Sleep 8 seconds then print a message",
+        "tool_call_id": "toolu_probe_1",
+        "tool_input": "{\n  \"command\": \"sleep 8; echo bg-finished\",\n  \"description\": \"Sleep 8 seconds then print a message\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_1",
+        "tool_output": "Sleep 8 seconds then print a message",
+        "tool_output_bytes": 36,
+        "tool_output_digest": "1aceb4aa95a92585eaff79a40e9245214177ab7290def4048fb55a9ed78b5dce"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 8; echo bg-finished",
+          "description": "Sleep 8 seconds then print a message",
+          "run_in_background": true
+        },
+        "title": "Sleep 8 seconds then print a message",
+        "tool_call_id": "toolu_probe_1",
+        "tool_input": "{\n  \"command\": \"sleep 8; echo bg-finished\",\n  \"description\": \"Sleep 8 seconds then print a message\",\n  \"run_in_background\": true\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Sleep 8 seconds then print a message",
+        "is_backgrounded": true,
+        "run_id": "0mwglwgdo-f2e27ddf",
+        "session_id": "claude-session-raw-sdk-live",
+        "subtype": "task_started",
+        "task_id": "b78b0gyk1",
+        "task_type": "local_bash",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "uuid": "probe-msg-1"
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_started"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_1",
+        "tool_final": true,
+        "tool_output": "```console\nCommand running in background with ID: b78b0gyk1. Output is being written to: <path> You will be notified when it completes. To check interim output, use Read on that file path.\n```",
+        "tool_output_bytes": 192,
+        "tool_output_digest": "ba42545a3bc66d42777bd3862b78f2626604ab64568c8333d397d5f6dbec614c",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_1",
+        "text": "STARTED"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "STARTED",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      82555,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      4,
+      162,
+      94486,
+      70237
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "patch": {
+          "end_time": 1794672897853,
+          "status": "completed"
+        },
+        "run_id": "0mwglwgdo-f2e27ddf",
+        "session_id": "claude-session-raw-sdk-live",
+        "subtype": "task_updated",
+        "task_id": "b78b0gyk1",
+        "type": "system",
+        "uuid": "probe-msg-2"
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_updated"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "output_file": "<tasks>/b78b0gyk1.output",
+        "run_id": "0mwglwgdo-f2e27ddf",
+        "session_id": "claude-session-raw-sdk-live",
+        "status": "completed",
+        "subtype": "task_notification",
+        "summary": "Background command \"Sleep 8 seconds then print a message\" completed (exit code 0)",
+        "task_id": "b78b0gyk1",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "uuid": "probe-msg-3"
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_notification"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Read File",
+        "tool_call_id": "toolu_probe_2",
+        "tool_kind": "read",
+        "wire_title": "Read File"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "<path>"
+        },
+        "title": "Read <path>",
+        "tool_call_id": "toolu_probe_2",
+        "tool_input": "{\n  \"file_path\": \"<path>\"\n}",
+        "wire_title": "Read <path>"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_2",
+        "tool_final": true,
+        "tool_output": "```\n1\tbg-finished\n2\t\n3\t[exited with code 0]\n```",
+        "tool_output_bytes": 47,
+        "tool_output_digest": "fc8d78be030ac034f0b1736235a30a27988ee9d0c9f6b45a300593df87ced8c9",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "The background job fin"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The background job fin",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "ished. It printed `bg"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ished. It printed `bg",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "-finished` and exited with"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-finished` and exited with",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": " code 0."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " code 0.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      83374,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Workflow",
+        "tool_call_id": "toolu_probe_3",
+        "tool_kind": "other",
+        "wire_title": "Workflow"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "script": "export const meta = {\n  name: 'tiny-greet',\n  description: 'Two tool-less agents each reply with one word',\n  phases: [{ title: 'Greet', detail: 'agents a and b reply with one word' }],\n}\n\nphase('Greet')\nconst prompt = 'Reply with exactly one word. Do not use any tools.'\nconst results = await parallel([\n  () => agent(prompt, { label: 'a', phase: 'Greet', effort: 'low' }),\n  () => agent(prompt, { label: 'b', phase: 'Greet', effort: 'low' }),\n])\nreturn { a: results[0], b: results[1] }\n"
+        },
+        "tool_call_id": "toolu_probe_3",
+        "tool_input": "{\n  \"script\": \"export const meta = {\\n  name: 'tiny-greet',\\n  description: 'Two tool-less agents each reply with one word',\\n  phases: [{ title: 'Greet', detail: 'agents a and b reply with one word' }],\\n}\\n\\nphase('Greet')\\nconst prompt = 'Reply with exactly one word. Do not use any tools.'\\nconst results = await parallel([\\n  () => agent(prompt, { label: 'a', phase: 'Greet', effort: 'low' }),\\n  () => agent(prompt, { label: 'b', phase: 'Greet', effort: 'low' }),\\n])\\nreturn { a: results[0], b: results[1] }\\n\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Two tool-less agents each reply with one word",
+        "prompt": "export const meta = {\n  name: 'tiny-greet',\n  description: 'Two tool-less agents each reply with one word',\n  phases: [{ title: 'Greet', detail: 'agents a and b reply with one word' }],\n}\n\nphase('Greet')\nconst prompt = 'Reply with exactly one word. Do not use any tools.'\nconst results = await parallel([\n  () => agent(prompt, { label: 'a', phase: 'Greet', effort: 'low' }),\n  () => agent(prompt, { label: 'b', phase: 'Greet', effort: 'low' }),\n])\nreturn { a: results[0], b: results[1] }\n",
+        "run_id": "0mwglx991-f16848e7",
+        "session_id": "claude-session-raw-sdk-live",
+        "subtype": "task_started",
+        "task_id": "wglue129u",
+        "task_type": "local_workflow",
+        "tool_use_id": "toolu_probe_3",
+        "type": "system",
+        "uuid": "probe-msg-4",
+        "workflow_name": "tiny-greet"
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_started"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_3",
+        "tool_final": true,
+        "tool_output": "Workflow launched in background. Task ID: wglue129u\nSummary: Two tool-less agents each reply with one word\nTranscript dir: <path>\nScript file: <path>\n(Edit this file with Write/Edit and re-invoke Workflow with {scriptPath: \"<path>\"} to iterate without resending the script.)\nRun ID: wf_1d1cd443-e8a\nTo resume after editing the script: Workflow({scriptPath: \"<path>\", resumeFromRunId: \"wf_1d1cd443-e8a\"}) — completed agents return cached results (cached results may themselves be empty — inspect journal.jsonl before assuming there is something to recover).\n\nYou will be notified when it completes. Use <path> to watch live progress.",
+        "tool_output_bytes": 636,
+        "tool_output_digest": "bfb3eb5b952a4ec8d1a771007fb1049e7c8c3802bd00a9ea4d031b65f3583f14",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Greet: a",
+        "last_tool_name": "a",
+        "run_id": "0mwglx991-f16848e7",
+        "session_id": "claude-session-raw-sdk-live",
+        "subtype": "task_progress",
+        "summary": "Two tool-less agents each reply with one word",
+        "task_id": "wglue129u",
+        "tool_use_id": "toolu_probe_3",
+        "type": "system",
+        "usage": {
+          "duration_ms": 57,
+          "tool_uses": 0,
+          "total_tokens": 0
+        },
+        "uuid": "probe-msg-5",
+        "workflow_progress": [
+          {
+            "index": 1,
+            "title": "Greet",
+            "type": "workflow_phase"
+          },
+          {
+            "agentId": "ad48734400bd97537",
+            "attempt": 1,
+            "index": 1,
+            "label": "a",
+            "lastProgressAt": 1794672927289,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word. Do not use any tools.",
+            "queuedAt": 1794672927284,
+            "startedAt": 1794672927288,
+            "state": "start",
+            "type": "workflow_agent"
+          },
+          {
+            "index": 2,
+            "label": "b",
+            "lastProgressAt": 1794672927284,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptPreview": "Reply with exactly one word. Do not use any tools.",
+            "queuedAt": 1794672927284,
+            "state": "start",
+            "type": "workflow_agent"
+          }
+        ]
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_progress",
+    "workflow_cards": [
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word. Do not use any tools.",
+        "label": "Greet: a",
+        "model": "probe-model",
+        "result": "",
+        "sessionId": "wglue129u:ad48734400bd97537",
+        "sessionName": "Reply with exactly one word. Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "working"
+        }
+      },
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word. Do not use any tools.",
+        "label": "Greet: b",
+        "model": "probe-model",
+        "result": "",
+        "sessionId": "wglue129u:2",
+        "sessionName": "Reply with exactly one word. Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "working"
+        }
+      }
+    ]
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_3",
+        "text": "The workflow is"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The workflow is",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_3",
+        "text": " running. I'll reply W"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " running. I'll reply W",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_3",
+        "text": "FDONE when"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "FDONE when",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_3",
+        "text": " it"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " it",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_3",
+        "text": " finishes."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " finishes.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      91003,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "prompt_tokens": [
+      4,
+      324,
+      173371,
+      7563
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Greet: a",
+        "last_tool_name": "a",
+        "run_id": "0mwglx991-f16848e7",
+        "session_id": "claude-session-raw-sdk-live",
+        "subtype": "task_progress",
+        "summary": "Two tool-less agents each reply with one word",
+        "task_id": "wglue129u",
+        "tool_use_id": "toolu_probe_3",
+        "type": "system",
+        "usage": {
+          "duration_ms": 2550,
+          "tool_uses": 0,
+          "total_tokens": 39088
+        },
+        "uuid": "probe-msg-6",
+        "workflow_progress": [
+          {
+            "index": 1,
+            "title": "Greet",
+            "type": "workflow_phase"
+          },
+          {
+            "agentId": "ad48734400bd97537",
+            "attempt": 1,
+            "durationMs": 2483,
+            "index": 1,
+            "label": "a",
+            "lastProgressAt": 1794672929772,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word. Do not use any tools.",
+            "queuedAt": 1794672927284,
+            "resultPreview": "Hello",
+            "startedAt": 1794672927288,
+            "state": "done",
+            "tokens": 39088,
+            "toolCalls": 0,
+            "type": "workflow_agent"
+          },
+          {
+            "agentId": "ab4feda86d0162e6f",
+            "attempt": 1,
+            "index": 2,
+            "label": "b",
+            "lastProgressAt": 1794672929735,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word. Do not use any tools.",
+            "queuedAt": 1794672927284,
+            "startedAt": 1794672927288,
+            "state": "start",
+            "type": "workflow_agent"
+          }
+        ]
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_progress",
+    "workflow_cards": [
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word. Do not use any tools.",
+        "label": "Greet: a",
+        "model": "probe-model",
+        "result": "Hello",
+        "sessionId": "wglue129u:ad48734400bd97537",
+        "sessionName": "Reply with exactly one word. Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "completed"
+        }
+      },
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word. Do not use any tools.",
+        "label": "Greet: b",
+        "model": "probe-model",
+        "result": "",
+        "sessionId": "wglue129u:ab4feda86d0162e6f",
+        "sessionName": "Reply with exactly one word. Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "working"
+        }
+      }
+    ]
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Greet: b",
+        "last_tool_name": "b",
+        "run_id": "0mwglx991-f16848e7",
+        "session_id": "claude-session-raw-sdk-live",
+        "subtype": "task_progress",
+        "summary": "Two tool-less agents each reply with one word",
+        "task_id": "wglue129u",
+        "tool_use_id": "toolu_probe_3",
+        "type": "system",
+        "usage": {
+          "duration_ms": 3998,
+          "tool_uses": 0,
+          "total_tokens": 78176
+        },
+        "uuid": "probe-msg-7",
+        "workflow_progress": [
+          {
+            "index": 1,
+            "title": "Greet",
+            "type": "workflow_phase"
+          },
+          {
+            "agentId": "ad48734400bd97537",
+            "attempt": 1,
+            "durationMs": 2483,
+            "index": 1,
+            "label": "a",
+            "lastProgressAt": 1794672929772,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word. Do not use any tools.",
+            "queuedAt": 1794672927284,
+            "resultPreview": "Hello",
+            "startedAt": 1794672927288,
+            "state": "done",
+            "tokens": 39088,
+            "toolCalls": 0,
+            "type": "workflow_agent"
+          },
+          {
+            "agentId": "ab4feda86d0162e6f",
+            "attempt": 1,
+            "durationMs": 1513,
+            "index": 2,
+            "label": "b",
+            "lastProgressAt": 1794672931248,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word. Do not use any tools.",
+            "queuedAt": 1794672927284,
+            "resultPreview": "Hello",
+            "startedAt": 1794672927288,
+            "state": "done",
+            "tokens": 39088,
+            "toolCalls": 0,
+            "type": "workflow_agent"
+          }
+        ]
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_progress",
+    "workflow_cards": [
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word. Do not use any tools.",
+        "label": "Greet: a",
+        "model": "probe-model",
+        "result": "Hello",
+        "sessionId": "wglue129u:ad48734400bd97537",
+        "sessionName": "Reply with exactly one word. Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "completed"
+        }
+      },
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word. Do not use any tools.",
+        "label": "Greet: b",
+        "model": "probe-model",
+        "result": "Hello",
+        "sessionId": "wglue129u:ab4feda86d0162e6f",
+        "sessionName": "Reply with exactly one word. Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "completed"
+        }
+      }
+    ]
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "patch": {
+          "end_time": 1794672932263,
+          "status": "completed"
+        },
+        "run_id": "0mwglx991-f16848e7",
+        "session_id": "claude-session-raw-sdk-live",
+        "subtype": "task_updated",
+        "task_id": "wglue129u",
+        "type": "system",
+        "uuid": "probe-msg-8"
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_updated"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "output_file": "<tasks>/wglue129u.output",
+        "run_id": "0mwglx991-f16848e7",
+        "session_id": "claude-session-raw-sdk-live",
+        "status": "completed",
+        "subtype": "task_notification",
+        "summary": "Dynamic workflow \"Two tool-less agents each reply with one word\" completed",
+        "task_id": "wglue129u",
+        "tool_use_id": "toolu_probe_3",
+        "type": "system",
+        "usage": {
+          "duration_ms": 4992,
+          "tool_uses": 0,
+          "total_tokens": 78176
+        },
+        "uuid": "probe-msg-9"
+      },
+      "sessionId": "claude-session-raw-sdk-live"
+    },
+    "raw_sdk_subtype": "task_notification"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_4",
+        "text": "Agent"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Agent",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_4",
+        "text": " a said"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " a said",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_4",
+        "text": " \"Hello\" and agent"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " \"Hello\" and agent",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_4",
+        "text": " b said \"Hello\"."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " b said \"Hello\".",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_4",
+        "text": " Neither used any tools."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " Neither used any tools.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_4",
+        "text": "\n\nWFDONE"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n\nWFDONE",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      92053,
+      1000000
+    ],
+    "usage_cost": null
+  }
+]

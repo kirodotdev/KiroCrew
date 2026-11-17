@@ -723,8 +723,8 @@ class TestTheWritePathIsUntouched:
                     writer._write_batch("unit", [job])
         return seen
 
-    #: Clock reads one job's batch pass already took before this change: the
-    #: stall-detection stamp ``_run_job`` takes per job (``_inflight_since``).
+    #: Clock reads one job's batch pass takes: the stall-detection stamp
+    #: ``_run_job`` records per job in ``_inflight``.
     #: Asserting this number rather than zero is what makes the test mean "no
     #: read was ADDED" -- any new one pushes the count above it.
     CLOCK_READS_PER_JOB = 1

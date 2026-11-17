@@ -47,6 +47,7 @@ const [, , extPath, cwd, ...calls] = process.argv;
 const handlers = {};
 const registered = [];
 const notes = [];
+const confirms = [];
 const pi = {
   registerCommand() {},
   registerMcpServer(name, config) {
@@ -60,7 +61,7 @@ const ctx = {
   hasUI: true,
   ui: {
     notify(message, level) { notes.push({ message, level }); },
-    async confirm() { return true; },
+    async confirm(_title, message) { confirms.push(JSON.parse(message)); return true; },
   },
 };
 const mod = await import(pathToFileURL(extPath).href);
@@ -75,7 +76,7 @@ const base = process.env.GATE_BASE_PROMPT || "BASE PROMPT";
 const first = await handlers.before_agent_start({ type: "before_agent_start", systemPrompt: base }, ctx);
 const prompt = first?.systemPrompt ?? base;
 const second = await handlers.before_agent_start({ type: "before_agent_start", systemPrompt: prompt }, ctx);
-console.log(JSON.stringify({ registered, notes, results, prompt, second: second ?? null }));
+console.log(JSON.stringify({ registered, notes, results, prompt, second: second ?? null, confirms }));
 """
 
 
@@ -180,6 +181,23 @@ def test_the_handoff_servers_are_registered_for_direct_use(node, tmp_path) -> No
         "handoff": "loaded",
         "registered": ["kirocrew-core"],
         "unregistered": {},
+    }
+
+
+def test_the_envelope_names_the_registered_server_of_an_mcp_call(node, tmp_path) -> None:
+    """The owner comes from the registration table: a Crew server's tool names it;
+    another server's tool and a built-in name none."""
+    out = _run(
+        node,
+        tmp_path,
+        mcp_json=None,
+        calls=["mcp__kirocrew_core__send_message", "mcp__other__tool", "read"],
+    )
+    by_tool = {c["tool"]: c.get("mcp") for c in out["confirms"]}
+    assert by_tool == {
+        "mcp__kirocrew_core__send_message": {"server": "kirocrew-core", "tool": "send_message"},
+        "mcp__other__tool": None,
+        "read": None,
     }
 
 

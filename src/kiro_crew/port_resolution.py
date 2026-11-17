@@ -132,8 +132,9 @@ def _gateway_owns_port(port: int) -> bool:
     1. **Recorded pid** — ``run_marker.read_pid(port)`` reads the sidecar the
        gateway wrote at ``0600`` inside the ``0700`` ``run/`` dir. Another local
        user cannot write it, so they cannot nominate a process of theirs.
-    2. **Holds the port** — that pid must be among
-       ``platform_compat.find_listening_pids(port)``. This is what makes a stale
+    2. **Holds the port** — that pid must itself hold a LISTEN socket on the
+       port, on any address
+       (``platform_compat.process_owns_port_listener``). This is what makes a stale
        recorded pid harmless: it has to actually hold the port we are about to
        send the secret to.
     3. **Owned by us, and ours** — the pid's uid must equal the caller's
@@ -146,8 +147,8 @@ def _gateway_owns_port(port: int) -> bool:
     escalation for them. The boundary this closes is a *different* local user.
 
     **Fails closed** at every step: no sidecar, no recorded pid, a pid that does
-    not hold the port, an unresolvable uid, a missing lookup tool
-    (``find_listening_pids`` folds that into an empty list) or a throwing one —
+    not hold the port, an unresolvable uid, an unreadable socket table or
+    descriptor list, a missing or incomplete lookup tool, or a throwing one —
     all deny, and discovery is skipped in favour of the documented default.
     ``--port`` and ``KIROCREW_PORT`` remain available on such hosts.
 
@@ -166,11 +167,17 @@ def _gateway_owns_port(port: int) -> bool:
     recorded = run_marker.read_pid(port)
     if recorded is None:
         return False
+    # Asked of the recorded pid alone, rather than listing every pid on the port
+    # with a system-wide lsof pass. That pass costs 115-275 ms on a busy host, and
+    # a pooled control-plane backend re-proves ownership on every call that posts
+    # back to the gateway. Any LISTEN socket on the port counts, whatever address
+    # it is bound to: boot's marker prune and sibling-port check read this as
+    # "that gateway is alive", and a gateway bound to one interface or to ::1
+    # alone has no loopback-covering socket. Anything but a completed True denies.
     try:
-        pids = platform_compat.find_listening_pids(port)
+        if platform_compat.process_owns_port_listener(recorded, port) is not True:
+            return False
     except Exception:
-        return False
-    if recorded not in pids:
         return False
     owner = platform_compat.process_owner_uid(recorded)
     if owner is None or owner != os.getuid():
@@ -378,6 +385,51 @@ def resolve_serving_port() -> int:
             pass  # malformed value is no evidence; fall through to the client order
     port, _evidence_backed = resolve_client_port_ex(None)
     return port
+
+
+def _well_formed_port(value: str) -> bool:
+    """1-5 ASCII decimal digits naming a port in 1..65535 (the KAS projection's gate)."""
+    return 1 <= len(value) <= 5 and value.isascii() and value.isdecimal() and 0 < int(value) < 65536
+
+
+def drop_foreign_inherited_port(env: dict[str, str]) -> None:
+    """Remove an inherited ``KIROCREW_PORT`` that names a gateway other than this one.
+
+    A gateway started from a shell that already exports ``KIROCREW_PORT`` (an
+    agent shell of ANOTHER gateway carries one) keeps that value in its own
+    environment beside the ``KIROCREW_BOUND_PORT`` its listener exports
+    (``dashboard.server_runtime.listener._export_bound_port``). Every child it
+    spawns inherits both, and :func:`resolve_client_port_src` reads
+    ``KIROCREW_PORT`` first. The child then dials the OTHER gateway with THIS
+    gateway's credential and every tool call fails ``internal_auth_mismatch``.
+
+    Dropping the foreign value, rather than overwriting it with the bound port,
+    is deliberate: the listener keeps the two variables apart so the transient
+    bound port is never written under the operator-intent name (which
+    ``service_environment()`` would bake into a unit file), and nothing here is
+    persisted -- it shapes one child's environment at spawn time. With the
+    foreign value gone the child's chain falls to ``KIROCREW_BOUND_PORT``, the
+    gateway that spawned it.
+
+    A no-op when no well-formed bound port is in *env* (nothing to prove the
+    inherited value foreign) or when the inherited value already equals it (the
+    operator's own ``KIROCREW_PORT`` that this gateway bound). Mutates *env*.
+
+    Lives here, beside the chain it corrects, because two spawn paths need it:
+    the ACP launcher, and the MCP gateway daemon for its pooled control-plane
+    backends (``daemon.launch.bind_control_plane_to_owner``), which must not
+    import the ACP launcher to get it.
+    """
+    bound = env.get("KIROCREW_BOUND_PORT", "")
+    if not _well_formed_port(bound):
+        return
+    inherited = env.get("KIROCREW_PORT")
+    if inherited is None:
+        return
+    value = inherited.strip()
+    if value.isascii() and value.isdecimal() and int(value) == int(bound):
+        return
+    env.pop("KIROCREW_PORT", None)
 
 
 # Subcommands that launch a long-running Kiro Crew *server* process which

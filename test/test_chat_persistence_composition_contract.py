@@ -36,6 +36,7 @@ from pathlib import Path
 import composition_contract_checks
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from source_corpus import repo_files_named, repo_root
 
 import kiro_crew
@@ -383,10 +384,10 @@ _MOVED: dict[str, str] = {
 
 #: The signature of every function the facade defined, as it was at that base.
 _SIGNATURES: dict[str, str] = {
-    "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, pending_backfills: 'list[tuple[str, dict]] | None' = None) -> 'None'",
+    "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, pending_backfills: 'list[tuple[str, dict]] | None' = None, lazy_tail: 'list[dict] | None' = None) -> 'None'",
     "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False, tail: 'list[dict] | None' = None, dropped: 'set[str] | None' = None, pending_backfills: 'list[tuple[str, dict]] | None' = None) -> 'int'",
     "_approx_window_payload_bytes": "(window: 'list[dict]') -> 'int'",
-    "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'None'",
+    "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'Path | None'",
     "_attach_variants": "(slot: '_ChatSlot', m: 'dict') -> 'None'",
     "_build_history_prefix": "(slot: '_ChatSlot', *, conversation_log: 'ConversationLog | None' = None, current_message: 'dict | None' = None, model_window: 'int | None' = None) -> 'str'",
     "_build_kiro_model_map": "() -> 'dict[str, str]'",
@@ -415,8 +416,8 @@ _SIGNATURES: dict[str, str] = {
     "_newest_human_turn_ts": "(rows: \"'list[dict] | tuple[dict, ...]'\") -> 'str'",
     "_on_config_change": "(change: 'object') -> 'None'",
     "_pin_private_agent_assignment": "(session_key: 'str', agent: 'str', config: 'KiroCrewConfig', *, conversation_log=None, native_context: 'bool' = False, authorized_store: 'str | None' = None, memory_mode: 'str' = 'persistent', validate_only: 'bool' = False) -> 'str'",
-    "_prefetch_recent_session": "(conv_log: 'ConversationLog', key: 'str', session: 'dict', *, folders_only: 'bool', cutoff: 'float | None') -> 'tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool]'",
-    "_prefetch_rehydrate_inputs": "(conv_log: 'ConversationLog', history_key: 'str', *, adopt_closed: 'bool' = False, kiro_model_map: 'dict[str, str] | None' = None, with_status: 'bool' = False) -> 'tuple[dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool]'",
+    "_prefetch_recent_session": "(conv_log: 'ConversationLog', key: 'str', session: 'dict', *, folders_only: 'bool', cutoff: 'float | None', row_tail: 'Callable[[ConversationLog, str, dict, str, tuple[str, str] | None], list[dict] | None] | None' = None) -> 'tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool, list[dict] | None]'",
+    "_prefetch_rehydrate_inputs": "(conv_log: 'ConversationLog', history_key: 'str', *, adopt_closed: 'bool' = False, kiro_model_map: 'dict[str, str] | None' = None, with_status: 'bool' = False, tail_window_above: 'int | None' = None) -> 'tuple[dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool]'",
     "_queue_snapshot_is_stale": "(slot: '_ChatSlot', queue_write_basis: 'str') -> 'bool'",
     "_read_mcp_app_claims": "(session_key: 'str') -> 'list[set[str]]'",
     "_read_open_slots_keys": "() -> 'list[object]'",
@@ -1153,7 +1154,7 @@ def _scenario_full_save(state) -> dict:
     _rows(
         slot,
         ("user", "hello", 6, {"mid": "m-1", HUMAN_TURN_META_KEY: True}),
-        ("assistant", "the key is AKIAIOSFODNN7EXAMPLE", 7, {"mid": "m-2"}),
+        ("assistant", f"the key is {github_classic(seed=29)}", 7, {"mid": "m-2"}),
         ("system", "a notice", 8, {"mid": "m-3"}),
     )
     ok = cp._save_slot_to_history(state, slot, force=True)

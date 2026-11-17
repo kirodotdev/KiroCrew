@@ -21,7 +21,8 @@
 #
 # Every network read happens in this script, which fails the step when a fetch
 # fails or any object of the four commits is still missing at the end. The
-# later steps read the commit graph and those four commits' files only, so
+# later steps read the commit graph, the trees of that history (the wheel-copy
+# drift guard compares two of them) and those four commits' files only, so
 # they never fetch. A fetch there that failed would read as an empty diff, and
 # a rule grep would pass.
 #

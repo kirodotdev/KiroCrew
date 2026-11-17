@@ -47,6 +47,12 @@ SKIP_IDENTITY_CHANGED = "identity_changed"
 #: module's SKIP_UNREADABLE, whose value is a different string for a different
 #: subject (an unreadable trash BATCH).
 SKIP_UNREADABLE_ENTRY = "unreadable_entry"
+#: The entry is one of Kiro Crew's own crew-hidden leaves and this process runs inside
+#: Kiro Crew's sandbox, which masks every such leaf (an empty stand-in on Linux, a
+#: denied read on macOS). Whatever this process sees there is not the operator's data,
+#: so it is not read at all and the gap is recorded under this code instead of as an
+#: empty tree or an unreadable one.
+SKIP_MASKED_BY_SANDBOX = "masked_by_sandbox"
 
 #: The reason codes that mean "carrying this was never the intent". A symlink and a
 #: non-regular entry are screened on EVERY run, by design, and an archive that screened
@@ -59,11 +65,17 @@ SKIP_UNREADABLE_ENTRY = "unreadable_entry"
 _NEVER_ARCHIVED = frozenset({SKIP_SYMLINK, SKIP_NOT_REGULAR})
 
 #: The reason codes that mean the archive lacks something it WAS asked to carry: the
-#: bytes were refused, truncated, swapped for another inode mid-copy, or the name went
-#: away between the listing and the copy. Listed so a test can assert the two sets
-#: together cover every ``SKIP_*`` code in this module.
+#: bytes were refused, truncated, swapped for another inode mid-copy, the name went
+#: away between the listing and the copy, or a sandbox masked it from this run. Listed
+#: so a test can assert the two sets together cover every ``SKIP_*`` code in this module.
 _OMITS_WANTED_DATA = frozenset(
-    {SKIP_UNREADABLE_ENTRY, SKIP_TOO_LARGE, SKIP_VANISHED, SKIP_IDENTITY_CHANGED}
+    {
+        SKIP_UNREADABLE_ENTRY,
+        SKIP_TOO_LARGE,
+        SKIP_VANISHED,
+        SKIP_IDENTITY_CHANGED,
+        SKIP_MASKED_BY_SANDBOX,
+    }
 )
 
 #: Times :func:`create_and_open_dir_pinned` re-runs its ``mkdir``-then-``open`` pair
@@ -369,6 +381,7 @@ def open_fenced_for_read(
     *,
     fence: Callable[[str], bool],
     refusal: type[Exception] = OSError,
+    allow_hardlinked: bool = False,
 ) -> int:
     """Open *resolved* for reading and return a descriptor validated as an inode.
 
@@ -386,6 +399,12 @@ def open_fenced_for_read(
     answered, and on the event loop every extra call is a resolver-pool
     submission. A missing kernel path fails closed.
 
+    *allow_hardlinked* skips the single-link check and nothing else. A caller
+    that sets it owns the decision about the bytes: it must ``fstat`` the
+    descriptor and refuse a multi-link inode unless the bytes it read are the
+    ones it can vouch for (``spec_reads._read_spec_bytes`` and its RECORD
+    digest check).
+
     The caller owns the returned descriptor. Every refusal closes it first and
     raises *refusal*; a missing file surfaces as the ordinary
     ``FileNotFoundError`` from the open.
@@ -402,7 +421,7 @@ def open_fenced_for_read(
         opened = os.fstat(fd)
         if not _stat.S_ISREG(opened.st_mode):
             raise refusal(f"refusing to read a non-regular file: {resolved_str}")
-        if opened.st_nlink != 1:
+        if opened.st_nlink != 1 and not allow_hardlinked:
             raise refusal(f"refusing to read a hardlinked file: {resolved_str}")
         fd_real = fd_real_path(fd)
         if fd_real is None:

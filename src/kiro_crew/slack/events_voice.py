@@ -89,7 +89,7 @@ async def _transcribe_with_reaction(
         logger.debug("Failed to add STT reaction", exc_info=True)
 
     try:
-        transcripts = await _transcribe_files(orch, files)
+        transcripts = await _transcribe_files(orch, files, slack=slack_client)
     finally:
         if _stt_reaction_added:
             try:
@@ -103,14 +103,21 @@ async def _transcribe_with_reaction(
     return transcripts
 
 
-async def _transcribe_files(orch: "GatewayOrchestrator", files: list[dict]) -> list[str]:
+async def _transcribe_files(
+    orch: "GatewayOrchestrator", files: list[dict], *, slack: "SlackClientOps | None" = None
+) -> list[str]:
     """Download and transcribe audio files, return list of transcription strings.
 
     What speech-to-text could hear, plus one pinned refusal note
     (:data:`VOICE_MEMO_TOO_LONG` / :data:`VOICE_MEMO_DURATION_UNVERIFIED`) per
     memo refused before transcription. A memo that produced nothing is reported
     by the caller, which knows how many arrived: see :func:`_voice_memo_context`.
+
+    *slack* is the client the route read before ingestion; every download uses
+    it, so a reconnect clearing ``orch.slack`` mid-message cannot strand a
+    memo. Omitted, ``orch.slack`` is read once.
     """
+    client = slack if slack is not None else orch.slack
     results: list[str] = []
     for f in files:
         if not is_voice_memo(f):
@@ -124,9 +131,9 @@ async def _transcribe_files(orch: "GatewayOrchestrator", files: list[dict]) -> l
             suffix = "." + (raw_ft or "webm")
             fd, dest = tempfile.mkstemp(suffix=suffix)
             os.close(fd)
-            assert orch.slack is not None
+            assert client is not None
             assert dest is not None
-            await orch.slack.download_file(url, dest)
+            await client.download_file(url, dest)
             sel().log_api_access(
                 caller="stt",
                 operation="slack.download_file",

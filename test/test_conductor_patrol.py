@@ -213,7 +213,7 @@ async def test_first_bind_arms_one_work_ledger_patrol(svc, audits):
     assert armed["slot_key"] == CONDUCTOR
     assert armed["watch"] == "work-ledger"
     assert armed["gate"] is True
-    assert armed["idle_secs"] == 600
+    assert armed["idle_secs"] == 300
     assert armed["max_cycles"] == 0
     assert armed["max_runtime_secs"] == conductor_patrol.patrol_max_runtime_secs()
     assert armed["replace_existing"] is False
@@ -402,7 +402,7 @@ def test_the_default_patrol_has_no_cycle_cap_and_the_ceiling_as_its_runtime():
     assert conductor_patrol.PATROL_MAX_CYCLES == 0
     assert conductor_patrol.patrol_max_runtime_secs() == runtime_ceiling_secs()
     assert DEFAULT_RUNTIME_CEILING_SECS == 7 * 86400
-    assert 300 <= conductor_patrol.PATROL_INTERVAL_SECS <= 900
+    assert conductor_patrol.PATROL_INTERVAL_SECS == 300
     message = conductor_patrol.PATROL_MESSAGE
     assert message.index("one final report") < message.index("call autonudge_stop")
 
@@ -771,3 +771,13 @@ async def test_an_audit_outage_that_races_closure_still_logs_its_refusal_at_warn
     assert [r.levelno for r in patrol_logs] == [logging.WARNING]
     assert "audit log unavailable" in patrol_logs[0].getMessage()
     assert SERVICE_SHUTTING_DOWN_MESSAGE not in patrol_logs[0].getMessage()
+
+
+def test_the_patrol_stays_open_while_work_is_queued_and_old_loops_still_pass():
+    """Queued work lives outside the ledger, so the patrol's stop names it; the text
+    from before that change stays a shipped one for loops armed with it."""
+    assert "every item is terminal and nothing is queued" in conductor_patrol.PATROL_MESSAGE
+    old = conductor_patrol._PATROL_MESSAGE_BEFORE_QUEUE
+    assert old != conductor_patrol.PATROL_MESSAGE
+    assert "every item is terminal or the user says stop" in old
+    assert old in conductor_patrol.SHIPPED_PATROL_MESSAGES

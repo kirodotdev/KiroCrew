@@ -200,3 +200,19 @@ def bound_account(external_id: str) -> str:
     """The account id pinned into the handle, or ``''`` when the handle predates binding."""
     _key, account, _profile = _parse_external_id(external_id)
     return account
+
+
+def _with_utf8_charset(content_type: str) -> str:
+    """``content_type`` with ``charset=utf-8`` added to a ``text/*`` type that names none.
+
+    Every text body the drive uploads is staged as UTF-8, but S3 serves the header
+    exactly as stored, and a browser reads a ``text/plain`` or ``text/markdown`` page
+    with no charset in its locale's default encoding, so non-ASCII text arrives garbled.
+    A type that already names a charset, and every non-text type, is left as it is.
+    """
+    main, _, params = content_type.partition(";")
+    if not main.strip().lower().startswith("text/"):
+        return content_type
+    if any(p.split("=", 1)[0].strip().lower() == "charset" for p in params.split(";")):
+        return content_type
+    return f"{content_type.rstrip().rstrip(';')}; charset=utf-8"

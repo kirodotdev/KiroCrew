@@ -9,8 +9,10 @@ holds what they share.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import sys
 import threading
-import time
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -93,6 +95,25 @@ class TestParseUsage:
 
     def test_no_bonus_fields_without_section(self):
         assert "bonus_credits" not in _parse_usage(SAMPLE_USAGE)
+
+    def test_parses_the_current_kiro_cli_bonus_format(self):
+        # kiro-cli's current /usage: a header with no colon, and
+        # "name: used/total credits used, expires in N days".
+        raw = (
+            "Estimated Usage | resets on 2026-12-01 | KIRO FREE\n"
+            "Bonus credits\n"
+            "kiroween-2026: 100.54/4000 credits used, expires in 49 days\n"
+            "Credits (0.00 of 50 covered in plan), 0.0%\n"
+        )
+        r = _parse_usage(raw)
+        assert r["credits_plan"] == 50.0
+        assert r["bonus_credits"] == [
+            {"name": "kiroween-2026", "used": 100.54, "total": 4000.0, "days_left": 49}
+        ]
+
+    def test_a_line_that_only_mentions_bonus_credits_is_not_the_header(self):
+        raw = "Estimated Usage\nYou have no bonus credits this month\n"
+        assert "bonus_credits" not in _parse_usage(raw)
 
     def test_parses_every_bounded_bonus_grant_in_dash_format(self):
         assert _parse_usage(SAMPLE_USAGE_WITH_BONUS)["bonus_credits"] == [
@@ -180,6 +201,36 @@ class TestRedactStrings:
         assert _redact_strings(42) == 42
         assert _redact_strings(3.5) == 3.5
         assert _redact_strings(None) is None
+
+
+@contextlib.contextmanager
+def _refuse_task_sleep() -> Iterator[list[float]]:
+    """Refuse a non-zero ``asyncio.sleep`` in the current task for the block.
+
+    A profile hook on the loop thread, so ``asyncio`` itself stays unpatched and
+    other tasks sleep as usual. Each refused delay is recorded; the refusal raises
+    into the sleeping caller before any timer is armed. Not seen: a sleep in a
+    task spawned with ``create_task``, and a blocking wait such as ``Event.wait``.
+    """
+    task = asyncio.current_task()
+    delays: list[float] = []
+
+    def refuse(frame, event: str, _arg) -> None:
+        if (
+            event == "call"
+            and frame.f_code is asyncio.sleep.__code__
+            and asyncio.current_task() is task
+            and frame.f_locals.get("delay", 0) > 0
+        ):
+            delays.append(frame.f_locals["delay"])
+            raise AssertionError(f"slept {frame.f_locals['delay']}s in the task under test")
+
+    previous = sys.getprofile()
+    sys.setprofile(refuse)
+    try:
+        yield delays
+    finally:
+        sys.setprofile(previous)
 
 
 class TestFetchUsageBg:
@@ -288,11 +339,10 @@ class TestFetchUsageBg:
 
     @pytest.mark.asyncio
     async def test_text_scrape_does_not_clobber_richer_api_value(self):
-        # Regression: on a refresh where the API call transiently fails and we
-        # fall back to the overage-blind text scrape, the scrape must NOT
-        # overwrite a fresher, richer API value for THE SAME account — the bug
-        # that flipped the pill from the true 41,336/10,000 (413%) to a
-        # misleading 10,000/10,000 (100%, overage hidden). Seed an API value
+        # On a refresh where the API call transiently fails and we fall back to
+        # the overage-blind text scrape, the scrape must NOT overwrite a fresher,
+        # richer API value for THE SAME account -- that would flip the pill from
+        # the true 41,336/10,000 (413%) to 10,000/10,000 (100%, overage hidden). Seed an API value
         # that shows overage and carries this account's email, then run a
         # refresh that falls through to the scrape (fixture stubs the API to
         # return None); whoami reports the SAME email. SAMPLE_USAGE scrapes to
@@ -452,14 +502,22 @@ class TestFetchUsageBg:
             events.append("whoami")
             return {}
 
+        reap_timeouts: list[float | None] = []
+        real_kill_and_reap = sessions_mod.kill_and_reap
+
+        async def recorded_reap(child, *, timeout=None):
+            reap_timeouts.append(timeout)
+            await real_kill_and_reap(child, timeout=timeout)
+
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"),
             patch.object(sessions_mod, "_fetch_whoami", AsyncMock(side_effect=whoami)),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+            patch.object(sessions_mod, "kill_and_reap", recorded_reap),
         ):
-            started = time.monotonic()
-            await sessions_mod._fetch_usage_bg()
-            elapsed = time.monotonic() - started
+            with _refuse_task_sleep() as delays:
+                await sessions_mod._fetch_usage_bg()
+        assert delays == [], f"the timeout path slept {delays} before moving on"
         # top whoami, the pre-spawn whoami, the scrape, the reap (kill + draining
         # communicate), then the handler's whoami.
         assert events == [
@@ -471,7 +529,9 @@ class TestFetchUsageBg:
             "whoami",
         ], events
         proc.kill.assert_called_once()  # the finally does not reap a second time
-        assert elapsed < 5  # the (mocked) reap is bounded; nothing waited on the child
+        # The reap is handed a finite bound.
+        assert len(reap_timeouts) == 1 and reap_timeouts[0] is not None, reap_timeouts
+        assert 0 < reap_timeouts[0] <= 5, reap_timeouts
         assert sessions_mod._usage_cache == {"available": False}
         assert sessions_mod._usage_fetching is False
 

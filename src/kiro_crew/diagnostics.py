@@ -308,7 +308,13 @@ def _collapse_home_prefixes(text: str) -> tuple[str, int]:
     """
     count = 0
     for prefix in _home_prefixes():
-        pattern = re.compile(re.escape(prefix) + _PREFIX_BOUNDARY, re.IGNORECASE)
+        # Between segments any run of separators matches, so every escaping depth
+        # collapses. A leading root stays one separator: a run there would swallow
+        # ``file://`` and rescan every position of a long run.
+        first, *rest = re.split(r"[\\/]+", prefix.rstrip("\\/"))
+        body = r"[\\/]+".join(re.escape(s) for s in rest)
+        lead = (re.escape(first) + r"[\\/]+" if rest else re.escape(first)) if first else r"[\\/]"
+        pattern = re.compile(lead + body + _PREFIX_BOUNDARY, re.IGNORECASE)
         text, n = pattern.subn("~", text)
         count += n
     return text, count
@@ -404,14 +410,18 @@ def _kiro_log_dirs() -> list[Path]:
     guessing which one is authoritative per platform, try every candidate and
     take the first that actually exists; ``KIRO_CHAT_LOG_FILE`` overrides all of
     them for anyone running a non-default layout. Windows sets ``TEMP``/``TMP``
-    and usually leaves ``TMPDIR`` unset, so those follow ``TMPDIR``.
+    and usually leaves ``TMPDIR`` unset, so those follow ``TMPDIR``. The fixed
+    ``/tmp`` candidate is POSIX-only: on Windows it names ``\\tmp`` at the root
+    of the current drive, which kiro-cli does not use and any local account can
+    create.
     """
     out: list[Path] = []
     for env in ("XDG_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"):
         value = os.environ.get(env)
         if value:
             out.append(Path(value) / "kiro-log")
-    out.append(Path("/tmp") / "kiro-log")
+    if not platform_compat.IS_WINDOWS:
+        out.append(Path("/tmp") / "kiro-log")
     # Preserve order while dropping duplicates (TMPDIR is often /tmp), and drop
     # symlinked candidates: a symlinked `kiro-log` would resolve to off-tree
     # files that are not themselves symlinks, so the per-file guard would pass
@@ -1401,8 +1411,8 @@ def terminal_issue_url(result: BundleResult, note: str = "") -> str:
     The dashboard renders `BundleResult.github_issue_url` out of a JSON response
     that no redactor scans, so it keeps the full pre-filled body. A link PRINTED
     to stdout has no such guarantee — it gets selected into chat, captured from a
-    shell tool, or relayed by an agent, and on those paths the pre-filled variant
-    is replaced wholesale by ``[REDACTED: suspicious URL to github.com]``. This
+    shell tool, or relayed by an agent, and on those paths a long pre-filled query
+    reads as data carried out (``security.exfil.scan_exfiltration_urls``). This
     variant trades the pre-filled body for a link that arrives intact. An edition
     tracker gets the same ``prefill=False`` signal and owns keeping its query short.
     """

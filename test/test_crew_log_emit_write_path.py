@@ -11,6 +11,7 @@ import asyncio
 import gc
 import inspect
 import logging
+import sys
 import threading
 import time
 
@@ -216,27 +217,40 @@ def test_a_refused_oversize_write_is_dropped_and_counted_and_named_once(caplog):
     """A refusal is a loss NOW, not a retry, and it is admitted rather than hidden.
 
     A refusal happens before any byte is written and would repeat on every retry, so
-    the entry is dropped at once and counted.
+    the entry is dropped at once and counted, and a ``write/dropped`` marker admits it.
+    The second refusal queues behind the first one's marker, so it lands through a pass:
+    the pass the first refusal starts is held in its batching pause until the drain.
     """
+    emit.reset_caches(limits=WriterLimits(batch_deadline_seconds=20.0))  # flake-ok: not waited
     _open_session()
     before = len(_entries())
     with caplog.at_level(logging.WARNING, logger=emit.logger.name):
         emit.on_tool_called(SESSION, 1, name="x" * (70 * 1024), call_id="tc-big")
         emit.on_tool_called(SESSION, 1, name="y" * (70 * 1024), call_id="tc-big2")
-    assert len(_entries()) == before, "a refused write must not land"
+        assert_drained()
+    landed = [e["type"] for e in _entries()[before:]]
+    assert landed == [
+        "write/dropped",
+        "write/dropped",
+    ], f"a refusal landed or went unadmitted: {landed}"
     assert emit.dropped_writes() == 2, "both losses are counted"
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     # One for the storage failure, one for the loss -- and the SECOND refusal adds
-    # neither, because a failing crew log names itself once rather than per entry.
-    assert len(warnings) == 2, f"expected the failure and the loss once each: {warnings}"
+    # neither, because a failing crew log names itself once rather than per entry --
+    # plus one when the first marker lands and the log is writing again.
+    assert (
+        len(warnings) == 3
+    ), f"expected the failure, the loss and the recovery once each: {warnings}"
     assert any("gave up on" in record.getMessage() for record in warnings)
+    assert any("landing again" in record.getMessage() for record in warnings)
 
 
 def test_a_refused_write_does_not_break_the_next_good_write():
     _open_session()
     emit.on_tool_called(SESSION, 1, name="z" * (70 * 1024), call_id="tc-big")
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert _body()[-1]["type"] == "turn/completed"
+    assert_drained()
+    assert [e["type"] for e in _body()][-2:] == ["write/dropped", "turn/completed"]
 
 
 def test_a_storage_layer_that_raises_never_breaks_a_caller(monkeypatch):
@@ -374,25 +388,67 @@ def test_a_slow_writer_costs_memory_not_a_record_and_not_the_loop(monkeypatch):
     assert_drained()
     original = lg.CrewLog.append
     release = threading.Event()
+    producer = threading.get_ident()
+    producer_appends: list[int] = []
+    writer_gave_up = threading.Event()
 
     def _held(self, *args, **kwargs):
+        if threading.get_ident() == producer:
+            # The producer wrote for itself. Record it and do not hold it, so the
+            # test fails by name below instead of sitting out the hold.
+            producer_appends.append(1)
+            return original(self, *args, **kwargs)
         # The writer is stuck for the whole burst, so this measures the producer
-        # alone rather than a race with a writer that might be keeping up.
-        assert release.wait(20.0)
+        # alone rather than a race with a writer that might be keeping up. Only the
+        # producer sets ``release``, after its burst: a producer that waited on this
+        # writer leaves the hold to run out, which is what ``writer_gave_up`` reads.
+        # The hold is the lost-run bound: only a producer that waits on this writer
+        # (or a host stalled for that long) lets it run out.
+        if not release.wait(default_timeout()):
+            writer_gave_up.set()
+            release.set()  # held once is the evidence; let the rest drain
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(lg.CrewLog, "append", _held)
+    # Any timed or untimed wait the producer makes on its own thread during the
+    # burst: Event.wait, Queue.put(block=True) and Future.result all park in
+    # Condition.wait, and a poll loop parks in time.sleep. Seen through a profile
+    # hook on THIS thread only (``sys.setprofile`` is per-thread), so no other
+    # thread in the worker runs this test's instrumentation.
+    producer_waits: list[str] = []
+    cond_wait = threading.Condition.wait.__code__
+    thread_start = threading.Thread.start.__code__
+    real_sleep = time.sleep
+
+    def _profile(frame, event, arg):  # type: ignore[no-untyped-def]
+        if event == "c_call" and arg is real_sleep:
+            producer_waits.append("time.sleep")
+        elif event == "call" and frame.f_code is cond_wait:
+            timeout = frame.f_locals.get("timeout")
+            # Thread.start parks until the new thread runs: the writer pool
+            # spawning its drain thread, not a wait on the writer's progress.
+            callers = (frame.f_back, frame.f_back.f_back if frame.f_back else None)
+            spawning = any(f is not None and f.f_code is thread_start for f in callers)
+            if timeout != 0 and not spawning:
+                producer_waits.append(f"Condition.wait({timeout})")
 
     async def _flood() -> None:
-        started = time.monotonic()
-        for n in range(40):
-            emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
-        elapsed = time.monotonic() - started
-        # The writer holds the very first append for 20s. A producer that waited
-        # on it, or wrote for itself, could not get through 40 emits in under a
-        # second.
-        # flake-ok: pre-existing 1 s real-time ceiling on 40 emits while the writer is held for 20 s, moved verbatim; tracked for a de-flake pass
-        assert elapsed < 1.0, f"the producer blocked for {elapsed:.2f}s"
+        previous = sys.getprofile()
+        sys.setprofile(_profile)
+        try:
+            for n in range(40):
+                emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
+        finally:
+            sys.setprofile(previous)
+        # The writer holds the very first append until ``release``. A producer that
+        # waited on it could not get through 40 emits before the hold ran out; one
+        # that wrote for itself shows up on its own thread.
+        assert not producer_waits, f"the producer waited: {producer_waits[:3]}"
+        # The hold is the lost-run bound (half the test's timeout), not a budget: it
+        # runs out only if the burst took that long, which the profile checks above
+        # would name first for any wait they can see.
+        assert not writer_gave_up.is_set(), "lost run: the burst outlasted the held writer"
+        assert producer_appends == [], "the producer wrote to the file itself"
         assert emit.buffered_writes() > 0, "nothing was buffered -- the writer kept up"
         release.set()
         # The drain is 40 fsynced appends, so its length is the host's disk speed:
@@ -901,7 +957,10 @@ def test_a_write_that_finishes_late_sheds_nothing():
     real_append = lg.CrewLog.append
 
     def _slow(self, *a, **kw):
-        release.wait(10.0)
+        # The emits below write inline on this thread, so the wait always runs out:
+        # the write returns late, which is the case under test. Nothing in the writer
+        # times an append, so how late does not change the path it takes.
+        release.wait(0.2)  # flake-ok: a deliberate late return, not a barrier
         return real_append(self, *a, **kw)
 
     with pytest.MonkeyPatch.context() as mp:
@@ -1169,6 +1228,49 @@ def test_a_permanently_failed_creation_counts_later_discards_as_loss():
     assert emit.dropped_writes() == dropped_before + 1, (
         "a discarded entry for a creation-failed session was a silent no-op, " "not counted as loss"
     )
+
+
+@pytest.mark.parametrize("queued", [False, True], ids=["inline", "queued"])
+def test_a_reopened_session_creates_its_log_ahead_of_its_refused_marker(queued):
+    """Once the creation's cause is repaired, re-opening the session creates its log.
+
+    The failed opening owes a marker the log refuses (there is no file), so that debt is
+    parked, and the re-open queues behind it. Only the opening can create the file, so it
+    is tried first and the marker lands right behind ``session/opened``.
+    """
+
+    def _run(step) -> None:
+        if queued:
+
+            async def _in_loop() -> None:
+                step()
+
+            asyncio.run(_in_loop())
+        else:
+            step()
+        assert_drained()
+
+    real_create = lg.CrewLog.create
+
+    def _refuse_create(kind, unit_id, *args, **kwargs):
+        if unit_id == SESSION:
+            raise lg.CrewLogError("refused at create", code=lg.CODE_ALREADY_OWNED)
+        return real_create(kind, unit_id, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lg.CrewLog, "create", _refuse_create)
+        _run(_open_session)
+    assert SESSION in emit._creation_failed and not _log_path().is_file()
+
+    def _reopen_and_turn() -> None:
+        _open_session()
+        emit.on_turn_started(SESSION, 1, "user")
+
+    _run(_reopen_and_turn)
+
+    assert _log_path().is_file(), "the repaired session never created its log"
+    assert [e["type"] for e in _body()] == ["session/opened", "write/dropped", "turn/started"]
+    assert _body()[1]["data"]["dropped_count"] == 1, "the marker did not name the one lost opening"
 
 
 def test_a_session_that_was_never_opened_stays_a_silent_no_op():

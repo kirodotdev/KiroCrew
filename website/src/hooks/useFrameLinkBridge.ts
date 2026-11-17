@@ -165,8 +165,13 @@ export function webUrlOf(data: unknown): string | null {
  * a new click in the frame while a keyboard user keeps their place: one Tab goes
  * back into the page. The holder is made focusable from script only
  * (`tabindex="-1"`) when it is not already; with no holder the frame is blurred.
+ *
+ * Also what a host calls before it REMOVES a frame that holds focus. Removing it
+ * leaves focus on no element and the dashboard's window without focus, so the next
+ * click into any frame fires no window `blur` and `focusEntry` never records it:
+ * every click after that reads as untied until the person clicks in the dashboard.
  */
-function focusHostOf(frame: HTMLIFrameElement): void {
+export function focusHostOf(frame: HTMLIFrameElement): void {
   const host = frame.parentElement
   if (!host) {
     frame.blur()
@@ -175,6 +180,11 @@ function focusHostOf(frame: HTMLIFrameElement): void {
   if (!host.hasAttribute('tabindex')) host.setAttribute('tabindex', '-1')
   host.focus({ preventScroll: true })
   if (document.activeElement === frame) frame.blur()
+}
+
+/** The bridge's default: every web URL may open. */
+function neverRefuse(): boolean {
+  return false
 }
 
 /** A ref that always holds the latest *value*, for use inside stable callbacks. */
@@ -213,14 +223,21 @@ export function useFrameLinkBridge(
   open: (url: string) => void = openExternal,
   gesture: (frame: HTMLIFrameElement) => boolean = hasGesture,
   tied: (frame: HTMLIFrameElement) => boolean = tiedToFrame,
+  refuse: (url: string) => boolean = neverRefuse,
 ): ReactNode {
   const [chip, setChip] = useState<{ url: string; frame: HTMLIFrameElement } | null>(null)
   const openRef = useLatest(open)
   const tiedRef = useLatest(tied)
+  const refuseRef = useLatest(refuse)
   // The frame, URL and gesture checks are useFrameOpenLink's own listener; this
   // hook adds the web-URL rule, the tie and the once-per-click focus move.
   const answer = useCallback((url: string, frame?: HTMLIFrameElement) => {
     if (!frame) return
+    // A link the host's own text would draw as a Blocked link chip opens nothing.
+    if (refuseRef.current(url)) {
+      setChip(null)
+      return
+    }
     if (tiedRef.current(frame)) {
       setChip(null)
       openRef.current(url)
@@ -228,7 +245,7 @@ export function useFrameLinkBridge(
       return
     }
     setChip({ url, frame })
-  }, [openRef, tiedRef])
+  }, [openRef, tiedRef, refuseRef])
   useFrameOpenLink(frames, webUrlOf, answer, gesture)
   if (!chip) return null
   const { url, frame } = chip

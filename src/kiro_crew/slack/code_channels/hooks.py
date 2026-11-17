@@ -57,6 +57,8 @@ class TurnEvent:
     session_key: str
     source: str = "dashboard"
     outcome: str = ""
+    #: On start: the prompt text the turn runs (merged queue entries included).
+    prompt: str = ""
 
 
 Hook = Callable[[Binding, TurnEvent], Awaitable[None]]
@@ -77,10 +79,17 @@ def set_turn_preparer(preparer: Preparer | None) -> None:
     _PREPARER[:] = [preparer] if preparer is not None else []
 
 
-def on_turn_start(hook: Hook) -> Hook:
-    """Subscribe *hook* to turn starts (idempotent). Usable as a decorator."""
+def on_turn_start(hook: Hook, *, first: bool = False) -> Hook:
+    """Subscribe *hook* to turn starts (idempotent). Usable as a decorator.
+
+    *first* runs it before every hook already registered, for a hook that must
+    observe the start before any other one awaits.
+    """
     if hook not in _START_HOOKS:
-        _START_HOOKS.append(hook)
+        if first:
+            _START_HOOKS.insert(0, hook)
+        else:
+            _START_HOOKS.append(hook)
     return hook
 
 

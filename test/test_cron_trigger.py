@@ -205,6 +205,45 @@ class TestTriggerCronJob:
         assert ok is False
         assert msg == "Error: HTTP 409"
 
+    @pytest.mark.parametrize(
+        "body",
+        [b"<html><body>ok</body></html>", b"", b'["ok"]', b"\xff\xfe"],
+        ids=["html", "empty", "json-list", "not-utf8"],
+    )
+    def test_unreadable_success_answer_is_reported_not_raised(self, mock_dashboard, body):
+        """A 200 whose body is not a JSON object fails cleanly and says the job may have run."""
+        port, cfg_dir = mock_dashboard
+        _MockDashboardHandler.forced_response = (200, body)
+        try:
+            outcome: object = trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
+        except (ValueError, AttributeError) as exc:
+            outcome = f"escaped as {type(exc).__name__}"
+        assert outcome == (
+            False,
+            "Error: gateway returned an unreadable answer; the trigger may have run",
+        )
+
+    def test_success_answer_cut_off_mid_read_is_reported_not_raised(self, tmp_path):
+        """A 200 whose body breaks while being read is the same unreadable answer."""
+        import http.client
+        import io
+
+        class _CutOff(io.BytesIO):
+            def read(self, *_args):
+                raise http.client.IncompleteRead(b'{"ok": tr')
+
+        secret_path = tmp_path / ".local_secret"
+        secret_path.write_text("fake")
+        with patch("kiro_crew.cron_trigger.loopback_urlopen", return_value=_CutOff()):
+            try:
+                outcome: object = trigger_cron_job("abc12345", 19999, secret_path)
+            except http.client.HTTPException as exc:
+                outcome = f"escaped as {type(exc).__name__}"
+        assert outcome == (
+            False,
+            "Error: gateway returned an unreadable answer; the trigger may have run",
+        )
+
     def test_body_cut_off_mid_read_keeps_the_bare_status(self, tmp_path):
         """A body that breaks while being read cannot turn the refusal into a crash."""
         import http.client
@@ -421,8 +460,8 @@ class TestCronTriggerCLI:
         from unittest.mock import patch as _patch
 
         with _patch(
-            "kiro_crew.cli_commands.trigger_cron_job",
-            return_value=(True, "Triggered job: test-job (abc12345)"),
+            "kiro_crew.cron_trigger.trigger_cron_job_status",
+            return_value=(True, "Triggered job: test-job (abc12345)", None),
         ) as mock_trigger:
             _cron(args)
         assert mock_trigger.call_args[0][0] == "abc12345"
@@ -475,7 +514,8 @@ class TestCronTriggerCLI:
         assert out.out == ""
         assert out.err == "Job not found: aabbccddee\n"
 
-    def test_cli_trigger_already_running_names_reason_and_exits_1(self, mock_dashboard, capsys):
+    def test_cli_trigger_already_running_names_reason_and_exits_75(self, mock_dashboard, capsys):
+        """A busy job exits 75 (EX_TEMPFAIL), so a script can retry it later."""
         import argparse
 
         from kiro_crew.cli_commands import _cron
@@ -493,7 +533,7 @@ class TestCronTriggerCLI:
         ):
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
-        assert exc.value.code == 1
+        assert exc.value.code == 75
         out = capsys.readouterr()
         assert out.out == ""
         assert out.err == "Error: HTTP 409: job is already running\n"

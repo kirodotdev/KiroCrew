@@ -77,11 +77,11 @@ def _hold_first_admission(monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:
     at_seam = asyncio.Event()
     release = asyncio.Event()
 
-    async def held(task):
+    async def held(task, **kw):
         if not at_seam.is_set():
             at_seam.set()
             await release.wait()
-        return await real(task)
+        return await real(task, **kw)
 
     monkeypatch.setattr(memory_startup, "wait_for_memory_preparation", held)
     return at_seam, release
@@ -103,6 +103,18 @@ async def _settle(state, slot) -> None:
         lambda: not slot.running and not _pending(),
         describe=lambda: f"running={slot.running} pending={_pending()}",
     )
+
+
+async def _yield_loop(times: int = 50) -> None:
+    """Give every ready task a turn; deterministic, unlike sleeping a duration."""
+    for _ in range(times):
+        await asyncio.sleep(0)
+
+
+async def _settle_task(task: asyncio.Future, what: str) -> None:
+    """Cancel *task* if it is still running and wait, bounded, for it to end."""
+    task.cancel()
+    await await_until(asyncio.gather(task, return_exceptions=True), what=what)
 
 
 def _finish_preparation(state) -> None:
@@ -155,48 +167,133 @@ async def test_continue_pressed_during_preparation_runs_once_it_finishes(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_message_queued_behind_a_refused_turn_runs_once_preparation_finishes(
-    tmp_path, monkeypatch
-):
+async def test_turn_waits_past_the_grace_and_queued_message_runs_after_it(tmp_path, monkeypatch):
     state, delivered = _state_with_pending_memory(tmp_path, monkeypatch)
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
     slot = _seeded_slot(state, "queued-slot")
-    at_seam, release = _hold_first_admission(monkeypatch)
     first = asyncio.create_task(_run_chat(state, slot, "FIRST-MESSAGE"))
     slot.task = first
     try:
         async with TestClient(TestServer(_app(state))) as client:
-            # The first turn is parked at the admission seam with its grace
-            # period not yet started, so this send lands behind it however
-            # long the server and the request take.
-            await await_until(at_seam, what="the first turn reaching memory admission")
-            assert slot.turn_running
+            await async_wait_until(
+                lambda: slot.turn_running, describe=lambda: "first turn admitted"
+            )
             resp = await client.post(
                 "/api/chat?ws=1", json={"message": "SECOND-MESSAGE", "slot": "queued-slot"}
             )
-            assert resp.status == 200
             assert (await resp.json())["queued"] is True
 
-        # The turn in flight starts its grace period only now and is refused at
-        # the admission seam; what queued behind it is retained and has not
-        # been popped.
-        release.set()
-        await first
-        assert [item["content"] for item in slot._queue] == ["SECOND-MESSAGE"]
-        assert not any(
-            m["role"] == "user" and m["content"] == "SECOND-MESSAGE" for m in slot.messages
-        )
+        # The grace period is zero: the first turn is still waiting, not refused.
+        await _yield_loop()
+        assert not first.done()
+        assert not any(m["role"] == "error" for m in slot.messages)
         assert delivered == []
 
-        # Nothing else is sent: preparation finishing alone starts it.
+        # Preparation finishing alone runs both, in order, with no resend.
         _finish_preparation(state)
+        await await_until(first, what="the first turn after preparation")
         await _settle(state, slot)
     finally:
-        release.set()
         _finish_preparation(state)
+        await _settle_task(first, "the first turn")
 
     assert slot._queue == []
-    assert _ran(delivered, "SECOND-MESSAGE") == 1
-    assert _ran(delivered, "FIRST-MESSAGE") == 0
+    assert [("F" if "FIRST-MESSAGE" in m else "S") for m in delivered] == [
+        "F",
+        "S",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_turn_is_refused_when_preparation_failed(tmp_path, monkeypatch):
+    from kiro_crew import memory_startup
+
+    state, delivered = _state_with_pending_memory(tmp_path, monkeypatch)
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
+    slot = _seeded_slot(state, "failed-slot")
+    startup = memory_startup.MemoryStartup.begin()
+    turn = asyncio.create_task(_run_chat(state, slot, "FAILED-MESSAGE"))
+    slot.task = turn
+    try:
+        await _yield_loop()
+        assert not turn.done()
+        # The supervisor records the failure; the wedged worker never returns.
+        startup.fail(RuntimeError("boom"))
+        monkeypatch.setattr("kiro_crew.memory_startup._FENCE_RECHECK_SECONDS", 0.01)
+        await await_until(turn, what="the turn refused on the recorded failure")
+        assert not state.memory_startup_task.done()
+    finally:
+        await _settle_task(turn, "the failed-preparation turn")
+        startup.stop()
+        startup.release()
+        _finish_preparation(state)
+
+    assert delivered == []
+    assert any(m["role"] == "error" and "boom" in m["content"] for m in slot.messages)
+
+
+@pytest.mark.asyncio
+async def test_wedged_preparation_ends_the_wait_with_a_refusal(tmp_path, monkeypatch):
+    """No supervisor failure and a task that never finishes: the turn's own finite
+    limit refuses it instead of waiting forever. The limit is driven to zero; the
+    test asserts the outcome, not a duration."""
+    state, delivered = _state_with_pending_memory(tmp_path, monkeypatch)
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_PREPARATION_DEADLINE_SECONDS", 0.0)
+    monkeypatch.setattr("kiro_crew.memory_startup._UNBOUNDED_WAIT_MARGIN_SECONDS", 0.0)
+    monkeypatch.setattr("kiro_crew.memory_startup._FENCE_RECHECK_SECONDS", 0.01)
+    slot = _seeded_slot(state, "wedged-slot")
+    turn = asyncio.create_task(_run_chat(state, slot, "WEDGED-MESSAGE"))
+    slot.task = turn
+    try:
+        await await_until(turn, what="the turn refused at its own limit")
+        assert not state.memory_startup_task.done()
+    finally:
+        await _settle_task(turn, "the wedged-preparation turn")
+        _finish_preparation(state)
+
+    assert delivered == []
+    errors = [m for m in slot.messages if m["role"] == "error"]
+    assert [m.get("meta", {}).get("code") for m in errors] == ["memory_unavailable"]
+    assert "Memory preparation is still running" in errors[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_wedged_publication_ends_the_wait_with_a_refusal(monkeypatch):
+    """The task is never published while startup is preparing: the same finite limit."""
+    from kiro_crew import memory_startup
+
+    monkeypatch.setattr(memory_startup, "MEMORY_PREPARATION_DEADLINE_SECONDS", 0.0)
+    monkeypatch.setattr(memory_startup, "_UNBOUNDED_WAIT_MARGIN_SECONDS", 0.0)
+    startup = memory_startup.MemoryStartup.begin()
+    wait = asyncio.ensure_future(
+        memory_startup.wait_for_memory_preparation(lambda: None, bounded=False)
+    )
+    try:
+        with pytest.raises(memory_startup.MemoryStartupUnavailable, match="still starting"):
+            await await_until(wait, what="the unpublished-task wait at its own limit")
+    finally:
+        await _settle_task(wait, "the unpublished-task wait")
+        startup.stop()
+        startup.release()
+
+
+@pytest.mark.asyncio
+async def test_stop_during_the_wait_leaves_preparation_running(tmp_path, monkeypatch):
+    state, delivered = _state_with_pending_memory(tmp_path, monkeypatch)
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
+    slot = _seeded_slot(state, "stop-slot")
+    turn = asyncio.create_task(_run_chat(state, slot, "STOPPED-MESSAGE"))
+    slot.task = turn
+    try:
+        await _yield_loop()
+        await _settle_task(turn, "the stopped turn")
+        assert turn.cancelled() or turn.done()
+        assert not state.memory_startup_task.done()
+    finally:
+        await _settle_task(turn, "the stopped turn")
+        _finish_preparation(state)
+
+    assert delivered == []
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,8 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
     _TestChatPermissionRequestHarness,
 )
 
+from kiro_crew.testing.synthetic_credentials import github_classic
+
 
 class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness):
     """What a permission request shows the person, and the identity it is audited under.
@@ -929,7 +931,9 @@ class TestChatPermissionRequestConsentSurface(_TestChatPermissionRequestHarness)
 
         import kiro_crew.cli_chat as cli_chat
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        # A GitHub token with a valid checksum; an AWS key ID and a bare 40-character
+        # run are kept visible, so neither can stand in.
+        secret = github_classic(seed=139)
         trace: list = []
         gate = self._gate()
         monkeypatch.setattr(

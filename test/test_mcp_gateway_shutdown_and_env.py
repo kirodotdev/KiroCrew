@@ -524,6 +524,25 @@ class TestDeclaredEnvForwarding:
         forwarded = gatewayd._declared_non_secret_env(key)
         assert forwarded == {"KEEP": "yes"}
 
+    def test_drops_credential_keys_in_any_case(self, tmp_path, monkeypatch):
+        """Windows env names are case-insensitive, so a child reads
+        ``ssh_auth_sock`` as ``SSH_AUTH_SOCK``; the scrub match must fold case."""
+        key = _pool_key()
+        key = self._write_sidecar(
+            tmp_path,
+            monkeypatch,
+            {
+                "PLAIN_SETTING": "on",
+                "ssh_auth_sock": "/tmp/agent.sock",
+                "Ssh_Auth_Sock": "/tmp/agent.sock",
+                "aws_access_key_id": "AKIA...",
+                "git_askpass": "/usr/bin/askpass",
+                "gnupghome": "/home/u/.gnupg",
+            },
+            key,
+        )
+        assert gatewayd._declared_non_secret_env(key) == {"PLAIN_SETTING": "on"}
+
     def test_every_forwarded_key_is_also_a_hashed_key(self, tmp_path, monkeypatch):
         """The invariant that makes forwarding safe: a forwarded key is part of
         ``effective_env_hash``, so every session sharing the backend agreed on

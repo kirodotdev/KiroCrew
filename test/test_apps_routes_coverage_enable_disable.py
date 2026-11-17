@@ -24,7 +24,11 @@ from apps_routes_coverage_helpers import (
 
 import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import await_until
+
+#: A GitHub token with a valid checksum; a ghp_ without one is no token.
+_GH = github_classic(seed=143)
 
 # Enable / disable warning + rollback branches
 
@@ -272,6 +276,35 @@ class TestEnableBranches:
             assert (await resp.json())["enabled"] is False
 
     @pytest.mark.asyncio
+    async def test_a_failed_rollback_does_not_claim_the_app_is_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `disable_app` fails closed; when it fails the reply must say so, not
+        # report a disable that did not happen.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, setup={"onEnable": "setup.sh"})
+
+        async def _failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {"output": "boom", "failed": True}
+
+        monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _failed)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
+        monkeypatch.setattr(
+            routes_mod,
+            "disable_app",
+            lambda n: AppResult(ok=False, name=n, error="could not record the disable"),
+        )
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "on_enable_failed"
+        assert "remains disabled" not in body["error"]
+        assert "could not be disabled" in body["error"]
+        assert "could not record the disable" in body["error"]
+
+    @pytest.mark.asyncio
     async def test_hook_failure_becomes_a_warning_not_a_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -297,11 +330,7 @@ class TestEnableBranches:
         _install(tmp_path)
 
         async def _hooks(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            return {
-                "health_status": {
-                    "issues": ["cannot reach token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789"]
-                }
-            }
+            return {"health_status": {"issues": [f"cannot reach token={_GH}"]}}
 
         monkeypatch.setattr(routes_mod, "on_app_enable", _hooks)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
@@ -309,7 +338,7 @@ class TestEnableBranches:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 200
             issues = (await resp.json())["hooks"]["health_status"]["issues"]
-        assert "ghp_0123456789abcdefghijABCDEFGHIJ0123456789" not in issues[0]
+        assert _GH not in issues[0]
 
     @pytest.mark.asyncio
     async def test_enable_of_unknown_app_is_404(
@@ -375,16 +404,15 @@ class TestDisableBranches:
 
         async def _failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
             return {
-                "output": "failed with token=ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
+                "output": f"failed with token={_GH}",
                 "failed": True,
             }
 
-        # Patched on the SHARED teardown, not on `routes`: this PR routes the
-        # disable path's hook/backend/onDisable work through
+        # Patched on the SHARED teardown, not on `routes`: the disable path's
+        # hook/backend/onDisable work runs in
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
         # trust-revocation path also calls, so `routes` does not hold these
-        # symbols. The behaviour these tests pin is unchanged — the warnings still
-        # surface on the disable response — only the module that owns the step moved.
+        # symbols. The warnings still surface on the disable response.
         from kiro_crew.apps import teardown as teardown_mod
 
         # Patched on `teardown`, NOT on `lifecycle_scripts`: teardown does
@@ -402,7 +430,7 @@ class TestDisableBranches:
             body = await resp.json()
             warnings = body["warnings"]
             assert any("onDisable script failed" in w for w in warnings)
-            assert not any("ghp_0123456789abcdefghijABCDEFGHIJ0123456789" in w for w in warnings)
+            assert not any(_GH in w for w in warnings)
             resp = await client.get(f"/api/apps/{APP}")
             assert (await resp.json())["enabled"] is False
 
@@ -417,12 +445,11 @@ class TestDisableBranches:
         async def _boom(*args: Any, **kwargs: Any) -> dict[str, Any]:
             raise RuntimeError("disable hook exploded")
 
-        # Patched on the SHARED teardown, not on `routes`: this PR routes the
-        # disable path's hook/backend/onDisable work through
+        # Patched on the SHARED teardown, not on `routes`: the disable path's
+        # hook/backend/onDisable work runs in
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
         # trust-revocation path also calls, so `routes` does not hold these
-        # symbols. The behaviour these tests pin is unchanged — the warnings still
-        # surface on the disable response — only the module that owns the step moved.
+        # symbols. The warnings still surface on the disable response.
         from kiro_crew.apps import teardown as teardown_mod
 
         monkeypatch.setattr(teardown_mod, "on_app_disable", _boom)
@@ -444,12 +471,11 @@ class TestDisableBranches:
             assert kwargs["bounded_startup_cleanup"] is False
             return {"cron_cleanup": "2 job(s) left enabled", "other": 1}
 
-        # Patched on the SHARED teardown, not on `routes`: this PR routes the
-        # disable path's hook/backend/onDisable work through
+        # Patched on the SHARED teardown, not on `routes`: the disable path's
+        # hook/backend/onDisable work runs in
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
         # trust-revocation path also calls, so `routes` does not hold these
-        # symbols. The behaviour these tests pin is unchanged — the warnings still
-        # surface on the disable response — only the module that owns the step moved.
+        # symbols. The warnings still surface on the disable response.
         from kiro_crew.apps import teardown as teardown_mod
 
         monkeypatch.setattr(teardown_mod, "on_app_disable", _hooks)
@@ -700,7 +726,11 @@ class TestRecordReadsRunOffTheLoop:
             open_reads, reads[:] = list(reads), []
             assert (await client.post(f"/api/apps/{APP}/disable")).status == 200
             disable_reads = list(reads)
-        assert enable_reads == [("get_app", False), ("app_enabled_state", False)]
+        assert enable_reads == [
+            ("get_app", False),
+            ("app_enabled_state", False),
+            ("get_app", False),
+        ]
         assert open_reads == [("get_app", False)]
         assert disable_reads == [("get_app", False), ("app_enabled_state", False)]
 

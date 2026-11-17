@@ -225,7 +225,7 @@ describe('CrewDashboardTab on a preview link', () => {
     const read = vi.spyOn(api, 'memberDashboard').mockImplementation(async (_s, _m, _l, preview) => {
       if (preview) {
         if (kept) throw NO_PREVIEW()
-        return body('staged', { preview: true, staged_ms: STAGED_MS, structure_locked: false })
+        return body('staged', { preview: true, staged_ms: STAGED_MS })
       }
       return body(kept ? 'kept' : 'staged')
     })
@@ -264,23 +264,6 @@ describe('CrewDashboardTab on a preview link', () => {
     await waitFor(() => expect(read.mock.calls.some(([, , , preview]) => !preview)).toBe(true))
     await waitFor(() => expect(frameSrc()).toBe('/sandbox-doc/kept'), LAZY)
     expect(screen.queryByTestId('crew-dashboard-preview-gone')).toBeNull()
-  })
-
-  it('stays on the preview and says locked when the gateway refuses with dashboard_locked', async () => {
-    vi.spyOn(api, 'memberDashboard').mockResolvedValue(body('staged', { preview: true, staged_ms: STAGED_MS, structure_locked: false }))
-    vi.spyOn(api, 'memberDashboardPreviewApply').mockRejectedValue(
-      new ApiError(423, 'locked', JSON.stringify({ error: 'locked', code: 'dashboard_locked' })),
-    )
-    renderHost()
-    const keep = await screen.findByTestId('dashboard-preview-keep', undefined, LAZY)
-    await waitFor(async () => { await drawFrame(); expect(keep).not.toBeDisabled() }, LAZY)
-    fireEvent.click(keep)
-    const refused = await screen.findByTestId('dashboard-preview-problem')
-    expect(refused).toHaveTextContent('Layout locked — unlock on Profile')
-    // The server's refusal is an error, through the shared error surface.
-    expect(refused.closest('[role="alert"]')).not.toBeNull()
-    expect(screen.getByTestId('url').textContent).toContain('dashboard=preview')
-    expect(screen.queryByTestId('dashboard-preview-outcome')).toBeNull()
   })
 
   it('a Keep that fails stays on the preview and says so through the shared error surface', async () => {

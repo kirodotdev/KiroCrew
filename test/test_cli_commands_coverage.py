@@ -160,7 +160,7 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
         assert exc.value.code == 1
-        assert "bad spawn" in capsys.readouterr().out
+        assert "bad spawn" in capsys.readouterr().err
 
     def test_list_http_error_with_opaque_body_prints_status(
         self, capsys: pytest.CaptureFixture[str]
@@ -171,7 +171,7 @@ class TestSpawnCli:
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
-        assert "503" in capsys.readouterr().out
+        assert "503" in capsys.readouterr().err
 
     def test_list_unreachable_gateway_reports_port(
         self, capsys: pytest.CaptureFixture[str]
@@ -186,7 +186,7 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="list", port=4321))
         assert exc.value.code == 1
-        assert "4321" in capsys.readouterr().out
+        assert "4321" in capsys.readouterr().err
 
     def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         cc._spawn(_ns(spawn_action="bogus", port=1))
@@ -247,7 +247,8 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
         assert "final answer" in capsys.readouterr().out
-        assert slept.call_count == 2
+        # One wait: after the read that found the run unfinished, none after the last.
+        assert slept.call_count == 1
 
     def test_run_blocking_surfaces_agent_error_as_exit_1(
         self, capsys: pytest.CaptureFixture[str]
@@ -289,7 +290,7 @@ class TestSpawnCli:
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
-        assert "task too long" in capsys.readouterr().out
+        assert "task too long" in capsys.readouterr().err
 
     def test_run_unreachable_gateway_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
@@ -298,7 +299,7 @@ class TestSpawnCli:
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="run", port=9, task="t", fire_and_forget=True))
-        assert "gateway not running" in capsys.readouterr().out
+        assert "gateway not running" in capsys.readouterr().err
 
 
 # ── app subcommands ──
@@ -778,8 +779,10 @@ class TestAppCli:
             # A relative path: the gateway's working directory is not this shell's.
             cc._handle_app(_ns(app_action="install", source="demo-app"))
 
-        assert len(requests) == 2
-        action = requests[1]
+        # Mint, the serving gateway's version, then install.
+        assert len(requests) == 3
+        assert "/api/version?" in requests[1].full_url
+        action = requests[2]
         assert action.get_method() == "POST"
         assert "/api/apps/install?" in action.full_url
         assert json.loads(action.data) == {"source": str(source.resolve())}
@@ -881,7 +884,12 @@ class TestAppCli:
             patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
             patch(
                 "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
-                side_effect=[_FakeResponse({"token": "dashboard-credential"}), error],
+                # Mint, the gateway's version (read before the action), the install.
+                side_effect=[
+                    _FakeResponse({"token": "dashboard-credential"}),
+                    _FakeResponse({"version": "0.0.1"}),
+                    error,
+                ],
             ),
             patch("kiro_crew.cli_commands.install_app") as local_install,
             pytest.raises(SystemExit) as exc,
@@ -892,6 +900,7 @@ class TestAppCli:
         err = capsys.readouterr().err
         assert "gateway refused: no app.json" in err
         assert "Nothing was installed; the gateway reads the app directory" in err
+        assert "Decided by the running gateway, Kiro Crew 0.0.1" in err
         local_install.assert_not_called()
 
     def test_install_gateway_mint_error_exits_without_file_edit(

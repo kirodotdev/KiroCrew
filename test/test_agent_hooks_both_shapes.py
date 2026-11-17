@@ -746,7 +746,7 @@ class TestOffStaysOffThroughAutoimport:
             "enabled": False,
             "action": {"type": "command", "command": command},
         }
-        # The suppression read is the one place this PR resolves a command the
+        # The suppression read is the one place the code resolves a command the
         # author wrote, so it is the one place the gate belongs.
         assert hook_documents_suppressed_commands([document]) == {}
 

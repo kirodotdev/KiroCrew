@@ -267,3 +267,13 @@ def test_first_install_prints_no_hint(tmp_path: Path, signing_key: SigningKey) -
     assert result.returncode == 0, result.stderr
     assert WARNING not in result.stderr
     assert calls == []
+
+
+def test_next_steps_say_the_service_needs_sudo_on_linux(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """The service step names its sudo before a user without sudo follows it."""
+    result, _calls = _run(tmp_path / "case", signing_key, existing=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "  kirocrew service install    # needs sudo on Linux; run it 24/7" in result.stdout

@@ -589,7 +589,7 @@ class TestBackgroundBudget:
         # this test. With a rule set far larger than the startup allowance, the
         # rendered ``[Learned corrections]`` block must be bound at
         # ``caps.lessons_startup`` (~37,000): greater than the ordinary
-        # ``caps.lessons`` (~7,458, the pre-fix regression this PR undoes) and no
+        # ``caps.lessons`` (~7,458, the cap that must not apply here) and no
         # larger than ``caps.lessons_startup`` plus header/footer framing (so not
         # the ceiling). At the 200K window used here the ceiling is 100,000, well
         # above 37,000, so only the startup allowance can bind.

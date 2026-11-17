@@ -20,6 +20,7 @@ import functools
 import re
 
 import pytest
+from redaction_structured_cases import ALNUM, B64URL, HEX, aws_key_id, github_classic, synth
 
 import kiro_crew.validation as validation
 from kiro_crew import security, security_posture
@@ -64,6 +65,7 @@ _REDACTOR_CALL_RE = re.compile(
     r"\bStreamRedactor\("  # streaming redactor
     r"|\b\w*redact\w*\("  # redact/redact_credentials/redact_and_truncate/_redact/...
     r"|\.redact\("  # qualified: security.redact(...), credentials.redact(...)
+    r"|\brefuses\("  # a refusal gate: security.refuses runs the redactor it is handed
 )
 
 
@@ -254,11 +256,14 @@ def _gate_side_baseline_log_sites(
 #: nets to zero (both edits land in one reviewed diff), and the scan is
 #: single-scope (see :func:`_gate_side_baseline_log_sites`).
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
+    # The model-substitution retry's warning, moved out of client_start.py with the
+    # retry; same gateway process.
+    "acp/client_claude_session.py": 1,
     "acp/client_lifecycle.py": 1,
     # +1: model-unavailable warning log in the rejected-model path
     "acp/client_model_selection.py": 2,
     "acp/client_permissions.py": 1,
-    "acp/client_start.py": 2,
+    "acp/client_start.py": 1,
     "acp/client_transport.py": 1,
     # _format_acp_error's scrubbed-content warning, in the same gateway process as
     # the client owners' sites.
@@ -621,7 +626,7 @@ class TestDisclosureContract:
     def test_the_redaction_guard_is_not_vacuous(self):
         # Guard the guard: if redact_credentials ever stopped firing, the
         # assertion above would pass trivially and the contract would be unpinned.
-        _redacted, warnings = security.redact_credentials("AKIAIOSFODNN7EXAMPLE")
+        _redacted, warnings = security.redact_credentials(github_classic())
         assert warnings != []
 
 
@@ -835,31 +840,32 @@ class TestOmissionDetection:
     def test_every_credential_family_is_actually_redacted(self):
         """Each advertised family must have a live pattern behind it.
 
-        Pairs a synthetic (non-real) token shape with every family row, so a family
-        whose regex alternative is deleted stops being advertised. The count
-        assertion below is what catches the reverse — a regex alternative added
-        without a family row.
+        Pairs a synthetic (non-real) token of a valid format with every family row,
+        so a family whose rule is deleted stops being advertised. The count
+        assertion below is what catches the reverse: a rule added without a family
+        row. An AWS key ID alone is an identifier, so it must stay visible.
         """
         samples = {
-            "AWS access keys": "AKIAIOSFODNN7EXAMPLE",
+            # A key ID is an Identifier; the secret key is what this family redacts.
+            "AWS access keys": "aws_secret_access_key=" + synth(40, ALNUM, seed=3),
             "Private keys": "-----BEGIN RSA PRIVATE KEY-----\nQUJD\n-----END RSA PRIVATE KEY-----",
             "Slack tokens": "xoxb-000000000000-abcdefghijkl",
-            "GitHub tokens": "ghp_" + "a" * 36,
+            "GitHub tokens": github_classic(),
             "GitLab tokens": "glpat-" + "a" * 20,
             "Stripe keys": "sk_live_" + "a" * 24,
-            "SendGrid keys": "SG." + "a" * 22 + "." + "b" * 22,
+            "SendGrid keys": f"SG.{synth(22, B64URL, 15)}.{synth(43, B64URL, 16)}",
             "OpenAI keys": "sk-proj-" + "a" * 20,
-            "Anthropic keys": "sk-ant-" + "a" * 20,
+            "Anthropic keys": f"sk-ant-api03-{synth(95, B64URL, 10)}",
             "npm tokens": "npm_" + "a" * 36,
             "PyPI tokens": "pypi-" + "a" * 20,
-            "DigitalOcean tokens": "dop_v1_" + "a" * 44,
+            "DigitalOcean tokens": f"dop_v1_{synth(64, HEX, 19)}",
             "Google OAuth secrets": "GOCSPX-" + "a" * 24,
             "Telegram bot tokens": "123456789:" + "A" * 35,
             "JWT / JWE tokens": "eyJhbGciOiJIUzI1NiJ9.eyJhIjoxfQ.c2ln",
             "HTTP bearer tokens": "Authorization: Bearer abc.def-ghi~jkl",
-            "Database URIs": "postgres://user:secret@db.example.com:5432/app",
+            "Database URIs": f"postgres://user:{synth(20, ALNUM, 26)}@db.example.com:5432/app",
             "Base64-encoded variants": base64.b64encode(
-                b"AKIAIOSFODNN7EXAMPLE and more padding text here"
+                f"token {github_classic()} and more padding text".encode()
             ).decode(),
         }
         advertised = [i.label for i in security_posture._credential_family_items()]
@@ -872,6 +878,8 @@ class TestOmissionDetection:
         for family, sample in samples.items():
             _redacted, warnings = security.redact_credentials(sample)
             assert warnings, f"advertised family {family!r} is not actually redacted"
+        key_id = aws_key_id()
+        assert security.redact_credentials(key_id) == (key_id, [])
 
     def test_every_exfil_heuristic_actually_fires(self):
         """Each advertised heuristic must trigger a verdict from the live scanner."""
@@ -1174,6 +1182,11 @@ class TestRedactionSinkRegistry:
             "redact_tree",
             "redact_and_truncate",
             "redact_via_context",
+            # Delegates to redact_via_context, plus containment for a miscomposed host.
+            "redact_log_via_context",
+            # The transcript write boundary: the composed policy for a user row, else
+            # redact_exfiltration_urls THEN redact_credentials.
+            "_redact_at_write_boundary(",
             "display_safe",
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.
@@ -1200,14 +1213,21 @@ class TestRedactionSinkRegistry:
             "redact_peer_text",
             "_redact_peer_payload",
             "_redact_sse_event_async",
-            # _redact_for_display (dashboard/chat_utils_display.py) runs redact_exfiltration_urls
-            # THEN redact_credentials, cached by content hash, so a sink calling it is
-            # fully covered; test_the_display_redactor_runs_both_scanners pins that.
+            # _redact_for_display (dashboard/chat_utils_display.py) runs the display battery,
+            # the credential plan that masks every credential value inside a URL or not,
+            # cached by content hash, so a sink calling it is fully covered;
+            # test_the_display_redactor_masks_a_credential_inside_a_url pins that.
             "_redact_for_display(",
             # _redact_project_path (dashboard/file_api/project_dirs.py) is `redact()`,
             # both scanners, over the whole path; on Darwin only the OS-generated temp
             # id is withheld from the scan (TestMacosPrefixBoundary pins that).
             "_redact_project_path(",
+            # _redact_meta (dashboard/handlers/steering.py) is `redact()`, both
+            # scanners, over a steering listing's description or display path.
+            "_redact_meta(",
+            # redact_model_written (memory_provider/migration.py) runs
+            # _redact_memory_field, both scanners, over an item's text and negative.
+            "redact_model_written(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
@@ -1222,17 +1242,21 @@ class TestRedactionSinkRegistry:
                 "the sink to run both"
             )
 
-    def test_the_display_redactor_runs_both_scanners(self):
-        """Why ``_redact_for_display(`` is a dual pass above: one input carrying a
-        credential and an exfiltration URL comes back with both removed."""
+    def test_the_display_redactor_masks_a_credential_inside_a_url(self):
+        """Why ``_redact_for_display(`` is full coverage above: the display battery is
+        the credential plan, which masks a credential VALUE outside and inside a URL
+        and leaves the rest of the URL, its host included, as written."""
         from kiro_crew.dashboard import chat_utils
 
         chat_utils._clear_display_redaction_cache()
-        url = "https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
-        out = chat_utils._redact_for_display(f"key AKIAIOSFODNN7EXAMPLE then {url}")
+        token = synth(40, B64URL, seed=31)
+        url = f"https://auth.example.test/token?client_id=app1&client_secret={token}&x=1"
+        secret = github_classic()
+        out = chat_utils._redact_for_display(f"key {secret} then {url}")
         chat_utils._clear_display_redaction_cache()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
-        assert "corp-laptop" not in out and "attacker.example/?token" not in out
+        assert secret not in out
+        assert token not in out
+        assert "https://auth.example.test/token?client_id=app1&client_secret=" in out
 
     def test_sink_prose_claims_are_true_of_the_named_module(self):
         """A sink's `detail` makes testable claims — pin them to the call site.
@@ -1431,7 +1455,7 @@ class TestGateSideLogRedactorSpelling:
         for rel in ("platform/update_provider.py", "task_planner.py", "name_grant.py"):
             assert (
                 rel not in _BASELINE_LOG_SITE_CENSUS
-            ), f"{rel} was converged by #7151 and must not carry a baseline log site"
+            ), f"{rel} is converged and must not carry a baseline log site"
 
 
 class TestPostureClaimsMatchEnforcement:

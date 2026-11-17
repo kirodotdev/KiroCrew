@@ -48,10 +48,14 @@ def filter_comments_for_forward(
         # Fall back to the parent walk when thread_id resolves to nothing (the
         # field defaults to ""). The `seen` set terminates a parent cycle; a
         # parent missing from the list ends the walk, leaving the comment its
-        # own root.
+        # own root. comments.json is decoded verbatim, so a hand edit can leave a
+        # parent_id that is a list or an object; it names no comment, and must not
+        # stop the other threads, so it ends the walk too.
         seen: set[str] = set()
         cur = c
-        while cur.parent_id and cur.parent_id in by_id and cur.parent_id not in seen:
+        while (
+            isinstance(cur.parent_id, str) and cur.parent_id in by_id and cur.parent_id not in seen
+        ):
             seen.add(cur.id)
             cur = by_id[cur.parent_id]
         return cur
@@ -116,20 +120,15 @@ def merge_remote(
     """
     incoming = {rc.origin: rc for rc in remote_comments if rc.origin and rc.origin != "local"}
     deleted_origins = {origin for origin, rc in incoming.items() if getattr(rc, "deleted", False)}
-    # Threads whose ROOT was deleted upstream — cascade-drop the whole
-    # subtree, not just the tombstoned root. Two confirmed realities:
-    #   * some remotes do NOT cascade-delete replies when a parent is
-    #     deleted — the replies keep coming back deleted=False — so we drop
-    #     them by thread rather than waiting for per-reply tombstones.
-    #   * the remote retains the deleted ROOT as a tombstone in *every*
-    #     fetch, so seed the drop-set from the INCOMING tombstones (the
-    #     authoritative, always-present signal), not only the local mirror
-    #     — that mirror is gone after the first cascade, so relying on it
-    #     would let the orphans come back on the next fetch.
-    # Replies share the root's thread_id (provider: thread_id =
-    # parentCommentId or commentId), so this drops the subtree on every
-    # fetch — self-healing, no persistent local tombstone needed. Local
-    # threads can't collide: a deleted root is always a provider comment.
+    # Threads whose ROOT was deleted upstream: drop the whole subtree. Some
+    # remotes do NOT cascade-delete replies (they keep coming back with
+    # deleted=False), and the remote returns the deleted root as a tombstone on
+    # EVERY fetch. So the drop-set is seeded from the incoming tombstones, not
+    # the local mirror, which is gone after the first cascade and would let the
+    # orphans return. Replies share the root's thread_id (provider: thread_id =
+    # parentCommentId or commentId), so this drops the subtree on every fetch
+    # with no stored tombstone. Local threads cannot collide: a root deleted
+    # upstream is always a provider comment.
     dropped_threads: set[str] = set()
     for irc in incoming.values():
         irc_root = not irc.parent_id or irc.thread_id == irc.id

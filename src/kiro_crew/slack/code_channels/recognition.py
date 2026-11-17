@@ -21,6 +21,7 @@ import logging
 import time
 from collections import OrderedDict
 
+from kiro_crew.slack.code_channels import audience
 from kiro_crew.slack.code_channels.client import CodeChannelsClient
 from kiro_crew.slack.code_channels.models import ChannelInfo, CodeChannelApiError
 
@@ -84,9 +85,15 @@ async def classify_channel(
     try:
         info = await client.channel_info(channel_id)
     except CodeChannelApiError as exc:
+        # A lookup that could not answer must not leave an older "not shared"
+        # standing: the dispatch exemption reads that as fail-closed unknown.
+        audience.forget(channel_id)
         if exc.unavailable:
             return ChannelKind.UNAVAILABLE, None
         return ChannelKind.UNKNOWN, None
+    # The audience reading the dispatch exemption judges (whether the channel is
+    # shared beyond this workspace), refreshed on every lookup -- see ``audience``.
+    audience.note_channel_info(info)
     if not info.is_code_channel:
         _remember_ordinary(channel_id)
         return ChannelKind.ORDINARY, info

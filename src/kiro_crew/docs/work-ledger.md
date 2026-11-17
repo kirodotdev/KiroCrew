@@ -29,7 +29,7 @@ a conductor would only add overhead.
 
 To start one, open a session on the **`kirocrew-conductor`** agent (see
 [Agents](agents.md) for the per-session, per-thread and per-cron selectors), which
-is what an Ultra Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
+is what a conductor mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
 `kirocrew-ledger-conductor` is a deprecated alias of the same spec, kept for one
 release so an existing session or cron that names the old string keeps resolving.
 
@@ -48,13 +48,19 @@ An item is the unit of dispatch. It holds:
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
 | `status` | worker | `progress` / `done` / `blocked` / `question`, and `reply` while `work_ledger.remote_dispatch` is on |
 | `reason` | worker | on `blocked` / `question`, when only a person can move it: `approval` / `needs_human` |
+| `wake_at` | worker | on `progress`, when the worker will resume: an ISO-8601 time with a zone, at most 24 hours ahead |
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
+| `discussion` | worker | only when it hosts a discussion: where it stands, shown on the goal board as a discussing row |
 
 The conductor writes its half with `work_ledger_record` (one action per call:
 `goal`, `create`, `bind`, `decide`, `verdict`, `accept`, `close`) and reads the
-ledger back with `work_ledger_read`. A patrol cycle reads it with `compact=true`
+ledger back with `work_ledger_read`. When it relays an item's question to the
+person, it records what the item needs, why, each option with what it leads to,
+and its pick with `work_ask_record`, a deferred tool it loads first; the
+person's welcome shows that record, and `decide` or `close` clears it. A patrol
+cycle reads it with `compact=true`
 (status columns and derived flags only); `item_id`, `state`, `since` and
 `events` narrow a full read. A reply over the tool-result limit comes back as
 valid JSON marked `truncated`: event tails go first, then oversized acceptances
@@ -114,10 +120,11 @@ conductor's own children are workers. An operator who runs a deeper
 organization raises the cap with `work_ledger.max_depth` (2 to 10); `work_ledger_read`
 reports the cap in force as `max_depth`, and a `depth_exceeded` refusal names
 the setting. Lowering the cap does not close ledgers that are already open: it
-refuses new ledgers and new items at the levels it removes. A bound lead's or
-conductor's `work_report` waits on an approval prompt unless the agent's allowed
-tools include `@kirocrew-work/work_report`, so a deeper run that nobody watches
-needs that entry for the parent to wake on its own. A worker holds one open item at a time.
+refuses new ledgers and new items at the levels it removes. A bound team lead's or
+goal conductor's `work_report` runs without an approval prompt: their allowed
+tools include `@kirocrew-work/work_report`, as every worker's do, so a deeper run
+that nobody watches still wakes its parent. The pipeline and security conductors
+keep it gated. A worker holds one open item at a time.
 
 ## Other refusals
 
@@ -125,7 +132,7 @@ With the crew log on, a write can still be refused. Each answer carries a `code`
 
 | Code | What happened | What to do |
 |---|---|---|
-| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | Retry the write. For a `create` whose answer carries an `item_id`, do not repeat the `create`; read the board first. |
+| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | When the message says the write has been undone, retry it; that holds for a `create` too, whose item was removed. When it says the write could not be undone, read the board before retrying (a `cache_dirty` refusal: see the next row). |
 | `409 cache_dirty` | An undo failed, so the board's files may not match the record. Reads and writes of the board (`work_ledger_read`, `work_ledger_record`, `work_brief`, `work_report`) are refused until it is repaired. | Run `work_ledger_rebuild`. To keep the files as they stand instead, remove the marker file the message names. |
 | `400 work_entry_too_large` | The write does not fit one crew-log line. | Shorten the fields you sent. |
 | `400 work_item_too_large` | The item predates the record and, written whole, does not fit one line; usually its acceptance is too large. | The conductor shrinks it with `work_ledger_record action=accept` and a smaller acceptance. |
@@ -154,7 +161,12 @@ returns is state. It does not return the conductor's goal or any sibling item: a
 worker has neither.
 
 A session that is not a dispatched worker gets `not_bound`, which is also how a
-root conductor learns it has no parent.
+root conductor learns it has no parent, and how a `kirocrew-worker` started with
+`spawn_run` learns that its task message is the whole task. A worker calls
+`work_brief` first whatever its first message says, so it never works out for
+itself whether it is bound, and one that is bound cannot skip its brief. Only
+`work_brief`'s refusal names the message as the task: a refused `work_report`
+may come from a worker whose item moved to another session.
 
 ## `work_report` — what a worker writes
 
@@ -186,6 +198,21 @@ replaces it. When every open item waits on a person (`approval` or
 turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
 the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
+
+**`wake_at` says a `progress` report is a wait until a known time.** The item is
+not flagged `stale` before that time, so the conductor mode sidebar does not call the
+worker stalled; once it passes, the staleness window runs from it. The exception is
+a worker whose own loop is active but cannot fire (held on an unanswered approval,
+or past its budget or cycle cap): its `wake_at` is ignored and the normal window
+runs, because the wait it declared leans on a loop that wakes nobody. A `wake_at`
+that does not parse with a zone, is in the past or is more than a day ahead is
+refused (`wake_at_invalid`, `wake_at_in_past`, `wake_at_too_far`), and so is one
+on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`
+report. Every report replaces it. Nothing wakes the conductor at that time yet; a
+worker still idle one window after it is flagged `stale` like any other. A
+remote-dispatch report does not carry it to the hub's board yet.
+
+**`discussion` is where a discussion the worker hosts stands.** It is an object: `phase` (`talking`, `checking`, `asking` or `done`), `round`, `minutes`, `direction` (up to 200 chars), `agreed` (up to 8 lines), `disputed` (up to 5 `{point, sides}`), `checking` (up to 3 lines), `recent` (up to 6 `{who, text}`) and `thread` (up to 512 chars), an http(s) URL or an `/artifacts`, `/chat`, `/schedule`, `/capabilities` or `/settings` path to the full back-and-forth. The worker sends the whole object every time; each report replaces it, and one without it clears it. A part over its cap, malformed or unknown is refused whole (`field_too_long` or `invalid_value`), and the refusal's `field` names the part, such as `discussion.agreed[3]`: nothing is cut. It rides the `work/recorded` entry and the work fold, so `work_ledger_read` and the goal board read it. The goal board shows an open item that carries one as "Discussing", with its counts on the row and the rest behind a toggle. A question for the person still goes through `status: question` and the board's needs-you band.
 
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
@@ -229,7 +256,7 @@ at the cap still reads.
 
 An item can carry a `steer` event: the time, actor `person`, and the person's own
 text, redacted and cut to 500 characters. It records that the person typed into
-the crew member (the worker session) that holds the item, from an Ultra Mode chat.
+the crew member (the worker session) that holds the item, from a conductor mode chat.
 It is also written, with fixed text and nothing from the tool call, when the
 person answers a tool approval in that crew member's chat while the item's last
 report is `blocked` or `question` with reason `approval` and nobody has answered
@@ -244,17 +271,26 @@ crew member, which calls it, lands with the Crew panel.
 
 ## Why `done` is a claim
 
-A worker's `done` never closes an item. The conductor reads its whole ledger
-with `work_ledger_read` — every item, its own derived staleness flags, and a
-ready-to-evaluate batch — runs the acceptance evaluator against the item's own
-condition, and records the answer with `work_ledger_record` as a `verdict`.
-The evaluator is the `accept_eval` tool on `kirocrew-work`, and the budget
-check for a capped loop is its sibling `patrol_budget` (a `watch="work-ledger"`
-patrol has no cap or budget to check). Both run the goal-conductor skill's
-bundled scripts in-process with typed arguments, take no command or path to
-run, and are auto-approved for the conductor and the team lead, so an
-unattended verify cycle waits on no click. The scripts still run by shell for an
-older spec. The verdicts are:
+A worker's `done` never closes an item. The conductor runs the acceptance
+evaluator against the item's own condition and records the answer with
+`work_ledger_record` as a `verdict`.
+The evaluator is the `accept_eval` tool on `kirocrew-work`. Called with no
+arguments it reads the stored condition of every item whose worker reported
+`done` from the conductor's own ledger, so the conductor reads nothing first and
+copies no document; an item that is not `done` is never evaluated. Each answer
+carries what the worker reported (`reported`: its summary and claimed `pr`), the
+`fails` so far and the worker's session key; an item that has read `pending` past
+its budget also carries `pending_overdue`, the conductor's last `decision` and its
+stored `acceptance`, and a bar that is not concrete yet comes back with its stored
+`acceptance` too. A reply too large for the tool-result limit leaves those fields
+out, stored bars first, and says so (`truncated`); if it is still too large it
+names the last items under `omitted` for a call of their own. A `pass` is
+then recorded and closed by one write, a `close` that carries the `verdict`.
+The tool runs the
+goal-conductor skill's bundled script in-process with typed arguments, takes no
+command or path to run, and is auto-approved for the conductor and the team
+lead, so an unattended verify cycle waits on no click. The script still runs by
+shell for an older spec. The verdicts are:
 
 - `pass` / `fail` — final for that cycle.
 - `pending` — the condition is not true yet; keep waiting, for at most 24 hours on
@@ -270,6 +306,11 @@ older spec. The verdicts are:
   names a command to run lands here too, and so does an `edition_check` whose
   check says a person must decide.
 - `error` — a broken condition or environment, including a bar still set to `TBD`.
+
+Only a `pass` lets an item close `accepted`. A `close` with `state: accepted` on
+an item with no verdict, or whose latest verdict is anything else, is refused
+(`invalid_value` on `state`) and the item stays open; close it `rejected` or
+`abandoned` instead. A `human_approval` item gets its `pass` from your answer.
 
 So the strongest true thing a worker can say is that it believes the bar is met.
 The conductor's own read is also filtered: only items currently reporting `done`
@@ -288,22 +329,20 @@ spend, an irreversible step or deleting someone's work, a costly preference
 they cannot infer, or a choice the person said they want to make.
 
 Parallel work is bounded in code, not only in the prompt. Each goal may hold at
-most `concurrency_cap` items open at once. The default is 6; a `goal` write sets
-it (`concurrency_cap`, 1 to 32). A `create` past it is refused
+most `concurrency_cap` items open at once. `resource_status` decides the wave;
+a bound the user set is `concurrency_cap`, written by a `goal` write (1 to 32).
+With none set it is 32, the store's own open bound, which refuses first with
+`item_cap_exceeded`. A `create` past a lower cap is refused
 `goal_concurrency_cap_reached`, and the board writes nothing. That is not a
 stop: the next item that lands frees a seat, and the conductor waits for it
 rather than asking to raise the cap. Closed items never count toward it.
 
-The total is advisory. Each goal is expected to create at most `item_cap` items,
-closed ones and every round's re-plans included; the default is 20 and a `goal`
-write sets it (`item_cap`, 1 to 256). Nothing is refused past it. The read
-returns `goal_items_used` and `cap_exceeded` on the `conductor` block, compact
-reads included. The conductor keeps the count out of its round reports and
-tells the user once, the first report after `cap_exceeded` turns true, that the
-goal has spent past its line. Only a goal write with `new_goal=true` (a goal the user replaced)
-starts a new count; rewording the goal, moving the round or changing a cap
-keeps it. A board that never records a goal, such as a pipeline or security
-conductor's queue, has neither goal cap. After two rounds in a row with
+The total has no cap. The read returns the goal's item count, closed items and
+every round's re-plans included, as `goal_items_used` on the `conductor` block,
+compact reads included. Only a goal write with `new_goal=true` (a goal the user
+replaced) starts a new count; rewording the goal, moving the round or changing
+the cap keeps it. A board that never records a goal, such as a pipeline or
+security conductor's queue, has no concurrency cap. After two rounds in a row with
 nothing accepted the conductor tells the user and re-plans the failing items
 once; a third stops new dispatches until the user answers.
 
@@ -367,6 +406,23 @@ its reports any more. For such an item the board offers **Stop current turn**,
 which cancels the worker's running turn and keeps its session, branch and
 reports. There is no take-over. To ask where a goal stands, you can still ask the
 conductor session — it answers from the record.
+
+### When a run is done
+
+A conductor ends its run by sending you one final report and then stopping its
+patrol loop. The board reads that: once it has items and no loop is active on the
+conductor's session, the run is **done** when every item is closed and **stopped**
+when some are still open. A rejected or abandoned item counts as closed but not
+done. Nothing is stored for this, so a new goal, a re-armed patrol or a new item
+puts the run back to working on the next read; the board read also waits for a
+new goal's first item before it calls anything settled. The board read
+(`GET /api/crew-board`) and the conductor mode chat's Sessions row both carry this
+as `run` (`settled`, `open`, `accepted`, `not_done`, `at_limit`, `patrol_on`; the row only once
+the board has an item); the code is `dashboard/conductor_mode_run.py`. A stop the
+conductor made and one you made look the same to the board, so it never says who
+stopped the run. `at_limit` marks a patrol that ended at its time or budget bound,
+and `patrol_on` whether the loop is on: a new goal that waits on its first item with
+no loop on is not shown as working.
 
 ## Cleaning up finished ledgers
 

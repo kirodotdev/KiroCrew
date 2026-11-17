@@ -446,6 +446,18 @@ export function GuideProvider({ children }: { children: ReactNode }) {
   const inflightRef = useRef(0)
   const waitersRef = useRef<Array<() => boolean>>([])
   const [settleTick, setSettleTick] = useState(0)
+  // A waiter with a deadline. The effect below runs waiters only when the view
+  // or a report settles, and an unchanged re-read moves neither, so a timer
+  // also runs it at the deadline until it answers true.
+  const pushDeadlineWaiter = useCallback((waiter: () => boolean, deadline: number) => {
+    waitersRef.current.push(waiter)
+    const arm = () => setTimeout(() => {
+      if (!waitersRef.current.includes(waiter)) return
+      if (waiter()) waitersRef.current = waitersRef.current.filter(w => w !== waiter)
+      else arm()
+    }, Math.max(0, deadline - Date.now()) + 1)
+    arm()
+  }, [])
   // Set synchronously on the Cancel press and held until the cancel settles:
   // no progress report, recovery, heartbeat or re-plan is sent meanwhile, so
   // nothing this tab does moves the guide on past the press.
@@ -493,7 +505,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
           return true
         }
         void queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY }).then(() => {
-          if (!moved()) waitersRef.current.push(moved)
+          if (!moved()) pushDeadlineWaiter(moved, deadline)
         })
       })
     }
@@ -503,7 +515,7 @@ export function GuideProvider({ children }: { children: ReactNode }) {
       return true
     }
     if (!startWhenSettled()) waitersRef.current.push(startWhenSettled)
-  }, [busy, store, refused, queryClient])
+  }, [busy, store, refused, queryClient, pushDeadlineWaiter])
 
   const report = useCallback((outcome: GuideOutcome, resumeStepIndex?: number, detail?: GuideMissingDetail): boolean => {
     const v = viewRef.current
@@ -610,12 +622,12 @@ export function GuideProvider({ children }: { children: ReactNode }) {
           return true
         }
         void queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY }).then(() => {
-          if (!moved()) waitersRef.current.push(moved)
+          if (!moved()) pushDeadlineWaiter(moved, deadline)
         })
       })
     }
     attempt()
-  }, [store, refused, queryClient])
+  }, [store, refused, queryClient, pushDeadlineWaiter])
   const noteSaveRefused = useCallback((actionId: string) => {
     const v = viewRef.current
     if (v?.action?.id === actionId) setSubmittedKey(null)

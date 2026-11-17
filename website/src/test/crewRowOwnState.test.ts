@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { crewRowOwnState } from '../pages/chat-sidebar/SessionRow'
 
-describe('crewRowOwnState — the Ultra Mode row\'s one word', () => {
+describe('crewRowOwnState — the conductor mode row\'s one word', () => {
   it('a passive patrol reads Waiting while nothing in the crew runs', () => {
     expect(crewRowOwnState('structured_monitor_passive', '')?.word).toBe('Waiting')
   })

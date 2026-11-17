@@ -1,13 +1,14 @@
 /**
- * The compiled chat pane's crash card follows a language switch.
+ * The compiled chat pane's crash notice follows a language switch.
  *
  * `ErrorBoundary` is a class component, so it cannot subscribe through
  * `useLanguageGeneration()`. `ChatPaneNotices` is on the React Compiler opt-in
  * list, and without a changing prop the compiled pane would hand back the same
- * cached boundary element after a switch, leaving a visible crash card in the
- * previous language. The pane passes `languageGeneration` to the boundary; this
- * test makes the lazy unrestored-tabs notice throw so the card shows, switches
- * language with every pane prop unchanged, and expects the card in Chinese.
+ * cached boundary element after a switch, leaving a visible crash notice in the
+ * previous language. The pane passes `languageGeneration` to the lazy notice's
+ * wrapper, which hands it to its boundary; this test makes the lazy
+ * unrestored-tabs notice throw so the crash notice shows, switches language
+ * with every pane prop unchanged, and expects the notice in Chinese.
  */
 import '../i18n/all'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -56,8 +57,8 @@ afterEach(async () => {
   await act(async () => { await i18next.changeLanguage('en') })
 })
 
-describe('ChatPaneNotices crash card under a language switch', () => {
-  it('renders the boundary card in the new language with unchanged props', async () => {
+describe('ChatPaneNotices crash notice under a language switch', () => {
+  it('renders the crash notice in the new language with unchanged props', async () => {
     // React logs the caught render error; the boundary handling it is the point.
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -71,8 +72,8 @@ describe('ChatPaneNotices crash card under a language switch', () => {
       </QueryClientProvider>
     )
     const { rerender } = render(tree)
-    const englishHeading = i18nT('components.errorBoundary.something_went_wrong')
-    // The card appears only after the lazy `import()` of the mocked notice
+    const englishHeading = i18nT('pages.chatPage.could_not_check_restored_tabs')
+    // The crash notice appears only after the lazy `import()` of the mocked notice
     // resolves, the notice throws and the boundary commits its fallback. A named
     // ceiling for that chain on a loaded worker, not the 1000 ms default.
     expect(await screen.findByText(englishHeading, {}, { timeout: 5000 })).toBeInTheDocument()
@@ -80,7 +81,7 @@ describe('ChatPaneNotices crash card under a language switch', () => {
     await act(async () => { await i18next.changeLanguage('zh-CN') })
     rerender(tree)
 
-    const chineseHeading = i18nT('components.errorBoundary.something_went_wrong')
+    const chineseHeading = i18nT('pages.chatPage.could_not_check_restored_tabs')
     expect(chineseHeading).not.toBe(englishHeading)
     expect(screen.getByText(chineseHeading)).toBeInTheDocument()
     expect(screen.queryByText(englishHeading)).toBeNull()

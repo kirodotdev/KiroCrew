@@ -133,7 +133,9 @@ class SkillsShProvider:
             repo_url = f"https://github.com/{source}" if source else ""
             try:
                 installs = int(item.get("installs", 0) or 0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError: ``1e999`` parses as an infinite float. One bad row
+                # loses its count, never the provider's whole result list.
                 installs = 0
             skill_ident = _s(item.get("id")) or _s(item.get("skillId")) or _s(item.get("name"))
             if not skill_ident:

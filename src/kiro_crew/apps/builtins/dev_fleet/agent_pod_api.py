@@ -248,6 +248,27 @@ def _clean_limits(body: dict[str, Any]) -> tuple[dict[str, str], web.Response | 
     return out, None
 
 
+def _clean_env(body: dict[str, Any]) -> tuple[dict[str, str], web.Response | None]:
+    """The optional ``env`` overrides (``KEY=VALUE`` strings) from a body, or a 400.
+
+    Checked here with the CLI's own allowlist so a refused key never reaches
+    argv; ``kirocrew pod up --env`` checks the same rules again.
+    """
+    from kiro_crew.pod import env_overrides
+
+    raw = body.get("env")
+    if raw is None or raw == []:
+        return {}, None
+    try:
+        if not isinstance(raw, list):
+            raise env_overrides.EnvOverrideError("'env' must be a list of KEY=VALUE strings")
+        return env_overrides.parse_assignments(raw), None
+    except env_overrides.EnvOverrideError as exc:
+        return {}, web.json_response(
+            {"ok": False, "code": "invalid_env", "error": str(exc)}, status=400
+        )
+
+
 async def _body(request: web.Request) -> tuple[dict[str, Any], web.Response | None]:
     """The request's JSON object, or a 400. A missing body reads as ``{}``."""
     if not request.can_read_body:
@@ -370,7 +391,14 @@ async def pod_up_response(body: dict[str, Any]) -> web.Response:
     limits, err = _clean_limits(body)
     if err is not None:
         return err
-    result = await _run_op(functools.partial(_ops()._pod_up, name, **limits))
+    env, err = _clean_env(body)
+    if err is not None:
+        return err
+    if env:
+        limits_and_env: dict[str, Any] = {**limits, "env": env}
+    else:
+        limits_and_env = dict(limits)
+    result = await _run_op(functools.partial(_ops()._pod_up, name, **limits_and_env))
     refusal = _repo_refusal(result)
     if refusal is not None:
         return refusal

@@ -584,17 +584,30 @@ describe('CrewGoalsPane', () => {
     expect(screen.queryByTestId('crew-goals-new-goal')).toBeNull()
   })
 
-  it.each(['unknown', 'response-late', 'transport-error'] as const)('keeps the New goal modal open on a %s receipt and says the delivery is unconfirmed', async status => {
+  it.each(['unknown', 'response-late', 'transport-error'] as const)('on a %s receipt says the delivery is unconfirmed and offers the chat, never a second send', async status => {
     memberGoals.get.mockResolvedValue(record())
     const onSendToChat = vi.fn().mockResolvedValue(status)
     const onSent = vi.fn()
-    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" onSendToChat={onSendToChat} onSent={onSent} />)
+    const { rerender } = renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" onSendToChat={onSendToChat} onSent={onSent} />)
     fireEvent.click(await screen.findByTestId('crew-goals-add'))
     fireEvent.click(screen.getByTestId('crew-goals-new-goal-send'))
-    expect(await screen.findByTestId('crew-goals-new-goal-unconfirmed')).toBeInTheDocument()
+    const notice = await screen.findByTestId('crew-goals-new-goal-unconfirmed')
+    // The dialog has no composer, so the notice claims none.
+    expect(notice).toHaveTextContent('Delivery not confirmed — open the chat and check the conversation before sending it again.')
     expect(screen.queryByTestId('crew-goals-new-goal-error')).toBeNull()
-    expect(screen.getByRole('dialog', { name: 'New goal' })).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: 'New goal' })
     expect(onSent).not.toHaveBeenCalled()
+    // The thread re-confirming after the reset withdraws the send callback;
+    // Open chat sends nothing, so it stays live.
+    rerender(<CrewGoalsPane slug="scout" member="scout" name="Scout" onSent={onSent} />)
+    // No Send while unconfirmed: the one button opens the chat instead.
+    expect(within(dialog).queryByTestId('crew-goals-new-goal-send')).toBeNull()
+    const open = within(dialog).getByTestId('crew-goals-new-goal-open-chat')
+    expect(open).toHaveTextContent('Open chat')
+    expect(open).toBeEnabled()
+    fireEvent.click(open)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(onSent).toHaveBeenCalledTimes(1)
     expect(onSendToChat).toHaveBeenCalledTimes(1)
   })
 
@@ -746,5 +759,75 @@ describe('CrewGoalsPane', () => {
     const dialog = screen.getByRole('dialog', { name: 'New goal' })
     expect(within(dialog).getByTestId('crew-goals-new-goal')).toHaveTextContent('A goal is the big thing you want Scout to make happen.')
     expect(within(dialog).getByTestId('crew-goals-new-goal-send')).toBeDisabled()
+  })
+})
+
+describe('CrewGoalsPane credits used', () => {
+  const spendCard = async () => screen.findByTestId('crew-goals-spend')
+
+  it('shows the credits the work used next to the goals', async () => {
+    memberGoals.get.mockResolvedValue(record({ spend: { status: 'reported', credits: 3.75, partial: false } }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    const card = await spendCard()
+    expect(within(card).getByRole('heading', { name: 'Credits used' })).toBeInTheDocument()
+    expect(within(card).getByTestId('crew-goals-spend-value')).toHaveTextContent('3.75 credits')
+    expect(card).toHaveTextContent("Credits reported by the sessions doing Scout's tasks.")
+    // Right after the Goals card, before the milestones.
+    const sections = screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)
+    expect(sections.slice(0, 3)).toEqual(['Goals', 'Credits used', 'Milestones'])
+  })
+
+  it('says "at least" when the fold could not carry all the work', async () => {
+    memberGoals.get.mockResolvedValue(record({ spend: { status: 'reported', credits: 12.5, partial: true } }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    expect(within(await spendCard()).getByTestId('crew-goals-spend-value')).toHaveTextContent('At least 12.5 credits')
+  })
+
+  it('says not reported, never zero, when nothing was metered', async () => {
+    memberGoals.get.mockResolvedValue(record({ spend: { status: 'not_reported', partial: false } }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    const value = within(await spendCard()).getByTestId('crew-goals-spend-value')
+    expect(value).toHaveTextContent('Not reported')
+    expect(value).not.toHaveTextContent('0')
+  })
+
+  it('says it is still counting while the gateway reads the work for the first time', async () => {
+    memberGoals.get.mockResolvedValue(record({ spend: { status: 'pending' } }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    expect(within(await spendCard()).getByTestId('crew-goals-spend-value')).toHaveTextContent('Still counting')
+  })
+
+  it('shows no spend card when the gateway could not read it', async () => {
+    memberGoals.get.mockResolvedValue(record({ spend: null }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    await screen.findByTestId('crew-goals-key-results')
+    expect(screen.queryByTestId('crew-goals-spend')).toBeNull()
+  })
+
+  it('keeps the spend line across a save, whose answer carries none', async () => {
+    const full = record({ spend: { status: 'reported', credits: 3.75, partial: false } })
+    memberGoals.get.mockResolvedValue(full)
+    memberGoals.removeKeyResult.mockResolvedValue(record({
+      key_results: full.key_results.slice(1),
+      removed_key_result: { id: 'k00000001', text: 'PRs with a description', at: NOW },
+    }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    fireEvent.click((await screen.findAllByTestId('goal-key-result-open'))[0])
+    fireEvent.click(screen.getByTestId('crew-goals-kr-remove'))
+    const section = await screen.findByTestId('crew-goals-key-results')
+    expect(await within(section).findByText('Milestone removed')).toBeInTheDocument()
+    expect(within(screen.getByTestId('crew-goals-spend')).getByTestId('crew-goals-spend-value')).toHaveTextContent('3.75 credits')
+  })
+
+  it('keeps the spend line across a heartbeat save, which writes the same record', async () => {
+    const full = record({ spend: { status: 'reported', credits: 3.75, partial: false } })
+    memberGoals.get.mockResolvedValue(full)
+    memberGoals.setSchedules.mockResolvedValue(record({ schedules: { ...full.schedules, heartbeat: true } }))
+    renderWithProviders(<><CrewGoalsPane slug="scout" member="scout" name="Scout" /><CrewHeartbeatRow slug="scout" member="scout" /></>)
+    const row = await screen.findByTestId('crew-heartbeat-row')
+    await spendCard()
+    fireEvent.click(within(row).getByRole('switch', { name: 'Heartbeat' }))
+    expect(await within(row).findByRole('combobox', { name: 'How often' })).toBeEnabled()
+    expect(within(screen.getByTestId('crew-goals-spend')).getByTestId('crew-goals-spend-value')).toHaveTextContent('3.75 credits')
   })
 })

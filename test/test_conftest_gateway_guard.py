@@ -30,12 +30,14 @@ import pytest
 
 from kiro_crew import mcp_core, port_resolution
 
+#: Where the verbs are defined: the facade, and the gateway owner they moved to so the
+#: other own servers can send without loading the core server.
+_HOMES = (mcp_core.__name__, "kiro_crew.mcp_core_parts.gateway")
+
 _SENDERS = {
     name: fn
     for name, fn in vars(mcp_core).items()
-    if inspect.isfunction(fn)
-    and fn.__module__ == mcp_core.__name__
-    and "_send" in fn.__code__.co_names
+    if inspect.isfunction(fn) and fn.__module__ in _HOMES and "_send" in fn.__code__.co_names
 }
 
 _HELPERS = ("_delete", "_get", "_patch", "_post", "_put")
@@ -139,7 +141,7 @@ def _assert_refused(answer: dict, port: int) -> None:
 def test_every_mcp_core_function_that_sends_is_driven_here():
     """A new ``mcp_core`` function that calls ``_send`` fails here until it is listed."""
     assert sorted(_SENDERS) == list(_HELPERS)
-    assert all(fn.__module__ == "kiro_crew.mcp_core" for fn in _SENDERS.values())
+    assert all(fn.__module__ in _HOMES for fn in _SENDERS.values())
 
 
 @pytest.mark.parametrize("helper", _HELPERS)

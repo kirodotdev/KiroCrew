@@ -14,7 +14,9 @@ Semantics (frozen — see ``docs/system-specs/modules/workflows.md``):
   (``lambda: ctx.agent(p)``) OR an already-created awaitable (``ctx.agent(p)``) —
   both are accepted, since authors naturally reach for the latter. A task that
   raises (synchronously or in its awaitable) resolves to ``None`` — the call
-  itself NEVER raises (GATE A5), so callers ``.filter(None)``.
+  itself NEVER raises (GATE A5), so callers ``.filter(None)``. The one exception
+  is ``BudgetExceeded``: a run ceiling still ends the run, raised once every task
+  has settled.
 
 * ``pipeline(items, *stages)`` — NO barrier between stages. Each item flows through
   all stages in its own chain; item B can reach stage 2 while item A is still in
@@ -22,7 +24,7 @@ Semantics (frozen — see ``docs/system-specs/modules/workflows.md``):
   per-stage. Each stage is called ``stage(prev, item, index)`` (arity-adapted: a
   1-arg stage just gets ``prev``); for stage 0 ``prev`` is the item itself. A stage
   that raises drops that item to ``None`` and skips its remaining stages. Results
-  are returned in input order.
+  are returned in input order. ``BudgetExceeded`` is raised as for ``parallel``.
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 from typing import Any, Awaitable, Callable, Optional, Sequence
+
+from . import BudgetExceeded
 
 # A thunk: zero-arg callable returning an awaitable (matches Thunk in __init__).
 Thunk = Callable[[], Awaitable[Any]]
@@ -92,14 +96,40 @@ async def _run_thunk(thunk: Thunk) -> Any:
             # Caller passed ctx.agent(...) directly (a coroutine/awaitable).
             return await thunk
         return await _maybe_await(thunk())
+    except BudgetExceeded as exc:
+        return _CeilingHit(exc)
     except Exception:
         return None
+
+
+class _CeilingHit:
+    """A task stopped by a run ceiling; the combinator raises it after its barrier.
+
+    ``BudgetExceeded`` is how the token budget and the agent-call cap end a run, so
+    resolving it to ``None`` like any other failure would let a fan-out run past
+    both. It is held until every sibling has settled rather than raised straight
+    out of ``gather``, which would leave the siblings running after the run ends.
+    """
+
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: BudgetExceeded) -> None:
+        self.exc = exc
+
+
+def _raise_ceiling(results: list) -> list:
+    """Raise the first held ``BudgetExceeded`` in input order, else return ``results``."""
+    for value in results:
+        if isinstance(value, _CeilingHit):
+            raise value.exc
+    return results
 
 
 async def parallel(thunks: Sequence[Thunk], *, limit: Optional[int] = None) -> list:
     """Run thunks concurrently (barrier), results in input order.
 
-    A failing thunk → ``None``; this never raises (GATE A5). ``limit`` bounds
+    A failing thunk → ``None``; this never raises (GATE A5) except to pass on a
+    task's ``BudgetExceeded`` once every task has settled. ``limit`` bounds
     concurrency via a semaphore (the runner passes its run-global cap).
     """
     if not thunks:
@@ -113,14 +143,15 @@ async def parallel(thunks: Sequence[Thunk], *, limit: Optional[int] = None) -> l
         async with sem:
             return await _run_thunk(t)
 
-    return list(await asyncio.gather(*[_guarded(t) for t in thunks]))
+    return _raise_ceiling(list(await asyncio.gather(*[_guarded(t) for t in thunks])))
 
 
 async def pipeline(items: Sequence[Any], *stages: Stage, limit: Optional[int] = None) -> list:
     """Run each item through all stages independently — no inter-stage barrier (A3).
 
     Each item gets its own chain; chains run concurrently (bounded by ``limit``).
-    A stage that raises drops that item to ``None`` and skips its remaining stages.
+    A stage that raises drops that item to ``None`` and skips its remaining stages;
+    a ``BudgetExceeded`` is raised once every chain has settled, as in ``parallel``.
     Results are returned in input order. With no stages, returns the items as-is.
     """
     if not items:
@@ -135,6 +166,8 @@ async def pipeline(items: Sequence[Any], *stages: Stage, limit: Optional[int] = 
         for stage in stages:
             try:
                 prev = await _call_stage(stage, prev, item, index)
+            except BudgetExceeded as exc:
+                return _CeilingHit(exc)
             except Exception:
                 return None  # drop this item; skip remaining stages
         return prev
@@ -145,4 +178,6 @@ async def pipeline(items: Sequence[Any], *stages: Stage, limit: Optional[int] = 
         async with sem:
             return await _chain(item, index)
 
-    return list(await asyncio.gather(*[_guarded(it, i) for i, it in enumerate(items)]))
+    return _raise_ceiling(
+        list(await asyncio.gather(*[_guarded(it, i) for i, it in enumerate(items)]))
+    )

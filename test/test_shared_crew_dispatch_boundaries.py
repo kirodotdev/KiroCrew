@@ -193,6 +193,9 @@ async def test_recovery_leaves_unaccepted_cards_in_the_same_slot(
         await asyncio.wait_for(drain_restored_parked_sends(state), timeout=30)
         if memory_pending:
             assert calls == [] and len(slot._queue) == len(saved)
+            # The sends the startup drain accepted wait for memory, not for a
+            # person; only the ordinary cards are held.
+            assert slot.to_dict()["queue_held_depth"] == len(plain)
             drained.clear()
             state.memory_startup_task.set_result(None)
             await await_until(drained)
@@ -217,6 +220,123 @@ async def test_recovery_leaves_unaccepted_cards_in_the_same_slot(
         await await_until(asyncio.gather(*tasks, return_exceptions=True))
         for task in list(state._background_tasks):
             await await_until(task)
+        service._store.tasks.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("abandon", ["memory_failed", "fence_refused"])
+async def test_an_abandoned_startup_drain_leaves_its_accepted_card_held(
+    tmp_path, monkeypatch, abandon
+):
+    before = _service(tmp_path)
+    admission = await before.admit(
+        budget_key=BOB.id,
+        session_key="dashboard:abandoned",
+        operation=OperationKind.CHAT_TURN,
+        idempotency_key="abandoned-parked",
+        park=True,
+    )
+    saved = durable_queue_entries(
+        [
+            {
+                "id": "parked",
+                "content": "accepted",
+                "meta": {entry.QUEUED_WORK_META_KEY: admission.work.work_id},
+            }
+        ]
+    )
+    before._store.tasks.close()
+    service = _service(tmp_path)
+    monkeypatch.setattr(ag, "_SERVICE", service)
+    monkeypatch.setattr(ag, "current_service", AsyncMock(return_value=service))
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    state.push_slots_update = MagicMock()
+    state._dynamic_cards = None
+    state.memory_startup_task = asyncio.get_running_loop().create_future()
+    slot = state.get_or_create_slot("abandoned")
+    slot._queue[:] = sanitize_restored_queue(saved)
+    from kiro_crew.shared_crew.host_hooks import mark_sessions_restored
+
+    mark_sessions_restored(state)
+    monkeypatch.setattr(
+        chat_runner, "_parked_queue_drain_admitted", lambda: abandon != "fence_refused"
+    )
+    calls = []
+
+    async def run(_state, _slot, message, **kwargs):
+        calls.append(message)
+
+    monkeypatch.setattr(chat_runner, "_run_chat", run)
+    try:
+        await asyncio.wait_for(drain_restored_parked_sends(state), timeout=30)
+        # While memory prepares, the startup drain still owns the accepted send.
+        assert slot.to_dict()["queue_held_depth"] == 0
+        state.push_slots_update.reset_mock()
+        if abandon == "memory_failed":
+            state.memory_startup_task.set_exception(RuntimeError("memory recovery failed"))
+        else:
+            state.memory_startup_task.set_result(None)
+        await await_until(asyncio.gather(*state._background_tasks))
+        # No drain will start it now, so it waits for a person like any restored card.
+        assert calls == [] and [item["id"] for item in slot._queue] == ["parked"]
+        assert slot.to_dict()["queue_held_depth"] == 1
+        state.push_slots_update.assert_called_once_with()
+    finally:
+        if not state.memory_startup_task.done():
+            state.memory_startup_task.cancel()
+        for task in list(state._background_tasks):
+            await await_until(asyncio.gather(task, return_exceptions=True))
+        service._store.tasks.close()
+
+
+@pytest.mark.asyncio
+async def test_a_boot_scan_that_fails_part_way_marks_no_card(tmp_path, monkeypatch):
+    before = _service(tmp_path)
+    saved = []
+    for index in range(2):
+        admission = await before.admit(
+            budget_key=BOB.id,
+            session_key="dashboard:scan",
+            operation=OperationKind.CHAT_TURN,
+            idempotency_key=f"scan-parked-{index}",
+            park=True,
+        )
+        saved.append(
+            {
+                "id": f"parked-{index}",
+                "content": f"accepted {index}",
+                "meta": {entry.QUEUED_WORK_META_KEY: admission.work.work_id},
+            }
+        )
+    failing_id = admission.work.work_id
+    before._store.tasks.close()
+    service = _service(tmp_path)
+    monkeypatch.setattr(ag, "_SERVICE", service)
+    monkeypatch.setattr(ag, "current_service", AsyncMock(return_value=service))
+    read = service.current_work
+
+    async def read_failing_on_the_second_card(work_id):
+        if work_id == failing_id:
+            raise RuntimeError("store read failed")
+        return await read(work_id)
+
+    monkeypatch.setattr(service, "current_work", read_failing_on_the_second_card)
+    state = _make_state(tmp_path)
+    state.broadcast_ws = MagicMock()
+    state.push_slots_update = MagicMock()
+    state._dynamic_cards = None
+    slot = state.get_or_create_slot("scan")
+    slot._queue[:] = sanitize_restored_queue(durable_queue_entries(saved))
+    from kiro_crew.shared_crew.host_hooks import mark_sessions_restored
+
+    mark_sessions_restored(state)
+    try:
+        with pytest.raises(RuntimeError, match="store read failed"):
+            await asyncio.wait_for(drain_restored_parked_sends(state), timeout=30)
+        # The first card passed the scan, but no drain owns it, so both wait for a person.
+        assert slot.to_dict()["queue_held_depth"] == 2
+    finally:
         service._store.tasks.close()
 
 

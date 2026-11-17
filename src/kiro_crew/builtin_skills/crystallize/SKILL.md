@@ -114,6 +114,12 @@ a session that touched credentials / sensitive paths. Being asked does not make 
    Only `scripts/` is conditional: if you generated a script, put it under
    `scripts/<name>.py` in that folder, set `"has_scripts": true`, and list it in
    `scripts`; for a prose-only candidate use `"has_scripts": false, "scripts": []`.
+   **The folder holds `SKILL.md`, `.meta.json` and that optional `scripts/`,
+   nothing else.** Approval refuses a candidate with any other top-level entry
+   (a `references/` folder, a README), so it could never go live. Put reference
+   material in `SKILL.md` itself, under its own heading, instead of in separate
+   files, and keep `SKILL.md` under 50 KB: the review panel cannot open a
+   larger one.
 
    **Freshening an existing live auto-skill is an UPDATE candidate, not a new
    one.** Same pending folder, but set `"kind": "update"`, `"target":

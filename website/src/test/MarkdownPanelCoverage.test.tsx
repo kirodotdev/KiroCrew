@@ -168,7 +168,6 @@ beforeEach(() => {
   highlightRegistry.clear()
   localStorage.clear()
   sessionStorage.clear()
-  document.getElementById('mc-comment-hl-style')?.remove()
   installFetch()
   vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] } as never)
   vi.mocked(api.artifact).mockResolvedValue({ live_dirty: false, pinned: false } as never)
@@ -1075,7 +1074,8 @@ describe('MarkdownPanel — inline comment highlights', () => {
     seedDraft('beta')
     mountPanel({ filePath: FILE, content: BODY, onSubmitComments: vi.fn() })
     await waitFor(() => expect(highlightRegistry.get('mc-comment')?.length).toBe(1))
-    expect(document.getElementById('mc-comment-hl-style')).not.toBeNull()
+    // The underline rule lives in the stylesheet and reaches only `[data-hl-scope]`.
+    expect(highlightRegistry.get('mc-comment')![0].startContainer.parentElement!.closest('[data-hl-scope]')).not.toBeNull()
   })
 
   it('paints nothing when the anchor text is no longer in the document', async () => {

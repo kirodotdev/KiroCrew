@@ -36,8 +36,10 @@ from kiro_crew.work_ledger import (
     WorkEvent,
     WorkItem,
     WorkLedgerError,
+    _as_str,
     _commit_item_locked,
     _now_iso,
+    _read_json_record,
     _require_acceptance,
     _require_item_id,
     _require_record_fits,
@@ -47,6 +49,7 @@ from kiro_crew.work_ledger import (
     apply_conductor_action,
     binding_lock,
     binding_path,
+    bindings_dir,
     create_bound_item,
     ensure_conductor,
     item_events_path,
@@ -74,7 +77,7 @@ MAX_CONDUCTOR_KEY_CHARS = 512
 
 #: The ``work_item`` keys a create may carry. Anything else is refused, so a hub
 #: cannot reach a field the RFC does not give it.
-WORK_ITEM_KEYS = frozenset({"conductor_key", "item_id", "title", "acceptance", "decision"})
+WORK_ITEM_KEYS = frozenset({"conductor_key", "item_id", "title", "acceptance", "decision", "trust"})
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,9 @@ class MailboxRequest:
     title: str
     acceptance: dict[str, Any]
     decision: str
+    #: The hub's conductor was in Trust or YOLO at create (RFC §4). Only a request
+    #: for a scoped grant: the crew's own policy decides whether one is armed.
+    trust: bool = False
 
     @property
     def board(self) -> str:
@@ -140,12 +146,16 @@ def parse_work_item(raw: Any) -> MailboxRequest:
         raise WorkLedgerError("acceptance is required", code=CODE_INVALID_VALUE, field="acceptance")
     acceptance = _require_acceptance(raw.get("acceptance"))
     decision = _require_text(raw.get("decision"), MAX_DECISION_CHARS, "decision", required=False)
+    trust = raw.get("trust", False)
+    if not isinstance(trust, bool):
+        raise WorkLedgerError("trust must be a boolean", code=CODE_INVALID_VALUE, field="trust")
     request = MailboxRequest(
         conductor_key=conductor,
         item_id=item_id,
         title=title,
         acceptance=acceptance,
         decision=decision,
+        trust=trust,
     )
     _require_record_fits(request.item("w" * MAX_CONDUCTOR_KEY_CHARS).to_dict())
     return request
@@ -268,6 +278,37 @@ def bound_mailbox(worker_slot_key: str) -> tuple[str, str] | None:
     if binding is None or not is_mailbox(binding[0]):
         return None
     return binding
+
+
+def open_mailbox_workers() -> int:
+    """Worker slots on this crew bound to an open hub mailbox item. BLOCKING.
+
+    Walks the binding files. A binding counts when its board is a ``hub:`` board
+    and its item is open and names the worker back, the test :func:`close_mailbox`
+    uses: a deleted slot's item is closed or discarded, so it counts nothing.
+    A torn binding or item file counts nothing. Raises ``OSError`` when the
+    bindings directory cannot be listed; the caller decides how to fail.
+    """
+    root = bindings_dir()
+    if not root.is_dir():
+        return 0
+    count = 0
+    for path in root.glob("*.json"):
+        raw = _read_json_record(path, strict=False)
+        if not isinstance(raw, dict):
+            continue
+        board = _as_str(raw.get("conductor_slot_key"))
+        item_id = _as_str(raw.get("item_id"))
+        worker = _as_str(raw.get("worker_slot_key"))
+        if not worker or not is_mailbox(board) or not _slot_key_is_shaped(board):
+            continue
+        try:
+            item = read_work_item(board, item_id)
+        except WorkLedgerError:
+            continue
+        if item is not None and not item.is_terminal and item.worker_session_key == worker:
+            count += 1
+    return count
 
 
 def names_worker(bound: tuple[str, str], worker_slot_key: str) -> bool:

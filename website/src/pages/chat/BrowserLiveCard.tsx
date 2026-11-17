@@ -17,6 +17,8 @@ import type { BrowserLiveCanvasHandle } from './BrowserLiveCardCanvas'
 import { clearTopOverlay, holdPinnedPromptAside } from './browserLiveClearance'
 import { BrowserLiveAllowView, BrowserLiveDoneRow, BrowserLiveLiveView, BrowserLiveStagedRow, hostOf } from './BrowserLiveCardViews'
 import BrowserLiveSheet from './BrowserLiveSheet'
+import { VaultUnsavedNotice } from './quickAsk/QuickAskVault'
+import { mcpIdentityFromTitle } from '../../utils/toolCallTitle'
 
 /** How long the takeover's grow animation takes to settle before the card re-checks its place. */
 const GROW_SETTLE_MS = 400
@@ -55,14 +57,21 @@ const GROW_SETTLE_MS = 400
  * The tool is a managed-MCP tool, so a real row reads `🔧 @kirocrew-core/browser`
  * (the `@server/tool` form every MCP call arrives in) and a stamped name may carry
  * the server too. Both spellings are the one tool; a bare `browser` is kept for the
- * built-in shape and the fixtures. */
+ * built-in shape and the fixtures. Any other MCP spelling a backend uses (an ACP
+ * backend writes `mcp__server__tool`) is read by the shared `mcpIdentityFromTitle`. */
 const BROWSER_ROW_RE = /^🔧\s*(?:@(?:[\w.-]+\/)?)?browser(?:\s|$)/
 const NAMESPACED_BROWSER_RE = /(?:^|\/|::|___)browser$/
+function namesBrowser(name: string): boolean {
+  const mcp = mcpIdentityFromTitle(name)
+  return mcp ? mcp.tool === 'browser' : NAMESPACED_BROWSER_RE.test(name)
+}
 export function isBrowserToolMessage(msg: ChatMessage): boolean {
   if (msg.role !== 'tool') return false
   const trusted = msg.meta?.tool_name
-  if (typeof trusted === 'string' && trusted) return NAMESPACED_BROWSER_RE.test(trusted)
-  return BROWSER_ROW_RE.test(msg.content)
+  if (typeof trusted === 'string' && trusted) return namesBrowser(trusted)
+  if (BROWSER_ROW_RE.test(msg.content)) return true
+  const pill = msg.content.match(/^🔧\s*(\S+)(?:\s|$)/)
+  return !!pill && mcpIdentityFromTitle(pill[1])?.tool === 'browser'
 }
 
 /** What a turn's card anchors on: the first browser row's call id, else its timestamp. */
@@ -248,6 +257,7 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
             onOpenLive={openLive}
           />
         )}
+        {!staged && isCurrent && <VaultUnsavedNotice sessionKey={sessionKey} />}
       </motion.div>
       {/* The sheet surface of the stage, for this card's turn. */}
       {hostsSheet && <BrowserLiveSheet sessionKey={sessionKey} />}

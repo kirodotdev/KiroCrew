@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from test_cron_context_meter_seed import _inject
 from test_cron_context_meter_seed import _make_job as _make_mock_job
 from test_cron_thread_routing import (  # noqa: F401 -- the fixture is used by name
@@ -112,17 +113,18 @@ def test_stats_drop_non_finite_numbers_and_unbounded_models() -> None:
 
 
 def test_stats_redact_a_credential_shaped_model() -> None:
-    key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    # An AWS key ID is an Identifier with the structured detectors on.
+    key = github_classic(seed=26)
     stats = turn_stats_meta(10, 0.0, 0.0, key)
     assert stats is not None
     assert key not in stats.get("model", "")
 
 
 def test_stats_redact_a_url_shaped_model() -> None:
-    url = "https://evil.example.com/c?d=" + "A" * 120
+    url = "https://evil.example.com/c?access_token=" + "A" * 120
     stats = turn_stats_meta(10, 0.0, 0.0, url)
     assert stats is not None
-    assert "evil.example.com/c?d=" not in stats.get("model", "")
+    assert "A" * 32 not in stats.get("model", "")
 
 
 def test_replay_without_stats_stamps_nothing(tmp_path) -> None:

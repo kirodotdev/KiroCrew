@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -43,11 +43,25 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel from '../pages/chat/SidePanel'
 import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 
-function Harness() {
+let lastTabs: ReturnType<typeof usePanelTabs>['tabs'] = []
+
+function Harness({ view = 'git' }: { view?: 'git' | 'side' }) {
   const tabsCtl = usePanelTabs('slot-a')
   const openView = tabsCtl.openView
-  useEffect(() => { openView('git') }, [openView])
+  lastTabs = tabsCtl.tabs
+  useEffect(() => { openView(view) }, [openView, view])
   return <SidePanel tabsCtl={tabsCtl} slot="slot-a" projectDir="/repo" onFileOpen={vi.fn()} onFileSave={async () => {}} onClose={() => {}} />
+}
+
+function renderPanel(view?: 'git' | 'side') {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <Provider store={createTestStore()}>
+        <Harness view={view} />
+      </Provider>
+    </QueryClientProvider>,
+  )
 }
 
 describe('the Git tab body', () => {
@@ -58,14 +72,7 @@ describe('the Git tab body', () => {
   })
 
   it('reaches ActivityViewer with the slot and no project directory', async () => {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(
-      <QueryClientProvider client={queryClient}>
-        <Provider store={createTestStore()}>
-          <Harness />
-        </Provider>
-      </QueryClientProvider>,
-    )
+    renderPanel()
     await screen.findByTestId('activity-viewer')
     const gitView = viewerProps.mock.calls.map(([p]) => p as Record<string, unknown>).find(p => p.view === 'git')
     expect(gitView).toBeDefined()
@@ -73,5 +80,25 @@ describe('the Git tab body', () => {
     // The side panel keeps its own projectDir for the file tabs; none of it is
     // forwarded here, because nothing in ActivityViewer reads it.
     expect(gitView).not.toHaveProperty('projectDir')
+  })
+})
+
+describe('the Side Chat tab body', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetPanelTabs()
+    viewerProps.mockReset()
+  })
+
+  // A folder a side reply names opens as this panel's folder tab, for this
+  // chat (#35014). Without an opener the side chat's folder chip fell back to
+  // the OS reveal, which a headless gateway answers by copying the path.
+  it('hands ActivityViewer a folder opener that opens a folder tab for the slot', async () => {
+    renderPanel('side')
+    await screen.findByTestId('activity-viewer')
+    const sideView = viewerProps.mock.calls.map(([p]) => p as Record<string, unknown>).find(p => p.view === 'side')
+    expect(sideView?.onFolderOpen).toBeTypeOf('function')
+    act(() => { (sideView!.onFolderOpen as (path: string) => void)('/repo/evidence/') })
+    expect(lastTabs).toContainEqual(expect.objectContaining({ kind: 'folder', path: '/repo/evidence/', slot: 'slot-a' }))
   })
 })

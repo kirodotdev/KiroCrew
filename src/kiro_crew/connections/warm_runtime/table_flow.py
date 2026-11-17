@@ -300,8 +300,9 @@ async def warm_mint_all(
         # activation would otherwise leave every row ``minting`` with no watcher and no
         # activation. ``expire_dead_mints`` judges ``waiting`` rows only, so nothing would
         # ever withdraw them -- and they keep ``_shared_mints_pending`` true, so the reaper
-        # never retires the process either. The release awaits to completion: a task is
-        # handed its cancellation once, so this cleanup runs before the raise resumes it.
+        # never retires the process either. A second cancel can land inside this release,
+        # so the release takes every row out of the table with no await and shields the
+        # disposal that follows (see ``_release_shared_claims``).
         await _release_shared_claims(claims)
         raise
     await asyncio.to_thread(

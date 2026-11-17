@@ -93,6 +93,25 @@ describe('mochi panelBridge socket silence watchdog', () => {
     expect(FakeWebSocket.instances[0].closed).toBe(false)
   })
 
+  it('a replacement after a healthy socket starts the backoff over', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    bridge.onChatDone(() => {})
+    // A first socket that never opens grows the next delay to 2000.
+    FakeWebSocket.instances[0].close()
+    advance(1000)
+    FakeWebSocket.instances[1].open()
+
+    // Healthy for a whole silence window, then silent: the watchdog replaces it.
+    advance(WS_SILENCE_MS + WS_SILENCE_CHECK_MS)
+    expect(FakeWebSocket.instances).toHaveLength(3)
+
+    // The replacement fails at once; the retry comes after 1000, not 2000.
+    FakeWebSocket.instances[2].close()
+    advance(1000)
+    expect(FakeWebSocket.instances).toHaveLength(4)
+    vi.restoreAllMocks()
+  })
+
   it('leaves a silent socket alone while the page is hidden', () => {
     openFirst()
     hidden = true

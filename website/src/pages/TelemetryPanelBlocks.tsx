@@ -1,13 +1,15 @@
 /** The Telemetry panel's shared building blocks: the sortable data table
  *  (`DataTable`, its column model `Col` and header cell), the summary strip
- *  (`Sums`) and the bucket histogram the Spend and Startup tabs draw with. */
+ *  (`Sums`), the bucket histogram the Spend and Startup tabs draw with, and the
+ *  Spend tab's recommendations list. */
 import React, { useState } from 'react'
-import { Activity, ChevronDown, ChevronRight, ChevronUp } from 'lucide-react'
+import { Activity, ChevronDown, ChevronRight, ChevronUp, Lightbulb } from 'lucide-react'
 import InfoTip from '../components/InfoTip'
 import { Btn, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
-import { compareText, fmtNumber } from '../i18n/format'
+import { compareText, fmtCompact, fmtNumber, fmtPercent } from '../i18n/format'
 import { i18nT } from '../i18n/t'
+import type { SpendAdvice } from './telemetryPanelModel'
 
 // ── Sortable table ─────────────────────────────────────────────
 //
@@ -19,10 +21,9 @@ import { i18nT } from '../i18n/t'
 // shared component cannot express without changing those five pages: this is
 // the first numeric-heavy table, so most columns must right-align (SortableHeader
 // hard-codes `text-left`, and its className is appended rather than merged, so
-// a competing `text-right` would resolve by stylesheet order), and it carries
-// the ▾/▴ caret plus accent-coloured active column from the Session & Task
-// Memory card. Giving SortableHeader a caret is worth doing for all six tables,
-// but as its own change.
+// a competing `text-right` would resolve by stylesheet order), and it marks the
+// active column in the accent colour, as the Session & Task Memory card does.
+// The ▾/▴ caret is the same one `SortableHeader` draws.
 //
 // The comparison is also local, because the hook's direction model negates by
 // swapping arguments — which cannot express "nulls last in BOTH directions".
@@ -327,13 +328,18 @@ export function Histogram({
   labelClass = 'w-20 text-right font-mono text-muted',
   valueClass = 'w-12',
   barDecorative = false,
+  formatValue = fmtNumber,
 }: {
   rows: { key: string; label: React.ReactNode; count: number; title?: string }[]
   labelClass?: string
   valueClass?: string
   barDecorative?: boolean
+  /** How the figure beside each bar is written; a plain count by default. */
+  formatValue?: (n: number) => string
 }) {
-  const peak = Math.max(1, ...rows.map(r => r.count))
+  // Scaled to the largest row, not floored at 1: spend in dollars is mostly
+  // below one, and a floor of 1 drew every such bar as a sliver.
+  const peak = Math.max(0, ...rows.map(r => r.count)) || 1
   return (
     <div className="flex flex-col gap-1">
       {rows.map(r => (
@@ -348,9 +354,54 @@ export function Histogram({
               style={{ width: `${(r.count / peak) * 100}%`, background: 'var(--muted-strong)' }}
             />
           </div>
-          <span className={`${valueClass} shrink-0 text-right font-mono tabular-nums`}>{fmtNumber(r.count)}</span>
+          <span className={`${valueClass} shrink-0 text-right font-mono tabular-nums`}>{formatValue(r.count)}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Spend recommendations ──────────────────────────────────────
+//
+// Each line is a sentence the gateway measured, worded here in the reader's
+// language, with the share of the window's spend it applies to.
+
+function adviceText(a: SpendAdvice): string | null {
+  const share = fmtPercent(a.share_pct / 100)
+  if (a.id === 'high_context') {
+    return i18nT('pages.telemetryPanel.advice_high_context', { share, tokens: fmtCompact(a.tokens) })
+  }
+  if (a.id === 'costly_model') {
+    return i18nT('pages.telemetryPanel.advice_costly_model', {
+      share,
+      model: a.model,
+      cheaper: a.cheaper_model,
+      ratio: fmtNumber(a.ratio, { maximumFractionDigits: 1 }),
+    })
+  }
+  return null
+}
+
+export function SpendAdvicePanel({ advice }: { advice?: SpendAdvice[] }) {
+  const lines = (advice ?? []).flatMap(a => {
+    const text = adviceText(a)
+    return text ? [{ id: a.id, text }] : []
+  })
+  if (!lines.length) return null
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <div className="flex items-center gap-1 text-[10px] text-muted uppercase tracking-wide mb-1.5">
+        {i18nT('pages.telemetryPanel.advice_title')}
+        <InfoTip text={i18nT('pages.telemetryPanel.advice_tip')} />
+      </div>
+      <ul className="m-0 p-0 list-none space-y-1.5">
+        {lines.map(l => (
+          <li key={l.id} className="flex items-start gap-2 text-[12.5px] text-text">
+            <Lightbulb className="lucide-inline mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+            <span>{l.text}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

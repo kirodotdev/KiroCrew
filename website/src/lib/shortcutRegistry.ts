@@ -228,6 +228,14 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // keydown.preventDefault() cannot cancel a composed character — this chord
   // fires from inside the composer, so it must not be able to leave one behind.
   { id: 'toggle-focus-mode', group: 'actions', dispatch: 'registry', defaults: both({ key: 'm', alt: true, shift: true }) },
+  // Mute or unmute the dictation in progress (lib/dictationMute). Fires from
+  // inside the composer, where dictation lands. The macOS chord carries no
+  // Option: the default push-to-talk key there is a bare right Option, and a
+  // press of it during a recording stops the recording, so an Option chord
+  // would end the dictation it was meant to pause. Off macOS the push-to-talk
+  // default is a chord of its own, which Alt+Shift+Q does not match.
+  { id: 'toggle-dictation-mute', group: 'actions', dispatch: 'registry',
+    defaults: mac({ key: 'm', ctrl: true, shift: true }, { key: 'q', alt: true, shift: true }) },
   // ⌘O / Ctrl+O ("out") — pop the current session out to its own window, or
   // focus that window when it is already out (#28521): the keyboard twin of the
   // chat header's pop-out button. Not browser-reserved: a browser tab hands the
@@ -240,6 +248,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // fallback), not the global handler; listed for the reference so the
   // shortcuts modal advertises it alongside the other composer bindings.
   { id: 'edit-last-message', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowUp', mod: true }) },
+  // ⌘⇧U / Ctrl+Shift+U opens the composer's Upload file picker. Dispatched by
+  // ChatInput (chat-input/attach.tsx), not the global handler; listed for the
+  // reference. Not ⌘U / Ctrl+U: browsers bind that to View Source.
+  { id: 'upload-file', group: 'actions', dispatch: 'code', defaults: both({ key: 'u', mod: true, shift: true }) },
   // Bare Tab / Shift+Tab on a list line, handled by the composer's own key
   // handler (chat-input/keyboard.ts); listed for the reference.
   { id: 'list-indent', group: 'actions', dispatch: 'code', defaults: both({ key: 'Tab' }) },

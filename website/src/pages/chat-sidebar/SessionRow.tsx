@@ -4,7 +4,7 @@
  *  (./rows) and its one `actions` object; the row's memo compares both. */
 import { useRef, useEffect, useState, memo, useMemo, useContext, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, GitFork, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon, Zap } from 'lucide-react'
+import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, Split, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon, Zap } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector, type RootState } from '../../store'
@@ -14,7 +14,7 @@ import { offlineProps } from '../../utils/offline'
 import { sessionRefBlockReason } from '../../utils/sessionRefs'
 import { OfflineReasonRow } from '../../components/OfflineMenuReason'
 import { crewOf } from '../../hooks/useInstanceSessions'
-import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from '../../store/chatSlice'
+import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot, selectSlotStreamState } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
 import { resolveSessionColor } from '../../utils/sessionColors'
@@ -28,7 +28,7 @@ import SessionActionsMenu from '../../components/SessionActionsMenu'
 import { ChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../../components/RemoteCrewChip'
 import { DndDraggable, DndDroppable } from '../../components/dnd'
-import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../../components/workflows/runModel'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatTag, CrewWorkFacts } from '../../types'
 import { hasLiveSessionWork } from '../chat/sessionLane'
@@ -40,6 +40,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { deriveAutomationStatus, MONITOR_STATUS_KEYS } from '../../monitoring/automation'
 import MonitorRadar from '../../components/MonitorRadar'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { agentOrDefaultLabel, withMemorySource } from '../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
@@ -51,6 +52,7 @@ import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { useSessionCardLines, cardLineClass } from './cardLines'
+import { RowTrailingMeta, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { crewRootOf } from '../../lib/crewMode'
@@ -78,6 +80,7 @@ function selectRowLive(st: RootState, localSlotKey: string) {
   const wf = selectSidebarWorkflowActive(st)[normalizeRunSessionKey(localSlotKey)]
   return {
     statusDetail: st.chat.slotStatusDetail?.[localSlotKey],
+    compacting: selectSlotStreamState(st, localSlotKey) === 'compacting',
     automation: selectAutomationForSlot(st, localSlotKey),
     queuedForSlot: st.chat.subagentQueued?.[localSlotKey] || 0,
     queuedReason: st.chat.subagentQueuedReason?.[localSlotKey],
@@ -145,16 +148,14 @@ const LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['running', 'subagents'
  *  member's waiting approval never takes the line from one of them. */
 const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'loop_waiting'])
 
-/** A slot's running-status line. Every phase resolves through toolStatusLabel:
- *  the fixed phases (`thinking`/`streaming`) carry no copy in the store and map
- *  to catalog keys at render time, a server-supplied status (also
- *  `kind: 'thinking'`, with its own `label`) is passed through, and a `tool`
- *  phase honors the user's `simplifiedToolNames` preference (purpose vs raw tool
- *  title), so the row agrees with the inline tool pill in the transcript rather
- *  than always showing the purpose. The generic copy covers whatever resolves to
- *  nothing (an `idle` phase caught before the slot list refreshes). */
-function slotStatusText(detail: ToolStatusDetail | undefined, simplifiedToolNames: boolean, uiLang: string): string {
-  return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
+/** A slot's running-status line. A compaction says the chat footer's word, whatever
+ *  phase the status detail still holds. Every other phase resolves through
+ *  toolStatusLabel: `thinking`/`streaming` map to catalog keys at render time, a
+ *  server-supplied status (`kind: 'thinking'` with its own `label`) passes through,
+ *  and a `tool` phase honors `simplifiedToolNames`, as the transcript's tool pill
+ *  does. The generic copy covers whatever resolves to nothing (an early `idle`). */
+function slotStatusText(detail: ToolStatusDetail | undefined, compacting: boolean, simplifiedToolNames: boolean, uiLang: string): string {
+  return compacting ? i18nT('pages.chat.chatFooter.compacting') : toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
 }
 
 export { connectedChannelLinks }
@@ -243,11 +244,11 @@ interface SessionRowProps {
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
 
-/** An Ultra Mode root's status line: "N needs you", "N stalled" (plus who
+/** A conductor mode root's status line: "N needs you", "N stalled" (plus who
  *  stalled longest), "N running", or "Done" -- only what applies. With no crew
  *  and nothing owed it shows *fallback*, the row's usual line. */
-function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }: {
-  root: string; fallback: ReactNode; own?: CrewRowOwnState | null
+function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, dot = null }: {
+  root: string; fallback: ReactNode; own?: CrewRowOwnState | null; /** The row's unread dot, kept in front of the status. */ dot?: ReactNode
   /** The root's ledger in brief (`crew_work`): what waits on a person, what stalled. */
   work?: CrewWorkFacts | null
   /** The root itself holds an approval or a question for the person. */
@@ -289,14 +290,14 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   const stalledForMs = longest ? Date.now() - longest.since : 0
   const stalledName = member?.title || member?.agent || longestSlot || i18nT('commandCenter.worker_untitled')
   const title = crewRowTooltip(total, rowCounts, stall.stalled, needsYou)
-  // Finished only when the main chat itself is settled too.
-  const allDone = total > 0 && done === total && !own
+  // Finished only when the main chat is settled too, and, with a ledger, the gateway's run verdict says done.
+  const allDone = (work?.run ? work.run.settled === 'done' : total > 0 && done === total) && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
   const ownFirst = !paused && own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
   // Nothing needs attention and the crew is not finished (or paused): the row's usual line.
   if (!failed && !paused && !ownFirst && !allDone && needsYou === 0 && stall.stalled === 0 && running === 0) return <>{fallback}</>
   return (
-    <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
+    <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">{dot}
       {/* The row's own state outranks a failed crew read: it is said first. */}
       {failed && own && <CrewStateWord kind={own.kind} title={own.title} />}
       {!failed && ownFirst && <CrewStateWord kind={ownFirst.kind} title={ownFirst.title} />}
@@ -403,7 +404,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // stays in the tooltip, where it tells untitled rows apart.
   const shownTitle = memberTitle ?? sessionDisplayTitle(s)
   // The tooltip keeps a topic stored before the thread was named after the crewmate.
-  const tooltipTitle = memberTitle !== null && s.title && s.title !== s.key && s.title !== memberTitle
+  const tooltipTitle = memberTitle !== null && s.title && !isUntitledSession(s) && s.title !== memberTitle
     ? `${memberTitle}: ${s.title}`
     : memberTitle ?? (isUntitledSession(s) ? `${shownTitle} · ${s.key}` : shownTitle)
   // Inside a crew group the header already names the machine, so the row
@@ -441,7 +442,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // keeps each field's own identity rule: an entry object repaints only when
   // THIS slot's entry is replaced, and the workflow primitives only when this
   // slot's runs change.
-  const { statusDetail, automation, queuedForSlot, queuedReason, wfCount, wfName: wfRawName, wfPhase: wfRawPhase } =
+  const { statusDetail, compacting, automation, queuedForSlot, queuedReason, wfCount, wfName: wfRawName, wfPhase: wfRawPhase } =
     useAppSelector(st => selectRowLive(st, localSlotKey), shallowEqual)
   // A Crew Mode root's crew members waiting on a tool approval. The server keeps
   // each one's `pending_approval` on its own row, which the person's list leaves
@@ -459,7 +460,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // wakes itself at that moment and the selector above reads the clock again.
   useCrewWorkClock(s.crew_work ? [s.crew_work] : [])
   // A Crew Mode root whose own turn is idle is still working while one of its
-  // crew members runs; its Ultra Mode tag flows for either. Only crew roots scan.
+  // crew members runs; its conductor mode tag flows for either. Only crew roots scan.
   const crewWorking = useAppSelector(st => crewRoot && (hasLiveSessionWork(s) || openedSessionRunning(st.dashboard.slots, s.key)))
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
@@ -699,8 +700,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const goalLoopLabel = !goalLoop
       ? ''
       : goalLoop.maxCycles > 0
-        ? i18nT('pages.chatSidebar.loop', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-        : i18nT('pages.chatSidebar.loop_2', { count: goalLoop.cycleCount })
+        ? i18nT('pages.chatSidebar.loop', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+        : i18nT('pages.chatSidebar.loop_2', { count: fmtNumber(goalLoop.cycleCount) })
     // The loop is armed but its session's last turn died — a trailing error row
     // or an unanswered user row, the state behind the composer's Resume button —
     // and nothing is executing on its behalf. The pulsing dot below would claim
@@ -745,7 +746,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const crewStalled = crewIdle && (crewWork?.stalled ?? 0) > 0
     const crewMoving = crewIdle && (crewWork?.moving ?? 0) > 0
     const crewLooping = crewMoving && crewWork?.looping === crewWork?.moving
-    const crewRunningText = crewLooping ? i18nT('components.crewMode.ultra_row_count_running', { count: crewWork?.looping ?? 0 }) : ''
+    const crewRunningText = crewLooping ? i18nT('components.crewMode.conductor_mode_row_count_running', { count: crewWork?.looping ?? 0 }) : ''
     // Ordinary sessions need the same reboot/error visibility as goal loops,
     // without claiming that an older interrupted parent turn has stopped live
     // child work. A goal loop keeps its richer cycle-specific treatment below;
@@ -763,7 +764,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       : subagentCount > 0
         ? subagentLabel
         : s.running
-          ? slotStatusText(statusDetail, simplifiedToolNames, uiLang)
+          ? slotStatusText(statusDetail, compacting, simplifiedToolNames, uiLang)
           : snapshotOnlyLiveWork
             ? snapshotLiveWorkLabel
             : (s.last_message || '')
@@ -872,8 +873,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             className={ROW_STATUS_LINE_CLS}
             title={goalLoop
               ? (goalLoop.maxCycles > 0
-                ? i18nT('pages.chatSidebar.loop_waiting_title_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-                : i18nT('pages.chatSidebar.loop_waiting_title_cycle_2', { count: goalLoop.cycleCount }))
+                ? i18nT('pages.chatSidebar.loop_waiting_title_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+                : i18nT('pages.chatSidebar.loop_waiting_title_cycle_2', { count: fmtNumber(goalLoop.cycleCount) }))
               : i18nT('pages.chatSidebar.loop_waiting_title')}
           >
             {goalLoop
@@ -888,8 +889,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 carries the full sentence. */}
             <span className="truncate"><span className="font-medium crew-tone-warn">{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted">{goalLoop || monitorOwnsRunning ? ' · ' : ''}{goalLoop
               ? (goalLoop.maxCycles > 0
-                ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-                : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
+                ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+                : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: fmtNumber(goalLoop.cycleCount) }))
               : monitorOwnsRunning ? i18nT('pages.chatSidebar.loop_waiting_monitor') : ''}</span></span>
           </div>
         ),
@@ -956,8 +957,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         when: !!goalLoop,
         build: () => {
           const cycleTitle = goalLoop && goalLoop.maxCycles > 0
-            ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-            : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop?.cycleCount ?? 0 })
+            ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+            : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: fmtNumber(goalLoop?.cycleCount ?? 0) })
           return (
             <div className={ROW_STATUS_LINE_CLS} title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : (goalLoopDetail || undefined)}>
               <span role="img" aria-label={cycleTitle} title={cycleTitle} data-testid="goal-loop-icon" className="inline-flex shrink-0">
@@ -1049,7 +1050,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         key: 'running',
         when: isRunning && (!monitorOwnsRunning || s.running),
         build: () => {
-          const text = slotStatusText(statusDetail, simplifiedToolNames, uiLang)
+          const text = slotStatusText(statusDetail, compacting, simplifiedToolNames, uiLang)
           // `title` because this is the one status text that is unbounded — a tool
           // phase can name a long command — and the line truncates. The gutter
           // glyph used to carry that tooltip, so it has to move with it, or a
@@ -1130,7 +1131,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       ? crewApprovalEntry
       : ownStateEntry
     const rowState = rowStateEntry?.build() ?? null
-    // The sentence the winning branch shows, kept for an Ultra Mode row's tooltip.
+    // The sentence the winning branch shows, kept for a conductor mode row's tooltip.
     const rowStateTitle = (key: string | undefined): string => {
       switch (key) {
         case 'pending_approval': return i18nT('pages.chatSidebar.needs_approval')
@@ -1139,8 +1140,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         case 'needs_input': return needsInputLabel
         case 'loop_waiting': return !goalLoop && !monitorOwnsRunning ? i18nT('pages.chatSidebar.loop_waiting_on_you') : `${i18nT('pages.chatSidebar.loop_waiting_on_you')} · ${goalLoop
           ? (goalLoop.maxCycles > 0
-            ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
-            : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
+            ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: fmtNumber(goalLoop.cycleCount), total: fmtNumber(goalLoop.maxCycles) })
+            : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: fmtNumber(goalLoop.cycleCount) }))
           : i18nT('pages.chatSidebar.loop_waiting_monitor')}`
         case 'interrupted': return i18nT('pages.chat.recoveryCard.turn_interrupted')
         case 'crew_stalled': return i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })
@@ -1154,11 +1155,11 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         case 'subagents_waiting': return subagentWaitingTitle || subagentWaitingLabel
         case 'subagents': return subagentLabel
         case 'snapshot_live_work': return snapshotLiveWorkLabel
-        case 'running': return slotStatusText(statusDetail, simplifiedToolNames, uiLang)
+        case 'running': return slotStatusText(statusDetail, compacting, simplifiedToolNames, uiLang)
         default: return ''
       }
     }
-    // The same branch, as a word and a tooltip for an Ultra Mode row.
+    // The same branch, as a word and a tooltip for a conductor mode row.
     const crewOwnState = crewRoot ? crewRowOwnState(rowStateEntry?.key, rowStateTitle(rowStateEntry?.key), goalLoopStalled, !!crewWorking) : null
     // The title-line live dot reads the WINNING branch of the resolver above, so
     // it can never disagree with the secondary line: it lights exactly when that
@@ -1245,7 +1246,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const rowMenuProps = useMemo(() => ({
       slotKey: rowKey,
       mode,
-      onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
+      onRename: () => onRenameStart(rowKey, scope, rowTitle && !isUntitledSession({ key: rowKey, title: rowTitle }) ? rowTitle : '', true),
       onAutoTitle: () => onAutoTitle(rowKey),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
       // A row menu opens from inside this panel, where the folder-order banner
@@ -1281,7 +1282,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         && !sessionRefBlockReason({ key: rowKey, activeSlot: isSidebarActiveSlot ? rowKey : null, memoryMode: s.memory_mode })
         ? () => onDropSessionRef({
             key: rowKey,
-            title: rowTitle && rowTitle !== rowKey ? rowTitle : rowKey,
+            title: rowTitle && !isUntitledSession({ key: rowKey, title: rowTitle }) ? rowTitle : rowKey,
             messages: s.messages,
           })
         : undefined,
@@ -1306,16 +1307,17 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     ) : (
       // The open session's row shows its actions only while a guide step
       // points at one (sessions.row-menu resolves to the open row's copy).
+      // No `title` here: IconButton then shows each aria-label as an instant tip.
       <IconButtonGroup className={`absolute top-1/2 -translate-y-1/2 right-1.5 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100 ${isActive && guideOnRowControl ? '!opacity-100' : ''}`}>
         <DropdownMenu guideScope="menu:sessions.row-menu">
           <DropdownMenuTrigger asChild>
-            <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
+            <IconButton aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
             <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
           </DropdownMenuContent>
         </DropdownMenu>
-        <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} {...uiLocation('sessions.row-duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><GitFork size={12} /></IconButton>
+        <IconButton variant="accent" aria-label={i18nT('pages.chatSidebar.duplicate')} {...uiLocation('sessions.row-duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><Split size={12} /></IconButton>
         {/* No hover close control on an ADOPTED remote-crew row (#19958, ruling 4):
             a bare icon with no visible label read as a destructive "cut the chat
             off" and the reader would not click it (UX). Removal for an adopted row
@@ -1323,7 +1325,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             where the plain label and the hint are always visible. Ordinary local
             rows keep their red ✕ close. */}
         {!releaseLocally && (
-          <IconButton variant="danger" title={closeReachLabel ?? i18nT('pages.chatSidebar.close')} aria-label={closeReachLabel !== undefined ? i18nT('pages.chatSidebar.close_this_session_only') : i18nT('pages.chatSidebar.close_session')} {...uiLocation('sessions.row-close')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
+          <IconButton variant="danger" aria-label={closeReachLabel !== undefined ? i18nT('pages.chatSidebar.close_this_session_only') : i18nT('pages.chatSidebar.close_session')} {...uiLocation('sessions.row-close')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
         )}
       </IconButtonGroup>
     )) : null
@@ -1536,7 +1538,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             if (renamingHere) return
             e.preventDefault()
             e.stopPropagation()
-            onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', false)
+            onRenameStart(s.key, scope, s.title && !isUntitledSession(s) ? s.title : '', false)
           }}>
           {/* The root of the Crew Mode worker in the pane: said for readers too,
               not by the tint alone. */}
@@ -1635,7 +1637,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  conductor is Crew Mode's to choose and may be swapped. The bolt sits
                 *  inline on this line rather than as a badge before the title, so the
                 *  title keeps the row's full width. */}
-              {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />}
+              {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 conductor-mode-accent" />}
               {crewRoot && <CrewEyebrow active={crewWorking} />}
               {/* A code-channel row's agent name gives way first, so the Slack
                 *  mark and the time keep their room; other rows keep `shrink-0`. */}
@@ -1643,7 +1645,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} data-testid="session-row-agent" className={`truncate ${s.code_channel ? CODE_CHANNEL_AGENT_FIT : 'shrink-0'} ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* Shared Crew creator: inline after the agent name, never a new line. */}
-              <SessionCreatorByline attribution={s.attribution} />
+              <SessionCreatorByline attribution={s.attribution} participants={s.participants} participantsDropped={s.participants_dropped} />
               {/* WHY this card is sitting above its folder's other rows, in a
                 *  word, beside the agent name that is the card's own first line.
                 *  The accent bar down its left edge groups the card with the
@@ -1829,9 +1831,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  and in practice the two names coincide often enough that showing
                *  both read as a stutter. Folder membership is carried by the tree
                *  itself in folder view; in flat view the row's own context menu
-               *  still names it. */}
+               *  still names it, and a search names it beside the time. */}
               {slotActivityTs(s) || isPinned || s.muted || s.process === 'released' || conductorMeta ? (
-                <span className="ml-auto inline-flex items-center gap-1 shrink-0">
+                <RowTrailingMeta slot={s}>
                   {/* FIRST in the group, so it sits immediately left of the timestamp
                    *  and the timestamp keeps the position it has in every other lane.
                    *  Inside the card's own meta group rather than beside the card:
@@ -1846,7 +1848,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {s.muted && <span className="shrink-0" data-testid="session-row-muted" role="img" aria-label={i18nT('pages.chatSidebar.muted')} title={i18nT('pages.chatSidebar.muted')}><VolumeX size={10} className="text-muted" /></span>}
                   {s.process === 'released' && <span className="shrink-0" data-testid="session-row-released" role="img" aria-label={i18nT('pages.chatSidebar.process_released')} title={i18nT('pages.chatSidebar.process_released')}><Moon size={10} className="text-muted" /></span>}
                   {isPinned && <span className="shrink-0" role="img" aria-label={i18nT('pages.chatSidebar.pinned')} title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
-                </span>
+                </RowTrailingMeta>
               ) : null}
             </div>
             {/* One line by default: `truncate`, so every row is the same height.
@@ -1915,16 +1917,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 lands — the one marker with no state branch of its own. A row that
                 is unread with nothing said yet still renders the line, because the
                 dot IS the content then. A crew card's workers summary takes the
-                tail's place: still ONE line, below the row's own state. */}
+                tail's place (ONE line); a search's snippet stands in for the tail. */}
             {crewRoot
-              // An Ultra Mode row shows only what needs attention; the full counts
-              // are in the tooltip.
-              ? <CrewRootSummaryLine root={s.key} fallback={rowState ?? lastMessageLine} own={crewOwnState} work={s.crew_work}
-                  // What the main chat itself holds for the person: an approval, a
-                  // question, a spawn approval, or an armed loop asking (a ledger item
-                  // on the person is counted from `crew_work` already).
+              // A conductor mode row shows only what needs attention (counts in the tooltip), else the usual tail.
+              ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work} dot={unreadDot}
+                  // What the main chat itself holds for the person: an approval, a question, a
+                  // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).
                   rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
-              : (rowState ?? lastMessageLine)}
+              : <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />}
             {s.source_links && s.source_links.length > 0 && (
               <SessionSourceChips
                 slotKey={s.key}

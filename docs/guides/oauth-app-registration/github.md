@@ -80,7 +80,7 @@ have the same shape, for example
 
 ## 5. Enter the credentials in Kiro Crew
 
-1. Open the Kiro Crew dashboard and go to **Settings → OAuth Apps → GitHub card**.
+1. Open the Kiro Crew dashboard and go to **Settings → Connections → GitHub card**.
 2. Paste the value from step 1.12 into **Client ID**.
 3. Paste the generated secret into **Client secret**.
 4. Use the card's copy button for the redirect URI to double-check that GitHub holds exactly `http://127.0.0.1:48101/callback`.
@@ -92,7 +92,7 @@ GitHub's host guide warns that "end users will be able to discover your 'client 
 
 ## 6. Verify the connection
 
-1. Open **Customize → Connections**. The GitHub card should read **Connect** instead of **Needs configuration**.
+1. Open **Settings → Connections**. The GitHub card should read **Connect** instead of **Needs configuration**.
 2. Click **Connect**. A github.com page opens listing the requested scopes and, if you belong to restricted organizations, a **Request** or **Grant** control per organization.
 3. Click **Authorize**. Local installs return to the dashboard automatically; remote installs show the paste box described in section 2.
 4. The card should now read **Connected**.

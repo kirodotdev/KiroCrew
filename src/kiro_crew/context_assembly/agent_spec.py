@@ -30,10 +30,11 @@ import hashlib
 import logging
 import os
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew.context_assembly import output_contract as _output_contract
 from kiro_crew.context_assembly import sections as _sections
 
 if TYPE_CHECKING:
@@ -77,15 +78,17 @@ def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool
 #: The project half of the resources kiro-cli adds to an agent's own while a
 #: workspace inherits its defaults (``acp/skill_projection_parts/preparation.py``):
 #: the project's steering and ``AGENTS.md``, when a project is bound. The global
-#: half is ``_GLOBAL_DEFAULT_RESOURCE``. The Claude Code backend reads none of
-#: them itself.
+#: half is ``_GLOBAL_DEFAULT_RESOURCE``. A harness this load serves reads none of
+#: them from the spec. Codex reads ``AGENTS.md`` from its working directory, so
+#: the load leaves that file out there (``harness_reads_agents_md``).
 _PROJECT_DEFAULT_RESOURCES = ("file://.kiro/steering/**/*.md", "file://AGENTS.md")
 
 
 #: The global half: the operator's steering under the host ``~/.kiro``. It stays
 #: there under a relocated ``KIRO_HOME`` because the folder-steering dedup
 #: (``folder_steering._double_load_roots``) skips the host tree as delivered on
-#: this backend, and a root it skips must be the root this load reads.
+#: the harnesses this load serves, and a root it skips must be the root this load
+#: reads.
 _GLOBAL_DEFAULT_RESOURCE = "file://~/.kiro/steering/**/*.md"
 
 
@@ -109,8 +112,46 @@ def _steering_glob_anchor(pattern: str, project: Path | None) -> tuple[Path, str
     return Path(*parts[:split]), str(Path(*parts[split:]))
 
 
-def _load_steering_resources(project: str | None = None) -> str:
-    """Load steering files from the agent config's resources array.
+def _load_steering_resources(
+    project: str | None = None,
+    excluded: Collection[str] = frozenset(),
+    *,
+    harness_reads_agents_md: bool = False,
+) -> str:
+    """The steering text :func:`steering_resource_documents` keeps, joined.
+
+    *excluded* holds the resolved paths this chat switched off
+    (:mod:`kiro_crew.steering_off`); those documents are left out.
+    """
+    parts = [
+        body
+        for _path, resolved, body in steering_resource_documents(
+            project, harness_reads_agents_md=harness_reads_agents_md
+        )
+        if body is not None and str(resolved) not in excluded
+    ]
+    if parts:
+        logger.debug(
+            "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)
+        )
+    return "\n".join(parts)
+
+
+def steering_resource_documents(
+    project: str | None = None, *, harness_reads_agents_md: bool = False
+) -> list[tuple[Path, Path, str | None]]:
+    """``(path, resolved, body)`` for each document the steering load admits.
+
+    The one reader behind :func:`_load_steering_resources` and the dashboard's
+    per-chat steering list, so the two cannot disagree. *body* is ``None`` for an
+    admitted document :func:`kiro_crew.folder_steering.every_session_body` withholds.
+
+    *harness_reads_agents_md* says the harness reads ``<project>/AGENTS.md`` itself
+    from its working directory. The load then leaves that file out, whether the
+    default or the spec's own entry names it, because the harness reads it
+    whatever the spec lists, and a second copy only doubles its tokens.
+
+    Loads steering files from the agent config's resources array.
 
     kiro-cli injects these automatically for its sessions; the dashboard
     must do it explicitly so that dashboard chat sessions also benefit
@@ -126,12 +167,13 @@ def _load_steering_resources(project: str | None = None) -> str:
     only itself.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.file_uri import file_uri_path_text
     from kiro_crew.folder_steering import every_session_body
 
     try:
         cfg_path = ctx.kiro_agents_dir() / "kirocrew.json"
         if not cfg_path.exists():
-            return ""
+            return []
         # The agents dir is user-writable and shared with other tools, so the
         # spec goes through the hardened agent-spec reader. ``safe_read_file``
         # screens the resolved target but reads it with an unbounded
@@ -149,7 +191,7 @@ def _load_steering_resources(project: str | None = None) -> str:
             source="unknown",
         )
         if cfg is None:
-            return ""
+            return []
         declared = cfg.get("resources", [])
         project_root = Path(project).expanduser() if project else None
         resources = [
@@ -157,16 +199,23 @@ def _load_steering_resources(project: str | None = None) -> str:
             _GLOBAL_DEFAULT_RESOURCE,
             *(_PROJECT_DEFAULT_RESOURCES if project_root is not None else ()),
         ]
+        # Matched by resolved path, as the de-duplication below is: an entry
+        # that reaches the same file another way is the same file.
+        read_by_harness = (
+            {(project_root / "AGENTS.md").resolve()}
+            if harness_reads_agents_md and project_root is not None
+            else set()
+        )
     except Exception as exc:
         logger.debug("steering load failed: %s", type(exc).__name__)
-        return ""
-    parts: list[str] = []
-    seen: set[Path] = set()
+        return []
+    documents: list[tuple[Path, Path, str | None]] = []
+    seen: set[Path] = set(read_by_harness)
     for res in resources:
         if not isinstance(res, str) or not res.startswith("file://"):
             continue
         try:
-            anchor, pattern = _steering_glob_anchor(res.removeprefix("file://"), project_root)
+            anchor, pattern = _steering_glob_anchor(file_uri_path_text(res), project_root)
             hits = sorted(anchor.glob(pattern))
         except Exception as exc:
             # pathlib refuses some patterns outright; skip this entry only.
@@ -184,13 +233,8 @@ def _load_steering_resources(project: str | None = None) -> str:
                 logger.debug("steering document skipped: %s", type(exc).__name__)
                 continue
             seen.add(resolved)
-            if body is not None:
-                parts.append(body)
-    if parts:
-        logger.debug(
-            "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)
-        )
-    return "\n".join(parts)
+            documents.append((p, resolved, body))
+    return documents
 
 
 def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
@@ -563,10 +607,9 @@ def _load_agent_prompt(
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
-    from kiro_crew.member_essential_context import (
-        read_template_spec,
-        resolve_relative_prompt_path,
-    )
+    from kiro_crew.agent_sdk.agent_specs import spec_prompt
+    from kiro_crew.file_uri import file_uri_path_text
+    from kiro_crew.member_essential_context import read_template_spec
 
     try:
         if spec_path is not None:
@@ -583,7 +626,7 @@ def _load_agent_prompt(
         path, data = resolved
         if data is None:
             return ""
-        prompt = data.get("prompt") or ""
+        prompt = spec_prompt(data) or ""
         if not isinstance(prompt, str):
             return ""
         # The managed contract resolves to the contract file for EVERY spec
@@ -599,21 +642,82 @@ def _load_agent_prompt(
         if agent == owner_template:
             return ""
         if prompt.startswith("file://"):
-            source = Path(prompt[7:]).expanduser()
-            if not source.is_absolute():
-                resolved_source = resolve_relative_prompt_path(source, path, project)
-                if resolved_source is None:
-                    return ""
-                source, root = resolved_source
-                prompt_bytes = ctx.safe_read_file_bytes_nolink(str(source), within_root=str(root))
-                if prompt_bytes is None:
-                    logger.debug("Skipping relative agent prompt rejected at read time")
-                    return ""
-                return prompt_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            return ctx.safe_read_file(str(source))
+            return _read_agent_prompt_file(agent, file_uri_path_text(prompt), path, project)
         return prompt
     except (OSError, ValueError, ctx.FileTooLargeError):
         return ""
+
+
+def _is_checkout_spec(spec_path: Path, project: str | None) -> bool:
+    """Whether *spec_path* is a project checkout's spec (``<project>/.kiro/agents``).
+
+    The same test ``resolve_relative_prompt_path`` uses to pick the project root
+    as the containment root. A path that cannot be resolved counts as a checkout,
+    so the stricter rule applies.
+    """
+    if not project:
+        return False
+    from kiro_crew.config.paths import project_agents_dir
+
+    try:
+        return spec_path.parent.resolve() == project_agents_dir(Path(project).resolve()).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
+def _read_agent_prompt_file(agent: str, ref: str, spec_path: Path, project: str | None) -> str:
+    """The text of a custom agent's ``file://`` prompt *ref*, or "" with a WARNING naming it.
+
+    *ref* is expanded as KAS expands it (``$VAR``, ``~``:
+    :func:`kiro_crew.agent_sdk.agent_specs.expand_prompt_ref`). A relative path stays
+    inside its template root (``resolve_relative_prompt_path``). Relative or
+    absolute, the resolved path must pass KAS's prompt-path check
+    (:func:`kiro_crew.agent_sdk.agent_specs.is_unsafe_prompt_path`), since the
+    text is sent to the model. A project checkout's spec is held to its project
+    root for an expanded or absolute path too: the path is resolved (symlinks
+    followed) and read only when it stays inside that root
+    (:func:`_is_checkout_spec`). A file that is missing, refused, unreadable or
+    empty degrades to "" (the session runs without the persona) and is named in
+    one WARNING, so the operator can see why.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_sdk.agent_specs import expand_prompt_ref, is_unsafe_prompt_path
+    from kiro_crew.member_essential_context import resolve_relative_prompt_path
+
+    def _unread(name: object, why: str) -> str:
+        logger.warning(
+            "Agent %s's prompt file %r is %s, so this session runs without that prompt",
+            agent,
+            str(name),
+            why,
+        )
+        return ""
+
+    try:
+        source = expand_prompt_ref(ref)
+        if source.is_absolute() and not _is_checkout_spec(spec_path, project):
+            source = source.resolve()
+            if is_unsafe_prompt_path(source):
+                return _unread(source, "not an allowed location")
+            text = ctx.safe_read_file(str(source))
+        else:
+            # An absolute *source* replaces the anchor in this join, so the same
+            # resolve-then-contain check holds a checkout's expanded path to its root.
+            resolved_source = resolve_relative_prompt_path(source, spec_path, project)
+            if resolved_source is None:
+                return _unread(ref, "outside the agent's folder")
+            source, root = resolved_source
+            if is_unsafe_prompt_path(source.resolve()):
+                return _unread(source, "not an allowed location")
+            prompt_bytes = ctx.safe_read_file_bytes_nolink(str(source), within_root=str(root))
+            if prompt_bytes is None:
+                return _unread(source, "refused at read time")
+            text = prompt_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, RuntimeError, ValueError, ctx.FileTooLargeError) as exc:
+        return _unread(ref, f"unreadable ({type(exc).__name__})")
+    if not text.strip():
+        return _unread(source, "empty")
+    return text
 
 
 def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> str:
@@ -634,8 +738,8 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     """
     from kiro_crew.mate_worker import (
         MATE_WORKER_AGENT,
-        MATE_WORKER_PROMPT,
         WorkerKitUnreadable,
+        mate_worker_prompt,
         worker_prompt_in_context_block,
         worker_session_spec,
     )
@@ -644,7 +748,7 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
         return base_prompt
     if not worker_prompt_in_context_block(session_key):
         return base_prompt
-    worker_base = f"{base_prompt.rstrip()}\n\n{MATE_WORKER_PROMPT}"
+    worker_base = f"{base_prompt.rstrip()}\n\n{mate_worker_prompt()}"
     from kiro_crew.agent_sdk.agent_specs import AgentSpecUnreadable
     from kiro_crew.mate_config_migration import _worker_base
 
@@ -711,8 +815,51 @@ def _resolve_agent_prompt(
         pp = ctx._prompt_path()
         logger.debug("Prompt selection: mode=%r → %s", mode, pp)
         agent_prompt = _read_prompt_file(pp)
+    key = session_key or ""
+    # Any host-derived token in this prompt must be snapshotted per session:
+    # the contract block is asserted byte-identical across a session's
+    # renders, so a token resolved live on each render cannot hold it. The
+    # ``browser`` tool is mounted whatever this reads and re-checks at each
+    # call, so a session start is the only reading the section needs.
+    return _render_contract(
+        agent,
+        agent_prompt,
+        session_key,
+        cap_figure=lambda: self._session_cap_figure(key, refresh=session_start),
+        computer_use=lambda: self._session_computer_use_gate(key, refresh=session_start),
+        browser=lambda: self._session_reading(
+            self._browser_gates,
+            self._browser_gates_lock,
+            key,
+            _live_browser_gate,
+            refresh=session_start,
+        ),
+        substitute_bot_name=self._substitute_bot_name,
+    )
+
+
+def _render_contract(
+    agent: str | None,
+    agent_prompt: str,
+    session_key: str | None,
+    *,
+    cap_figure: Callable[[], str],
+    computer_use: Callable[[], bool],
+    browser: Callable[[], bool],
+    substitute_bot_name: Callable[[str], str],
+) -> str:
+    """The ``[AGENT SYSTEM PROMPT]`` text for *agent_prompt*, the agent's raw contract.
+
+    The one renderer of the block: the builder passes its per-session readings of
+    the host-derived tokens, and the session head
+    (:mod:`kiro_crew.session_head`) passes live ones, so the two
+    agree byte for byte whenever the readings do. Each reading is taken only when
+    its token is in the prompt.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.crew_mode import CONDUCTOR_TEMPLATES
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
+    from kiro_crew.members import is_member_session_key
 
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
@@ -724,10 +871,22 @@ def _resolve_agent_prompt(
     # A crewmate's conductor dispatches to worker sessions and mounts no spawn
     # tools, so it gets its own delegation rule where the sub-agent span was.
     # Resolved before the capacity token below, which sits inside that span.
+    # A session without a member key never gets the session tools, so outside its
+    # own thread it is told to do the work itself. The key never changes within
+    # a session, so every render of the block agrees.
     if _sections.SUBAGENTS_BEGIN in agent_prompt or _sections.SUBAGENTS_END in agent_prompt:
         agent_prompt = _sections.subagent_section(
-            agent_prompt, conductor=agent == MATE_CONDUCTOR_AGENT
+            agent_prompt,
+            conductor=agent == MATE_CONDUCTOR_AGENT,
+            own_thread=is_member_session_key(session_key),
         )
+    # The Bot conductor's spec prompt is the shared stub, so its ask policy (the
+    # shared core and conductor tail, the same constants Conductor mode carries)
+    # rides here at agent rank. After any user prompt.md is read, so a custom
+    # charter keeps it too.
+    if agent == MATE_CONDUCTOR_AGENT:
+        ask = _output_contract.ASK_CORE + _output_contract.CONDUCTOR_ASK_TAIL
+        agent_prompt = f"{agent_prompt}\n\n{ask}" if agent_prompt else ask
     # Every shipped conductor talks to a person in the dashboard chat, so it gets
     # the widget pointer here, not as a token in its spec: kiro-cli loads that
     # spec prompt natively and a crewmate's essentials deliver it verbatim, and
@@ -737,37 +896,15 @@ def _resolve_agent_prompt(
         agent_prompt = f"{agent_prompt}\n\n{_WIDGET_TOKEN}" if agent_prompt else _WIDGET_TOKEN
     if not agent_prompt:
         return ""
-    # Any host-derived token in this prompt must be snapshotted per session:
-    # the contract block is asserted byte-identical across a session's
-    # renders, so a token resolved live on each render cannot hold it.
-    cap_figure = (
-        self._session_cap_figure(session_key or "", refresh=session_start)
-        if self._MAX_SUBAGENTS_TOKEN in agent_prompt
-        else ""
-    )
-    computer_use = (
-        self._session_computer_use_gate(session_key or "", refresh=session_start)
-        if self._COMPUTER_USE_TOKEN in agent_prompt
-        else None
-    )
-    # The ``browser`` tool is mounted whatever this reads and re-checks at each
-    # call, so a session start is the only reading the section needs.
-    browser = (
-        self._session_reading(
-            self._browser_gates,
-            self._browser_gates_lock,
-            session_key or "",
-            _live_browser_gate,
-            refresh=session_start,
-        )
-        if _sections.BROWSER_BEGIN in agent_prompt
-        else None
-    )
-    agent_prompt = self._resolve_prompt_templates(
-        agent_prompt, session_key or "", cap_figure, computer_use=computer_use, browser=browser
+    builder = ctx.ContextBuilder
+    figure = cap_figure() if builder._MAX_SUBAGENTS_TOKEN in agent_prompt else ""
+    mounted = computer_use() if builder._COMPUTER_USE_TOKEN in agent_prompt else None
+    available = browser() if _sections.BROWSER_BEGIN in agent_prompt else None
+    agent_prompt = builder._resolve_prompt_templates(
+        agent_prompt, session_key or "", figure, computer_use=mounted, browser=available
     )
     # Off the dashboard the pointer resolves to nothing, which leaves a prompt
     # that held only the pointer empty: no block rather than a blank one.
     if not agent_prompt.strip():
         return ""
-    return self._substitute_bot_name(agent_prompt)
+    return substitute_bot_name(agent_prompt)

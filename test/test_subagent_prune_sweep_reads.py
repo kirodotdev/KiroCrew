@@ -17,14 +17,16 @@ import kiro_crew.subagent_persistence as sp
 import kiro_crew.subagent_persistence_layout as layout
 
 _AGENTS = 3
+# A provider the sweep has no cleanup route for, so its "cannot reclaim yet" is remembered.
+_NO_ROUTE = "kas"
 
 
-def _seed_prunable(agent_id: str, *, died: float = 1) -> None:
+def _seed_prunable(agent_id: str, *, died: float = 1, provider: str = "acp") -> None:
     """A delivered run past its window, with one protected cleanup generation."""
     sp.create_agent_folder(agent_id, task=agent_id)
-    sp.update_state(agent_id, session_id=f"sid-{agent_id}", provider="acp", keep=False)
+    sp.update_state(agent_id, session_id=f"sid-{agent_id}", provider=provider, keep=False)
     sp.remember_live_cleanup_identity(
-        agent_id, session_id=f"sid-{agent_id}", provider="acp", keep=False
+        agent_id, session_id=f"sid-{agent_id}", provider=provider, keep=False
     )
     sp.write_tombstone(agent_id, cause="delivered", recovery_action="none")
     ts_path = sp._agent_dir(agent_id) / "tombstone.json"
@@ -92,14 +94,16 @@ class TestPruneSweepReadCounts:
         per_agent = {p.name: n for p, n in restricted.items() if p.parent == records_root}
         assert per_agent == {agent_id: per_lockdown for agent_id in agent_ids}
 
-    def test_a_second_sweep_reads_the_records_again(self) -> None:
-        # Nothing carries over between sweeps: a corrupted record seen by the
-        # second sweep must stop that sweep, whatever the first one read.
+    def test_a_second_sweep_reads_a_changed_record_again(self) -> None:
+        # A verdict carries over between sweeps only while the files it was read
+        # from are unchanged. The provider here has no cleanup route, so the first
+        # sweep does remember "cannot reclaim yet"; a corrupted record seen by the
+        # second sweep must still be read, and must stop that sweep.
         # flake-ok: back-dated a second on the live clock, inside the retry window
-        _seed_prunable("kept-across-sweeps", died=time.time() - 1)
+        _seed_prunable("kept-across-sweeps", died=time.time() - 1, provider=_NO_ROUTE)
         _forget_live_identities()
-        with patch.object(sp, "_cleanup_session_files_sync", return_value=False):
-            assert sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 0
+        assert sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 0
+        assert "kept-across-sweeps" in sp._UNRECLAIMABLE_MEMO, "the first verdict was not kept"
         record = sp._cleanup_identities_path("kept-across-sweeps")
         record.write_text(json.dumps({"identities": [{"session_id": ""}]}))
 
@@ -108,6 +112,42 @@ class TestPruneSweepReadCounts:
 
         cleanup.assert_not_called()
         assert sp._agent_dir("kept-across-sweeps").exists()
+        assert "kept-across-sweeps" not in sp._UNRECLAIMABLE_MEMO, "a refused record was kept"
+
+    def test_a_second_sweep_does_not_read_an_unchanged_record(self) -> None:
+        # The other half of the same rule: nothing changed, so nothing is read again.
+        # flake-ok: back-dated a second on the live clock, inside the retry window
+        _seed_prunable("unchanged-across-sweeps", died=time.time() - 1, provider=_NO_ROUTE)
+        _forget_live_identities()
+        assert sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 0
+
+        record_reads: Counter[str] = Counter()
+        real_read_text = Path.read_text
+
+        def counting_read_text(path: Path, *args: object, **kwargs: object) -> str:
+            if path.name == sp._CLEANUP_IDENTITIES_FILE:
+                record_reads[path.parent.name] += 1
+            return real_read_text(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", counting_read_text):
+            assert sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 0
+
+        assert record_reads == {}
+        assert sp._agent_dir("unchanged-across-sweeps").exists()
+
+    def test_a_restarted_process_remembers_nothing(self) -> None:
+        # The verdicts live in process memory only: what a new process starts with
+        # is an empty table, so its first sweep evaluates every run in full.
+        # flake-ok: back-dated a second on the live clock, inside the retry window
+        _seed_prunable("across-a-restart", died=time.time() - 1, provider=_NO_ROUTE)
+        _forget_live_identities()
+        assert sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 0
+        sp._UNRECLAIMABLE_MEMO.clear()  # what a restart leaves
+
+        with patch.object(sp, "_cleanup_session_files_sync", return_value=False) as cleanup:
+            assert sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0) == 0
+
+        cleanup.assert_called_once_with("sid-across-a-restart", _NO_ROUTE, cwd="")
 
 
 class TestPruneSweepFailsClosed:

@@ -134,16 +134,19 @@ const ADVANCED_CUT = { duration: 0 } as const
  * it, so the chevron turns from pointing down to pointing up while they are
  * open. Under reduced motion the chevron turns without animating.
  */
-function AdvancedSettingsToggle({ open, onToggle, label }: {
+function AdvancedSettingsToggle({ open, onToggle, label, disabled }: {
   open: boolean
   onToggle: () => void
   label: string
+  /** Locked while the create is out, like the fields it unfolds. */
+  disabled?: boolean
 }) {
   const reduceMotion = useReducedMotion()
   return (
     <Btn
       type="button"
       onClick={onToggle}
+      disabled={disabled}
       aria-expanded={open}
       aria-controls={ADVANCED_ID}
       className={SUBTLE_TEXT_BUTTON}
@@ -828,13 +831,17 @@ export default function NewCrewmateDialog({
       data-testid="crewmate-create-form"
       onSubmit={(e) => { e.preventDefault(); if (!busy) submit() }}
     >
-      {/* One lock for the whole form while the POST is in flight: a
-          disabled fieldset disables every control under it -- the look
-          tile, Create and the editor's own fields, which take
-          no `disabled` prop of their own -- so an edit cannot land after
-          the body was sent and vanish when success closes the dialog. */}
+      {/* The whole-panel lock while the nested New workspace dialog is open:
+          focus is in that layer, not here, so disabling every control under
+          this fieldset is safe (the panel is already `inert` then, see the
+          Modal's `interactionDisabled`). The POST-in-flight lock is NOT here:
+          a `disabled` fieldset natively disables the control the reader just
+          pressed and blurs it to <body>. While busy the look tile and the
+          editor's own fields -- which take no `disabled` prop -- are held by
+          the nested fieldset below, and Name and Create, the two controls a
+          create can start from, are held focusable with `aria-disabled`. */}
       <fieldset
-        disabled={busy || wsModalOpen}
+        disabled={wsModalOpen}
         aria-busy={busy || undefined}
         className="contents min-w-0 m-0 p-0 border-0"
         data-testid="crewmate-create-fieldset"
@@ -873,7 +880,14 @@ export default function NewCrewmateDialog({
             // base `border-border` whatever order the stylesheet emits them in.
             className="aria-invalid:border-danger"
             autoFocus
-            disabled={busy}
+            // While the POST is out the field is held, not disabled: a native
+            // `disabled` on the control a reader pressed Enter in blurs it to
+            // <body>, outside the dialog, so they lose their place until the
+            // create answers. `readOnly` refuses every edit while keeping the
+            // field focusable, and `aria-disabled` announces it unavailable.
+            // The `wsModalOpen` inert lock stays with the fieldset below.
+            readOnly={busy}
+            aria-disabled={busy || undefined}
           />
         </div>
         {/* A refusal, not a field hint: it reads in the error tone and the
@@ -939,6 +953,7 @@ export default function NewCrewmateDialog({
             open={advanced}
             onToggle={() => setAdvanced((v) => !v)}
             label={t('pages.membersPage.create_advanced_settings')}
+            disabled={busy}
           />
         </div>
         {/* The fields grow out of the card directly under the toggle
@@ -956,6 +971,16 @@ export default function NewCrewmateDialog({
               exit={reduceMotion ? { ...ADVANCED_FOLD, transition: ADVANCED_CUT } : ADVANCED_FOLD}
               data-testid="crewmate-create-advanced"
             >
+              {/* Each Advanced field is locked individually while the create
+                  is out, because a create can start from more than Name and
+                  Create: Enter in any text field here (Job, Triggers, the hex
+                  colour) implicitly submits the form, so a native `disabled`
+                  on one of them would blur it to <body>. The text fields are
+                  held focusable with `readOnly` + `aria-disabled`; the
+                  non-text controls (the workspace and model selects, the
+                  colour swatches and picker) cannot submit, so they keep a
+                  native lock. A single disabled fieldset here would re-disable
+                  the text fields, so there is none. */}
               <div className="flex flex-col gap-4 pt-4">
                 <Field
                   label={`${t('pages.membersPage.create_job')} · ${t('pages.membersPage.create_optional')}`}
@@ -966,7 +991,8 @@ export default function NewCrewmateDialog({
                     onChange={(e) => setJob(e.target.value)}
                     aria-label={t('pages.membersPage.create_job')}
                     placeholder={t('pages.membersPage.create_job_placeholder')}
-                    disabled={busy}
+                    readOnly={busy}
+                    aria-disabled={busy || undefined}
                   />
                 </Field>
                 <WorkspaceField
@@ -977,15 +1003,17 @@ export default function NewCrewmateDialog({
                   value={workspace}
                   onChange={setWorkspace}
                   onNewWorkspace={openWsModal}
+                  disabled={busy}
                 />
                 <ModelField
                   options={modelOptions}
                   value={model}
                   onChange={setModel}
                   hint={t('pages.kiroCrewAgentsPage.model_inherited_from_default')}
+                  disabled={busy}
                 />
-                <TriggersField value={triggers} onChange={setTriggers} subject="member" />
-                <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" />
+                <TriggersField value={triggers} onChange={setTriggers} subject="member" busy={busy} />
+                <SessionColorField value={sessionColor} onChange={setSessionColor} subject="member" busy={busy} />
               </div>
             </motion.div>
           )}
@@ -1000,7 +1028,16 @@ export default function NewCrewmateDialog({
           submit button (Enter in the Name field submits through it) and the
           fieldset's lock covers it. 44px tall on a phone. */}
       <div className="sticky -bottom-4 z-10 -mx-5 -mb-4 mt-4 border-t border-border bg-card px-5 py-3" data-testid="crewmate-create-footer">
-        <Btn primary type="submit" disabled={busy || wsModalOpen} className="min-h-11 w-full justify-center sm:min-h-9" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
+        {/* While the POST is out Create is HELD, not `disabled`: a native
+            `disabled` on the button a reader just pressed blurs it to <body>,
+            outside the dialog. `aria-disabled` announces it unavailable and
+            `aria-busy` that a request is running, while the button stays
+            focusable; the form's `onSubmit` guard (`if (!busy)`) is what
+            refuses a second submit. The `aria-disabled:` classes mirror the
+            `disabled:` look so the held button is pixel-for-pixel the same.
+            `wsModalOpen` keeps its native lock: the panel is inert then and
+            focus is in the nested dialog, so nothing here is focused. */}
+        <Btn primary type="submit" disabled={wsModalOpen} aria-disabled={busy || undefined} aria-busy={busy || undefined} className="min-h-11 w-full justify-center sm:min-h-9 aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none aria-disabled:active:scale-100" data-testid="crewmate-create-submit" data-guide-anchor={guided ? GUIDE_ANCHORS.crewmateCreate : undefined}>
           {busy ? t('pages.membersPage.create_submitting') : t('pages.membersPage.create_submit')}
         </Btn>
       </div>

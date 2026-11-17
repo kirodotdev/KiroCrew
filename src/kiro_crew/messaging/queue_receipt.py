@@ -168,7 +168,9 @@ class QueueReceipt:
     """The single, in-place receipt bubble tracking messages queued mid-turn.
 
     ``msg_id`` is opaque (``Any``): Telegram ids are ints, Discord's strings, and
-    the id is only ever handed back to the surface that produced it.
+    the id is only ever handed back to the surface that produced it. ``None`` means the
+    ``send_receipt`` was refused: there is no bubble, nothing is written to the entry,
+    and it holds its lines only so the next message's bubble lists them.
 
     One entry serves a whole session key, which can span several conversations
     (``messaging.dm_scope = "unified"`` DMs, or a ``space:{room_id}`` group space),
@@ -188,8 +190,9 @@ class QueueReceipt:
     """
 
     msg_id: Any
-    #: The surface the bubble was OPENED on -- the one conversation ``msg_id`` is
-    #: valid in, and the only surface an owed record is written or posted through.
+    #: The surface the bubble was OPENED on (or refused on, with no ``msg_id``) -- the
+    #: one conversation ``msg_id`` is valid in, and the only surface an owed record is
+    #: written or posted through.
     #: ``None`` only for an entry built without one, which is written to not at all
     #: rather than through some caller's surface.
     opened_on: ReceiptSurface | None = None
@@ -316,8 +319,9 @@ class QueueReceipt:
         """Drop *owner*'s answered lines here, keeping their *still_queued* NEWEST.
 
         Keeps the newest rather than dropping "as many as were answered": not every
-        queued message opens a line (a refused send, or arrival while the entry owes a
-        record), so a positional count would erase a still-queued message's only handle.
+        queued message keeps a line (one arriving while the entry owes a record, or a
+        never-sent entry's line replaced by a message from another address), so a
+        positional count would erase a still-queued message's only handle.
         The drain takes from the front and re-enqueues the rest, so what is still queued
         is the principal's LATEST; with fewer lines than *still_queued*, none is dropped
         (a line left listed is re-rendered as queued; a removed one is gone).
@@ -422,10 +426,11 @@ class ReceiptQueue:
         """Whether a LIVE receipt exists for this session.
 
         An entry still owing a record is terminal, not live: it cannot be grown, and
-        the next mid-turn message opens a fresh bubble rather than joining it.
+        the next mid-turn message opens a fresh bubble rather than joining it. An entry
+        whose ``send_receipt`` was refused has no bubble at all.
         """
         receipt = self._receipts.get(session_key)
-        return receipt is not None and not receipt.owes_record
+        return receipt is not None and receipt.msg_id is not None and not receipt.owes_record
 
     async def create_or_grow_locked(
         self,
@@ -463,17 +468,21 @@ class ReceiptQueue:
                 # from what it dequeued. The line is NOT retained: no path reads a
                 # terminal entry's lines, and keeping them would grow without bound.
                 return
-        if receipt is None:
+        if receipt is None or receipt.msg_id is None:
             if not surface.address_key:
                 # No address, so no bubble: a guessed conversation for ``msg_id`` could
-                # rewrite a stranger's message. Same outcome as a refused ``send_receipt``.
+                # rewrite a stranger's message.
                 logger.debug("%s: queue receipt skipped, surface has no address", surface.label)
                 return
-            msg_id = await surface.send_receipt(receipt_text([display_text]))
-            if msg_id is not None:
-                self._receipts[session_key] = QueueReceipt(
-                    msg_id=msg_id, opened_on=surface, lines=[line]
-                )
+            # A refused send left its lines with no bubble: this bubble lists them too.
+            held = receipt.lines if receipt is not None and receipt.addressed_by(surface) else []
+            lines = [*held, line]
+            msg_id = await surface.send_receipt(receipt_text([each.text for each in lines]))
+            # Kept even when refused (no ``msg_id``, never written to), so the next
+            # message's bubble still counts this one.
+            self._receipts[session_key] = QueueReceipt(
+                msg_id=msg_id, opened_on=surface, lines=lines
+            )
             return
         receipt.lines.append(line)
         if not receipt.addressed_by(surface):
@@ -563,6 +572,12 @@ class ReceiptQueue:
             return
         # ``deferred``, NOT ``len(answered)``: not every queued message opened a line.
         receipt.drop_answered(owner, deferred)
+        if receipt.msg_id is None:
+            # Its ``send_receipt`` was refused, so there is no bubble to write: only the
+            # lines still queued stay, for the next bubble to list.
+            if receipt.lines:
+                self._receipts[session_key] = receipt
+            return
         if receipt.others_at_address(owner):
             # A PARTIAL drain (ordinary in a group space): another principal's message is
             # still queued and this entry is its only handle. "Now answering" would say
@@ -623,10 +638,11 @@ class ReceiptQueue:
                 # rendered on it, so it owes them nothing.
                 return
             self._receipts.pop(session_key, None)
-            if receipt.addressed_by(surface):
+            if receipt.msg_id is not None and receipt.addressed_by(surface):
                 # Safe to render the withdrawn lines here: a line records the address it
                 # ARRIVED at, this caller's lines arrived on this caller's surface, and
-                # the test just established that surface is the bubble's own.
+                # the test just established that surface is the bubble's own. A refused
+                # ``send_receipt`` left no bubble, so there is nothing to finalize.
                 body = receipt_text(withdrawn, cancelled=True)
                 if not await self._edit(surface, receipt.msg_id, body):
                     await self._owe_record(session_key, receipt, body)
@@ -641,7 +657,7 @@ class ReceiptQueue:
         # is written rather than skipped. Rendered from this address's own lines: the
         # clear spans every conversation on the key, and the bubble is only one of them.
         target = receipt.opened_on
-        if target is None:
+        if target is None or receipt.msg_id is None:
             return
         body = receipt_text(receipt.texts_at_address(), cancelled=True)
         if not await self._edit(target, receipt.msg_id, body):

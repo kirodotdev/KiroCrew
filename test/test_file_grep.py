@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
+import sys
 import threading
 import time
 import zipfile
@@ -34,10 +34,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from file_grep_helpers import _rg_spawn
 from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew.dashboard.handlers import api_file_grep
 from kiro_crew.dashboard.handlers import files as f
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 #: Skips the ripgrep half of a parity pair on a host without the binary.
 #:
@@ -65,6 +67,14 @@ def _require_rg_engine() -> None:
     """
     if f._grep_rg_executable() is None:
         pytest.skip("no ripgrep this endpoint may run (refused for its provenance)")
+
+
+def _pin_rg_on_path(monkeypatch) -> None:
+    """Run the ripgrep on ``PATH`` whoever owns it: the subject is the rg ENGINE's answer,
+    and who owns the binary is the host's (provenance has tests of its own)."""
+    found = shutil.which("rg")
+    assert found is not None, "requires_rg guards this test"
+    monkeypatch.setattr(f, "_grep_rg_executable", lambda: found)
 
 
 def _make_app() -> web.Application:
@@ -296,7 +306,8 @@ class TestEngines:
 
     @pytest.mark.asyncio
     @requires_rg
-    async def test_ripgrep_reports_the_same_shape(self, tree):
+    async def test_ripgrep_reports_the_same_shape(self, tree, monkeypatch):
+        _pin_rg_on_path(monkeypatch)
         payload = await _grep(tree, "needle")
         assert payload["engine"] == "rg"
         hit = next(r for r in payload["results"] if r["file"].endswith("alpha.py"))
@@ -311,6 +322,7 @@ class TestEngines:
         ripgrep must not get a different search, so the two engines are compared
         against EACH OTHER on one tree rather than each against its own
         expectations."""
+        _pin_rg_on_path(monkeypatch)
         with_rg = await _grep(tree, "needle")
         monkeypatch.setattr(f, "_grep_rg_executable", lambda: None)
         without_rg = await _grep(tree, "needle")
@@ -639,7 +651,8 @@ class TestDocumentPass:
 
     @pytest.mark.asyncio
     async def test_a_workbook_reports_its_sheet_and_row(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         root = tmp_path / "sheets"
         root.mkdir()
         book = openpyxl.Workbook()
@@ -658,7 +671,6 @@ class TestDocumentPass:
     ):
         """openpyxl opens the container itself, so without the inventory vet a
         crafted workbook reaches the XML parser on its extension alone."""
-        pytest.importorskip("openpyxl")
         path = tmp_path / "bomb.xlsx"
         with zipfile.ZipFile(path, "w") as zf:
             zf.writestr("xl/workbook.xml", "<workbook/>")
@@ -683,93 +695,6 @@ class TestDocumentPass:
         root.mkdir()
         _write_docx(root / "street.docx", ["Straße"])
         assert _files(await _grep(root, "strasse")) == set()
-
-
-def _rg_spawn(
-    monkeypatch, *, lines=(), returncode=0, wait_raises=False, patch_wrap=True, made=None
-):
-    """Point `_grep_rg` at a fake streaming child.
-
-    `_grep_rg` reads `proc.stdout` line by line, so the fake's stdout is any
-    iterable of record lines -- including an endless generator, which is how the
-    cap is tested without materializing anything.
-    """
-    if patch_wrap:
-        monkeypatch.setattr(f, "_grep_rg_executable", lambda: "/usr/bin/rg")
-        monkeypatch.setattr(f, "wrap_argv", lambda cmd: (cmd, None))
-        monkeypatch.setattr(f, "cgroup_scope_argv", lambda cmd: cmd)
-
-    class _Pipe:
-        """Iterable like a text pipe, and closable like one."""
-
-        def __init__(self, source):
-            self._it = iter(source)
-            self.closed = False
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            if self.closed:
-                raise StopIteration
-            return next(self._it)
-
-        def close(self):
-            self.closed = True
-
-    class _Stdin:
-        """Records what the pattern channel was handed.
-
-        Not a `StringIO`: the code under test CLOSES stdin so rg sees EOF and
-        starts searching, and a closed `StringIO` refuses `getvalue()`. The
-        recorded text has to outlive the close for a test to read it.
-        """
-
-        def __init__(self):
-            self.written = ""
-            self.closed = False
-
-        def write(self, text):
-            self.written += text
-            return len(text)
-
-        def close(self):
-            self.closed = True
-
-    class _Proc:
-        pid = 4242
-
-        def __init__(self):
-            self.stdout = _Pipe(lines)
-            # The pattern is handed over stdin, so the fake has to accept it --
-            # and record it, which is how the "never in the argv" test proves the
-            # query still reaches the child.
-            self.stdin = _Stdin()
-            self._reaped = False
-
-        def poll(self):
-            # None means "still running", which is what makes teardown kill it.
-            return None if not self._reaped else returncode
-
-        def wait(self, timeout=None):
-            if wait_raises and not self._reaped:
-                self._reaped = True
-                raise subprocess.TimeoutExpired(cmd="rg", timeout=timeout or 1.0)
-            self._reaped = True
-            return returncode
-
-    def _spawn(argv, **kw):
-        proc = _Proc()
-        if made is not None:
-            made.append(proc)
-        return proc
-
-    monkeypatch.setattr(f, "popen_limited", _spawn)
-    # Every path that stops the child early goes through this, so the helper owns
-    # it rather than each test remembering: the fake pid is not a real process.
-    killed: list[int] = []
-    monkeypatch.setattr(f.platform_compat, "kill_process_tree", lambda pid: killed.append(pid))
-    return killed
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -797,11 +722,11 @@ class TestPreviewRedaction:
         root = tmp_path / "secrets"
         root.mkdir()
         (root / "settings.py").write_text(
-            'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # deploy key\n', encoding="utf-8"
+            'AWS_KEY = "' + SAMPLE_SLACK_BOT_TOKEN + '"  # deploy key\n', encoding="utf-8"
         )
         payload = await _grep(root, "deploy key")
         preview = payload["results"][0]["preview"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in preview
+        assert SAMPLE_SLACK_BOT_TOKEN not in preview
         assert "deploy key" in preview  # the match itself still reads
 
     @pytest.mark.asyncio
@@ -813,19 +738,19 @@ class TestPreviewRedaction:
         root.mkdir()
         _write_docx(
             root / "runbook.docx",
-            ["the WIDGET rotation", "token AKIAIOSFODNN7EXAMPLE is the WIDGET key"],
+            ["the WIDGET rotation", f"token {SAMPLE_SLACK_BOT_TOKEN} is the WIDGET key"],
         )
         payload = await _grep(root, "WIDGET key")
         preview = payload["results"][0]["preview"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in preview
+        assert SAMPLE_SLACK_BOT_TOKEN not in preview
 
     def test_a_credential_in_the_PATH_is_redacted(self):
         """A path segment can itself be credential-shaped -- a directory or filename
         holding a token -- and this row is an egress boundary for a file the user never
         asked for by name. The listings in this module already redact the paths they
         return; a search result is no different."""
-        hit = f._grep_hit("/repo/AKIAIOSFODNN7EXAMPLE/notes.txt", 3, "nothing secret here")
-        assert "AKIA" not in hit["file"]
+        hit = f._grep_hit(f"/repo/{SAMPLE_SLACK_BOT_TOKEN}/notes.txt", 3, "nothing secret here")
+        assert "xoxb" not in hit["file"]
         # The clean segments survive, so the row still says where it is.
         assert "notes.txt" in hit["file"]
 
@@ -841,7 +766,7 @@ class TestPreviewRedaction:
         flagged one per round -- preview, then label, then path -- because each fix
         covered the field that was named. This asserts over the row's strings, so a
         field added later without redaction fails here rather than in a review."""
-        planted = "AKIAIOSFODNN7EXAMPLE"
+        planted = SAMPLE_SLACK_BOT_TOKEN
         hit = f._grep_hit(
             f"/repo/{planted}/notes.txt",
             0,
@@ -855,8 +780,8 @@ class TestPreviewRedaction:
         """A label is document CONTENT, not a shape this endpoint chose -- a workbook's
         is its sheet title, which an author picks. It reaches the response and the audit
         resource string, so leaving it raw published whatever the title said."""
-        hit = f._grep_hit("/r/budget.xlsx", 0, "totals", label="AKIAIOSFODNN7EXAMPLE row 12")
-        assert "AKIA" not in hit["label"]
+        hit = f._grep_hit("/r/budget.xlsx", 0, "totals", label=f"{SAMPLE_SLACK_BOT_TOKEN} row 12")
+        assert "xoxb" not in hit["label"]
 
     def test_a_long_sheet_title_is_cut_like_a_preview(self):
         """Author-controlled text of any length, bounded like every other string this
@@ -908,9 +833,10 @@ class TestPreviewRedaction:
         """A secret straddling the preview cap would be CUT IN HALF first, and
         half a token matches no pattern -- so the cut has to come second."""
         monkeypatch.setattr(f, "_GREP_PREVIEW_CHARS", 40)
-        line = "x" * 30 + "AKIAIOSFODNN7EXAMPLE" + " tail"
+        # A blank before it: a token glued to a letter is no token.
+        line = "x" * 29 + " " + SAMPLE_SLACK_BOT_TOKEN + " tail"
         hit = f._grep_hit("/r/a.py", 1, line)
-        assert "AKIA" not in hit["preview"]
+        assert "xoxb" not in hit["preview"]
         assert len(hit["preview"]) <= 40
 
 
@@ -1076,18 +1002,53 @@ class TestFinishedSearchIsNotReportedPartial:
 
         Blocking for the whole remaining budget on the first `Empty` and then
         reporting `truncated` would call a FINISHED search partial and hold the
-        user for the rest of the budget to say so, which is what the elapsed-time
-        assertion below fences.
+        user for the rest of the budget to say so. So the queue records every wait
+        the loop asks of it: no wait is longer than one poll, and once the reader
+        has exited the loop takes exactly one more empty poll before it ends.
 
         The sentinel is dropped deterministically rather than by racing a real full
         queue: `put_nowait` always refuses, which is exactly the state the reader's
         `finally` hits when the queue is full.
         """
+        from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
         real_queue_cls = f.queue.Queue
+        exited_reader: list[threading.Thread] = []
+        empty_after_exit: list[float | None] = []
 
         class _DropsSentinel(real_queue_cls):  # type: ignore[valid-type,misc]
             def put_nowait(self, item):
+                # The reader's last act, so a wait after it is a wait on a finished
+                # reader. Only the reader's own `_drain` is refused; any other
+                # thread's non-blocking put passes through.
+                if sys._getframe(1).f_code.co_name != "_drain":
+                    return super().put_nowait(item)
+                exited_reader.append(threading.current_thread())
                 raise f.queue.Full
+
+            def get(self, block=True, timeout=None):
+                # Only the search loop's waits on its record queue are judged; the
+                # path gate's own pool queues pass through.
+                if not block or sys._getframe(1).f_code is not f._grep_rg.__code__:
+                    return super().get(block, timeout)
+                assert timeout is not None and timeout <= f._GREP_RG_POLL_SECS + 1e-6, (
+                    f"the loop asked to wait {timeout!r}s for one record; a wait longer "
+                    "than one poll is the deadline becoming the exit"
+                )
+                try:
+                    return super().get(block, timeout)
+                except f.queue.Empty:
+                    # Read after the wait: a reader that announced its exit during
+                    # this poll left nothing behind it, so this poll counts.
+                    if exited_reader and self.empty():
+                        # Let `is_alive()` read the exit the dropped sentinel announced.
+                        exited_reader[0].join(FALLBACK_TIMEOUT_SECS)
+                        assert not exited_reader[0].is_alive(), "the reader never stopped"
+                        empty_after_exit.append(timeout)
+                        assert (
+                            len(empty_after_exit) == 1
+                        ), f"kept polling a reader that had exited: {empty_after_exit}"
+                    raise
 
         monkeypatch.setattr(f.queue, "Queue", _DropsSentinel)
         record = (
@@ -1105,16 +1066,15 @@ class TestFinishedSearchIsNotReportedPartial:
         )
         _rg_spawn(monkeypatch, lines=(record,))
 
-        started = f.time.monotonic()
-        hits, truncated = f._grep_rg("/r", "needle", started + 30)
-        elapsed = f.time.monotonic() - started
+        hits, truncated = f._grep_rg("/r", "needle", f.time.monotonic() + 30)
 
         # The record still lands ...
         assert [h["file"] for h in hits] == ["/r/a.py"]
         # ... the answer is COMPLETE ...
         assert truncated is False
-        # ... and it did not wait out the 30s budget to say so.
-        assert elapsed < 5, f"took {elapsed:.1f}s; the deadline should not be the exit"
+        # ... and the loop ended on the dead reader, one poll after it exited, not
+        # on the 30s deadline.
+        assert empty_after_exit == [f._GREP_RG_POLL_SECS], empty_after_exit
 
     def test_a_reader_still_running_does_not_end_the_search_early(self, monkeypatch):
         """The other half of the same branch: an empty queue with a LIVE reader is
@@ -1157,9 +1117,9 @@ class TestTheQueryNeverReachesTheCommandLine:
         _rg_spawn(monkeypatch, lines=(), made=made)
         # A future deadline: `_grep_rg` returns before spawning anything when the
         # budget is already spent, and then this would assert on an empty list.
-        f._grep_rg("/r", "AKIAIOSFODNN7EXAMPLE", f.time.monotonic() + 5)
+        f._grep_rg("/r", SAMPLE_SLACK_BOT_TOKEN, f.time.monotonic() + 5)
         assert made, "no child was spawned"
-        assert made[0].stdin.written == "AKIAIOSFODNN7EXAMPLE\n"
+        assert made[0].stdin.written == SAMPLE_SLACK_BOT_TOKEN + "\n"
         # Closed too, or rg would wait for EOF that never comes.
         assert made[0].stdin.closed is True
 
@@ -1289,7 +1249,8 @@ class TestAParseIsBoundedByTheDeadline:
     """
 
     def test_a_workbook_of_empty_rows_stops_at_the_deadline(self, tmp_path, monkeypatch):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "blank.xlsx"
         book = openpyxl.Workbook()
         sheet = book.active
@@ -1309,7 +1270,8 @@ class TestAParseIsBoundedByTheDeadline:
         assert segments == ()
 
     def test_a_workbook_within_the_deadline_reports_complete(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "ok.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"
@@ -1402,7 +1364,8 @@ class TestPartialParsesAreHonest:
     def test_a_mid_read_failure_is_not_whole(self, tmp_path, monkeypatch):
         """Rows already read are real and are kept; the reader did not see the
         rest, so the answer is short."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "breaks.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"
@@ -1444,7 +1407,8 @@ class TestPartialParsesAreHonest:
 
     def test_the_character_cap_is_not_whole(self, tmp_path, monkeypatch):
         """A match past the cap is invisible, so the answer must say it is partial."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         monkeypatch.setattr(f, "_GREP_DOC_MAX_CHARS", 20)
         path = tmp_path / "long.xlsx"
         book = openpyxl.Workbook()
@@ -1463,7 +1427,8 @@ class TestPartialParsesAreHonest:
         it, so a wide row is N references until a join makes it N copies -- and the
         zip expansion gate counts the string once. The row must be assembled inside
         the remaining budget, so no string longer than the cap is ever built."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         monkeypatch.setattr(f, "_GREP_DOC_MAX_CHARS", 100)
         path = tmp_path / "wide.xlsx"
         book = openpyxl.Workbook()
@@ -1503,65 +1468,27 @@ class TestAuditRedaction:
         """Previews are redacted for the pasted-secret case; a user grepping for a
         token VALUE types the token, which is the same class of text."""
         monkeypatch.setattr(f, "_grep_rg_executable", lambda: None)
-        await _grep(tree, "AKIAIOSFODNN7EXAMPLE")
+        await _grep(tree, SAMPLE_SLACK_BOT_TOKEN)
         for call in mock_sel.log_api_access.call_args_list:
-            assert "AKIAIOSFODNN7EXAMPLE" not in str(call.kwargs.get("resources", ""))
-
-
-class TestWorkbookExpansion:
-    def test_a_workbook_that_expands_past_the_cap_never_reaches_openpyxl(
-        self, tmp_path, monkeypatch
-    ):
-        """The shared inventory vet bounds member COUNT and central-directory
-        size, not expansion, so a single hugely-compressed member passed it and
-        reached openpyxl's XML parser."""
-        pytest.importorskip("openpyxl")
-        path = tmp_path / "bomb.xlsx"
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("xl/workbook.xml", "<workbook/>")
-            zf.writestr("xl/big.bin", b"\0" * (2 * 1024 * 1024))
-        opened: list[str] = []
-        monkeypatch.setattr(f, "_SHEET_MAX_EXPANDED_BYTES", 1024)
-
-        real_import = __import__
-
-        def tracking_import(name, *args, **kwargs):
-            if name == "openpyxl":
-                opened.append(name)
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", tracking_import)
-        parse = f._grep_xlsx_segments(path.read_bytes(), str(path), f.time.monotonic() + 30)
-        assert parse == ((), True)
-        # The refusal is BEFORE the parser: reaching openpyxl and bailing out
-        # later would already have paid the expansion this cap exists to refuse.
-        assert opened == []
-
-    def test_a_workbook_within_the_cap_is_still_read(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
-        path = tmp_path / "small.xlsx"
-        book = openpyxl.Workbook()
-        book.active.title = "Ledger"
-        book.active.append(["note"])
-        book.active.append(["the WIDGET invoice"])
-        book.save(path)
-        segments, whole = f._grep_xlsx_segments(
-            path.read_bytes(), str(path), f.time.monotonic() + 30
-        )
-        assert whole is True
-        assert any("WIDGET" in text for _label, text in segments)
+            assert SAMPLE_SLACK_BOT_TOKEN not in str(call.kwargs.get("resources", ""))
 
 
 class TestHelpers:
-    def test_the_sensitive_globs_are_derived_from_the_shared_fence(self):
+    def test_the_sensitive_globs_are_derived_from_the_shared_fence(self, tmp_path, monkeypatch):
         """Derived, never a second hand-kept list: a copy here would be the thing
         that silently stops matching what ``is_sensitive_path`` blocks.
 
         Asserted with HOME as the root, because that is the only root the stores
-        are actually under -- which is the whole point of the anchoring below."""
+        are actually under -- which is the whole point of the anchoring below. A fresh
+        HOME: a real store can be a symlink out of it, and then is rightly not emitted."""
         from kiro_crew.security import sensitive_home_dirs
 
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         home = os.path.expanduser("~")
+        assert home == str(fake_home)
         args = f._grep_sensitive_globs(home)
         assert args[0::2] == ["--iglob"] * (len(args) // 2)
         patterns = {p.casefold() for p in args[1::2]}
@@ -1883,12 +1810,26 @@ class TestHelpers:
     def test_a_query_that_prints_nothing_still_answers_inside_the_budget(self, monkeypatch):
         """rg emits no record for a non-matching file, so a rare-or-absent query over
         a large tree prints NOTHING while it traverses. Reading the pipe inline could
-        only notice the deadline when a line arrived, so this case ran to rg's own
-        completion and then reported `truncated: False` -- a budget overrun presented
-        as a complete answer, with a transfer-pool worker held for the whole walk."""
+        only notice the deadline when a line arrived, so this case would run to rg's
+        own completion and then report `truncated: False` -- a budget overrun
+        presented as a complete answer, with a transfer-pool worker held for the
+        whole walk.
+
+        Asserted as what the call asks of the pipe: it never reads it on the calling
+        thread, no queue wait is longer than one poll, and it returns while the pipe
+        is still silent. The search reads a manual clock that only its own queue
+        waits advance, so however slowly this host reaches the first poll, the
+        deadline is met by polling and never by scheduling."""
         import threading as _threading
 
+        from kiro_crew.testing.clock import ManualClock
+        from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+        caller = _threading.get_ident()
         release = _threading.Event()
+        pipe_answered = _threading.Event()
+        read_inline: list[str] = []
+        waits: list[float | None] = []
 
         class _Silent:
             """A pipe that never yields a line until the test lets it go."""
@@ -1897,18 +1838,59 @@ class TestHelpers:
                 return self
 
             def __next__(self):
-                release.wait(30)
+                if _threading.get_ident() == caller:
+                    # A read here holds the caller until rg speaks; refuse it.
+                    read_inline.append("read on the calling thread")
+                    raise StopIteration
+                release.wait(FALLBACK_TIMEOUT_SECS)
+                pipe_answered.set()
                 raise StopIteration
 
+        real_queue_cls = f.queue.Queue
+
+        clock = ManualClock()
+
+        class _RecordsWaits(real_queue_cls):  # type: ignore[valid-type,misc]
+            def get(self, block=True, timeout=None):
+                # The search loop's waits on its record queue, not the path gate's:
+                # the silent pipe has nothing queued, so each poll times out at once
+                # and moves the clock by the time it asked for.
+                if block and sys._getframe(1).f_code is f._grep_rg.__code__:
+                    waits.append(timeout)
+                    assert len(waits) <= 1000, "the search polled past its deadline"
+                    clock.advance(timeout)
+                    raise f.queue.Empty
+                return super().get(block, timeout)
+
+        monkeypatch.setattr(f.queue, "Queue", _RecordsWaits)
         killed = _rg_spawn(monkeypatch, lines=_Silent())
-        started = f.time.monotonic()
-        hits, truncated = f._grep_rg("/r", "needle", started + 0.3)
-        elapsed = f.time.monotonic() - started
-        release.set()
+        clock.install(monkeypatch, f)
+        answered_at_teardown: list[bool] = []
+        real_teardown = f._grep_rg_teardown
+
+        def _teardown(proc, reader, lines):
+            # The search loop is done once teardown starts: record whether the pipe
+            # had spoken by then, then let it go so the reader can be joined on a
+            # clock that only the polls move.
+            answered_at_teardown.append(pipe_answered.is_set())
+            release.set()
+            return real_teardown(proc, reader, lines)
+
+        monkeypatch.setattr(f, "_grep_rg_teardown", _teardown)
+        try:
+            hits, truncated = f._grep_rg("/r", "needle", clock.monotonic() + 0.3)
+        finally:
+            release.set()
+        assert read_inline == [], "the pipe was read on the calling thread"
         assert hits == []
         # Short, and SAYS it is short -- the two facts the budget contract rests on.
         assert truncated is True
-        assert elapsed < 5, f"the read was not deadline-bounded ({elapsed:.1f}s)"
+        # Every wait was one poll at most, and the answer came while rg was silent.
+        assert waits and all(
+            t is not None and t <= f._GREP_RG_POLL_SECS + 1e-6 for t in waits
+        ), waits
+        assert sum(waits) == pytest.approx(0.3), f"polled {sum(waits)}s against a 0.3s budget"
+        assert answered_at_teardown == [False], "the call waited for the pipe to speak"
         assert killed, "the child was left traversing after the deadline"
 
     def test_a_failed_ripgrep_asks_for_the_fallback_rather_than_claiming_no_matches(

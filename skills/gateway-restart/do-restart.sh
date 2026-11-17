@@ -57,10 +57,11 @@ set +C
 # attempt's verdict.
 rm -f -- "$STATUS_FILE"
 sleep "${KIROCREW_RESTART_DELAY:-10}"
-# The restart verb prints a fresh dashboard token URL on success; the skill
-# tells the resumed agent to quote this log into the conversation, so redact
-# the bearer token on the way in. PIPESTATUS keeps the restart's own exit
-# status — plain $? would report sed's.
+# kirocrew restart prints a dashboard login link only to a terminal, and this
+# pipe is not one, so the log gets the `kirocrew token` hint instead. The
+# skill tells the resumed agent to quote this log into the conversation, so
+# the sed redacts any ?token= value as a guard. PIPESTATUS keeps the
+# restart's own exit status; plain $? would report sed's.
 kirocrew restart 2>&1 | sed -E 's/([?&]token=)[^[:space:]]+/\1REDACTED/g' >&3
 status="${PIPESTATUS[0]}"
 # Same open-once discipline as the log: the exclusive open is the write

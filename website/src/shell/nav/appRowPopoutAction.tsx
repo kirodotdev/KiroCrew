@@ -2,7 +2,7 @@ import { useLocation } from 'react-router-dom'
 import { AppWindow, ExternalLink } from 'lucide-react'
 import { useLabelTip } from '../../components/InstantTip'
 import { useAppPopouts } from '../../hooks/useAppPopouts'
-import { hasBuiltinComponent } from '../../apps/builtinRegistry'
+import { hasPopoutPage } from '../../pages/corePopoutPages'
 import { appRouteOf } from '../../utils/appPopoutRoute'
 import { i18nT } from '../../i18n/t'
 
@@ -54,7 +54,7 @@ export function AppRowPopoutAction({ route, label, active }: {
     ? i18nT('shell.nav.appRowPopoutAction.label_is_open_in_its_own_window_focus_it', { label })
     : i18nT('shell.nav.appRowPopoutAction.pop_out_label_to_its_own_window', { label })
   const tip = useLabelTip(name)
-  if (appRouteOf(route, hasBuiltinComponent) !== route) return null
+  if (appRouteOf(route, hasPopoutPage) !== route) return null
 
   return (
     <button

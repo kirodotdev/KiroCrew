@@ -799,7 +799,7 @@ def _titles_by_stem(conversation_log: Any) -> dict[str, str]:
     cache is shared. A session that never got a title simply has no entry.
     """
     try:
-        rows = conversation_log.list_sessions()
+        rows = conversation_log.list_sessions_indexed()
     except Exception:
         logger.debug("session titles unreadable", exc_info=True)
         return {}

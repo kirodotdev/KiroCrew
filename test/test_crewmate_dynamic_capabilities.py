@@ -314,7 +314,7 @@ def test_the_worker_is_asked_for_the_missing_capability_line_either_way(off, mon
         service_agents, "_write_mate_service_spec", lambda f, c, w: written.update(c)
     )
     service_agents._install_mate_worker_agent()
-    assert written["prompt"] == f"Base.\n\n{mate_worker.MATE_WORKER_PROMPT}"
+    assert written["prompt"] == f"Base.\n\n{mate_worker.mate_worker_prompt()}"
     assert mate_worker.MISSING_CAPABILITY_PREFIX in written["prompt"]
 
 
@@ -493,10 +493,12 @@ def test_per_crewmate_hand_off_summary(roster, monkeypatch):
         cards_mod, "_capability_service", lambda app: SimpleNamespace(_mate_catalog=lambda m: {})
     )
     monkeypatch.setattr(catalog_mod, "worker_spec", lambda m: {})
-    monkeypatch.setattr(catalog_mod, "dispatch_summary", lambda spec, cat: "worker has: jira")
+    monkeypatch.setattr(
+        catalog_mod, "dispatch_summary", lambda spec, cat, report: "worker has: jira"
+    )
     for name, want in (("Atlas", "worker has: jira"), ("Briar", "")):
         monkeypatch.setattr(crewmate_approval, "crewmate_name_for", lambda cfg, e, n=name: n)
-        assert crewmate_dispatch_capabilities._note(None, "c", "t") == want, name
+        assert crewmate_dispatch_capabilities._note(None, "c", "t", None) == want, name
 
 
 def test_per_crewmate_conductor_prompt(roster, monkeypatch, tmp_path):

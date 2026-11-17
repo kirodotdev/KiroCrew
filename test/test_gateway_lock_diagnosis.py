@@ -623,6 +623,46 @@ def test_refusal_names_the_live_acquirer_from_proc_locks(monkeypatch, refused_lo
     assert err.live_holder is True
 
 
+@pytest.mark.parametrize(
+    ("bind", "address", "family", "url", "names_token"),
+    [
+        (None, "127.0.0.1", "4", "http://127.0.0.1:5477", True),
+        # `kirocrew token` dials 127.0.0.1 only, so it cannot reach a `::` bind.
+        ("::", "::1", "6", "http://[::1]:5477", False),
+    ],
+)
+def test_a_serving_holder_refusal_leads_with_how_to_open_it(
+    monkeypatch, refused_lock, bind, address, family, url, names_token
+):
+    """A second `kirocrew gateway` on a served home is usually a lost tab or URL.
+
+    So the refusal leads with where the gateway answered and, where it can reach
+    that gateway, the command that prints a sign-in link, and keeps stopping it
+    or another home as the way to start a separate one.
+    """
+    from kiro_crew import gateway_lock, platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: 16968)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [16968])
+    monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 118)
+    monkeypatch.setattr(
+        platform_compat,
+        "find_port_listeners",
+        lambda _p: _listeners(16968, address=address, family=family),
+    )
+    monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: True)
+
+    with pytest.raises(gateway_lock.GatewayLockError) as excinfo:
+        gateway_lock.GatewayLock(refused_lock, port=5477, bind_address=bind).acquire()
+    text = str(excinfo.value)
+    assert text.startswith(f"Kiro Crew is already running for this home at {url} (pid 16968).")
+    assert ("kirocrew token" in text) is names_token
+    assert ("kirocrew token --port 5477\n" in text) is names_token
+    assert "kirocrew stop" in text and "KIROCREW_HOME" in text
+    assert excinfo.value.live_holder is True
+
+
 def test_a_live_acquirer_without_the_port_is_not_a_live_holder(monkeypatch, refused_lock):
     """Alive but not on the port: a sibling still starting, or one shutting down
     that has closed its listener and will release the lock next. Either way the

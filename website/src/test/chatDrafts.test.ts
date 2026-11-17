@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts, setDraft, appendTypedText, typedDuringCreate, chatPageShouldConsumeHandoff, __resetForTests } from '../utils/chatDrafts'
+import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, mergeReplyIntoDraft, saveDrafts, setDraft, appendTypedText, typedDuringCreate, chatPageShouldConsumeHandoff, __resetForTests } from '../utils/chatDrafts'
 import { DRAFT_MAX_STORE_BYTES } from '../utils/draftConstants'
 
 describe('chatDrafts', () => {
@@ -334,6 +334,29 @@ describe('draft merges keep the draft verbatim except for the newlines they repl
     // treating that as already restored drops the message the user must retry.
     expect(mergeRecoveredDraft('please run tests first', 'run tests'))
       .toBe('please run tests first\n\nrun tests')
+  })
+})
+
+/* A dashboard page's replies: answers to several cards go out in one message. */
+describe('mergeReplyIntoDraft', () => {
+  it('appends a second card\'s reply as its own paragraph instead of replacing the first', () => {
+    expect(mergeReplyIntoDraft('"Card A": Ship it', '"Card B": Wait')).toBe('"Card A": Ship it\n\n"Card B": Wait')
+  })
+
+  it('does not add a reply already present as a paragraph', () => {
+    const draft = '"Card A": Ship it\n\n"Card B": Wait\n'
+    expect(mergeReplyIntoDraft(draft, '"Card A": Ship it')).toBe(draft)
+    expect(mergeReplyIntoDraft(draft, '  "Card B": Wait  ')).toBe(draft)
+  })
+
+  it('still adds a reply that only occurs inside text the person wrote', () => {
+    expect(mergeReplyIntoDraft('please say "Card A": Ship it', '"Card A": Ship it'))
+      .toBe('please say "Card A": Ship it\n\n"Card A": Ship it')
+  })
+
+  it('fills an empty composer with the reply', () => {
+    expect(mergeReplyIntoDraft('', '"Card A": Ship it')).toBe('"Card A": Ship it')
+    expect(mergeReplyIntoDraft(null, '"Card A": Ship it')).toBe('"Card A": Ship it')
   })
 })
 

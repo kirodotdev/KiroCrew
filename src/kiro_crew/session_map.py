@@ -145,6 +145,14 @@ SUPPRESS_REPLAY_FLAG = "suppress_replay"
 #: later mapping of a different sid can never inherit the verdict.
 UNLANDED_SID_FIELD = "unlanded_sid"
 
+#: The sid of a native session whose first turn left ``[AGENT SYSTEM PROMPT]`` to
+#: its session head, the agent prompt the engine keeps in its first message
+#: (``kiro_crew.session_head``). A resume that cannot re-apply
+#: that head gets a first message rebuilt without the block, so the resumed turn
+#: re-sends it while this names the mapped sid. Scoped to the sid, as
+#: :data:`UNLANDED_SID_FIELD` is, so a later mapping never inherits it.
+HEAD_SID_FIELD = "head_sid"
+
 # Highest explicit DM generation acknowledged before its first provider turn:
 # ``kiro_crew.session_map_store.GENERATION_FLOOR_FIELD``, which reads it too.
 
@@ -152,6 +160,13 @@ UNLANDED_SID_FIELD = "unlanded_sid"
 # discarded: ``{"sid": <source sid>, "message_id": <fork point>}``. It stands in
 # for an empty ``sid``, so every write or clear of ``sid`` drops it.
 NATIVE_FORK_FIELD = "native_fork"
+
+#: The KAS local-memory mode the mapped sid's session was created under
+#: (:mod:`kiro_crew.acp.kas_memory`). Carried beside ``provider`` and read for
+#: the same kind of decision: KAS honours a session's stored memory record over
+#: anything a ``session/load`` names, so a chat whose recorded mode reads the
+#: host's memories its chat is not granted must stop resuming that session.
+KAS_MEMORY_FIELD = "kas_memory"
 
 # Flags that are durable SETTINGS rather than session-scoped state, and so keep
 # their entry alive through :meth:`SessionMap.prune`. Membership is opt-in
@@ -361,7 +376,7 @@ def _keeps_entry(entry: dict) -> bool:
 
 
 def _stash_and_clear_sid(entry: dict) -> bool:
-    """Drop *entry*'s ``sid`` while keeping it as ``discarded_sid``. True if it changed.
+    """Drop *entry*'s session pointer and metadata. True if either changed.
 
     One definition for every path that empties ``sid`` in place, because the
     three that existed disagreed and the disagreement was reachable: a provider
@@ -372,13 +387,16 @@ def _stash_and_clear_sid(entry: dict) -> bool:
     the one between them. Which path emptied the field is not a distinction any
     reader of it can use, so the field cannot be written by only some of them.
 
-    A pending native fork is dropped too, even with no ``sid`` to stash: it
-    would otherwise restore a conversation the caller has just cleared.
+    The KAS memory mode describes only the mapped SID, so it is dropped with
+    the pointer. A pending native fork is dropped too, even with no ``sid`` to
+    stash: it would otherwise restore a conversation the caller has just
+    cleared.
     """
     fork_dropped = entry.pop(NATIVE_FORK_FIELD, None) is not None
+    mode_dropped = entry.pop(KAS_MEMORY_FIELD, None) is not None
     sid = entry.get("sid")
     if not sid:
-        return fork_dropped
+        return fork_dropped or mode_dropped
     entry["discarded_sid"] = sid
     entry["sid"] = ""
     return True
@@ -580,7 +598,27 @@ class SessionMap:
         # Set by ``_load`` when the file exists but is not usable JSON; the first
         # ``_write_payload`` moves it to ``<name>.corrupt-<utc>`` and clears it.
         self._set_aside_owed = False
+        # Moved by ``_touch`` after every mutation (see ``mutation_generation``).
+        self._mutation_gen = 0
         self._load()
+
+    def mutation_generation(self) -> int:
+        """A counter that moves after every in-memory mutation of this map.
+
+        Every write to ``_data`` or ``_thread_to_session`` is followed by
+        ``_save()`` or, for the writes that persist nothing, ``_touch()``; both
+        move it (``test_session_map_bindings`` checks every mutator for one of
+        the two). So a reader that records the value BEFORE reading the map and
+        finds it unchanged later knows nothing it read has changed since. The
+        slots projection keys its per-slot channel-link rows on it. Read without
+        the lock: an int read is atomic, and a bump racing the read only costs
+        that reader one recompute.
+        """
+        return self._mutation_gen
+
+    def _touch(self) -> None:
+        """Move :meth:`mutation_generation` after a write that is not saved."""
+        self._mutation_gen += 1
 
     async def _flush_async(self) -> None:
         """Debounce, serialize under the lock, write off the loop; repeat.
@@ -873,23 +911,44 @@ class SessionMap:
             self._note_inbound_unbind(key, inbound, reason)
 
     @_guarded
-    def set(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:
-        """Save mapping and persist to disk, preserving existing slack fields."""
+    def set(
+        self,
+        key: str,
+        sid: str,
+        *,
+        provider: str = "",
+        cwd: str = "",
+        kas_memory: str | None = None,
+    ) -> None:
+        """Save mapping and persist to disk, preserving existing link fields.
+
+        ``kas_memory=None`` preserves the mapped session's mode when its id is
+        remapped, as ``seed_conversation`` does. A string replaces the mode;
+        ``""`` clears it for a session created without a KAS memory setting.
+        """
         key = canonical_key(key)
         existing = self._data.get(key)
         if existing:
             if existing.get(UNLANDED_SID_FIELD) not in (None, sid):
                 existing.pop(UNLANDED_SID_FIELD, None)
+            if existing.get(HEAD_SID_FIELD) not in (None, sid):
+                existing.pop(HEAD_SID_FIELD, None)
             existing["sid"] = sid
             existing.pop(NATIVE_FORK_FIELD, None)
             if provider:
                 existing["provider"] = provider
+            if not sid or kas_memory == "":
+                existing.pop(KAS_MEMORY_FIELD, None)
+            elif kas_memory is not None:
+                existing[KAS_MEMORY_FIELD] = kas_memory
             if cwd:
                 existing["cwd"] = cwd
         else:
             entry: dict = {"sid": sid, "slack_thread_ts": None, "slack_channel_id": None}
             if provider:
                 entry["provider"] = provider
+            if sid and kas_memory:
+                entry[KAS_MEMORY_FIELD] = kas_memory
             if cwd:
                 entry["cwd"] = cwd
             self._data[key] = entry
@@ -922,6 +981,19 @@ class SessionMap:
             return ""
         return entry.get("provider", "")
 
+    def get_kas_memory(self, key: str) -> str:
+        """The KAS memory mode *key*'s mapped session was created under, or ''.
+
+        ``''`` for every entry written before the setting existed and for every
+        session that stated no mode, which is the same answer: that session
+        asked KAS for no memory. See :data:`KAS_MEMORY_FIELD`.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry:
+            return ""
+        recorded = entry.get(KAS_MEMORY_FIELD, "")
+        return recorded if isinstance(recorded, str) else ""
+
     @_guarded
     def clear_sid(self, key: str) -> bool:
         """Clear the stored session ID without removing the entry.
@@ -932,17 +1004,21 @@ class SessionMap:
         manually reversible — the native conversation still exists on disk;
         only the pointer to it is dropped.
 
-        Returns whether a pointer was actually dropped, so a caller clearing a
-        SET of keys can report how many conversations it orphaned without a
-        second lookup. ``get`` is the wrong probe for that: it gates on the
+        Returns whether a pointer was actually dropped -- the ``sid`` or a
+        pending native fork -- so a caller clearing a SET of keys can report how
+        many conversations it orphaned without a second lookup. Dropping only a
+        leftover KAS memory mode is saved but answers False: it pointed at no
+        conversation. ``get`` is the wrong probe for that: it gates on the
         transcript file existing and prunes stale entries as a side effect, so
         it answers "is this resumable" rather than "is a pointer recorded".
         """
         entry = self._data.get(canonical_key(key))
-        if entry and _stash_and_clear_sid(entry):
+        if not entry:
+            return False
+        pointer_dropped = bool(entry.get("sid")) or entry.get(NATIVE_FORK_FIELD) is not None
+        if _stash_and_clear_sid(entry):
             self._save()
-            return True
-        return False
+        return pointer_dropped
 
     @_guarded
     def mark_sid_unlanded(self, key: str, sid: str) -> bool:
@@ -980,6 +1056,28 @@ class SessionMap:
         entry.pop(UNLANDED_SID_FIELD, None)
         self._save()
         return True
+
+    @_guarded
+    def mark_sid_head(self, key: str, sid: str) -> bool:
+        """Record that *sid*, *key*'s current mapping, started with a session head.
+
+        Written only over the sid the entry already holds, so the record never
+        describes another session. Returns whether it is recorded. See
+        :data:`HEAD_SID_FIELD`.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not sid or not entry or entry.get("sid") != sid:
+            return False
+        if entry.get(HEAD_SID_FIELD) != sid:
+            entry[HEAD_SID_FIELD] = sid
+            self._save()
+        return True
+
+    @_guarded
+    def sid_head_pending(self, key: str) -> bool:
+        """Whether *key*'s mapped sid started with a session head."""
+        entry = self._data.get(canonical_key(key))
+        return bool(entry and entry.get("sid") and entry.get(HEAD_SID_FIELD) == entry["sid"])
 
     def get_discarded_sid(self, key: str) -> str:
         """Return the last sid dropped from *key* by any path, or ''.
@@ -1282,6 +1380,7 @@ class SessionMap:
         if entry is None:
             entry = {"sid": "", "slack_thread_ts": None, "slack_channel_id": None}
             self._data[key] = entry
+            self._touch()
         return entry
 
     @_guarded

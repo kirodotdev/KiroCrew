@@ -116,25 +116,26 @@ async function run(browser, base, scenario) {
     if (path === '/api/recent-projects') return json(route, { dirs: [PROJECT] }), true
     return false
   }
-  await stubDashboardApi(page, { slots, extra })
-  logPageProblems(page)
-
   // The expansion memory's storage shape is internal to the tree, so the
   // folders are opened by clicking them below rather than seeded here.
   const tabs = [{ id: 'files', kind: 'files', title: 'Files' }, fileTabFor(OTHER_PATH)]
-  await page.addInitScript(([slot, tabsJson]) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot-chat', slot)
-    localStorage.setItem('mc-activity-open:' + slot, 'true')
-    localStorage.setItem('mc-panel-tabs:' + slot, tabsJson)
-    localStorage.setItem('mc-side-panel-width', '560')
-    // The file tab shows its own tree beside the document.
-    localStorage.setItem('mc-files-rail-open', '1')
-    localStorage.setItem('kirocrew:comment-hint-dismissed', '1')
-    localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }))
-  }, [SLOT, JSON.stringify({ activeId: 'files', tabs })])
+  await stubDashboardApi(page, {
+    slots, extra,
+    localStorageEntries: {
+      'mc-theme': 'dark',
+      'mc-onboarded': '1',
+      'mc-active-slot-chat': SLOT,
+      ['mc-activity-open:' + SLOT]: 'true',
+      ['mc-panel-tabs:' + SLOT]: JSON.stringify({ activeId: 'files', tabs }),
+      'mc-side-panel-width': '560',
+      // The file tab shows its own tree beside the document.
+      'mc-files-rail-open': '1',
+      'kirocrew:comment-hint-dismissed': '1',
+      'mc-chat-config': JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }),
+    },
+  })
+  logPageProblems(page)
+
   await page.goto(base + '/?sid=' + encodeURIComponent(SLOT), { waitUntil: 'domcontentloaded' })
 
   const scroller = page.locator('[data-file-tree-virtualized-scroll="true"]').first()

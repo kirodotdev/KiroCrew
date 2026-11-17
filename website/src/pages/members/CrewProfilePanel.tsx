@@ -110,6 +110,9 @@ export interface CrewProfilePanelProps {
    *  "No schedules yet" instead of "Nothing wakes this mate on its own yet",
    *  which the row above it would contradict. */
   heartbeatOn?: boolean
+  /** Whether a goal check-in (daily, weekly or monthly) is on: it wakes the
+   *  mate too, so the empty line points to the Goals tab that lists it. */
+  checkInsOn?: boolean
   /** A write from one of the "On its own" rows (Heartbeat or patrol) is in
    *  flight: the tab rail refuses to leave Schedules until it settles (the
    *  host's leave guard refuses close and navigation the same way). */
@@ -198,10 +201,13 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   const openerRef = useRef<HTMLElement | null>(null)
   const name = crewDisplayName(p.member)
   // The workspace NAME the crew record carries (a key into the configured
-  // workspaces), shown as-is. It is not a directory: the host resolves the
-  // name to the DM slot's project when it roots Files / Terminal, so there is
-  // no path here to take a folder name from.
+  // workspaces). It is not a directory: the host resolves the name to the DM
+  // slot's project when it roots Files / Terminal, so there is no path here to
+  // take a folder name from. The one made for this Bot (`member-<slug>`) keeps
+  // the name it was made under through a rename, so the tile reads the Bot's
+  // current name for it; any other workspace is shown as-is.
   const ws = p.member.workspace ?? ''
+  const wsLabel = ws === `member-${p.member.slug}` ? name : ws
 
   const captureOpener = () => {
     const active = document.activeElement
@@ -531,7 +537,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />
-                  <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={ws || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
+                  <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={wsLabel || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
                 </div>
 
                 {/* The doors: Notes, and the Settings row the settings body
@@ -560,7 +566,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                     <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5 mt-1" data-testid="crew-schedule-heading-yours">{t('pages.membersPage.your_schedules')}</h3>
                   </>
                 )}
-                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} />
+                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} checkInsOn={p.checkInsOn} />
               </div>
             )}
             {tab === 'sessions' && p.sessionsBody}

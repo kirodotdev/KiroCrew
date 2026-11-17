@@ -163,6 +163,23 @@ class TestFolderCRUD:
             assert data["name"] == "New"
 
     @pytest.mark.asyncio
+    async def test_a_null_name_keeps_the_folder_name(self, tmp_path, monkeypatch):
+        # ``str(None)`` must not become the folder's name; the MCP twin already
+        # treats an explicit null as "no rename".
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            folder = await (await client.post("/api/chat/folders", json={"name": "Old"})).json()
+            resp = await client.patch(
+                f"/api/chat/folders/{folder['id']}", json={"name": None, "collapsed": True}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == "Old"
+            assert data["collapsed"] is True
+
+    @pytest.mark.asyncio
     async def test_a_failed_folder_write_restores_the_slots_it_unfiled(self, tmp_path, monkeypatch):
         """Delete must not half-land: unfiled slots go back if the store write fails.
 
@@ -433,7 +450,7 @@ class TestFolderCRUD:
         # not the paginated client history window.
         monkeypatch.setattr(
             state.conversation_log,
-            "list_sessions",
+            "list_sessions_indexed",
             lambda: [
                 {"key": "a", "folder_id": "f1"},
                 {"key": "b", "folder_id": "f1"},

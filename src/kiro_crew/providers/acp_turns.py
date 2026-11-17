@@ -93,12 +93,17 @@ def _to_llm_event(e: Any) -> LLMEvent:
         tool_identity_trusted=e.tool_identity_trusted,
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
+        # The check that set the flag above; dropping it leaves a flagged event
+        # with no reason.
+        mcp_identity_unreadable_reason=e.mcp_identity_unreadable_reason,
         kas_builtin_ids=e.kas_builtin_ids,
         # Dropping it hides the reason box on a KAS card, and the reason with it.
         takes_rejection_reason=e.takes_rejection_reason,
         # Dropping this would leave every spec-granted KAS built-in prompting on
         # this surface: the gate's spec-builtin-grant row reads it.
         spec_granted_builtins=e.spec_granted_builtins,
+        # Same row: dropping this would leave every hook-held MCP grant prompting.
+        spec_hook_held=e.spec_hook_held,
         # Same row: dropping this would leave every allowedCommands match prompting.
         spec_granted_commands=e.spec_granted_commands,
         # Dropping this would let a `denyByDefault` spec's unlisted command run on
@@ -110,6 +115,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         spec_write_cwd=e.spec_write_cwd,
         # Same row as spec_granted_builtins, with the denies it is checked against.
         spec_denied_grant=e.spec_denied_grant,
+        # Dropping this would let a Bot worker run a command its spec's unjudged
+        # denies hold: the gate's spec-unjudged-denies row reads it.
+        spec_unjudged_denies=e.spec_unjudged_denies,
         # Dropping this would refuse a read-only command an `autoAllowReadonly`
         # spec runs under `denyByDefault`: the spec-shell-allowlist row reads it.
         spec_shell_readonly=e.spec_shell_readonly,
@@ -162,6 +170,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_server_name=e.mcp_server_name,
         diff_old_text=e.diff_old_text,
         diff_path=e.diff_path,
+        # Dropping it leaves a claude Read of an image with no thumbnail on its row.
+        read_path_arg=e.read_path_arg,
         # Typed execution-layer status (``kirocrew/status`` / the watchdog's
         # ``waiting_input`` classification). The consumers read it here:
         # chat_runner's tool-stall continuation takes ``wait_reason`` from
@@ -178,6 +188,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # nothing to record: no notice line and no promotion of the slot to
         # the model the engine moved to (acp/engine_fallback.py).
         model_fallback=e.model_fallback,
+        # A notice the harness reported. Dropping it zeroes it to None, so the
+        # dashboard reads an adapter notice as reply text and never sees a mode change.
+        harness_notice=e.harness_notice,
     )
 
 
@@ -315,6 +328,7 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     # here, so a harness added later must opt in to it, not inherit it and
     # hard-error on every slash command a user types. KAS is the case in point:
     # kiro-family, yet it answers the RPC with -32603.
+    #
     # /compact and /clear discard native history; invalidate before dispatch
     # so the next warm turn resends the complete snapshot even when the
     # status receipt is missing or arrives late.
@@ -345,14 +359,21 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
 def watch_agent_turns(self: AcpProvider, callback: Callable[[], None] | None) -> bool:
     """Call *callback* when the agent starts a turn on its own; ``None`` stops it.
 
-    Only a direct ``AcpClient`` on a backend in ``ACP_BACKENDS_AGENT_STARTED_TURNS``
-    has a reader that sees such a turn, so any other session registers nothing and
-    returns False. The callback runs synchronously on the event loop, from the
-    client's idle reader, and the turn is read with :func:`stream_unsolicited`.
+    A backend in ``ACP_BACKENDS_AGENT_STARTED_TURNS`` sees such a turn on a direct
+    ``AcpClient`` (its idle reader) and on a chat of the shared runtime (its
+    session handle's queue); any other session registers nothing and returns
+    False. The callback runs synchronously on the event loop, and the turn is
+    read with :func:`stream_unsolicited`.
     """
     client = self._client
-    if not isinstance(client, AcpClient) or client.backend not in ACP_BACKENDS_AGENT_STARTED_TURNS:
+    if getattr(client, "backend", None) not in ACP_BACKENDS_AGENT_STARTED_TURNS:
         return False
+    if not isinstance(client, AcpClient):
+        # A chat on the shared runtime: its session handle sees such a turn in
+        # its queue (``session_handle_agent_turns``).
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        return isinstance(client, AcpSessionProvider) and client.watch_agent_turns(callback)
     if callback is None:
         client.on_agent_turn = None
     else:
@@ -363,7 +384,11 @@ def watch_agent_turns(self: AcpProvider, callback: Callable[[], None] | None) ->
 def agent_turn_pending(self: AcpProvider) -> bool:
     """Whether a turn the agent started is waiting to be read by :func:`stream_unsolicited`."""
     client = self._client
-    return isinstance(client, AcpClient) and client._agent_turn_pending()
+    if isinstance(client, AcpClient):
+        return client._agent_turn_pending()
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    return isinstance(client, AcpSessionProvider) and client.agent_turn_pending()
 
 
 async def stream_unsolicited(
@@ -376,6 +401,12 @@ async def stream_unsolicited(
     """
     client = self._client
     if not isinstance(client, AcpClient):
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        if isinstance(client, AcpSessionProvider):
+            async with aclosing(client.stream_unsolicited(timeout)) as shared_events:
+                async for e in shared_events:
+                    yield self._to_llm_event(e)
         return
     try:
         # The client's method is an async generator typed as its iterator.
@@ -415,6 +446,7 @@ async def compact(self: AcpProvider, context: str = "") -> None:
     #   manual /compact and Slack's !compact have always used: kiro ACKs
     #   the prompt (end_turn) and then emits _kiro.dev/compaction/status
     #   started/completed, which wait_for_compaction() picks up.
+    #
     # Capture a terminal status emitted MID-TURN (before end_turn) while
     # draining — otherwise it would be consumed and lost, stranding a
     # subsequent wait_for_compaction() (task_executor, wecom, cli_chat)
@@ -543,13 +575,11 @@ async def wait_for_compaction(
         # source and is absent for want of a driven capture, which is recorded
         # on ``ACP_BACKENDS_COMPACT``.
         #
-        # HERE rather than in ``compact()``, because this is the one method
-        # BOTH routes to a compaction reach. ``compact()`` covers the
-        # seventeen call sites that pair it with this wait, but the session
-        # layer's autocompact drives the harness through
-        # ``stream_command("/compact")`` and never calls ``compact()`` at
-        # all -- so an arm placed there left the automatic path, the one no
-        # user action is needed to reach, still stranding.
+        # HERE rather than in ``compact()``, because BOTH compaction routes
+        # reach this method: the session layer's autocompact drives the
+        # harness through ``stream_command("/compact")`` and never calls
+        # ``compact()``, so a check there would leave autocompact waiting out
+        # the timeout.
         #
         # No ``summary``: an inline harness reports no summary text, and an
         # invented one would be echoed to the user as the backend's own.

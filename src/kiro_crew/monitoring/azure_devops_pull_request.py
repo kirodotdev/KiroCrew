@@ -243,8 +243,10 @@ def _facts(
     else:
         mergeability = "pending"
     checks: list[PullRequestCheck] = []
-    for index, raw in enumerate(statuses[:_MAX_EVIDENCE_ITEMS]):
-        item = _object(raw)
+    # Fold first, then bound: cutting the history first could drop a newer post
+    # while keeping the one it replaced.
+    latest_statuses = _latest_statuses(statuses)
+    for index, item in latest_statuses[:_MAX_EVIDENCE_ITEMS]:
         context = item.get("context")
         context_name = _object(context).get("name") if context else None
         raw_identity = item.get("id") or context_name or index
@@ -296,7 +298,7 @@ def _facts(
         checks_complete=(
             statuses_complete
             and policies_complete
-            and len(statuses) <= _MAX_EVIDENCE_ITEMS
+            and len(latest_statuses) <= _MAX_EVIDENCE_ITEMS
             and len(policies) <= _MAX_EVIDENCE_ITEMS
         ),
         pr_comment_body_digest=_comment_body_digest(threads, review_threads_complete),
@@ -341,6 +343,39 @@ def _comment_body_digest(threads: list[object], threads_complete: bool) -> str:
             if len(fingerprints) > _MAX_EVIDENCE_COMMENTS:
                 return ""
     return comment_body_digest(fingerprints)
+
+
+def _latest_statuses(statuses: list[object]) -> list[tuple[int, Mapping[str, Any]]]:
+    """The newest status per context, in first-seen order.
+
+    Azure DevOps lists every status ever posted to the pull request, across
+    iterations, and each post has its own ``id``. Counting them all left a
+    superseded ``failed`` or ``pending`` post in the verdict after the same
+    check posted ``succeeded``. A status with no context name stands alone, as
+    before.
+    """
+
+    def _rank(item: Mapping[str, Any]) -> int:
+        # Status ids grow with each post on a pull request, so the highest id is
+        # the newest, whether or not a post names its iteration.
+        status_id = item.get("id")
+        return status_id if isinstance(status_id, int) else 0
+
+    latest: dict[object, tuple[int, Mapping[str, Any]]] = {}
+    for index, raw in enumerate(statuses):
+        item = _object(raw)
+        context = item.get("context")
+        context = context if isinstance(context, Mapping) else {}
+        name = context.get("name")
+        key: object = (
+            ("context", str(context.get("genre")), str(name)) if name else ("index", index)
+        )
+        held = latest.get(key)
+        if held is None:
+            latest[key] = (index, item)
+        elif _rank(item) >= _rank(held[1]):
+            latest[key] = (held[0], item)
+    return list(latest.values())
 
 
 def _status_state(value: object) -> str:

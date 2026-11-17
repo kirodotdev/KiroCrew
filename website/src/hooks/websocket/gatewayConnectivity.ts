@@ -9,7 +9,7 @@
  *  truths, so these helpers are the only sanctioned way for the socket layer
  *  to move the flag (`test/gatewayConnectedPairing.test.ts` pins that). */
 import type { AppDispatch } from '../../store'
-import { sseConnected, sseDisconnected } from '../../store/dashboardSlice'
+import { sseConnected, sseDisconnected, type OfflineCause } from '../../store/dashboardSlice'
 import { setGatewayConnected } from '../../utils/errorReport'
 import { setAppSlotPushConnected } from '../../utils/appSlotPush'
 
@@ -19,8 +19,8 @@ export function markGatewayConnected(dispatch: AppDispatch): void {
   setAppSlotPushConnected(true)
 }
 
-export function markGatewayDisconnected(dispatch: AppDispatch): void {
-  dispatch(sseDisconnected())
+export function markGatewayDisconnected(dispatch: AppDispatch, cause?: OfflineCause): void {
+  dispatch(sseDisconnected(cause))
   setGatewayConnected(false)
   setAppSlotPushConnected(false)
 }

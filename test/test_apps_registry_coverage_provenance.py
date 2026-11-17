@@ -110,6 +110,94 @@ class TestCandidateResolution:
         entry = registry._pinned_registry_entry("demo", {"sourceUrl": "https://x/demo.git"})
         assert entry == {"gitUrl": "https://x/demo.git"}
 
+    def test_candidates_take_their_registry_from_the_index_not_the_cache_file(
+        self, monkeypatch, cache_dir
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.apps.official_catalog.inventory_for_install", lambda name: None
+        )
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        reg = _reg("mine", "https://gitea.internal/idx.git")
+        _config_with(monkeypatch, [reg])
+        registry._write_external_registry_cache(
+            registry._external_registry_cache_identity(reg),
+            [{"name": "demo", "gitUrl": "https://x/demo.git", "_registry": "forged"}],
+        )
+        [candidate] = registry._registry_app_candidates("demo")
+        assert candidate["_registry"] == "mine"
+
+
+class TestMoveBetweenPinnedRegistries:
+    """An app listed by one build-pinned registry and later by another keeps updating."""
+
+    def _setup(self, monkeypatch, candidates, pinned=("tier-a", "tier-b")):
+        monkeypatch.setattr(
+            registry,
+            "_pinned_registries",
+            lambda: [_reg(n, f"https://forge.example/{n}.git") for n in pinned],
+        )
+        monkeypatch.setattr(registry, "_registry_app_candidates", lambda name: candidates)
+
+    def test_a_move_between_pinned_registries_resolves_to_the_new_listing(self, monkeypatch):
+        moved = {"gitUrl": "https://x/demo.git", "_registry": "tier-b"}
+        self._setup(monkeypatch, [moved])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is moved
+
+    def test_an_exact_match_wins_over_a_move(self, monkeypatch):
+        moved = {"gitUrl": "https://x/demo.git", "_registry": "tier-b"}
+        same = {"gitUrl": "https://x/demo.git", "_registry": "tier-a"}
+        self._setup(monkeypatch, [moved, same])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is same
+
+    @pytest.mark.parametrize(
+        ("recorded", "listed"),
+        [
+            pytest.param("user-added", "tier-b", id="recorded-registry-not-pinned"),
+            pytest.param("tier-a", "user-added", id="listing-registry-not-pinned"),
+            pytest.param("", "tier-b", id="recorded-bundled-catalog"),
+            pytest.param("tier-a", "", id="listing-bundled-catalog"),
+        ],
+    )
+    def test_a_move_with_an_unpinned_end_is_refused(self, monkeypatch, recorded, listed):
+        self._setup(monkeypatch, [{"gitUrl": "https://x/demo.git", "_registry": listed}])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": recorded}
+        )
+        assert entry is None
+
+    def test_a_name_a_pinned_and_an_operator_registry_both_claim_is_refused(self, monkeypatch):
+        # The operator's own "tier-a" points somewhere else, so neither "tier-a" is
+        # served; an install recorded from it must not follow the app to tier-b.
+        self._setup(monkeypatch, [{"gitUrl": "https://x/demo.git", "_registry": "tier-b"}])
+        _config_with(monkeypatch, [_reg("tier-a", "https://operator.example/tier-a.git")])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is None
+
+    def test_a_move_to_a_different_repository_is_refused(self, monkeypatch):
+        self._setup(monkeypatch, [{"gitUrl": "https://x/fork.git", "_registry": "tier-b"}])
+        entry = registry._pinned_registry_entry(
+            "demo", {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"}
+        )
+        assert entry is None
+
+    def test_an_installed_app_resolves_its_update_after_the_move(self, monkeypatch):
+        moved = {"name": "demo", "gitUrl": "https://x/demo.git", "_registry": "tier-b"}
+        self._setup(monkeypatch, [moved])
+        monkeypatch.setattr(
+            registry,
+            "get_app",
+            lambda name: {"sourceUrl": "https://x/demo.git", "sourceRegistry": "tier-a"},
+        )
+        assert registry._resolve_install_entry("demo") == (moved, "")
+
 
 class TestResolveInstallEntry:
     def test_record_without_provenance_keeps_first_match_wins(self, monkeypatch):
@@ -218,8 +306,8 @@ class TestExternalRegistryCacheIdentity:
 
     def test_repointed_registry_stops_serving_the_old_index(self, monkeypatch, cache_dir):
         # The ignore_ttl stale-fallback readers must MISS after a repoint —
-        # serving the old repository's index under the same display name is
-        # the defect this PR exists to close.
+        # serving the old repository's index under the same display name would
+        # hand out the wrong apps.
         monkeypatch.setattr(registry, "_load_registry_file", list)
         old = _reg("mine", "https://gitea.internal/old.git")
         registry._write_external_registry_cache(
@@ -231,8 +319,8 @@ class TestExternalRegistryCacheIdentity:
         assert registry.known_registry_repos() == set()
 
     def test_absent_none_and_empty_branch_share_one_identity(self):
-        # Duck-typed registry objects may not carry ``branch`` at all
-        # (regression: AttributeError from _registry_app_candidates). Absent,
+        # Duck-typed registry objects may not carry ``branch`` at all (and
+        # _registry_app_candidates must not raise AttributeError). Absent,
         # None, and "" all mean "default branch" and must agree — and must
         # never collide with a real branch.
         no_branch = SimpleNamespace(name="mine", repo="https://gitea.internal/idx.git")
@@ -252,10 +340,10 @@ class TestExternalRegistryCacheIdentity:
         assert real not in ids
 
     def test_owner_count_reader_agrees_with_the_writer(self, monkeypatch, cache_dir):
-        # Regression: _repo_key_owner_count read the cache under the display
-        # name while every writer had moved to the coordinate identity, so an
-        # external source always counted 0 and the single-owner credential
-        # grant was silently disabled.
+        # _repo_key_owner_count must read the cache under the coordinate
+        # identity every writer uses. Reading it under the display name counts
+        # an external source as 0 and silently disables the single-owner
+        # credential grant.
         from kiro_crew.apps.routes import _repo_key_owner_count
 
         monkeypatch.setattr(registry, "_load_registry_file", list)

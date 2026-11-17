@@ -401,11 +401,26 @@ async def record_live_children_after_turn(source: Any) -> None:
     longer answers ``getpgid``, so without it the teardown handle carries no
     group id and the late children recorded here could never vouch for the
     group they keep alive.
+
+    A source whose runs share an ``AcpRuntime`` (the kiro-backend
+    ``AcpSessionProvider``, which holds it on ``_runtime``) starts the runtime's
+    pass as a task (``AcpRuntime._record_tree_in_background``) and returns at
+    once: the walk starts now, while the leader is alive, and every kill and
+    pre-teardown refresh of that runtime waits for it
+    (``AcpRuntime.wait_tree_recorded``), so the end of a turn does not wait for
+    a walk only a kill reads. On macOS that walk starts a ``pgrep`` per
+    process, 68 to 105 ms at the end of each warm turn with 64 servers.
     """
-    await _bounded_tree_refresh(
-        getattr(source, "refresh_process_tree", None),
-        label="Recording a turn's late children",
-    )
+    # Asked of the runtime's type, so only a class that defines it opts in.
+    runtime = getattr(source, "_runtime", None)
+    in_background = getattr(type(runtime), "_record_tree_in_background", None)
+    if runtime is not None and callable(in_background):
+        in_background(runtime)
+    else:
+        await _bounded_tree_refresh(
+            getattr(source, "refresh_process_tree", None),
+            label="Recording a turn's late children",
+        )
     _retain_verified_group(source)
 
 

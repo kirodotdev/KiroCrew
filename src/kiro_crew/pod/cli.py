@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Callable, NoReturn
 
+from kiro_crew.pod import env_overrides as pod_env_overrides
 from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
@@ -374,7 +375,7 @@ def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_popul
             "cleanup after a failed start would otherwise be allowed to delete that "
             "existing state. To restart it unchanged: "
             f"kirocrew pod up {name}. To boot it fresh: "
-            f"kirocrew pod down {name} && kirocrew pod up {name} --seed {scenario}"
+            f"kirocrew pod down {name}, then kirocrew pod up {name} --seed {scenario}"
         )
     if landed == scenario:
         return
@@ -385,8 +386,8 @@ def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_popul
         f"  The per-pod boot override should point systemd at this checkout: "
         f"{rt.unit_mod.dropin_path(cfg, name)}.\n"
         f"  Its boot log: kirocrew pod logs {name}\n"
-        f"  Then retry:   kirocrew pod down {name} && kirocrew pod up {name} "
-        f"--seed {scenario}"
+        f"  Then retry:   kirocrew pod down {name}\n"
+        f"                kirocrew pod up {name} --seed {scenario}"
     )
 
 
@@ -443,10 +444,20 @@ def _limit_updates(name: str, args: argparse.Namespace) -> dict[str, str]:
     return updates
 
 
+def _env_overrides(name: str, args: argparse.Namespace) -> dict[str, str]:
+    """Checked ``--env`` overrides, refused before anything changes."""
+    try:
+        return pod_env_overrides.parse_assignments(getattr(args, "env", None) or [])
+    except pod_env_overrides.EnvOverrideError as exc:
+        _audit("pod.up", "denied", f"name={name}", error="invalid env override")
+        _die(str(exc))
+
+
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     _require_up_user_bus(name)
     limit_updates = _limit_updates(name, args)
+    env_overrides = _env_overrides(name, args)
     checkout = _resolve_or_die(cfg, name)
 
     scenario = ""
@@ -470,7 +481,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         if not prov.has_dist(checkout):
             _die(
                 f"no built dist for {name!r}.\n"
-                f"  Build it (slow, one-time):  cd {checkout / 'website'} && npm run build\n"
+                f"  Build it (slow, one-time):  cd {checkout / 'website'}\n"
+                f"                              npm run build\n"
                 f"  Or let pod do the full chain: kirocrew pod up {name} --provision"
             )
 
@@ -512,6 +524,13 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             boot_flags.append("--no-embeddings")
         env_updates.update(limit_updates)
         boot_flags.extend(f"--{k.lower()} {v}" for k, v in limit_updates.items())
+        override_updates = pod_env_overrides.env_file_updates(
+            env_overrides, rt.read_env_file(cfg, name)
+        )
+        env_updates.update(override_updates)
+        # A cleared override is a boot setting too: on a running pod it takes
+        # effect only at the next boot, so it must reach the note below.
+        boot_flags.extend(f"--env {k}={v}" for k, v in override_updates.items())
 
         # Read the unit's state BEFORE choosing a port, and inside the mutex: the
         # two questions are one decision. An `up` against an already-active pod is
@@ -640,7 +659,7 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                 joined = " ".join(boot_flags)
                 # `pod restart` refuses on Windows, so name the remedy that works there.
                 apply_now = (
-                    f"`kirocrew pod down {name} && kirocrew pod up {name} {joined}` "
+                    f"`kirocrew pod down {name}`, then `kirocrew pod up {name} {joined}`, "
                     "applies it now with a fresh home."
                     if rt.IS_WINDOWS
                     else f"`kirocrew pod restart {name}` applies it now and keeps the pod's home."
@@ -678,6 +697,9 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             resources += " embeddings=off"
         for key, val in limit_updates.items():
             resources += f" {key.lower()}={val}"
+        if env_overrides:
+            # Key names only: the audit row says a double is in play, not where.
+            resources += f" env={','.join(env_overrides)}"
         if boot_flags and was_active:
             resources += " applied=next_boot"
         _audit("pod.up", "allowed", resources)

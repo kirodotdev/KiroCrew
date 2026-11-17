@@ -173,7 +173,14 @@ own. For the surface it is asked about it runs the union of: test files in the
 diff; `test_<module>.py` / `test_<module>_*.py` (vitest: `<Stem>.*.test.ts`) for
 each changed module; test files that textually reference a changed file; and,
 when the OTHER surface changed, the cross-surface set `ci-surface-tests.py`
-computes for CI (its `--summary` flag prints the current size). Two outcomes, and
+computes for CI (its `--summary` flag prints the current size). From the backend
+union it then subtracts the `test/` files this platform does not collect
+(`test/windows-collect-ignore.txt` on Windows, `test/macos-collect-ignore.txt` on
+macOS), read through the same `platform_collect_ignore_helpers` the conftest hook
+uses: every related target is an explicit pytest path, and an explicit path
+bypasses `pytest_ignore_collect`, so without the subtraction a suite the list
+keeps off the platform would run -- and fail -- whenever a change touched,
+name-matched or referenced it. Two outcomes, and
 neither is "everything":
 
 | condition | verdict |
@@ -185,8 +192,8 @@ neither is "everything":
 Workers: the gate runs `-n auto` and caps it by setting
 `PYTEST_XDIST_AUTO_NUM_WORKERS` to `min(max(cpu_count // 3, 2), 12)` in the
 subprocess environment (a tighter cap already in the environment is kept). An
-explicit `-n <N>` would bypass the root `xdist_budget.py` hook and with it the
-live free-memory clamp and the flock slots shared between concurrent runs; going
+explicit `-n <N>` would bypass the root `xdist_budget.py` hook's live free-memory
+clamp (it still claims the flock slots shared between concurrent runs); going
 through xdist's own knob keeps those and adds the gate's cap on top. A human who
 wants the machine saturated runs a bare `python -m pytest` and gets the budget's
 default.

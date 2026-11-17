@@ -12,7 +12,7 @@
  *    the list; All sources clears only that filter. Add source opens the popover.
  */
 import { BadgeCheck, Database, Plus, ShieldCheck, Users } from 'lucide-react'
-import type { Category } from './categories'
+import { categoryLabel, type Category } from './categories'
 import { sourceRowKey } from './types'
 import { RadioChipGroup, radioChip } from '../RadioChipGroup'
 
@@ -95,7 +95,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, in
       <RadioChipGroup ariaLabelledBy="appstore-rail-categories">
         <div id="appstore-rail-categories" className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
         {item(i18nT('components.appstore.categoryRail.all_apps'), total, 'all')}
-        {categories.map(({ category, count }) => item(category, count, category))}
+        {categories.map(({ category, count }) => item(categoryLabel(category), count, category))}
       </RadioChipGroup>
       <RadioChipGroup ariaLabelledBy="appstore-rail-install-state">
         <div id="appstore-rail-install-state" className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.install_state')}</div>

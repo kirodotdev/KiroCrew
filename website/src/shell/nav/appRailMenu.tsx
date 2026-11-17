@@ -69,10 +69,12 @@ export function AppRailMenu({ row, dragActive, children }: {
   const guardedLeave = useGuardedLeave()
   // The registry query the Discover badge's observer fetches. With
   // `refetchOnMount: false`, a row that mounts after the list has loaded reads
-  // the cache and sends no request of its own.
+  // the cache and sends no request of its own. A row that is not an installed
+  // app (a core surface such as Task Runner) has no menu, so it never asks.
   const { data: registryData, error: registryError } = useQuery({
     queryKey: ['registry'],
     queryFn: registryQueryFn,
+    enabled: !!row.appName,
     staleTime: 5 * 60_000,
     refetchOnMount: false,
     refetchOnWindowFocus: false,

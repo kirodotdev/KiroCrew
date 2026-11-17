@@ -48,11 +48,9 @@ export function useRowDeliveryWatchdog(dispatch: AppDispatch, forceReconnect: ()
    * client believes is running has gone ROW_STALL_MS without progress.
    *
    * Scope, deliberately: this watches the slot THIS client believes is running.
-   * A client whose belief is wrong -- a turn started on another device whose run
-   * frame was lost, so the slot looks idle here -- is NOT covered: nothing
-   * re-checks a slot this client believes idle. Covering it from here would
-   * cost a steady slots GET per visible tab to guard a case no report has
-   * produced.
+   * A client whose belief is wrong -- a turn started elsewhere whose run frame
+   * was lost, so the slot looks idle here -- is covered instead by the idle
+   * `slots` row naming that turn (`useSlotListSync`), at no steady-state cost.
    */
   useEffect(() => {
     let slotKey: string | null = null

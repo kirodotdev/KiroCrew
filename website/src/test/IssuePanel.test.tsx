@@ -206,6 +206,20 @@ describe('IssuePanel', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
+  it('shows a failed section read through ErrorNotice, not only the partial banner', async () => {
+    mockApi.fetchIssueSource.mockResolvedValue({
+      ...openIssue,
+      partialSections: ['comments'],
+      failedSections: ['comments'],
+    })
+    renderPanel({ issues: [links[0]] })
+    const failure = await screen.findByTestId('issue-panel-failed-sections')
+    expect(failure).toHaveAttribute('role', 'alert')
+    expect(failure).toHaveTextContent("Couldn't load comments for this issue")
+    expect(failure).toHaveTextContent('Ask the agent')
+    expect(screen.queryByText(/Provider results may be partial/)).toBeNull()
+  })
+
   it('turns an authentication failure into the CLI login instruction', async () => {
     mockApi.fetchIssueSource.mockRejectedValue(new Error('not logged in; run `gh auth login`'))
     renderPanel({ issues: [links[0]] })

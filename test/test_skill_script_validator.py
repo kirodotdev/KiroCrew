@@ -197,6 +197,21 @@ def test_rejects_expanded_sensitive_paths():
         assert ok is False and any("sensitive path" in f for f in findings), path
 
 
+def test_rejects_windows_separator_sensitive_paths():
+    """Multi-segment entries must match with backslash separators too."""
+    for src in (
+        "open(r'C:\\Users\\u\\.kube\\config')",
+        "open('C:\\\\Users\\\\u\\\\.kube\\\\config')",
+        "open(r'C:\\Users\\u\\.KUBE\\CONFIG')",
+        "open(r'C:\\Users\\u\\AppData\\Local\\kiro-cli\\data.db')",
+        "open(r'C:\\Users\\u\\.kiro\\crew\\token_signing.key')",
+    ):
+        ok, findings = validate_skill_script("run.py", src + ".read()\n")
+        assert ok is False and any("sensitive path" in f for f in findings), src
+    ok, findings = validate_skill_script("run.py", "open(r'C:\\u\\projects\\allow.txt')\n")
+    assert ok is True, findings
+
+
 def test_env_environ_not_flagged_as_sensitive_path():
     """The .env path token must not false-positive on os.environ access."""
     ok, findings = validate_skill_script("run.py", "import os\nprint(os.environ.get('HOME'))\n")

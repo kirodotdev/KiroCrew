@@ -37,6 +37,7 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
+from kiro_crew.acp.node_compile_cache import apply_node_compile_cache
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_CLIENT_CAPABILITIES,
@@ -178,6 +179,7 @@ class KiroHarness(MembershipHarness):
         pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_client_application_env(env)
         apply_child_env_defaults(env)
+        apply_node_compile_cache(env)
 
     @property
     def verifies_agent_activation(self) -> bool:
@@ -213,12 +215,27 @@ class KiroHarness(MembershipHarness):
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """Nothing. kiro-cli already has the agent from its spawn flag.
 
         Sending a wire-registered copy as well would advertise the same agent
-        twice, so the empty answer is the correct one rather than a gap.
+        twice, so the empty answer is the correct one rather than a gap. A
+        helper of a Bot with held limits is refused here instead, since its
+        spec file's pre-approvals cannot be narrowed on this harness.
         """
+        from kiro_crew.mate_held_rules import is_bot_helper_session, kiro_cli_helper_refusal
+
+        if not is_bot_helper_session(session_key, agent):
+            return SessionExtras()
+        # It reads the ledger and the helper's spec from disk, so off the loop.
+        reason = await asyncio.to_thread(
+            kiro_cli_helper_refusal, session_key, agent, cwd=session_cwd or work_dir
+        )
+        if reason:
+            from kiro_crew.acp.session_handle import AcpAgentUnavailable
+
+            raise AcpAgentUnavailable(reason, agent=agent)
         return SessionExtras()
 
     def session_mcp_servers(

@@ -87,7 +87,8 @@ describe('hooks page — lifecycle event picker', () => {
     // `textContent` is `FileEdited` + `stored only`. The mark itself is covered
     // below; what this asserts is the vocabulary and its order.
     const names = screen.getAllByRole('option')
-      .map(o => (o.textContent ?? '').replace(/not fired yet|never fires/, '').trim())
+      .map(o => (o.textContent ?? '')
+        .replace(/not fired yet|never fires|\([^)]*\)/g, '').trim())
     expect(names).toEqual([
       'AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
       'SessionLaneChanged',
@@ -330,12 +331,28 @@ describe('hooks page — lifecycle event picker', () => {
     expect(screen.queryByText(/never fires on its own/)).toBeNull()
   })
 
-  it('does not mark the five events the gateway fires', async () => {
+  it('glosses the lane event where the choice is made', async () => {
+    // The wire value reads as its own opposite -- "lane" is also the board's word for
+    // the AUTOMATIC columns this event never fires on -- so the gloss has to be in the
+    // OPEN LIST, not only in the native list a mouse user never sees.
+    renderPage()
+    const trigger = await openForm()
+    fireEvent.click(trigger)
+    const option = await screen.findByRole('option', { name: 'SessionLaneChanged' })
+    // Parenthesised, so it reads as an aside rather than as a second label. And it names
+    // the TRIGGER rather than the place: the firing contract is status-tags-only, so
+    // `board column` would have swept in the automatic columns the gloss exists to exclude.
+    expect(option).toHaveTextContent('(status-tag column)')
+    expect(option).not.toHaveTextContent('not fired yet')
+    expect(option.getAttribute('aria-label')).toBeNull()
+  })
+
+  it('does not mark the six events the gateway fires', async () => {
     renderPage()
     const trigger = await openForm()
     fireEvent.click(trigger)
     await screen.findByRole('option', { name: 'AgentSpawn' })
-    for (const event of ['AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']) {
+    for (const event of ['AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionLaneChanged']) {
       const option = screen.getByRole('option', { name: event })
       expect(option).not.toHaveTextContent('not fired yet')
       expect(option).not.toHaveTextContent('never fires')

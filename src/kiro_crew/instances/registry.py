@@ -85,7 +85,7 @@ _REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
 _AWS_PROFILE_RE = _validation_aws_profile_re
 # aws_region: standard AWS region shape (e.g. us-east-1, eu-west-2). Empty
 # string means "use the profile's/environment's default region".
-_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z|^\Z")
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-[0-9]{1,2}\Z|^\Z")
 # ssm_run_as: the remote POSIX user that SSM commands are wrapped in
 # (``sudo -u <user> -i``). Unix username shape, matching the charset
 # cloud.ssm.run_command validates at the chokepoint. Defaults to the
@@ -169,6 +169,10 @@ class InstanceNotFoundError(InstancesError):
 
 class InstanceDisabledError(InstancesError):
     """The crew is disabled, so no tunnel may be opened for it."""
+
+
+class InstanceStoppedError(InstanceDisabledError):
+    """The crew's cloud machine was stopped from the panel, so no tunnel may be opened."""
 
 
 class InvalidInstanceError(InstancesError):
@@ -310,6 +314,10 @@ class Instance:
     # ``was_connected`` intent, but no tunnel is opened for it -- not by a click,
     # not by auto-connect, not by the startup revive -- until it is enabled again.
     disabled: bool = False
+    # The owner stopped this crew's EC2 instance from the panel. Like ``disabled``
+    # no tunnel is opened for it, and the panel shows it as Stopped with Start as
+    # the way back; the cloud Start route clears it.
+    cloud_stopped: bool = False
 
     def validate(self) -> None:
         """Raise :class:`InvalidInstanceError` if any field is malformed."""
@@ -497,6 +505,7 @@ class Instance:
             "forwarder_sig": self.forwarder_sig,
             "forwarder_argv_sig": self.forwarder_argv_sig,
             "disabled": self.disabled,
+            "cloud_stopped": self.cloud_stopped,
         }
 
     @classmethod
@@ -560,6 +569,7 @@ class Instance:
             # A record written before this field existed has no key: enabled.
             # `is True`: a hand-edited "false" string must not switch a crew off.
             disabled=data.get("disabled", False) is True,
+            cloud_stopped=data.get("cloud_stopped", False) is True,
         )
 
 
@@ -733,7 +743,7 @@ class InstancesRegistry:
         if not self._path.exists():
             return _RegistryDoc()
         try:
-            raw = json.loads(self._path.read_bytes())
+            raw = json.loads(read_bytes_with_retry(self._path))
         except (ValueError, OSError) as e:
             logger.warning("Failed to read %s: %s — treating as empty", self._path, e)
             return _RegistryDoc()
@@ -996,6 +1006,7 @@ class InstancesRegistry:
             "via_instance_id",
             "via_remote_port",
             "disabled",
+            "cloud_stopped",
         }
         unknown = set(changes) - allowed
         if unknown:

@@ -24,13 +24,12 @@ import contextlib
 import importlib.util
 import json
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
 
+import pytest
 from aiohttp import web
 
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import OwnerRequest
@@ -108,8 +107,13 @@ def _body(resp) -> dict:
 class _SageRoutesBase(unittest.IsolatedAsyncioTestCase):
     """Per-test tmp data root + a freshly loaded routes module."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
         # config_dir() memoizes the resolved data home for the process; reset it
@@ -137,7 +141,6 @@ class _SageRoutesBase(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _cfg_path(self) -> Path:
         return store.data_dir() / "config.json"

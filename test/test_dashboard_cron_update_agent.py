@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from body_stream_helpers import attach_body
+from dashboard_owner_helpers import owner_claims
 
 from kiro_crew.dashboard.handlers import api_cron_update
 
@@ -106,6 +107,9 @@ class TestCronUpdateAgent:
                 "silent": True,
             }
         )
+        # Only the owner may set ``auto``; an app token is refused.
+        owner_claims(request)
+        request.app["state"].owner_id = ""
 
         resp = await api_cron_update(request)
 

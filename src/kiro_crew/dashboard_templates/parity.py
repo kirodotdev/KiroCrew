@@ -76,13 +76,14 @@ _VOID_TAGS: Final[frozenset[str]] = frozenset(
 
 #: Tags that make a page a control surface, refused for two different reasons.
 #:
-#: Most of them the host strips, so a template authoring one ships a layout with a hole
-#: in it and an author who believes the button exists. Three -- ``label``, ``fieldset``
-#: and ``option`` -- the host KEEPS, and this package refuses them on its own account:
-#: they render as the furniture of a control, so a page carrying them tells a reader an
-#: action is available where none is. :func:`control_tags_used` does not distinguish the
-#: two, because the answer to both is the same, but the claim that the host removes every
-#: one of these would be false and ``TestTheControlTagsSplit`` holds the real division.
+#: Most of them the host strips, so a template using one ships a layout with a hole and
+#: an author who believes the button exists. Three -- ``label``, ``fieldset`` and
+#: ``option`` -- the host KEEPS, and this package refuses them itself: they render as the
+#: furniture of a control and tell a reader an action exists where none does.
+#: :func:`control_tags_used` treats both groups alike, since the answer is the same, but
+#: the host does not strip all of them;
+#: ``test_the_control_tags_split_into_host_stripped_and_locally_refused`` pins the real
+#: split.
 #:
 #: A dashboard template states facts and offers no actions: a decision goes through the
 #: product's own question and approval surfaces, which are outside the rendered frame and
@@ -114,18 +115,18 @@ CONTROL_TAGS: Final[frozenset[str]] = frozenset(
 #: name: writing provider text into live CSS is its own deliberate refusal.
 _BINDING_SKIPPED_TAGS: Final[frozenset[str]] = frozenset({"style"})
 
-#: Elements html marks NON-CONFORMING -- its own obsolete list -- that this reader also
-#: refuses a binding on. The ground is this package's, not the sanitizer's: a dashboard
-#: renders a fact, and an obsolete element is not how this product renders one. Stating it
-#: that way is what makes the set answerable, because the alternative ground -- "DOMPurify
-#: drops it" -- needs the allow-list :data:`_KNOWN_HTML` already records as unreadable here.
+#: Elements html marks NON-CONFORMING (its own obsolete list) that this reader also refuses
+#: a binding on. The ground is this package's, not the sanitizer's: a dashboard renders a
+#: fact, and an obsolete element is not how this product renders one. The other possible
+#: ground, "DOMPurify drops it", would need DOMPurify's allow-list, which this module
+#: cannot read (see :data:`_KNOWN_HTML`).
 #:
-#: They stay in :data:`_KNOWN_HTML`, which is html's index and says nothing about whether a
-#: tag should be used; this set is the separate question of whether a card may bind one.
+#: They stay in :data:`_KNOWN_HTML`, which is html's index and says nothing about whether
+#: a tag should be used; this set answers whether a card may bind one.
 #:
-#: The formatting elements among the obsolete ones (``big``, ``font``, ``nobr``, ``strike``,
-#: ``tt``) are deliberately NOT here: a browser paints their text, a sanitizer that keeps
-#: them is plausible, and refusing them would reject a page that renders.
+#: The obsolete formatting elements (``big``, ``font``, ``nobr``, ``strike``, ``tt``) are
+#: deliberately NOT here: a browser paints their text, a sanitizer may well keep them, and
+#: refusing them would reject a page that renders.
 _OBSOLETE_TAGS: Final[frozenset[str]] = frozenset(
     {
         "basefont",
@@ -184,29 +185,24 @@ _ROOTS: Final[frozenset[str]] = frozenset({"html", _BODY})
 #: these, html ignores the slash on a non-void tag and the element stays open.
 _FOREIGN_ROOTS: Final[frozenset[str]] = frozenset({"svg", "math"})
 
-#: Every element name html defines, including the obsolete ones a parser still recognises.
-#: Used for ONE question: is this tag something the host's sanitizer could keep at all?
+#: Every element name html defines, including obsolete ones a parser still recognises.
+#: Used for ONE question: could the host's sanitizer keep this tag at all?
 #:
 #: The host calls DOMPurify with only ``ADD_TAGS: ['style']``, so its DEFAULT allow-list
-#: applies and anything outside it -- a custom element, a misspelled tag -- is removed
-#: along with the binding it carried, leaving a green gate over a cell that never appears.
-#: An allow-list is the only shape that answers that, because the thing being detected is
-#: precisely a name nobody listed.
+#: applies: a custom element or a misspelled tag is removed with the binding it carried,
+#: leaving a green gate over a cell that never appears. Only an allow-list can catch a
+#: name nobody listed.
 #:
-#: This is the one rule here NOT read from the authority that governs it: DOMPurify's own
-#: default list lives in ``node_modules``, which this package cannot import and a Python
-#: reader cannot parse. So it is written as html's element index, which is WIDER than
-#: DOMPurify's list -- deliberately, because being wider means this rule never refuses a
-#: page the host would have rendered. The narrower cases are already covered element by
-#: element above (controls, sanitizer-stripped tags, fallback content).
+#: This is the one rule here NOT read from its authority: DOMPurify's default list lives
+#: in ``node_modules``, which this package cannot import and Python cannot parse. So it is
+#: html's element index, WIDER than DOMPurify's list on purpose, so that this rule never
+#: refuses a page the host would render. The narrower cases are covered element by element
+#: above (controls, sanitizer-stripped tags, fallback content).
 #:
-#: Obsolete elements a parser still recognises are IN, because the reader's other sets name
-#: several of them and html still defines how to parse them. An element the spec has DROPPED
-#: is not: ``keygen`` is gone from html and from every browser, so a binding on one is a
-#: binding on nothing.
-#:
-#: A test holds it to every tag the rest of this module names, so it cannot drift out of
-#: agreement with its own neighbours.
+#: Obsolete elements a parser still recognises are IN: other sets here name several, and
+#: html still defines how to parse them. An element the spec DROPPED is not: ``keygen`` is
+#: gone from html and from every browser, so a binding on one binds nothing. A test holds
+#: this set to every tag the rest of the module names, so it cannot drift from them.
 _KNOWN_HTML: Final[frozenset[str]] = frozenset("""
     a abbr address applet area article aside audio b base basefont bdi bdo bgsound big
     blockquote body br button canvas caption center cite code col colgroup data datalist
@@ -219,26 +215,18 @@ _KNOWN_HTML: Final[frozenset[str]] = frozenset("""
     tfoot th thead time title tr track tt u ul var video wbr xmp
     """.split())
 
-#: Elements whose text content the spec defines as FALLBACK: it is painted only by a user
-#: agent that cannot use the element itself, so a browser that supports the element shows
-#: none of it. The binder matches on the attribute alone and fills it regardless, which
-#: makes a binding here reachable and invisible at the same time.
+#: Elements whose text the spec defines as FALLBACK: painted only by a user agent that
+#: cannot use the element, so a browser that supports it shows none of that text. The
+#: binder matches on the attribute alone and fills it anyway, so a binding here is
+#: reachable and invisible at once.
 #:
-#: Named as the spec's own category rather than one tag at a time. ``object`` and
-#: ``iframe`` are already in :data:`CONTROL_TAGS`, so a page carrying one is refused by the
-#: control reader too -- they are here so this reader agrees with itself rather than
-#: relying on its neighbour. ``embed`` needs no entry: it is void and already refused for
-#: holding no text at all.
-#: An ENUMERATION, not a set derived from one rule -- worth saying plainly, because the
-#: rest of this reader avoids enumerations for exactly the reason this one keeps growing.
-#: The spec marks this content fallback element by element, in each element's own content
-#: model, so there is no single list to read and no membership test a reader can compute.
+#: ``object`` and ``iframe`` are in :data:`CONTROL_TAGS` too; they are here so this reader
+#: agrees with itself. ``embed`` is void and already refused for holding no text.
 #:
-#: Left as an enumeration rather than inverted into an allow-list of elements that DO paint
-#: text, because that list is most of html: getting it wrong refuses a page the browser
-#: renders, which is worse than the miss here. A tag absent from this set costs one blank
-#: cell on a page under review; a tag wrongly absent from an allow-list costs every page
-#: that uses it.
+#: An ENUMERATION, because the spec marks fallback content element by element. Not an
+#: allow-list of elements that DO paint text: that is most of html, and a tag wrongly
+#: missing from it would refuse every page using it, while a tag missing here costs one
+#: blank cell on a page under review.
 _FALLBACK_TEXT_TAGS: Final[frozenset[str]] = frozenset(
     {"canvas", "audio", "video", "object", "iframe", "meter", "progress"}
 )
@@ -296,12 +284,9 @@ class _FieldScanner(HTMLParser):
         #: below never reaches into the parser's own bookkeeping.
         self.open_at_end: list[str] = []
         #: Whether the cursor is still inside the head. NOT read off the open-element
-        #: stack, and the strict end-tag rule below does not make it readable from there:
-        #: html reparents content the head may not hold into the BODY, so
-        #: ``<head><span data-dashboard-field=...></span></head>`` is well formed by every
-        #: rule here and the browser still binds that span. A stack read would refuse it.
-        #: This is a content-model question, not a nesting one, and it is answered with a
-        #: set this reader keeps for its own sake.
+        #: stack: html reparents content the head may not hold into the BODY, so
+        #: ``<head><span data-dashboard-field=...></span></head>`` is still bound by the
+        #: browser. A content-model question, answered with :data:`_HEAD_CONTENT`.
         self._head_depth = 0
         #: Every open element around the cursor as ``(tag, field or None)``, innermost
         #: last. A pair of counters cannot survive an unmatched ``</div>``: it pops a
@@ -318,13 +303,9 @@ class _FieldScanner(HTMLParser):
     def _in_foreign(self, tag: str) -> bool:
         """Is ``tag`` being read as foreign content -- svg or mathml?
 
-        Answered from the open-element stack rather than a depth counter, for the reason
-        the counter was replaced everywhere else in this scanner: an end tag matching
-        nothing open closes nothing, and a counter cannot tell. ``<svg></math><circle
-        data-dashboard-field=...>`` decremented a count that ``</math>`` never raised,
-        and the binding then read as ordinary html and was accepted. Unwinding the stack
-        cannot make that mistake -- the stray end tag finds no ``math`` open and leaves
-        the ``svg`` where it is.
+        Answered from the open-element stack, not a depth counter: in ``<svg></math>``
+        the stray ``</math>`` closes nothing, but a counter would drop out of foreign
+        content and accept the next binding as ordinary html.
         """
         if tag in _FOREIGN_ROOTS:
             return True
@@ -334,14 +315,10 @@ class _FieldScanner(HTMLParser):
         """Why the binder will never write to this element, or ``None`` if it will.
 
         Recording the binding anyway would make the equality gate PASS on a page whose
-        cell stays blank at every render -- the precise failure this whole package is
-        built to make impossible, reached through its own reader.
+        cell stays blank at every render.
 
-        The first question asked is whether the binder VISITS this element at all, rather
-        than whether the element is one of the kinds it is known to step over. Listing
-        what is skipped means every placement nobody listed is accepted, and the binder's
-        reach has a short definition: ``body.querySelectorAll`` walks the descendants of
-        the body, which excludes the body and the root themselves.
+        Asked first: does the binder VISIT this element? ``body.querySelectorAll`` walks
+        the body's descendants, which excludes the body and the root themselves.
         """
         if tag in _ROOTS:
             return (
@@ -478,21 +455,10 @@ class _FieldScanner(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         """Every end tag must close the innermost open element, and nothing else.
 
-        This is STRICTER than html, deliberately. html lets an author omit many end tags and
-        repairs a misnested one, so accepting what a browser accepts means modelling both: a
-        table of omission rules, the scope variant each end tag is resolved in, and an unwind
-        that notices which formatting elements a stray end tag crossed.
-
-        That machinery is declined because of what this reader is FOR. It runs at authoring
-        time on a page someone in this repository is writing, and its whole job is to say
-        where a binding lands. A tree builder is a lot of machinery to answer that, and its
-        failure mode is silent: a scope set slightly wrong reads a child as a sibling and
-        reports it in a precise sentence. This rule cannot be wrong about scope at all, and
-        the author's remedy is one end tag, named, on the line that needs it.
-
-        So a page that renders and is refused here is not a bug in the page. It is this gate
-        asking for markup a reader can follow without guessing, which a dashboard page can
-        always supply.
+        STRICTER than html on purpose. Accepting what a browser accepts means modelling
+        end-tag omission, scope variants and misnest repair, and a tree builder that gets
+        scope slightly wrong reads a child as a sibling silently. This rule cannot be
+        wrong about scope, and the author's fix is one named end tag.
         """
         tag = tag.lower()
         if tag == _HEAD and self._head_depth:
@@ -634,9 +600,7 @@ def dropped_text_attributes(html: str) -> set[tuple[str, str]]:
     return _scan(html).dropped_text
 
 
-# --------------------------------------------------------------------------
-# the contract end
-# --------------------------------------------------------------------------
+# The contract end
 
 
 def _is_typed_dict(annotation: Any) -> bool:
@@ -647,18 +611,17 @@ def _is_typed_dict(annotation: Any) -> bool:
     )
 
 
-#: The only leaves a flat card can carry. An ALLOW-list on purpose: naming the shapes
-#: that cannot reach the page means every shape nobody thought of is accepted, and
-#: ``Mapping``, ``Sequence``, ``frozenset`` and ``deque`` are all containers whose origin
-#: is not ``dict``, ``list``, ``set`` or ``tuple``. Anything not named here is refused
-#: until someone decides how it becomes one string.
+#: The only leaves a flat card can carry. An ALLOW-list on purpose: a list of shapes that
+#: cannot reach the page would accept every shape nobody thought of (``Mapping``,
+#: ``Sequence``, ``frozenset`` and ``deque`` are containers whose origin is not ``dict``,
+#: ``list``, ``set`` or ``tuple``). Anything else is refused until someone decides how it
+#: becomes one string.
 #:
-#: The set is what :func:`~kiro_crew.dashboard_templates.card_data` already says it
-#: handles: a sentinel, or something stringified, "which for this package's contracts
-#: means an ``int`` or a ``str``". Nothing else belongs here. ``None`` would reach the
-#: page as the word ``None``, which is invariant 3 broken in its worst form -- a gap
-#: rendering as something that reads like data. ``bool`` would render a Python literal.
-#: ``float`` is a ratio, and a template states a count with its denominator instead.
+#: The set is what :func:`~kiro_crew.dashboard_templates.card_data` handles: a sentinel, or
+#: a stringified ``int`` or ``str``. ``None`` would reach the page as the word ``None``,
+#: invariant 3 broken in its worst form (a gap that reads like data). ``bool`` would render
+#: a Python literal. ``float`` is a ratio, and a template states a count with its
+#: denominator instead.
 _FLAT_LEAVES: Final[tuple[type, ...]] = (str, int, Unsaid)
 
 

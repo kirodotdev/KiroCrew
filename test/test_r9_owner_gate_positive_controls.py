@@ -8,7 +8,7 @@ The caller classes:
 
 * the owner's dashboard cookie: ``app == ""`` with the owner's subject;
 * an app token: ``app`` carries the app's name, and ``_enforce_app_scope`` confines
-  it to its manifest's declared paths (the Projects app declares ``/api/taskrunner``,
+  it to its manifest's declared paths (an app may declare ``/api/taskrunner``,
   and several apps declare ``/api/chat/*``);
 * an ``X-Internal-Secret`` loopback process: ``app`` is ABSENT and
   ``internal_auth`` is True (the ``task_run`` MCP tool posts ``/api/taskrunner``).
@@ -132,9 +132,9 @@ def _runner():
 
 
 async def test_taskrunner_update_plan_app_token_still_reaches_runner() -> None:
-    """The Projects app's token (``app="projects"``) is scoped by its manifest, not by owner."""
+    """An app's token (``app="planner"``) is scoped by its manifest, not by owner."""
     runner = _runner()
-    app = _taskrunner_app(_identity(user="dashboard", app="projects"), runner)
+    app = _taskrunner_app(_identity(user="dashboard", app="planner"), runner)
     async with TestClient(TestServer(app)) as client:
         response = await client.put("/api/taskrunner/t1/plan", json={"steps": []})
         assert response.status == 200, await response.text()
@@ -267,22 +267,31 @@ async def test_computer_use_config_allows_owner(monkeypatch) -> None:
     write_state.assert_called()
 
 
-async def test_update_apply_allows_owner(monkeypatch) -> None:
+async def test_update_apply_allows_owner(monkeypatch, tmp_path) -> None:
+    from kiro_crew import update_next_start
     from kiro_crew.dashboard.handlers import updates
     from kiro_crew.platform import update_provider
 
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     applied = AsyncMock(return_value=True)
     restarted = AsyncMock()
     monkeypatch.setattr(update_provider, "apply_policy_update", applied)
+    # A policy-defined provider owns the update, so any layout may arm.
+    monkeypatch.setattr(update_provider, "resolve_provider", lambda: object())
     monkeypatch.setattr(updates, "_restart_gateway", restarted)
+    monkeypatch.setitem(updates._update_info, "check_status", "succeeded")
+    monkeypatch.setitem(updates._update_info, "update_available", True)
+    monkeypatch.setitem(updates._update_info, "latest_version", "9.9.9")
     app = web.Application(middlewares=[_owner()])
-    app["state"] = SimpleNamespace(owner_id=OWNER)
+    app["state"] = SimpleNamespace(owner_id=OWNER, push_refresh=lambda _kind: None)
     app.router.add_post("/api/update", updates.api_update_apply)
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/api/update", json={})
-        assert response.status == 200, await response.text()
-    applied.assert_awaited_once()
-    restarted.assert_awaited_once()
+        assert response.status == 202, await response.text()
+    # The owner is let through to ARM the update; nothing applies or restarts now.
+    assert update_next_start.read().armed is True
+    applied.assert_not_awaited()
+    restarted.assert_not_awaited()
 
 
 async def test_side_turn_allows_owner(monkeypatch) -> None:

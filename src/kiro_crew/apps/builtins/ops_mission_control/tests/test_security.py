@@ -16,12 +16,16 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from kiro_crew import security
 from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
+from kiro_crew.testing.synthetic_credentials import github_classic, synth
 
 
 class TestKeystoneProtection(unittest.TestCase):
@@ -173,7 +177,7 @@ class TestRedaction(unittest.IsolatedAsyncioTestCase):
         # fabricated `sk-abcdef…` that matches no provider's actual format, which made core
         # look broken when it was not — the leak was genuine but the diagnosis overreached.
         leaked = {
-            "akia": "glpat-IOSFODNN7EXAMPLE",
+            "akia": "glpat-" + synth(20, seed=7),  # a GitLab PAT: 20 or more characters
             "pagerduty": "u+AbCdEfGhIjKlMnOpQrStUv",
             "datadog": "d" * 32,
             "openai_bearer": "Bearer sk-proj-AbCdEfGhIjKlMnOpQrStUv",
@@ -238,17 +242,14 @@ class TestRedaction(unittest.IsolatedAsyncioTestCase):
 class TestSecretBackend(unittest.TestCase):
     """The store is write-only over the API: values go in, only names come out."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dir(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the secrets file."""
+        self._tmp_path = tmp_path
+
     def setUp(self):
-        import tempfile
-        from pathlib import Path
-
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = self._tmp_path
         self.backend = secrets.KeystoneFileBackend(self.tmp / "secrets.json")
-
-    def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_put_then_get(self):
         self.backend.put("pagerduty", "api_token", "u+secretvalue")
@@ -324,10 +325,13 @@ class TestSecretStoreLockdownOrdering(unittest.TestCase):
         from kiro_crew import platform_compat
 
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
 
         def _measuring(target):
-            sizes.append(os.stat(target).st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(os.stat(target).st_size)
             return real_restrict(target)
 
         with mock.patch("kiro_crew.platform_compat.restrict_to_owner", _measuring):
@@ -821,8 +825,9 @@ class TestEveryRedactionSinkUsesTheSameSeam(unittest.TestCase):
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import slack_out
 
-        core_shape = slack_out._safe("alarm glpat-IOSFODNN7EXAMPLE fired")
-        self.assertNotIn("glpat-IOSFODNN7EXAMPLE", core_shape)
+        token = github_classic(seed=41)
+        core_shape = slack_out._safe(f"alarm {token} fired")
+        self.assertNotIn(token, core_shape)
 
         app_shape = slack_out._safe("key ddapp_0123456789abcdef0123456789abcdef01234567")
         self.assertNotIn("ddapp_0123456789abcdef", app_shape)

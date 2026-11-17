@@ -33,6 +33,15 @@
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
 
+/* ── Edged buttons on a hovered row ── its --bg-hover hides a stock button's
+   --border edge, so the button takes --border-strong, carried from the row as
+   --row-edge because its own hover moves --border-strong up to --border-hover.
+   Gated like Tailwind's `hover:`, which paints that tint. */
+@media (hover:hover){
+  tbody tr:hover{--row-edge:var(--border-strong)}
+  tbody tr:hover button.border-border{--border:var(--row-edge);--border-strong:var(--border-hover)}
+}
+
 /* ── Follow-up option chip width cap ──
    An option label is a full user-voice instruction and can run to hundreds of
    characters. Capped at roughly half the default composer width so at least
@@ -200,6 +209,46 @@
    the 2px accent focus ring. Yielding here lets the focus ring win whenever
    focus is present. */
 .swatch-cue:hover:not(:focus-visible){outline:1px solid var(--muted);outline-offset:-3px}
+
+/* ── Busy action buttons (aria-disabled, not native disabled) ── */
+/* A button whose own action is running is kept FOCUSABLE with `aria-disabled`
+   instead of native `disabled`, so a keyboard user does not lose focus to
+   <body> mid-action (issue #33120; same fix as the #33132 Investigate/Review
+   button). The busy state must LOOK identical to the disabled state, which the
+   controls express in Tailwind `disabled:*` utilities. Expressing the mirror as
+   a parallel `aria-disabled:*` utility for each one — primary alone needed seven
+   — repeats a long class string in the always-loaded JS chunk per call site.
+   The shared look lives here once instead.
+
+   KEYED ON `[data-busy]`, NOT `[aria-disabled]`: `Btn` carries the `busy-cue`
+   class unconditionally, but ONLY sets `data-busy` while its `busy` prop is on.
+   Keying on `aria-disabled` alone would also restyle every existing Btn caller
+   that sets its OWN `aria-disabled` for a non-busy reason — the opposite of
+   leaving those callers unchanged. `data-busy` is set by this feature alone, so
+   only a genuinely-busy control is matched.
+
+   The `.busy-cue[data-busy]` attribute+class selector (0,2,0) and, for the hover
+   reset, + `:hover` (0,2,1) outspecify the Tailwind `hover:*` utilities (0,1,1)
+   at equal source order, so a busy button does not light up under the pointer.
+   The hover reset yields to `:not(:focus-visible)` so a KEYBOARD-focused busy
+   button keeps its `.focus-ring` box-shadow (which the reset would otherwise
+   clear, leaving no visible focus — a WCAG 2.4.7 failure), the same pattern this
+   file uses for `.swatch-cue` above. The cursor/dim is variant-agnostic; the two
+   `.busy-cue-*` variants restate exactly the `disabled:*` surface their Btn
+   branch already carries. */
+.busy-cue[data-busy]{cursor:default;opacity:var(--busy-dim,0.3)}
+.busy-cue[data-busy]:hover:not(:focus-visible){background-color:transparent;border-color:var(--border);
+  box-shadow:none}
+.busy-cue-danger[data-busy]:hover:not(:focus-visible){color:var(--danger)}
+/* Primary Btn: the muted disabled surface (bg-bg-hover, text-muted, transparent
+   border, opacity-60), not a faded accent. The surface always applies while
+   busy; `box-shadow:none` is split out under `:not(:focus-visible)` so a
+   keyboard-focused busy primary button keeps its `.focus-ring` shadow. */
+.busy-cue-primary[data-busy]{background-color:var(--bg-hover);color:var(--muted);
+  border-color:transparent;opacity:0.6}
+.busy-cue-primary[data-busy]:not(:focus-visible){box-shadow:none}
+.busy-cue-primary[data-busy]:hover:not(:focus-visible){background-color:var(--bg-hover);color:var(--muted);
+  border-color:transparent}
 
 /* ── Syntax highlighting (highlight.js) ── */
 .hljs{color:var(--text)}

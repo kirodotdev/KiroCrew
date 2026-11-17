@@ -77,6 +77,20 @@ describe('VoiceStatusBar', () => {
     expect(screen.getByText('Default microphone')).toBeTruthy()
   })
 
+  it('shows how long the recording has run, only while recording', () => {
+    const { rerender } = render(<VoiceStatusBar recording level={0.2} />)
+    expect(screen.getByTestId('voice-recording-elapsed').textContent).toBe('0:00')
+    // Capture is over: the strip that explains the wait has no clock, since
+    // nothing is being recorded any more.
+    rerender(<VoiceStatusBar recording={false} level={0} download={{ done: 0, total: 0, stage: 'preparing' }} />)
+    expect(screen.queryByTestId('voice-recording-elapsed')).toBeNull()
+  })
+
+  it('shows no elapsed time beside a mic error', () => {
+    render(<VoiceStatusBar recording level={0.2} error="Microphone permission denied" />)
+    expect(screen.queryByTestId('voice-recording-elapsed')).toBeNull()
+  })
+
   it('shows a dismissible error and prefers it over the recording indicator', () => {
     const onDismissError = vi.fn()
     render(
@@ -168,5 +182,41 @@ describe('VoiceStatusBar', () => {
     expect(screen.queryByTestId('voice-kept-recording')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(onDismissError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('VoiceStatusBar mute', () => {
+  const noop = () => {}
+  it('says Muted, keeps the timer, and offers unmute while muted', () => {
+    const onToggleMute = vi.fn()
+    render(<VoiceStatusBar recording level={0} muted onToggleMute={onToggleMute} onSelectDevice={noop} />)
+    expect(screen.getByText('Muted')).toBeTruthy()
+    expect(screen.queryByText('Recording')).toBeNull()
+    expect(screen.getByTestId('voice-recording-elapsed')).toBeTruthy()
+    const btn = screen.getByTestId('voice-mute-toggle')
+    // The name carries the action, so there is no pressed state to contradict it.
+    expect(btn.hasAttribute('aria-pressed')).toBe(false)
+    expect(btn.getAttribute('aria-label')).toBe('Unmute microphone')
+    // A visible word, not only an icon: the device picker beside it is a mic too.
+    expect(btn.textContent).toBe('Unmute')
+    fireEvent.click(btn)
+    expect(onToggleMute).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers mute while recording, and no control without a handler', () => {
+    const { unmount } = render(<VoiceStatusBar recording level={0.4} onToggleMute={noop} onSelectDevice={noop} />)
+    expect(screen.getByText('Recording')).toBeTruthy()
+    expect(screen.getByTestId('voice-mute-toggle').getAttribute('aria-label')).toBe('Mute microphone')
+    unmount()
+    render(<VoiceStatusBar recording level={0.4} onSelectDevice={noop} />)
+    expect(screen.queryByTestId('voice-mute-toggle')).toBeNull()
+  })
+
+  it('lets the recording row wrap, so a narrow composer keeps the device picker inside', () => {
+    // Every child but the picker keeps its width. On one row at 320px (Italian,
+    // muted) they pushed the picker past the composer's clipped edge.
+    render(<VoiceStatusBar recording level={0} muted onToggleMute={noop} deviceLabel="Mic" onSelectDevice={noop} />)
+    const row = screen.getByTestId('voice-mute-toggle').parentElement
+    expect(row?.className).toContain('flex-wrap')
   })
 })

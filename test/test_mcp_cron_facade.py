@@ -233,7 +233,7 @@ def test_every_name_served_from_outside_the_family_is_visible_to_type_checkers()
     for name in _LOCALLY_IMPORTED:
         owner = sys.modules[_index().exports[name]]
         assert getattr(mcp_cron, name) is vars(owner)[name]
-        assert expected.pop(name) == ("kiro_crew.mcp_core", name)
+        assert expected.pop(name) == ("kiro_crew.mcp_core_parts.gateway", name)
     assert _home_manifest() == expected
 
 

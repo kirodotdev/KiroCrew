@@ -653,7 +653,17 @@ class TestVoiceSynthesize:
             data = await resp.json()
             assert data["ok"] is True
             assert data["chunks"] == 1
-        state.broadcast_ws.assert_called()
+        # The stitch failed, yet every chunk was sent: the request still
+        # settles, with no replay clip.
+        complete = [
+            call.args[1]
+            for call in state.broadcast_ws.call_args_list
+            if call.args[0] == "voice_complete"
+        ]
+        assert len(complete) == 1
+        assert complete[0]["chunks"] == 1
+        assert complete[0]["request_id"] == data["request_id"]
+        assert "audio" not in complete[0]
 
     @pytest.mark.asyncio
     async def test_the_polly_chunks_are_written_and_read_off_the_event_loop(

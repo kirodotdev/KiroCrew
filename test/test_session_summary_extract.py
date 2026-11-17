@@ -25,6 +25,10 @@ from kiro_crew.session_summary import (
     render_bounded_input,
     render_input,
 )
+from kiro_crew.testing.synthetic_credentials import github_classic
+
+#: A GitHub token with a valid checksum.
+_TOKEN = github_classic(seed=67)
 
 
 def _rec(role, content, ts=None, **extra):
@@ -91,7 +95,7 @@ class TestTrapAutomationUnderUserRole:
             [
                 _rec("user", "real request"),
                 _rec("user", "[Subagent completion event] Agent X completed"),
-                _rec("user", "[Cron notification from \"nightly\"] ran"),
+                _rec("user", '[Cron notification from "nightly"] ran'),
                 _rec("user", "[Monitor wake] checks failed"),
                 _rec("user", "[Tool refusal -- automatic recovery] blocked"),
                 _rec("user", "=== Restored Context (from prior session) ==="),
@@ -110,6 +114,22 @@ class TestTrapAutomationUnderUserRole:
         )
         numbered = [t.user_turn for t in turns if not t.injected]
         assert numbered == [1, 2]
+
+    def test_a_monitors_final_wake_is_automation(self):
+        """The last wake of a pull-request watch opens with its result, not the cycle tag."""
+        turns = extract_turns(
+            [
+                _rec("user", "first"),
+                _rec(
+                    "user",
+                    "[monitor finished] PR acme/widgets#7 merged at 2026-11-15T14:37:24Z, "
+                    "head e0a19a0a2e69.\n\n[auto-nudge cycle 4]\nwatch it",
+                ),
+                _rec("user", "second"),
+            ]
+        )
+        assert count_user_turns(turns) == 2
+        assert [t.injected for t in turns] == [False, True, False]
 
     def test_render_labels_automation_explicitly(self):
         turns = extract_turns([_rec("user", "[Subagent completion event] done")])
@@ -382,13 +402,11 @@ class TestPayloadRedaction:
     the sidecar is read straight back to the panel."""
 
     def test_a_credential_in_a_title_is_redacted(self):
-        payload = normalize_payload(
-            {"intents": [{"title": "rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789"}]}
-        )
-        assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in payload["intents"][0]["title"]
+        payload = normalize_payload({"intents": [{"title": f"rotate {_TOKEN}"}]})
+        assert _TOKEN not in payload["intents"][0]["title"]
 
     def test_redaction_reaches_nested_fields(self):
-        secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+        secret = _TOKEN
         payload = normalize_payload(
             {
                 "intents": [

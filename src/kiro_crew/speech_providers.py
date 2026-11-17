@@ -39,6 +39,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ── Built-in reply (TTS) providers ──
+# Defined here, below ``voice_reply``, so boot can validate an edition's registry against
+# them without loading the synthesis code; ``voice_reply`` serves the same names.
+PROVIDER_POLLY = "polly"
+PROVIDER_SYSTEM = "system"
+VALID_PROVIDERS = frozenset({PROVIDER_POLLY, PROVIDER_SYSTEM})
+# Removed providers a saved config may still name. Each resolves to the
+# default with one warning per process; see docs/request-for-change/
+# rfc-remove-piper-tts.md. The ``piper_*`` keys beside it are left in
+# config.json, unread, so a downgrade still finds them.
+REMOVED_PROVIDERS = frozenset({"piper"})
+# The host's built-in speech engine is the default because it is the only
+# provider that needs nothing installed and no account: macOS and Windows both
+# ship one, so auto-speak works on a fresh machine. Polly is the paid cloud
+# option, used only when explicitly selected.
+DEFAULT_PROVIDER = PROVIDER_SYSTEM
+
 #: How long one provider's ``check()`` may take before core reports it unavailable.
 #: A capability page lists every provider, so one slow hosted check must not hold it.
 CHECK_TIMEOUT_SECS = 5.0
@@ -150,7 +167,6 @@ def validate_speech_registry(registry: "SpeechProviderRegistry") -> None:
     # Imported here: this module is imported by the config loader, and both the
     # STT section and ``voice_reply`` sit above it.
     from kiro_crew.config.sections_stt import _RETIRED_STT_PROVIDERS, _VALID_STT_PROVIDERS
-    from kiro_crew.voice_reply import REMOVED_PROVIDERS, VALID_PROVIDERS
 
     try:
         stt = tuple(registry.stt_providers() or ())
@@ -238,7 +254,6 @@ def stt_provider(name: object) -> "Optional[SttProvider]":
 
 def tts_provider(name: object) -> "Optional[TtsProvider]":
     """The edition's TTS provider called *name*; ``None`` for a built-in or unknown name."""
-    from kiro_crew.voice_reply import REMOVED_PROVIDERS, VALID_PROVIDERS
 
     return _registered("tts_providers", name, VALID_PROVIDERS | REMOVED_PROVIDERS)
 
@@ -280,6 +295,15 @@ def owns_session_limit(provider: Any) -> bool:
     provider that never mentions it, or sets a truthy non-bool, keeps core's cap.
     """
     return getattr(provider, "owns_session_limit", False) is True
+
+
+def needs_pcm_wav(provider: Any) -> bool:
+    """Whether *provider* declared ``needs_pcm_wav`` as exactly ``True``.
+
+    Such a provider reads only a 16 kHz mono 16-bit PCM WAV, so
+    ``transcribe.transcribe_audio`` converts any other clip before handing it over.
+    """
+    return getattr(provider, "needs_pcm_wav", False) is True
 
 
 def language_identifying_stt_names(builtins: "Tuple[str, ...]") -> "Tuple[str, ...]":

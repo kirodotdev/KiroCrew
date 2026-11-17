@@ -1,0 +1,4 @@
++1
+The exact Slack consent pair ("slack.com", "/oauth/v2_user/authorize") in
+exfil_oauth's _OAUTH_AUTHORIZATION_ENDPOINTS set, so Kiro Crew's own Slack MCP
+sign-in keeps its PKCE code_challenge and state instead of failing closed (#11895).

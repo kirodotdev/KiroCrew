@@ -19,6 +19,18 @@ export function gatewayStopCommand(st: UpdateState | null | undefined): string |
 }
 
 /**
+ * Whether the edition's own update widget owns the update prompts for the lane
+ * that sent this payload: the install's EXTERNALLY-MANAGED marker carries
+ * `updatePrompts: "edition"`, and the main process stamps it on every push.
+ * UpdateFoundModal and UpdateModal then stay closed for it, so the edition's
+ * widget is the one surface that offers and arms the update. False on every
+ * install whose marker does not say so, the public build included.
+ */
+export function editionOwnsUpdatePrompts(st: UpdateState | null | undefined): boolean {
+  return st?.updatePrompts === 'edition'
+}
+
+/**
  * The update lifecycle payload pushed by the Electron main process.
  *
  * The single shared declaration: AboutPanel and UpdateModal import it rather

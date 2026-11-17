@@ -838,6 +838,17 @@ class TestSessions:
         assert response.status == 400
         assert _json_of(response)["code"] == "invalid_request"
 
+    async def test_a_key_with_a_trailing_newline_is_a_400(self) -> None:
+        # `%0A` in the URL reaches the handler as a literal newline.
+        saved = await routes._handle_save_session(
+            _request("PUT", match_info={"key": "pr-o-r-1\n"}, body={"slot_key": "s"})
+        )
+        deleted = await routes._handle_delete_session(_request(match_info={"key": "pr-o-r-1\n"}))
+        assert saved.status == 400
+        assert deleted.status == 400
+        assert _json_of(saved)["code"] == _json_of(deleted)["code"] == "invalid_request"
+        assert store.list_sessions() == []
+
 
 # ── run artifacts ────────────────────────────────────────────────────────────
 

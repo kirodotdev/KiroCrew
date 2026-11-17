@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.monitoring.targets import (
     infer_pull_request_kind,
@@ -10,25 +11,30 @@ from kiro_crew.monitoring.targets import (
     parse_gitlab_merge_request_target,
 )
 
+# A 40-char GitHub token with a valid checksum, which fits a path segment. A bare
+# 40-character run with no label or key ID beside it is no credential by itself.
+_CREDENTIAL = github_classic(seed=7)
+
 
 @pytest.mark.parametrize(
     ("kind", "url"),
     [
         (
             "github_pull_request",
-            "https://github.com/AKIAIOSFODNN7EXAMPLE/widgets/pull/7",
+            # A GitHub owner is at most 39 chars, so the 40-char secret sits in the repo name.
+            "https://github.com/acme/" + _CREDENTIAL + "/pull/7",
         ),
         (
             "gitlab_merge_request",
-            "https://gitlab.com/AKIAIOSFODNN7EXAMPLE/widgets/-/merge_requests/8",
+            "https://gitlab.com/" + _CREDENTIAL + "/widgets/-/merge_requests/8",
         ),
         (
             "azure_devops_pull_request",
-            "https://dev.azure.com/AKIAIOSFODNN7EXAMPLE/project/_git/widgets/pullrequest/9",
+            "https://dev.azure.com/" + _CREDENTIAL + "/project/_git/widgets/pullrequest/9",
         ),
         (
             "bitbucket_pull_request",
-            "https://bitbucket.org/AKIAIOSFODNN7EXAMPLE/widgets/pull-requests/10",
+            "https://bitbucket.org/" + _CREDENTIAL + "/widgets/pull-requests/10",
         ),
     ],
 )

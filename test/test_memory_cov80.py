@@ -277,14 +277,14 @@ class TestFtsErrorPaths:
         store.write_preferences("# User Preferences\n\n- qqzz\n")
         assert "qqzz" in store.read_preferences()
 
-    def test_rebuild_index_still_counts_files_when_db_fails(self, tmp_path):
+    def test_rebuild_index_reports_zero_when_db_fails(self, tmp_path):
         store = MemoryStore(workspace=tmp_path)
         store.init()
         (tmp_path / "memory" / "history" / "2026-01-01.md").write_text("# 2026-01-01\n")
         self._break_db(store)
 
-        # preferences.md + projects.md + one history file
-        assert store.rebuild_index() == 3
+        # Three source files exist, but nothing was committed, so none counts as indexed.
+        assert store.rebuild_index() == 0
 
     def test_search_returns_empty_list_when_db_fails(self, tmp_path):
         store = MemoryStore(workspace=tmp_path)

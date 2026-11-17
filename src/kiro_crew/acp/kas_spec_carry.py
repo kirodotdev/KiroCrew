@@ -10,14 +10,19 @@ Split out of :mod:`kiro_crew.acp.kas_agents`, which sits at the file-line cap.
 * ``toolAliases`` has no slot, so a session runs without it and is told. The pairs
   Crew's own Connections pass wrote are not named: Crew put them there, so the
   user has nothing to fix (:mod:`kiro_crew.connections.alias_record`).
+* ``use_aws`` in ``tools`` or ``allowedTools`` names no KAS tool, so the session
+  is told AWS calls go through the shell (:func:`use_aws_notice`), and its
+  ``toolsSettings`` denies become shell denies (:func:`use_aws_shell_denies`).
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from kiro_crew.acp.kas_permissions import merge_user_permissions
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path
 
 _FILE_SCHEME = "file://"
@@ -137,3 +142,90 @@ def user_tool_aliases(aliases: object) -> bool:
 
     claimed = load_claimed(spec_fingerprint(aliases))
     return any(not is_recorded_emission(claimed, ref, alias) for ref, alias in aliases.items())
+
+
+_AWS_SERVICE_FIRST = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
+_AWS_SERVICE_CHARS = _AWS_SERVICE_FIRST | {"-"}
+_MAX_SERVICE_LENGTH = 128
+
+
+def _is_aws_service(name: str) -> bool:
+    """An AWS CLI service name (``s3``, ``ec2-instance-connect``): lower-case ASCII
+    letters, digits and ``-``, not starting with ``-``. Anything else is not turned
+    into a shell rule."""
+    return (
+        bool(name)
+        and name[0] in _AWS_SERVICE_FIRST
+        and all(ch in _AWS_SERVICE_CHARS for ch in name)
+    )
+
+
+def use_aws_shell_denies(tools_settings: Any) -> dict[str, Any] | None:
+    """``toolsSettings.use_aws.deniedServices`` as a KAS ``permissions`` block of shell denies.
+
+    KAS has no AWS tool, so an AWS call is an ``aws`` shell command there. Only
+    denies travel: an allow would widen, since kiro-cli allows by an exact
+    operation table and a shell rule matches text. The key stays named as not
+    carried, because ``aws --profile x <service>`` slips the deny. *tools_settings*
+    is canonical (one ``use_aws`` key per kiro-cli alias group).
+    """
+    settings = tools_settings.get("use_aws") if isinstance(tools_settings, dict) else None
+    services = settings.get("deniedServices") if isinstance(settings, dict) else None
+    if not isinstance(services, list):
+        return None
+    match = [
+        f"aws {s.strip()} *"
+        for s in services
+        # An over-long pattern would make KAS's schema refuse the whole block.
+        if isinstance(s, str) and len(s) <= _MAX_SERVICE_LENGTH and _is_aws_service(s.strip())
+    ]
+    return {"rules": [{"capability": "shell", "match": match, "effect": "deny"}]} if match else None
+
+
+def with_use_aws_denies(
+    permissions: dict[str, Any] | None,
+    tools_settings: Any,
+    agent_id: str,
+    audit: Callable[[str, str, str, str], None],
+    ceiling_permits: Callable[[str], bool],
+) -> dict[str, Any] | None:
+    """*permissions* with :func:`use_aws_shell_denies` merged in, each decision audited.
+
+    The caller merges this after its grant readers take their copy of the policy,
+    so the denies never withhold the shell grant: KAS refuses the service itself.
+    """
+    block = use_aws_shell_denies(tools_settings)
+    if block is None:
+        return permissions
+    return merge_user_permissions(
+        permissions,
+        block,
+        ceiling_permits=ceiling_permits,
+        audit_decision=lambda refs, outcome, reason: audit(refs, outcome, reason, agent_id),
+        agent_id=agent_id,
+        source="translated `toolsSettings.use_aws`",
+    )
+
+
+#: kiro-cli's names for its AWS tool in ``tools`` and ``allowedTools``.
+_USE_AWS_NAMES = frozenset({"use_aws", "aws", "@builtin/use_aws", "@builtin/aws"})
+
+
+def use_aws_notice(agent: str, spec: dict[str, Any]) -> str:
+    """The session-start line for a spec that lists kiro-cli's ``use_aws``, else ``""``.
+
+    Not mapped to the shell: that would hand an agent allowed only AWS calls
+    every command. ``toolsSettings.use_aws`` denies travel as shell denies
+    (:func:`use_aws_shell_denies`).
+    """
+    for key in ("tools", "allowedTools"):
+        names = spec.get(key)
+        if isinstance(names, list) and any(
+            n in _USE_AWS_NAMES for n in names if isinstance(n, str)
+        ):
+            return (
+                f"ℹ Agent {agent} lists use_aws. KAS has no AWS tool, so AWS calls run "
+                "as aws commands in the shell. They need the shell tool and follow its "
+                "approval rules."
+            )
+    return ""

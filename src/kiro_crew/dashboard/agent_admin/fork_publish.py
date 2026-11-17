@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         CapabilityError,
         DashboardState,
         KiroCrewConfig,
+        PendingEditBlocksSave,
         _AmbiguousTemplateName,
         _ForkBookkeepingFailed,
         _get_config_lock,
@@ -248,7 +249,7 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                         agent_state.set_fork_info(
                             copy_name, forked_from=source_name, private_to=crew  # type: ignore[arg-type]
                         )
-                        managed = agent_state.get_model_managed(source_name)
+                        managed = agent_state.get_model_managed(source_name, strict=True)
                         if managed is not None:
                             agent_state.set_model_managed(copy_name, managed)
                     except Exception:
@@ -259,7 +260,14 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                     chosen.append((copy_name, dest))
                 return cfg_data
 
-            update_config_locked(mutate=_mutate)
+            try:
+                update_config_locked(mutate=_mutate)
+            except PendingEditBlocksSave:
+                # Refused after _mutate created the copy: remove it, or each retry
+                # while the change is pending leaves another unbound copy behind.
+                for copy_name, dest in chosen:
+                    _unwind(dest, copy_name)
+                raise
             return chosen[0]
 
         try:
@@ -285,6 +293,9 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                 {"error": "Could not record the copy's lineage", "code": "bookkeeping_failed"},
                 status=500,
             )
+        except PendingEditBlocksSave:
+            # A pending config.json change: the dashboard chain answers it 409.
+            raise
         except Exception:
             logger.exception("fork failed for crew %r", crew)
             return web.json_response(
@@ -572,7 +583,7 @@ async def api_agent_publish(request: web.Request) -> web.Response:
         def _record_publish_model() -> None:
             # The clean-slate prune already ran in the create step, before
             # the file existed; only the source's model tracking is copied.
-            managed = agent_state.get_model_managed(source_name)
+            managed = agent_state.get_model_managed(source_name, strict=True)
             if managed is not None:
                 agent_state.set_model_managed(new_name, managed)  # type: ignore[arg-type]
 
@@ -609,6 +620,10 @@ async def api_agent_publish(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+        except PendingEditBlocksSave:
+            # A pending config.json change: undo the create; the chain answers 409.
+            await asyncio.to_thread(_undo_publish)
+            raise
         except Exception:
             logger.exception("publish rebind failed for crew %r", crew)
             await asyncio.to_thread(_undo_publish)
@@ -770,6 +785,9 @@ async def api_agent_reset(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+        except PendingEditBlocksSave:
+            # A pending config.json change: the dashboard chain answers it 409.
+            raise
         except Exception:
             logger.exception("reset rebind failed for crew %r", crew)
             return web.json_response(

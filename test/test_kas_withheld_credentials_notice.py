@@ -33,6 +33,7 @@ from kiro_crew.config import paths as paths_mod
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: Values that must never reach the notice. Long enough to be unique.
 _REFERENCE_VALUE = "${GITLAB_PERSONAL_ACCESS_TOKEN}"
@@ -171,7 +172,7 @@ class TestTheNotice:
         notice = withheld_credentials_notice(_GITLAB_NOTICE)
         assert notice == (
             "ℹ gitlab-mcp may be missing some of its settings in this chat. To fix it, "
-            "turn on Share for it in Customize → Connections → MCP Management."
+            "turn on Share for it in MCP Servers → Sharing."
         )
 
     @pytest.mark.parametrize(
@@ -256,11 +257,11 @@ class TestTheNotice:
             assert value not in notice
 
     def test_a_credential_shaped_server_name_is_counted_not_printed(self):
-        name = "ghp_" + "b" * 36
+        name = github_classic(seed=406)
         notice = withheld_credentials_notice(
             {"vendor": (("X",), ("env",), True), name: (("X",), ("env",), True)}
         )
-        assert "b" * 36 not in notice
+        assert name.removeprefix("ghp_") not in notice
         assert "vendor, 1 more may be missing" in notice
 
     def test_a_malformed_env_is_left_to_the_log(self):

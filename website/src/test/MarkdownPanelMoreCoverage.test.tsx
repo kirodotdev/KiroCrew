@@ -161,7 +161,6 @@ beforeEach(() => {
   fetchOpts = {}
   highlightRegistry.clear()
   localStorage.clear()
-  document.getElementById('mc-comment-hl-style')?.remove()
   installFetch()
   // happy-dom has no scrollIntoView; the comment-row flash calls it directly.
   Object.defineProperty(Element.prototype, 'scrollIntoView', {

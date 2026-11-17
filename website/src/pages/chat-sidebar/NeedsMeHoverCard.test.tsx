@@ -18,6 +18,7 @@ vi.mock('../../hooks/sharedCrew/sendRevisionSeed', () => ({ baseRevisionForPress
 
 const api = vi.hoisted(() => ({
   approveChatSlot: vi.fn(),
+  decideApproval: vi.fn(),
   resolveApproval: vi.fn(),
   sessionSummary: vi.fn(),
   chatSlotDetail: vi.fn(),
@@ -32,7 +33,6 @@ import { collectAsks, pickRecap } from './needsMeCard'
 import { store } from '../../store'
 import { sseSlots } from '../../store/dashboardSlice'
 import { clearQuestionCard, setQuestionCard } from '../../store/chatSlice'
-import { turnOnCrewModePreview } from '../../test/crewModePreview'
 import { sendRaceNoticeFor } from '../../api/sendRace'
 
 const LONG_COMMAND = "npx playwright test tests/auth --project=chromium --workers=2 --reporter=line --grep '@redirect' && git log --oneline -3"
@@ -51,6 +51,7 @@ const SLOTS: ChatSlot[] = [
   { key: 'ask', title: 'Release notes', messages: 5, running: true, needs_input: true },
   { key: 'worker', title: 'Crew worker', messages: 6, running: true, pending_approval: true, crew_root: 'conductor-1' },
   { key: 'choice', title: 'Pick a plan', messages: 4, running: false, has_options: true, options: ['Upgrade both', 'Pin until next week'], last_message: 'Upgrade both now, or pin until next week?' },
+  { key: 'deploy', title: 'Ship it', messages: 4, running: false, has_options: true, options: ['@deploy', 'Approve $40 spend'], last_message: 'Deploy now?' },
 ] as ChatSlot[]
 
 let fine = true
@@ -101,11 +102,13 @@ beforeEach(() => {
     key: slot, running: true, total: 2, has_more: false, next_before: 0,
     messages: slot === 'choice'
       ? [{ role: 'assistant', content: 'Two packages have major updates. Upgrade both now, or pin until next week?', cls: '' } as ChatMessage]
+      : slot === 'deploy'
+      ? [{ role: 'assistant', content: 'The build is green. Deploy now?', cls: '' } as ChatMessage]
       : slot === 'blocked'
       ? [permission({ approval_id: 'req-9', mid: 'mid-9', deny_override_rule: 'rm-rf' })]
       : [permission()],
   }))
-  api.approveChatSlot.mockResolvedValue({ ok: true })
+  api.decideApproval.mockResolvedValue({ ok: true })
   sendTurn.mockResolvedValue({ status: 'dispatched' })
 })
 afterEach(() => {
@@ -143,6 +146,16 @@ describe('NeedsMeHoverCard', () => {
     expect(row.textContent).toContain('Upgrade both')
     expect(row.textContent).toContain('Pin until next week')
     expect(screen.getByTestId('needs-me-recap').textContent).toBe('No recap yet.')
+  })
+
+  it('still shows the reply when every option is command-shaped, listed as text', async () => {
+    mount()
+    hover('deploy')
+    const ask = await screen.findByText('The build is green. Deploy now?')
+    const row = ask.closest('[data-kind="reply"]')!
+    expect(row.textContent).toContain('@deploy')
+    expect(row.textContent).toContain('Approve $40 spend')
+    expect(row.querySelector('button')).toBeNull()
   })
 
   it('shows a notice when the approvals cannot be loaded', async () => {
@@ -221,7 +234,7 @@ describe('NeedsMeHoverCard', () => {
 
   it('names the verdict when another tab answered first', async () => {
     const { ApiError } = await vi.importActual<typeof import('../../api/client')>('../../api/client')
-    api.approveChatSlot.mockRejectedValue(new ApiError(409, 'already resolved', JSON.stringify({ code: 'already_resolved', decision: { decision_id: 'd1', outcome: 'rejected' } })))
+    api.decideApproval.mockRejectedValue(new ApiError(409, 'already resolved', JSON.stringify({ code: 'already_resolved', decision: { decision_id: 'd1', outcome: 'rejected' } })))
     mount()
     hover('gate')
     fireEvent.click(await screen.findByRole('button', { name: 'Approve Shell' }))
@@ -295,13 +308,26 @@ describe('NeedsMeHoverCard', () => {
     hover('gate')
     fireEvent.click(await screen.findByRole('button', { name: 'Approve Shell' }))
     await screen.findByText('Approved')
-    expect(api.approveChatSlot).toHaveBeenCalledTimes(1)
-    const [slot, action, extra] = api.approveChatSlot.mock.calls[0]
-    expect(slot).toBe('gate')
-    expect(action).toBe('approved')
-    expect(extra).toMatchObject({ origin: 'native', request_id: 'req-1', request_mid: 'mid-1' })
-    expect(typeof extra.response_id).toBe('string')
+    expect(api.decideApproval).toHaveBeenCalledTimes(1)
+    const [target, action, responseId] = api.decideApproval.mock.calls[0]
+    expect(target).toEqual({ origin: 'native', id: 'req-1', slot: 'gate', mid: 'mid-1' })
+    expect(action).toBe('approve')
+    expect(typeof responseId).toBe('string')
     expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Approve Shell' })).toBeNull()
+  })
+
+  it('a press refused as no longer pending shows the refusal as status, not the muted expired label (#18203)', async () => {
+    const { ApiError } = await vi.importActual<typeof import('../../api/client')>('../../api/client')
+    api.decideApproval.mockRejectedValue(new ApiError(404, 'not pending'))
+    mount()
+    hover('gate')
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve Shell' }))
+    const notice = await screen.findByText(/no longer waiting on it/)
+    expect(notice.closest('[role="status"]')).not.toBeNull()
+    expect(notice.closest('[role="alert"]')).toBeNull()
+    expect(screen.queryByText('Expired')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Approve Shell' })).toBeNull()
   })
 
@@ -310,12 +336,11 @@ describe('NeedsMeHoverCard', () => {
     hover('gate')
     fireEvent.click(await screen.findByRole('button', { name: 'Deny Shell' }))
     await screen.findByText('Denied')
-    expect(api.approveChatSlot.mock.calls[0][1]).toBe('rejected_once')
-    expect(api.approveChatSlot.mock.calls[0][2]).toMatchObject({ origin: 'native', request_mid: 'mid-1' })
+    expect(api.decideApproval.mock.calls[0][1]).toBe('reject_once')
+    expect(api.decideApproval.mock.calls[0][0]).toMatchObject({ origin: 'native', mid: 'mid-1' })
   })
 
   it('shows a Crew Mode worker approval without decision buttons', async () => {
-    turnOnCrewModePreview()
     mount()
     hover('worker')
     await screen.findByTestId('needs-me-command')

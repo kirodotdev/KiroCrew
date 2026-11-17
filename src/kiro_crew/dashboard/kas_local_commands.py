@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import shlex
@@ -59,6 +60,8 @@ from kiro_crew.security.paths import is_unverifiable_path_refusal, sensitive_pat
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+
+logger = logging.getLogger(__name__)
 
 #: The commands this module answers (see :func:`answers_locally` for their arguments).
 KAS_LOCAL_INSPECT_COMMANDS = frozenset(
@@ -114,7 +117,8 @@ def local_harness_menu(backend: str) -> frozenset[str]:
     """What the ``/`` menu lists, and ``/help`` prints, on a harness with no command
     channel: the commands the dashboard serves for *backend*, plus ``/compact``,
     which has a gate of its own. ``GET /api/slash-commands`` and ``/help`` both read
-    this one function."""
+    this one function. On a harness with an ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``
+    row, ``GET /api/slash-commands`` lists this and that row."""
     from kiro_crew.dashboard.chat_utils import (
         _BLOCKED_SLASH_COMMANDS,
         _DASHBOARD_SERVED_SLASH_COMMANDS,
@@ -568,7 +572,14 @@ async def _kas_call(provider: Any, command: str, params: dict[str, Any]) -> dict
     try:
         answer = await call(command, params)
     except Exception as exc:  # noqa: BLE001 - a dead or refusing engine is shown, not raised
-        return {"success": False, "message": str(exc)}
+        logger.warning("KAS %s command failed", command, exc_info=True)
+        # Matched by name, as chat_threads._is_auth_required does: the ACP type
+        # sits behind the agent-SDK import boundary. Its text is the host-written
+        # sign-in remedy, so it is shown. Any other exception text can carry
+        # local detail, so it gets a fixed line.
+        if type(exc).__name__ == "AcpAuthRequired":
+            return {"success": False, "message": redact(str(exc))}
+        return {"success": False, "message": "The engine could not run the command."}
     return answer if isinstance(answer, dict) else None
 
 

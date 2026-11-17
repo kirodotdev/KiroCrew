@@ -129,7 +129,7 @@ Telegram and dashboard paths. Three rules:
 
 ### Registered providers
 
-A composed edition can add TTS providers through the `speech` slot on `PlatformContext` (`SpeechProviderRegistry.tts_providers()`; see `platform-context.md`). The default registry adds none, so a standalone install has exactly `VALID_PROVIDERS`. `voice_reply.valid_providers()` is the built-ins plus the registered names.
+A composed edition can add TTS providers through the `speech` slot on `PlatformContext` (`SpeechProviderRegistry.tts_providers()`; see `platform-context.md`). The default registry adds none, so a standalone install has exactly `VALID_PROVIDERS`. The built-in sets (`VALID_PROVIDERS`, `REMOVED_PROVIDERS`, `DEFAULT_PROVIDER`) are defined in `speech_providers` and served by `voice_reply`, so boot validates a registry against them without loading the synthesis code. `voice_reply.valid_providers()` is the built-ins plus the registered names.
 
 - **Collision rule.** A registered name may not be a built-in (`polly`, `system`) or a removed provider (`piper`), may not be blank and may not repeat. `speech_providers.validate_speech_registry` refuses any of these at boot with `PlatformCompositionError`, so an edition can add a provider but never replace one.
 - **Default precedence.** A stored provider always wins. Only an absent, null or empty value takes `voice_reply.default_provider()`: the edition's `default_tts()` when it names a selectable provider, else `DEFAULT_PROVIDER`. An invalid stored value still falls back to `DEFAULT_PROVIDER`, never to the edition default, for the same reason it never falls back to Polly.
@@ -146,7 +146,7 @@ A composed edition can add TTS providers through the `speech` slot on `PlatformC
 | Streaming playback | `website/src/hooks/websocket/voicePlayback.ts`, `website/src/lib/voicePlayback.ts` | Detects speech boundaries, coalesces pending requests, schedules PCM on one audio clock, and handles interruption. `website/src/hooks/useWebSocket.ts` composes it and routes the `voice_*` frames and the stream and turn boundaries to it. |
 | Playback failures | `website/src/components/VoicePlaybackNotice.tsx` | Displays localized playback or provider failures and retains their machine code in the error report. |
 | Settings | `website/src/pages/settings/VoicePanel.tsx` | Updates auto-speak, provider, and the selected provider's settings; fetches each provider's voice catalogue only while that provider is selected. |
-| Slack reply | `slack.handler.handle_message()`, through `_reply_by_voice()` and `_safe_voice_reply()` (`slack/handler_runtime/voice.py`) | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
+| Slack reply | `slack.transport_dispatch.handle_message_transport()` (the default `messaging.use_transport` path, through `slack.transport_voice.speak_finished_turn()`) and the native `slack.handler.handle_message()`, both through `_reply_by_voice()` and `_safe_voice_reply()` (`slack/handler_runtime/voice.py`) | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
 | WhatsApp reply | `whatsapp.transport_dispatch.WhatsAppDispatcher._speak_reply()` | Answers an inbound voice note with a push-to-talk note after the text when `whatsapp.auto_reply_to_voice` is on. Polly only: it passes `ogg_opus=True` through `synthesize_and_deliver()`, so Polly writes Ogg/Opus (`.ogg`), the container a WhatsApp voice note plays; the built-in engine's WAV is skipped rather than sent. |
 
 ## Dashboard auto-speak
@@ -197,11 +197,16 @@ after a newer response starts.
 
 For Polly, `api_voice_synthesize()` iterates
 `voice_reply.streaming_voice_reply()`, broadcasts each `voice_chunk`, then
-uses `stitch_mp3s()` to broadcast `voice_complete`.
+uses `stitch_mp3s()` to broadcast `voice_complete`. `stitch_mp3s()` hands
+ffmpeg's concat demuxer a list file, so the command line stays one length for
+any chunk count (Windows refuses one over 32,767 characters). When the stitch
+fails (no ffmpeg, a non-zero exit, a timeout), every chunk has still been sent, so
+`voice_complete` is broadcast without `audio` or `audioMime`, a WARNING is
+logged, and the HTTP response is unchanged.
 The built-in engine broadcasts its completed WAV. Only the explicit Polly
 provider reaches the Polly branch; a future provider cannot silently reach a
-paid AWS service. Both event types include `audioMime` and echo the synthesis `request_id`.
-`voice_complete` also updates the Redux
+paid AWS service. Both event types echo the synthesis `request_id`, and carry
+`audioMime` with their audio. A `voice_complete` with audio also updates the Redux
 `voiceAudio` field; `UseWebSocketCoverage.voice.test.tsx` covers that state update.
 
 `VoicePcmPlayer` decodes WAV chunks in order and schedules their sources on one
@@ -311,6 +316,19 @@ auto-speak also stops current speech. Every accepted `voice_chunk`,
 active slot; clearing the known IDs makes late frames inert even after the
 muted flag is reset for another response.
 
+The playback bar's Read again button dispatches `voice-restart`. The playback
+owner keeps the synthesis requests of the current playback context in the order
+they were spoken (the merged sentence text of an auto-speak request, the whole
+reply of a manual Read aloud with its client-fallback flag), and `stopVoice()`
+empties that list, so Stop, a new turn, a new manual Read aloud and a slot
+change each start a context with nothing to replay. Restart tears down output
+and in-flight requests like Stop does, then unmutes, keeps the speech progress
+so a reply still streaming under auto-speak continues after the replayed
+sentences, and submits the saved requests again, each as its own request, in
+order. A request cancelled by the restart keeps its old `request_id`, so its
+late frames are inert. With nothing saved (before anything was spoken, after
+Stop) the event does nothing.
+
 The backend keys active synthesis by `(slot, request_id)` in an application-owned
 registry. `POST /api/voice/cancel` cancels the matching handler, which closes its
 provider stream and releases its child. A bounded, expiring cancellation record
@@ -318,6 +336,52 @@ also rejects a synthesis POST that arrives after its cancellation. Unknown IDs
 cannot cancel another request in the same slot. `register_voice_lifecycle()`
 cancels active work during dashboard shutdown, and the registry bounds concurrent
 synthesis so simultaneous local requests cannot load unbounded models.
+
+## Playback bar, Pause and Resume
+
+In a Sessions chat, `VoicePlaybackBar` sits above the composer while
+`voicePlaying` or `voicePreparing` is set. It shows "Preparing audio…" or
+"Reading aloud" in two rows inside one glass pane. The first row holds the
+status and two buttons: Pause reading / Resume reading, then Stop reading. The
+second row, set off by a hairline and aligned to the end, holds Read again alone,
+so no row has more than two buttons. Stop dispatches `voice-stop`, Read again
+dispatches `voice-restart` (see above). Pause dispatches `voice-pause`; the store flag
+`voicePaused` then turns the same button into Resume reading, which dispatches
+`voice-resume`, and the status text reads "Paused". The toggle is one element,
+so keyboard focus stays on it. The bar is a container: while it is narrower than
+680 px (a phone, or a narrow dock), the Pause / Resume and Stop labels hide
+visually and remain the buttons' accessible names, so the status text always has
+room, in every locale. Read again, alone on its row, keeps its label until the
+viewport is narrower than 360 px.
+
+`voicePaused` is the single source of truth. The playback owner sets it first
+and then holds every engine at its current position, so Resume continues from
+there instead of from sentence 1:
+
+- The PCM player suspends its `AudioContext`. Audio that arrives while paused is
+  decoded and scheduled on the frozen clock, skips the autoplay-resume wait, and
+  plays when Resume resumes the context.
+- The media-element path pauses the active element. A queued chunk is not
+  started while paused (`playNextVoiceChunk` returns early), and Resume plays the
+  active element again or starts the next queued chunk. Each `play()` captures
+  a play-attempt token. Pause, a newer play, and teardown invalidate that token,
+  so an older rejected promise cannot report a failure or stop resumed playback.
+  A rejection from the current attempt still reports the playback error.
+- Client fallback speech pauses and resumes the Web Speech engine, and speech
+  that starts while paused starts held. Stopping cancels the engine and releases
+  a paused queue so the next utterance is heard.
+
+Pause is ignored unless a reading is playing or preparing. Pausing during a gap
+between sentences keeps the bar and the button visible. The reducers for
+`setVoicePlaying` and `setVoicePreparing` clear `voicePaused` once both flags are
+false, so Stop, a new turn, a failed request and the end of playback all leave
+nothing held. Escape and the reply menu's Read aloud item keep meaning Stop.
+
+Read again while paused ends the pause and speaks from the first sentence.
+Restart's teardown (`silenceVoice`) stops the PCM sources, the media element and
+the Web Speech queue, and its final `setVoicePlaying(false)` clears
+`voicePaused`; the replayed requests then start on a running `AudioContext`
+(`VoicePcmPlayer.unlock()` resumes a suspended one now that the flag is clear).
 
 ## Configuration and API
 
@@ -378,7 +442,7 @@ same account and region even when a config PUT lands mid-request.
 
 ## Provider safety
 
-`voice_reply.synthesize_speech()` redacts credentials and suspicious URLs before
+`voice_reply.synthesize_speech()` redacts credentials, inside URLs too, before
 provider selection. `text_to_ssml()` and `strip_markdown()` then produce
 speakable text. `strip_markdown()` replaces fenced code, diff blocks, widgets,
 tables, path-like inline code, and links with spoken placeholders or labels and
@@ -496,9 +560,18 @@ surface can show:
 `slack.handler` accepts `!voice` thread commands (`_bang_voice`,
 `slack/handler_runtime/commands.py`) for enabling and disabling a
 thread, toggling global replies, and choosing a voice, engine, speed, or pitch.
-`handle_message()` calls `_reply_by_voice()` (`slack/handler_runtime/voice.py`),
-which starts `_safe_voice_reply()` as a background task when a
-thread or global setting enables replies, or when voice-input reply settings
-allow a transcribed voice message to receive audio. `_safe_voice_reply()` calls
-the provider-aware `voice_reply.voice_reply()` path, so Slack replies follow
-the selected provider rather than assuming Polly.
+Both Slack turn paths call `_reply_by_voice()` (`slack/handler_runtime/voice.py`)
+once the answer is out: the default transport path
+(`transport_dispatch.handle_message_transport()`, `messaging.use_transport`) and
+the native `handle_message()` (review-mode channels and
+`messaging.use_transport=false`). It starts `_safe_voice_reply()` as a background
+task when a thread or global setting enables replies, or when voice-input reply
+settings allow a transcribed voice message to receive audio. The transport path
+speaks `SlackRenderer.delivered_text`, the answer as Slack showed it (OPTIONS,
+control tags and thinking removed, redacted), into the conversation the answer
+was posted to, and skips an unfinished or cancelled turn; a failure there is
+logged and never re-records the turn. `_route_message` hands the voice-memo
+signal (`had_voice_input`) to whichever path it picks, and the busy-session
+queues carry it to `_dispatch_queued`, so a queued voice memo is answered in kind
+too. `_safe_voice_reply()` calls the provider-aware `voice_reply.voice_reply()`
+path, so Slack replies follow the selected provider rather than assuming Polly.

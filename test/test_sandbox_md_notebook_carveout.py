@@ -163,20 +163,24 @@ class TestTheStagingDirectoryIsMaskedAndCarvedBack:
     def test_the_staging_dir_is_masked_in_every_mode(self, mode: str, prefix: str) -> None:
         assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) in _hidden_dirs(mode)
 
-    def test_the_backend_gets_the_staging_dir_back(self) -> None:
-        targets = sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME)
+    def test_the_backend_gets_its_declared_directory_back_and_not_this_one(self) -> None:
+        """The state moved under the app's data dir; core hands this one back to nobody."""
+        assert sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME) == ()
+        targets = sb.app_declared_mask_targets(sb.MD_NOTEBOOK_APP_NAME, builtin=True)
 
         for prefix in _CREW_PREFIXES:
-            assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) in targets
+            assert _crew_path(prefix, "apps/md-notebook/data/state") in targets
+            assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) not in targets
 
-    def test_the_launcher_lifts_the_staging_mask_for_that_spawn(self) -> None:
+    def test_the_staging_dir_stays_masked_for_the_backend_spawn(self) -> None:
         hidden = _hidden_dirs(
             "standard",
-            extra_visible_dirs=sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME),
+            extra_visible_dirs=sb.app_declared_mask_targets(sb.MD_NOTEBOOK_APP_NAME, builtin=True),
         )
 
         for prefix in _CREW_PREFIXES:
-            assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) not in hidden
+            assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) in hidden
+            assert _crew_path(prefix, "apps/md-notebook/data/state") not in hidden
 
     def test_the_precreate_table_covers_exactly_the_state_leaves(self) -> None:
         """Materialising a leaf needs its own absent-equivalence argument, so the two
@@ -200,9 +204,9 @@ class TestANewOwnedLeavesAppCannotSilentlySkipMaterialization:
     """
 
     def test_every_owned_leaves_app_is_covered_by_materialization(self) -> None:
-        covered = {
-            # One owned DIRECTORY; every precreated stub sits inside it.
-            sb.MD_NOTEBOOK_APP_NAME: {sb._MD_NOTEBOOK_STAGING_LEAF},
+        covered: dict[str, set[str]] = {
+            # NOT md-notebook: its state directory is declared in its own manifest and
+            # lifted through ``app_declared_mask_targets``, like any app's.
             # NOT dev-fleet: its live-target pointer stays masked from its own backend
             # (build children share that namespace — see
             # test_sandbox_dev_fleet_live_target.py); the pointer is still materialised
@@ -570,14 +574,21 @@ class TestAbsentStateFilesAreMaterializedSoTheMaskCanMount:
     def test_a_linked_app_directory_keeps_the_backend_from_starting(self):
         """Pinned structurally: with ``workspace/md-notebook`` masked by a writable,
         namespace-only stand-in, a backend could attach, clone and save a PAT there, and
-        all of it would vanish on restart. ``apps/backend.py`` must not start it."""
+        all of it would vanish on restart. ``apps/backend.py`` must not start it: Notes'
+        row's start gate (``md_notebook_state.backend_start_refusal``) refuses, and the
+        spawn returns on that answer. The spawn's provenance argument is pinned by
+        behaviour in ``test_app_backend_spawn_env.py``."""
         import inspect
 
+        from kiro_crew import md_notebook_state as mns
         from kiro_crew.apps import backend as backend_mod
 
         source = inspect.getsource(backend_mod._start_app_backend_body)
-        guard = source.index("for d in _md_notebook_degraded_mask_dirs())")
-        assert "return None" in source[guard : guard + 900]
+        guard = source.index("_legacy_state_moves.backend_start_refusal(")
+        assert "return None" in source[guard : guard + 400]
+        refusal = inspect.getsource(mns.backend_start_refusal)
+        guard = refusal.index("for d in _md_notebook_degraded_mask_dirs())")
+        assert "return (" in refusal[guard : guard + 400]
 
     def test_a_resolving_leaf_symlink_refuses_the_spawn(self, crew_home, tmp_path):
         """A RESOLVING link at the leaf is refused too, not only a dangling one:

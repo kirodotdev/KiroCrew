@@ -33,14 +33,17 @@ from urllib.parse import urlparse
 from kiro_crew import _facade_mirror, mcp_core, platform_compat
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS
+from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.control_parts.directive import (
+    chat_rename,
     chat_tag,
     nothing_to_do,
     reset_conversation,
     set_project,
     suggest_followup,
 )
+from kiro_crew.mcp_tools.control_parts.mcp_wait import mcp_server_wait
 from kiro_crew.mcp_tools.control_parts.monitor import (
     autonudge_stop,
     monitor_inspect,
@@ -136,6 +139,9 @@ def wait(name: str, args: dict[str, Any]) -> "str | DeferredTool":
 class _WaitStep(DeferredTool):
     """The parked half of :func:`wait`: one keepalive POST per step."""
 
+    #: The word its heartbeat carries (the keepalive and the MCP progress note).
+    phase = "waiting"
+
     def __init__(self, *, seconds: int, reason_safe: str, identified: bool) -> None:
         self.seconds = seconds
         self.reason_safe = reason_safe
@@ -187,6 +193,10 @@ class _WaitStep(DeferredTool):
                 "/api/session-keepalive",
                 (
                     {
+                        # The call this sleep runs under, so the gateway
+                        # restarts that call's own silence timer. An
+                        # unidentified sleep names nothing: its key is a guess.
+                        **heartbeat_fields(self.phase),
                         "wait_id": self.wait_id,
                         "seconds": self.seconds,
                         "remaining": max(0, int(remaining)),
@@ -474,7 +484,7 @@ def _ask_question_blocking(sk: str, questions: list[dict]) -> "str | DeferredToo
         if code == "crew_worker_asks_conductor":
             # A Crew Mode worker: the gateway's own instruction, not "ask in plain
             # text", which would put the question in front of the person after all.
-            logger.info("ask_question: an Ultra Mode worker's question goes to its conductor")
+            logger.info("ask_question: a conductor mode worker's question goes to its conductor")
             return str(opened.get("error") or "Ask your conductor with work_report.")
         if isinstance(opened, dict) and "clients" in opened and not opened.get("clients"):
             why = "no dashboard window is open to show it"
@@ -526,6 +536,9 @@ class _AskStep(DeferredTool):
     the step pool is full; the request carries no slice of its own.
     """
 
+    #: The word its heartbeat carries: the call waits on a person.
+    phase = "waiting_for_answer"
+
     def __init__(self, sk: str, ask_id: str, *, confirmed: bool) -> None:
         self.sk = sk
         self.ask_id = ask_id
@@ -543,10 +556,12 @@ class _AskStep(DeferredTool):
 
     def step(self) -> str | None:
         try:
-            # Resets the stall watchdog and the staleness reaper, exactly as the
-            # ``wait`` tool's ping does. Best-effort: a missed ping costs nothing
-            # the next slice does not repair.
-            mcp_core._post("/api/session-keepalive", {}, session_key=self.sk)
+            # Resets the call's silence timer and the staleness reaper, exactly
+            # as the ``wait`` tool's ping does. Best-effort: a missed ping costs
+            # nothing the next slice does not repair.
+            mcp_core._post(
+                "/api/session-keepalive", heartbeat_fields(self.phase), session_key=self.sk
+            )
         except Exception:
             pass
         reply = mcp_core._post(
@@ -617,6 +632,7 @@ def _format_ask_outcome(reply: dict) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "task_run": task_run,
     "wait": wait,
+    "mcp_server_wait": mcp_server_wait,
     "route_crew": route_crew,
     "select_crew": select_crew,
     "register_hook": register_hook,
@@ -631,6 +647,7 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "set_project": set_project,
     "reset_conversation": reset_conversation,
     "chat_tag": chat_tag,
+    "chat_rename": chat_rename,
     "suggest_followup": suggest_followup,
 }
 
@@ -643,10 +660,12 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
 #
 #   ``control_parts.schemas`` -- every control descriptor and the two config reads that shape one.
 #   ``control_parts.directive`` -- the directive emitter and the tools whose effect is one directive.
+#   ``control_parts.mcp_wait`` -- waiting for one of the session's MCP servers to finish starting.
 #   ``control_parts.monitor`` -- the monitoring-loop tools: arm, inspect, update and stop a loop.
 _OWNERS = (
     "kiro_crew.mcp_tools.control_parts.schemas",
     "kiro_crew.mcp_tools.control_parts.directive",
+    "kiro_crew.mcp_tools.control_parts.mcp_wait",
     "kiro_crew.mcp_tools.control_parts.monitor",
 )
 for _owner in _OWNERS:
@@ -659,10 +678,28 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.mcp_tools.control_parts.directive import _emit_directive  # noqa: F401
+    from kiro_crew.mcp_tools.control_parts.directive import (  # noqa: F401
+        QUIET_END_AFTER_TEXT_REMINDER,
+        _emit_directive,
+    )
+    from kiro_crew.mcp_tools.control_parts.mcp_wait import (  # noqa: F401
+        _MAX_UNANSWERED,
+        _POLL_SECS,
+        _POLL_TIMEOUT_SECS,
+        _SETTLED_TEXT,
+        _TIMED_OUT_TEXT,
+        _UNKNOWN_LEFT_OUT,
+        _UNKNOWN_NO_REPORTS,
+        _UNKNOWN_TEXT,
+        _UNREADABLE_TEXT,
+        _count,
+        _McpWaitStep,
+        _quoted,
+    )
     from kiro_crew.mcp_tools.control_parts.monitor import (  # noqa: F401
         _arming_preflight_refusal,
         _compact_monitor_inspection,
+        _finished_watch,
         _monitor_context_refusal,
         _parsed_pull_request_target,
     )
@@ -678,6 +715,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
     from kiro_crew import autonudge, session_directive  # noqa: F401
+    from kiro_crew.agent_sdk.mcp_problems import MCP_SERVER_WAIT_SECS  # noqa: F401
     from kiro_crew.autonudge_judge import ending_phrase, screen_phrase  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES  # noqa: F401
@@ -709,7 +747,9 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.session_directive import MAX_DIRECTIVE_CHARS  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         AUTONUDGE_STOP_SCHEMA,
+        CHAT_RENAME_SCHEMA,
         CHAT_TAG_SCHEMA,
+        MCP_SERVER_WAIT_SCHEMA,
         MONITOR_INSPECT_SCHEMA,
         MONITOR_START_SCHEMA,
         MONITOR_STOP_SCHEMA,

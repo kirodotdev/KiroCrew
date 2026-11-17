@@ -4,9 +4,10 @@ One of the launcher program's parts (see :mod:`kiro_crew.sandbox_launcher_parts`
 marker line this file is the program's text from ``check_crew_home_aliases`` to
 ``confirm_crew_home_aliases``: the crew-home alias checks on both sides of the masks, the
 pre-read of the files the masks re-expose, and every stage ``place_masks`` runs -- staging the
-private windows, pinning the seals' parents, sealing the read-only paths, masking the sensitive
-directories, re-opening the write carve-outs, restoring the exposed files, checking the credential
-aliases, and masking the sensitive files and ``~/.ssh``. A new launcher stage goes here, and ``place_masks`` or
+private windows, applying the operator's read-only layer, pinning the seals' parents, sealing
+the read-only paths, masking the sensitive directories, re-opening the write carve-outs,
+restoring the exposed files, checking the credential aliases, and masking the sensitive files
+and ``~/.ssh``. A new launcher stage goes here, and ``place_masks`` or
 ``run_child`` in :mod:`kiro_crew.sandbox_launcher_program` names its place in the order.
 """
 
@@ -19,7 +20,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.sandbox_launcher_program import (
+        _FDINFO,
         _MNT_DETACH,
+        _MOUNTINFO,
         _MS_BIND,
         _MS_NODEV,
         _MS_NOEXEC,
@@ -37,6 +40,7 @@ if TYPE_CHECKING:
         _pin_mount_path,
         _register_stand_in,
         _retire_stage_or_die,
+        _stage_mkdtemp,
         _stand_in_identity,
         _stand_in_mkdtemp,
         _stand_in_mkstemp,
@@ -316,71 +320,238 @@ def seal_readonly(launch):
     """
     for d in launch.readonly_dirs:
         target = d.encode()
-        # Any KIND passes: a governance ceiling is a plain file (``security_policy.json``),
-        # and bind-over-self + MS_RDONLY seals a regular file exactly as it seals a
-        # directory.
-        _seal_fd, _seal_target = _pin_mount_path(
-            launch, target, _any_kind, require_present=_mask_required(launch, target)
+        _seal_path(launch, d, _MS_BIND, _mask_required(launch, target))
+
+
+def _seal_path(launch, d, bind_flags, require_present):
+    """Bind *d* over itself with *bind_flags*, remount it ``MS_RDONLY``, or refuse.
+
+    The one seal :func:`seal_readonly` and :func:`seal_operator_readonly` share. Returns
+    ``False`` when *d* is absent and nothing required it, ``True`` once it is sealed.
+    """
+    target = d.encode()
+    # Any KIND passes: a governance ceiling is a plain file (``security_policy.json``),
+    # and bind-over-self + MS_RDONLY seals a regular file exactly as it seals a
+    # directory.
+    _seal_fd, _seal_target = _pin_mount_path(
+        launch, target, _any_kind, require_present=require_present
+    )
+    if _seal_target is None:
+        return False
+    try:
+        _seal_id = os.fstat(_seal_fd)
+        _mount_or_die(
+            launch, _seal_target, _seal_target, bind_flags, "exposing read-only path %s" % d
         )
-        if _seal_target is None:
-            continue
+    finally:
+        os.close(_seal_fd)
+    # The seal is the REMOUNT, and a remount can only name the mount the bind just
+    # created -- which no descriptor taken before that bind can name, since such a
+    # descriptor still refers to the mount underneath. So the name is resolved once
+    # more, and the object it reaches is REQUIRED to be the object the bind covered:
+    # a bind of a path over itself leaves the device and inode unchanged, so a
+    # mismatch means the name now reaches something else and the seal would land off
+    # target, leaving this ceiling writable.
+    _rdonly_fd, _rdonly_target = _pin_mount_path(launch, target, _any_kind)
+    if _rdonly_target is not None:
         try:
-            _seal_id = os.fstat(_seal_fd)
-            _mount_or_die(
-                launch, _seal_target, _seal_target, _MS_BIND, "exposing read-only path %s" % d
-            )
-        finally:
-            os.close(_seal_fd)
-        # The seal is the REMOUNT, and a remount can only name the mount the bind just
-        # created -- which no descriptor taken before that bind can name, since such a
-        # descriptor still refers to the mount underneath. So the name is resolved once
-        # more, and the object it reaches is REQUIRED to be the object the bind covered:
-        # a bind of a path over itself leaves the device and inode unchanged, so a
-        # mismatch means the name now reaches something else and the seal would land off
-        # target, leaving this ceiling writable.
-        _rdonly_fd, _rdonly_target = _pin_mount_path(launch, target, _any_kind)
-        if _rdonly_target is not None:
-            try:
-                _rdonly_id = os.fstat(_rdonly_fd)
-                _same = (
-                    _rdonly_id.st_dev == _seal_id.st_dev and _rdonly_id.st_ino == _seal_id.st_ino
+            _rdonly_id = os.fstat(_rdonly_fd)
+            _same = _rdonly_id.st_dev == _seal_id.st_dev and _rdonly_id.st_ino == _seal_id.st_ino
+            if _same:
+                _mount_or_die(
+                    launch,
+                    _rdonly_target,
+                    _rdonly_target,
+                    _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(_rdonly_target),
+                    "sealing read-only path %s" % d,
                 )
-                if _same:
-                    _mount_or_die(
-                        launch,
-                        _rdonly_target,
-                        _rdonly_target,
-                        _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(_rdonly_target),
-                        "sealing read-only path %s" % d,
-                    )
-                    # AFTER the remount, resolve the NAME once more and require it STILL
-                    # reaches the object just sealed. The two pins above bracket only the
-                    # bind; an atomic replacement landing between the second pin and this
-                    # remount would seal the OLD object while the configured name now
-                    # reaches a writable one, and nothing downstream re-checks it.
-                    _post_fd, _post_target = _pin_mount_path(launch, target, _any_kind)
-                    if _post_target is None:
-                        _same = False
-                    else:
-                        try:
-                            _post_id = os.fstat(_post_fd)
-                            _same = (
-                                _post_id.st_dev == _seal_id.st_dev
-                                and _post_id.st_ino == _seal_id.st_ino
-                            )
-                        finally:
-                            os.close(_post_fd)
-            finally:
-                os.close(_rdonly_fd)
+                # AFTER the remount, resolve the NAME once more and require it STILL
+                # reaches the object just sealed. The two pins above bracket only the
+                # bind; an atomic replacement landing between the second pin and this
+                # remount would seal the OLD object while the configured name now
+                # reaches a writable one, and nothing downstream re-checks it.
+                _post_fd, _post_target = _pin_mount_path(launch, target, _any_kind)
+                if _post_target is None:
+                    _same = False
+                else:
+                    try:
+                        _post_id = os.fstat(_post_fd)
+                        _same = (
+                            _post_id.st_dev == _seal_id.st_dev
+                            and _post_id.st_ino == _seal_id.st_ino
+                        )
+                    finally:
+                        os.close(_post_fd)
+        finally:
+            os.close(_rdonly_fd)
+    else:
+        _same = False
+    if not _same:
+        sys.exit(
+            "sandbox: BLOCKED -- %s changed identity between being bound "
+            "and being sealed, so the read-only seal would apply to a "
+            "different object and this path would stay writable. Another "
+            "process is rewriting that name. Lower agent.sandbox to run "
+            "without this control deliberately." % d
+        )
+    return True
+
+
+def _unescape_mount_point(field):
+    """A ``mountinfo`` mount point with its octal escapes (``\\040`` ...) decoded."""
+    out = bytearray()
+    i = 0
+    while i < len(field):
+        if field[i : i + 1] == b"\\" and field[i + 1 : i + 4].isdigit():
+            out.append(int(field[i + 1 : i + 4], 8))
+            i += 4
         else:
-            _same = False
-        if not _same:
-            sys.exit(
-                "sandbox: BLOCKED -- %s changed identity between being bound "
-                "and being sealed, so the read-only seal would apply to a "
-                "different object and this path would stay writable. Another "
-                "process is rewriting that name. Lower agent.sandbox to run "
-                "without this control deliberately." % d
+            out.append(field[i])
+            i += 1
+    return bytes(out)
+
+
+def _mount_points_below(root, mountinfo):
+    """Every mount point strictly inside *root*, from *mountinfo*'s text, once each.
+
+    Both are bytes. Field 5 of each ``mountinfo`` line is the mount point as this
+    namespace sees it; a mount stacked on another at one point is listed once, because a
+    remount by that name reaches the top one, which is the one lookups see.
+    """
+    prefix = root.rstrip(b"/") + b"/"
+    points = []
+    for line in mountinfo.splitlines():
+        fields = line.split(b" ")
+        if len(fields) < 5:
+            continue
+        point = _unescape_mount_point(fields[4])
+        if point.startswith(prefix) and point not in points:
+            points.append(point)
+    return points
+
+
+def _mount_ids_at(points, mountinfo):
+    """The mount IDs *mountinfo* lists at each of *points*, as ``{point: {id, ...}}``.
+
+    Field 1 of each line is the mount's ID. Several mounts can be listed at one point:
+    stacked there, or one hidden there by a later mount over a directory above it.
+    """
+    ids: dict[bytes, set[bytes]] = {point: set() for point in points}
+    for line in mountinfo.splitlines():
+        fields = line.split(b" ")
+        if len(fields) < 5:
+            continue
+        point = _unescape_mount_point(fields[4])
+        if point in ids:
+            ids[point].add(fields[0])
+    return ids
+
+
+def _mount_id_of(fd):
+    """The ID of the mount *fd* sits on, from its ``fdinfo``; ``None`` when unreadable."""
+    try:
+        with open(_FDINFO % fd, "rb") as _fdinfo:
+            for line in _fdinfo.read().splitlines():
+                if line.startswith(b"mnt_id:"):
+                    return line.split(b":", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def seal_operator_readonly(launch):
+    """Apply the operator's read-only directories and the write exceptions inside them.
+
+    ``agent.sandbox_readonly_paths`` / ``agent.sandbox_readonly_exceptions``, applied
+    BEFORE every crew seal, mask and carve-out, so each crew rule is a mount placed on
+    top of this layer and wins wherever the two meet. Nothing runs when the operator set
+    neither key.
+
+    Each read-only directory is bound over itself RECURSIVELY, so a filesystem mounted
+    below it (``/mnt/c`` under ``/mnt``) stays visible, and then every mount of that
+    copy is remounted ``MS_RDONLY``: the directory's own through :func:`_seal_path`, the
+    ones below it by the names this namespace lists for them. A non-recursive bind would
+    hide those filesystems instead, and the kernel refuses one outright over a mount a
+    user namespace has locked. Every one of these mounts withholds access, so each
+    fails CLOSED like a crew seal; an entry that is absent now is skipped, as the plan
+    already logged any entry it could not use.
+
+    Each exception is then re-opened the way :func:`apply_carveouts` re-opens a crew
+    carve-out -- a fresh bind remounted read-write, failing OPEN so a refused mount
+    leaves the path read-only -- except that the bind is recursive too, and a
+    filesystem mounted below an exception keeps the read-only remount it just got.
+    A mount that cannot be reached to seal, or whose record is hidden by a later mount
+    over a directory above it, is skipped; any exception containing such
+    a mount stays read-only with a warning, since re-opening it could restore access
+    to that mount while it is writable.
+    """
+    _skipped_points = []
+    for d in launch.operator_readonly_dirs:
+        if not _seal_path(launch, d, _MS_BIND | _MS_REC, False):
+            continue
+        with open(_MOUNTINFO, "rb") as _info:
+            _mountinfo = _info.read()
+        _points = _mount_points_below(d.encode(), _mountinfo)
+        _ids = _mount_ids_at(_points, _mountinfo)
+        for _point in _points:
+            # A mount this namespace cannot reach is skipped. Outside write exceptions,
+            # its read-only ancestor prevents restoring traversal; containing exceptions
+            # must stay read-only so they cannot expose an unsealed writable mount.
+            # A reachable mount that will not go read-only refuses the spawn below.
+            try:
+                os.stat(_point)
+            except OSError:
+                _skipped_points.append(_point)
+                continue
+            _sub_fd, _sub_target = _pin_mount_path(launch, _point, _any_kind)
+            if _sub_target is None:
+                continue
+            try:
+                # A record whose name now reaches none of the mounts listed at it is
+                # hidden by a later mount over a directory above it: no lookup reaches
+                # it, so it is skipped as unreachable rather than remounted by a name
+                # that is no mount point. An unreadable ID is judged as reached.
+                _reached = _mount_id_of(_sub_fd)
+                if _reached is not None and _reached not in _ids[_point]:
+                    _skipped_points.append(_point)
+                    continue
+                _mount_or_die(
+                    launch,
+                    _sub_target,
+                    _sub_target,
+                    _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(_sub_target),
+                    "sealing read-only mount %s below %s" % (os.fsdecode(_point), d),
+                )
+            finally:
+                os.close(_sub_fd)
+    for d in launch.operator_writable_dirs:
+        target = d.encode()
+        _skipped_point = next(
+            (
+                _point
+                for _point in _skipped_points
+                if _point == target or _point.startswith(target.rstrip(b"/") + b"/")
+            ),
+            None,
+        )
+        if _skipped_point is not None:
+            sys.stderr.write(
+                "sandbox: WARNING -- read-only exception %s left read-only: "
+                "a mount below it (%s) could not be reached to seal\n"
+                % (d, os.fsdecode(_skipped_point))
+            )
+            continue
+        if not os.path.isdir(target) or os.path.islink(target):
+            continue
+        if _mount_or_warn(
+            launch, target, target, _MS_BIND | _MS_REC, "read-only exception bind for %s" % d
+        ):
+            _mount_or_warn(
+                launch,
+                target,
+                target,
+                _MS_REMOUNT | _MS_BIND | _locked_mount_flags(target),
+                "read-only exception remount for %s" % d,
             )
 
 
@@ -685,7 +856,7 @@ def _open_unreadable_stand_in(launch, what):
     """
     if not launch.nondumpable:
         return None
-    _stage = _stand_in_mkdtemp(launch)
+    _stage = _stage_mkdtemp(launch)
     # Read after the create: a retry moves the stand-in root, and the stage is compared
     # with the root it was actually made in.
     _parent = launch.tmpfs_src or tempfile.gettempdir()

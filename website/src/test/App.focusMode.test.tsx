@@ -784,7 +784,7 @@ describe('focus mode — shell layout', () => {
     // aria-expanded-only signal would pin the header permanently and focus mode
     // would look broken on load — so the query also requires aria-haspopup, and
     // this is the case that proves it.
-    const dot = await screen.findByLabelText(/Gateway (connected|offline)/)
+    const dot = await screen.findByLabelText(/Gateway (connected|offline)|Connecting to the gateway/)
     expect(dot.getAttribute('aria-expanded')).toBe('true')
     expect(dot.hasAttribute('aria-haspopup')).toBe(false)
     expect((document.querySelector('header.topbar') as HTMLElement).style.transform).toBe('translateY(-100%)')

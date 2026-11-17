@@ -45,6 +45,9 @@ from kiro_crew.config.loader import (
     publish_materialized_agents,
     schedule_materialized_agents_refresh,
 )
+from kiro_crew.file_uri import file_uri_path_text
+from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+from kiro_crew.mcp_provenance import DERIVED_KEY
 from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
@@ -139,7 +142,7 @@ def _apply_agent_prompt(
     raw = per_agent.get("prompt")
     if not isinstance(raw, str) or not raw:
         return agent_data
-    path = Path(raw[len("file://") :] if raw.startswith("file://") else raw)
+    path = Path(file_uri_path_text(raw) if raw.startswith("file://") else raw)
     if not path.is_absolute():
         logger.warning("Agent %s: prompt path is not absolute, ignoring: %s", agent_name, raw)
         return agent_data
@@ -244,7 +247,7 @@ def _ceiling_filtered_allowed(refs: object, agent_name: str = "") -> list[Any]:
 
 
 def _apply_agent_mcp_policy(
-    agent_data: dict[str, Any], agent_name: str, policy: dict[str, Any]
+    agent_data: dict[str, Any], agent_name: str, policy: dict[str, Any], *, builtin: bool = False
 ) -> dict[str, Any]:
     """Merge an app's MCP policy into one materialized agent config.
 
@@ -265,6 +268,10 @@ def _apply_agent_mcp_policy(
     are NOT added to ``tools``.  Explicit tool lists rather than a wildcard: the
     app discovers the real tool names, so a server that grows a tool cannot
     quietly slip through a stale pattern.
+
+    ``builtin`` is whether the app is first party (shipped and holding its own
+    install): only then may a grant copy a server the default agent mounts, since a
+    user-installed app writes its own policy file and no owner consent covers it.
     """
     per_agent = (policy.get("agents") or {}).get(agent_name) or {}
     granted = per_agent.get("servers") or {}
@@ -286,6 +293,15 @@ def _apply_agent_mcp_policy(
     # Needed by BOTH branches: a policy entry names a server, it does not carry
     # the launch spec, so the real command/args/env come from the ambient config.
     ambient = _global_mcp_specs() if (granted or neutralized) else {}
+    # What the default agent mounts: the rebuild's merge of the MCP page's store,
+    # registry installs and edition servers over the global file, store winning a tie.
+    # Another app's server is that app's, never a grant's to copy.
+    mounted: dict[str, Any] = {}
+    if granted and builtin:
+        from kiro_crew import agent as agent_mod
+
+        app_owned = agent_mod._app_owned_mcp_keys()
+        mounted = {k: v for k, v in _mounted_mcp_servers().items() if k not in app_owned}
 
     for name, spec in granted.items():
         if not isinstance(spec, dict):
@@ -295,12 +311,24 @@ def _apply_agent_mcp_policy(
         # top of it the entry is command-less, so the server never launches and
         # its tools are simply absent -- the agent reports "not available" with
         # nothing in any log. (Same defect the neutralize branch below had.)
-        base = servers.get(name) or ambient.get(name) or _managed_mcp_spec(name)
+        base = servers.get(name) or _managed_mcp_spec(name)
+        if not base:
+            base = mounted.get(name) or ambient.get(name)
+            # A copied server the default agent does not start stays off: turned off
+            # in MCP Management, not yet consented, or a secret:// reference withheld.
+            if mcp_entry_is_muted(base):
+                logger.warning(
+                    "Skipping MCP grant for %r on agent %r: the server is turned off "
+                    "or withheld for the default agent",
+                    name,
+                    agent_name,
+                )
+                continue
         if not isinstance(base, dict) or not base.get("command"):
             logger.warning(
                 "Skipping MCP grant for %r on agent %r: no launch spec found in "
-                "the agent config, the global MCP config, or the host's managed "
-                "servers",
+                "the agent config, the host's managed servers, the default agent's "
+                "servers, or the global MCP config",
                 name,
                 agent_name,
             )
@@ -308,6 +336,7 @@ def _apply_agent_mcp_policy(
         merged = {**base, **spec}
         merged.pop("neutralized", None)
         merged.pop("disabled", None)  # a grant un-disables a denied server
+        merged.pop(DERIVED_KEY, None)  # the rebuild's record, true only in its own file
         # `mountOnly` (set by a policy for a built-in grant) means: mount the
         # server so the tool is visible, but keep it OFF allowedTools no matter
         # what the ceiling says, so every call routes through the approval gate
@@ -509,6 +538,19 @@ def _audit_declared_mcp_tools(
         logger.debug("SEL audit unavailable for mcpTools restriction", exc_info=True)
 
 
+def _mounted_mcp_servers() -> dict[str, Any]:
+    """Server name -> entry from Kiro Crew's own agent config, the servers the default
+    agent mounts; ``{}`` when it cannot be read."""
+    try:
+        with _mcp_lock():
+            data = _read_mcp_json_unlocked()
+    except Exception as exc:  # noqa: BLE001 — never block agent materialization
+        logger.warning("Cannot read the default agent's MCP servers: %s", exc)
+        return {}
+    servers = data.get("mcpServers")
+    return servers if isinstance(servers, dict) else {}
+
+
 def _own_mcp_servers(app_name: str) -> dict[str, Any]:
     """The app's OWN registered MCP servers, keyed as ``<app>:<server>``.
 
@@ -523,14 +565,7 @@ def _own_mcp_servers(app_name: str) -> dict[str, Any]:
     not load for it, silently.
     """
     prefix = f"{app_name}:"
-    try:
-        with _mcp_lock():
-            data = _read_mcp_json_unlocked()
-    except Exception as exc:  # noqa: BLE001 — never block agent materialization
-        logger.warning("App %s: cannot read registered MCP servers: %s", app_name, exc)
-        return {}
-    servers = data.get("mcpServers") or {}
-    return {k: v for k, v in servers.items() if k.startswith(prefix)}
+    return {k: v for k, v in _mounted_mcp_servers().items() if k.startswith(prefix)}
 
 
 def _managed_mcp_spec(name: str) -> dict[str, Any] | None:
@@ -682,8 +717,56 @@ def snapshot_app_agent_configs(app_name: str) -> dict[str, dict[str, Any]]:
     return snapshot
 
 
+#: Suffix of the template record kept beside each materialized app agent spec,
+#: ``<agents dir>/<app>--<agent>.template`` (:func:`_template_record`). Not ``.json``,
+#: so kiro-cli and every spec scan skip it, as they skip the ``.lock`` beside the spec.
+_TEMPLATE_RECORD_SUFFIX = ".template"
+
+
+def _user_owned_agent_keys(
+    prior: Mapping[str, Any] | None, record: Mapping[str, Any] | None
+) -> set[str]:
+    """The keys of the on-disk config *prior* that are the user's.
+
+    Every key outside :data:`_FRAMEWORK_OWNED_AGENT_KEYS` whose value is not the one
+    the template record *record* says the template wrote. With no record (a spec
+    written before records existed) that is every such key.
+    """
+    if not prior:
+        return set()
+    missing = object()
+    return {
+        key
+        for key, value in prior.items()
+        if key not in _FRAMEWORK_OWNED_AGENT_KEYS
+        and (record is None or record.get(key, missing) != value)
+    }
+
+
+def _template_record(
+    fresh: Mapping[str, Any],
+    prior: Mapping[str, Any] | None,
+    record: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The template record to keep beside the spec: what this registration wrote
+    from the template, *fresh*, for each key the user does not own.
+
+    A key the user owns stays out even when the new template happens to equal
+    their value, so a later template that changes it again cannot take it back.
+    """
+    owned = _user_owned_agent_keys(prior, record)
+    return {
+        key: value
+        for key, value in fresh.items()
+        if key not in _FRAMEWORK_OWNED_AGENT_KEYS and key not in owned
+    }
+
+
 def _preserve_user_agent_edits(
-    name: str, prior: dict[str, Any] | None, fresh: dict[str, Any]
+    name: str,
+    prior: dict[str, Any] | None,
+    fresh: dict[str, Any],
+    template_record: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Carry a user's own edits in an existing agent config across a refresh.
 
@@ -696,19 +779,17 @@ def _preserve_user_agent_edits(
 
     Same split the managed-MCP refresh uses (``agent._refresh_dynamic_fields``):
     keys the framework derives are refreshed because a stale one is a BUG, and
-    every other key present in the on-disk file wins over the template.
+    every other key the user owns in the on-disk file wins over the template.
 
-    "Can only have gotten there by the user" would be the natural reading of that
-    second half, and it is WRONG — the previous boot's materialization wrote the
-    template's own values there too. Nothing here records what the last template
-    wrote, so there is no provenance to tell a hand edit from a stale copy of the
-    template. Rather than introduce that provenance (a sidecar file to keep in
-    sync, for the sake of two keys), the ownership line is drawn by what a key
-    MEANS:
+    The previous registration wrote the template's own values into the file too,
+    so a value on disk is not by itself the user's. *template_record* tells them
+    apart (:func:`_template_record`, kept beside the spec): a value that still
+    equals what the record says the template wrote follows the new template, which
+    may also drop the key. Any other value is the user's
+    (:func:`_user_owned_agent_keys`), and with no record every value on disk is.
 
-    * A **preference** (``model``, ``description``, extra ``toolsSettings``) is
-      preserved. A template change that never reaches an existing install is the
-      intended outcome — the user's choice outranks the template's default.
+    * A **preference** (``model``, ``description``, extra ``toolsSettings``) the
+      user changed is preserved: their choice outranks the template's default.
     * **Containment** (``managedToolPolicy``, ``includeMcpJson``) is framework-owned
       and always refreshed, because preserving it is wrong in BOTH directions: a
       template that later tightens ``managedToolPolicy.exclude`` would never reach
@@ -725,10 +806,11 @@ def _preserve_user_agent_edits(
     if not prior:
         return fresh
 
+    owned = _user_owned_agent_keys(prior, template_record)
     merged = dict(fresh)
     kept: list[str] = []
     for key, value in prior.items():
-        if key in _FRAMEWORK_OWNED_AGENT_KEYS:
+        if key not in owned:
             continue
         if merged.get(key) != value:
             merged[key] = value
@@ -855,11 +937,11 @@ def _render_shipped_agent(
     ``None`` when it holds one that cannot be resolved (nothing is registered rather
     than registering a config with a literal ``{ENGINE_ROOT}`` in it).
 
-    ``io_failures`` collects ONLY the write failure. This returns ``None`` for three
-    different reasons and just one of them can succeed on a retry: an unresolved
+    ``io_failures`` collects ONLY the read and write failures. This returns ``None`` for
+    four different reasons and just those two can succeed on a retry: an unresolved
     placeholder and invalid rendered JSON are properties of the template and will fail
     identically forever, so reporting them to a caller that retries would spin without
-    ever converging. The ``OSError`` arm is the transient one.
+    ever converging. The two ``OSError`` arms are the transient ones.
 
     **The gateway renders the template itself.** Verifying the app's own provisioned
     copy as "the template with only placeholders substituted" is unsound: that check
@@ -877,9 +959,16 @@ def _render_shipped_agent(
     """
     try:
         template = agent_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        # Unrendered: the caller's own read of this path reports the failure.
+    except UnicodeDecodeError:
+        # Unrendered: the caller's own read of this path fails the same way and skips it.
         return agent_path
+    except OSError as exc:
+        # Not handed to the caller: its own read could succeed and register the
+        # template with its placeholders still in it.
+        logger.warning("App %s: could not read agent %s: %s", app_name, agent_path.name, exc)
+        if io_failures is not None:
+            io_failures.append(str(agent_path))
+        return None
     if not _TEMPLATE_PLACEHOLDER_RE.search(template):
         return agent_path
 
@@ -966,6 +1055,9 @@ def _register_agents(
         agents_dir.mkdir(parents=True, exist_ok=True)
         policy = _agent_mcp_policy(app_name)
         own_servers = _own_mcp_servers(app_name)
+        from kiro_crew.apps.execution import builtin_app_names
+
+        builtin = app_name in builtin_app_names()
 
         screened_root = screen_app_path(app_root) if manifest.agents else Containment.UNCHECKED
         for agent_path_str in manifest.agents:
@@ -1044,6 +1136,10 @@ def _register_agents(
             prior_on_disk = _read_agent_config(link_path)
             if prior_on_disk is None and prior_configs:
                 prior_on_disk = prior_configs.get(link_name)
+            # What the previous registration wrote from the template. It sits in the
+            # agents directory, which the sandbox seals read-only like the spec.
+            record_path = link_path.with_suffix(_TEMPLATE_RECORD_SUFFIX)
+            prior_record = _read_agent_config(record_path)
 
             # Drop a legacy SYMLINK from an older Kiro Crew (which pointed at a file
             # inside the app) so the write below lands a real file at this path.
@@ -1071,7 +1167,7 @@ def _register_agents(
                 # the HOST agent's config, not the global mcp.json, so without this
                 # merge the reference dangles and the tool silently never mounts.
                 _materialize_managed_refs(agent_data)
-                merged = _apply_agent_mcp_policy(agent_data, agent_name, policy)
+                merged = _apply_agent_mcp_policy(agent_data, agent_name, policy, builtin=builtin)
                 # Enforce permissions.mcpTools: withhold every host-managed tool the
                 # app did not declare via managedToolPolicy.exclude. BEFORE
                 # _preserve_user_agent_edits, which treats managedToolPolicy as
@@ -1079,7 +1175,8 @@ def _register_agents(
                 # value is the one carried across the refresh.
                 merged = _enforce_declared_mcp_tools(merged, manifest)
                 merged = _apply_agent_prompt(merged, agent_name, policy, app_name, app_root)
-                merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged)
+                record = _template_record(merged, prior_on_disk, prior_record)
+                merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged, prior_record)
                 # LAST governance pass, on the map that is about to be written. By this
                 # point `autoApprove` could have come from the app's own manifest, the
                 # per-agent MCP policy, a materialized managed ref, or a preserved
@@ -1130,6 +1227,13 @@ def _register_agents(
                     if _agent._declined_foreign_spec_write(link_path):
                         continue
                     atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
+                    try:
+                        atomic_write(record_path, json.dumps(record, indent=2) + "\n")
+                    except OSError as exc:
+                        # The spec is in place and the previous record stays, so a
+                        # value this write took from a changed template reads as the
+                        # user's next time and is kept.
+                        logger.warning("Could not write %s: %s", record_path.name, exc)
                 _audit_declared_mcp_tools(app_name, agent_name, manifest, merged)
                 registered.append(_namespace(app_name, agent_name))
                 # The DECLARED name only — kiro-cli enumerates agents by their
@@ -1175,6 +1279,12 @@ def _deregister_agents(app_name: str) -> int:
             try:
                 entry.unlink()
                 removed += 1
+            except OSError:
+                pass
+        elif entry.name.startswith(prefix) and entry.name.endswith(_TEMPLATE_RECORD_SUFFIX):
+            # The template record goes with its spec (_template_record).
+            try:
+                entry.unlink()
             except OSError:
                 pass
     # The launch copies the app's palette sessions ran under (apps.agent_launch)

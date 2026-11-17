@@ -19,7 +19,7 @@ from types import ModuleType
 
 import kiro_crew as _kiro_crew_pkg
 from kiro_crew import sandbox_plan
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import agent_readonly_dirs, credential_masks
 from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.platform import current_context
@@ -30,10 +30,8 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HOME_PREFIXES,
     _CREW_READONLY_LEAVES,
     _CREW_SANDBOX_VISIBLE_LEAVES,
-    _MD_NOTEBOOK_STAGING_LEAF,
     _POLICY_CACHE_LEAF,
     _RELOCATED_CREW_HIDDEN_LEAVES,
-    MD_NOTEBOOK_APP_NAME,
     _crew_home_entries,
 )
 
@@ -223,12 +221,10 @@ _APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
     # the SAME namespace — and a worktree's lifecycle script could then pick the code
     # the gateway execs next. The pointer stays masked; Dev Fleet moves the cutover to a
     # gateway-process route instead (``dev_fleet/gateway_routes.py``).
-    MD_NOTEBOOK_APP_NAME: (
-        # The whole state directory, handed back as one unit: the state files, their staged
-        # temps and the migration marker all live inside it, so the publish rename stays on
-        # one mount. The retired bare spellings are NOT here; the backend never reads them.
-        _MD_NOTEBOOK_STAGING_LEAF,
-    ),
+    #
+    # NOT here either: the Notes state. It lives under the app's own data directory, in
+    # the directory its manifest declares in ``credentialMasks`` ("state/"), and its
+    # backend gets it back through :func:`app_declared_mask_targets` like any app's.
 }
 
 
@@ -287,7 +283,8 @@ def app_declared_mask_targets(
     Only a path that is absent or a regular file with ONE name is handed back
     (:func:`_liftable_declared_file`). A second hard link makes the file's bytes another
     path's bytes too, maybe a core credential's, and a path comparison cannot tell; a
-    directory is not a declared entry at all. Either one stays masked for the backend.
+    directory at a file entry stays masked for the backend too. A directory entry
+    (``"state/"``) is handed back while it is absent or a real directory, never a link.
 
     Returns ``()`` for an app that declares nothing.
     """
@@ -306,6 +303,58 @@ def app_declared_mask_targets(
     )
     if not leaves:
         return ()
+    directories = credential_masks.declared_crew_dir_leaves_for(app_name, builtin=builtin)
+    home = str(Path.home())
+    targets: list[tuple[str, bool]] = []
+    for leaf in leaves:
+        directory = leaf in directories
+        targets.extend((os.path.join(home, e), directory) for e in _crew_home_entries((leaf,)))
+        targets.extend((t, directory) for t in _relocated_crew_targets((leaf,)))
+    return tuple(
+        dict.fromkeys(
+            target
+            for target, directory in targets
+            if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+            and not carveout_chain_has_planted_link(target)
+            and (_liftable_declared_dir(target) if directory else _liftable_declared_file(target))
+        )
+    )
+
+
+def app_declared_readonly_targets(
+    app_name: str, *, builtin: bool, mode: str = "standard"
+) -> tuple[str, ...]:
+    """Absolute paths of the directories *app_name* declares in ``agentReadOnlyDirs``.
+
+    Every sandbox seals those directories read-only, and the app's spawned backend is
+    their writer, so ``apps/backend.py`` hands exactly these spellings back as
+    ``extra_visible_dirs`` for that one spawn, and ``sandbox_argv._live_plan_host`` leaves
+    a declared seal off a spawn that names its exact spelling there. Nothing else in that
+    list lifts a seal. Each is under ``apps/<app_name>/data/`` by construction
+    (:mod:`kiro_crew.apps.agent_readonly_dirs`). A leaf that is, holds or sits beneath a
+    core leaf of any disposition is dropped, and so is a spelling beneath another mask or
+    reached through a planted link, so a declaration never lifts a core fence and never
+    cancels a mask: the lift returns only what the declaration added. *builtin* names the
+    code the spawn executes, as for :func:`app_declared_mask_targets`.
+
+    Returns ``()`` for an app that declares nothing.
+    """
+    core = (
+        *_CREW_HIDDEN_LEAVES,
+        *_RELOCATED_CREW_HIDDEN_LEAVES,
+        *_CREW_READONLY_LEAVES,
+        *_CREW_SANDBOX_VISIBLE_LEAVES,
+    )
+    leaves = tuple(
+        leaf
+        for leaf in agent_readonly_dirs.declared_crew_leaves_for(app_name, builtin=builtin)
+        if not any(
+            entry == leaf or entry.startswith(leaf + "/") or leaf.startswith(entry + "/")
+            for entry in core
+        )
+    )
+    if not leaves:
+        return ()
     home = str(Path.home())
     targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
     targets.extend(_relocated_crew_targets(leaves))
@@ -314,8 +363,28 @@ def app_declared_mask_targets(
         for target in targets
         if not carveout_shadowed_by_foreign_mask(target, mode=mode)
         and not carveout_chain_has_planted_link(target)
-        and _liftable_declared_file(target)
     )
+
+
+def _liftable_declared_dir(target: str) -> bool:
+    """Whether a declared directory *target* may go back to its backend: absent, or a real dir.
+
+    Judged with ``lstat``, so a link at the name is never followed or handed back.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        info = None
+    if info is not None and stat.S_ISDIR(info.st_mode):
+        return True
+    logger.warning(
+        "sandbox: not handing the declared directory mask %s back to its app's backend: it "
+        "is not a directory, so it stays masked for that backend too.",
+        target,
+    )
+    return False
 
 
 def _liftable_declared_file(target: str) -> bool:
@@ -344,7 +413,7 @@ def _liftable_declared_file(target: str) -> bool:
 def enterprise_policy_cache_view(
     mode: str = "standard", extra_hidden_dirs: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
-    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an LTS build.
+    """The governance cache to lift READ-ONLY for a sandboxed spawn on a governed host.
 
     An LTS build always enters the central tier (RFC D2), including a Kiro Crew
     MCP server kiro-cli starts inside the agent sandbox. That process reaches neither the
@@ -354,10 +423,15 @@ def enterprise_policy_cache_view(
     fixed source and the fetch validators; no credential. The vault and every other
     credential path stay hidden.
 
+    An oss build whose ceiling came from central distribution
+    (``policy_distribution.central_ceiling_installed``) is in the same position: the ACP
+    launch tail and managed MCP declarations put the harness's Kiro Crew MCP children in
+    cache-only mode, and a KAS runtime starts them inside this sandbox.
+
     Lifted the way ``apps/backend.py`` lifts it for a cache-only backend: one spelling,
     refused when it sits beneath a foreign mask (:func:`carveout_shadowed_by_foreign_mask`),
     and kept read-only by the plan for every spelling (``sandbox_plan.is_policy_cache_dir``).
-    ``()`` in an oss build, so an oss sandbox is unchanged.
+    ``()`` in an oss build with no central ceiling, so such a sandbox is unchanged.
 
     Also ``()``, so the cache stays masked and a cache-only child fails closed, when:
 
@@ -370,8 +444,9 @@ def enterprise_policy_cache_view(
     """
     try:
         from kiro_crew.edition import is_lts
+        from kiro_crew.platform.policy_distribution import central_ceiling_installed
 
-        if not is_lts():
+        if not (is_lts() or central_ceiling_installed()):
             return ()
         target = os.path.join(str(config_dir()), _POLICY_CACHE_LEAF)
     except Exception:
@@ -1104,8 +1179,8 @@ _SENSITIVE_ENV_PREFIXES: list[str] = [
 #    day under heavy subagent use). ``pycache_gc.prune_pycache`` bounds what
 #    the gateway's own tree still writes there.
 #  - PYTHONDONTWRITEBYTECODE: the packaged macOS app exports it instead of the
-#    prefix (its tree ships fully precompiled, see gateway-env.js), so the
-#    bundled interpreter never writes into the sealed .app. It is a statement
+#    prefix (its tree ships the caches it starts with, see gateway-env.js), so
+#    the bundled interpreter never writes into the sealed .app. It is a statement
 #    about OUR bundle, not about the user's Python: inherited by a foreign
 #    interpreter it silently disables bytecode caching for the user's own
 #    projects -- pytest's assertion rewriter falls back to rewriting in memory
@@ -1249,6 +1324,122 @@ def configured_sandbox_mode() -> str:
             "Could not read agent.sandbox; using %r for this spawn", _SANDBOX_MODE_FALLBACK
         )
         return _SANDBOX_MODE_FALLBACK
+
+
+_READONLY_LAYER_CACHE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+_READONLY_LAYER_WARNED: set[tuple[str, str, bool]] = set()
+
+
+def configured_readonly_layer() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The operator's read-only paths and exceptions, with ``~`` expanded.
+
+    Read both config documents at each spawn without rewriting them, each as the
+    loader reads it (``read_endorsed_config_text``: where a detached bind lets an agent
+    rewrite or delete the file, its gateway-endorsed copy). The local
+    overlay wins per key, and absent files or keys contribute nothing. Existing
+    documents must be JSON objects with an object-valued ``agent`` when present.
+    An unreadable document retains this process's last fully readable layer;
+    without one, the documents that did parse supply the layer, as the config
+    loader uses them. Each distinct
+    unreadable situation logs a SECURITY warning. Values are coerced to lists
+    of non-empty strings, as the config loader coerces them.
+
+    Import lazily to avoid the config import cycle. Never use ``KiroCrewConfig.load()``:
+    the plan reads after the pre-spawn pass records ``config.json``'s identity,
+    and a load can write the file back.
+    """
+    from kiro_crew.config.loader_locations import (
+        config_local_path,
+        config_path,
+        read_endorsed_config_text,
+    )
+
+    stored: dict[str, object] = {}
+    unreadable: list[tuple[Path, str]] = []
+    for path in (config_local_path(), config_path()):
+        try:
+            document = json.loads(read_endorsed_config_text(path))
+            if not isinstance(document, dict):
+                raise ValueError("config document must be a JSON object")
+            agent = document.get("agent", {})
+            if not isinstance(agent, dict):
+                raise ValueError("agent must be a JSON object")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            unreadable.append((path, str(exc)))
+            continue
+        for key in ("sandbox_readonly_paths", "sandbox_readonly_exceptions"):
+            if key in agent:
+                stored.setdefault(key, agent[key])
+
+    if unreadable:
+        cached = "layer" in _READONLY_LAYER_CACHE
+        for path, reason in unreadable:
+            situation = (str(path), reason, cached)
+            if situation in _READONLY_LAYER_WARNED:
+                continue
+            _READONLY_LAYER_WARNED.add(situation)
+            logger.warning(
+                "SECURITY: %s could not be read (%s); %s",
+                path,
+                reason,
+                (
+                    "keeping the last agent.sandbox_readonly_paths this process read"
+                    if cached
+                    else "applying agent.sandbox_readonly_paths from the documents that parsed"
+                ),
+            )
+        if cached:
+            return _READONLY_LAYER_CACHE["layer"]
+        # Nothing read whole yet: apply what the readable documents hold, as the
+        # config loader does, rather than no layer. Not cached, so the next whole
+        # read replaces it.
+        return _readonly_layer_from(stored)
+
+    layer = _readonly_layer_from(stored)
+    _READONLY_LAYER_CACHE["layer"] = layer
+    return layer
+
+
+def _readonly_layer_from(stored: dict[str, object]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``stored``'s two read-only keys as non-empty strings, with ``~`` expanded."""
+    paths, exceptions = (
+        (
+            [entry for entry in value if isinstance(entry, str) and entry]
+            if isinstance(value, list)
+            else []
+        )
+        for value in (
+            stored.get("sandbox_readonly_paths"),
+            stored.get("sandbox_readonly_exceptions"),
+        )
+    )
+    layer = (
+        tuple(os.path.expanduser(path) for path in paths),
+        tuple(os.path.expanduser(path) for path in exceptions),
+    )
+    return layer
+
+
+def warn_readonly_layer_unenforced(reason: str) -> None:
+    """Log once per process that the operator's read-only layer is not applied, and why.
+
+    For a spawn no Kiro Crew OS sandbox confines (Windows has no backend), so an
+    operator who set ``agent.sandbox_readonly_paths`` is told it does nothing there
+    rather than left to assume it holds.
+    """
+    if getattr(warn_readonly_layer_unenforced, "_warned", False):
+        return
+    paths, exceptions = configured_readonly_layer()
+    if not paths and not exceptions:
+        return
+    warn_readonly_layer_unenforced._warned = True  # type: ignore[attr-defined]
+    logger.warning(
+        "SECURITY: agent.sandbox_readonly_paths is set but NOT enforced: %s. The agent "
+        "can write to those directories.",
+        reason,
+    )
 
 
 # The single environment marker that proves this process is already INSIDE a

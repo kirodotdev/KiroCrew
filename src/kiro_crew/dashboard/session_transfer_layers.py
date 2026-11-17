@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.drivers.acp_vocab import PROVIDER_LABEL_DEFAULT, PROVIDER_LABEL_KAS
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
@@ -166,8 +165,13 @@ def _read_layer_b(sid: str) -> dict[str, Any] | None:
         if not isinstance(envelope, dict):
             return None
         snapshot = _snapshot_events_file(lf)
-    except Exception:
-        logger.debug("session_transfer: could not read Layer B for sid=%s", sid, exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "session_transfer: could not read Layer B for sid=%s: %s: %s",
+            sid,
+            type(exc).__name__,
+            exc,
+        )
         return None
     if snapshot is None:
         # A crash-truncated source file (kiro-cli killed mid-write) would ship a
@@ -220,8 +224,13 @@ def _read_kas_layer_b(sid: str) -> dict[str, Any] | None:
         if not isinstance(session, dict):
             return None
         snapshot = _snapshot_events_file(meta.parent / "messages.jsonl")
-    except Exception:
-        logger.debug("session_transfer: could not read KAS session sid=%s", sid, exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "session_transfer: could not read KAS session sid=%s: %s: %s",
+            sid,
+            type(exc).__name__,
+            exc,
+        )
         return None
     if snapshot is None:
         return None
@@ -238,8 +247,9 @@ def _snapshot_events_file(src: Path) -> Path | None:
     its longest single record. The bytes are copied unchanged (see
     :func:`_read_layer_b` on why nothing is rewritten).
 
-    Returns the snapshot's path, or ``None`` (and no file left behind) when a
-    record does not parse or the log is not UTF-8.
+    Returns the snapshot's path, or ``None`` (and no file left behind) when the
+    log is missing, a record does not parse, the log is not UTF-8 or it cannot
+    be read; every case but a missing log logs one WARNING naming the error.
     """
     fd, name = tempfile.mkstemp(dir=str(_egress_tmp_dir()), suffix=".jsonl")
     dst = Path(name)
@@ -255,7 +265,15 @@ def _snapshot_events_file(src: Path) -> Path | None:
                 fout.write(line)
         ok = True
         return dst
-    except Exception:
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.warning(
+            "session_transfer: could not snapshot Layer B events %s: %s: %s",
+            src,
+            type(exc).__name__,
+            exc,
+        )
         return None
     finally:
         if not ok:
@@ -303,14 +321,14 @@ def _rewrite_layer_b_envelope(env: dict[str, Any], new_sid: str, agent: str) -> 
     return e
 
 
-def _slot_runs_kas(session_key: str) -> bool:
-    """Whether a new session on *session_key* starts on KAS. **Blocking** (config read).
+def _slot_starts_on(session_key: str, backend: str) -> bool:
+    """Whether a new session on *session_key* starts on *backend*. **Blocking** (config read).
 
-    A KAS context joined to a slot that runs another backend is dropped at its
-    first turn (``detect_provider_switch``) and the tab reopens from the
-    transcript, so the import would report a full resume it does not have. Read
-    through the same member-aware gate as the provider factory; any failure
-    answers False, so the import falls back to the marked transcript-only copy.
+    A context joined to a slot that runs another backend is dropped at its first
+    turn (``detect_provider_switch``) and the tab reopens from the transcript, so
+    the import would report a full resume it does not have. Read through the same
+    member-aware gate as the provider factory; any failure answers False, so the
+    import falls back to the marked transcript-only copy.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -319,7 +337,7 @@ def _slot_runs_kas(session_key: str) -> bool:
 
         cfg = KiroCrewConfig.load()
         pick = session_backend_pick(session_key)
-        backend = select_provider_backend(
+        starts_on = select_provider_backend(
             session_key,
             cfg.agent.member_acp_backend,
             cfg.agent.acp_backend,
@@ -329,7 +347,7 @@ def _slot_runs_kas(session_key: str) -> bool:
     except Exception:
         logger.debug("session_transfer: could not resolve %s's backend", session_key, exc_info=True)
         return False
-    return backend == ACP_BACKEND_KAS
+    return starts_on == backend
 
 
 def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:

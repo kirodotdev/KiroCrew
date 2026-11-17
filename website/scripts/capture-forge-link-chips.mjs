@@ -77,6 +77,7 @@ async function capture(browser, base, theme, name) {
   await stubDashboardApi(page, {
     slots,
     theme,
+    localStorageEntries: { 'mc-active-slot': 'chat-forge-chips' },
     extra: async (path, route) => {
       if (path.startsWith('/api/chat/slots/')) { json(route, detail); return true }
       if (path === '/api/recent-projects') { json(route, { dirs: [PROJECT] }); return true }
@@ -86,12 +87,6 @@ async function capture(browser, base, theme, name) {
   })
   logPageProblems(page)
 
-  await page.addInitScript((t) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', t)
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot', 'chat-forge-chips')
-  }, theme)
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
 
   // All four chip shapes, by their forge-convention labels.

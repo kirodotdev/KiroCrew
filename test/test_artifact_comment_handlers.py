@@ -18,6 +18,7 @@ from body_stream_helpers import attach_json_body
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard.handlers import artifacts as h
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -414,7 +415,7 @@ class TestEditComment:
 
     @pytest.mark.asyncio
     async def test_edit_gated_by_publish_governance(self, store, monkeypatch):
-        # Regression (PR #14 alice): a shared-comment edit is outbound egress and
+        # A shared-comment edit is outbound egress and
         # must pass the same capabilities.publish gate as artifact publish. A
         # policy that DENIES the destination keeps the edit LOCAL (remote_synced
         # False) even though the provider supports COMMENTS_EDIT.
@@ -571,6 +572,86 @@ class TestAgentDeleteComment:
         )
         assert resp.status == 403
         assert store.list_comments("doc")[0].status == "open"
+
+    @pytest.mark.asyncio
+    async def test_agent_mark_review_on_resolved_thread_409(self, store):
+        """Resolve is the person's call, so an agent mark_review must
+        not move a thread the person resolved back to REVIEW."""
+        root = await _post("doc", text="root")
+        rresp = await h.api_artifact_resolve_comment(
+            _req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert rresp.status == 200
+        events_before = len(store.get("doc").events)
+        resp = await h.api_artifact_mark_review(
+            _agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 409
+        assert "resolved" in _j(resp)["error"]
+        assert store.list_comments("doc")[0].status == "resolved"
+        assert len(store.get("doc").events) == events_before
+
+    @pytest.mark.asyncio
+    async def test_agent_mark_review_on_open_thread_still_works(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_mark_review(
+            _agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 200
+        assert store.list_comments("doc")[0].status == "review"
+
+
+def _socket_agent_req(*, body: dict | None = None, match: dict | None = None) -> MagicMock:
+    """An agent call over the agent socket: it sends a capability, not the
+    secret header, and the auth middleware marks it ``internal_auth``."""
+    r = _req(body=body, match=match)
+    marks = {"internal_auth": True}
+    r.get = lambda key, default=None: marks.get(key, default)
+    return r
+
+
+class TestSocketAgentIsAnAgent:
+    """The agent socket carries no X-Internal-Secret header, so each actor
+    check must also read the middleware's ``internal_auth`` mark."""
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_mark_review_on_resolved_thread_409(self, store):
+        root = await _post("doc", text="root")
+        await h.api_artifact_resolve_comment(
+            _req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        resp = await h.api_artifact_mark_review(
+            _socket_agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 409
+        assert store.list_comments("doc")[0].status == "resolved"
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_cannot_resolve_403(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_resolve_comment(
+            _socket_agent_req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 403
+        assert store.list_comments("doc")[0].status == "open"
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_delete_needs_reason_400(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_delete_comment(
+            _socket_agent_req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 400
+        assert len(store.list_comments("doc")) == 1
+
+    @pytest.mark.asyncio
+    async def test_socket_agent_mark_review_event_is_by_agent(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_mark_review(
+            _socket_agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 200
+        assert store.get("doc").events[-1]["by"] == "agent"
 
 
 class TestCommentIdentityFromRequest:
@@ -749,6 +830,9 @@ class TestFetchOnViewMerge:
     async def test_provider_author_redacted_at_read_boundary(self, store, monkeypatch):
         from kiro_crew.publish_provider import RemoteComment
 
+        # A GitHub token with a valid checksum; an AWS key ID and a bare 40-character
+        # run are kept visible, so neither can stand in.
+        secret = github_classic(seed=138)
         self._publish(store)
         self._patch_provider(
             monkeypatch,
@@ -756,7 +840,7 @@ class TestFetchOnViewMerge:
                 RemoteComment(
                     remote_id="7",
                     thread_id="7",
-                    author="AKIAIOSFODNN7EXAMPLE",
+                    author=secret,
                     body="looks good",
                 )
             ],
@@ -765,10 +849,10 @@ class TestFetchOnViewMerge:
         assert resp.status == 200
         cmt = next(c for c in _j(resp)["comments"] if c["origin"] == "fakeprov:7")
         # Credential in the provider-controlled author never reaches the wire.
-        assert "AKIAIOSFODNN7EXAMPLE" not in cmt["author"]
+        assert secret not in cmt["author"]
         # ...but it IS stored raw in the mirror (redaction is read-boundary only).
         stored = next(c for c in store.list_comments("doc") if c.origin == "fakeprov:7")
-        assert stored.author == "AKIAIOSFODNN7EXAMPLE"
+        assert stored.author == secret
 
     @pytest.mark.asyncio
     async def test_merged_mirror_carries_routing_metadata(self, store, monkeypatch):

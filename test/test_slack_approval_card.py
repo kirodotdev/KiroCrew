@@ -39,6 +39,13 @@ from kiro_crew.slack.renderer import (
     build_approval_blocks,
     split_approval_token,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+
+#: A synthetic Slack bot token split by Slack emphasis, and a piece of its body.
+#: (An AWS key ID would not do: the structured detectors keep it visible.)
+_TOKEN = SAMPLE_SLACK_BOT_TOKEN
+_MARKED = _TOKEN[:5] + "**" + _TOKEN[5:] + "**"
+_BODY = _TOKEN[5:19]
 
 #: Slack refuses a whole post whose section or context text passes this.
 _SLACK_TEXT_MAX = 3000
@@ -226,9 +233,9 @@ class TestTheCardIsSafeMrkdwn:
         assert "&lt;!here&gt; &amp; &lt;@U123&gt;" in shown, shown
 
     def test_a_key_split_by_markup_is_redacted_on_the_card(self):
-        # The driver's byte-level pass reads `AKIA**...**` as no key at all; the
+        # The driver's byte-level pass reads `xoxb-**...**` as no key at all; the
         # renderer's display-form pass is what catches it.
-        key = "AKIA" + "**" + "1234567890ABCDEX" + "**"
+        key = _MARKED
         card = _card_for(
             AcpEvent(
                 kind=EVENT_PERMISSION_REQUEST,
@@ -238,7 +245,7 @@ class TestTheCardIsSafeMrkdwn:
             )
         )
         shown = "\n".join(_texts(card))
-        assert "1234567890ABCDEX" not in shown, shown
+        assert _BODY not in shown, shown
         assert "REDACTED" in shown, shown
 
 
@@ -247,7 +254,7 @@ class TestTheCardScansOnlyWhatItShows:
     a few thousand characters of each string, so the scan reads a bounded head of a
     large argument while what the card shows stays redacted."""
 
-    _KEY = "AKIA" + "**" + "1234567890ABCDEX" + "**"
+    _KEY = _MARKED
 
     @staticmethod
     def _bound() -> int:
@@ -278,7 +285,7 @@ class TestTheCardScansOnlyWhatItShows:
             )
         )
         (fence,) = _fenced(card)
-        assert "1234567890ABCDEX" not in fence and "REDACTED" in fence, fence[:200]
+        assert _BODY not in fence and "REDACTED" in fence, fence[:200]
         assert fence.endswith(_TRUNCATION_MARKER + "\n```"), fence[-40:]
         assert scanned and max(scanned) <= bound, max(scanned)
 
@@ -288,7 +295,7 @@ class TestTheCardScansOnlyWhatItShows:
         # is scanned instead, and that scan sees the key whole.
         bound = self._bound()
         pad = "\x1b[0m" * ((bound - 20) // 4)
-        assert len(pad) + len("AKIA**1234567890ABCD") == bound
+        assert len(pad) + len(self._KEY[:20]) == bound
         card = _card_for(
             AcpEvent(
                 kind=EVENT_PERMISSION_REQUEST,
@@ -298,7 +305,7 @@ class TestTheCardScansOnlyWhatItShows:
             )
         )
         shown = "\n".join(_texts(card))
-        assert "1234567890ABCD" not in shown, shown[-200:]
+        assert self._KEY[6:20] not in shown, shown[-200:]
         assert "REDACTED" in shown, shown[-200:]
 
 

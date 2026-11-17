@@ -222,6 +222,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         )
     )
     partial_sections: list[str] = []
+    failed_sections: list[str] = []
     for raw_value, section in (
         (commits_raw, "commits"),
         (discussions_raw, "review discussions"),
@@ -229,7 +230,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         (pipelines_raw, "checks"),
     ):
         if isinstance(raw_value, BaseException):
-            projection._mark_partial(partial_sections, section)
+            projection._mark_failed(partial_sections, failed_sections, section)
     commits = projection._or_empty(commits_raw)
     discussions = projection._or_empty(discussions_raw)
     changes = projection._or_empty(changes_raw)
@@ -252,7 +253,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
                 host=ref.host,
             )
         except SourceProviderError:
-            projection._mark_partial(partial_sections, "checks")
+            projection._mark_failed(partial_sections, failed_sections, "checks")
             jobs = []
     if len(projection._as_list(jobs)) >= projection._SECONDARY_PAGE_SIZE:
         # A full page of jobs may be truncated — a failed job on a later page
@@ -378,6 +379,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         "comments": gitlab_comments,
         "files": normalized_files,
         "partialSections": partial_sections,
+        "failedSections": failed_sections,
     }
     if gitlab_ci is not None:
         # Authoritative aggregate CI for the glyph; consumed by
@@ -490,10 +492,11 @@ async def _fetch_gitlab_issue(ref: SourceRef) -> dict[str, Any]:
         return_exceptions=True,
     )
     partial_sections: list[str] = []
+    failed_sections: list[str] = []
     if isinstance(notes_raw, BaseException):
-        projection._mark_partial(partial_sections, "comments")
+        projection._mark_failed(partial_sections, failed_sections, "comments")
     if isinstance(related_raw, BaseException):
-        projection._mark_partial(partial_sections, "linked changes")
+        projection._mark_failed(partial_sections, failed_sections, "linked changes")
     note_rows = projection._as_list(projection._or_empty(notes_raw))
     if len(note_rows) >= projection._SECONDARY_PAGE_SIZE:
         projection._mark_partial(partial_sections, "comments")
@@ -552,4 +555,5 @@ async def _fetch_gitlab_issue(ref: SourceRef) -> dict[str, Any]:
         "comments": comments,
         "linkedChanges": _gitlab_linked_changes(projection._or_empty(related_raw)),
         "partialSections": partial_sections,
+        "failedSections": failed_sections,
     }

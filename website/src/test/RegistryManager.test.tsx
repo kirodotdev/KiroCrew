@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import RegistryManager from '../components/RegistryManager'
 
 const mockListRegistries = vi.fn()
@@ -17,7 +19,7 @@ vi.mock('../api/client', () => ({
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const Wrapper = ({ children }: { children: React.ReactNode }) => (
-  <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  <Provider store={createConnectedTestStore()}><QueryClientProvider client={qc}>{children}</QueryClientProvider></Provider>
 )
 
 // A deferred promise so we can assert pending UI before resolving.

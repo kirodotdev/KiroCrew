@@ -497,8 +497,8 @@ async def test_a_cancel_inside_the_admission_save_still_clears_the_marker(tmp_pa
         "kiro_crew.dashboard.chat_runner", fromlist=["x"]
     )._begin_local_turn_marker
 
-    async def cancelling_begin(st, sl, generation):
-        await real_begin(st, sl, generation)
+    async def cancelling_begin(st, sl, generation, opener=None):
+        await real_begin(st, sl, generation, opener)
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(
@@ -1093,6 +1093,49 @@ def test_a_lost_opening_row_is_restored_before_the_tail_is_judged(tmp_path):
         "second prompt, never flushed",
     ]
     assert "turn_in_flight_prompt" not in state.conversation_log.get_metadata("dashboard:chat-1")
+
+
+def test_the_marker_opener_is_the_dispatchers_row_not_a_row_written_after_it():
+    """A plain dashboard session: a message queued behind the running turn writes
+    its row on arrival, and a steer lands mid-turn. Neither opened the turn being
+    admitted; the dispatcher's own row did, so the marker copies that one."""
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("chat-plain")
+    dispatched = slot.append("user", "fix the build", "msg msg-u")
+    slot.append("user", "also check the docs", "msg msg-u", meta={"steer": True})
+    slot.append("user", "then deploy", "msg msg-u")  # queued behind, written on arrival
+    copy = _local_turn_opening_row(slot, dispatched)
+    assert copy is not None and copy["content"] == "fix the build"
+    assert copy["ts"] == dispatched["ts"]
+    # A dispatcher row outside the window: the walk, as for a direct send.
+    copy = _local_turn_opening_row(slot, {"role": "user", "content": "gone"})
+    assert copy is not None and copy["content"] == "then deploy"
+
+
+def test_a_restore_keeps_the_dispatchers_evidence_after_clearing_the_marker(tmp_path):
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    slot.append("user", "first", "msg msg-u")
+    assert _save_slot_to_history(state, slot, force=True)
+    lost = slot.append("user", "second prompt, never flushed", "msg msg-u")
+    assert state.conversation_log is not None
+    state.conversation_log.update_metadata(
+        "dashboard:chat-1",
+        {"turn_in_flight_generation": 4, "turn_in_flight_prompt": _prompt_copy(lost)},
+    )
+    del state._slots["chat-1"]
+    restored = _rehydrate_slot_from_history(state, "chat-1")
+    assert restored is not None
+    assert restored._turn_in_flight_generation == 0
+    assert restored._restored_turn_marker == {
+        "generation": 4,
+        "ts": lost["ts"],
+        "mid": lost["meta"]["mid"],
+    }
+    # A session whose turn finished keeps none.
+    plain = state.get_or_create_slot("chat-2")
+    assert plain._restored_turn_marker is None
 
 
 def test_an_opening_row_already_on_disk_is_not_restored_twice(tmp_path):

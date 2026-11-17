@@ -19,6 +19,7 @@ def _crewmate_worker_spec(
     tool_limits_honoured: bool = False,
     spec_policy_honoured: bool = False,
     mcp_tool_limits_honoured: bool = False,
+    native_tool_limits_honoured: bool = False,
 ) -> dict[str, Any] | None:
     """*spec*, or for a crewmate's worker session the worker spec it runs on.
 
@@ -34,7 +35,9 @@ def _crewmate_worker_spec(
     default), a crewmate file that sets any refuses with
     ``capability_tool_limits_unsupported``, judged on the read this spec is built from;
     one that honours the MCP half (*mcp_tool_limits_honoured*) refuses only a limit
-    no MCP deny carries (``mate_worker.uncarried_tool_limits_of``).
+    no MCP deny carries (``mate_worker.uncarried_tool_limits_of``), and one that also
+    honours native-tool excludes (*native_tool_limits_honoured*) refuses only a native
+    entry its built-in table does not cover.
     On a host that applies no ``hooks``, ``permissions`` or ``toolsSettings``
     (*spec_policy_honoured* False, the default), a crewmate file that sets any
     refuses the worker, naming them.
@@ -54,6 +57,7 @@ def _crewmate_worker_spec(
         refuse_tool_limits=not tool_limits_honoured,
         refuse_spec_policy=not spec_policy_honoured,
         mcp_tool_limits_carried=mcp_tool_limits_honoured,
+        native_tool_limits_carried=native_tool_limits_honoured,
     )
 
 
@@ -79,6 +83,7 @@ def crewmate_worker_deny_rules(
     from kiro_crew.acp import session_mcp
     from kiro_crew.agent_sdk.backends import (
         ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+        ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
         ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     )
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
@@ -91,6 +96,7 @@ def crewmate_worker_deny_rules(
         session_key=session_key,
         worker_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
         worker_mcp_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+        worker_native_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     )
     return worker_deny_rules(projection.disabled_tools, projection.agent_spec)
 
@@ -105,7 +111,9 @@ def worker_deny_rules(
     the merge writes the crewmate file's limits and the dashboard's switches,
     ``mate_worker.merge_worker_spec``) and each whole ``@server``. Spelled as Claude
     Code names the tool (``claude_mcp_names``). A native or wildcard entry is not a
-    rule: a worker whose crewmate file sets one is refused before this is read.
+    rule: the session's ``tools`` list withholds a native tool
+    (``claude_worker_tools.claude_worker_builtin_tools``), and a worker whose crewmate
+    file sets any other is refused before this is read.
     """
     from kiro_crew.acp.claude_mcp_names import claude_mcp_server_rule, claude_mcp_tool_name
     from kiro_crew.mate_worker import uncarried_tool_limits_of

@@ -52,7 +52,7 @@ from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.platform_compat import IS_LINUX, IS_MACOS, IS_WINDOWS, file_lock, open_lock_file
-from kiro_crew.pod import launchd
+from kiro_crew.pod import env_overrides, launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
@@ -143,7 +143,8 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     )
 
 # Pod names become systemd instance names and path segments; keep them strict.
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$")
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline.
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}\Z")
 
 
 class PodError(RuntimeError):
@@ -332,9 +333,9 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
 def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
     """Merge *updates* into the pod's env file, preserving existing keys.
 
-    Values MUST be single-line: the ``KEY='value'`` format does not escape
-    newlines, so a multi-line value would not round-trip. ``--seed`` is
-    user-supplied, so reject a newline-bearing value loudly (fail-closed) rather
+    Values MUST be NUL-free and single-line under ``str.splitlines()``: the
+    ``KEY='value'`` format does not escape line boundaries. ``--seed`` is
+    user-supplied, so reject an invalid value loudly (fail-closed) rather
     than silently writing an un-parseable file.
 
     **Written atomically**, because readers are deliberately lock-free: ``boot``
@@ -354,13 +355,13 @@ def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
     re-acquiring it inside an outer transaction safe.
     """
     for key, val in updates.items():
-        if "\n" in val or "\r" in val:
+        if not env_overrides.is_single_line_env_value(val):
             raise PodError(f"pod env value for {key!r} must be single-line")
     with pod_name_mutex(cfg, name):
         data = read_env_file(cfg, name)
         data.update(updates)
         for key, val in data.items():
-            if "\n" in val or "\r" in val:
+            if not env_overrides.is_single_line_env_value(val):
                 raise PodError(f"pod env value for {key!r} must be single-line")
         cfg.pods_dir.mkdir(parents=True, exist_ok=True)
         # Keep a UTF-8 byte-order mark the file was saved with: it is what makes
@@ -918,7 +919,14 @@ def systemctl(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
             "pods require `systemctl --user`, but no systemctl executable was found "
             "in trusted system directories; refusing to resolve it from PATH."
         )
-    return _run([systemctl_bin, "--user", *args], timeout=timeout)
+    try:
+        return _run([systemctl_bin, "--user", *args], timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Not PodBackendAbsent: a manager that did not answer is no proof of none.
+        raise PodError(
+            f"`systemctl --user {args[0] if args else ''}` did not answer within "
+            f"{exc.timeout}s; run `systemctl --user is-system-running` to see why"
+        ) from exc
 
 
 def is_active(cfg: PodConfig, name: str) -> bool:
@@ -1050,16 +1058,21 @@ def recent_journal(
     if since is not None and JOURNAL_SINCE_USEC in since:
         secs, usecs = divmod(since[JOURNAL_SINCE_USEC], 1_000_000)
         bound.append(f"--since=@{secs}.{usecs:06d}")
-    cp = subprocess.run(
-        ["journalctl", "--user", "-u", pod_unit(cfg, name), "-n", str(lines), "--no-pager", *bound],
-        capture_output=True,
-        timeout=10,
-        env=_systemctl_env(),
-        # The journal stores UTF-8 and journalctl prints it raw, even under the
-        # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
-        # raise on a non-ASCII path in the very boot failure this surfaces.
-        **UTF8_TEXT,
-    )
+    unit = pod_unit(cfg, name)
+    try:
+        cp = subprocess.run(
+            ["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
+            capture_output=True,
+            timeout=10,
+            env=_systemctl_env(),
+            # The journal stores UTF-8 and journalctl prints it raw, even under the
+            # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
+            # raise on a non-ASCII path in the very boot failure this surfaces.
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Said, not raised: `pod up` prints this tail and must still stop the unit.
+        return f"(could not read the pod journal: {exc})"
     return cp.stdout
 
 
@@ -1205,7 +1218,8 @@ def pod_plane_mutex(cfg: PodConfig):
 # Slack is deliberately absent: it has no config-level enable, being gated purely
 # on credentials that ``build_pod_env`` scrubs.
 #
-# ``test_pod.py`` pins this tuple against ``channels.builtin_channel_descriptors()``
+# ``test_pod_env.py::TestSeedSanitization`` pins this tuple against
+# ``channels.builtin_channel_descriptors()``
 # so a channel added to the roster cannot reach a pod ungated.
 SEED_DISABLED_SECTIONS: tuple[str, ...] = (
     "tunnel",
@@ -1402,7 +1416,7 @@ def build_pod_env(
         "KIROCREW_BIND": "127.0.0.1",
         # The pod's OWN venv leads PATH, ahead of cfg.gateway_path (which starts
         # with ~/.local/bin). Without this a bare `kirocrew` inside a pod — an
-        # agent bash turn, a subprocess, `_kirocrew_bin()`'s "console-script on
+        # agent bash turn, a subprocess, `_resolve_kirocrew_bin()`'s "console-script on
         # PATH" probe — resolves the machine-wide shim instead of the checkout
         # under test, so the pod silently exercises the global install and stays
         # coupled to a symlink it does not own.

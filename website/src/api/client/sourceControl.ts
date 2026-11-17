@@ -4,7 +4,7 @@
  * review and submission, the issue source, and repository contributors.
  */
 
-import type { PullRequestSource, PullRequestCheck, PullRequestStatusBatch, IssueSource, AppContributor } from '../../types'
+import type { PullRequestSource, PullRequestCheck, PullRequestStatusBatch, IssueSource, IssueSearchRequest, IssueSearchResponse, AppContributor } from '../../types'
 import type { ClientTransport } from './transport'
 
 export function createSourceControlEndpoints({ post, j }: ClientTransport) {
@@ -28,6 +28,8 @@ export function createSourceControlEndpoints({ post, j }: ClientTransport) {
     // Issue sources. `refresh` bypasses the server's cached payload; the panel
     // never polls, so a refresh is always an explicit user action.
     fetchIssueSource: (url: string, refresh = false) => post('/api/source/issue', { url, refresh }).then(j) as Promise<IssueSource>,
+    /** One page of issues from any issue provider; `cursor` is the previous page's `nextCursor`. */
+    fetchIssues: (query: IssueSearchRequest) => post('/api/source/issues', query).then(j) as Promise<IssueSearchResponse>,
     /** Top contributors to an app's source repo (GitHub only). Owner-gated. */
     appContributors: (url: string, refresh = false) => post('/api/source/contributors', { url, refresh }).then(j) as Promise<{ contributors: AppContributor[] }>,
   }

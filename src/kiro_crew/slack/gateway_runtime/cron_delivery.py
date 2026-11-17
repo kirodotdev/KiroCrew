@@ -4,7 +4,7 @@ The duplicate and silent paths, the dashboard tab and bell, the channel the job 
 scheduled from, and the Slack post with its uploads; the dedup anchor advances only
 on a confirmed delivery.
 
-Orchestrator fields read: ``_owner_id``, ``dashboard_state``, ``sessions``, ``slack``.
+Orchestrator fields read: ``dashboard_state``, ``sessions``, ``slack``.
 Orchestrator fields written: none.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -182,9 +182,12 @@ async def _deliver_cron_agent_result(
                 if log is not None:
                     await asyncio.to_thread(log.update_metadata, session_key, {"cron_run": "tab"})
             except Exception:
+                from kiro_crew.terminal_safe import safe_terminal_line
+
+                # The name is agent-authored: one line, no controls, in the log.
                 logger.warning(
                     "Cron '%s': could not keep run transcript %s; no tab opened",
-                    job.name,
+                    safe_terminal_line(job.name),
                     session_key,
                     exc_info=True,
                 )
@@ -282,8 +285,9 @@ async def _deliver_cron_agent_result(
             # Retry only open_dm (transient Slack API errors).
             # Delivery (post_blocks/post_message) is NOT retried to avoid duplicates.
             channel = job.channel
-            if not channel and (job.created_by or self._owner_id):
-                channel = await self._open_dm_with_retry(job.created_by or self._owner_id, job.name)
+            dm_user = self._cron_dm_user(job)
+            if not channel and dm_user:
+                channel = await self._open_dm_with_retry(dm_user, job.name)
             if channel:
                 # ── Extract embedded local images and upload them
                 # natively (mirror the chat renderer's on_done seal).

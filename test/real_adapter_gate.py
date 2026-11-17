@@ -77,6 +77,14 @@ OPENCODE_PACKAGE = "opencode-ai"
 #: a pin on one alone would let the other drift unmeasured.
 PI_ACP_PACKAGE = "pi-acp"
 PI_PACKAGE = "@earendil-works/pi-coding-agent"
+#: The harnesses only ``test_real_adapter_harness_probe.py`` drives.
+CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp"
+DSH_PACKAGE = "@deepseek-ai/dsh"
+STRANDS_CLI_PACKAGE = "@strands-agents/cli"
+
+#: goose is a release binary, not an npm package, so its pin is its own file: the
+#: version, the asset URL and the asset's sha256, which the lane checks before use.
+GOOSE_PIN = json.loads((MANIFEST_DIR / "goose.json").read_text(encoding="utf-8"))
 
 
 def pinned_version(package: str) -> str:
@@ -84,11 +92,12 @@ def pinned_version(package: str) -> str:
 
     Exact means exact: a range or a tag is not a version anyone can re-measure
     against, so anything but three dotted integers is refused here rather than
-    installed.
+    installed. A prerelease suffix (``0.2.0-rc.2``) is still one exact build, and
+    is the only kind some upstreams ship.
     """
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     version = manifest["dependencies"][package]
-    parts = version.split(".")
+    parts = version.split("-", 1)[0].split(".")
     if len(parts) != 3 or not all(part.isdigit() for part in parts):
         raise ValueError(f"{MANIFEST}: {package} is pinned to {version!r}, not an exact release")
     return version
@@ -107,6 +116,12 @@ MEASURED_OPENCODE_VERSION = pinned_version(OPENCODE_PACKAGE)
 #: or above ``acp.harness.pi.PI_MIN_VERSION``'s floor for pi; that test asserts it.
 MEASURED_PI_ACP_VERSION = pinned_version(PI_ACP_PACKAGE)
 MEASURED_PI_VERSION = pinned_version(PI_PACKAGE)
+
+#: The releases ``test_real_adapter_harness_probe.py``'s expectations were measured
+#: against, beside codex, opencode and pi above.
+MEASURED_CLAUDE_AGENT_ACP_VERSION = pinned_version(CLAUDE_AGENT_ACP_PACKAGE)
+MEASURED_DSH_VERSION = pinned_version(DSH_PACKAGE)
+MEASURED_STRANDS_CLI_VERSION = pinned_version(STRANDS_CLI_PACKAGE)
 
 
 def real_adapters_required() -> bool:

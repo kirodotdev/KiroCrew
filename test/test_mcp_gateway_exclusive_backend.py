@@ -16,10 +16,12 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_mcp_gateway_spawn_gate import _within_ceiling
 
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolAtCapacity, PoolKey
@@ -287,6 +289,52 @@ async def test_double_register_on_one_connection_reaps_the_loser() -> None:
 
 
 @pytest.mark.asyncio
+async def test_daemon_shutdown_joins_a_cancelled_double_register_reap() -> None:
+    """A cancellation cannot detach the private backend that lost registration."""
+    pool = BackendPool(max_backends=10)
+    key = _make_pool_key()
+    first = _make_mock_backend(key, pid=1)
+    second = _make_mock_backend(key, pid=2)
+    shutdown_started = asyncio.Event()
+    finish_shutdown = asyncio.Event()
+    shutdown_finished = asyncio.Event()
+
+    async def slow_shutdown(*, timeout: float) -> None:
+        assert timeout == 2.0
+        shutdown_started.set()
+        try:
+            await finish_shutdown.wait()
+        finally:
+            shutdown_finished.set()
+
+    first.shutdown = AsyncMock(side_effect=slow_shutdown)  # type: ignore[method-assign]
+    second.shutdown = AsyncMock()  # type: ignore[method-assign]
+    await pool.acquire_exclusive(key, "stub-a", _spawner(first))
+    acquire = asyncio.create_task(pool.acquire_exclusive(key, "stub-a", _spawner(second)))
+    await _within_ceiling(shutdown_started.wait(), "the replaced backend reap starting")
+    acquire.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await acquire
+
+    registered = await pool.release_exclusive("stub-a")
+    assert registered is second
+    await registered.shutdown()
+    daemon_shutdown = asyncio.create_task(pool.shutdown_all())
+    try:
+        await asyncio.sleep(0)
+        assert not daemon_shutdown.done(), "shutdown_all returned without joining the reap"
+    finally:
+        finish_shutdown.set()
+        await _within_ceiling(shutdown_finished.wait(), "the replaced backend reap finishing")
+        await _within_ceiling(daemon_shutdown, "daemon shutdown joining the replaced backend reap")
+
+    first.shutdown.assert_awaited_once()
+    second.shutdown.assert_awaited_once()
+    assert shutdown_finished.is_set()
+    assert not pool._shutdown_tasks
+
+
+@pytest.mark.asyncio
 async def test_pooled_backend_digest_is_the_plain_poolkey_hash() -> None:
     """The shared path is unchanged: reuse depends on two connections computing
     one digest, so a pooled backend must NOT carry a per-connection suffix.
@@ -466,6 +514,10 @@ class _HandlerBackend:
     control_plane = False
     quarantined = False
     exclusive_token = ""
+    # What ``launch.bound_to_owner_port`` reads before each forward: a backend
+    # bound to no owner port, which no announce in these tests replaces.
+    pool_key = SimpleNamespace(server_name="")
+    owner_port = 0
 
     def __init__(self) -> None:
         self._pending_requests: dict = {}

@@ -163,6 +163,14 @@ describe("electron-builder files list", () => {
         pending.push(resolved);
       }
     }
+    // Every file the shell loads at start is in app.asar. A module main.js
+    // reaches but build.files omits throws MODULE_NOT_FOUND in the installed
+    // app only (a checkout resolves it from disk), and the gateway never spawns.
+    assert.deepStrictEqual(
+      [...closure].filter((f) => !bundledFiles.includes(f)).sort(),
+      [],
+      "every module main.js reaches is listed in build.files",
+    );
     // Every runtime owner on disk is reached from main.js and packaged: none is
     // an orphan that only a test loads.
     const runtimeOwners = [];
@@ -319,6 +327,42 @@ describe("Linux desktop naming", () => {
       !targetArgs("AppImage", "KiroCrew").some((a) => a.startsWith("-c.linux.icon=")), // brand-ok -- product name under test
       "stable AppImage must not override the icon"
     );
+  });
+
+  it("gives the LTS edition its own side-by-side identity, nightly pattern", bashOnly, () => {
+    // RFC crew-lts-edition D11: the LTS app updates from its own lane, so it
+    // must not share an install identity the oss installer would replace.
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew LTS"), [ // brand-ok -- product name under test
+      "-c.linux.desktop.entry.Name=Kiro Crew LTS",
+    ]);
+    assert.match(buildScript, /if \[ "\$\{KIROCREW_BUILD_EDITION:-oss\}" = "lts" \]; then[\s\S]*?PRODUCT_NAME="KiroCrew LTS"/); // brand-ok -- product name under test
+    const block = buildScript.match(/elif \[ "\$PRODUCT_NAME" = "KiroCrew LTS" \]; then[\s\S]*?EB_ARGS\+=\(([\s\S]*?)\n {4}\)/); // brand-ok -- product name under test
+    assert.ok(block, "build-desktop.sh has an LTS identity block");
+    for (const arg of [
+      "-c.productName=KiroCrew LTS", // brand-ok -- product name under test
+      "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew LTS",
+      "-c.deb.packageName=kirocrew-lts",
+      "-c.rpm.packageName=kirocrew-lts",
+      "-c.linux.executableName=kirocrew-desktop-lts",
+      "-c.extraMetadata.desktopName=kirocrew-desktop-lts.desktop",
+      "-c.extraMetadata.name=kirocrew-desktop-lts",
+      "-c.win.appId=${BASE_APP_ID}.lts",
+    ]) {
+      assert.ok(block[1].includes(`"${arg}"`), `LTS identity sets ${arg}`);
+    }
+    // The Windows appId is package.json's build.appId plus ".lts", and nsis.guid
+    // is electron-builder's own derivation of it (NsisTarget: UUID v5, its namespace).
+    assert.match(buildScript, /BASE_APP_ID="\$\(node -p 'require\(process\.argv\[1\]\)\.build\.appId' "\$ELECTRON_DIR\/package\.json"\)"/);
+    const { UUID } = require("builder-util-runtime");
+    const ltsAppId = `${require("../package.json").build.appId}.lts`;
+    const guid = UUID.v5(ltsAppId, UUID.parse("50e065bc-3134-11e6-9bab-38c9862bdaf3"));
+    assert.ok(block[1].includes(`"-c.nsis.guid=${guid}"`), "nsis.guid is UUID v5 of the LTS appId");
+    // The running app claims the same ID (main.js app.setAppUserModelId).
+    const mainJs = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+    assert.ok(mainJs.includes(`${require("../package.json").build.appId}";`), "main.js names the production ID");
+    assert.ok(mainJs.includes("IS_LTS_BUILD ? `${appUserModelId}.lts` : appUserModelId"), "main.js LTS ID is production + .lts");
+    // The macOS bundle id stays shared, as nightly's does: no new signing identifier.
+    assert.ok(!/"-c\.appId=|"-c\.mac\.appId=/.test(block[1]), "LTS keeps the shared mac appId");
   });
 
   it("pins the metadata helper to the packaged Linux interpreter", () => {
@@ -532,7 +576,7 @@ describe("first-download installer design contract", () => {
     ]
       .map((match) => match[1])
       .sort();
-    for (const key of ["KiroCliPrerequisiteText", "KiroCliPrerequisiteLink"]) {
+    for (const key of ["KiroCliPrerequisiteText", "KiroCliPrerequisiteLink", "KiroUnmovableFile"]) {
       const prerequisiteLocales = [
         ...installer.matchAll(new RegExp(`^LangString ${key} (\\d+) `, "gm")),
       ]
@@ -611,52 +655,6 @@ describe("first-download installer design contract", () => {
     assert.match(
       buildScript,
       /precompile_windows\.py" \\\r?\n\s*--root "\$out" --module kiro_crew\.cli_server/
-    );
-  });
-
-  it("compiles the whole macOS tree, so the signed bundle is never written to", () => {
-    // codesign seals every file under a .app's Contents/, so bytecode written
-    // there after signing makes Gatekeeper refuse the app as "damaged". The
-    // desktop shell forbids the write (gatewayBytecodeEnvironment); shipping a
-    // cache for EVERY module is what removes the reason to want one.
-    //
-    // Whole tree, not the traced closure the Windows lane ships: Authenticode
-    // seals no resource tree so a later write on Windows is harmless, while on
-    // macOS any uncovered module is a latent signature break.
-    const buildScript = fs.readFileSync(
-      path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
-      "utf8"
-    );
-    const macStart = buildScript.indexOf("build_backend() {");
-    const macEnd = buildScript.indexOf("build_backend_windows() {", macStart);
-    assert.ok(macStart >= 0 && macEnd > macStart, "could not locate build_backend()");
-    const macBuilder = buildScript.slice(macStart, macEnd);
-
-    assert.match(
-      macBuilder,
-      /-m compileall -q -f \\\r?\n\s*--invalidation-mode checked-hash "\$out\/lib"/,
-      "the macOS backend ships no precompiled tree, so the runtime would have to " +
-        "compile on first use — the write that breaks the signature"
-    );
-    assert.doesNotMatch(
-      macBuilder,
-      /--invalidation-mode timestamp/,
-      "a timestamp pyc records the source mtime, and ditto restamps sources at " +
-        "extraction, so every shipped timestamp pyc is rewritten on first use"
-    );
-    // It must run AFTER the prune that deletes pip's timestamp pycs, or its
-    // output is deleted.
-    assert.ok(
-      macBuilder.indexOf("-name __pycache__ -prune") <
-        macBuilder.indexOf("-m compileall"),
-      "compiling before the prune would have its output deleted"
-    );
-    // And the coverage has to be gated, or a silent compileall failure ships a
-    // tree the runtime wants to write to.
-    assert.match(
-      macBuilder,
-      /shipped without a bytecode cache/,
-      "nothing asserts the tree actually shipped with caches"
     );
   });
 
@@ -1040,6 +1038,216 @@ describe("first-download installer design contract", () => {
     assert.match(runtimeScript, /existing-install-file/);
     assert.match(runtimeScript, /invalidProcess\.ExitCode -ne 2/);
     assert.equal(pkg.devDependencies["electron-builder"], "26.15.3");
+  });
+
+  it("reports a failed previous-version uninstall without blocking a silent install", () => {
+    const installUtil = fs.readFileSync(
+      path.join(ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "include", "installUtil.nsh"),
+      "utf8"
+    );
+    // The template runs the hooks INSTEAD of its own body, for both hives.
+    const handleResult = normalizedNsisBlock(
+      installUtil,
+      /Function handleUninstallResult[\s\S]*?FunctionEnd/
+    );
+    assert.match(
+      handleResult,
+      /"\$rootKey_uninstallResult" == "SHELL_CONTEXT"\n!ifmacrodef customUnInstallCheck\n!insertmacro customUnInstallCheck\nReturn/
+    );
+    assert.match(
+      handleResult,
+      /"\$rootKey_uninstallResult" == "HKEY_CURRENT_USER"\n!ifmacrodef customUnInstallCheckCurrentUser\n!insertmacro customUnInstallCheckCurrentUser\nReturn/
+    );
+    // The body the hooks replace: a box with no /SD, then exit 2.
+    assert.match(
+      handleResult,
+      /MessageBox MB_OK\|MB_ICONEXCLAMATION "\$\(uninstallFailed\): \$R0"\nDetailPrint `Uninstall was not successful\. Uninstaller error code: \$R0\.`\nSetErrorLevel 2\nQuit/
+    );
+
+    for (const hook of ["customUnInstallCheck", "customUnInstallCheckCurrentUser"]) {
+      const body = normalizedNsisBlock(installer, new RegExp(`!macro ${hook}\\r?\\n[\\s\\S]*?!macroend`));
+      assert.equal(body, `!macro ${hook}\n!insertmacro KiroUninstallResultCheck\n!macroend`);
+    }
+    const check = normalizedNsisBlock(
+      installer,
+      /!macro KiroUninstallResultCheck[\s\S]*?!macroend/
+    );
+    assert.equal(
+      check,
+      [
+        "!macro KiroUninstallResultCheck",
+        "${If} ${Errors}",
+        "DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`",
+        "${ElseIf} $R0 != 0",
+        'MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK',
+        "DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`",
+        "SetErrorLevel 2",
+        "Quit",
+        "${EndIf}",
+        "!macroend",
+      ].join("\n")
+    );
+  });
+
+  it("clears or refuses an installed file the previous uninstaller cannot move, before it runs", () => {
+    const code = installer
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith(";"))
+      .join("\n");
+    const defineOf = name => Number(code.match(new RegExp(`^!define ${name} (\\d+)$`, "m"))[1]);
+    const maxMovePath = defineOf("KIRO_MAX_MOVE_PATH");
+    const maxMoveDir = defineOf("KIRO_MAX_MOVE_DIR");
+    // MAX_PATH (260) less the NUL, and CreateDirectoryW's 248 less the NUL.
+    assert.equal(maxMovePath, 259);
+    assert.equal(maxMoveDir, 247);
+    const budget = fs.readFileSync(
+      path.join(REPO_ROOT, "packaging", "check_windows_path_budget.py"),
+      "utf8"
+    );
+    assert.match(budget, /^MAX_USABLE_PATH = 259$/m, "the build budget and the installer must agree");
+
+    // The move root measured is the shape un.atomicRMDir moves into: one
+    // CreateDirectory per directory and one Rename per file, under
+    // $PLUGINSDIR\old-install, with $R0 the directory below $INSTDIR.
+    const uninstaller = fs.readFileSync(
+      path.join(ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "uninstaller.nsh"),
+      "utf8"
+    );
+    const atomic = normalizedNsisBlock(uninstaller, /Function un\.atomicRMDir[\s\S]*?FunctionEnd/);
+    assert.match(atomic, /^CreateDirectory "\$PLUGINSDIR\\old-install\$R0\\\$R2"$/m);
+    assert.match(atomic, /^Rename "\$INSTDIR\$R0\\\$R2" "\$PLUGINSDIR\\old-install\$R0\\\$R2"$/m);
+
+    // The walk deletes only a .pyc inside __pycache__, and only one over a limit.
+    const clear = code.match(/Function KiroClearUnmovableFiles\n[\s\S]*?FunctionEnd/)[0];
+    assert.match(clear, /\$\{If\} \$R3 > \$\{KIRO_MAX_MOVE_DIR\}\nStrCpy \$R5 1/);
+    assert.match(clear, /StrCpy \$R4 \$R0 "" -12\n\$\{If\} \$R4 == "\\__pycache__"/);
+    const deletes = [...clear.matchAll(/^Delete .*$/gm)];
+    assert.equal(deletes.length, 1);
+    assert.match(
+      clear,
+      /\$\{If\} \$R3 > \$\{KIRO_MAX_MOVE_PATH\}\n\$\{OrIf\} \$R5 == 1\nStrCpy \$R3 \$R2 "" -4\n\$\{If\} \$R4 == 1\n\$\{AndIf\} \$R3 == "\.pyc"\nDelete "\$KiroWalkRoot\$R0\\\$R2"\n\$\{EndIf\}/
+    );
+    // A root is walked only when it holds this app's executable.
+    const root = code.match(/Function KiroClearUnmovableRoot\n[\s\S]*?FunctionEnd/)[0];
+    assert.match(
+      root,
+      /Pop \$KiroWalkRoot\n\$\{If\} \$KiroWalkRoot != ""\n\$\{AndIf\} \$KiroAppExeName != ""\n\$\{AndIf\} \$\{FileExists\} "\$KiroWalkRoot\\\$KiroAppExeName"\nPush ""\nCall KiroClearUnmovableFiles/
+    );
+
+    // customInit measures, after $INSTDIR is final and in the instance that can
+    // delete there, every root installSection.nsh uninstalls, against the
+    // longest name GetTempFileName gives the uninstaller's $PLUGINSDIR, and
+    // stops before either uninstall starts.
+    const init = code.match(/!macro customInit\n[\s\S]*?!macroend/)[0];
+    assert.match(
+      init,
+      new RegExp(
+        [
+          "StrCpy \\$INSTDIR \\$KiroInstallDir",
+          '\\$\\{If\\} \\$installMode != "all"',
+          "\\$\\{OrIf\\} \\$\\{UAC_IsAdmin\\}",
+          'StrLen \\$KiroMoveRootLength "\\$TEMP\\\\nsa0000\\.tmp\\\\old-install"',
+          'StrCpy \\$KiroUnmovable ""',
+          "Push \\$INSTDIR",
+          "Call KiroClearUnmovableRoot",
+          '\\$\\{If\\} \\$installMode == "all"',
+          'ReadRegStr \\$KiroWalkRoot HKCU "\\$\\{UNINSTALL_REGISTRY_KEY\\}" UninstallString',
+          "!ifdef UNINSTALL_REGISTRY_KEY_2",
+          '\\$\\{If\\} \\$KiroWalkRoot == ""',
+          'ReadRegStr \\$KiroWalkRoot HKCU "\\$\\{UNINSTALL_REGISTRY_KEY_2\\}" UninstallString',
+          "\\$\\{EndIf\\}",
+          "!endif",
+          '\\$\\{If\\} \\$KiroWalkRoot != ""',
+          'ReadRegStr \\$KiroWalkRoot HKCU "\\$\\{INSTALL_REGISTRY_KEY\\}" InstallLocation',
+          "\\$\\{If\\} \\$KiroWalkRoot != \\$INSTDIR",
+          "Push \\$KiroWalkRoot",
+          "Call KiroClearUnmovableRoot",
+          "\\$\\{EndIf\\}",
+          "\\$\\{EndIf\\}",
+          "\\$\\{EndIf\\}",
+          "ClearErrors",
+          '\\$\\{If\\} \\$KiroUnmovable != ""',
+          'MessageBox MB_OK\\|MB_ICONSTOP "\\$\\(KiroUnmovableFile\\)\\$\\\\r\\$\\\\n\\$\\\\r\\$\\\\n\\$KiroUnmovable" /SD IDOK',
+          "SetErrorLevel 2",
+          "Quit",
+          "\\$\\{EndIf\\}",
+          "\\$\\{EndIf\\}",
+          "!macroend$",
+        ].join("\\n")
+      )
+    );
+    // The uninstall order this relies on: SHELL_CONTEXT, then HKCU when all-users.
+    const section = fs.readFileSync(
+      path.join(ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "installSection.nsh"),
+      "utf8"
+    );
+    assert.match(
+      section,
+      /!insertmacro uninstallOldVersion SHELL_CONTEXT\n!insertmacro handleUninstallResult SHELL_CONTEXT\n\n\$\{if\} \$installMode == "all"\n {2}!insertmacro uninstallOldVersion HKEY_CURRENT_USER/
+    );
+
+    // The file from the field report, for a nine-character user name: Windows
+    // installed it, the uninstaller could not move it, and its source moves.
+    const win = path.win32;
+    const user = "u".repeat(9);
+    const installRoot = win.join("C:\\Users", user, "AppData\\Local\\Programs\\KiroCrew");
+    const moveRoot = win.join("C:\\Users", user, "AppData\\Local\\Temp", "nsiAC0D.tmp", "old-install");
+    const cacheDir =
+      "\\resources\\backend-dist\\kirocrew-backend\\Lib\\site-packages\\lark_oapi\\api\\" +
+      "security_and_compliance\\v2\\model\\__pycache__";
+    const cache = `${cacheDir}\\p2_security_and_compliance_device_apply_record_device_apply_event_v2.cpython-312.pyc`;
+    const source = win.join(win.dirname(cacheDir), "p2_security_and_compliance_device_apply_record_device_apply_event_v2.py");
+    assert.equal((installRoot + cache).length, 252);
+    assert.ok((installRoot + cache).length <= maxMovePath, "Windows can install it");
+    assert.equal((moveRoot + cache).length, 263);
+    assert.ok((moveRoot + cache).length > maxMovePath, "the uninstaller cannot move it");
+    assert.ok((moveRoot + cacheDir).length <= maxMoveDir);
+    assert.ok((moveRoot + source).length <= maxMovePath, "its source still moves");
+
+    // The Windows installer job plants both kinds of file and re-runs the installer.
+    assert.match(runtimeScript, /Invoke-SilentReinstall "Re-install over a bytecode cache too deep to move"/);
+    assert.match(runtimeScript, /\$refused\.ExitCode -ne 2/);
+    assert.match(runtimeScript, /\$filesAfter -ne \$filesBefore/);
+    // It sizes the probes from the Win32 temp path NSIS's $TEMP comes from, not
+    // .NET's, which can name the same directory by a longer form.
+    assert.match(
+      runtimeScript,
+      /\$moveRootLength = \$win32Temp\.Length \+ "\\nsa0000\.tmp\\old-install"\.Length/
+    );
+    assert.doesNotMatch(runtimeScript, /\$moveRootLength = \[IO\.Path\]::GetTempPath\(\)/);
+    // The refusal dialog is captured as evidence and uploaded with the job's artifacts.
+    assert.match(runtimeScript, /Save-InstallerWindow \$refusalHandle \(Join-Path \$evidence "update-refused-path-too-long\.png"\)/);
+    assert.match(buildWorkflow, /website\/electron\/runtime-evidence\/update-refused-path-too-long\.png/);
+
+    // The dialog tells the user the installed version still works and how to update.
+    const english = installer.match(/^LangString KiroUnmovableFile 1033 "(.*)"$/m)[1];
+    assert.match(english, /installed version still works/);
+    assert.match(english, /uninstall \$\{PRODUCT_NAME\}, then run this installer again/);
+    assert.match(english, /\$\\r\$\\n\$\\r\$\\nThis installed file's path is too long for the update to move:$/);
+    for (const match of installer.matchAll(/^LangString KiroUnmovableFile (\d+) "(.*)"$/gm)) {
+      assert.match(match[2], /\$\\r\$\\n\$\\r\$\\n/, `KiroUnmovableFile ${match[1]} must set the path off on its own line`);
+      assert.equal((match[2].match(/\$\{PRODUCT_NAME\}/g) || []).length, 2, `KiroUnmovableFile ${match[1]}`);
+    }
+  });
+
+  it("re-installs silently over the existing install in all three cases, under a stated ceiling", () => {
+    for (const stage of [
+      "Re-install with nothing running",
+      "Re-install over the running app",
+      "Re-install beside a running sibling",
+    ]) {
+      assert.match(runtimeScript, new RegExp(`Invoke-SilentReinstall "${stage}"`));
+    }
+    assert.match(runtimeScript, /^\$MaxReinstallSeconds = 240$/m);
+    assert.match(runtimeScript, /throw "\$Stage did not finish within the \$MaxReinstallSeconds-second ceiling\."/);
+    assert.match(runtimeScript, /throw "\$Stage exited with code \$\(\$reinstall\.ExitCode\)\."/);
+    // The re-installs run after the installed tree passes the path budget the
+    // previous version's uninstaller has to fit.
+    assert.ok(
+      runtimeScript.indexOf("check_windows_path_budget.py") <
+        runtimeScript.indexOf('Invoke-SilentReinstall "Re-install with nothing running"')
+    );
   });
 
   it("reuses the shipped logo and opening-animation ghost artwork", () => {

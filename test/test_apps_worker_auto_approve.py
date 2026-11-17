@@ -24,8 +24,8 @@ from kiro_crew.apps import worker_auto_approve as waa
 from kiro_crew.apps.context import build_app_context
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
-    APPROVED_GRANTS_FILENAME,
     INSTALLED_META_FILENAME,
+    _write_approve_declared,
     app_dir,
     approved_manifest_permissions,
     disable_app,
@@ -227,7 +227,8 @@ def test_an_undeclaring_app_with_no_stored_approval_gets_no_grant(tmp_path):
     """A record from before the approved set was stored approves what is declared, so
     the declaration alone has to refuse here."""
     _installed(tmp_path, declare=False)
-    (app_dir(APP) / APPROVED_GRANTS_FILENAME).unlink()
+    # What the one-time import stores for such a record: approve what is declared.
+    _write_approve_declared(APP)
     record = app_dir(APP) / INSTALLED_META_FILENAME
     data = json.loads(record.read_text(encoding="utf-8"))
     data.pop("approvedGrantsStored", None)

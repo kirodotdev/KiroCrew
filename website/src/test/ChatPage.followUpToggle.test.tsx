@@ -13,17 +13,19 @@
  * Negative control: point the predicate back at `followUpPicked` and four of
  * these fail with "Deploy, Deploy".
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
+import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { appendMessage } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import chatReducer, { appendMessage, setQuestionCard, setSlotRunning } from '../store/chatSlice'
+import dashboardReducer, { sseDisconnected, updateSlot } from '../store/dashboardSlice'
+import { BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
 import notificationsReducer from '../store/notificationsSlice'
 
 /** The per-chip single-click debounce in FollowUpBar; one click = one onSelect. */
@@ -39,6 +41,7 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockResolvedValue([{ key: 'chat-1', messages: 1, running: false, mode: '', project: '/repo' }]),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 }),
     sendChat: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) }),
+    answerQuestion: vi.fn().mockResolvedValue({ ok: true }),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
     models: vi.fn().mockResolvedValue([]),
     agents: vi.fn().mockResolvedValue([]),
@@ -371,5 +374,151 @@ describe('ChatPage plan-shaped follow-ups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send now: Go All' }))
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     expect(JSON.stringify((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0])).toContain('"Go All"')
+  })
+})
+
+describe('ChatPage command-shaped follow-ups under quick send', () => {
+  it('picks a command chip into a non-empty draft instead of sending it, then a second click takes it out', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPage('Done.\n\n[OPTIONS: /clear | Merge it now]', '', 'Merge it now')
+    fireEvent.change(composer(), { target: { value: 'note' } })
+    vi.useFakeTimers()
+    await act(async () => { clickOption('/clear') })
+    expect(composer().value).toBe('note, /clear')
+    expect(chip('/clear').className).toContain('glass-accent')
+    await act(async () => { clickOption('/clear') })
+    expect(composer().value).toBe('note')
+    expect(chip('/clear').className).not.toContain('glass-accent')
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+})
+
+/** A discussion card's Start / No thanks, as GrillCard dispatches it. */
+function cardSend(text: string, slot: string) {
+  const detail: { text: string; slot: string; result: string | null; onOutcome: (o: string, reason?: string) => void } = { text, slot, result: null, onOutcome: (o, reason) => { cardOutcomes.push(o); cardReasons.push(reason) } }
+  act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+  return detail.result
+}
+/** What each card send came to, in order (`onOutcome`). */
+let cardOutcomes: string[] = []
+let cardReasons: (string | undefined)[] = []
+
+describe('ChatPage discussion-card sends (a deliberate press: sent whatever Quick Send says)', () => {
+  const sentTexts = () => (api.sendChat as ReturnType<typeof vi.fn>).mock.calls.map(c => [c[0], c[1]])
+  beforeEach(() => { cardOutcomes = []; cardReasons = [] })
+
+  it('reports a refused send as refused, with no error row or text back in the box', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, status: 400, json: () => Promise.resolve({ error: 'nope' }) })
+    const store = await renderPage()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['refused']))
+    // Its bubble goes too: with no error row under it, it would look delivered.
+    expect(store.getState().chat.messages.some(m => m.role === 'user' && m.content === '不用讨论了')).toBe(false)
+    // The framed reason goes to the card: an isolated send shows it nowhere else.
+    expect(cardReasons[0]).toContain('nope')
+    expect(composer().value).toBe('')
+  })
+
+  it('releases a blocking question, as a typed send does, when it queues behind it', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ queued: true, queue_id: 'q-1' }) })
+    const store = await renderPage()
+    // The send path reads the app store; point it at this page's store.
+    const read = vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
+    onTestFinished(() => read.mockRestore())
+    act(() => { store.dispatch(setQuestionCard({ slot: 'chat-1', ask_id: 'ask-1', questions: [{ question: 'Which?', options: [{ label: 'A' }] }] as never })) })
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    await waitFor(() => expect(api.answerQuestion).toHaveBeenCalledWith('ask-1', undefined, 'queued'))
+  })
+
+  it('reports a lost answer as not confirmed', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await renderPage()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['indeterminate']))
+  })
+
+  it('reports a send that stopped before the POST (false, no undelivered call) as refused', async () => {
+    await renderPage()
+    expect(cardSend('   ', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['refused']))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('sends to the card\'s chat with Quick Send off', async () => {
+    await renderPage()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    expect(composer().value).toBe('')
+  })
+
+  it('sends with Quick Send on, too', async () => {
+    ;(api.dashboardConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ quick_send: true })
+    await renderPage()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+  })
+
+  it('sends while a chip selection is open, leaving the picked chip in the box', async () => {
+    await renderPage()
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Deploy', { shiftKey: true }) })
+    vi.useRealTimers()
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    expect(composer().value).toBe('Deploy')
+  })
+
+  it('queues behind a running turn (Queue mode)', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(setSlotRunning(true)) })
+    // Queue, not steer: the card takes the composer's busy decision for this chat.
+    localStorage.setItem(`${BUSY_SEND_MODE_LS_KEY}:chat-1`, 'queue')
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+  })
+
+  it('steers into a running turn by default (the composer\'s busy decision)', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(setSlotRunning(true)) })
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+  })
+
+  it('reads busy as the composer does: sub-agents still running count', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(updateSlot({ key: 'chat-1', subagents_running: true })) })
+    localStorage.setItem(`${BUSY_SEND_MODE_LS_KEY}:chat-1`, 'queue')
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('pending')
+    await waitFor(() => expect(sentTexts()).toEqual([['不用讨论了', 'chat-1']]))
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+  })
+
+  it('stages while the gateway is offline', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(sseDisconnected(null)) })
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('stages during a force stop, which clears the queue', async () => {
+    const store = await renderPage()
+    act(() => { store.dispatch(updateSlot({ key: 'chat-1', stop_state: 'killing' })) })
+    expect(cardSend('不用讨论了', 'chat-1')).toBe('staged')
+    await waitFor(() => expect(composer().value).toBe('不用讨论了'))
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('leaves a card from another chat alone', async () => {
+    await renderPage()
+    expect(cardSend('不用讨论了', 'chat-2')).toBeNull()
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(composer().value).toBe('')
   })
 })

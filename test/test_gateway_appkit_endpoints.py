@@ -551,7 +551,9 @@ class TestReverseProxy:
         app_dir = home / "apps" / "proxy-app"
         app_dir.mkdir(parents=True)
         self._secret = "test-secret-abc123"
-        (app_dir / ".app_secret").write_text(self._secret)
+        from kiro_crew.dashboard.token_auth import write_app_secret
+
+        write_app_secret("proxy-app", self._secret)
         manifest = {
             "name": "proxy-app",
             "version": "1.0.0",

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -122,8 +123,8 @@ def test_b_project_hook_files_are_not_loaded_and_notice_is_emitted(tmp_path, mon
     _point_hooks_dir(monkeypatch, home)
     assert spec_hooks.user_hook_files() == []
     # The detector that drives the session notice sees the project files.
-    assert spec_hooks.project_hook_files_present(str(project)) is True
-    assert spec_hooks.project_hook_files_present(None) is False
+    assert spec_hooks.project_hook_file_names(str(project)) == ["p.json"]
+    assert spec_hooks.project_hook_file_names(None) == []
 
 
 # (c) an unknown action type or trigger is skipped, not guessed.
@@ -431,7 +432,7 @@ def test_k_rejected_dir_is_not_audited_per_turn(tmp_path, monkeypatch):
     assert len(audits) == 1, "the install path still audits a rejected dir once"
 
 
-# (l) R3: a 30-command-hook file reports 10 dropped (cap is 20), counted before
+# (l) R3: a file 10 command hooks past the cap reports them dropped, counted before
 #     _from_documents truncates. The message names the cap, not an exact count --
 #     the loader stops at the cap and cannot know how many more there were.
 def test_l_over_cap_single_file_keeps_cap_and_warns_naming_the_cap(tmp_path, monkeypatch):
@@ -444,7 +445,7 @@ def test_l_over_cap_single_file_keeps_cap_and_warns_naming_the_cap(tmp_path, mon
             "trigger": "UserPromptSubmit",
             "action": {"type": "command", "command": f"echo {n}"},
         }
-        for n in range(30)
+        for n in range(spec_hooks._MAX_SPEC_HOOKS + 10)
     ]
     _write_user_hook(home, "many.json", docs)
     _point_hooks_dir(monkeypatch, home)
@@ -454,7 +455,7 @@ def test_l_over_cap_single_file_keeps_cap_and_warns_naming_the_cap(tmp_path, mon
 
     monkeypatch.setattr(agent_mod, "_sel_hook_rejected", lambda *a, **k: reasons.append(a[2]))
     out = spec_hooks.user_hook_files()
-    assert len(out) == spec_hooks._MAX_SPEC_HOOKS  # exactly 20 retained
+    assert len(out) == spec_hooks._MAX_SPEC_HOOKS  # exactly the cap retained
     assert len(reasons) == 1  # audited once
     # Honest message: names the cap, no exact dropped count.
     assert f"more than {spec_hooks._MAX_SPEC_HOOKS} hooks" in reasons[0]
@@ -562,3 +563,41 @@ def test_n_under_cap_skipped_doc_does_not_audit_as_a_cap_drop(tmp_path, monkeypa
     assert not any(
         a and a[0] == "user_hook_files" for a in reasons
     ), "a disabled/confirm/unknown-trigger doc under the cap must not audit as a cap drop"
+
+
+# (o) A chat shows the project hook-files notice once, however many backend
+#     sessions it starts (a reconnect, a reload, a restart), and again only when
+#     the project folder or the set of withheld files changes.
+def test_o_project_hook_files_notice_shows_once_per_chat(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _point_hooks_dir(monkeypatch, home)
+    _agents_dir(tmp_path, monkeypatch)
+    project = tmp_path / "proj"
+    hooks_dir = project / ".kiro" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "a.kiro.hook.json").write_text("{}", encoding="utf-8")
+    notices: list = []
+    monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda state, slot, role, text, cls, **kw: notices.append(text),
+    )
+    slot = _NS(_project_hook_files_notice_shown="")
+
+    def new_session(cwd: Path) -> int:
+        notices.clear()
+        client = _NS(capabilities=capabilities_for(ACP_BACKEND_KAS), cwd=str(cwd))
+        _asyncio.run(chat_runner._prepare_spec_hooks(_NS(), slot, client, "a1", is_new=True))
+        return sum("hook files in .kiro/hooks" in n for n in notices)
+
+    assert new_session(project) == 1
+    assert new_session(project) == 0, "a second session of the same chat repeats it"
+    (hooks_dir / "b.kiro.hook.json").write_text("{}", encoding="utf-8")
+    assert new_session(project) == 1, "a changed file set shows it again"
+    assert new_session(project) == 0
+    other = tmp_path / "other"
+    shutil.copytree(project, other)
+    assert new_session(other) == 1, "another project folder shows it again"
+    # A different chat has its own mark.
+    slot = _NS(_project_hook_files_notice_shown="")
+    assert new_session(other) == 1

@@ -6,11 +6,13 @@ first-message title generation.
 
 Two passes, in order:
 
-1. Project tag, always on and DETERMINISTIC: the tag name is
-   ``os.path.basename(slot.project)`` (the repo/directory name). No model call.
+1. Project tag, on unless ``dashboard.project_tags_enabled`` is false, and
+   DETERMINISTIC: the tag name is ``os.path.basename(slot.project)`` (the
+   repo/directory name). No model call.
 2. Topic tags, off unless ``dashboard.topic_tags_enabled`` is set: one call on
    the shared background session (``run_bg_oneliner``, the same ``_bg`` runtime
-   auto-title uses, so it stays serialized and on the cheap background model)
+   auto-title uses, so it stays serialized and on the cheap background model),
+   made once the turn the send started has handed its prompt to the engine,
    asks for up to ``_TOPIC_TAG_MAX`` short topic tags from the first user
    message. This pass never takes a session above ``MAX_TAGS_PER_SESSION``
    tags; the cap is applied here, on the server, not by the model's reply. With an
@@ -40,6 +42,7 @@ from kiro_crew.dashboard.chat_tags import (
 )
 from kiro_crew.dashboard.chat_title import _titling_messages, _ui_language
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.prompt_handoff import turn_handed_off
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -114,7 +117,8 @@ async def maybe_auto_tag(state: Any, slot: Any) -> None:
 
     Never raises — all failures are debug-logged. Guards:
     - Once-per-slot: ``slot._auto_tagged`` flag (mirrors ``_titled`` pattern)
-    - Non-empty ``slot.project`` that isn't trivial (".", "~") for the project tag
+    - Non-empty ``slot.project`` that isn't trivial (".", "~") and
+      ``dashboard.project_tags_enabled`` for the project tag
     - ``dashboard.topic_tags_enabled`` and a first user message for topic tags
     - Idempotent: a tag id already in slot.tags is never added twice
     """
@@ -148,8 +152,17 @@ async def _auto_tag_inner(state: Any, slot: Any) -> None:
     message = _first_user_message(slot)
     history_key = slot_history_key(slot)
     project_tag = _project_tag_name(slot)
-    if project_tag and not await _apply_tag_names(
-        state, slot, [project_tag], cap=None, model_chosen=False
+    if (
+        project_tag
+        and await _dashboard_flag("project_tags_enabled", True)
+        and not await _apply_tag_names(
+            state,
+            slot,
+            [project_tag],
+            cap=None,
+            model_chosen=False,
+            expected_history_key=history_key,
+        )
     ):
         return
     await _maybe_topic_tags(state, slot, message, history_key)
@@ -244,14 +257,19 @@ def _parse_topic_tags(text: str, limit: int) -> list[str]:
     return names
 
 
-async def _topic_tags_enabled() -> bool:
+async def _dashboard_flag(name: str, default: bool) -> bool:
+    """``dashboard.<name>`` read off the loop; *default* when the config cannot load."""
     loop = asyncio.get_running_loop()
     try:
         cfg = await loop.run_in_executor(None, KiroCrewConfig.load)
-    except Exception:  # noqa: BLE001 — no config, no topic tags
+    except Exception:  # noqa: BLE001 — no config, the field's default
         logger.debug("auto_tag: config load failed", exc_info=True)
-        return False
-    return bool(getattr(cfg.dashboard, "topic_tags_enabled", False))
+        return default
+    return bool(getattr(cfg.dashboard, name, default))
+
+
+async def _topic_tags_enabled() -> bool:
+    return await _dashboard_flag("topic_tags_enabled", False)
 
 
 async def _maybe_topic_tags(state: Any, slot: Any, message: str, history_key: str) -> None:
@@ -275,6 +293,9 @@ async def _maybe_topic_tags(state: Any, slot: Any, message: str, history_key: st
         count=count,
         language=_LANGUAGE_TEMPLATE.format(lang=ui_language) if ui_language else "",
     )
+    # The background session may have to start; the turn this send started must
+    # not wait behind that, so the call follows the turn's prompt handoff.
+    await turn_handed_off(slot)
     try:
         text = await run_bg_oneliner(
             state.sessions,

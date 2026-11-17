@@ -88,17 +88,20 @@ FAKE_IMAGE_WIDTH = 1
 FAKE_IMAGE_HEIGHT = 1
 
 # ── Redaction fixtures ──
-# The canonical PUBLIC documentation access-key id (it appears verbatim in AWS's
-# own docs and in this repo's redaction tests) plus two exfiltration-shaped URLs
-# using IANA-reserved documentation ranges. None of these is a real credential or
-# a reachable host; they exist so a test can assert that the rendered tree comes
-# back MASKED.
-FAKE_CREDENTIAL_FIXTURE = "AKIA" "IOSFODNN7EXAMPLE"
+# A synthetic 40-character secret-key value (not the AWS documentation example,
+# which the redactor keeps visible), written under its label because a bare run is
+# no credential, plus exfiltration-shaped URLs using IANA-reserved documentation
+# ranges, whose credential parameter value is masked. None of these is a real
+# credential or a reachable host; they exist so a test can assert that the
+# rendered tree comes back MASKED.
+FAKE_CREDENTIAL_FIXTURE = "Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE"
 FAKE_EXFIL_URL = (
-    "https://evil.example.com/collect?data="
+    "https://evil.example.com/collect?access_token="
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
-FAKE_LEAKY_TITLE = f"deploy notes key={FAKE_CREDENTIAL_FIXTURE} upload={FAKE_EXFIL_URL}"
+FAKE_LEAKY_TITLE = (
+    f"deploy notes aws_secret_access_key={FAKE_CREDENTIAL_FIXTURE} upload={FAKE_EXFIL_URL}"
+)
 # The value a secure field holds. A test asserts this string is NEVER present in
 # any rendered output.
 FAKE_SECRET_VALUE = "correct-horse-battery-staple"

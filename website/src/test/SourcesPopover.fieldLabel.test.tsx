@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import type { ReactNode } from 'react'
 import { i18next } from '../i18n/all'
 import zh from '../i18n/locales/zh-CN.json'
@@ -19,7 +21,7 @@ import SourcesPopover from '../components/appstore/SourcesPopover'
 
 const wrap = (ui: ReactNode) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  return render(<Provider store={createConnectedTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
 }
 
 describe('SourcesPopover install path name', () => {

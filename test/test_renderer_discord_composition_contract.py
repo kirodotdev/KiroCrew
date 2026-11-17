@@ -117,7 +117,11 @@ BASE_MEMBERS = {
     "on_steer_consumed": ("coroutine", "(self, summary: 'str' = '') -> 'None'"),
     "_rotate_at_markers": ("coroutine", "(self) -> 'None'"),
     "_rotate_on_length": ("coroutine", "(self) -> 'None'"),
-    "_seal_rotated_part": ("coroutine", "(self) -> 'None'"),
+    "_seal_rotated_part": (
+        "coroutine",
+        "(self, *, components: 'list[dict] | None' = None, extract_uploads: 'bool' = False)"
+        " -> 'None'",
+    ),
     "_open_new_message": ("function", "(self) -> 'None'"),
     "_segment_text": ("function", "(self) -> 'str'"),
     "_stream_live": ("coroutine", "(self, *, force: 'bool' = False) -> 'None'"),

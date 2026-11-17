@@ -48,8 +48,7 @@ logger = logging.getLogger(__name__)
 COPY = "copy"
 LINK = "link"
 
-#: Bound on the parent walk when looking for a git repository root. Same value
-#: and idiom as ``dashboard.handlers.files._PROJECT_ROOT_WALK_LIMIT`` — a fixed cap
+#: Bound on the parent walk when looking for a git repository root: a fixed cap
 #: so a pathological path can't turn classification into an unbounded stat
 #: storm.
 PROJECT_ROOT_WALK_LIMIT = 40

@@ -76,7 +76,7 @@ export interface ChatInputProps {
    * composer draft and its staging untouched (the rule an option send follows).
    * A host that renders follow-up chips while busy must honour it. */
   onSteer?: (opts?: { auto?: boolean; text?: string }) => void
-  /** Whether the host may offer `Auto (Jev)` in the split button's mode picker:
+  /** Whether the host may offer `Auto (decision model)` in the split button's mode picker:
    * the gateway reports the Decisions seam as permitted by governance AND
    * consented to. Defaults to false, so a surface that never asks cannot offer a
    * mode the gateway would refuse to act on. */
@@ -154,10 +154,14 @@ export interface ChatInputProps {
   /** A whole message staged as the quote of the next send (`messageQuote.ts`).
    *  Drawn INSIDE the text area, above the caret, as a card with a remove
    *  control -- part of what is being written, not a strip of chrome. The host
-   *  owns the state and folds it into the send; ChatInput only shows and
-   *  unstages it. A staged quote counts as a draft for the send button. */
+   *  owns the state and folds it into the send; ChatInput only shows it and
+   *  hands the card's remove and jump clicks back to the host. A staged quote
+   *  counts as a draft for the send button. */
   pendingQuote?: MessageQuote | null
   onRemoveQuote?: () => void
+  /** Scroll the transcript to the staged quote's message, as a sent card's
+   *  click does. Absent: the card is not a jump control. */
+  onJumpToQuote?: (quote: MessageQuote) => void
   /** Show macOS-only buttons (screenshot) */
   isMac?: boolean
   /** Drag-and-drop handler for the entire input bar */
@@ -219,7 +223,7 @@ export interface ChatInputProps {
    * preview is on, so `model.route` puts the turn in a tier and runs it on that
    * tier's model.
    *
-   * The chip then names the POLICY (`Auto (Jev)`) in place of `modelName`, rather
+   * The chip then names the POLICY (`Auto (decision model)`) in place of `modelName`, rather
    * than an id with a marker beside it. A routed session's model changes from turn
    * to turn, so naming one makes a chip that reads like a pin and is stale by the
    * next reply; the model a given turn actually ran on is on that turn's routing
@@ -230,12 +234,19 @@ export interface ChatInputProps {
    * Hosts compute it from the SAME `jevRouteOffered()` the picker's row is drawn
    * from (`lib/jevRoute.ts`) against the slot's raw `model`, which is what the
    * routing gate reads. One condition, so the chip cannot say Auto for a turn that
-   * routed, nor Auto (Jev) for one that did not.
+   * routed, nor Auto (decision model) for one that did not.
    *
    * Wins over `modelIsInheritedDefault`: both describe a slot that pinned nothing,
    * and this one names WHO picks instead, which is the more specific fact and the
    * one that costs money. */
   modelIsJevRouted?: boolean
+  /**
+   * The session's harness when it is not this install's own: selection-
+   * capabilities' `models_backend` (config spelling, e.g. `'claude'`), which the
+   * server sets only then (`own_models_backend`; Kiro CLI and KAS count as one).
+   * The model chip draws that harness's mark before the model, named in its
+   * tooltip (`Runs on Claude Code`). Unset: the chip is unchanged. */
+  harnessBackend?: string
   /**
    * Picker openers (agent, model, project, and `onSessionControlClick` below).
    * Each hands the host the chip's click-time rect AND the chip element itself:
@@ -294,6 +305,10 @@ export interface ChatInputProps {
   /** Show used/window token counts in the inline context readout. */
   showContextTokens?: boolean
   isRunning?: boolean
+  /** Names the chat's current turn (`stagedProjectTurnKey`), so a queued turn
+   *  that starts without the composer going idle re-takes the start project
+   *  the staged-pick badge compares against (#20350). */
+  projectTurnKey?: string
   /** Lock the project chip: the composer is busy only because sub-agents are
    *  attached. A pick there cannot land at the next turn, because the deferred
    *  session reset stays armed while children share the runtime. */
@@ -320,6 +335,9 @@ export interface ChatInputProps {
    * component keeps working, it just gets the neutral wording.
    */
   continueIsRecovery?: boolean
+  /** The newest error row is a sign-in error: Resume stays (it works once the
+   *  sign-in lands), and its placeholder names the sign-in first. */
+  resumeAfterSignIn?: boolean
   /** Queue cards restored from before a gateway restart. Resume runs only the
    *  interrupted turn and leaves them for the user to send, so while Resume is
    *  offered the placeholder says how many wait. */
@@ -340,7 +358,7 @@ export interface ChatInputProps {
   approvalMode?: string
   /** The approval-mode picker drives another machine's session (crew window). */
   approvalModeRemote?: ApprovalModeRemote
-  /** Drawn directly right of the approval-mode picker (the mid-chat Ultra Mode chip). */
+  /** Drawn directly right of the approval-mode picker (the mid-chat conductor mode chip). */
   afterApprovalMode?: React.ReactNode
   reasoningEffort?: string
   /** True when `reasoningEffort` is the configured default rather than a
@@ -416,6 +434,14 @@ export interface ChatInputProps {
    *  drop, no `!` shell). The context popover shows the reading only, without
    *  this machine's auto-compact slider. */
   sessionOnPeer?: boolean
+  /** The running reply's own project as the server reports it (the slot's
+   *  `turn_project`). Preferred over the composer's start-of-response
+   *  snapshot, which a reload would take from a mid-reply pick. */
+  turnProject?: string | null
+  /** True when `turnProject` is a fallback from a hidden scratch folder the chat
+   *  still stores, not a pick waiting to take effect (the slot's
+   *  `turn_project_fallback`). */
+  turnProjectFallback?: boolean
   /** Checked-out branch of the active project (or short SHA when detached). */
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */

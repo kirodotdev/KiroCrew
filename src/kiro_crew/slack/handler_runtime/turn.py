@@ -88,6 +88,7 @@ if TYPE_CHECKING:
         canonical_key,
         consume_reinjection,
         context_template,
+        continue_timed_out_calls,
         credential_give_up_text,
         enter_turn,
         exit_turn,
@@ -292,9 +293,13 @@ class _SlackTurn:
         still intact in ``answer.accumulated``.
         """
         if self._hook_turn is not None and self._turn_completed_ok:
-            await slack_script_hooks.stop_hooks_after(
-                self._hook_turn, self._stop_reason, redact(self.answer.accumulated)
-            )
+            # A hook is a sink no output seam lists: it reads the answer redacted in
+            # full, inside the turn's channel seam with the owner's redaction off too.
+            from kiro_crew.security.redaction_switch import always_scan
+
+            with always_scan():
+                shown = redact(self.answer.accumulated)
+            await slack_script_hooks.stop_hooks_after(self._hook_turn, self._stop_reason, shown)
 
     # Release the retained permit once delivery and accounting have run. Called
     # explicitly right after accounting so a queued turn can proceed while the
@@ -418,11 +423,13 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     session_key = turn.session_key
     _agent = turn._agent
 
+    from kiro_crew.slack.code_channels.binding import no_reactions
+
     status_ctrl = StatusReactionController(
         slack,
         channel,
         msg_ts,
-        enabled=KiroCrewConfig.load().slack.reactions_enabled,
+        enabled=KiroCrewConfig.load().slack.reactions_enabled and not no_reactions(channel),
     )
     _had_error = False
     _unsent = False
@@ -581,6 +588,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 try:
                     await slack.delete_message(channel, _ts)
                 except Exception:
+                    # A message that cannot be deleted stays; the replay posts its own.
                     pass
         _working_ts = None
         turn._working_ts = None
@@ -952,7 +960,10 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await turn.clear_working_indicators()
             return False
 
-        async for event in client.stream(full_message):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model inside this turn (``acp.timed_out_continuation``): the same session
+        # is told the call timed out, and its answer streams on into this reply.
+        async for event in continue_timed_out_calls(client.stream, full_message):
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 

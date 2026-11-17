@@ -30,8 +30,11 @@ import { sseSlots } from '../store/dashboardSlice'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from '../hooks/notificationEvent'
 import {
+  CHAT_COMPLETE_MIN_SECONDS_KEY,
   CHAT_COMPLETE_NOTIFY_KEY,
+  loadChatCompleteMinSeconds,
   loadChatCompleteNotify,
+  saveChatCompleteMinSeconds,
   saveChatCompleteNotify,
   setChatCompleteHostReader,
   shouldNotifyOnChatComplete,
@@ -180,6 +183,35 @@ describe('chatCompleteNotify preference and predicate', () => {
     expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false })).toBe(false)
     MockNotification.permission = 'denied'
     expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false })).toBe(false)
+  })
+
+  describe('minimum turn length', () => {
+    beforeEach(() => {
+      localStorage.removeItem(CHAT_COMPLETE_MIN_SECONDS_KEY)
+      saveChatCompleteNotify(true)
+      setHidden(true)
+    })
+    afterEach(() => { localStorage.removeItem(CHAT_COMPLETE_MIN_SECONDS_KEY) })
+    const gate = (turnSeconds?: number | null, reconnecting = false) =>
+      shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting, turnSeconds })
+
+    it('skips only a turn known to be shorter than the chosen length', () => {
+      expect(loadChatCompleteMinSeconds()).toBe(0)
+      expect(gate(0)).toBe(true)
+      saveChatCompleteMinSeconds(30)
+      expect([gate(29), gate(30), gate(400), gate(), gate(null)]).toEqual([false, true, true, true, true])
+      expect(gate(90, true)).toBe(false)
+    })
+
+    it.each(['abc', '-5', '1.5', '', '99999', '3601', ' 30'])('reads the stored value %j as every turn', raw => {
+      localStorage.setItem(CHAT_COMPLETE_MIN_SECONDS_KEY, raw)
+      expect(loadChatCompleteMinSeconds()).toBe(0)
+    })
+
+    it('stores only whole numbers in range', () => {
+      const stored = [60, 3600, 2.5, -1, 3601].map(n => { saveChatCompleteMinSeconds(n); return loadChatCompleteMinSeconds() })
+      expect(stored).toEqual([60, 3600, 0, 0, 0])
+    })
   })
 })
 
@@ -361,5 +393,51 @@ describe('useWebSocket chat_done native toast', () => {
 
     expect(CONSTRUCTED).toEqual([])
     vi.restoreAllMocks()
+  })
+
+  describe('minimum turn length', () => {
+    afterEach(() => { localStorage.removeItem('mc-notify-min-turn-seconds') })
+    // Pins the persisted key itself: a rename would strand users' saved choice.
+    const openSlot = (minSeconds: number) => {
+      saveChatCompleteNotify(true)
+      localStorage.setItem('mc-notify-min-turn-seconds', String(minSeconds))
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+      return (type: string, data: Record<string, unknown>) => act(() => { ws.simulateMessage({ type, data: { slot: 'slot-a', ...data } }) })
+    }
+
+    it.each([
+      { frame: { run_seconds: 59 }, toasts: 0 },
+      { frame: { run_seconds: 60 }, toasts: 1 },
+      // An older gateway, or a run whose start it did not record: unknown is announced.
+      { frame: {}, toasts: 1 },
+      { frame: { run_seconds: 'long' }, toasts: 1 },
+      { frame: { run_seconds: -1 }, toasts: 1 },
+      { frame: { run_seconds: 2, needs_input: true }, toasts: 1 },
+    ])('reads the run length the gateway reports: %j', ({ frame, toasts }) => {
+      openSlot(60)('chat_done', frame)
+      expect(CONSTRUCTED).toHaveLength(toasts)
+    })
+
+    it('toasts a short run that ended in an error', () => {
+      const send = openSlot(60)
+      send('chat_message', { role: 'error', content: 'x' })
+      send('chat_done', { run_seconds: 2 })
+      expect(CONSTRUCTED.map(c => c.options?.body)).toEqual(['This turn failed. Open the session to see why.'])
+    })
+
+    it('measures a run from the gateway in a window that reloaded mid-run', () => {
+      const send = openSlot(60)
+      // This fresh window's first row is a follow-up turn's opener (a sub-agent
+      // result), seconds before the 20-minute run ends.
+      send('chat_message', { role: 'subagent', content: 'x' })
+      send('chat_done', { run_seconds: 1200 })
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('toasts every finish while no minimum is chosen', () => {
+      openSlot(0)('chat_done', { run_seconds: 0 })
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
   })
 })

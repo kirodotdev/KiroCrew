@@ -7,6 +7,7 @@ import {
   resolveRows,
   verdict,
 } from '../../scripts/lib/i18n-gate-table.mjs'
+import { runScript } from '../../scripts/lib/i18n-run-script.mjs'
 
 /**
  * The i18n runner's verdict.
@@ -376,5 +377,23 @@ describe('untranslated passthrough — the total reports, only the diff fails', 
     // tell "you left this in English" from "your quotes do not pair".
     expect(row(rows, 'changed-values').state).toBe('PASS')
     expect(failed).toBe(true)
+  })
+})
+
+describe('a script that never finishes ends the run instead of holding it silent', () => {
+  it('kills a script still running at its time limit and reports it as fatal', () => {
+    // The child exits by itself after a minute: `spawnSync` blocks this worker, so
+    // vitest's own timeout cannot fire, and a runner without the limit fails here
+    // after that minute instead of hanging the shard.
+    const res = runScript(['-e', 'setTimeout(() => {}, 60_000)'], { cwd: process.cwd(), timeoutMs: 500 })
+    expect(res.fatal).toBe('still running after 0.5 s, so it was killed')
+  })
+
+  it('keeps the exit code and every byte of a script that finishes', () => {
+    const res = runScript(
+      ['-e', "process.stdout.write('out'); process.stderr.write('err'); process.exitCode = 3"],
+      { cwd: process.cwd() },
+    )
+    expect(res).toEqual({ status: 3, text: 'outerr' })
   })
 })

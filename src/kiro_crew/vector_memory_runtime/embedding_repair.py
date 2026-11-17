@@ -296,7 +296,37 @@ def has_pending_embeddings(store: VectorMemoryStore) -> bool:
         "SELECT 1 FROM semantic_memory WHERE is_deleted = 0 AND embedding IS NULL "
         "AND key NOT LIKE 'lesson.%' LIMIT 1",
     )
-    return any(store._fetch_one_locked(sql) is not None for sql in probes)
+    if any(store._fetch_one_locked(sql) is not None for sql in probes):
+        return True
+    # A private store's lesson-dedup queue, or a retirement a flag-off sweep
+    # restores, is work the sweep does too (memory.member_lesson_dedup).
+    if store.algorithm_version != "v2":
+        return False
+    from kiro_crew.memory_lesson_dedup import (
+        MODE_OFF,
+        PENDING_KEY,
+        RETIRED_KEY,
+        configured_mode,
+    )
+
+    if store._fetch_one_locked("SELECT 1 FROM memory_meta WHERE key = ?", (PENDING_KEY,)):
+        return True
+    # A retirement is work only for the flag-off restore; while the flag is on
+    # the marker stays and the sweep has nothing to do for it.
+    return (
+        store._fetch_one_locked("SELECT 1 FROM memory_meta WHERE key = ?", (RETIRED_KEY,))
+        is not None
+        and configured_mode() == MODE_OFF
+    )
+
+
+def _resolve_member_lesson_dedup(
+    store: VectorMemoryStore, should_stop: "Callable[[], bool] | None"
+) -> None:
+    if store.algorithm_version == "v2" and not (should_stop is not None and should_stop()):
+        from kiro_crew.memory_lesson_dedup import resolve_pending
+
+        resolve_pending(store)
 
 
 def backfill_rows(
@@ -375,6 +405,8 @@ def backfill_missing_embeddings(
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
     if store.embed_fn is None:
+        # The dedup sweep needs no model: a flag-off restore still runs.
+        _resolve_member_lesson_dedup(store, should_stop)
         return 0
     # Repair lesson vectors FIRST: they need no numpy (struct-packed and
     # compared directly, never indexed), and they must be rebuilt even when
@@ -383,6 +415,9 @@ def backfill_missing_embeddings(
     store._backfill_lesson_embeddings(
         progress, pace=pace, max_rows=max_rows_per_kind, should_stop=should_stop
     )
+    # A private store's new consolidation lessons that just got their vector
+    # are checked for a stored copy (memory.member_lesson_dedup).
+    _resolve_member_lesson_dedup(store, should_stop)
     # Same for non-lesson semantic KV rows: struct-packed, no numpy, no
     # FAISS — get_semantic_context ranks them straight from the stored blob.
     # No progress callback: the (done,total) stream belongs to the episodic

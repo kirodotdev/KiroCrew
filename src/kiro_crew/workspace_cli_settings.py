@@ -20,10 +20,13 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.bounded_read import bounded_read
+from kiro_crew.config.paths import kiro_home
 
 logger = logging.getLogger(__name__)
 
 CLI_SETTINGS_LOCK_NAME = ".kirocrew-cli-settings.lock"
+_INTO_KIRO_HOME = "workspace CLI settings folder is a link into the global kiro settings"
 _EXCLUDE_COMMENT = "# Kiro Crew session settings (local only)"
 _READ_LIMIT = 1 << 20
 _EXCLUDE_LINES = (
@@ -54,7 +57,7 @@ def _read_small(path: Path) -> str:
         os.close(fd)
         raise OSError(f"{path} is not a regular file")
     with os.fdopen(fd, encoding="utf-8", errors="surrogateescape") as handle:
-        text = handle.read(_READ_LIMIT + 1)
+        text = bounded_read(handle, _READ_LIMIT + 1)
     if len(text) > _READ_LIMIT:
         # A partial read would misjudge the trailing newline; leave it alone.
         raise OSError(f"{path} is larger than {_READ_LIMIT} characters")
@@ -135,14 +138,44 @@ def _exclude_from_git(work_dir: Path) -> None:
         handle.write(text)
 
 
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _links_into_kiro_home(settings_dir: Path) -> bool:
+    """Whether a ``.kiro`` or ``settings`` link makes *settings_dir* a kiro home's own.
+
+    That folder holds the user's own kiro-cli defaults. Both homes are checked: the
+    user's own kiro-cli reads ``~/.kiro`` even when ``KIRO_HOME`` moves this one. A
+    work dir with no link, or a link to any other folder, is left alone.
+    """
+    work_dir = settings_dir.parent.parent
+    unlinked = os.path.join(os.path.realpath(work_dir), ".kiro", "settings")
+    if os.path.realpath(settings_dir) == unlinked:
+        return False
+    return any(
+        _same_dir(settings_dir.parent, home) or _same_dir(settings_dir, home / "settings")
+        for home in (kiro_home(), Path(os.path.expanduser("~")) / ".kiro")
+    )
+
+
 @contextmanager
 def workspace_cli_settings_lock(
     work_dir: Path, *, timeout: float = CLI_SETTINGS_LOCK_TIMEOUT_SECS
 ) -> Iterator[Path]:
-    """Yield a workspace ``cli.json`` path while its verified lock is held."""
+    """Yield a workspace ``cli.json`` path while its verified lock is held.
+
+    Refused, before anything is created, when ``.kiro`` or ``.kiro/settings`` is a
+    link into the global kiro settings.
+    """
     stack = ExitStack()
     try:
         settings_dir = work_dir / ".kiro" / "settings"
+        if _links_into_kiro_home(settings_dir):
+            raise OSError(_INTO_KIRO_HOME)
         settings_dir.mkdir(parents=True, exist_ok=True)
         lock_path = settings_dir / CLI_SETTINGS_LOCK_NAME
         if platform_compat.is_link_or_junction(lock_path):

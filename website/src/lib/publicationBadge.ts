@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
-import { publishNoticeKey } from '../components/PublishHub'
+import { publishNoticeKey } from './publishHelpers'
 import type { ArtifactPublication, PublishProviderDescriptor } from '../types'
 
 /**
@@ -19,6 +19,7 @@ export function publicationBadgeLabel(pub: ArtifactPublication, providerName?: s
     return i18nT(publishNoticeKey({
       rolling_out: 'pages.artifactsPage.published_rolling_out',
       distribution_disabled: 'pages.artifactsPage.published_distribution_disabled',
+      origin_mismatch: 'pages.artifactsPage.published_origin_mismatch',
       notice_generic: 'pages.artifactsPage.published_notice_generic',
     }, pub.notice_code))
   }

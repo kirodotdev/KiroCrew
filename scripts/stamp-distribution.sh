@@ -28,6 +28,18 @@ case "$DIST" in
      exit 1 ;;
 esac
 
+# The release lane these bytes are packaged for, from the packaging job's
+# environment (nightly.yml passes build_channel: nightly to every build
+# workflow, which exports it as KC_BUILD_CHANNEL). Empty when the job names
+# none. Read by kiro_crew.build_channel; a value outside the known lanes is
+# refused rather than baked, for the same reason as DIST above.
+BUILD_CHANNEL="${KC_BUILD_CHANNEL:-}"
+case "$BUILD_CHANNEL" in
+  ""|stable|insider|nightly) ;;
+  *) echo "ERROR: unknown KC_BUILD_CHANNEL '$BUILD_CHANNEL' (want: stable|insider|nightly or empty)" >&2
+     exit 1 ;;
+esac
+
 if [ -z "$PKG_DIR" ]; then
   PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src/kiro_crew"
 fi
@@ -58,6 +70,7 @@ from __future__ import annotations
 
 DISTRIBUTION = "$DIST"
 WEBSITE_TREE = "$WEBSITE_TREE"
+BUILD_CHANNEL = "$BUILD_CHANNEL"
 EOF
 
-echo "Stamped distribution=$DIST website_tree=${WEBSITE_TREE:-<none>} -> $PKG_DIR/_build_info.py"
+echo "Stamped distribution=$DIST website_tree=${WEBSITE_TREE:-<none>} build_channel=${BUILD_CHANNEL:-<none>} -> $PKG_DIR/_build_info.py"

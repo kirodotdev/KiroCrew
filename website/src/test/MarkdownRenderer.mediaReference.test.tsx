@@ -39,6 +39,44 @@ describe('markdown media references', () => {
     expect(container.querySelector('[data-testid="md-broken-image-chip"]')).toBeNull()
   })
 
+  it('a local video holds a pending box, then the clip\'s own box on every later mount', () => {
+    const clip = '/home/user/project/shots/reserve-me.mp4'
+    const first = render(<MarkdownRenderer content={`![Demo recording](${clip})`} />)
+    const video = first.container.querySelector('video')!
+    // Before the metadata arrives a <video> is 300x150 whatever the clip, so
+    // it gets the fixed box an unloaded image gets.
+    expect(video.style.width).toBe('420px')
+    expect(video.style.height).toBe('236px')
+    expect(video.className).not.toContain('mc-img-reserve')
+
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 1280 })
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 720 })
+    fireEvent.loadedMetadata(video)
+    expect(video.className).toContain('mc-img-reserve')
+    expect(video.style.getPropertyValue('--mc-img-w')).toBe('1280')
+    expect(video.style.getPropertyValue('--mc-img-h')).toBe('720')
+    expect(video.style.height).toBe('')
+    first.unmount()
+
+    // A virtualized row mounts its clip again each time it scrolls back in.
+    const again = render(<MarkdownRenderer content={`![Demo recording](${clip})`} />).container.querySelector('video')!
+    expect(again.className).toContain('mc-img-reserve')
+    expect(again.style.getPropertyValue('--mc-img-w')).toBe('1280')
+    expect(again.style.getPropertyValue('--mc-img-h')).toBe('720')
+    expect(again.style.height).toBe('')
+  })
+
+  it('a local video whose metadata reports no picture size falls back to its natural size', () => {
+    const clip = '/home/user/project/shots/sound-only.mp4'
+    const { container } = render(<MarkdownRenderer content={`![Voice memo](${clip})`} />)
+    const video = container.querySelector('video')!
+    expect(video.style.height).toBe('236px')
+    fireEvent.loadedMetadata(video)
+    expect(video.className).not.toContain('mc-img-reserve')
+    expect(video.style.width).toBe('')
+    expect(video.style.height).toBe('')
+  })
+
   it('a local audio reference renders an audio player', () => {
     const { container } = render(<MarkdownRenderer content={`![voice note](${LOCAL_AUDIO})`} />)
     const audio = container.querySelector('audio')

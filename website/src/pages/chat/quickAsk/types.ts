@@ -55,17 +55,30 @@ export interface QuickAsk {
    * for one (`none`: the page showed only a password box).
    */
   steps?: { username: QuickAskUsername }
+  /**
+   * credentials under the Secrets vault preview: the NAMES of the vault logins
+   * whose URL is exactly `origin`. The person picks one and the gateway fills it
+   * (never this page). Empty: none match, and the sheet offers to save what is
+   * typed. Absent: the sheet is as without the preview.
+   */
+  vault?: { items: QuickAskVaultLogin[]; more?: number }
   /** Epoch ms after which the gateway answers `stale`. */
   expires_at: number
   phase: 'waiting' | 'taken_over'
 }
 
+/** One offered vault login: its entry name (what a click sends) and its username (shown). */
+export interface QuickAskVaultLogin { name: string; username: string }
+
 export type QuickAskUsername = 'required' | 'optional' | 'none'
 
 export type QuickAskAction = 'fill' | 'decline' | 'take_over' | 'done' | 'confirm' | 'cancel'
 export interface QuickAskValues { username?: string; password?: string; text?: string; otp?: string }
-export type QuickAskError = 'origin_changed' | 'stale' | 'not_owner' | 'too_large' | 'bad_action' | 'no_field' | 'too_long'
-export interface QuickAskAnswer { ok: boolean; outcome?: string; error?: QuickAskError | string }
+export type QuickAskError = 'origin_changed' | 'stale' | 'not_owner' | 'too_large' | 'bad_action' | 'no_field' | 'too_long' | 'vault_unusable'
+/** `saved`: present when the answer asked to save the typed login; whether it was. */
+export interface QuickAskAnswer { ok: boolean; outcome?: string; error?: QuickAskError | string; saved?: boolean }
+/** A credentials answer's vault part: fill from a picked login, or save the typed one. */
+export interface QuickAskVaultChoice { vault_item?: string; save?: true }
 
 const KINDS: ReadonlySet<string> = new Set(['credentials', 'text', 'otp', 'human_check', 'confirm'])
 const ROLES: ReadonlySet<string> = new Set(['username', 'password', 'text', 'otp', 'widget', 'action', 'region'])
@@ -110,6 +123,7 @@ export function readQuickAsk(raw: unknown): QuickAsk | null {
   const digits = finite(d.digits) && Number.isInteger(d.digits) && d.digits >= 4 && d.digits <= 10 ? d.digits : undefined
   const stepsRaw = d.kind === 'credentials' && d.steps && typeof d.steps === 'object' ? (d.steps as Record<string, unknown>).username : undefined
   const steps = stepsRaw === 'required' || stepsRaw === 'optional' || stepsRaw === 'none' ? { username: stepsRaw as QuickAskUsername } : undefined
+  const vault = d.kind === 'credentials' ? readVault(d.vault) : undefined
   return {
     id: d.id,
     kind: d.kind as QuickAskKind,
@@ -122,9 +136,30 @@ export function readQuickAsk(raw: unknown): QuickAsk | null {
     ...(typeof d.summary === 'string' ? { summary: d.summary } : {}),
     ...(typeof d.button === 'string' ? { button: d.button } : {}),
     ...(steps ? { steps } : {}),
+    ...(vault ? { vault } : {}),
     expires_at: finite(d.expires_at) ? d.expires_at : 0,
     phase: d.phase === 'taken_over' ? 'taken_over' : 'waiting',
   }
+}
+
+/** The gateway's caps: at most 50 logins offered, each name and username at most 120 characters. */
+const VAULT_ITEMS_MAX = 50
+const VAULT_NAME_MAX = 120
+
+/** The ask's `vault` part: each login's entry name and username, every one short, or nothing at all. */
+function readVault(v: unknown): { items: QuickAskVaultLogin[]; more?: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const raw = (v as Record<string, unknown>).items
+  if (!Array.isArray(raw) || raw.length > VAULT_ITEMS_MAX) return undefined
+  const short = (s: unknown, min: number): s is string => typeof s === 'string' && s.length >= min && s.length <= VAULT_NAME_MAX
+  const items: QuickAskVaultLogin[] = []
+  for (const it of raw) {
+    const r = it && typeof it === 'object' ? it as Record<string, unknown> : null
+    if (!r || !short(r.name, 1) || !short(r.username, 0)) return undefined
+    items.push({ name: r.name, username: r.username })
+  }
+  const more = (v as Record<string, unknown>).more
+  return { items, ...(finite(more) && Number.isInteger(more) && more > 0 ? { more } : {}) }
 }
 
 /** A defensive cap on the agent's reason; the display clamps it to two lines. */

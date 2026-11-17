@@ -265,6 +265,26 @@ async def test_gate_redeems_then_admits_the_capability_for_its_own_session(gate_
 
 
 @pytest.mark.asyncio
+async def test_a_connection_bridge_capability_serves_its_proxy_route_only(gate_app):
+    """A bridge's capability is no key to the gateway's other internal routes."""
+    from kiro_crew.agent_ipc_wire import BRIDGE_PICKUP_PREFIX
+
+    app, sock = gate_app
+    pickup = agent_ipc.issue_pickup(
+        server=f"{BRIDGE_PICKUP_PREFIX}github", session_token="tok", runtime_pid=os.getppid
+    )
+
+    def call():
+        cap = _post(REDEEM_PATH, sock, body={"pickup": pickup})[1]["capability"]
+        return _post(
+            "/api/internal/thing", sock, headers={CAPABILITY_HEADER: cap, "X-Session-Key": "chat-1"}
+        )
+
+    status, body = await _serve(app, call)
+    assert status == 403 and body["code"] == agent_ipc.REFUSE_ROUTE
+
+
+@pytest.mark.asyncio
 async def test_gate_refuses_a_redemption_from_outside_the_session(gate_app):
     app, sock = gate_app
     # The runtime root is this process itself, so this process is not its descendant.

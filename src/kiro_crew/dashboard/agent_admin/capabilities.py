@@ -311,11 +311,13 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     # A body that is valid JSON but not an object (or carries a non-string
     # ``package``) must be a 400, not an unhandled AttributeError -> 500.
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     package = body.get("package")
     if not isinstance(package, str):
         return web.json_response({"error": "package required"}, status=400)
@@ -338,9 +340,9 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
             _audit_capability(f"capability_agent_{verb}", "error", package)
             # The message is edition subprocess output in all but name: it can
             # echo a registry URL with an embedded token, so it is redacted (both
-            # scans) and length-bounded before reaching the dashboard.
-            message = (res.message or f"{verb} failed")[:500]
-            return web.json_response({"error": _redact_external(message)}, status=500)
+            # scans) and then length-bounded before reaching the dashboard.
+            message = _redact_external(res.message or f"{verb} failed")[:500]
+            return web.json_response({"error": message}, status=500)
         # Filesystem-heavy config rebuild — offload so it never blocks the asyncio
         # event loop (chat turn + liveness heartbeat) on a slow FS. REPORT whether
         # it landed: the package op above already landed and survives a declined
@@ -411,17 +413,15 @@ async def api_capability_plugins_sync(request: web.Request) -> web.Response:
         res = await mgr.sync_plugins()
         if not res.ok:
             _audit_capability("capability_plugins_sync", "error", "*")
-            message = (res.message or "sync failed")[:500]
-            return web.json_response({"error": _redact_external(message)}, status=500)
+            message = _redact_external(res.message or "sync failed")[:500]
+            return web.json_response({"error": message}, status=500)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         _audit_capability("capability_plugins_sync", "ok", "*")
         # Redacted AND length-bounded on the success path too: this message names
         # what was reconciled and can carry edition subprocess output, so it gets
         # the same treatment as the failure path rather than passing through raw.
-        return web.json_response(
-            {"ok": True, "message": _redact_external((res.message or "")[:500])}
-        )
+        return web.json_response({"ok": True, "message": _redact_external(res.message or "")[:500]})
     except Exception as exc:
         return _err500(exc)
 

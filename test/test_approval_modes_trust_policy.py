@@ -611,16 +611,32 @@ async def test_with_no_rule_trust_stays_allowed_through_every_pending_moment(mon
     assert amp._resolve() == frozenset()
 
 
-def test_with_no_rule_a_first_read_without_a_context_allows_trust(monkeypatch):
-    """_bootstrap with current_context() raising: the store loads, finds no rule."""
+def test_a_first_read_whose_context_fails_denies_trust_and_retries(monkeypatch):
+    """_bootstrap with current_context() raising: the policy was not read, so deny."""
     gp.reset_store()
 
     def _no_context():
         raise RuntimeError("no context")
 
-    monkeypatch.setattr(ctx_mod, "current_context", _no_context)
-    assert amp.session_mode_permitted("trust") is True
-    assert amp.session_mode_permitted("trust_reads") is True
+    with monkeypatch.context() as patched:
+        patched.setattr(ctx_mod, "current_context", _no_context)
+        assert amp.session_mode_permitted("trust") is False
+        assert amp.session_mode_permitted("trust_reads") is False
+        amp.ensure_resolved()
+        assert amp.session_mode_permitted("trust") is False, "a failed read is never cached"
+    assert amp.session_mode_permitted("trust") is True, "the next read tries again"
+
+
+def test_a_first_read_on_a_host_whose_context_cannot_compose_denies_trust(monkeypatch):
+    """A non-standalone host with no installed policy: its rule cannot be read."""
+
+    def _not_composed():
+        raise ctx_mod.PlatformCompositionError("companion not loaded")
+
+    monkeypatch.setattr(ctx_mod, "current_context", _not_composed)
+    assert amp.session_mode_permitted("trust") is False
+    assert amp.session_mode_permitted("trust_reads") is False
+    assert amp.session_mode_permitted("normal") is True
 
 
 @pytest.mark.asyncio

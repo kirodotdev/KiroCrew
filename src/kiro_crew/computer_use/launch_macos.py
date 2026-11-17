@@ -582,6 +582,11 @@ def spawn_detached(bundle_path: str) -> None:
     """
     if not os.path.isfile(_OPEN_BIN):
         raise OSError(f"{_OPEN_BIN} is not available on this host")
+    # shortcut: the launch goes by PATH, so between resolve_target's checks and
+    # LaunchServices reading the bundle an admin user can rename the verified bundle out
+    # of a stock /Applications and put another at the same path; nothing re-checks it
+    # here. Upgrade when that window must close: launch by a file reference
+    # (LSOpenURLsWithRole on a file-reference URL) held from the check to the spawn.
     subprocess.Popen(  # noqa: S603 - fixed argv; bundle_name came from resolve_target
         [_OPEN_BIN, "-a", bundle_path],
         stdin=subprocess.DEVNULL,

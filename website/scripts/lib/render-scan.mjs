@@ -125,7 +125,7 @@ export const ALWAYS_LATIN = [
   // Connections launch-set provider brands (registry names; DNT proper nouns).
   // Asana joins because its pre-registered entry is now visible in the gallery
   // regardless of the launch gate, so its brand renders on `capabilities-mcp`.
-  'Asana', 'Atlassian', 'Linear', 'Notion', 'Stripe', 'Vercel',
+  'Asana', 'Atlassian', 'Linear', 'Notion', 'Stripe', 'TickTick', 'Vercel',
   // The six Google Workspace entries are pre-registered too, so their names render
   // there for the same reason.
   'Gmail', 'Google Drive', 'Google Calendar', 'Google Sheets', 'Google Docs', 'Google Slides',

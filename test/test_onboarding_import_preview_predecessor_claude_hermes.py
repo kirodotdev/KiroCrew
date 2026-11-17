@@ -31,11 +31,14 @@ from onboarding_import_helpers import (  # noqa: F401 -- the autouse fixture reg
     _select,
     _write_lineage_memory_db,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import onboarding_plan, onboarding_scan
 from kiro_crew.cron import CronService
 from kiro_crew.onboarding_sources import lineage as lineage_source
 from kiro_crew.vector_memory import VectorMemoryStore
+
+_KEY = github_classic(seed=18)  # a token the credential plan redacts
 
 # Keep apply_import's MCP sidecar lock off the real ~/.kiro/settings (see the
 # shared fixture in test/conftest.py).
@@ -339,9 +342,7 @@ class TestPreviewPredecessor:
         assert any(item["reason"] == "injection_instruction_excluded" for item in scan.skipped)
 
         credential = onboarding_scan._Scan("predecessor", tmp_path, tmp_path)
-        onboarding_plan._add_db_directive(
-            credential, "lesson.cred", "Use key AKIAIOSFODNN7EXAMPLE always"
-        )
+        onboarding_plan._add_db_directive(credential, "lesson.cred", f"Use key {_KEY} always")
 
         assert credential.items["instructions"] == []
         assert any(
@@ -356,7 +357,7 @@ class TestPreviewPredecessor:
         BROKEN code and lock in nothing. Escaped, the credential is invisible until
         `json.loads` runs, which is exactly the gap.
         """
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _KEY
         # value_json as it sits on disk: the key present only as escape sequences.
         raw = '"Use this deploy key %s always"' % "".join("\\u%04x" % ord(c) for c in secret)
         assert secret not in raw
@@ -443,7 +444,7 @@ class TestPreviewPredecessor:
 
     def test_nested_decoded_credential_is_screened(self, tmp_path: Path) -> None:
         """The screen walks string leaves, so a key nested in an object is caught too."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _KEY
         escaped = "".join("\\u%04x" % ord(char) for char in secret)
         raw = '{"rule": "Use key %s now", "note": "harmless"}' % escaped
         assert secret not in raw
@@ -483,7 +484,7 @@ class TestPreviewPredecessor:
         always-injected lesson tier — the bound becomes the bypass.
         """
         api = _api()
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _KEY
         escaped = "".join("\\u%04x" % ord(char) for char in secret)
         raw = '"Use key %s now"' % escaped
         for _ in range(onboarding_scan._MAX_DECODED_VALUE_DEPTH + 4):

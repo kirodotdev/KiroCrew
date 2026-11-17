@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.background_failure_log import log_background_failure
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.chat_title import _ui_language
 from kiro_crew.history import TranscriptWithheld, is_incognito_transcript
@@ -149,7 +150,7 @@ def _build_context(state: DashboardState) -> str:
     # Recent session titles and last messages
     try:
         if state.conversation_log:
-            sessions = state.conversation_log.list_sessions()
+            sessions = state.conversation_log.list_sessions_indexed()
             if sessions:
                 session_parts: list[str] = []
                 for s in sessions[:5]:
@@ -183,6 +184,7 @@ def _build_context(state: DashboardState) -> str:
                         # would have dropped it had the line been restricted then.
                         continue
                     except Exception:
+                        # Unreadable messages: the session is listed by its title or key alone.
                         pass
                     session_parts.append(line)
                 if session_parts:
@@ -278,8 +280,8 @@ async def generate_suggestions(state: DashboardState, *, ui_language: str) -> li
     # rather than surfacing it.
     try:
         text = await run_bg_oneliner(state.sessions, prompt, sel_source="suggestions", timeout=60)
-    except Exception:
-        logger.warning("Suggestions generation failed", exc_info=True)
+    except Exception as exc:
+        log_background_failure(logger, "Suggestions generation failed", exc)
         return []
 
     suggestions = _parse_suggestions(text)
@@ -300,8 +302,8 @@ async def refresh_suggestions(state: DashboardState, cache: SuggestionsCache) ->
             cache.suggestions = suggestions
             cache.generated_at = time.time()
             cache.language = language
-        except Exception:
-            logger.warning("Suggestions generation failed", exc_info=True)
+        except Exception as exc:
+            log_background_failure(logger, "Suggestions generation failed", exc)
 
 
 async def maybe_refresh(

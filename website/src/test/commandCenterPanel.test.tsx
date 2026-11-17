@@ -8,6 +8,7 @@ import CommandCenterPanel from '../pages/chat/command-center/CommandCenterPanel'
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import { setQuestionCard } from '../store/chatSlice'
 import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
+import { i18nT } from '../i18n/t'
 
 // Set true to make the lazy Overview subtree throw on render, standing in for a
 // failed chunk import — the F1 regression drives the dashboard-only boundary.
@@ -109,9 +110,15 @@ describe('task dashboard host controls', () => {
     mockState.chunkLoadFails = true
     try {
       renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-      expect(await screen.findByTestId('command-center-overview-error', {}, LAZY_DASHBOARD_WAIT)).toHaveTextContent('This dashboard could not be loaded.')
+      const overview = await screen.findByTestId('command-center-overview', {}, LAZY_DASHBOARD_WAIT)
+      expect(await within(overview).findByText('This dashboard could not be loaded.', {}, LAZY_DASHBOARD_WAIT)).toBeInTheDocument()
       // The panel itself is still mounted -- the host's draft-bearing cards survive.
       expect(screen.getByTestId('command-center-panel')).toBeInTheDocument()
+      // No hand-off beside the Questions tab's drafts; Try Again loads the Overview.
+      expect(within(overview).queryByRole('button', { name: i18nT('components.askAgent.ask_the_agent') })).toBeNull()
+      mockState.chunkLoadFails = false
+      fireEvent.click(within(overview).getByRole('button', { name: i18nT('components.errorBoundary.try_again') }))
+      expect(await screen.findByTestId('session-dynamic-dashboard', {}, LAZY_DASHBOARD_WAIT)).toBeInTheDocument()
     } finally {
       mockState.chunkLoadFails = false
     }

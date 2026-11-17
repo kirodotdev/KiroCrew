@@ -7,19 +7,26 @@
 # COLLECTION time rather than marked test-by-test because several fail at import
 # or fixture time on win32, which a skip marker cannot prevent.
 #
-# TWO readers, which is why this is a file and not a literal list:
+# THREE readers, which is why this is a file and not a literal list:
 #
-#   1. test/conftest.py's `pytest_ignore_collect` hook reads it. That covers the
-#      normal invocation, where pytest recurses into this directory.
+#   1. test/conftest.py's `pytest_ignore_collect` hook reads it (through
+#      test/platform_collect_ignore_helpers.py). That covers the normal
+#      invocation, where pytest recurses into this directory.
 #   2. scripts/ci-surface-tests.py filters it out of the reduced target list it
 #      emits on Windows. That is NOT redundant: naming a file explicitly on the
 #      pytest command line bypasses the `pytest_ignore_collect` hook, so a caller
 #      that passes explicit paths -- as the reduced frontend-only scope does --
 #      would collect these files and fail. The exclusion has to be applied by
 #      whoever builds that list.
+#   3. scripts/run_scoped_tests.py subtracts it from the local gate's related set
+#      for the same reason: every related target is an explicit pytest path, so a
+#      change that touches, name-matches or references one of these suites would
+#      otherwise run it on Windows. It reads the hook's own
+#      `platform_collect_ignore_helpers.PLATFORM_IGNORED`, so it follows the hook's
+#      platform rule exactly rather than carrying a second one.
 #
-# Adding a file here excludes it from both paths. Removing one re-enables it on
-# Windows; residual per-test gaps belong in windows-expected-failures.txt.
+# Adding a file here excludes it from all three paths. Removing one re-enables it
+# on Windows; residual per-test gaps belong in windows-expected-failures.txt.
 
 test_sandbox_argv.py               # OS sandbox is POSIX-only
 test_sandbox_argv_launcher_plan.py  # a test_sandbox_argv.py topic part; same suite

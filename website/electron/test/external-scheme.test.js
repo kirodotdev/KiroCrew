@@ -71,6 +71,10 @@ describe("classifyNavigation", () => {
       "vscode-insiders://file/etc/hosts",
       "vscode://vscode-remote/ssh-remote+dev-box.example.com/home/me/a.ts:10",
       "vscode://vscode-remote/ssh-remote+clouddesk/home/me",
+      "vscode://file/C:/Users/me/repo/a.ts",
+      "vscode://file/c:/Users/me/repo/a.ts:10",
+      "vscode://file/D:/work/x.py:3:2",
+      "vscode-insiders://file/C:/Users/me/a.ts",
     ]) {
       assert.equal(classifyNavigation(url, ORIGIN), "confirm", url);
     }
@@ -93,6 +97,13 @@ describe("classifyNavigation", () => {
       "VSCODE://file/Users/me/a.ts",
       " vscode://file/Users/me/a.ts",
       "vscode://file/Users/me/a.ts\n",
+      "vscode://file/C:/Users/../../etc/x",
+      "vscode://file/C:/Users/%2e%2e/x",
+      "vscode://file/C:%5CUsers/a.ts",
+      "vscode://file/C:/Users%5Ca.ts",
+      "vscode://file/CC:/a.ts",
+      "vscode://file/C:",
+      "vscode://vscode-remote/ssh-remote+dev-box/C:/a.ts",
     ]) {
       assert.equal(classifyNavigation(url, ORIGIN), "block", url);
     }
@@ -346,6 +357,23 @@ describe("createWindowOpenHandler", () => {
         await settle();
       }
       assert.equal(asked.length, 4);
+    });
+
+    it("lets a remembered local-file choice cover a later drive-letter link", async () => {
+      const asked = [];
+      const { handler, opened } = harness({
+        confirmOpen: async (url) => {
+          asked.push(url);
+          return { open: true, remember: true };
+        },
+        rememberedEditorTargets: new Set(),
+      });
+      handler({ url: "vscode://file/Users/me/a.ts" });
+      await settle();
+      handler({ url: "vscode://file/C:/Users/me/b.ts:4" });
+      await settle();
+      assert.equal(asked.length, 1);
+      assert.deepEqual(opened, ["vscode://file/Users/me/a.ts", "vscode://file/C:/Users/me/b.ts:4"]);
     });
 
     it("does not remember a Cancel, even with the box checked", async () => {

@@ -589,6 +589,40 @@ class TestMacOSDriverHappyPaths:
         posted = [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
         assert posted, "no key event reached the target pid"
 
+    @staticmethod
+    def _posted(fakes: _Fakes) -> list:
+        return [a for (n, a) in fakes.cg.calls if n == "CGEventPostToPid"]
+
+    def test_cmd_shortcut_to_a_background_app_is_sent_with_a_caveat(self, fakes: _Fakes):
+        """macOS may ignore a Cmd shortcut sent to a background app: Cmd+A posted to a
+        background TextEdit selected nothing while the tool answered "sent cmd+a"."""
+        fakes.ax.attrs[(_H_ELEMENT, "AXFrontmost")] = fakes.new_bool(False)
+        result = macos_driver.MacOSBackend().press_key(_APP, None, "cmd+a")
+        assert result.ok is True
+        assert self._posted(fakes)
+        assert "not the frontmost app" in result.text
+        assert "may ignore" in result.text
+
+    def test_cmd_shortcut_counts_an_unreadable_frontmost_state_as_background(self, fakes: _Fakes):
+        result = macos_driver.MacOSBackend().press_key(_APP, None, "cmd+a")
+        assert result.ok is True
+        assert self._posted(fakes)
+        assert "may ignore" in result.text
+
+    def test_cmd_shortcut_to_the_frontmost_app_carries_no_caveat(self, fakes: _Fakes):
+        fakes.ax.attrs[(_H_ELEMENT, "AXFrontmost")] = fakes.new_bool(True)
+        result = macos_driver.MacOSBackend().press_key(_APP, None, "cmd+a")
+        assert result.ok is True
+        assert result.text == "sent cmd+a"
+
+    def test_a_plain_key_to_a_background_app_carries_no_caveat(self, fakes: _Fakes):
+        """Only Cmd shortcuts were measured to need the frontmost app."""
+        fakes.ax.attrs[(_H_ELEMENT, "AXFrontmost")] = fakes.new_bool(False)
+        result = macos_driver.MacOSBackend().press_key(_APP, None, "return")
+        assert result.ok is True
+        assert self._posted(fakes)
+        assert result.text == "sent return"
+
     def test_type_text_posts_unicode_rather_than_keycodes(self, fakes: _Fakes):
         backend, rec, _ = self._staged(fakes)
         result = backend.type_text(_APP, rec, "héllo")

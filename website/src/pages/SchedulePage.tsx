@@ -42,6 +42,7 @@ import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
 import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
 import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
+import ScheduleCrewmateRosterNotice from './ScheduleCrewmateRosterNotice'
 import CronRowActions from '../components/CronRowActions'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import {
@@ -78,11 +79,11 @@ const SCHEDULE_COLUMNS = 10
 
 /**
  * The jobs table's declared min-width in px: the number in its
- * `min-w-[1194px]` class. It exists as a constant only so a user's column
+ * `min-w-[1210px]` class. It exists as a constant only so a user's column
  * resize can move it (`JOBS_TABLE_MIN_WIDTH + jobCols.extra`); the class stays
  * the default, and `SchedulePage.columnContract.test.ts` holds the two equal.
  */
-const JOBS_TABLE_MIN_WIDTH = 1194
+const JOBS_TABLE_MIN_WIDTH = 1210
 
 /**
  * The user-resizable jobs columns. Each `base` restates that column's
@@ -104,8 +105,10 @@ const JOB_COLUMNS = {
   type: { base: 116, min: 64, max: 480 },
   schedule: { base: 180, min: 80, max: 480 },
   status: { base: 104, min: 60, max: 240 },
-  lastRun: { base: 82, min: 56, max: 240 },
-  nextRun: { base: 92, min: 56, max: 240 },
+  // Wide enough for the label plus the sort arrow: the jobs open sorted by
+  // Next Run, and a narrower column ellipsized its own header ("Next R…").
+  lastRun: { base: 94, min: 56, max: 240 },
+  nextRun: { base: 96, min: 56, max: 240 },
 } satisfies Record<string, TableColumnSpec>
 
 const JOB_COLUMNS_STORAGE_KEY = 'kc:schedule:jobs-column-widths'
@@ -169,9 +172,9 @@ const fmtAgo = (ts?: number) => {
   if (!ts) return '—'
   const s = Math.floor((Date.now() / 1000) - ts)
   if (s < 60) return i18nT('pages.schedulePage.just_now')
-  if (s < 3600) return i18nT('pages.schedulePage.m_ago', { n: Math.floor(s / 60) })
-  if (s < 86400) return i18nT('pages.schedulePage.h_ago', { n: Math.floor(s / 3600) })
-  return i18nT('pages.schedulePage.d_ago', { n: Math.floor(s / 86400) })
+  // The locale words the past offset in the largest unit that fits, so a run a
+  // year ago reads `1y ago`, not `400d ago`, and matches the Next-run column.
+  return fmtRelative(ts * 1000, { numeric: 'always' })
 }
 
 const fmtIn = (ts?: number | null) => {
@@ -270,13 +273,14 @@ export function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder:
       {confirming && (
         <div className="flex items-center gap-3 px-3 py-1.5 mb-1.5 text-sm rounded-md bg-danger/5 border border-danger/20">
           <span className="text-text">{i18nT('pages.schedulePage.cronFolders.confirm_delete_folder', { name: folder.name })}</span>
-          <Btn danger onClick={() => { setConfirming(false); onDelete() }}>
+          {/* The stock Btn is transparent, so on the danger tint it has no edge until hovered. */}
+          <Btn danger onClick={() => { setConfirming(false); onDelete() }} className="border-border-strong bg-bg-elevated">
             {i18nT('pages.schedulePage.cronFolders.delete_folder_named', { name: folder.name })}
           </Btn>
           {/* Cancel unmounts the row and itself with it, which would drop
               focus to the page: hand it back to the trigger, as the rename
               editor does, a frame later so the row has gone. */}
-          <Btn onClick={() => {
+          <Btn className="border-border-strong bg-bg-elevated" onClick={() => {
             setConfirming(false)
             requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }))
           }}>
@@ -359,7 +363,8 @@ export default function SchedulePage() {
   // "By crewmate": '' lists every job, a crewmate name lists only that
   // crewmate's own schedules (rows whose `member_id` resolves to it).
   const [crewmateFilter, setCrewmateFilter] = useState('')
-  const { data: rosterData, isError: crewmateRosterFailed, error: crewmateRosterError, refetch: reloadCrewmateRoster, isFetching: crewmateRosterReloading } = useQuery(membersRosterQuery)
+  const crewmateRosterRead = useQuery(membersRosterQuery)
+  const rosterData = crewmateRosterRead.data
   const roster = useMemo(() => (Array.isArray(rosterData) ? rosterData : []), [rosterData])
   const [selected, setSelected] = useState<CronJob | null>(null)
   /**
@@ -548,6 +553,8 @@ export default function SchedulePage() {
   const handleMoveJob = useCallback(async (jobId: string, folderId: string) => {
     try {
       await api.updateCron(jobId, { folder_id: folderId })
+      // Only this job's own refusal: the slot is shared with other rows' errors.
+      setActionError(prev => (prev?.id === jobId ? null : prev))
       // Auto-expand the target folder so moved job stays visible
       if (folderId) {
         setCollapsedFolders(prev => {
@@ -608,7 +615,7 @@ export default function SchedulePage() {
   }), [sanitizedJobs, cronFilter, activeCrewmate, roster])
   const filterActive = !!cronFilter || !!activeCrewmate
   const scheduleComparators = useMemo(() => ({
-    name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
+    name: (a: CronJob, b: CronJob) => compareText(a.name, b.name),
     // Clock time first, so `9:00 AM` precedes `1:00 PM` -- the label sorts wrongly
     // as text. Rows with no clock (raw fallback, intervals) go last, then by label.
     schedule: (a: CronJob, b: CronJob) => {
@@ -786,22 +793,7 @@ export default function SchedulePage() {
           )}
           {/* Only when a listed job needs the roster: with no crewmate job the
               failed read costs the page nothing worth reporting. */}
-          {crewmateRosterFailed && jobs.some(j => j.member_id) && !detailDialogOpen && (
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              {/* askAgent on: the job dialog is closed, so no job draft can be lost. */}
-              <ErrorNotice
-                variant="inline"
-                className="flex-1 min-w-0"
-                title={i18nT('pages.membersPage.roster_load_failed')}
-                message={queryErrorMessage(crewmateRosterError)}
-                askAgent
-                testId="schedule-crewmate-roster-error"
-              />
-              <Btn onClick={() => void reloadCrewmateRoster()} disabled={crewmateRosterReloading} aria-busy={crewmateRosterReloading}>
-                {i18nT('pages.schedulePage.retry')}
-              </Btn>
-            </div>
-          )}
+          <ScheduleCrewmateRosterNotice read={crewmateRosterRead} show={jobs.some(j => j.member_id) && !detailDialogOpen} errorMessage={queryErrorMessage} />
           {lateFailures.map(f => (
             <ErrorNotice
               key={f.id}
@@ -932,6 +924,7 @@ export default function SchedulePage() {
                         setActionError({ id: 'batch-move', msg: i18nT('pages.schedulePage.cronFolders.batch_move_failed', { count: failedIds.length, total: ids.length }) })
                       } else {
                         setSelectedIds(new Set())
+                        setActionError(prev => (prev?.id === 'batch-move' ? null : prev))
                       }
                       if (folderId) {
                         setCollapsedFolders(prev => {
@@ -1014,7 +1007,7 @@ export default function SchedulePage() {
                   silently is not. Widening any px column means moving `min-w` by
                   the same amount: the two numbers are one statement, and editing
                   only the column takes the difference out of Message. */}
-            <div className="relative">
+            <div className="@container relative">
             {/* The scroller is the shadcn Table's own wrapper (the table's
                 parentElement — `relative w-full overflow-x-auto` in
                 ui/table.tsx); `sticky right-0` on the Actions cells resolves
@@ -1026,7 +1019,7 @@ export default function SchedulePage() {
                 column, and restates the rule above mechanically: the px
                 columns moved by `extra`, so min-width moves by the same
                 amount and Message keeps its floor. */}
-            <Table className="table-fixed min-w-[1194px]" style={jobCols.extra ? { minWidth: JOBS_TABLE_MIN_WIDTH + jobCols.extra } : undefined} aria-label={i18nT('pages.schedulePage.jobs_table')} {...uiLocation('schedule.job-list', attachJobsTable)}>
+            <Table className="table-fixed min-w-[1210px]" style={jobCols.extra ? { minWidth: JOBS_TABLE_MIN_WIDTH + jobCols.extra } : undefined} aria-label={i18nT('pages.schedulePage.jobs_table')} {...uiLocation('schedule.job-list', attachJobsTable)}>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-[36px] px-2 text-center">
@@ -1052,8 +1045,8 @@ export default function SchedulePage() {
                   <SortableTableHead label={i18nT('pages.schedulePage.schedule')} sortKey="schedule" sort={schedSort} onToggle={toggleSchedSort} className="w-[180px] relative" style={jobCols.style('schedule')} resizer={jobCols.resizer('schedule')} />
                   <TableHead>{i18nT('pages.schedulePage.message')}</TableHead>
                   <SortableTableHead label={i18nT('pages.schedulePage.status')} sortKey="status" sort={schedSort} onToggle={toggleSchedSort} className="w-[104px] relative" style={jobCols.style('status')} resizer={jobCols.resizer('status')} />
-                  <SortableTableHead label={i18nT('pages.schedulePage.last_run')} sortKey="lastRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[82px] relative" style={jobCols.style('lastRun')} resizer={jobCols.resizer('lastRun')} />
-                  <SortableTableHead label={i18nT('pages.schedulePage.next_run')} sortKey="nextRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[92px] relative" style={jobCols.style('nextRun')} resizer={jobCols.resizer('nextRun')} />
+                  <SortableTableHead label={i18nT('pages.schedulePage.last_run')} sortKey="lastRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[94px] relative" style={jobCols.style('lastRun')} resizer={jobCols.resizer('lastRun')} />
+                  <SortableTableHead label={i18nT('pages.schedulePage.next_run')} sortKey="nextRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[96px] relative" style={jobCols.style('nextRun')} resizer={jobCols.resizer('nextRun')} />
                   {/* 176px, not 164: under `table-fixed` a column width is a
                       CONTRACT, so a cell whose controls need more than it spills
                       OUT of the table instead of widening it. The three inline
@@ -1128,7 +1121,8 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
-              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
+              <Fragment key={j.id}>
+              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''} ${selected?.id === j.id || selectedIds.has(j.id) ? '[&_button.border-border]:[--border:var(--border-strong)]' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
@@ -1256,7 +1250,9 @@ export default function SchedulePage() {
                     SAME tokens above the base and below the controls (`-z-10`
                     inside the stacking context every sticky cell creates):
                     `--accent-subtle` is translucent, so composited over
-                    `bg-card` it matches the rest of the row exactly. */}
+                    `bg-card` it matches the rest of the row exactly. A selected
+                    row also re-points `--border` so the buttons keep an edge on
+                    that tint (the hovered-row rule in focus-and-state-cues.css). */}
                 <TableCell className="sticky right-0 whitespace-nowrap bg-card" onClick={e => e.stopPropagation()}>
                   <div aria-hidden className={`absolute inset-0 -z-10 transition-colors group-hover/jobrow:bg-bg-hover ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} />
                   {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
@@ -1273,13 +1269,14 @@ export default function SchedulePage() {
                         aria-label, which would override the label a sighted
                         user reads and break WCAG 2.5.3 (Label in Name); the
                         row context names the job. Same convention as
-                        ChatInput's Continue/Send buttons. */}
+                        ChatInput's Continue/Send buttons. While the delete runs it
+                        is busy the way Run is: focusable, named, spinner over it. */}
                     <Btn
                       danger
-                      disabled={isDeleting(j.id)}
+                      aria-disabled={isDeleting(j.id) || undefined} aria-busy={isDeleting(j.id) || undefined} className="relative aria-disabled:cursor-progress"
                       title={confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
                       onClick={() => { if (confirmDeleteId === j.id) void confirmDelete(j.id); else armDelete(j.id) }}
-                    >{isDeleting(j.id) ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</Btn>
+                    >{isDeleting(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={isDeleting(j.id) ? 'opacity-0' : undefined}>{confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</span></Btn>
                     <CronRowActions
                       job={j}
                       folders={cronFolders}
@@ -1294,11 +1291,18 @@ export default function SchedulePage() {
                       onNewFolder={handleNewFolder}
                     />
                   </div>
-                  {/* askAgent on: row actions (pause, strict, move, run, delete)
-                      act on a persisted job; the row holds no draft. */}
-                  {actionError?.id === j.id && <ErrorNotice variant="inline" className="mt-1 whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />}
                 </TableCell>
               </TableRow>
+              {/* Own full-width row, sticky and wrapping at the scroller's width (100cqw of the @container above). askAgent: job is persisted. */}
+              {actionError?.id === j.id && (
+                <TableRow>
+                  <TableCell colSpan={SCHEDULE_COLUMNS}>
+                    <div className="sticky left-4 inline-flex max-w-[calc(100cqw-2rem)] whitespace-normal" data-testid="schedule-job-action-error-pin">
+                      <ErrorNotice variant="inline" message={actionError.msg} askAgent testId="schedule-job-action-error" />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}</Fragment>
                     ))}</Fragment>
                   )
                 })
@@ -1656,9 +1660,11 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
             >
               {i18nT('pages.schedulePage.secrets_approve')}
             </SendBtn>
+            {/* The stock Btn is transparent, so on the warn tint it has no edge until hovered. */}
             <Btn
               danger
               disabled={busy}
+              className="border-border-strong bg-bg-elevated"
               onClick={() =>
                 act({
                   deny_pending: true,
@@ -1706,16 +1712,19 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
           {Object.keys(active).length > 0 && (
             <Btn
               danger
-              disabled={busy || revoke.isDeleting(job.id)}
-              className="w-fit"
+              disabled={busy}
+              aria-disabled={revoke.isDeleting(job.id) || undefined}
+              aria-busy={revoke.isDeleting(job.id) || undefined}
+              className="w-fit relative aria-disabled:cursor-progress"
               title={revokeArmed ? i18nT('pages.schedulePage.click_again_to_confirm') : undefined}
               onClick={() => { if (revokeArmed) void revoke.confirm(job.id); else revoke.arm(job.id) }}
             >
-              {revoke.isDeleting(job.id)
-                ? '...'
-                : revokeArmed
+              {revoke.isDeleting(job.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}
+              <span className={revoke.isDeleting(job.id) ? 'opacity-0' : undefined}>
+                {revokeArmed
                   ? i18nT('pages.schedulePage.secrets_revoke_all_confirm')
                   : i18nT('pages.schedulePage.secrets_revoke_all')}
+              </span>
             </Btn>
           )}
         </div>
@@ -1844,7 +1853,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           </div>
         )}
         {detailTab === 'logs' && job ? (
-          <JobLogsView jobId={job.id} jobName={job.name} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
+          <JobLogsView jobId={job.id} jobName={job.name} canHideIdle={!!job.script} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
             {job && <TemplateUpdatedNotice job={job} />}

@@ -51,6 +51,7 @@ from kiro_crew.config.loader_document import (
     _invalidate_config_cache,
     _shadowed_base_sections,
     _store_validated_data,
+    kas_bundle_build_default,
 )
 from kiro_crew.config.loader_locations import (
     config_local_path,
@@ -119,6 +120,8 @@ from kiro_crew.config.section_builders import (
     _build_work_ledger_config,
 )
 from kiro_crew.config.sections import (
+    BOT_MAX_WORKERS_MAX,
+    BOT_MAX_WORKERS_MIN,
     STAR_ORDER_MAX,
     AgentConfig,
     BrowserConfig,
@@ -605,15 +608,20 @@ def read_config_document() -> ConfigDocument:
     # build_config agrees by construction.
     if isinstance(data.get("resource_limits"), dict):
         data["resource_limits"] = asdict(ResourceLimitsConfig.from_raw(data["resource_limits"]))
-    # Same fail-closed-before-validation reason for the four agent
+    # Same fail-closed-before-validation reason for the seven agent
     # switches whose safe direction is FALSE.
     # `agent.session_control` is the operator's single withdrawal of
     # cross-session control, `agent.member_dispatch` gates whether
     # a crew member bypasses that withdrawal, `agent.crew_panel`
-    # gates the member's own webview, and `agent.kas_persist_mcp_sign_in`
-    # decides whether Crew stores remote MCP OAuth tokens. Schema validation pops a
+    # gates the member's own webview, `agent.kas_persist_mcp_sign_in`
+    # decides whether Crew stores remote MCP OAuth tokens,
+    # `agent.conductor_own_child_verbs` lets a conductor send to its own
+    # children unprompted, `agent.kas_repair_kiro_cli_extract` lets Crew
+    # move kiro-cli's broken KAS extract aside, and `agent.deny_override`
+    # decides whether a deny-rules refusal can be overridden on a card.
+    # Schema validation pops a
     # present-but-malformed value and the missing-field default is TRUE
-    # for all four, so a quoted `"false"` -- a routine operator quoting
+    # for all seven, so a quoted `"false"` -- a routine operator quoting
     # mistake -- would silently ride that default back to the
     # capability staying enabled. Coerce a present non-bool to False
     # HERE, so validation sees a valid bool and keeps it; a genuinely
@@ -634,6 +642,9 @@ def read_config_document() -> ConfigDocument:
             "member_dispatch",
             "crew_panel",
             "kas_persist_mcp_sign_in",
+            "conductor_own_child_verbs",
+            "kas_repair_kiro_cli_extract",
+            "deny_override",
         ):
             if _fail_closed_key in _agent_section and not isinstance(
                 _agent_section[_fail_closed_key], bool
@@ -646,6 +657,30 @@ def read_config_document() -> ConfigDocument:
                     type(_agent_section[_fail_closed_key]).__name__,
                 )
                 _agent_section[_fail_closed_key] = False
+    # ``telemetry.enabled`` defaults to TRUE (local recording on), so the same
+    # fail-closed rule applies: a present ``enabled`` that is not a bool, or a
+    # ``telemetry`` that is not an object (an overlay's ``null`` replacing the base
+    # section), reads as false before validation could drop it and leave the on
+    # default. An absent key still takes the default.
+    _telemetry_section = data.get("telemetry")
+    if "telemetry" in data and not isinstance(_telemetry_section, dict):
+        logger.warning(
+            "telemetry is %s, not an object; reading telemetry.enabled as false "
+            "(local recording is OFF).",
+            type(_telemetry_section).__name__,
+        )
+        data["telemetry"] = {"enabled": False}
+    elif (
+        isinstance(_telemetry_section, dict)
+        and "enabled" in _telemetry_section
+        and not isinstance(_telemetry_section["enabled"], bool)
+    ):
+        logger.warning(
+            "telemetry.enabled is %s, not a boolean; reading it as false (local "
+            "recording is OFF). Write true or false without quotes to choose.",
+            type(_telemetry_section["enabled"]).__name__,
+        )
+        _telemetry_section["enabled"] = False
     # Keep a genuinely absent default backward-compatible with older
     # configs, but normalize a PRESENT malformed value before advisory
     # schema validation can delete it and turn corruption into the
@@ -811,6 +846,8 @@ def build_config(
             agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
         mark_member_backend_inherited(cfg.agent, True)
+        # An absent key, so a nightly build's default applies to a fresh home too.
+        cfg.agent.kas_bundle = kas_bundle_build_default()
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (
@@ -862,8 +899,8 @@ def build_config(
     # dict iterates as its keys, a string as its characters). A list with
     # non-string/empty ENTRIES: the parse filter drops them, so an
     # all-invalid narrowing like [1, 2] parses to [] — indistinguishable
-    # from "no restriction configured", the exact silent widening this fix
-    # exists to stop. Both shapes record the degradation so the publish
+    # from "no restriction configured", a silent widening. Both shapes
+    # record the degradation so the publish
     # gate denies, and parse from what safely remains. Validation cannot
     # repair these values (publish.allowed_destinations is fail-closed
     # there — repairing an OPEN default silently widens), so the loader
@@ -1009,6 +1046,9 @@ def build_config(
                         else crew.default("worker_model")
                     ),
                     worker_reasoning_effort=coerce_effort(crew.get("worker_reasoning_effort")),
+                    max_workers=crew.read(
+                        "max_workers", _safe_int, lo=BOT_MAX_WORKERS_MIN, hi=BOT_MAX_WORKERS_MAX
+                    ),
                     # Kept as written, never coerced to a selectable value: the
                     # selection gate refuses a pin this build cannot start, and a
                     # coerced one would run the crewmate on another harness.
@@ -1033,6 +1073,10 @@ def build_config(
                     star_order=crew.read("star_order", _safe_int, lo=0, hi=STAR_ORDER_MAX),
                     # Strictly a bool, like ``starred``: a stray string reads as off.
                     dynamic_capabilities=crew.read("dynamic_capabilities", _safe_bool),
+                    # Hand-editable, and a safety switch: only a real bool is
+                    # honoured; anything else reads as the default (off).
+                    dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
+                    show_sessions_in_list=crew.read("show_sessions_in_list", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.
@@ -1110,6 +1154,11 @@ def build_config(
                 embedding_provider=store.get("embedding_provider"),
                 owner_member=store.get("owner_member"),
                 memory_version=store.get("memory_version"),
+                provider_mode=(
+                    mode
+                    if (mode := entry.get("provider_mode")) in ("inherit", "builtin")
+                    else "inherit"
+                ),
             )
     if not memory_stores:
         memory_stores[DEFAULT_MEMORY_STORE] = MemoryStoreConfig()
@@ -1260,8 +1309,8 @@ def build_config(
         slack_dm_activation=_validate_activation(
             slack_data.get("dm_activation", top.default("slack_dm_activation"))
         ),
-        observe_max_messages=max(1, slack_top.read("observe_max_messages", _safe_int)),
-        observe_ttl_hours=max(0.0, slack_top.read("observe_ttl_hours", _safe_float)),
+        observe_max_messages=slack_top.read("observe_max_messages", _safe_int, 1),
+        observe_ttl_hours=slack_top.read("observe_ttl_hours", _safe_float, 0.0),
         _extra_sections=extra_sections,
     )
 
@@ -1395,8 +1444,8 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
         #
         # In memory still matters as much as the file, which is why it happens at
         # all: the gateway reads these budgets once at startup, so a disk-only
-        # fix would leave the very run that performed it still on the old value,
-        # and "upgraded, restarted, nothing changed" is the complaint.
+        # write would leave the run that performed it on the old value until
+        # the next restart.
         adopt_keys = {e.dotted_key for e in adoptable}
         if adopt_keys:
             pending.add(MIGRATE_SUPERSEDED_DEFAULTS)

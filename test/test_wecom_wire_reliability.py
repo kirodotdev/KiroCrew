@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.testing.channel_fixtures import load_fixture
 from kiro_crew.wecom.client import (
@@ -1196,15 +1197,14 @@ class TestRendererRollsOffASealedBubble:
         c._ws = ws  # type: ignore[assignment]
         r = _renderer(c)
         await r.on_turn_start()
-        # A live AKIA key, split so neither half matches on its own.
-        await r.on_thinking("checking AKIAIOSFO")
-        await r.on_thinking("DNN7EXAMPLE now")
+        # A GitHub token, split so neither half matches on its own.
+        cred = github_classic(seed=44)
+        await r.on_thinking(f"checking {cred[:12]}")
+        await r.on_thinking(f"{cred[12:]} now")
         await r._push(force=True)
 
         sent = json.dumps(ws.sent, ensure_ascii=False)
-        assert (
-            "AKIAIOSFODNN7EXAMPLE" not in sent
-        ), "the split credential was rejoined and posted in clear text"
+        assert cred not in sent, "the split credential was rejoined and posted in clear text"
         assert "<think>" in sent, "the reasoning block itself must still be sent"
 
     @pytest.mark.asyncio

@@ -67,7 +67,7 @@ describe('ChatPage – crew-bound offer gates', () => {
   })
 
   it('gates handleEditResend on the crew-bound flag (early return)', () => {
-    expect(chatPageSrc).toMatch(/if \(!activeSlot \|\| slotRunning \|\| activeSlotRemoteBound\) return/)
+    expect(chatPageSrc).toMatch(/if \(!activeSlot \|\| slotRunning \|\| activeSlotRemoteBound\) return false/)
   })
 
   it('withholds the Edit affordance (canEdit) on a crew-bound slot', () => {

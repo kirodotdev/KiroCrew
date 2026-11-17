@@ -19,8 +19,8 @@ import type { ChatMessage } from '../../types'
  * skipped by the last-real-message scans (see lib/systemNotice.ts), so the
  * content is one of a closed set of shapes, not one:
  *
- *   ✅ Conversation compacted: <summary>     kiro-cli's /compaction/status
- *   ✅ Conversation compacted.               no summary (Claude backend, manual)
+ *   ✅ Conversation compacted: <summary>     kiro-cli's /compaction/status, claude's compaction_update
+ *   ✅ Conversation compacted.               no summary (the backend shipped none)
  *   ❌ Compaction failed: <reason>           first failures of a streak
  *   ❌ Compaction has failed Nx in a row …   the streak's collapsed notice
  *   ⚠️ Compaction timed out.                 the manual /compact wait
@@ -28,6 +28,7 @@ import type { ChatMessage } from '../../types'
  *   🔄 Auto-compacted at N%.                  threshold auto-compact, success
  *   🔄 Context at N% (limit M%) — will …     threshold crossed mid-turn (chat_turn/recovery.py)
  *   ♻️ This session was recycled …           watchdog recycle notice
+ *   ⚠️ The watchdog stopped recycling …      watchdog RSS hold notice (warn tone)
  *   ⏳ This turn has produced nothing …       stuck-turn notice
  *   ⏹ Compaction at N% was ended by Stop …  a Stop landed on the /compact turn
  *

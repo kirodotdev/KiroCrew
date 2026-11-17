@@ -6,12 +6,12 @@ unattributed: the log that follows says a process died, never who decided it
 should. Routing those callers through one gated place
 (:func:`kiro_crew.runtime_ownership.authorize_runtime_kill`, which both refuses a
 leased runtime and writes the attribution) is the work of several changes, so this module measures the remainder and ratchets it:
-:data:`BYPASS_BASELINE` may go DOWN in any change and may never go up. A new kill
-site must either attribute itself or lower something else to pay for itself.
+:data:`BYPASS_SITES` records the remainder per module, exactly: an entry may go
+DOWN in any change and may never go up, and a new kill site must attribute itself.
 
 Three things are pinned, and the third is what makes the first two mean anything:
 
-* the COUNT of direct primitive calls outside the primitive module
+* the COUNT of direct primitive calls outside the primitive module, per module
   (:func:`test_kill_primitive_bypass_count_does_not_grow`);
 * that the count is not low merely because the scan matches nothing -- a real
   primitive call is found where one is known to be
@@ -64,9 +64,12 @@ PID_KILL_PRIMITIVES = frozenset(
     }
 )
 
-#: Direct primitive calls outside :data:`PRIMITIVE_HOME`, measured on the change
-#: that introduced the attribution line. RATCHET: lower this when a change routes
-#: a site through an attributed path; never raise it for a site of your own.
+#: Direct primitive calls outside :data:`PRIMITIVE_HOME`, by module under
+#: ``src/kiro_crew``. RATCHET: lower a module's entry (delete it at zero) when a
+#: change routes a site through an attributed path; never raise one for a site of
+#: your own. Each entry is exact, and the record is one line per module rather than
+#: one total, so two changes to different modules edit different lines and stay
+#: green merged (testing-conventions.md § Merge-safe ratchets and counts).
 #:
 #: What the remainder is, so the next change knows where to look: the session
 #: teardown's own escalation (``session_pid``), app-backend and dev-preview
@@ -77,13 +80,43 @@ PID_KILL_PRIMITIVES = frozenset(
 #: remain counted here, because the gate brackets their escalation rather than
 #: replacing it.
 #:
-#: The one legitimate reason to raise this is a site the BASE branch gained, which
-#: this number tracks and does not govern: the PDF extractor's Windows-only tree
+#: The one legitimate reason to raise an entry is a site the BASE branch gained, which
+#: this record tracks and does not govern: the PDF extractor's Windows-only tree
 #: kill is such a site, and it kills a document-parsing subprocess that owns no
 #: session runtime, so an ownership gate there would consult a table that can
 #: never hold a lease for it. Raising it for a site the change itself adds is what
 #: the ratchet exists to stop.
-BYPASS_BASELINE = 63
+BYPASS_SITES: dict[str, int] = {
+    "acp/runtime_process_tree.py": 1,
+    "apps/backend_runtime/stale_reap.py": 2,
+    "apps/backend_runtime/termination.py": 7,
+    "apps/builtins/auto_improvement/spine/agent_runner.py": 2,
+    "apps/builtins/aws_control/crew/runtime/container/supervisor/__main__.py": 1,
+    "apps/builtins/aws_control/crew/runtime/container/supervisor/process.py": 1,
+    "apps/builtins/aws_control/crew/runtime/container_tests/test_supervisor_process.py": 1,
+    "apps/builtins/design_tweak/backend/dev_preview.py": 2,
+    "apps/builtins/dev_fleet/runtime.py": 2,
+    "builtin_skills/ios-simulator-preview/scripts/sim_mirror.py": 1,
+    "builtin_skills/security-conductor/scripts/verify_finding.py": 1,
+    "cli_server_stop.py": 1,
+    "cloud/ssm.py": 1,
+    "computer_use/overlay.py": 2,
+    "cron_script_procs.py": 4,
+    "dashboard/file_api/grep.py": 1,
+    "dashboard/port_reclaim.py": 1,
+    "frontend.py": 3,
+    "instances/ssh_tunnel_manager_child.py": 1,
+    "instances/ssh_tunnel_manager_ports.py": 1,
+    "mcp_discovery_probe.py": 1,
+    "mcp_gateway/daemon_control.py": 1,
+    "monitoring/provider_cli.py": 1,
+    "pdf_extract.py": 1,
+    "sandbox_probe.py": 1,
+    "session_pid.py": 7,
+    "session_pid_orphan_kill.py": 4,
+    "session_pid_provider_kill.py": 5,
+    "testing/harness.py": 6,
+}
 
 #: Functions that must say who fired before they signal anything, as module path
 #: -> function name. These are the paths every other kill funnels into: the
@@ -135,7 +168,7 @@ def _bypass_sites() -> dict[str, list[tuple[int, str]]]:
             continue
         found = _primitive_calls(tree)
         if found:
-            sites[str(path.relative_to(SRC))] = found
+            sites[path.relative_to(SRC).as_posix()] = found
     return sites
 
 
@@ -146,34 +179,42 @@ def _function_named(tree: ast.AST, name: str) -> ast.FunctionDef | ast.AsyncFunc
     return None
 
 
+def _bypass_counts() -> dict[str, int]:
+    return {module: len(calls) for module, calls in _bypass_sites().items()}
+
+
+def _bypass_drift(counts: dict[str, int], *, grown: bool) -> list[str]:
+    """The :data:`BYPASS_SITES` line to write for every module that grew or fell."""
+    return [
+        f'    "{module}": {counts.get(module, 0)},  # was {BYPASS_SITES.get(module, 0)}'
+        for module in sorted(set(counts) | set(BYPASS_SITES))
+        if (counts.get(module, 0) > BYPASS_SITES.get(module, 0)) is grown
+        and counts.get(module, 0) != BYPASS_SITES.get(module, 0)
+    ]
+
+
 def test_kill_primitive_bypass_count_does_not_grow() -> None:
     """The number of sites that kill without saying who fired may only fall."""
-    sites = _bypass_sites()
-    total = sum(len(v) for v in sites.values())
-    breakdown = "\n".join(
-        f"  {count:3d}  {module}"
-        for module, count in sorted(
-            ((m, len(v)) for m, v in sites.items()), key=lambda kv: (-kv[1], kv[0])
-        )
-    )
-    assert total <= BYPASS_BASELINE, (
-        f"{total} direct kill-primitive call(s) now bypass the attribution point, above "
-        f"the baseline of {BYPASS_BASELINE}. Route the new site through a path that calls "
-        f"kiro_crew.runtime_ownership.{GATE} instead of raising this number.\n"
-        f"Per module:\n{breakdown}"
+    grown = _bypass_drift(_bypass_counts(), grown=True)
+    assert not grown, (
+        "direct kill-primitive call(s) now bypass the attribution point above the "
+        "module's recorded count. Route the new site through a path that calls "
+        f"kiro_crew.runtime_ownership.{GATE} instead of raising the entry:\n" + "\n".join(grown)
     )
 
 
 def test_bypass_baseline_is_not_stale() -> None:
-    """A baseline left far above the real count stops ratcheting anything.
+    """A record left above the real count stops ratcheting anything.
 
-    Without this, a change that lowers 20 sites but leaves the number alone hands
+    Without this, a change that lowers 20 sites but leaves the record alone hands
     the next 20 regressions a free pass.
     """
-    total = sum(len(v) for v in _bypass_sites().values())
-    assert total == BYPASS_BASELINE, (
-        f"the real count is {total} but BYPASS_BASELINE says {BYPASS_BASELINE}. "
-        f"Lower the baseline to {total} in this change -- that is the ratchet clicking."
+    assert BYPASS_SITES and all(count > 0 for count in BYPASS_SITES.values())
+    fallen = _bypass_drift(_bypass_counts(), grown=False)
+    assert not fallen, (
+        "BYPASS_SITES records more sites than the tree has. Write these lines in this "
+        "change (a zero means delete the line) -- that is the ratchet clicking:\n"
+        + "\n".join(fallen)
     )
 
 
@@ -436,7 +477,9 @@ def test_the_leaked_provider_killer_commits_the_teardown_before_it_signals() -> 
 #: subagent holds no lease, so this claim is the only thing standing between a
 #: live turn and the provider drain; one of these left unguarded is a turn that
 #: can still be SIGTERMed mid-flight.
-_TURN_ENTRY_POINTS = ("stream", "stream_command")
+#: ``stream`` runs its turn as ``_stream_turn`` inside the shared chat turn gate,
+#: so the claim is pinned where the turn body is.
+_TURN_ENTRY_POINTS = ("_stream_turn", "stream_command")
 
 
 @pytest.mark.parametrize("function", _TURN_ENTRY_POINTS)

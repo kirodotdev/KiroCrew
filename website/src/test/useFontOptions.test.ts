@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 
 import { useFontOptions } from '../hooks/useFontOptions'
+import { BUNDLED_WEB_FONT_FAMILIES } from '../utils/fontFamilyOptions'
+import { readIndexCss } from './indexCssSource'
 
 /**
  * The hook's two detection layers are stubbed at the module boundary: the probe
@@ -12,6 +14,7 @@ import { useFontOptions } from '../hooks/useFontOptions'
 vi.mock('../utils/fontDetect', () => ({
   detectInstalledFonts: vi.fn(() => ['Menlo', 'Hack']),
   isLocalFontAccessSupported: vi.fn(() => true),
+  queryLocalFonts: vi.fn(() => Promise.resolve({ ok: true, families: [] })),
   queryLocalMonospaceFonts: vi.fn(() => Promise.resolve({ ok: true, families: ['Hack', 'Zed Mono'] })),
 }))
 
@@ -94,5 +97,44 @@ describe('useFontOptions', () => {
   it('starts idle, so no outcome line is claimed before the action ever ran', () => {
     const { result } = renderHook(() => useFontOptions())
     expect(result.current.lastResult).toBe('idle')
+  })
+
+  it('lists the bundled web fonts after the probe, once each, without asking for the font book', async () => {
+    // A bundled web face measures as missing until something on screen loads it.
+    detect.detectInstalledFonts.mockReturnValue(['Menlo', 'JetBrains Mono'])
+    const { result } = renderHook(() => useFontOptions('all'))
+    await waitFor(() => expect(result.current.families)
+      .toEqual(['Menlo', 'JetBrains Mono', 'Space Grotesk', 'OpenDyslexic', 'OpenDyslexicMono']))
+    expect(detect.queryLocalFonts).not.toHaveBeenCalled()
+  })
+
+  it('keeps the bundled web fonts when the font book lands before web fonts are ready', async () => {
+    // With permission already granted the font book needs no prompt, so it can
+    // beat the probe, which waits for web fonts.
+    detect.detectInstalledFonts.mockReturnValue(['Menlo', 'JetBrains Mono'])
+    detect.queryLocalFonts.mockResolvedValueOnce({ ok: true, families: ['Arial', 'Menlo'] })
+    let release = () => {}
+    const ready = new Promise<void>(resolve => { release = () => resolve() })
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { ready } })
+    try {
+      const { result } = renderHook(() => useFontOptions('all'))
+      await act(async () => { result.current.enumerate() })
+      await waitFor(() => expect(result.current.families).toEqual(['Arial', 'Menlo']))
+      expect(detect.detectInstalledFonts).not.toHaveBeenCalled()
+      await act(async () => { release(); await ready })
+      await waitFor(() => expect(result.current.families)
+        .toEqual(['Menlo', 'JetBrains Mono', 'Space Grotesk', 'OpenDyslexic', 'OpenDyslexicMono', 'Arial']))
+    } finally {
+      Reflect.deleteProperty(document, 'fonts')
+    }
+  })
+
+  it('names every family font-faces.css downloads as bundled', () => {
+    // A face with a url() source ships with the dashboard; the local()-only faces
+    // are script and quote aliases, not page fonts.
+    const shipped = [...readIndexCss().matchAll(/@font-face\s*\{([^}]*)\}/g)]
+      .filter(([, block]) => block.includes('url('))
+      .map(([, block]) => /font-family:\s*['"]?([^'";]+?)['"]?\s*;/.exec(block)?.[1])
+    expect([...new Set(shipped)].sort()).toEqual([...BUNDLED_WEB_FONT_FAMILIES].sort())
   })
 })

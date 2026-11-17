@@ -155,6 +155,12 @@ async def test_the_website_fixture_holds_the_rows_the_handlers_produce(wheel):
     assert produced["missing"]["released"].get("code") == "app_released"
     assert "code" not in produced["missing"]["not_installed"]
     assert (manager.app_dir(NAME) / "data").is_dir()
+    # The adopting update stores the approved set in the protected store, so an
+    # adopted row reports it stored; a built-in row still on its first record
+    # does not.
+    stored = {name: row["approvedGrantsStored"] for name, row in produced["detail"].items()}
+    assert stored["adopted"] is True and stored["adopted_host_too_old"] is True
+    assert stored["staged"] is False
     expected = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     assert produced == expected, (
         f"{_FIXTURE.name} no longer matches what /api/apps answers; replace it with:\n"

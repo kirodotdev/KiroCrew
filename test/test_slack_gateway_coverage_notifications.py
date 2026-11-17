@@ -269,6 +269,95 @@ class TestTaskNotify:
         orch.slack.post_message.assert_not_awaited()
         assert ds.notify.call_args.args == ("taskrunner", "Task 3 requires approval", "run it?")
 
+    def _origin_tab(self, tmp_path):
+        """A real dashboard with the chat tab a run was started from, and the sink."""
+        orch = _make_orchestrator()
+        ds = real_dashboard_state(tmp_path)
+        orch.dashboard_state = ds
+        orch._deliver_channel_reply = AsyncMock(return_value=False)
+        slot = ds.get_or_create_slot("chat-1")
+        slot.append("user", "please run my stand-up spec")
+        return orch, ds, slot, self._capture(orch)
+
+    @staticmethod
+    def _run_notices(slot) -> list[dict]:
+        return [
+            m for m in slot.messages if (m.get("meta") or {}).get("kind") == "taskrunner_notice"
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "[standup] 💀 Task 1: process died",
+            "[standup] 💀 Watchdog: ACP process died",
+            "[standup] ⏸️ Run not auto-resumed",
+            "[standup] ▶️ Resumed after a gateway restart",
+        ],
+    )
+    async def test_a_death_or_restart_notice_reaches_the_tab_that_started_the_run(
+        self, tmp_path, title
+    ):
+        orch, ds, slot, notify = self._origin_tab(tmp_path)
+
+        await notify(title, "Recovering (1/2)", "standup_1", session_key="dashboard:chat-1")
+
+        rows = self._run_notices(slot)
+        assert [(r["role"], r["content"]) for r in rows] == [
+            ("assistant", f"{title}\nRecovering (1/2)")
+        ]
+        assert rows[0]["meta"]["task_id"] == "standup_1"
+        assert notes(ds) == [("taskrunner", title, "Recovering (1/2)")]  # the bell still has it
+        orch._deliver_channel_reply.assert_awaited_once_with(
+            "dashboard:chat-1", f"{title}\nRecovering (1/2)", caller="taskrunner"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_run_notice_stays_on_the_bell(self, tmp_path):
+        orch, ds, slot, notify = self._origin_tab(tmp_path)
+
+        await notify(
+            "[standup] ✅ Task 1/2",
+            "Read Taskei tasks",
+            "standup_1",
+            session_key="dashboard:chat-1",
+        )
+
+        assert self._run_notices(slot) == []
+        assert notes(ds) == [("taskrunner", "[standup] ✅ Task 1/2", "Read Taskei tasks")]
+        orch._deliver_channel_reply.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "[Investigate why the process died] ✅ Task 1/2",
+            "[Check what was not auto-resumed] 🚧 GATE Task 2 requires approval",
+        ],
+    )
+    async def test_a_run_named_like_a_death_notice_keeps_its_ordinary_notices_on_the_bell(
+        self, tmp_path, title
+    ):
+        orch, ds, slot, notify = self._origin_tab(tmp_path)
+
+        await notify(title, "Read Taskei tasks", "standup_1", session_key="dashboard:chat-1")
+
+        assert self._run_notices(slot) == []
+        assert notes(ds) == [("taskrunner", title, "Read Taskei tasks")]
+        # Only the approval branch's own delivery, never a second run-notice one.
+        callers = [c.kwargs.get("caller") for c in orch._deliver_channel_reply.await_args_list]
+        assert callers == ([None] if "requires approval" in title else [])
+
+    @pytest.mark.asyncio
+    async def test_a_conversation_no_tab_shows_gets_the_bell_only(self, tmp_path):
+        orch, ds, slot, notify = self._origin_tab(tmp_path)
+
+        title = "[standup] 💀 Task 1: process died"
+        await notify(title, "Recovering (1/2)", "standup_1", session_key="dashboard:chat-gone")
+
+        assert self._run_notices(slot) == []
+        assert notes(ds) == [("taskrunner", title, "Recovering (1/2)")]
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # _channel_transport_permitted — audit-failure and fail-closed branches

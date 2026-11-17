@@ -96,6 +96,23 @@ def test_eligible_folders_skips_hidden_unnamed_and_idless() -> None:
     assert [f["id"] for f in fs._eligible_folders(state)] == ["keep"]
 
 
+def test_eligible_folders_skips_a_bots_home_and_its_subfolders() -> None:
+    """Only the Bot files a chat into its home, so the card's Move is refused there.
+
+    A suggestion of that folder (or of one inside it) could never be taken, so it
+    is never offered.
+    """
+    state = _state(
+        [
+            {"id": "keep", "name": "Keep", "order": 0},
+            {"id": "home", "name": "Conductor", "order": 1, "mate_home": "member-conductor"},
+            {"id": "sub", "name": "Round", "order": 2, "parent_id": "home"},
+            {"id": "deep", "name": "Workers", "order": 3, "parent_id": "sub"},
+        ]
+    )
+    assert [f["id"] for f in fs._eligible_folders(state)] == ["keep"]
+
+
 def test_eligible_folders_caps_the_list() -> None:
     state = _state([{"id": f"f{i}", "name": f"F{i}", "order": i} for i in range(200)])
     assert len(fs._eligible_folders(state)) == fs._MAX_FOLDERS
@@ -107,7 +124,7 @@ def test_eligible_folders_caps_the_list() -> None:
 def test_folder_sample_titles_caps_per_folder_and_keeps_newest() -> None:
     """list_sessions() is newest-first, so the cap keeps the most recent titles."""
     sessions = [{"folder_id": "a", "title": f"T{i}"} for i in range(10)]
-    state = _state([], log=SimpleNamespace(list_sessions=lambda: sessions))
+    state = _state([], log=SimpleNamespace(list_sessions_indexed=lambda: sessions))
     samples = fs._folder_sample_titles(state)
     assert samples["a"] == [f"T{i}" for i in range(fs._MAX_SAMPLES_PER_FOLDER)]
 
@@ -119,7 +136,7 @@ def test_folder_sample_titles_ignores_unfiled_and_untitled() -> None:
         {"folder_id": "a", "title": "   "},
         {"folder_id": "a", "title": "Real"},
     ]
-    state = _state([], log=SimpleNamespace(list_sessions=lambda: sessions))
+    state = _state([], log=SimpleNamespace(list_sessions_indexed=lambda: sessions))
     assert fs._folder_sample_titles(state) == {"a": ["Real"]}
 
 
@@ -138,14 +155,14 @@ def test_archived_scan_excludes_private_sessions(mode: str) -> None:
         {"folder_id": "a", "title": "SECRET private topic", "memory_mode": mode},
         {"folder_id": "a", "title": "Public topic", "memory_mode": "persistent"},
     ]
-    state = _state([], log=SimpleNamespace(list_sessions=lambda: sessions))
+    state = _state([], log=SimpleNamespace(list_sessions_indexed=lambda: sessions))
     assert fs._folder_sample_titles(state) == {"a": ["Public topic"]}
 
 
 def test_archived_scan_treats_missing_memory_mode_as_persistent() -> None:
     """Old sessions predate the marker; excluding them would empty the grounding."""
     sessions = [{"folder_id": "a", "title": "Legacy"}]
-    state = _state([], log=SimpleNamespace(list_sessions=lambda: sessions))
+    state = _state([], log=SimpleNamespace(list_sessions_indexed=lambda: sessions))
     assert fs._folder_sample_titles(state) == {"a": ["Legacy"]}
 
 
@@ -174,7 +191,9 @@ def test_live_slot_titles_excludes_self_and_unfiled() -> None:
     slots = {
         "me": SimpleNamespace(key="me", folder_id="a", title="Mine", memory_mode="persistent"),
         "sib": SimpleNamespace(key="sib", folder_id="a", title="Sibling", memory_mode="persistent"),
-        "loose": SimpleNamespace(key="loose", folder_id="", title="Loose", memory_mode="persistent"),
+        "loose": SimpleNamespace(
+            key="loose", folder_id="", title="Loose", memory_mode="persistent"
+        ),
     }
     titles = fs._live_slot_titles(_state([], slots=slots), exclude_key="me")
     assert titles == {"a": ["Sibling"]}
@@ -254,7 +273,7 @@ def test_build_prompt_numbers_folders_and_marks_empty_ones() -> None:
         labels=["Kiro Crew › i18n", "Errands"],
         samples=[["Pseudolocale gate", "Catalog sync"], []],
     )
-    assert "1. Kiro Crew › i18n — contains: \"Pseudolocale gate\"; \"Catalog sync\"" in prompt
+    assert '1. Kiro Crew › i18n — contains: "Pseudolocale gate"; "Catalog sync"' in prompt
     assert "2. Errands — (no sessions yet)" in prompt
     assert "Fix the render gate flake" in prompt
     # The NONE escape must always be offered, or the model is forced to guess.
@@ -350,8 +369,8 @@ def test_none_reply_delivers_nothing() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"folder_id": "already"},   # already filed
-        {"suggested": True},        # one shot already spent
+        {"folder_id": "already"},  # already filed
+        {"suggested": True},  # one shot already spent
         {"memory_mode": "temporary"},  # blank-slate session
     ],
 )
@@ -368,6 +387,15 @@ def test_no_folders_means_no_call() -> None:
     assert _run(state, slot) == []
     assert rec.sent == []
     # Nothing was offered, so the slot keeps its shot for a later titling.
+    assert slot._folder_suggested is False
+
+
+def test_only_a_bots_home_means_no_call_and_no_card() -> None:
+    slot = _Slot()
+    home = [{"id": "home", "name": "Conductor", "order": 0, "mate_home": "member-conductor"}]
+    state, rec = _suggest_state(home, slot)
+    assert _run(state, slot) == []
+    assert rec.sent == []
     assert slot._folder_suggested is False
 
 

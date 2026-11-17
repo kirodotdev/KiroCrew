@@ -145,3 +145,52 @@ def test_json_portable_rebuilds_only_what_it_must():
     assert dirty["drop"][0] == math.inf  # the caller's object is not mutated
     assert json_portable(-math.inf) is None
     assert json_portable({1.5: math.inf}) == {1.5: None}
+
+
+@pytest.mark.asyncio
+async def test_a_result_json_cannot_write_reaches_every_reader_as_its_text(tmp_path):
+    # Without json_plain a set makes every detail read a 500, and a tuple key fails
+    # every checkpoint, so a restart demotes the finished run to "interrupted".
+    script = (
+        'META = {"name": "non-json"}\n'
+        "async def workflow(ctx):\n"
+        '    return {"tags": {"a"}, "pairs": {(1, 2): "pair"}, "n": 1}\n'
+    )
+    expected = {"tags": "{'a'}", "pairs": {"(1, 2)": "pair"}, "n": 1}
+    svc = WorkflowService(sessions=None, store=WorkflowRunStore(base_dir=tmp_path))
+    rid = (await svc.start(script))["run_id"]
+
+    def _terminal():
+        snap = svc.status(rid)
+        return snap if snap and snap["status"] != "running" else None
+
+    snap = await async_wait_until(_terminal, describe=lambda: f"status: {svc.status(rid)}")
+    assert snap["status"] == "finished", snap
+    assert snap.get("error_code") is None, snap
+    # The status reads "finished" before the terminal checkpoint is written, so wait
+    # for the driver task, which awaits that write, before reloading the store.
+    task = svc.registry.get(rid).task
+    await async_wait_until(task.done, describe=lambda: f"status: {svc.status(rid)}")
+
+    body = _strict((await handlers._json_response_off_loop(svc.result(rid))).text)
+    assert body["result"] == expected
+    finished = [e for e in body["events"] if e["type"] == "run_finished"]
+    assert finished[0]["data"]["result"] == expected
+
+    reloaded = WorkflowService(sessions=None, store=WorkflowRunStore(base_dir=tmp_path))
+    after = reloaded.result(rid)
+    assert after["status"] == "finished", after
+    assert after["result"] == expected
+
+
+def test_json_plain_leaves_a_json_value_as_the_same_object():
+    from kiro_crew.strict_json import json_plain
+
+    clean = {"a": [1, 2.5, "s", None, True], "b": {"c": (1, 2)}, 3: "int key"}
+    assert json_plain(clean) is clean
+    assert json_plain({"r": math.inf}) == {"r": None}
+    assert json_plain({frozenset(): [{1}]}) == {"frozenset()": ["{1}"]}
+    colliding = {(1, 2): "tuple", "(1, 2)": "text"}
+    assert json_plain({"r": colliding}) == {"r": str(colliding)}
+    written_alike = {ValueError("1"): "error", 1: "number"}
+    assert json_plain({"r": written_alike}) == {"r": str(written_alike)}

@@ -40,7 +40,7 @@ const refusalBody = [
   'Blocked:',
   '  - Running: echo "== mypy =="; .venv/bin/mypy src/kiro_crew/config/loader.py src/kiro_crew/dashboard/handlers/core.py 2>&1 | tail -15; echo "== regenerate baseline =="; .venv/bin/python scripts/generate_config...: Blocked by security policy: .*env.*grep.*AWS.*',
   '',
-  'Decide how to proceed: use an allowed alternative (for a shell command, a read-only variant), a different tool, or — if the block is correct and you genuinely cannot proceed — say so and stop. Otherwise continue the task where you left off.',
+  'Decide how to proceed: use an allowed alternative that does not reach the same effect (for a shell command, a read-only variant; for a publish, a branch and a pull request), or — if none is left — say what you tried, give the exact step a person would run, and continue with what you can do without it. Otherwise continue the task where you left off.',
 ].join('\n')
 
 const t0 = Date.now() / 1000 - 900

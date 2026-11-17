@@ -57,14 +57,14 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
         # pins that list equal to the tree.
         ("metrics/feature_usage.py", "meetings"),
         # The data-home security floors name the app's stores by path: the startup
-        # sweep's owner-only store, the HIDDEN sandbox leaf and file-tool fence of the
-        # owner's edits, and the write fence of the owner's notes. These are the
-        # core's governance of the data home, which an app may not write for itself,
-        # and moving them behind a seam would change the sandbox scope.
+        # sweep's owner-only store, and the HIDDEN sandbox leaf and file-tool fence of
+        # the owner's edits. These are the core's governance of the data home, which
+        # an app may not write for itself, and moving them behind a seam would change
+        # the sandbox scope. The owner's notes are fenced by the app's own
+        # ``agentReadOnlyDirs`` declaration instead.
         ("owner_only_files.py", "apps/meetings/data"),
         ("sandbox_leaves.py", "apps/meetings/data/edits"),
         ("security/paths_lists.py", "apps/meetings/data/edits"),
-        ("security/paths_lists.py", "/apps/meetings/data/notes"),
         # The security-posture tables classify named files of the package, built-in
         # apps included: the core's audit of the app's code, not a reach into it.
         *(

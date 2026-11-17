@@ -194,7 +194,7 @@ async function main() {
     await picker.getByRole('radio', { name: 'Laya' }).click()
     await expectText(picker, /downloads 0\.8\s*GB of model files and about 1 GB of software/, 'the download note')
     if ((await picker.getByRole('textbox').count()) > 0) throw new Error('a port field is still offered')
-    await picker.getByRole('button', { name: 'Use this model' }).waitFor({ state: 'visible' })
+    await picker.getByRole('button', { name: 'Use Laya' }).waitFor({ state: 'visible' })
     await save(picker, 'decisions-local-not-downloaded-light')
     await page.context().close()
   }
@@ -270,7 +270,7 @@ async function main() {
   {
     const { page, picker } = await openPage(provider({ presets: [PLUMB, STRANDS, { ...LAYA, installed: true }] }))
     await picker.getByRole('radio', { name: 'Laya' }).click()
-    await expectText(picker, /Downloaded\. .* starts it when you press Use this model/, 'the ready note')
+    await expectText(picker, /Downloaded\. .* starts it when you press the button below/, 'the ready note')
     await save(picker, 'decisions-local-ready-light')
     await page.context().close()
   }

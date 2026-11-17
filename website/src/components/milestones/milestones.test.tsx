@@ -60,7 +60,7 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { store } from '../../store'
 import { setActiveSlot, setPendingInput } from '../../store/chatSlice'
-import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 import enManual from '../../i18n/locales/en.manual.json'
 import WelcomeView from '../WelcomeView'
 import { NavigationLeaveGuardProvider, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../NavigationLeaveGuard'
@@ -187,7 +187,6 @@ beforeEach(() => {
   })
 })
 afterEach(() => {
-  setPreviewFlag(PREVIEW_CREW_MODE, false)
   setPreviewFlag(PREVIEW_EXPLORE, false)
   act(() => closeMilestonesPanel())
   cleanup()
@@ -196,7 +195,6 @@ afterEach(() => {
 
 describe('tryToday', () => {
   it('takes three untried features, the same all day, rotating with the local date', () => {
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     const data = payload({}, ALL_OPEN())
     const day = (d: number) => tryToday(data, new Date(2026, 9, d, 9)).map(i => i.id)
     expect(day(30)).toHaveLength(3)
@@ -211,7 +209,6 @@ describe('tryToday', () => {
   })
 
   it('keeps the rest of the day\'s picks when one of them is finished', () => {
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     const items = ALL_OPEN()
     items[0].state = 'done'
     items[1].state = 'done'
@@ -235,7 +232,7 @@ describe('tryToday', () => {
     expect(gettingStarted(payload({}, items))).toEqual([])
   })
 
-  it('drops done, skipped and unavailable rows, and the Crew Mode row while its preview is off', () => {
+  it('drops done, skipped and unavailable rows', () => {
     const items = ALL_OPEN()
     items[0].state = 'done'
     items[1].state = 'skipped'
@@ -247,7 +244,6 @@ describe('tryToday', () => {
   })
 
   it('never picks pr-watch or crew-mode, even when they are the only rows left', () => {
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     const items = ALL_OPEN().map(i => (['pr-watch', 'crew-mode'].includes(i.id) ? i : { ...i, state: 'done' as const }))
     for (let d = 1; d <= 7; d++) expect(tryToday(payload({}, items), new Date(2026, 10, d))).toEqual([])
   })
@@ -744,7 +740,6 @@ describe('Explore panel', () => {
   })
 
   it('lists the longer features once the quick ones are done, instead of saying all tried', async () => {
-    setPreviewFlag(PREVIEW_CREW_MODE, true)
     const items = ALL_OPEN().map(i => (['pr-watch', 'crew-mode'].includes(i.id) ? i : { ...i, state: 'done' as const }))
     vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, items))
     renderWith(<MilestonesSheet />)
@@ -1072,12 +1067,12 @@ describe('a failed read', () => {
   })
 })
 
-describe('Crew Mode preview', () => {
-  it('leaves the Crew Mode row out of the ring while the preview is off', async () => {
+describe('conductor mode row', () => {
+  it('counts the conductor mode row in the ring with no preview turned on', async () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload({ features: { done: 1, total: 7 } }, ALL_OPEN()))
     renderWith(<MilestonesIndicator />)
     await screen.findByTestId('milestones-indicator')
-    expect(screen.getByTestId('milestones-ring').getAttribute('data-ratio')).toBe((1 / 6).toFixed(3))
+    expect(screen.getByTestId('milestones-ring').getAttribute('data-ratio')).toBe((1 / 7).toFixed(3))
   })
 })
 

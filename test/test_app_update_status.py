@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -49,7 +50,8 @@ def _catalog(monkeypatch, entries: list[dict[str, Any]], mtime: float | None = F
 
 def _external(monkeypatch, entries: list[dict[str, Any]], *, mtime: float | None = FIXED_MTIME):
     """Point the one configured registry's cache at *entries*."""
-    monkeypatch.setattr(update_status, "_effective_registries", lambda: [object()])
+    reg = SimpleNamespace(name="reg-a", repo="https://github.com/reg-a/index.git")
+    monkeypatch.setattr(update_status, "_effective_registries", lambda: [reg])
     monkeypatch.setattr(update_status, "_external_registry_cache_identity", lambda reg: "reg-a")
     monkeypatch.setattr(
         update_status, "_read_external_registry_cache", lambda name, ignore_ttl=False: entries
@@ -171,9 +173,11 @@ def _catalog_entry(name: str, version: str, *, url: str) -> dict[str, Any]:
 
 def _registries(monkeypatch, caches: dict[str, list[dict[str, Any]]]) -> None:
     """Configure one registry per key of *caches*, in order, each with its own index."""
-    regs = list(caches)
+    regs = [
+        SimpleNamespace(name=name, repo=f"https://github.com/{name}/index.git") for name in caches
+    ]
     monkeypatch.setattr(update_status, "_effective_registries", lambda: regs)
-    monkeypatch.setattr(update_status, "_external_registry_cache_identity", lambda reg: reg)
+    monkeypatch.setattr(update_status, "_external_registry_cache_identity", lambda reg: reg.name)
     monkeypatch.setattr(
         update_status,
         "_read_external_registry_cache",
@@ -251,6 +255,36 @@ class TestRecordedSource:
     def test_the_same_url_in_another_registry_does_not_match(self, monkeypatch, no_catalog):
         _registries(
             monkeypatch, {"reg-a": [{"name": "demo", "version": "9.0.0", "gitUrl": REG_B_URL}]}
+        )
+        assert self._update_for(_installed_from(REG_B_URL, "reg-b")) is None
+
+    def test_a_move_between_pinned_registries_is_answered_from_the_new_one(
+        self, monkeypatch, no_catalog
+    ):
+        from kiro_crew.apps import registry
+
+        monkeypatch.setattr(
+            registry,
+            "_pinned_registries",
+            lambda: [
+                SimpleNamespace(name=n, repo=f"https://forge/{n}.git") for n in ("reg-a", "reg-b")
+            ],
+        )
+        _registries(
+            monkeypatch, {"reg-a": [{"name": "demo", "version": "1.1.0", "gitUrl": REG_B_URL}]}
+        )
+        update = self._update_for(_installed_from(REG_B_URL, "reg-b"))
+        assert update is not None
+        assert update["latestVersion"] == "1.1.0"
+
+    def test_a_cache_file_tag_cannot_claim_another_registry(self, monkeypatch, no_catalog):
+        _registries(monkeypatch, {"reg-a": []})
+        monkeypatch.setattr(
+            update_status,
+            "_read_external_registry_cache",
+            lambda name, ignore_ttl=False: [
+                {"name": "demo", "version": "9.0.0", "gitUrl": REG_B_URL, "_registry": "reg-b"}
+            ],
         )
         assert self._update_for(_installed_from(REG_B_URL, "reg-b")) is None
 

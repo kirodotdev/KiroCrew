@@ -192,6 +192,61 @@ def list_recent_open_issues(
     return _run_gh_api(path, _ISSUE_POLL_JQ, timeout=timeout, paginate=False)
 
 
+# The crew wake sweep's comment read: the repository's newest conversation comments
+# (issues and PRs share the issue-comments endpoint on GitHub, so one call covers both).
+_REPO_COMMENT_JQ = (
+    '.[] | {id: (.id | tostring), number: (.issue_url | split("/") | last | tonumber), '
+    'is_pr: (.html_url | test("/pull/")), actor: (.user.login // ""), '
+    'created_at: .created_at, updated_at: .updated_at, body: ((.body // "")[:4000])'
+)
+
+
+def _repo_comment_jq(mention: str) -> str:
+    """:data:`_REPO_COMMENT_JQ`, plus ``asked``: whether the WHOLE body (before the
+    cut) addresses ``@mention``. ``gh --jq`` runs Go's regexp, so the pattern comes
+    from :func:`.mention_match.go_pattern`, embedded as a JSON string literal."""
+    # Imported here: every module-level name of this file is served by the facade.
+    from .mention_match import go_pattern
+
+    pattern = go_pattern(mention)
+    if not pattern:
+        return _REPO_COMMENT_JQ + "}"
+    test = json.dumps(pattern)
+    return _REPO_COMMENT_JQ + f', asked: ((.body // "") | ascii_downcase | test({test}))}}'
+
+
+def list_repo_comments_since(
+    owner: str,
+    repo: str,
+    since: str,
+    limit: int = 100,
+    *,
+    page: int = 1,
+    mention: str = "",
+    timeout: float = GH_TIMEOUT_SEC,
+) -> list[dict]:
+    """Issue and PR conversation comments updated at or after *since*, oldest UPDATE
+    first.
+
+    ONE page of ``issues/comments`` for the whole repository: GitHub files a PR's
+    conversation comments as issue comments, so this is every thread at once. Sorted
+    by update time because ``since`` filters by it: a caller paging by the newest
+    ``updated_at`` it saw always moves forward, even past a page of edited old
+    comments. Returns ``[{id, number, is_pr, actor, created_at, updated_at, body}]``
+    with ``body`` cut at 4000 characters, plus ``asked`` (the whole body addresses
+    ``@mention``) when *mention* is a plain login.
+    *since* is an ISO-8601 time; *page* reads on through a tie wider than one page.
+    """
+    lim = max(1, min(int(limit), 100))
+    path = (
+        f"repos/{owner}/{repo}/issues/comments?sort=updated&direction=asc&per_page={lim}"
+        f"&page={max(1, int(page))}"
+    )
+    if since:
+        path += f"&since={quote(str(since), safe='')}"
+    return _run_gh_api(path, _repo_comment_jq(mention), timeout=timeout, paginate=False)
+
+
 # The repo picker's list: repos the authenticated user personally CONTRIBUTED
 # to recently, newest contribution first.
 #

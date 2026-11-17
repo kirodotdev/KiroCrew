@@ -30,15 +30,18 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import _facade_mirror, mcp_core
 from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import spawn_list, spawn_status
 from kiro_crew.mcp_tools.spawn_parts.session_memory import session_memory_lines
 from kiro_crew.mcp_tools.spawn_parts.wave import _SA_ERROR_MAX_CHARS, spawn_sub_agents
 from kiro_crew.spawn_label import normalize_spawn_label
-from kiro_crew.subagent import (
+from kiro_crew.subagent import (  # noqa: F401 - the last two are read by spawn_parts.schemas
     AGENT_INTERNAL_CODE,
     AGENT_NOT_AVAILABLE_CODE,
     AGENT_NOT_FOUND_CODE,
+    agent_matches_allowlist,
+    parent_spawn_allowlists,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE
@@ -111,6 +114,11 @@ def _collapse_effort_verdicts(
 class _SpawnRunStep(DeferredTool):
     """Submit one task per pool step, then return the background-run receipt."""
 
+    #: Seconds between two heartbeats while the batch is submitted: the session
+    #: keepalive, naming this call, restarts its silence timer on the ACP side.
+    #: Each is bounded like a lost report, since it shares the step's thread.
+    KEEPALIVE_SECS = 30.0
+
     def __init__(
         self,
         *,
@@ -131,6 +139,7 @@ class _SpawnRunStep(DeferredTool):
         self._unsubmitted_closed = False
         self.phase = "submit"
         self.next_due = mcp_core.time.monotonic()
+        self.next_ping = self.next_due + self.KEEPALIVE_SECS
 
     def _close_unsubmitted(self) -> None:
         """Reconcile every task this call never posted, exactly once.
@@ -158,6 +167,17 @@ class _SpawnRunStep(DeferredTool):
         return self.next_due
 
     def step(self) -> str | None:
+        now = mcp_core.time.monotonic()
+        if now >= self.next_ping:
+            self.next_ping = now + self.KEEPALIVE_SECS
+            try:
+                mcp_core._post(
+                    "/api/session-keepalive",
+                    heartbeat_fields(self.phase),
+                    timeout=_LOST_REPORT_TIMEOUT_SECS,
+                )
+            except Exception:  # noqa: BLE001 - keepalive is best-effort
+                pass
         if self._submit_index < self.task_count:
             self._submit_one(self._submit_index)
             self._submit_index += 1
@@ -197,7 +217,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     # Support both single task and batch tasks. A ``tasks`` entry is a prompt
     # string or an object carrying per-task overrides; both
     # normalise to (prompt, overrides) here so the dispatch loop has one shape.
-    task_overrides: list[dict[str, str]] = []
+    task_overrides: list[dict[str, Any]] = []
     if tasks and isinstance(tasks, list):
         task_list = []
         for t in tasks:
@@ -206,7 +226,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
                 if not prompt.strip():
                     continue
                 task_list.append(prompt)
-                task_overrides.append({k: v for k, v in t.items() if k != "task" and v})
+                # An explicit ``light: false`` is a value of its own: it overrides
+                # a batch-wide ``light: true`` for this task.
+                task_overrides.append(
+                    {k: v for k, v in t.items() if k != "task" and (v or v is False)}
+                )
             elif isinstance(t, str) and t.strip():
                 task_list.append(t)
                 task_overrides.append({})
@@ -249,6 +273,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     backend = args.get("backend") or ""
     label = normalize_spawn_label(args.get("label"))
     keep = bool(args.get("keep"))
+    silent = args.get("silent") is True
+    light = args.get("light") is True
     # Context scope: absent ⇒ true, so a parent that passes nothing gets the
     # same context a normal session would.
     inc_memory = args.get("include_memory", True) is not False
@@ -341,6 +367,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
         t_effort = over.get("reasoning_effort") or reasoning_effort
         t_backend = over.get("backend") or backend
         t_label = normalize_spawn_label(over.get("label")) or label
+        t_light = over["light"] if isinstance(over.get("light"), bool) else light
         if a in refused_agents:
             # Short line on purpose: the full roster is already on the first
             # refusal above, and repeating it once per remaining member would
@@ -370,8 +397,14 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["backend"] = t_backend
         if t_label:
             body["label"] = t_label
+        if t_light:
+            body["light"] = True
         if keep:
             body["keep"] = True
+        if silent:
+            # Forwarded, not just accepted: a schema field the handler drops
+            # makes the documented flag a silent no-op (the `crew` rule above).
+            body["silent"] = True
         if not inc_memory:
             body["include_memory"] = False
         if not inc_lessons:
@@ -432,6 +465,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             effort_pendings.append((str(d.get("id", "?")), (t_effort, str(d["effort_pending"]))))
         if d.get("runtime_note"):
             runtime_notes.append((str(d.get("id", "?")), ("", str(d["runtime_note"]))))
+        # What a ``light`` flag did, or why it did nothing: the gateway words both.
+        for light_key in ("light", "warning"):
+            if isinstance(d.get(light_key), str) and d[light_key]:
+                runtime_notes.append((str(d.get("id", "?")), ("", d[light_key][:300])))
         if d.get("failover_from"):
             # The run is not on the backend this call named: say where it went.
             runtime_notes.append(
@@ -542,7 +579,13 @@ def _spawn_run_receipt(
         started = [m for m in members if m[0] not in queued_reasons]
         deferred = [m for m in members if m[0] in queued_reasons]
         if started:
-            if parent_session:
+            if parent_session and _completion_ends_in_bell(parent_session):
+                # No completion event and no polling advice: the
+                # closing receipt line says what this caller should do.
+                spawn_lines.append(
+                    f"Spawned {len(started)} subagent(s). Completion events will not reach this caller:"
+                )
+            elif parent_session:
                 spawn_lines.append(
                     f"Spawned {len(started)} subagent(s). Results will arrive as completion events:"
                 )
@@ -610,7 +653,7 @@ def _spawn_run_receipt(
             "The gateway may have accepted these tasks before the response failed. "
             "Do not retry automatically. Check spawn_list"
         )
-        if parent_session:
+        if parent_session and not _completion_ends_in_bell(parent_session):
             guidance += " and wait for completion events"
         guidance += (
             ". spawn_list lists queued spawns too, but a submission still in flight "
@@ -619,7 +662,9 @@ def _spawn_run_receipt(
         )
         spawn_lines.append(guidance)
     if agent_ids:
-        if parent_session:
+        if parent_session and _completion_ends_in_bell(parent_session):
+            spawn_lines.append("\n" + _SUBAGENT_RECEIPT)
+        elif parent_session:
             if can_work:
                 spawn_lines.append(
                     "\nAdvance only your ready, non-overlapping parent work for a short bounded "
@@ -647,6 +692,30 @@ def _spawn_run_receipt(
     return "\n".join(spawn_lines)
 
 
+#: The receipt a sub-agent caller gets once its children are dispatched. A
+#: completion whose parent is a ``subagent:`` session has no conversation to be
+#: injected into: the gateway rings the bell only (``_finish_subagent_cron_or_notify``),
+#: so nothing resumes a sub-agent that ended its turn to wait. It must not
+#: be told to poll either: a ``spawn_run`` parent keeps its slot (``taskq_child_registered``),
+#: so a polling parent can starve its own children. Only ``spawn_sub_agents`` yields it.
+_SUBAGENT_RECEIPT = (
+    "This caller is a subagent: [Subagent completion event] messages will not reach "
+    "it, and nothing resumes it after its turn ends. spawn_run is for starting "
+    "parallel work while you do work of your own. To collect a child's result in "
+    "this turn, use spawn_sub_agents, which waits for it without holding your slot. "
+    "Dispatch is not completion."
+)
+
+
+def _completion_ends_in_bell(parent_session: str) -> bool:
+    """Whether a child's completion is delivered to *parent_session* by the bell alone.
+
+    Mirrors the routing in ``subagent_injection``: a ``subagent:`` parent has no
+    tab, channel or cron session to inject into.
+    """
+    return parent_session.startswith("subagent:")
+
+
 def spawn_continue(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SPAWN_CONTINUE_SCHEMA)
     conv = (args.get("conversation") or "").strip()
@@ -664,6 +733,16 @@ def spawn_continue(name: str, args: dict[str, Any]) -> str:
     d = mcp_core._post(f"/api/spawn/{conv}/continue", body)
     if d.get("error"):
         return f"Error: {d['error']}"
+    if _completion_ends_in_bell(parent_session):
+        # spawn_sub_agents cannot wait on a continued run (no conversation
+        # parameter), so this caller is pointed at the run's own record.
+        run_id = d.get("id", "?")
+        return (
+            f"Continued conversation {conv} as run {run_id}. This caller is a subagent: "
+            "[Subagent completion event] messages will not reach it, and nothing resumes "
+            "it after its turn ends. Read the result with "
+            f"spawn_status(agent_id={run_id!r}) once the run has finished."
+        )
     return (
         f"Continued conversation {conv} as run {d.get('id', '?')}. "
         "The result will arrive as a [Subagent completion event] — "
@@ -882,10 +961,13 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why  # noqa: F401
     from kiro_crew.mcp_tools.spawn_parts.schemas import (  # noqa: F401
+        _CORE,
         _MAX_ROSTER_NAMES,
+        _SPAWN,
         _agent_roster_hint,
         _parent_allowlist_filter,
         _parent_template_for_roster,
+        _subagent_reader,
         schemas,
     )
     from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
@@ -896,6 +978,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         render_session_memory,
     )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
+        _HELD_READS,
         _OWNER_UNRESOLVED_PREFIX,
         _TASK_STORE_UNAVAILABLE_CODE,
         RESUME_HOLD_SECS,
@@ -906,24 +989,28 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SubAgentsStep,
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
+    from kiro_crew import subagent_standalone  # noqa: F401
+    from kiro_crew.agent_discovery import list_agents  # noqa: F401
     from kiro_crew.constants import (  # noqa: F401
         DEFAULT_SUBAGENT_MAX_TURNS,
         LEAKED_TOOL_CALL_NOTE,
         NO_TOOL_CALLS_NOTE,
+        UNVERIFIED_MODEL_NOTE,
     )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
+    from kiro_crew.mcp_core_parts.identity import _resolve_session_key  # noqa: F401
+    from kiro_crew.mcp_listing_relay import built_for_a_tool_server  # noqa: F401
+    from kiro_crew.mcp_shared import DEFERRED_STEP_WORKERS  # noqa: F401
+    from kiro_crew.mcp_tools.catalog import loaded_binding  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
     from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401
     from kiro_crew.subagent import (  # noqa: F401
-        agent_matches_allowlist,
         format_subagent_usage,
         is_internal_agent_spec,
-        parent_spawn_allowlists,
         visible_agent_names,
     )
-    from kiro_crew.subagent_persistence import agent_dir_for_display  # noqa: F401
     from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401

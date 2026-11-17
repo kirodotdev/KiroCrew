@@ -21,12 +21,27 @@ import hashlib
 import hmac
 import json
 import os
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.platform_compat import file_lock, restrict_to_owner
+from kiro_crew.secrets import items as _items
+from kiro_crew.secrets.items import ITEM_TYPE_SECRET
+
+
+def _note_reads(names: Iterable[str]) -> None:
+    """Audit a read of each stored secret in *names* (:mod:`kiro_crew.secrets.read_audit`).
+
+    Imported here rather than at module level: the MCP tool listing loads this
+    module, and its package import count has a ceiling.
+    """
+    from kiro_crew.secrets.read_audit import note_reads as _note
+
+    _note(names)
 
 
 class SecretValue:
@@ -66,6 +81,25 @@ def entry_revision(entry: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def entry_item_type(entry: Any) -> str:
+    """The item type a stored entry carries; ``secret`` when it carries none.
+
+    The type sits in the entry in the clear so a listing can group items
+    without decrypting, and it is bound into the ciphertext's AAD so a
+    hand-edit of that field makes the entry fail to decrypt rather than be
+    read as another type.
+    """
+    if isinstance(entry, dict):
+        item_type = entry.get("type")
+        if isinstance(item_type, str) and item_type:
+            return item_type
+    return ITEM_TYPE_SECRET
+
+
+#: How many names :meth:`SecretVault.add_item_under_free_name` tries before it gives up.
+_FREE_NAME_TRIES = 100
+
+
 class SecretVault:
     """Encrypted per-entry vault backed by a local key file.
 
@@ -84,29 +118,238 @@ class SecretVault:
         self._key_path = self._config_dir / ".vault_key"
         self._lock = asyncio.Lock()
 
+    def _store_exists(self) -> bool:
+        """Whether ``secrets.enc`` exists. Raises when that cannot be determined.
+
+        ``Path.exists`` answers False for a file it may not look at (always on
+        CPython 3.14, which delegates to ``os.path.exists``), so an unreadable
+        store -- macOS "Operation not permitted" -- read as empty and a delete
+        over it was a silent no-op that let a sign-out report success while the
+        credential stayed on disk. Only a missing file is absent.
+        """
+        try:
+            os.stat(self._store_path)
+        except FileNotFoundError:
+            return False
+        return True
+
     # ── Public API ──
 
     def get(self, name: str) -> Optional[SecretValue]:
-        """Retrieve a secret by name, or None if not stored."""
+        """Retrieve a secret by name, or None if not stored.
+
+        On a typed item this is the type's DEFAULT field (a login's password, a
+        note's text), so a consumer that reads ``secret://NAME`` keeps working
+        when the entry under that name becomes a login. The full item is
+        :meth:`get_items_many`.
+        """
         entries = self._load_entries()
         if name not in entries:
             return None
         key = self._get_or_create_key()
-        plaintext = self._decrypt_entry(name, entries[name], key)
-        return SecretValue(plaintext.decode("utf-8"))
+        value = self._default_field(name, entries[name], key)
+        _note_reads((name,))
+        return value
 
     def get_with_revision(self, name: str) -> Optional[tuple[SecretValue, str]]:
         """The secret and its :func:`entry_revision`, read from one snapshot, or None.
 
         Pairs with :meth:`delete_if_revision`: a reader that later deletes what it
         read deletes only that entry, never one another writer stored since.
+        Same default-field rule as :meth:`get`.
         """
         entries = self._load_entries()
         if name not in entries:
             return None
         entry = entries[name]
-        plaintext = self._decrypt_entry(name, entry, self._get_or_create_key())
-        return SecretValue(plaintext.decode("utf-8")), entry_revision(entry)
+        value = self._default_field(name, entry, self._get_or_create_key())
+        _note_reads((name,))
+        return value, entry_revision(entry)
+
+    def _default_field(self, name: str, entry: Any, key: bytes) -> SecretValue:
+        item_type = entry_item_type(entry)
+        plaintext = self._decrypt_entry(name, entry, key).decode("utf-8")
+        return SecretValue(_items.resolve_field(item_type, plaintext, None))
+
+    # ── Typed items ──
+
+    def get_items_many(self, names: list[str]) -> dict[str, Optional[tuple[str, SecretValue]]]:
+        """``(item_type, plaintext)`` per requested name from ONE store snapshot.
+
+        The typed sibling of :meth:`get_many`, with the same cost model (one
+        store load, one key read, lock-free) and the same per-name found/missing
+        semantics. The plaintext is the whole encrypted content: the value of a
+        ``secret``, the JSON object of a ``login`` or ``note`` (decode it with
+        :func:`kiro_crew.secrets.items.decode_item`).
+        """
+        entries = self._load_entries()
+        result: dict[str, Optional[tuple[str, SecretValue]]] = {}
+        key: Optional[bytes] = None
+        for name in names:
+            if name not in entries:
+                result[name] = None
+                continue
+            entry = entries[name]
+            if key is None:
+                key = self._get_or_create_key()
+            plaintext = self._decrypt_entry(name, entry, key)
+            result[name] = (entry_item_type(entry), SecretValue(plaintext.decode("utf-8")))
+        _note_reads(name for name, found in result.items() if found is not None)
+        return result
+
+    def get_items_readable(
+        self, names: list[str]
+    ) -> tuple[dict[str, tuple[str, SecretValue]], set[str]]:
+        """Like :meth:`get_items_many`, but an entry that fails to decrypt is
+        returned in the second value instead of raising.
+
+        Only a per-entry failure lands there (a tag that does not verify, a
+        malformed entry). The key is read once, first, so a missing or
+        unreadable key file raises as it does everywhere else: that is one fix
+        (restore the key) for every entry, never a reason to call each one
+        unreadable. So does a key that opens no stored entry at all. A name
+        not stored is in neither value.
+        """
+        from cryptography.exceptions import InvalidTag  # see _encrypt_entry
+
+        entries = self._load_entries()
+        found: dict[str, tuple[str, SecretValue]] = {}
+        unreadable: set[str] = set()
+        wanted = [name for name in names if name in entries]
+        if not wanted:
+            return found, unreadable
+        key = self._get_or_create_key()
+        # A key of the wrong length (a truncated restore) fails AESGCM for every
+        # entry with a ValueError the loop below would read as per-entry damage.
+        if len(key) != 32:
+            raise ValueError(
+                "Vault key file has the wrong length. Restore the original .vault_key file."
+            )
+
+        def opens(name: str) -> bool:
+            try:
+                self._decrypt_entry(name, entries[name], key)
+            except (InvalidTag, ValueError):
+                return False
+            return True
+
+        for name in wanted:
+            entry = entries[name]
+            try:
+                plaintext = self._decrypt_entry(name, entry, key).decode("utf-8")
+            except (InvalidTag, ValueError):
+                unreadable.add(name)
+                continue
+            found[name] = (entry_item_type(entry), SecretValue(plaintext))
+        # When no wanted entry opened, a different key of the right length
+        # fails them all the same way; only an entry that still opens under
+        # this key shows the failures are per-entry damage.
+        if not found and not any(opens(name) for name in entries if name not in unreadable):
+            raise ValueError(
+                "Vault key does not open any stored entry. Restore the original .vault_key file."
+            )
+        _note_reads(found)
+        return found, unreadable
+
+    def list_items(self) -> list[dict[str, str]]:
+        """Every stored entry's ``name``, ``type``, ``revision`` and, when recorded, ``updated_at``.
+
+        Read without decrypting: all four sit in the clear in the store. Content
+        a listing may show (a login's username and URLs) is
+        :func:`kiro_crew.secrets.items.public_view` over :meth:`get_items_many`.
+        """
+        out: list[dict[str, str]] = []
+        for name, entry in self._load_entries().items():
+            row = {"name": name, "type": entry_item_type(entry), "revision": entry_revision(entry)}
+            updated_at = entry.get("updated_at") if isinstance(entry, dict) else None
+            if isinstance(updated_at, str) and updated_at:
+                row["updated_at"] = updated_at
+            out.append(row)
+        return out
+
+    async def set_item_with_revision(
+        self, name: str, item_type: str, fields: Mapping[str, Any]
+    ) -> str:
+        """Store a typed item under *name*; return the :func:`entry_revision` written.
+
+        When *name* already holds an item of the same type, each
+        :data:`~kiro_crew.secrets.items.KEPT_WHEN_ABSENT` field *fields* leaves
+        out keeps its stored value; that read and the write happen under the
+        store's lock, so no other write lands between them. The result is then
+        validated and canonicalized by :func:`kiro_crew.secrets.items.validate_item`
+        (an invalid item raises :class:`~kiro_crew.secrets.items.ItemError` and
+        nothing is written). A ``secret`` item is stored exactly as
+        :meth:`set_with_revision` stores a value, so the two write paths produce
+        the same entry.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(self._set_item_sync, name, item_type, dict(fields))
+
+    def _set_item_sync(self, name: str, item_type: str, fields: dict[str, Any]) -> str:
+        from cryptography.exceptions import InvalidTag  # see _encrypt_entry
+
+        written: dict[str, str] = {}
+
+        def _mutate(entries: dict) -> dict:
+            merged = fields
+            previous = entries.get(name)
+            if previous is not None and entry_item_type(previous) == item_type:
+                try:
+                    stored = self._decrypt_entry(name, previous, self._get_or_create_key())
+                    prior = _items.decode_item(item_type, stored.decode("utf-8"))
+                except (InvalidTag, ValueError):
+                    # An unreadable stored item has nothing to keep: the write
+                    # replaces it with what the request carries.
+                    prior = {}
+                merged = _items.keep_absent_fields(item_type, fields, prior)
+            plaintext = _items.encode_item(item_type, merged)
+            entry = self._encrypt_entry(name, plaintext.encode("utf-8"), item_type)
+            written.update(entry)
+            return {**entries, name: entry}
+
+        self._write_store(_mutate)
+        return entry_revision(written)
+
+    async def add_item_under_free_name(
+        self,
+        base: str,
+        item_type: str,
+        fields: Mapping[str, Any],
+        reserved: Callable[[str], bool] = lambda _name: False,
+    ) -> str:
+        """Store a NEW typed item under *base*, else ``base (2)``, ``base (3)``, ...
+
+        Never overwrites: the first name no entry holds and *reserved* does not
+        refuse is picked inside the store's cross-process lock, so a writer that
+        took *base* a moment earlier keeps it. The item is validated before the
+        lock is taken (an invalid one raises
+        :class:`~kiro_crew.secrets.items.ItemError` and nothing is written).
+        Raises ``ValueError`` and writes nothing when no free name is found in
+        :data:`_FREE_NAME_TRIES` tries. Returns the name used.
+        """
+        plaintext = _items.encode_item(item_type, fields).encode("utf-8")
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._add_item_sync, base, item_type, plaintext, reserved
+            )
+
+    def _add_item_sync(
+        self, base: str, item_type: str, plaintext: bytes, reserved: Callable[[str], bool]
+    ) -> str:
+        used: list[str] = []
+
+        def _mutate(entries: dict) -> dict:
+            for n in range(1, _FREE_NAME_TRIES + 1):
+                name = base if n == 1 else f"{base} ({n})"
+                if name not in entries and not reserved(name):
+                    break
+            else:
+                raise ValueError("no free vault name")
+            used.append(name)
+            return {**entries, name: self._encrypt_entry(name, plaintext, item_type)}
+
+        self._write_store(_mutate)
+        return used[0]
 
     def get_many(self, names: list[str]) -> dict[str, Optional[SecretValue]]:
         """Batch-retrieve secrets, loading the store and key exactly once.
@@ -144,8 +387,8 @@ class SecretVault:
             entry = entries[name]
             if key is None:
                 key = self._get_or_create_key()
-            plaintext = self._decrypt_entry(name, entry, key)
-            result[name] = SecretValue(plaintext.decode("utf-8"))
+            result[name] = self._default_field(name, entry, key)
+        _note_reads(name for name, found in result.items() if found is not None)
         return result
 
     async def set(self, name: str, value: str) -> None:
@@ -162,6 +405,20 @@ class SecretVault:
         in this process (each acquisition uses its own fd).
         """
         self._set_sync(name, value)
+
+    def set_many_sync(self, values: dict[str, str]) -> None:
+        """Store every ``name -> value`` in *values* in ONE store write, synchronously.
+
+        Either all land or none does: entries that must agree with each other
+        (an OAuth client and the token pair it issued) are never left half-replaced.
+        Same locking rationale as ``set_sync``.
+        """
+        self._write_store(
+            lambda entries: {
+                **entries,
+                **{n: self._encrypt_entry(n, v.encode("utf-8")) for n, v in values.items()},
+            }
+        )
 
     def delete_sync(self, name: str) -> None:
         """Remove a secret synchronously. No-op if it does not exist.
@@ -270,7 +527,7 @@ class SecretVault:
             return await asyncio.to_thread(self._delete_if_revision_sync, name, revision)
 
     def _delete_if_revision_sync(self, name: str, revision: str) -> bool:
-        if not self._store_path.exists():
+        if not self._store_exists():
             return False
         deleted = False
 
@@ -293,7 +550,7 @@ class SecretVault:
     def _delete_sync(self, name: str) -> None:
         # Early return when no store exists — prevents creating an empty
         # store (and hitting the mixed-key guard on a fresh vault).
-        if not self._store_path.exists():
+        if not self._store_exists():
             return
         self._write_store(lambda entries: {k: v for k, v in entries.items() if k != name})
 
@@ -386,7 +643,7 @@ class SecretVault:
                 return {k: v for k, v in entries.items() if k != name}
             return {**entries, name: dict(restored_entry)}
 
-        if not self._store_path.exists():
+        if not self._store_exists():
             return False
         self._write_store(_mutate)
         return restored
@@ -419,7 +676,12 @@ class SecretVault:
         Refuses to create a new key when secrets.enc already exists (prevents
         mixed-key vault from a restored backup without its key).
         """
-        if self._key_path.exists():
+        try:
+            os.stat(self._key_path)
+            key_exists = True
+        except FileNotFoundError:
+            key_exists = False
+        if key_exists:
             # Enforce restrictive permissions on every read (catches restored
             # backups or manual copies with wrong mode).
             restrict_to_owner(self._key_path)
@@ -427,7 +689,7 @@ class SecretVault:
 
         # Refuse to create a new key if a store already exists — that would
         # make existing entries undecryptable.
-        if self._store_path.exists():
+        if self._store_exists():
             raise ValueError(
                 f"Vault store exists at {self._store_path} but key is missing at "
                 f"{self._key_path}. Cannot create a new key without losing existing "
@@ -472,11 +734,22 @@ class SecretVault:
 
     # ── Crypto helpers ──
 
-    def _aad_for(self, name: str) -> bytes:
-        """Per-entry AAD = b'v1' + scope + NUL + name (prevents transplant)."""
-        return b"v1" + self._SCOPE.encode() + b"\x00" + name.encode()
+    def _aad_for(self, name: str, item_type: str = ITEM_TYPE_SECRET) -> bytes:
+        """Per-entry AAD = b'v1' + scope + NUL + name [+ NUL + type].
 
-    def _encrypt_entry(self, name: str, plaintext: bytes) -> dict[str, str]:
+        Binds the ciphertext to its name (no transplant between names) and, for
+        a typed item, to its type (no re-labelling a note as a login). A
+        ``secret`` keeps the original AAD so every entry stored before item
+        types existed decrypts unchanged.
+        """
+        aad = b"v1" + self._SCOPE.encode() + b"\x00" + name.encode()
+        if item_type != ITEM_TYPE_SECRET:
+            aad += b"\x00" + item_type.encode()
+        return aad
+
+    def _encrypt_entry(
+        self, name: str, plaintext: bytes, item_type: str = ITEM_TYPE_SECRET
+    ) -> dict[str, str]:
         # Imported HERE, not at module top. `kiro_crew.secrets` is reached from
         # the tool-approval hook's import chain (hooks.on_tool_call ->
         # slack.gateway -> autonudge -> irq -> cron_script -> secrets), so a
@@ -487,13 +760,21 @@ class SecretVault:
         key = self._get_or_create_key()
         aesgcm = AESGCM(key)
         nonce = os.urandom(12)
-        ct = aesgcm.encrypt(nonce, plaintext, self._aad_for(name))
-        return {"nonce": nonce.hex(), "ct": ct.hex()}
+        ct = aesgcm.encrypt(nonce, plaintext, self._aad_for(name, item_type))
+        entry = {"nonce": nonce.hex(), "ct": ct.hex()}
+        if item_type != ITEM_TYPE_SECRET:
+            # A ``secret`` entry keeps its original two-field shape: callers
+            # fingerprint entries by exact dict equality (set_if_absent /
+            # _compare_and_delete_sync), and the importer's rollback relies on it.
+            entry["type"] = item_type
+            entry["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return entry
 
     def _decrypt_entry(self, name: str, entry: dict[str, str], key: bytes) -> bytes:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # see _encrypt_entry
 
         aesgcm = AESGCM(key)
+        item_type = entry_item_type(entry)
         # A corrupt / hand-edited store can make ``entry`` any shape (a string,
         # a list, a dict missing ``nonce``/``ct``, or one whose values are not
         # valid hex). Guard the extraction so callers see the module's
@@ -510,13 +791,13 @@ class SecretVault:
             raise ValueError(
                 f"Vault store corrupt: an entry is malformed ({type(exc).__name__})."
             ) from None
-        return aesgcm.decrypt(nonce, ct, self._aad_for(name))
+        return aesgcm.decrypt(nonce, ct, self._aad_for(name, item_type))
 
     # ── Store I/O ──
 
     def _load_entries(self) -> dict[str, dict[str, str]]:
         """Load and decode the on-disk entry map (empty if no store yet)."""
-        if not self._store_path.exists():
+        if not self._store_exists():
             return {}
 
         raw = self._store_path.read_text(encoding="utf-8")

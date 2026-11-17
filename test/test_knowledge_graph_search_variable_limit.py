@@ -153,7 +153,7 @@ class TestGraphSearchVariableLimit:
         assert any(r["id"] == item for r in results)
 
     def test_small_neighbourhood_still_ranks_by_mention_count(self, store):
-        """The new form keeps the count ranking and the item_id tie-break."""
+        """The json_each form ranks items by mention count, highest first."""
         a = store.add_entity("Auth", "service")
         b = store.add_entity("JWT", "concept")
         store.add_entity_relation(a, b, "uses")

@@ -8,11 +8,11 @@ leak a credential nor break the endpoint.
 
 import json
 import os
-import shutil
-import tempfile
 import unittest
 
 import pytest
+
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class TestRedactionReachesNestedValues:
@@ -24,12 +24,13 @@ class TestRedactionReachesNestedValues:
     structure, so no shape passes content through untouched.
     """
 
-    # Assembled at runtime, never written as one literal: the redactor only fires
-    # on credential-SHAPED input (a plain sentinel passes through untouched, so the
-    # test would prove nothing), but a real key shape sitting in the source trips
-    # the internal-content-scan credential rules. Splitting it satisfies both — the
-    # value is key-shaped when the redactor sees it, and no line here matches.
-    SECRET = "glpat-" + "1234567890EXAMPLE"
+    # Built at runtime, never written as one literal: the redactor only fires on a
+    # token in its published format (a plain sentinel passes through untouched, so the
+    # test would prove nothing), but a real key shape sitting in the source trips the
+    # internal-content-scan credential rules. A generated GitHub token with a valid
+    # checksum satisfies both: it is a token when the redactor sees it, and no line
+    # here matches.
+    SECRET = github_classic(seed=31)
 
     def _leaks(self, obj) -> bool:
         return self.SECRET in repr(obj)
@@ -90,7 +91,7 @@ class TestNoFindingFieldIsExemptFromRedaction:
     still left alone: `_redact_deep` only touches strings.
     """
 
-    SECRET = "glpat-" + "1234567890EXAMPLE"  # split: see the sentinel note above
+    SECRET = github_classic(seed=32)  # built: see the sentinel note above
 
     def test_a_credential_in_line_is_redacted(self):
         from sage_lib import report
@@ -129,10 +130,15 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
 
     # Assembled at runtime: the scan reads source text, while the redactor only
     # fires on credential-shaped input.
-    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = github_classic(seed=33)
+
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -141,7 +147,6 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _plant(self, payload, run_id="run-a"):
         from sage_lib import report
@@ -237,10 +242,15 @@ class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
     """
 
     # Assembled at runtime so the scan sees no credential-shaped literal.
-    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = github_classic(seed=33)
+
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -249,7 +259,6 @@ class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _plant(self, run_id, payload, index=None):
         from sage_lib import report
@@ -336,10 +345,15 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
 
     # Assembled at runtime: the scan reads source text, the redactor only fires
     # on credential-shaped input.
-    _SENTINEL = "glpat-" + "IOSFODNN7EXAMPLE"
+    _SENTINEL = github_classic(seed=33)
+
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory for the data home."""
+        self._tmp_path = tmp_path
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._old_home = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -348,7 +362,6 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._old_home
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _plant(self, run_id, rows):
         from sage_lib import report

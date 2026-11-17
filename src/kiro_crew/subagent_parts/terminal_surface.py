@@ -181,12 +181,11 @@ async def settle_before_delete(
     # halves cannot come apart -- a route that wrote only one of them would
     # clear the card from live state and leave the fold still offering it.
     #
-    # Written BEFORE the pop, because the pop is the PUBLISH. With the write
-    # second, an unwritable store still popped the run and still answered
-    # "delivered", which the DELETE route reports as success -- and the card
-    # came back on the next reconnect with nothing to explain it. A failed
-    # write returns the retryable result this coroutine already uses above,
-    # leaving the run in the manager so the operator can dismiss it again.
+    # Written BEFORE the pop, because the pop is the PUBLISH: popping after a
+    # failed write would answer "delivered" (success to the DELETE route) and
+    # the card would come back on the next reconnect. A failed write returns
+    # the retryable result used above and leaves the run in the manager, so
+    # the operator can dismiss it again.
     #
     # The folder write is OFF the loop, because it is a synchronous file write
     # and this is a coroutine; its two falsy cases are NOT the same, since a

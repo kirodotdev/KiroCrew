@@ -12,6 +12,7 @@ import { addNotification } from '../../../store/notificationsSlice'
 import { mergeIntoDraft, setDraft } from '../../../utils/chatDrafts'
 import { consumeChatHandoff, handoffToChat, persistClaimedChatHandoffs, subscribeChatHandoff } from '../../../utils/errorReport'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../../../utils/navIntent'
+import { sendAsChallenge, takeChallengeAutoSend } from '../../../utils/channelChallengeSend'
 import { safeSetSessionItem } from '../../../utils/safeStorage'
 import { revealComposer } from '../composerFocus'
 import { uniqueNotificationTs } from './notificationTs'
@@ -520,7 +521,10 @@ export function useAutoSendIntake({
     const appLaunch = appLaunchSendRef.current
     autoSendRef.current = null
     appLaunchSendRef.current = null
-    send(txt, appLaunch?.slotKey, undefined, !!appLaunch)
+    const start = () => send(txt, appLaunch?.slotKey, undefined, !!appLaunch)
+    // A channel challenge link's prompt is already in its thread (`channelChallengeSend`).
+    if (takeChallengeAutoSend(autoSendRef, txt)) void sendAsChallenge(start)
+    else void start()
   }, [send, connected, autoSendTick, autoSendRef, appLaunchSendRef])
 
   // A browser hand-back note no parked agent op was waiting for:

@@ -23,6 +23,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional, Tuple
 
+from kiro_crew.constants import ENV_TRUTHY
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_parts.archetypes import (
     MODE_ALLOW,
@@ -57,6 +58,7 @@ logger = logging.getLogger("kiro_crew.platform.governance")
 MAX_DURATION_SECS = threading.TIMEOUT_MAX
 
 _POLICY_DISTRIBUTION_URL_ENV = "KIROCREW_POLICY_URL"
+_POLICY_DISTRIBUTION_CACHE_ONLY_ENV = "KIROCREW_POLICY_CACHE_ONLY"
 
 #: Named here only so the declared-source refusal can point at it; the engine owns it.
 _POLICY_DISTRIBUTION_HEADERS_ENV = "KIROCREW_POLICY_HEADERS"
@@ -82,7 +84,9 @@ class BootControls:
     """Policy-only boot constraints (not a governed scope; checked at startup)."""
 
     require_sandbox: bool = True
-    allow_terminal: bool = False
+    #: ``None`` when no policy tier states the key: the policy has no opinion and
+    #: ``dashboard.terminal.enabled`` alone decides. ``False`` refuses the terminal.
+    allow_terminal: Optional[bool] = None
     fail_closed: bool = True
 
 
@@ -135,7 +139,8 @@ class UpdatePins:
     # The release channel this fleet follows (one of :data:`UPDATE_CHANNELS`), in
     # place of the local ``$KIROCREW_HOME/channel`` file (RFC
     # crew-lts-edition, appendix row "Update channel"). Empty = unpinned:
-    # the local file decides, except an LTS build follows ``stable``.
+    # the local file decides. An LTS build follows ``lts`` whatever this
+    # says (RFC D11).
     channel: str = ""
     # The operator-authored shell commands for the command update provider. Their
     # PRESENCE is what enables the provider (there is no mechanism selector): when
@@ -601,9 +606,15 @@ class PolicyDistribution:
                     f"{sorted(_UNAVAILABLE_DISPOSITIONS)}"
                 )
 
+        # A cache-only child receives no source by design; it validates and adopts
+        # the gateway's cached policy without starting a fetch itself. Read with the
+        # same truthy rule as ``policy_distribution_source.cache_only``, so a value
+        # that does not turn cache-only mode on does not lift this refusal either.
         if (
             not source
             and not os.environ.get(_POLICY_DISTRIBUTION_URL_ENV, "").strip()
+            and os.environ.get(_POLICY_DISTRIBUTION_CACHE_ONLY_ENV, "").strip().lower()
+            not in ENV_TRUTHY
             # An LTS build supplies the source itself (RFC D2), so a block that
             # only tunes the cadence or staleness bound is not inert there.
             and not _is_lts()
@@ -740,6 +751,10 @@ class GovernanceCeiling:
     # Set per composition, never carried over: a refresh with no lower tier is False.
     # Read by ``redaction_switch.owner_may_disable``.
     lower_tier_folded: bool = False
+    # The retired rows (``catalog.RETIRED_SCOPES``) this document named, grant or deny.
+    # A policy that names one governs the host even when no live row is left, so
+    # ``redaction_switch`` never reads it as ungoverned.
+    retired_rows: Tuple[str, ...] = ()
 
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)

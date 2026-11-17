@@ -61,7 +61,7 @@ const ALLOWLIST: ReadonlyArray<{ file: string; classes: string; reason: string }
       + 'landscape; the palette itself is centred by justify-center and needs no inset.',
   },
   {
-    file: 'src/apps/command-bar/CommandBarOverlay.tsx',
+    file: 'src/components/commandBar/CommandBarOverlay.tsx',
     classes: 'fixed left-0 right-0 z-[9999] flex items-start justify-center',
     reason: 'Same full-bleed backdrop as CommandPalette — the bar it centres carries no edge pin.',
   },

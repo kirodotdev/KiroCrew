@@ -134,7 +134,7 @@ type a reply to the agent instead. Anything else denies.
 ## Browsing (`browser` MCP tool)
 
 Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
-`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|reflex|ask`.
+`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|dialog|reflex|ask`.
 It drives one browser the gateway owns (the user's own Chrome where there is
 one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
 user watches the page live in the chat, where one click takes over. It opens
@@ -220,6 +220,7 @@ leftover prefix without touching it.
 | `kirocrew learn add "rule text"` | Save a lesson (category: knowledge) |
 | `kirocrew learn add "rule text" --category tool` | Save with category (tool/preference/knowledge) |
 | `kirocrew learn add "rule text" --negative "avoid X"` | Save with negative example |
+| `kirocrew learn add "rule text" --applies on_topic` | Save as a past finding loaded only when relevant (`always`: a standing rule for every session) |
 | `kirocrew learn remove "query"` | Remove lessons matching substring (add `--repo-scope FRAG` to remove only that scope, `--repo-scope ""` for global only) |
 | `kirocrew memory list` | Show semantic memory entries |
 | `kirocrew memory search "query"` | Search episodic memories |
@@ -369,6 +370,7 @@ already-running app record -- restart it.
 | `kirocrew bench retrieval` | Measure retrieval recall/nDCG against a corpus (deterministic) |
 | `kirocrew bench kb-retrieval` | Measure Knowledge Library recall/MRR/nDCG against a golden set (deterministic) |
 | `kirocrew bench lesson-recall` | Measure lesson ranking recall/MRR/nDCG against a golden set (deterministic) |
+| `kirocrew bench session-recall` | Measure session search recall/MRR against a golden set (deterministic) |
 | `kirocrew bench compare A B` | Diff two saved JSON reports; refuses to attribute a delta when the runs disagree on corpus |
 
 ## Governance Policy
@@ -386,6 +388,8 @@ or write them).
 | `kirocrew policy validate` | Load-check the policy + all profiles |
 | `kirocrew policy explain SCOPE ITEM` | Explain one tool/scope decision for a surface |
 | `kirocrew policy explain SCOPE ITEM --session-key K --agent A --app APP` | Scope the explanation to a surface |
+| `kirocrew policy explain SCOPE ITEM --json` | Print the explanation as one JSON object |
+| `kirocrew policy explain --batch FILE` | Explain each JSON Lines request in FILE (`-` = stdin) in one run, one JSON answer per line |
 | `kirocrew policy profile NAME` | Show a profile by name |
 | `kirocrew policy source` | Show whether this host fetches its policy from a central source |
 | `kirocrew policy fetch` | Fetch the central policy now and apply it if usable (`--force` re-downloads, ignoring cached validators) |
@@ -415,7 +419,7 @@ resolved by the `aws` CLI and never stored by Kiro Crew. All verbs accept
 | `kirocrew cloud start` | Start a stopped instance |
 | `kirocrew cloud destroy` | Remove the instance and ALL its AWS resources |
 | `kirocrew cloud destroy --dry-run` | Show the delete command without running it |
-| `kirocrew cloud iam-policy` | Print the least-privilege IAM policy to apply |
+| `kirocrew cloud iam-policy` | Print the least-privilege IAM policy to apply. Too big for an inline user policy: create it as a customer-managed policy and attach it to the user, group or role (or Identity Center permission set) behind the launch profile |
 | `kirocrew cloud iam-boundary` | Pre-create the immutable EC2 + Fargate permissions boundaries (admin, one-time) |
 
 ## Tailnet (Tailscale)

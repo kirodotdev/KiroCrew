@@ -23,7 +23,7 @@ import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { RECONNECT_SNAPSHOT_WAIT_MS, useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot } from '../store/chatSlice'
@@ -63,6 +63,12 @@ class MockWebSocket {
   simulateOpen() {
     this.readyState = MockWebSocket.OPEN
     this.onopen?.(new Event('open'))
+  }
+
+  /** The connect snapshot: the gateway's first `slots` list once it registered the socket. */
+  simulateSnapshot() {
+    const data = [{ key: ACTIVE, running: false }, { key: BG, running: false }, { key: MEMBER, mode: 'member', running: false }]
+    this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'slots', data }) }))
   }
 }
 
@@ -145,7 +151,8 @@ describe('useWebSocket reconnect hydrates every mounted ChatPane (observed hydra
     )
   }
 
-  /** First connect, drop, reconnect — returns after the reconnect branch ran.
+  /** First connect, drop, reconnect — returns after the reconnect branch and
+   *  the reconnect's connect snapshot ran.
    *  The mock is cleared just before the second open so every recorded call
    *  belongs to the reconnect path alone. */
   function connectDropReconnect(): void {
@@ -161,6 +168,7 @@ describe('useWebSocket reconnect hydrates every mounted ChatPane (observed hydra
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
     const next = WS_INSTANCES[WS_INSTANCES.length - 1]
     act(() => { next.simulateOpen() })
+    act(() => { next.simulateSnapshot() })
   }
 
   const settle = async () => {
@@ -258,7 +266,39 @@ describe('useWebSocket reconnect hydrates every mounted ChatPane (observed hydra
     vi.useRealTimers()
   })
 
-  it('does not warm on the FIRST connect, only on reconnect', () => {
+  it('a reconnect with two mounted non-active panes warms each exactly once (#38010)', () => {
+    vi.useFakeTimers()
+    mountPane(MEMBER)
+    mountPane(BG)
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    connectDropReconnect()
+
+    expect(warmedSlots().sort()).toEqual([BG, MEMBER].sort())
+
+    unmount()
+    vi.useRealTimers()
+  })
+
+  it('a reconnect whose snapshot never comes warms mounted panes after the fallback list read (#38010)', async () => {
+    vi.useFakeTimers()
+    mountPane(MEMBER)
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    act(() => { WS_INSTANCES[0].simulateOpen() })
+    const dead = WS_INSTANCES[WS_INSTANCES.length - 1]
+    act(() => { dead.onclose?.(new CloseEvent('close')) })
+    act(() => { vi.advanceTimersByTime(10_000) })
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+    const next = WS_INSTANCES[WS_INSTANCES.length - 1]
+    act(() => { next.simulateOpen() })
+    expect(warmedSlots()).toEqual([])
+    await act(async () => { await vi.advanceTimersByTimeAsync(RECONNECT_SNAPSHOT_WAIT_MS + 10) })
+    expect(warmedSlots()).toEqual([MEMBER])
+
+    unmount()
+    vi.useRealTimers()
+  })
+
+  it('does not warm when the FIRST connect opens (its first list does)', () => {
     mountPane(MEMBER)
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     act(() => { WS_INSTANCES[0].simulateOpen() })

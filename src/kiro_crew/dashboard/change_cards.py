@@ -1078,6 +1078,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kirocrew_target,
         _ranked,
         _reaches,
+        _refuse_locked,
         _registry_by_config_key,
         _registry_entry,
         _row_hits,
@@ -1106,6 +1107,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.schema import (  # noqa: F401
         requires_restart,
+    )
+    from kiro_crew.update_deferral import (  # noqa: F401
+        with_skip_list,
     )
 
 # This module is the facade of the change cards: every name is reached through it as

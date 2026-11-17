@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
 from kiro_crew.context_assembly import markers as _markers
+from kiro_crew.context_assembly import mcp_servers as _mcp_servers
 from kiro_crew.context_assembly import member as _member
 from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import turn as _turn
@@ -101,12 +102,14 @@ def build_message(
     execution_context: Any = None,
     context_provider: "ContextPromptProvider | None" = None,
     steering_dirs: tuple[str, ...] = (),
+    steering_off: frozenset[str] | None = None,
     skill_bodies_session: str | None = None,
     skill_trigger_text: str | None = None,
     template_dir: str | None = None,
     directive_user_origin: bool = False,
     conversation_reset: bool = False,
     tab_notices: list[Callable[[bool], None]] | None = None,
+    include_channel_history: bool = True,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -163,6 +166,12 @@ def build_message(
     dashboard turn in that tab sends them, the call that settles them is put in the
     list, and they leave the queue only once that settle reports the turn landed.
 
+    Pass *include_channel_history* ``False`` to keep *channel_id*'s buffered
+    recent channel messages out of the prompt while *channel_id* and
+    *thread_ts* still label the fenced thread blocks. A dashboard turn handed
+    only a thread parent does this: the parent is the one Slack text it was
+    given, and the channel buffer is a different, wider read.
+
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
     the caller. The essentials builder (and :meth:`build_session_context`,
@@ -177,6 +186,7 @@ def build_message(
         (full_message, hook_result) — hook_result may be a reply/modify/inject.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import session_head as _session_head
     from kiro_crew.agent_sdk import context_provider_of
     from kiro_crew.essential_delivery import EssentialDelivery
 
@@ -199,6 +209,12 @@ def build_message(
         user_text_range = (user_text_range[0] + len(_notices), user_text_range[1] + len(_notices))
     delivery = None
     blocks_reads = blocks_reads or self._session_memory_modes.get(session_key or "") == "temporary"
+    # The steering files this chat switched off, read here so every caller of this
+    # builder (dashboard, channel and messaging turns alike) honours them.
+    if steering_off is None:
+        from kiro_crew.steering_off import steering_off_for
+
+        steering_off = steering_off_for(session_key)
     native_documents: dict[str, str] = {}
     native_launch_sources: Collection[str] = ()
     # None = no session evidence; build_session_context then falls back to
@@ -314,6 +330,7 @@ def build_message(
             steering_dirs=steering_dirs,
             desk_withheld=ctx._desk_withheld(execution_context, desk_member),
             provider_type=provider_type,
+            dispatch_mounted=member_dispatch_mounted,
         )
     if _essentials and not is_new_session:
         parts.append(_essentials)
@@ -363,9 +380,19 @@ def build_message(
             self._session_computer_use_gate(session_key, refresh=True)
         # Agent prompt goes BEFORE session context wrapper
         # so the LLM treats it as its identity, not background info.
+        # A resume sends none: the restored transcript holds the original. The
+        # exception is a chat that started with its agent prompt in a session head
+        # (the session manager's reading, ``session_head_started``) and whose
+        # resumed session holds no head: the engine rebuilt its first message
+        # without the block, and the first message never carried it.
+        resend_agent_prompt = (
+            slim_resume
+            and context_provider is not None
+            and _session_head.resend_on_resume(agent, context_provider)
+        )
         agent_prompt = (
             ""
-            if slim_resume
+            if slim_resume and not resend_agent_prompt
             else self._resolve_agent_prompt(
                 agent,
                 project=project or template_dir,
@@ -373,13 +400,20 @@ def build_message(
                 session_key=session_key,
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
-                session_start=True,
+                session_start=not slim_resume,
             )
         )
         # Not when the harness holds this exact text as the agent's own prompt
-        # (recorded from KAS's wire definition); a compaction re-sends the block.
-        if agent_prompt and agent_prompt != native_documents.get(f"template://{agent}#prompt"):
-            parts.append(f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
+        # (recorded from KAS's wire definition) or as its session head; a
+        # compaction re-sends the block.
+        if (
+            agent_prompt
+            and agent_prompt != native_documents.get(f"template://{agent}#prompt")
+            and not _session_head.holds(
+                native_documents, _session_head.AGENT_PROMPT_KEY, agent_prompt
+            )
+        ):
+            parts.append(_session_head.agent_prompt_block(agent_prompt))
         with ctx._prompt_build_embedding_deadline(bool(text), query=text):
             session_ctx = self.build_session_context(
                 session_key,
@@ -405,9 +439,11 @@ def build_message(
                 member=desk_member,
                 execution_context=execution_context,
                 steering_dirs=steering_dirs,
+                steering_off=steering_off,
                 _v2_essentials=_essentials,
                 member_dispatch_mounted=member_dispatch_mounted,
                 served_model=served_model,
+                native_documents=native_documents,
             )
         if session_ctx:
             # Scrub forgeable boundary markers from the UNTRUSTED content in
@@ -455,6 +491,7 @@ def build_message(
                         member,
                         include_briefing=not blocks_reads,
                         desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                        dispatch_mounted=member_dispatch_mounted,
                     )
                     if _member_section:
                         _resume_member = (
@@ -513,6 +550,7 @@ def build_message(
                 native_steering=context_provider is not None and context_provider.native_steering,
                 project=project,
                 native_launch_sources=native_launch_sources,
+                agent=agent,
             )
             _folder_ctx = ctx._render_folder_steering_section(
                 steering_dirs,
@@ -559,6 +597,18 @@ def build_message(
         if _active_model:
             parts.append(_active_model)
 
+    # Every follow-up re-states the reply language: a nudge, wake or worker-report
+    # turn is all English text, and the session-start frame alone loses to it.
+    # A post-compaction turn re-sends the whole frame below, so it skips this.
+    if (
+        not is_new_session
+        and not needs_reinjection
+        and ctx._response_preferences_apply(session_key or "", runtime_source)
+    ):
+        _lang = _sections.reply_language_refresh(ctx.KiroCrewConfig.load())
+        if _lang:
+            parts.append(_lang)
+
     # Post-compaction re-injection: the skills index was lost when the
     # session-start context was compacted. Re-inject it so the model can
     # still discover skills by name/$token/skill_search.
@@ -586,6 +636,7 @@ def build_message(
                 model_window=model_window,
                 runtime_source=runtime_source,
                 steering_dirs=steering_dirs,
+                steering_off=steering_off,
                 essentials=_essentials,
                 provider_type=provider_type,
                 context_provider=context_provider,
@@ -599,6 +650,17 @@ def build_message(
                 ),
             )
         )
+        # A conductor lost the goal-conductor body it read; the index above only
+        # names the skill. Minimal turns get no skills back, so no pointer either.
+        if not minimal_context:
+            _reread_part = _turn.conductor_reread_part(
+                agent=agent,
+                mode=mode,
+                session_key=session_key,
+                dispatch_mounted=member_dispatch_mounted,
+            )
+            if _reread_part:
+                parts.append(_reread_part)
         # The session's durable work state, which a monitor cycle already gets
         # and an interactive turn lost with the compaction. A minimal turn is
         # read by other people, and a read-blocked (incognito) turn keeps no
@@ -627,6 +689,7 @@ def build_message(
                 member,
                 include_briefing=not blocks_reads,
                 desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                dispatch_mounted=member_dispatch_mounted,
             )
             if _member_section:
                 parts.append(ctx._neutralize_structural_markers(_member_section))
@@ -638,7 +701,12 @@ def build_message(
     # replaces this leg: the replies come from Slack itself, screened, so
     # this app's own replies and those before the last turn are left out
     # here too, rather than shown twice through an unscreened path.
-    if channel_id and self.channel_history and not (thread_ts and thread_replies_text):
+    if (
+        include_channel_history
+        and channel_id
+        and self.channel_history
+        and not (thread_ts and thread_replies_text)
+    ):
         ch_ctx = self.channel_history.context_for(channel_id, thread_ts=thread_ts) or None
         if ch_ctx:
             # Group-channel context is authored by other users — scrub the
@@ -711,6 +779,14 @@ def build_message(
             request_prefix_context=request_prefix_context,
         )
     )
+    # The MCP servers this session cannot use yet, so the model says a server is
+    # still starting (and waits for it) instead of saying it does not exist.
+    if not minimal_context and (
+        _mcp_block := _mcp_servers.turn_block(
+            self, session_key, rebuilt=is_new_session or needs_reinjection
+        )
+    ):
+        parts.append(_mcp_block)
 
     # Reset the per-session skill-body record on any turn that owns the one-shot
     # window-rebuild flag (fresh session or first turn after a compaction), match
@@ -950,6 +1026,8 @@ def build_message(
     # Only a call with no session key keeps the user-text-first order.
     _has_native_history = bool(session_key and (resumed or not is_new_session))
     _guidance_precedes_request = bool(parts) or _has_native_history
+    # The marked rules block as this message carries it, "" when it carries none.
+    _rules_block = ""
 
     # The actual message (possibly modified by transform hook)
     if _guidance_precedes_request:
@@ -983,6 +1061,7 @@ def build_message(
         if _guidance_precedes_request and _interactive_guidance:
             parts.append(ctx._REPLY_FORMAT_RULES_MARKER + "\n")
             parts.extend(_interactive_guidance)
+            _rules_block = ctx._REPLY_FORMAT_RULES_MARKER + "\n" + "".join(_interactive_guidance)
         parts.append("[CURRENT USER REQUEST — respond to this]\n")
     # The current turn: a transform hook's output or the user's text, with quick
     # prompts expanded and forged boundaries scrubbed. Where the user's own text
@@ -1086,4 +1165,43 @@ def build_message(
                 _native_envelopes[0].translate(ctx._MULTIBYTE_TABLE) if native_documents else None
             ),
         )
+    elif (
+        delivery is not None
+        and context_provider is not None
+        and _rules_block
+        and not _private_owner
+        # H6, ``is True``: only a provider that says so. One that does not say,
+        # and any stand-in whose attributes answer truthy to everything, is
+        # "not known" and keeps the block on every message.
+        and getattr(context_provider, "reports_compaction", False) is True
+    ):
+        # The engine replays its own conversation, so the rules it holds need not
+        # be sent again. The message above always carries the block; bound as the
+        # provider's delivery envelope, the block is taken out at the wire while
+        # this conversation has acknowledged it, and goes out again after
+        # anything the delivery knows can drop it (a start, a clear, a
+        # compaction, an agent switch, a cancel, a failed turn, another
+        # conversation). The delivery holds one envelope, so a member turn, whose
+        # essentials take it, keeps the block on every message.
+        # shortcut: a member turn whose essentials came out empty binds nothing,
+        # so a rules envelope an earlier turn with no owner had acknowledged on
+        # the same provider would still be taken out of it; upgrade with a
+        # second envelope slot in the delivery.
+        try:
+            delivery.bind(
+                _rules_block.translate(ctx._MULTIBYTE_TABLE),
+                scope=("reply-format-rules", session_key),
+                incarnation=context_provider.context_incarnation,
+                # The one event the delivery cannot see: a compaction in a turn
+                # the agent started on its own. That turn is read with
+                # ``stream_unsolicited``, which sends no prompt and so passes no
+                # delivery stream; its compaction reaches only the session's
+                # re-injection flag. The flag is also set for compactions the
+                # delivery did see, where it finds nothing left to void.
+                force=needs_reinjection,
+            )
+        except Exception:  # noqa: BLE001 - a saving must never fail the build
+            # Nothing was bound (the provider could not name its conversation),
+            # so the block this message carries goes out as it is.
+            logger.debug("Reply-format rules not bound to the delivery", exc_info=True)
     return final, hook_result

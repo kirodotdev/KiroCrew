@@ -96,6 +96,9 @@ export const SUCCESS_WINDOW_MS = 90_000
  */
 function isHealthSignal(job: CronJob): boolean {
   if (job.is_running === true) return true
+  // A fired one-shot is parked with the user-pause flags. Its park is the run's,
+  // not an opt-out, so its result still counts.
+  if (job.parked_after_run === true) return true
   if (job.user_paused === true) return false
   // An auto-paused job arrives as `enabled: false` with `user_paused: false`,
   // and must still count -- so a disabled job is only dropped when the wire

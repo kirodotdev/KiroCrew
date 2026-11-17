@@ -20,14 +20,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.apps.builtins.pptx_maker.backend import paths
 
 
 class _DeckRootFixture(unittest.TestCase):
     """Base fixture: a temp deck root with one deck in it, pinned via the env override."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.root = self.tmp / "decks"
         self.deck = self.root / "20260101-demo"
         (self.deck / "specs").mkdir(parents=True)
@@ -41,7 +48,6 @@ class _DeckRootFixture(unittest.TestCase):
             os.environ.pop(paths.DECK_ROOT_ENV, None)
         else:
             os.environ[paths.DECK_ROOT_ENV] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 class TestSegmentGrammar(unittest.TestCase):
@@ -55,6 +61,11 @@ class TestSegmentGrammar(unittest.TestCase):
     def test_rejects_traversal_and_separators(self) -> None:
         for name in ("..", ".", "", "a/b", "a\\b", "/etc", "..hidden", ".ssh"):
             self.assertIsNone(paths.SEGMENT_RE.match(name), name)
+
+    def test_rejects_a_trailing_newline(self) -> None:
+        for name in ("brief.md\n", "deck-1\n", "slide\n"):
+            self.assertIsNone(paths.SEGMENT_RE.match(name), repr(name))
+            self.assertIsNone(paths.split_segments(f"specs/{name}"), repr(name))
 
     def test_split_rejects_any_bad_segment(self) -> None:
         # One bad segment rejects the WHOLE path — a partial accept would let
@@ -83,6 +94,13 @@ class TestResolveDeckDir(_DeckRootFixture):
         self.assertIsNone(paths.resolve_deck_dir(".."))
         self.assertIsNone(paths.resolve_deck_dir("../decks"))
         self.assertIsNone(paths.resolve_deck_dir("/etc"))
+
+    def test_a_trailing_newline_never_reaches_a_deck_directory(self) -> None:
+        try:
+            (self.root / "deck-1\n").mkdir()
+        except OSError:
+            self.skipTest("file names with a newline are unavailable on this platform")
+        self.assertIsNone(paths.resolve_deck_dir("deck-1\n"))
 
     def test_missing_deck_is_none(self) -> None:
         self.assertIsNone(paths.resolve_deck_dir("does-not-exist"))
@@ -130,13 +148,15 @@ class TestResolveLibraryFile(unittest.TestCase):
     """Shared by every style/template read AND write, so a bad name can never
     reach a filesystem call regardless of which verb the request used."""
 
+    @pytest.fixture(autouse=True)
+    def _per_test_dirs(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory, which pytest reclaims even
+        when ``setUp`` fails before ``tearDown`` could run."""
+        self.tmp = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp())
         self.lib = self.tmp / "styles"
         self.lib.mkdir(parents=True)
-
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_resolves_a_name_to_a_suffixed_path(self) -> None:
         resolved = paths.resolve_library_file(self.lib, "my-style", ".html")
@@ -150,6 +170,10 @@ class TestResolveLibraryFile(unittest.TestCase):
     def test_rejects_traversal_names(self) -> None:
         for name in ("..", "../evil", "a/b", "", ".hidden"):
             self.assertIsNone(paths.resolve_library_file(self.lib, name, ".html"), name)
+
+    def test_a_trailing_newline_never_reaches_a_library_file(self) -> None:
+        # No file is created: a library target need not exist, so the name decides.
+        self.assertIsNone(paths.resolve_library_file(self.lib, "slide\n", ".html"))
 
 
 class TestDeckRootResolution(_DeckRootFixture):

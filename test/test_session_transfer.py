@@ -18,6 +18,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 from session_transfer_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _async_value,
     _FakeLog,
@@ -43,6 +44,10 @@ from kiro_crew.dashboard.session_transfer import (
     local_instance_label,
 )
 from kiro_crew.testing.wait import async_wait_until, await_until
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=44)
 
 # ── bundle construction ──────────────────────────────────────────────────
 
@@ -434,6 +439,67 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
 
 
 @pytest.mark.asyncio
+async def test_send_bundle_reports_the_crews_origin_refusal_without_a_remint(monkeypatch):
+    """The crew's CSRF barrier refusing the import is not a stale credential:
+    it is reported as itself, and no re-mint is spent on it."""
+    from kiro_crew.instances.ssh_tunnel_manager import (
+        SshTunnelManager,
+        TunnelState,
+        TunnelStatus,
+    )
+
+    mgr = SshTunnelManager.__new__(SshTunnelManager)
+    mgr._tunnel_epoch = {}
+    mgr._tokens = {"peer": "link"}
+    mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
+    mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
+    mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
+        instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
+    )
+    reminted: list[str] = []
+
+    async def _refresh(instance_id):
+        reminted.append(instance_id)
+        return "fresh"
+
+    mgr.refresh_token = _refresh  # type: ignore[method-assign]
+
+    class _Refused:
+        status = 403
+
+        class content:
+            @staticmethod
+            async def iter_chunked(_n):
+                yield b"CSRF check failed: request origin not allowed."
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, data=None, headers=None):
+            return _PostedBody(lambda _body: _Refused(), data)
+
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: _Session())
+    ok, payload = await _send(mgr, "peer", {"bundle_version": 1})
+
+    assert ok is False
+    assert payload["code"] == "transfer_origin_refused"
+    assert reminted == []
+
+
+@pytest.mark.asyncio
 async def test_bundle_refuses_while_a_rewrite_is_still_owed():
     """A rewind/regenerate leaves ``_pending_rewrite`` set until the TRUNCATING
     rewrite is written. Until then disk holds the pre-edit transcript and is
@@ -483,7 +549,7 @@ async def test_bundle_redacts_assistant_content_on_the_way_out():
     channel) can still hold a raw credential on disk; relying on the peer to
     scrub it would send the secret across the boundary first.
     """
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = _SECRET_TOKEN
     msgs = [
         {"role": "user", "content": f"my key is {secret}", "ts": ""},
         {"role": "assistant", "content": f"noted {secret}", "ts": ""},
@@ -515,7 +581,7 @@ async def test_bundle_redacts_the_title_on_the_way_out():
     """A title is generated from user content, and the resume path assigns a
     client-supplied title with no scan of its own — so it can carry a credential
     that would otherwise leave the host verbatim."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = _SECRET_TOKEN
     msgs = [{"role": "user", "content": "hi", "ts": ""}]
     slot = _slot(msgs, title=f"debugging {secret}")
 
@@ -1181,7 +1247,7 @@ async def test_import_redacts_assistant_content_but_not_the_users_own_words(monk
     own turn is left verbatim so their words are never corrupted."""
     from kiro_crew.dashboard import session_transfer as st
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = _SECRET_TOKEN
     resp_slot = await _run_import(
         st,
         monkeypatch,

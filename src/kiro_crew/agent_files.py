@@ -116,6 +116,26 @@ def is_assistant_member(name: object, entry: object) -> bool:
     return name == ASSISTANT_MEMBER_NAME
 
 
+def member_label(name: object, entry: object) -> str:
+    """The label a crew member is shown by: its ``display_name``, else its key.
+
+    The first crewmate is the exception: its key is ``mate``, an internal id
+    nobody chose, so with no ``display_name`` it reads
+    :data:`ASSISTANT_DEFAULT_DISPLAY_NAME`. Every surface that labels a member
+    calls this, which is what keeps the key out of one of them while the rest
+    say "Bot".
+
+    *entry* is the member's config row. A missing ``display_name``, an empty one
+    and one that is only spaces all read the same, so no surface can show a
+    label made of whitespace. The label is presentation only -- ``name`` stays
+    the identity every per-member route and binding is keyed on.
+    """
+    display = str(getattr(entry, "display_name", "") or "").strip()
+    if display:
+        return display
+    return ASSISTANT_DEFAULT_DISPLAY_NAME if is_assistant_member(name, entry) else str(name)
+
+
 # Collective allowlists — the EXACT filenames KiroCrew owns in each dir. Used by
 # the Playwright convergence sweep (browser/setup.py) so it rewrites only files
 # KiroCrew generates, never a user's own agent config that happens to share a
@@ -216,9 +236,12 @@ def kas_wire_agent_id(agent_id: str) -> str:
     advertised modes read back), so the rest of Kiro Crew keeps the crewmate's
     own id and kiro-cli, which reserves none of these, never sees the alias.
 
-    A session registers exactly one agent, so the alias cannot meet a second
-    entry of the same id in its batch; an on-disk spec that happens to carry it
-    is replaced by the wire definition (the ``kirocrew-conductor`` row above).
+    Only a session's own agent is sent under an alias: a sub-agent target with a
+    reserved id is not registered, and one named like the alias is dropped
+    (:mod:`kiro_crew.acp.kas_subagent_targets`), so the alias cannot meet a
+    second entry of the same id in its batch; an on-disk spec that happens to
+    carry it is replaced by the wire definition (the ``kirocrew-conductor`` row
+    above).
     """
     if agent_id in KAS_RESERVED_AGENT_IDS:
         return f"{agent_id}{KAS_WIRE_ID_SUFFIX}"

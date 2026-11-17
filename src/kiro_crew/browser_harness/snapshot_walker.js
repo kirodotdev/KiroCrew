@@ -28,6 +28,17 @@
   // characters, so a snapshot past NODE_CAP nodes carries nothing it would show.
   var CONSOLE_TEXT_CAP = 2000;
   var NODE_CAP = 1500;
+  // `glance` bounds: elements looked at, entries per list, and the longest name or
+  // message read. Text past its bound is left out, never cut, so a credential
+  // reaches the gateway's redaction whole. The text bounds are four times the
+  // report's display caps (`change_report.NAME_CAP`, `TEXT_CAP`); the gateway
+  // redacts first and only then cuts for display.
+  var GLANCE_SCAN_CAP = 600;
+  var GLANCE_LIST_CAP = 10;
+  var GLANCE_NAME_CAP = 240;
+  var GLANCE_TEXT_CAP = 640;
+  // Most ids an `aria-labelledby` list may name for `glance` to read it.
+  var GLANCE_ID_CAP = 4;
   // Cross-origin frames one snapshot hands the gateway to read (ops.py FRAME_READ_CAP).
   var FRAME_SLOT_CAP = 8;
   var INTERACTIVE_TAGS = { a: true, button: true, input: true, select: true, textarea: true };
@@ -39,6 +50,43 @@
   // `autocomplete` tokens that name a secret field whatever it is called.
   // Kept equal to `dom_census.SECRET_AUTOCOMPLETE` by a test.
   var SECRET_AUTOCOMPLETE = ["current-password", "new-password", "one-time-code", "cc-csc"];
+
+  // Whether char code *c* is white space as a regular expression's `\s` counts it:
+  // tab, line feed, vertical tab, form feed, carriage return, space, no-break
+  // space, ogham space, the en and em spaces to the hair space, the line and
+  // paragraph separators, narrow no-break space, medium mathematical space,
+  // ideographic space and the byte order mark.
+  function isSpace(c) {
+    return c === 32 || (c >= 9 && c <= 13) || c === 160 || c === 5760 ||
+      (c >= 8192 && c <= 8202) || c === 8232 || c === 8233 || c === 8239 ||
+      c === 8287 || c === 12288 || c === 65279;
+  }
+  // *s* with each run of white space made one space and both ends trimmed. The
+  // text is rebuilt whole, so a credential in it is never split.
+  function squashSpace(s) {
+    var out = "", gap = false;
+    for (var i = 0; i < s.length; i++) {
+      if (isSpace(s.charCodeAt(i))) { gap = true; continue; }
+      if (gap && out) out += " ";
+      gap = false;
+      out += s.charAt(i);
+    }
+    return out;
+  }
+  // The words of *s*, split at runs of white space, with no empty word.
+  function spaceWords(s) {
+    var words = [], word = "";
+    for (var i = 0; i < s.length; i++) {
+      if (isSpace(s.charCodeAt(i))) {
+        if (word) words.push(word);
+        word = "";
+      } else {
+        word += s.charAt(i);
+      }
+    }
+    if (word) words.push(word);
+    return words;
+  }
 
   // A camelCase name split into words (`otpCode` -> `otp Code`, `OTPCode` ->
   // `OTP Code`), so the name rule's word boundaries see `otp` as a word. The rule
@@ -702,11 +750,13 @@
       return result;
     },
 
-    // Scroll a ref into view and return its centre in CSS pixels.
-    resolve: function (ref) {
+    // Scroll a ref into view (unless `scroll` is false) and return its centre in CSS pixels.
+    resolve: function (ref, scroll) {
       var el = lookup(ref);
       if (!el) return { ok: false, code: "ref_stale" };
-      try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+      if (scroll !== false) {
+        try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+      }
       var r = el.getBoundingClientRect();
       if (!r || (r.width === 0 && r.height === 0)) return { ok: false, code: "ref_stale" };
       var off = docOffset(el);
@@ -714,6 +764,8 @@
         ok: true,
         x: off[0] + r.left + r.width / 2,
         y: off[1] + r.top + r.height / 2,
+        w: r.width,
+        h: r.height,
         tag: (el.tagName || "").toLowerCase(),
         password: inputType(el) === "password"
       };
@@ -1067,6 +1119,207 @@
         }
       }
       return false;
+    },
+
+    // A cheap read of what an action can change, taken before and after it
+    // (`browser.report_changes`): the address and title, the in-page dialogs, the
+    // alert and status text, the name of each field the page marks invalid (never
+    // its message), and a `role|name` key for each visible control. It mints no
+    // refs and does not enter frames or shadow roots. A field is named by its
+    // label, never by its value; a secret field, and anything inside a field, is
+    // left out whole, and a name built from several elements is read whole or not
+    // at all. `capped` names each list that stopped before the page
+    // did, so the gateway never reads a cut list as a complete one.
+    glance: function () {
+      var out = { url: location.href, title: document.title, controls: [], dialogs: [],
+                  alerts: [], invalid: [], truncated: false,
+                  capped: { dialogs: false, alerts: false, invalid: false } };
+      // Elements that are not text at all.
+      var NOT_TEXT = { script: 1, style: 1, template: 1, noscript: 1, datalist: 1 };
+      // Roles whose element shows its value as its own text, as any token of `role`.
+      var FIELD_ROLES = ["textbox", "searchbox", "combobox", "spinbutton", "slider"];
+      function fieldRole(n) {
+        var tokens = spaceWords(explicitRole(n));
+        for (var i = 0; i < tokens.length; i++) if (FIELD_ROLES.indexOf(tokens[i]) !== -1) return true;
+        return false;
+      }
+      // Elements looked through in shadow roots, for the whole glance: a page past
+      // it has its remaining shadow hosts counted as fields. Each host is looked
+      // through once.
+      var shadowBudget = GLANCE_SCAN_CAP * 4, hosts = new Map();
+      // One line of *value*, whole, or null when it is longer than *cap*: a cut could
+      // split a credential below the length the gateway's redaction matches.
+      function clip(value, cap) {
+        var text = squashSpace(String(value || ""));
+        return text.length <= cap ? text : null;
+      }
+      // The one test of "this is a field", for the controls scan and for every text
+      // read below: a native field, an editable region, an element with an input
+      // role, or a shadow host whose open root holds one. What a field holds is a
+      // value whatever its name says, so nothing inside one is ever read.
+      function fieldish(n, depth) {
+        var tag = n.tagName.toLowerCase();
+        if (tag === "input") return ["button", "submit", "reset", "image"].indexOf(inputType(n)) === -1;
+        if (tag === "textarea" || tag === "select" || n.isContentEditable) return true;
+        if (fieldRole(n)) return true;
+        if (!n.shadowRoot) return false;
+        if (hosts.has(n)) return hosts.get(n);
+        var holds = depth > 3;
+        var all = holds ? [] : n.shadowRoot.querySelectorAll("*");
+        shadowBudget -= all.length;
+        if (shadowBudget < 0) holds = true;
+        for (var i = 0; !holds && i < all.length; i++) holds = fieldish(all[i], depth + 1);
+        hosts.set(n, holds);
+        return holds;
+      }
+      function skipped(n) {
+        return !!NOT_TEXT[n.tagName.toLowerCase()] || fieldish(n, 0);
+      }
+      // Whether *n*, or an element it sits in, is a field or not text: its text and
+      // its attributes are then part of that field's value, and no name is read
+      // from it. Checked before any name is read.
+      function inField(n) {
+        for (var up = n; up; up = up.parentElement) if (skipped(up)) return true;
+        return false;
+      }
+      // Whether the page starts a new line at element *n*, whose computed display is
+      // *display*: a line break, or a block box in normal flow. Inline boxes (and an
+      // element with no computed display), and flex and grid items, which sit side
+      // by side, carry on the line.
+      function newLine(n, display) {
+        if (n.tagName.toLowerCase() === "br") return true;
+        if (!display || display.indexOf("inline") === 0 || display.indexOf("ruby") === 0 || display === "contents") return false;
+        var around = n.parentElement ? getComputedStyle(n.parentElement).display : "";
+        return around.indexOf("flex") === -1 && around.indexOf("grid") === -1;
+      }
+      // Whether the page draws the text of an element whose computed style is
+      // *style*: `visibility` is inherited, so a `visible` child of a hidden
+      // element is drawn and its hidden parent's own text is not.
+      function drawn(style) {
+        return style.visibility !== "hidden" && style.visibility !== "collapse";
+      }
+      // The text *node* shows, leaving out every field inside it, in one pass. A
+      // node inside a field (an id an attribute points at, an alert in an editor)
+      // is part of that field's value and reads as nothing, and text the page does
+      // not draw (`display: none`, `visibility: hidden` or `collapse`) reads as
+      // nothing and starts no new line. Text is joined as the page shows it: with
+      // the white space the page holds, and a space where a new line starts, so a
+      // credential split across inline elements reaches redaction whole. Text
+      // longer than *cap* reads as null, as in `clip`; the raw text looked at,
+      // spaces included, is bounded at four times *cap*.
+      function ownText(node, cap) {
+        if (inField(node)) return "";
+        // `inks` holds, for each entry of `stack`, whether its parent is drawn.
+        var text = "", length = 0, gap = false, LINE_END = {}, stack = [], inks = [];
+        var ink = drawn(getComputedStyle(node));
+        for (var c = node.lastChild; c; c = c.previousSibling) { stack.push(c); inks.push(ink); }
+        while (stack.length) {
+          var n = stack.pop();
+          ink = inks.pop();
+          if (n === LINE_END) { gap = true; continue; }
+          if (n.nodeType === 3) {
+            if (!ink) continue;
+            length += n.nodeValue.length;
+            if (length > cap * 4) return null;
+            text += (gap ? " " : "") + n.nodeValue;
+            gap = false;
+            continue;
+          }
+          if (n.nodeType !== 1 || skipped(n) || n.hidden) continue;
+          var style = getComputedStyle(n);
+          if (style.display === "none") continue;
+          ink = drawn(style);
+          if (ink && newLine(n, style.display)) { gap = true; stack.push(LINE_END); inks.push(true); }
+          for (c = n.lastChild; c; c = c.previousSibling) { stack.push(c); inks.push(ink); }
+        }
+        return clip(text, cap);
+      }
+      // The text of the elements *el*'s *attr* lists by id, read whole or not at all:
+      // null when the list names more ids than are read, or when a listed element
+      // is inside a field or reads as too long, so a name is never assembled from
+      // part of its pieces. An id with no element adds nothing, as on the page.
+      function idsText(el, attr) {
+        var parts = [];
+        var ids = spaceWords(el.getAttribute(attr) || "");
+        if (ids.length > GLANCE_ID_CAP) return null;
+        for (var i = 0; i < ids.length; i++) {
+          var n = document.getElementById(ids[i]);
+          if (!n) continue;
+          var part = inField(n) ? null : ownText(n, GLANCE_TEXT_CAP);
+          if (part === null) return null;
+          parts.push(part);
+        }
+        return clip(parts.join(" "), GLANCE_TEXT_CAP);
+      }
+      // A control's name from its labels and attributes; a field's own text and
+      // value never count, and a button's or link's own text does.
+      function nameOf(el, isField) {
+        var named = idsText(el, "aria-labelledby") || clip(el.getAttribute("aria-label"), GLANCE_NAME_CAP);
+        if (named) return named;
+        if (el.labels && el.labels.length) {
+          var l = ownText(el.labels[0], GLANCE_NAME_CAP);
+          if (l) return l;
+        }
+        if (!isField) {
+          var own = ownText(el, GLANCE_NAME_CAP) || clip(el.getAttribute("alt") || el.getAttribute("value"), GLANCE_NAME_CAP);
+          if (own) return own;
+        }
+        return clip(el.getAttribute("placeholder") || el.getAttribute("title") ||
+                    el.getAttribute("name"), GLANCE_NAME_CAP);
+      }
+      var scanned = document.querySelectorAll(
+        "a[href],button,input,select,textarea,[role],[tabindex],[contenteditable]");
+      for (var i = 0; i < scanned.length; i++) {
+        var el = scanned[i];
+        if (i >= GLANCE_SCAN_CAP) { out.truncated = true; break; }
+        var role = roleFor(el);
+        if (!interactive(el, role) || !visible(el)) continue;
+        // An element inside a field is part of its value: nothing of it is read.
+        if (inField(el.parentElement)) continue;
+        // A field is named by its labels only: its own text would be its value.
+        var isField = fieldish(el, 0);
+        if (isField && secretish(el)) continue;
+        out.controls.push((role || "generic") + "|" + (clip(nameOf(el, isField), GLANCE_NAME_CAP) || ""));
+      }
+      var found = document.querySelectorAll("dialog[open],[role=\"dialog\"],[role=\"alertdialog\"]");
+      for (var d = 0; d < found.length; d++) {
+        if (!shown(found[d]) || inField(found[d].parentElement)) continue;
+        if (out.dialogs.length >= GLANCE_LIST_CAP) { out.capped.dialogs = true; break; }
+        var head = found[d].querySelector("h1,h2,h3,[role=\"heading\"]");
+        out.dialogs.push(idsText(found[d], "aria-labelledby") ||
+          clip(found[d].getAttribute("aria-label"), GLANCE_NAME_CAP) ||
+          (head ? ownText(head, GLANCE_NAME_CAP) : "") || "dialog");
+      }
+      var live = document.querySelectorAll("[role=\"alert\"],[role=\"status\"],[aria-live=\"assertive\"]");
+      for (var a = 0; a < live.length; a++) {
+        if (!shown(live[a])) continue;
+        var said = ownText(live[a], GLANCE_TEXT_CAP);
+        // A message too long to read whole is still a message: it is said to be there.
+        if (said === null) said = "a message too long to show";
+        else if (!said) continue;
+        if (out.alerts.length >= GLANCE_LIST_CAP) { out.capped.alerts = true; break; }
+        out.alerts.push(said);
+      }
+      // Native fields, and any element marked invalid that the one field test names
+      // a field (a custom `role="textbox"`, an editable region).
+      var fields = document.querySelectorAll("input,select,textarea,[aria-invalid=\"true\"]");
+      for (var f = 0; f < fields.length; f++) {
+        if (f >= GLANCE_SCAN_CAP) { out.capped.invalid = true; break; }
+        var field = fields[f];
+        var flagged = field.getAttribute("aria-invalid") === "true";
+        if (!flagged) {
+          try { flagged = field.matches(":user-invalid"); } catch (e) { flagged = false; }
+        }
+        // A secret field, and a field inside another, is left out whole here too, as
+        // in the controls above.
+        if (!flagged || !fieldish(field, 0) || !shown(field) || secretish(field) ||
+            inField(field.parentElement)) continue;
+        if (out.invalid.length >= GLANCE_LIST_CAP) { out.capped.invalid = true; break; }
+        // Named only: a validation message can repeat what was typed in any form,
+        // so none is read. The agent takes a snapshot when it needs the message.
+        out.invalid.push(clip(nameOf(field, true), GLANCE_NAME_CAP) || "field");
+      }
+      return out;
     }
   };
   return api;

@@ -147,6 +147,21 @@ def _doctor_reads_the_warm_probe_cache(monkeypatch):
     monkeypatch.setattr(_doc, "warm_backend", lambda timeout=None: None)
 
 
+@pytest.fixture(autouse=True)
+def _doctor_reads_current_tz_data(_floor_monkeypatch):
+    """The doctor's ``tz data`` row reads current rules, whatever the host holds.
+
+    ``_doctor_tz_data`` reads the host's zone files (or the ``tzdata`` package), and a
+    host whose data predates the probe's rule change (IANA tzdb 2026b) adds
+    "timezone data out of date" to the issues, so every whole-report doctor test exits
+    1 there and 0 on CI. The row itself is covered by ``test_doctor_tz_data.py``.
+    """
+    from kiro_crew.doctor_checks import install
+
+    _floor_monkeypatch.setattr(install, "_tz_probe_offset", lambda: install._TZ_PROBE_OFFSET)
+    _floor_monkeypatch.setattr(install, "_tz_data_from_system", lambda: True)
+
+
 class _TestChatPermissionRequestHarness:
     """The members both permission-request classes read.
 

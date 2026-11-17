@@ -243,8 +243,8 @@ if (EXPECT === 'after') {
   }
 
   // 11 — the same refusal landing AFTER the user switched to another member:
-  //      no banner over the other thread; an error row in radar's transcript,
-  //      found when the user comes back.
+  //      no banner over the other thread and no row in radar's transcript;
+  //      radar's upload banner shows it when the user comes back.
   {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1 })
     await routeApi(page, { key: 'member-radar', title: 'radar', running: false, messages: THREAD })
@@ -262,10 +262,11 @@ if (EXPECT === 'after') {
     await page.waitForTimeout(500)
     const bannerOnFixer = await page.getByTestId('chat-pane-upload-error').count()
     await page.getByText('radar', { exact: true }).first().click()
-    await transcript(page).getByText(/Unsupported file type/).waitFor()
-    check('11-upload-failure-offscreen: no banner over fixer, error row in radar\'s transcript', bannerOnFixer === 0, `bannerOnFixer=${bannerOnFixer}`)
+    await page.getByTestId('chat-pane-upload-error').getByText(/Unsupported file type/).waitFor()
+    const rowInRadar = await transcript(page).getByText(/Unsupported file type/).count()
+    check('11-upload-failure-offscreen: no banner over fixer, radar\'s banner on return, no transcript row', bannerOnFixer === 0 && rowInRadar === 0, `bannerOnFixer=${bannerOnFixer} rowInRadar=${rowInRadar}`)
     await page.waitForTimeout(300)
-    await page.screenshot({ path: `${OUT}/11-members-upload-failure-transcript-row.png` })
+    await page.screenshot({ path: `${OUT}/11-members-upload-failure-held-banner.png` })
     await page.close()
   }
 

@@ -13,15 +13,16 @@ announced per app, and only a DIFFERENT version announces again.
 A first observation adopts instead of announcing. With no ledger yet, every
 pending update looks new, and a user who installed this with five updates
 waiting would get five notes about versions that have been out for weeks. The
-badge already states that standing backlog; the bell is for what changes from
-here. Same choice ``issue_radar``'s watcher makes for a repository's
+Discover Updates list already shows that standing backlog; the bell is for what
+changes from here. Same choice ``issue_radar``'s watcher makes for a repository's
 pre-existing issue backlog, for the same reason.
 
 Persist before you publish. The ledger is written BEFORE any note is built for
 delivery, and a ledger that cannot be written produces no note at all: the
 next listing would read the same stale ledger and announce again, on every
 dashboard load, for as long as the write keeps failing. One missed note is the
-cost of the other ordering, and the note is redundant with the badge anyway.
+cost of the other ordering, and the note is redundant with the Updates list
+anyway.
 
 Split in two halves because they run in different places. ``prepare`` reads and
 writes the ledger, so the route runs it off the loop. ``deliver`` calls
@@ -39,6 +40,13 @@ read as well as the write is what makes "announce only what is not recorded" a
 decision against the ledger as it actually stands. A lock that cannot be taken
 fails closed into the total contract below: no note, nothing written.
 
+A note is retired by the same listing that raised it. Once a row says the
+installed version has reached the one a note announced, that note is marked
+read: it has nothing left to ask. The listing is where every update shows up,
+whichever surface ran it (the store, ``kirocrew app update``, an agent), so
+this needs no hook in each one. Marked read, never deleted, as a resolved skill
+review is.
+
 Adds no network call and no timer. It reads rows the listing already built, and
 runs where that listing is already served.
 """
@@ -48,7 +56,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.apps.registry_pipeline.catalog import _version_newer
 from kiro_crew.apps.update_status import publishable_version
@@ -121,11 +129,11 @@ def _write_ledger(versions: dict[str, str]) -> bool:
 def _updatable(row: dict[str, Any]) -> bool:
     """Whether the store could actually update this listing row.
 
-    The same three conditions the Discover badge counts (``countUpdatables`` in
-    ``useAppsData.ts``), so the note and the badge can never disagree about what
-    is pending. ``lifecycle`` matters most: an ``app``- or ``locked``-lifecycle
-    app updates itself, so announcing one would point the user at an Update
-    button the store cannot press.
+    The same three conditions the Discover Updates list applies
+    (``useAppsData.ts``), so the note and that list agree about what is pending;
+    the rail badge counts only the list's enabled apps. ``lifecycle`` matters
+    most: an ``app``- or ``locked``-lifecycle app updates itself, so announcing
+    one would point the user at an Update button the store cannot press.
     """
     return bool(
         row.get("installed") and row.get("updateAvailable") and row.get("lifecycle") == "gateway"
@@ -262,3 +270,61 @@ def deliver_app_update_notes(state: Any, notes: list[dict[str, Any]]) -> list[st
             continue
         delivered.append(app)
     return delivered
+
+
+def _installed_versions(rows: list[Any]) -> dict[str, str]:
+    """``name -> installed version`` for each installed row with a whole version.
+
+    Through ``publishable_version`` for the same reason as :func:`_pending`, and
+    so an externally detected app (``installedVersion`` ``"unknown"``) is no
+    evidence that anything caught up.
+    """
+    installed: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("installed"):
+            continue
+        name = row.get("name")
+        version = publishable_version(row.get("installedVersion"))
+        if isinstance(name, str) and name and version:
+            installed[name] = version
+    return installed
+
+
+def _caught_up(installed: dict[str, str]) -> Callable[[dict[str, Any]], bool]:
+    """Whether a stored note announced a version its app now has installed.
+
+    Only this module's own notes: the gateway's channel, ``source`` ``system``,
+    and a ``latestVersion`` (the bus merges ``meta`` into the stored note). The
+    "setup script failed" note on the same channel carries no version and is
+    never matched, because an update does not fix it.
+
+    Caught up means the same version or one positively newer. Two pre-releases
+    of one release are not ordered (``_version_newer`` is False both ways), so
+    ``2.0.0-beta.1`` installed leaves a ``2.0.0-beta.2`` note unread.
+    """
+
+    def matches(note: dict[str, Any]) -> bool:
+        if note.get("channel") != NOTE_CHANNEL or note.get("source") != "system":
+            return False
+        app = note.get("app")
+        announced = publishable_version(note.get("latestVersion"))
+        have = installed.get(app, "") if isinstance(app, str) else ""
+        return bool(have and announced) and (have == announced or _version_newer(have, announced))
+
+    return matches
+
+
+async def resolve_app_update_notes(state: Any, rows: list[Any]) -> int:
+    """Mark read each note whose announced version *rows* show installed. ON the loop.
+
+    Returns the count marked read. Total, like the other two halves: the store
+    response this rides on must not fail on it.
+    """
+    try:
+        installed = _installed_versions(rows)
+        if not installed:
+            return 0
+        return int(await state.acknowledge_notifications_where(_caught_up(installed)))
+    except Exception:
+        logger.warning("could not mark the installed app updates' notes read", exc_info=True)
+        return 0

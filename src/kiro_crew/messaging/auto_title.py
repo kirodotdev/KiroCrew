@@ -489,7 +489,10 @@ async def _stream_title(client: Any, prompt: str, *, source: str) -> str:
             await client.reject_tool(event.request_id)
         elif event.kind == EVENT_COMPLETE:
             break
-    return text
+    # kiro-cli's [STEERING steer-…] ack is protocol, not the title.
+    from kiro_crew.messaging.driver import strip_steering_markers
+
+    return strip_steering_markers(text)
 
 
 async def maybe_auto_title(

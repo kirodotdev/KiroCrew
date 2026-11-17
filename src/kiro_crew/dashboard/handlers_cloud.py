@@ -47,9 +47,11 @@ from kiro_crew.dashboard.handlers.sessions import fetch_local_identity
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
 )
+from kiro_crew.dashboard.handlers_cloud_paused import mark_cloud_stopped
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform.defaults import RecipientMoved
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
+from kiro_crew.platform.provisioner_listing import offered_provisioners
 from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
@@ -159,23 +161,8 @@ async def _astore(state: "DashboardState") -> lj.LaunchJobStore:
 
 
 def _provisioners() -> list:
-    """The deployment's provisioners, from the CPP ``remote_provisioners`` seam.
-
-    ``safe_context_call`` fallback is the built-in descriptor alone: a degraded
-    seam read keeps today's AWS tab working rather than emptying it, which is
-    the fail-safe direction for a listing (nothing here mints or bills). Rows
-    with a blank id or kind are dropped, never shadowed. Synchronous; called via
-    ``_in_executor`` from a handler because context resolution can touch disk.
-    """
-    from kiro_crew.platform.context import current_context, safe_context_call
-    from kiro_crew.platform.defaults import BUILTIN_REMOTE_PROVISIONER
-
-    rows = safe_context_call(
-        lambda: list(current_context().remote_provisioners.provisioners()),
-        fallback_factory=lambda: [BUILTIN_REMOTE_PROVISIONER],
-        log_message="remote_provisioners.provisioners degraded; offering the built-in lane only",
-    )
-    return [r for r in rows if getattr(r, "id", "") and getattr(r, "kind", "")]
+    """The deployment's provisioners; see :func:`offered_provisioners`."""
+    return offered_provisioners()
 
 
 def _provisioner_dict(p) -> dict:
@@ -1575,7 +1562,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # ``KeyError`` for a provider id with no launch engine. The row exists and
         # the request is well formed, so this is a 400, not an unaudited 500 that
         # would also leave the running crew undeletable from the panel. Same arm
-        # ``api_launch_task`` carries for the same resolution.
+        # ``api_cloud_launch_task`` carries for the same resolution.
         _audit(op, "denied", request_id=tag, error=f"no engine for lane {lane!r}")
         return web.json_response(
             {"error": f"lane {lane!r} has no teardown engine", "code": "unknown_provisioner"},
@@ -1592,6 +1579,13 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
     except SandboxUnavailableError as exc:
         return _sandbox_unavailable_response(op, exc, "The AWS call", request_id=tag)
+    if op in ("stop", "start"):
+        unsaved = await mark_cloud_stopped(
+            state, str(result.get("instance_id") or ""), tag, op == "stop"
+        )
+        if unsaved is not None:
+            _audit(op, "failure", request_id=tag, error="cloud state not saved")
+            return unsaved
     _audit(op, "success", request_id=tag)
     return web.json_response(result)
 

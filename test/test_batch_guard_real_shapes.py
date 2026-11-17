@@ -122,11 +122,8 @@ def test_a_ledger_create_batched_with_a_send_of_the_new_item_is_refused():
     assert _NEW_ITEM in reason
 
 
-def test_a_session_create_is_not_judged_and_mints_nothing_the_guard_reads():
-    # session_create is not write-class on main, so it is no peer to judge by.
-    guard = _guard()
-    window = guard.BatchWindow()
-    create = AcpEvent(
+def _session_create() -> AcpEvent:
+    return AcpEvent(
         kind=EVENT_TOOL_CALL,
         tool_call_id="c",
         tool_name="session_create",
@@ -134,9 +131,83 @@ def test_a_session_create_is_not_judged_and_mints_nothing_the_guard_reads():
         mcp_identity_trusted=True,
         tool_input=_args(title="reviewer"),
     )
-    guard.note_dispatched(window, create)
+
+
+def test_a_session_create_batched_with_a_send_to_a_guessed_key_is_refused():
+    # The create mints the session key; a send naming one in the same batch guessed it.
+    guard = _guard()
+    window = guard.BatchWindow()
+    guard.note_prompt(window, "Open a reviewer session and hand it the task.")
+    guard.note_dispatched(window, _session_create())
     window.dispatched("s", guard.WRITE, text=_args(target=_KEY, message="Start."))
+    reason = window.refusal_for("s", guard.WRITE)
+    assert reason is not None
+    assert _KEY[:12] in reason
+
+
+def test_a_session_create_batched_with_a_bind_of_a_guessed_key_is_refused():
+    guard = _guard()
+    window = guard.BatchWindow()
+    guard.note_prompt(window, f"Open a reviewer session for {_ITEM}.")
+    guard.note_dispatched(window, _session_create())
+    bind = AcpEvent(
+        kind=EVENT_TOOL_CALL,
+        tool_call_id="b",
+        tool_name="work_ledger_record",
+        mcp_server_name=_WORK,
+        mcp_identity_trusted=True,
+        tool_input=_args(action="bind", item_id=_ITEM, worker_session_key=_KEY),
+    )
+    guard.note_dispatched(window, bind)
+    reason = window.refusal_for("b", guard.classify(bind))
+    assert reason is not None
+    assert _KEY[:12] in reason
+    assert _ITEM not in reason
+
+
+def test_a_session_create_named_only_by_its_approval_still_refuses_a_guessed_bind():
+    # KAS announces the call by server alone; its permission request names the
+    # tool. A creator has no class, and the refresh must keep its flag anyway.
+    guard = _guard()
+    window = guard.BatchWindow()
+    guard.note_prompt(window, f"Open a reviewer session for {_ITEM}.")
+    window.dispatched("c", "", text=_args(title="reviewer"))
+    create = _session_create()
+    window.refresh(
+        "c", guard.classify(create), text=_args(title="reviewer"), creator=guard.is_creator(create)
+    )
+    window.dispatched(
+        "b",
+        guard.WRITE,
+        text=_args(action="bind", item_id=_ITEM, worker_session_key=_KEY),
+    )
+    reason = window.refusal_for("b", guard.WRITE)
+    assert reason is not None
+    assert _KEY[:12] in reason
+
+
+def test_a_session_create_batched_with_a_send_to_a_key_an_earlier_call_printed_passes():
+    # The key came back from a call of an earlier step, so the send depends on
+    # nothing its own batch returns.
+    guard = _guard()
+    window = guard.BatchWindow()
+    guard.note_prompt(window, "Open a second reviewer session and nudge the first.")
+    window.dispatched("earlier", "", text=_args(title="first reviewer"))
+    window.settled("earlier", f"Created session {_KEY}.")
+    window.reset()
+    guard.note_dispatched(window, _session_create())
+    window.dispatched("s", guard.WRITE, text=_args(target=_KEY, message="Any update?"))
     assert window.refusal_for("s", guard.WRITE) is None
+
+
+def test_a_session_create_is_never_refused_itself():
+    guard = _guard()
+    window = guard.BatchWindow()
+    guard.note_prompt(window, "Open a reviewer session.")
+    create = _session_create()
+    guard.note_dispatched(window, create)
+    window.dispatched("r", guard.READ, "gh pr view 7")
+    assert window.refusal_for("c", guard.classify(create)) is None
 
 
 def test_an_enqueue_its_read_back_and_a_report_in_one_batch_is_refused():
@@ -537,3 +608,95 @@ def test_a_client_learns_a_result_streamed_before_an_outputless_terminal(tmp_pat
     assert not window._open
     member = next(iter(window._members.values()))
     assert _SHA in member.output
+
+
+def test_a_batched_write_the_guard_cannot_judge_is_refused(monkeypatch):
+    guard = _guard()
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    window.dispatched("w", guard.WRITE, text=_args(item_id=_ITEM, decision=_SHA))
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("judge failed")
+
+    monkeypatch.setattr(window, "_refusal", _boom)
+    reason = window.refusal_for("w", guard.WRITE)
+    assert reason is not None and "could not be checked" in reason
+    assert window.refusal_for("r", guard.READ) is None
+
+
+def _write_ask(call_id: str) -> AcpEvent:
+    return _ask(7, call_id, _WORK, "work_ledger_record", {"item_id": _ITEM})
+
+
+async def _screen(window, event) -> str | None:
+    from types import SimpleNamespace
+
+    transport = SimpleNamespace(_batch_window=window, backend="kiro", steer=AsyncMock())
+    return await _guard().screen_approval(transport, event)
+
+
+@pytest.mark.asyncio
+async def test_a_batched_write_whose_tool_call_was_not_recorded_is_refused(monkeypatch):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    monkeypatch.setattr("kiro_crew.deny_notice.steer_refusal_notice", AsyncMock())
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    real = window.dispatched
+
+    def _fails_for_w(call_id, *a, **kw):
+        if call_id == "w":
+            raise RuntimeError("could not record")
+        return real(call_id, *a, **kw)
+
+    monkeypatch.setattr(window, "dispatched", _fails_for_w)
+    guard.note_dispatched(window, _write_ask("w"))
+    monkeypatch.setattr(window, "refresh", lambda *a, **kw: None)
+    assert await _screen(window, _write_ask("w")) == guard.UNJUDGED_REFUSAL
+
+
+@pytest.mark.asyncio
+async def test_a_batched_write_whose_refresh_failed_is_refused(monkeypatch):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    monkeypatch.setattr("kiro_crew.deny_notice.steer_refusal_notice", AsyncMock())
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    window.dispatched("w", guard.WRITE, text="")
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("could not refresh")
+
+    monkeypatch.setattr(window, "refresh", _boom)
+    assert await _screen(window, _write_ask("w")) == guard.UNJUDGED_REFUSAL
+
+
+@pytest.mark.asyncio
+async def test_a_batched_call_whose_classification_raises_is_refused_not_left_unanswered(
+    monkeypatch,
+):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    monkeypatch.setattr("kiro_crew.deny_notice.steer_refusal_notice", AsyncMock())
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("could not classify")
+
+    monkeypatch.setattr(guard, "classify", _boom)
+    guard.note_dispatched(window, _write_ask("w"))
+    assert await _screen(window, _write_ask("w")) == guard.UNJUDGED_REFUSAL
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_call_after_its_batch_ended_is_not_refused(monkeypatch):
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    window = guard.BatchWindow()
+    window.dispatched("r", guard.READ, text=_args(item_id=_ITEM))
+    window.settled("r", "done")
+    window.mark_unrecorded("w")
+    monkeypatch.setattr(window, "refresh", lambda *a, **kw: None)
+    assert await _screen(window, _write_ask("w")) is None

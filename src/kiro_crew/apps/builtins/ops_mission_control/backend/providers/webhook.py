@@ -40,11 +40,14 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (
     get_secret,
     has_secrets,
 )
-from kiro_crew.webhook_sources import SOURCE_OPS_MISSION_CONTROL, source_refusal
+from kiro_crew.webhook_sources import app_source_refusal
 
 logger = logging.getLogger(__name__)
 
 PROVIDER_ID = "webhook"
+
+#: Must equal ``app.json`` ``name``: the ``webhooks`` source id this app is governed under.
+APP_NAME = "ops-mission-control"
 
 _SECRET_SIGNING_KEY = "signing_secret"
 _REQUIRED_SECRETS: tuple[str, ...] = (_SECRET_SIGNING_KEY,)
@@ -345,8 +348,9 @@ def enqueue(raw_body: bytes, signature: str) -> tuple[bool, str]:
     """Verify and queue a delivery. Returns ``(accepted, detail)``."""
     # The ``webhooks`` governance scope names the sources that may deliver; in an
     # LTS build none may until a policy names one (RFC LTS edition,
-    # Red "Webhooks by source").
-    refusal = source_refusal(SOURCE_OPS_MISSION_CONTROL)
+    # Red "Webhooks by source"). The manifest's ``permissions.webhookSource`` makes
+    # this app a source under its own name.
+    refusal = app_source_refusal(APP_NAME)
     if refusal:
         return False, refusal
     if not provider_enabled(PROVIDER_ID):

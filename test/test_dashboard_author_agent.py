@@ -10,15 +10,20 @@ at the stem.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
+from aiohttp import web
+from sidecar_fault_helpers import fail_one_sidecar_read
 
-from kiro_crew import agent, agent_state
+from kiro_crew import agent, agent_spec_injections, agent_state
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_materialization import skill_resources, worker_agent
+from kiro_crew.dashboard.handlers.agents import api_agent_detail
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 
@@ -657,6 +662,30 @@ def test_a_rebuild_preserves_the_pinned_model_and_skill_mappings(
     assert _is_installers(target) is True
 
 
+def test_a_rebuild_with_a_failed_sidecar_read_keeps_the_pinned_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable sidecar is unknown ownership, not "no pin". Writing the shipped
+    model would destroy a pin recorded nowhere else, so the rebuild carries the spec's model,
+    and the next readable rebuild still finds the pin."""
+    rig = _Rig(tmp_path, monkeypatch)
+    agent.rebuild_agent_config()
+    target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
+    spec = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)
+    spec["model"] = "claude-user-pinned"
+    target.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+    agent_state.set_model_managed("kirocrew-dashboard-author", False)
+    agent_state.set_managed_digest("kirocrew-dashboard-author", agent_state.spec_digest(spec))
+
+    with monkeypatch.context() as faulted:
+        fail_one_sidecar_read(faulted, "get_model_managed", "kirocrew-dashboard-author")
+        worker_agent._install_dashboard_author_agent()
+    assert rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)["model"] == "claude-user-pinned"
+
+    worker_agent._install_dashboard_author_agent()
+    assert rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)["model"] == "claude-user-pinned"
+
+
 def test_a_rebuild_does_not_carry_a_pinned_model_from_an_unconfirmed_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -989,3 +1018,153 @@ def test_every_managed_writer_calls_begin_and_finalize(
     assert (
         "begin" in calls and "finalize" in calls
     ), "the installer writer must call begin_managed_write and finalize_managed_write"
+
+
+# --------------------------------------------------------------------------- #
+# An entry another tool injects into every spec keeps the managed spec ours.
+# --------------------------------------------------------------------------- #
+
+_INJECTED_SERVER = "creds-agent"
+
+
+def _inject(spec: dict[str, Any]) -> dict[str, Any]:
+    """*spec* with the server entry a credentials sandbox tool adds on each launch."""
+    servers = dict(spec.get("mcpServers") or {})
+    servers[_INJECTED_SERVER] = {
+        "command": "creds-agent",
+        "args": [],
+        "env": {"AIM_CREDS_AGENT_INJECTION": "00000000-0000-4000-8000-000000000000"},
+    }
+    return {**spec, "mcpServers": servers}
+
+
+def _drop_injection(spec: dict[str, Any]) -> dict[str, Any] | None:
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return None
+    entry = servers.pop(_INJECTED_SERVER, None)
+    if not isinstance(entry, dict) or "AIM_CREDS_AGENT_INJECTION" not in (entry.get("env") or {}):
+        return None
+    return spec
+
+
+def _stale_managed_spec_with_injection(rig: _Rig, *, user_edit: bool) -> Path:
+    """A managed spec from an older install (old ``kirocrew-core`` path, digest recorded),
+    then rewritten by the injecting tool, optionally with an unrelated user edit too."""
+    target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
+    agent.rebuild_agent_config()
+    old = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)
+    old["mcpServers"]["kirocrew-core"]["command"] = "/gone/0.0.1/bin/kirocrew"
+    agent_state.set_managed_digest("kirocrew-dashboard-author", agent_state.spec_digest(old))
+    live = _inject(old)
+    if user_edit:
+        live["prompt"] = "a person's own charter"
+    target.write_text(json.dumps(live, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def test_a_managed_spec_carrying_a_registered_injection_is_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file is our last write plus exactly the injected entry, so the rebuild still
+    owns it and replaces the dead ``kirocrew-core`` path."""
+    monkeypatch.setattr(agent_spec_injections, "_FILTERS", {})
+    agent_spec_injections.register_spec_injection_filter("creds", _drop_injection)
+    rig = _Rig(tmp_path, monkeypatch)
+    target = _stale_managed_spec_with_injection(rig, user_edit=False)
+    assert _is_installers(target) is True
+
+    agent.rebuild_agent_config()
+
+    command = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)["mcpServers"]["kirocrew-core"]["command"]
+    assert command != "/gone/0.0.1/bin/kirocrew"
+    assert _is_installers(target) is True
+
+
+@pytest.mark.parametrize("registered", [True, False])
+def test_an_injected_spec_with_another_edit_or_no_filter_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registered: bool
+) -> None:
+    """Any change beside the injection, or an injection no filter names, is a user file."""
+    monkeypatch.setattr(agent_spec_injections, "_FILTERS", {})
+    if registered:
+        agent_spec_injections.register_spec_injection_filter("creds", _drop_injection)
+    rig = _Rig(tmp_path, monkeypatch)
+    target = _stale_managed_spec_with_injection(rig, user_edit=registered)
+    before = target.read_bytes()
+    assert _is_installers(target) is False
+
+    agent.rebuild_agent_config()
+
+    assert target.read_bytes() == before
+
+
+def _with_launch_id(spec: dict[str, Any], launch_id: str) -> dict[str, Any]:
+    injected = _inject(spec)
+    injected["mcpServers"][_INJECTED_SERVER]["env"]["AIM_CREDS_AGENT_INJECTION"] = launch_id
+    return injected
+
+
+def _patch_model(name: str, model: str) -> web.Response:
+    request = MagicMock(spec=web.Request)
+    request.method = "PATCH"
+    request.match_info = {"name": name}
+    request.app = {"state": MagicMock()}
+
+    async def _json() -> dict[str, Any]:
+        return {"model": model}
+
+    request.json = _json
+    return asyncio.run(api_agent_detail(request))
+
+
+def test_a_dashboard_save_with_an_injection_keeps_the_spec_managed_across_launch_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model save renews the digest without the injected entry, so the tool writing a
+    new launch identifier does not strand the spec, and the rebuild clears a dead path."""
+    monkeypatch.setattr(agent_spec_injections, "_FILTERS", {})
+    agent_spec_injections.register_spec_injection_filter("creds", _drop_injection)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+        lambda request: True,
+    )
+    rig = _Rig(tmp_path, monkeypatch)
+    target = _stale_managed_spec_with_injection(rig, user_edit=False)
+    name = "kirocrew-dashboard-author"
+
+    assert _patch_model(name, "claude-user-pinned").status == 200
+    saved = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)
+    assert _INJECTED_SERVER in saved["mcpServers"]
+    recorded = agent_state.get_managed_digest(name)
+    assert recorded == agent_state.spec_digest(_drop_injection(json.loads(json.dumps(saved))))
+
+    relaunched = _with_launch_id(saved, "11111111-1111-4111-8111-111111111111")
+    target.write_text(json.dumps(relaunched, indent=2) + "\n", encoding="utf-8")
+    assert _is_installers(target) is True
+
+    agent.rebuild_agent_config()
+
+    rebuilt = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)
+    assert rebuilt["mcpServers"]["kirocrew-core"]["command"] != "/gone/0.0.1/bin/kirocrew"
+    assert rebuilt["model"] == "claude-user-pinned"
+
+
+def test_the_install_and_a_save_record_the_same_digest_for_the_same_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every writer records the digest of the spec without the injection, so the install's
+    record of a file on disk equals what a save records for the same content."""
+    monkeypatch.setattr(agent_spec_injections, "_FILTERS", {})
+    agent_spec_injections.register_spec_injection_filter("creds", _drop_injection)
+    rig = _Rig(tmp_path, monkeypatch)
+    agent.rebuild_agent_config()
+    clean = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)
+    injected = _inject(clean)
+
+    assert worker_agent.dashboard_author_ownership_digest(injected) == (
+        agent_state.get_managed_digest("kirocrew-dashboard-author")
+    )
+    assert worker_agent.dashboard_author_ownership_digest(injected) == (
+        worker_agent.dashboard_author_ownership_digest(clean)
+    )

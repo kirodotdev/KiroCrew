@@ -253,6 +253,7 @@ async function modalInstallErrorScene(theme) {
       check: async () => ({ ok: true }),
       download: async () => ({ ok: true }),
       install: async () => { throw new Error('install request failed') },
+      armsOnQuit: true,
       getInfo: async () => ({ version: '0.4.7', channel: 'stable', packaged: true, lastState: null }),
     }
   }, theme)
@@ -268,7 +269,7 @@ async function modalInstallErrorScene(theme) {
     return json({})
   })
   await p.goto(`${base}/`, { waitUntil: 'networkidle' })
-  const install = p.getByRole('button', { name: generated.components.updateModal.restart_update ?? manual.components.updateModal.restart_update, exact: true })
+  const install = p.getByRole('button', { name: generated.components.updateModal.install_on_quit ?? manual.components.updateModal.install_on_quit, exact: true })
   await install.waitFor({ state: 'visible', timeout: 20_000 })
   await install.click()
   const notice = p.getByTestId('update-modal-install-error')

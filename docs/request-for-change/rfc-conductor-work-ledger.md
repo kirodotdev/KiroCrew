@@ -19,9 +19,10 @@ Status: partial. Phases 1, 2, 2.5, the 2.6 conductor swap, Phase 3 (the
 work-ledger wake gate, [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781),
 including the one-call `watch: "work-ledger"` arm on `monitor_start` and
 `monitor_update`) and Phase 4 (the Crew board,
-[#12792](https://github.com/kirodotdev/KiroCrew/pull/12792)) are on main. Five tools
+[#12792](https://github.com/kirodotdev/KiroCrew/pull/12792)) are on main. Five ledger tools
 ship (`work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record`,
-`work_ledger_rebuild`), with the worker/conductor agents, deprecated alias, doctor
+`work_ledger_rebuild`; `kirocrew-work` has since added `accept_eval`, #31849, and
+`work_ask_record`, #33805), with the worker/conductor agents, deprecated alias, doctor
 notice, and ledger cleanup command. Phase 3b (sibling visibility) and Phase 5
 (worker-to-worker communication) are proposed and not implemented: no `siblings`,
 `work_request`, `work_message` or `inbox` exists. Every
@@ -152,6 +153,8 @@ One per conductor session.
 | `depth` | int 0..2 | server | 0 for a root conductor; see §Two-level conductors |
 | `parent_item` | string or null | server | set when this conductor is itself a worker |
 | `created_at` | ISO 8601 | server | |
+| `goal_id` | 16 hex | server | minted with the board and by each `new_goal` (and by the next `goal` write on a header from before the field), so the rounds of one goal share it; the tracer keys a round's trace on it. Rides no crew-log entry: a rebuild keeps the cache's |
+| `round_started_at` | ISO 8601 | server | when the current round began: stamped with the board, and by a `goal` write that changes the round or starts a new goal. The tracer rolls a round's trace over by its age. Rides no crew-log entry: a rebuild keeps the cache's |
 
 There is deliberately **no item roster field**. The item list is derived by listing the items directory, which removes a writer and therefore a class of clobber. `list_work_items` in Issue Radar's `crew_store` already derives its list the same way.
 
@@ -354,8 +357,8 @@ byte, so the cache never holds a mutation the log never saw. The store's own
 validation still runs first on every accepted write; the entry is then appended
 with the COMMITTED values (an omitted `artifacts` clears the map, and the entry says
 so) and acknowledged: the route answers `200` only once the writer has appended the
-entry, and otherwise `503 crew_log_unrecorded`, carrying the committed `item_id` so
-a `create` is not repeated on retry. Before answering, the route undoes the unrecorded write from the snapshot it took
+entry, and otherwise `503 crew_log_unrecorded`, carrying the write's `item_id` unless
+the undo completed and so removed the item a `create` made, which makes that `create` safe to repeat. Before answering, the route undoes the unrecorded write from the snapshot it took
 of every file the write could touch (the conductor record, the item's record and
 event log, the worker's binding), and removes an item the write created -- an exact
 undo that needs no fold, so a board from before the projection is undone the same
@@ -461,7 +464,7 @@ files stay outside the fold; they are a follow-up, not part of the projection ch
 
 ### Tools
 
-Five tools ship, all mounted on one opt-in MCP server, `kirocrew-work`: `work_brief` and `work_report` for the worker, `work_ledger_read`, `work_ledger_record` and `work_ledger_rebuild` for the conductor (`WORKER_TOOLS` and `CONDUCTOR_TOOLS` in [`src/kiro_crew/mcp_work.py`](../../src/kiro_crew/mcp_work.py)). Which of them answer a given call depends on what the resolved caller is rather than on which spec mounted them; §Agent spec changes gives the dispatch table and argues for that placement. Four shipped in Phase 2, and `work_ledger_rebuild` came with the crew-log projection. `work_request` and `work_message` are Phase 5: proposed, not implemented.
+Five tools ship, all mounted on one opt-in MCP server, `kirocrew-work`: `work_brief` and `work_report` for the worker, `work_ledger_read`, `work_ledger_record` and `work_ledger_rebuild` for the conductor (`WORKER_TOOLS` and `CONDUCTOR_TOOLS` in [`src/kiro_crew/mcp_work.py`](../../src/kiro_crew/mcp_work.py)). Which of them answer a given call depends on what the resolved caller is rather than on which spec mounted them; §Agent spec changes gives the dispatch table and argues for that placement. Four shipped in Phase 2, and `work_ledger_rebuild` came with the crew-log projection. The server has since gained two more: `work_ask_record` in `CONDUCTOR_TOOLS` ([#33805](https://github.com/kirodotdev/KiroCrew/pull/33805)) and the `accept_eval` check in `CHECK_TOOLS` ([#31849](https://github.com/kirodotdev/KiroCrew/pull/31849)). `work_request` and `work_message` are Phase 5: proposed, not implemented.
 
 #### `work_brief` — worker reads its own item
 
@@ -716,6 +719,8 @@ are the conductor's own writes, and a gate that wakes on its owner's writes neve
 ### Verification stays the conductor's job
 
 A worker's `done` is a claim. The conductor's rule is unchanged from the skill: run `accept_eval.py` over the `accept_batch` and act on its verdict. `work_report` cannot write `verdict`, so a worker cannot mark itself accepted; the strongest thing it can do is assert `status: done`, which is the trigger for verification rather than a substitute for it.
+
+The `accept_eval` tool applies that rule without a copied document: called with no arguments it takes the `accept_batch` entries of the caller's own open items whose status is `done` (`work_verify.select_done`) and evaluates those, returning beside each answer what a read of that item shows (`work_verify.row_facts`: the worker's `summary` and claimed `pr` under `reported`, `fails`, the worker's session key, and `pending_overdue` with the conductor's `decision` and the stored `acceptance` when that flag is set; a bar that is not concrete comes back with its stored `acceptance`). That reply is fitted to the read budget: over it, the stored bars and then the other row facts are left out and the reply says so, and if it is still over, the last results are named under `omitted` for a call of their own. It still writes nothing. The conductor settles a pass with one `work_ledger_record` call, a `close` that carries the `verdict`; the tool sends the `verdict` write and then the `close` write, so the item keeps both events.
 
 When the conductor needs detail the summary does not carry, it uses `session_send` to ask and `session_read_message` to read the answer, exactly as today, and that path keeps its human approval prompt. The ledger removes the polling, not the conversation.
 

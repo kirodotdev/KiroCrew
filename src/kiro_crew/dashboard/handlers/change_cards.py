@@ -1270,6 +1270,13 @@ def _record_memory(
         # history line.
         if memory_writes_off_key(KiroCrewConfig.load().memory) is not None:
             return
+        from kiro_crew.memory_provider import resolver
+
+        # A provider that replaces Crew's memory gets no history line: Crew's own
+        # memory stays as it was, and the line is not a kind a provider takes.
+        if not resolver.builtin_writes_allowed(DEFAULT_MEMORY_STORE):
+            resolver.note_skip("change-card history line", DEFAULT_MEMORY_STORE)
+            return
         ContextBuilder.get_memory_for(memory_store=DEFAULT_MEMORY_STORE).append_history(entry)
 
     async def _run() -> None:

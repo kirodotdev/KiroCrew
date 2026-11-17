@@ -42,6 +42,16 @@ export const ENV_SHELLS: readonly EnvShellEntry[] = [
 ] as const
 
 /**
+ * The `DO_NOT_TRACK` opt-out in each shell, for the Privacy disclosure's command
+ * list (PrivacyDisclosure.tsx pairs each with its translated shell label).
+ */
+export const DO_NOT_TRACK_COMMANDS = {
+  macos: 'export DO_NOT_TRACK=1',
+  powershell: "$env:DO_NOT_TRACK = '1'",
+  cmd: 'set DO_NOT_TRACK=1',
+} as const
+
+/**
  * Build the `kirocrew config set` CLI command for a file-mode setting.
  * Lives here (not in SettingRef.tsx) because this module is the named i18n
  * boundary for CLI syntax: commands and their placeholders are terminal

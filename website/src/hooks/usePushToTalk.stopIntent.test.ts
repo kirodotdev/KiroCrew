@@ -112,15 +112,16 @@ describe('push-to-talk stop intent', () => {
     key('keyup', 'AltRight')
     expect(voice.recording).toBe(true)
     key('keydown', 'AltRight', { altKey: true })
+    key('keyup', 'AltRight')
     expect(voice.stop).toHaveBeenLastCalledWith('finish')
 
-    key('keyup', 'AltRight')
     key('keydown', 'AltRight', { altKey: true })
     key('keyup', 'AltRight')
     expect(voice.recording).toBe(true)
     // Shift held before the modifier: refused by matchesBinding, accepted as
     // the keep-draft stop because a capture is running.
     key('keydown', 'AltRight', { altKey: true, shiftKey: true })
+    key('keyup', 'AltRight', { shiftKey: true })
     expect(voice.stop).toHaveBeenLastCalledWith(undefined)
     expect(voice.recording).toBe(false)
   })

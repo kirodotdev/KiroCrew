@@ -570,8 +570,8 @@ def test_every_post_mutation_await_is_individually_protected():
         for text, stack in matching:
             assert any(any(kind in entry for kind in _PROTECTING) for entry in stack), (
                 f"{name}: `{text}` is guarded only by {stack or ['nothing']} -- a "
-                "CancelledError walks past every `except Exception`, which is exactly the "
-                "bug class three review rounds found"
+                "CancelledError walks past every `except Exception`, so a cancelled warm "
+                "must be caught by name"
             )
 
 

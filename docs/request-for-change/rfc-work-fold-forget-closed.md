@@ -1,10 +1,10 @@
 ---
 title: Work fold forgets closed items — bound a board by what is open, not by what it ever created
-status: accepted
+status: implemented
 author: kirocrew agent session
 created: 2026-10-10
-last-audited: 2026-10-10
-audited-at: bf1723d3f
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 18982
 implementation-prs: [19068]
 tracking-issues: [18583]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Work fold forgets closed items
 
-Status: accepted. Implementation in [#19068](https://github.com/kirodotdev/KiroCrew/pull/19068); see the implementation note in §4.2. Every code reference below was read at `bf1723d3f`.
+Status: implemented. Accepted, then implemented in [#19068](https://github.com/kirodotdev/KiroCrew/pull/19068); see the implementation note in §4.2. Rechecked at `1d08e941b3`: `WORK_CLOSED_WINDOW` (`work_vocab.py`) bounds closed items in `crew_log/projection_work.py`. Every code reference below was read at `bf1723d3f`.
 
 This document lands on its own, before any implementation, because it removes a
 user-visible limit (a conductor board stops dispatching after 256 lifetime items)

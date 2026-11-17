@@ -25,7 +25,8 @@ exit code. The families here hold the rest:
   bounds and loop-stall history
 * :mod:`~kiro_crew.doctor_checks.channels` -- Slack, Discord, WhatsApp and every other
   channel
-* :mod:`~kiro_crew.doctor_checks.features` -- vector memory and speech-to-text
+* :mod:`~kiro_crew.doctor_checks.features` -- vector memory, speech-to-text and
+  saved prompts a built-in command shadows
 
 The orchestrator imports these when a health report runs (``--bundle`` prints no
 report and imports none of them), so ``import kiro_crew.cli`` never pays for them.

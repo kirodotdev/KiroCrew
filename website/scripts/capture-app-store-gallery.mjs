@@ -39,7 +39,6 @@ const APPS = [
   ['agent-worlds', 'agent_worlds', 'worlds', '/worlds'],
   ['auto-improvement', 'auto_improvement', 'auto-improvement', '/auto-improvement'],
   ['auto-research', 'auto_research', 'auto-research', '/auto-research'],
-  ['channels', 'channels', 'channels', '/channels'],
   ['code-review-sage', 'code_review_sage', 'code-review-sage', '/code-review-sage'],
   ['command-bar', 'command_bar', 'command-bar', '/chat'],
   ['crew-companion', 'crew_companion', 'crew-companion', '/crew-companion'],
@@ -55,7 +54,6 @@ const APPS = [
   ['papyrus', 'papyrus', 'papyrus', '/papyrus'],
   ['personal-shopper', 'personal_shopper', 'personal-shopper', '/personal-shopper'],
   ['pptx-maker', 'pptx_maker', 'pptx-maker', '/pptx-maker'],
-  ['projects', 'projects', 'projects', '/projects'],
   ['spec-builder', 'spec_builder', 'spec-builder', '/spec-builder'],
   ['workflows', 'workflows', 'workflows', '/workflows'],
 ]

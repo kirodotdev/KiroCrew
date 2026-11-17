@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const connectInstance = vi.fn()
-vi.mock('../api/client', () => ({ api: { connectInstance: (...a: unknown[]) => connectInstance(...a) } }))
+const embedInstanceToken = vi.fn()
+vi.mock('../api/client', () => ({
+  api: {
+    connectInstance: (...a: unknown[]) => connectInstance(...a),
+    embedInstanceToken: (...a: unknown[]) => embedInstanceToken(...a),
+  },
+}))
 
 import { connectInstanceInto } from './connectInstance'
-import { setWarm } from '../store/instancesSlice'
+import { setConnectError, setWarm } from '../store/instancesSlice'
 
 function captureInfo() {
   const lines: string[] = []
@@ -118,6 +124,78 @@ describe('connectInstanceInto pane journal', () => {
     expect(dispatch).not.toHaveBeenCalled()
     expect(lines).toEqual([
       '[pane] warm-declined id=fargate-crew via=select state=connected hasPort=true hasToken=false',
+    ])
+  })
+})
+
+/** A dashboard token's shape, `base64url(payload).signature`, naming `port`. */
+function tokenNaming(port: number): string {
+  const b64 = btoa(JSON.stringify({ sub: 'owner', embed_parent_port: String(port) }))
+  return `${b64.replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')}.c2ln`
+}
+
+function servePageAt(url: string) {
+  ;(window as unknown as { happyDOM: { setURL(u: string): void } }).happyDOM.setURL(url)
+}
+
+// The desktop app's managed tunnel: this page on 5477, the gateway bound on 5476.
+describe('connectInstanceInto on a page served on another port than the gateway', () => {
+  beforeEach(() => {
+    connectInstance.mockReset()
+    embedInstanceToken.mockReset()
+    servePageAt('http://127.0.0.1:5477/')
+  })
+  afterEach(() => {
+    servePageAt('http://localhost:6776/')
+    vi.restoreAllMocks()
+  })
+
+  it('stores a credential naming this page, never the gateway token naming its own port', async () => {
+    const dispatch = vi.fn()
+    connectInstance.mockResolvedValue({ state: 'connected', local_port: 7778, token: tokenNaming(5476) })
+    embedInstanceToken.mockResolvedValue({ token: 'page-token', port: 7778, ttl: '30m' })
+    await connectInstanceInto(dispatch as never, 'c', 'auto-connect')
+    expect(embedInstanceToken).toHaveBeenCalledWith('c', 5477)
+    expect(dispatch.mock.calls).toEqual([
+      [setWarm({ id: 'c', conn: { port: 7778, token: 'page-token' }, keepTokenIfPortUnchanged: false })],
+    ])
+  })
+
+  it('does it for every warm-writer, auto-warm and a rebuild onto a new port included', async () => {
+    for (const [via, opts, port] of [
+      ['select', {}, 7778],
+      ['retry', { rebuild: true }, 7779],
+      ['auto-warm', { onlyIfConnected: true }, 7778],
+      ['link', { onlyIfConnected: true }, 7778],
+    ] as const) {
+      const dispatch = vi.fn()
+      connectInstance.mockResolvedValue({ state: 'connected', local_port: port, token: tokenNaming(5476) })
+      embedInstanceToken.mockResolvedValue({ token: `page-${via}`, port, ttl: '30m' })
+      await connectInstanceInto(dispatch as never, 'c', via, opts)
+      expect(dispatch.mock.calls[0][0].payload.conn).toEqual({ port, token: `page-${via}` })
+    }
+    expect(embedInstanceToken.mock.calls.every(([, p]) => p === 5477)).toBe(true)
+  })
+
+  it('a token already naming this page is stored as it is, with no second request', async () => {
+    const dispatch = vi.fn()
+    const token = tokenNaming(5477)
+    connectInstance.mockResolvedValue({ state: 'connected', local_port: 7778, token })
+    await connectInstanceInto(dispatch as never, 'c')
+    expect(embedInstanceToken).not.toHaveBeenCalled()
+    expect(dispatch.mock.calls[0][0].payload.conn).toEqual({ port: 7778, token })
+  })
+
+  it('a refused page credential is a failed connect: no warm entry, the reason kept for the panel', async () => {
+    const lines = captureInfo()
+    const dispatch = vi.fn()
+    const err = new Error('our forward changed; try again')
+    connectInstance.mockResolvedValue({ state: 'connected', local_port: 7778, token: tokenNaming(5476) })
+    embedInstanceToken.mockRejectedValue(err)
+    await expect(connectInstanceInto(dispatch as never, 'c', 'select')).rejects.toBe(err)
+    expect(dispatch.mock.calls).toEqual([[setConnectError({ id: 'c', error: 'our forward changed; try again' })]])
+    expect(lines).toEqual([
+      '[pane] warm-failed id=c via=select stage=pane-credential error="our forward changed; try again"',
     ])
   })
 })

@@ -34,6 +34,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_helpers import (  # noqa:
     _redirect_state,
     _slot_stub,
 )
+from kiro_crew.testing.links import make_dir_link
 
 
 @pytest.mark.asyncio
@@ -161,45 +162,187 @@ def test_the_decision_ledger_is_not_in_the_agent_writable_index():
 @pytest.mark.parametrize(
     "path",
     [
-        "~/.kiro/crew/trust/spec-builder-decisions.json",
-        "~/.kirocrew/trust/spec-builder-decisions.json",
+        "~/.kiro/crew/apps/spec-builder/data/trust/spec-builder-decisions.json",
+        "~/.kirocrew/apps/spec-builder/data/trust/spec-builder-decisions.json",
         # The PARENT, which is the half a leaf-only entry missed.
-        "~/.kiro/crew/trust",
-        "~/.kirocrew/trust",
+        "~/.kiro/crew/apps/spec-builder/data/trust",
+        "~/.kirocrew/apps/spec-builder/data/trust",
     ],
 )
-def test_the_decision_ledger_is_on_the_security_keystone(path):
-    """Read+write keystone, like the Notes vault registry and the Ops Mission
-    Control policy: app-owned, not a secret, but forging or erasing it defeats the
-    app's safety property, so the agent must not reach it through the file tools
-    (the shell is confined by the OS sandbox, not by a matcher over command text).
+def test_the_decision_ledger_is_fenced_from_agent_writes(path):
+    """Write-fenced through the app's own ``agentReadOnlyDirs`` declaration: app-owned,
+    not a secret, but forging or erasing it defeats the app's safety property, so the
+    agent's file tools must not write it (the shell is confined by the OS sandbox, which
+    seals the same declared directory read-only).
 
-    The PARENT is gated too. Under this app's own state dir it was not: a directory
-    below ``workspace/`` is not a sensitive path, so one ``ln -s`` naming it
-    redirected every read and write, and this backend opens the path directly (as
-    keystone writers must) so it would have followed the link."""
+    The PARENT is fenced too. Under this app's ``workspace/`` state dir it was not, so one
+    ``ln -s`` naming it redirected every read and write, and this backend opens the path
+    directly so it would have followed the link."""
     from kiro_crew import security
 
-    assert security.is_sensitive_path(path)
+    assert security.is_sensitive_write_path(path)
+    assert not security.is_sensitive_path(path), "the record is readable, not a secret"
+
+
+def test_the_app_declares_the_ledger_directory_read_only_to_agents():
+    """The fence is the app's own declaration, so the manifest must carry it."""
+    import json
+
+    manifest = json.loads(
+        (Path(__file__).resolve().parents[1] / "app.json").read_text(encoding="utf-8")
+    )
+    assert "trust" in manifest["agentReadOnlyDirs"]
 
 
 def test_the_ledger_is_not_under_the_apps_own_state_dir(tmp_path, monkeypatch):
-    """Source/behaviour guard: the default location must be the gated trust root.
+    """Source/behaviour guard: the default location is the declared read-only directory.
 
-    Anything under the app's state dir has a replaceable parent, which is the defect
-    this move fixes -- and it would come back silently, because the app opens the
-    path directly and a symlinked parent reads and writes exactly like a real one."""
+    Anything under the app's state dir has an agent-writable parent, which is the
+    defect this location fixes -- and it would come back silently, because the app
+    opens the path directly and a symlinked parent reads and writes exactly like a
+    real one."""
     monkeypatch.setattr(routes, "_DECISIONS_PATH", None)
     monkeypatch.setattr(routes, "_STATE_DIR", tmp_path / "state")
 
     path = routes._decisions_path()
 
     assert path.parent.name == "trust", path
+    assert path.parent.parent.name == "data", path
     assert (tmp_path / "state") not in path.parents, path
     from kiro_crew import security
 
-    assert security.is_sensitive_path(str(path))
-    assert security.is_sensitive_path(str(path.parent))
+    assert security.is_sensitive_write_path(str(path))
+    assert security.is_sensitive_write_path(str(path.parent))
+
+
+def _point_at_a_home(monkeypatch, tmp_path):
+    """Use the default ledger location under *tmp_path* as the data home."""
+    from kiro_crew.apps.builtins.spec_builder.backend import decisions
+
+    monkeypatch.setattr(routes, "_DECISIONS_PATH", None)
+    monkeypatch.setattr(decisions, "config_dir", lambda: tmp_path)
+    return tmp_path / "trust" / "spec-builder-decisions.json", routes._decisions_path()
+
+
+def test_an_earlier_releases_record_is_moved_and_kept(tmp_path, monkeypatch):
+    """An upgrade keeps every recorded answer: the old ``trust/`` record moves once."""
+    legacy, path = _point_at_a_home(monkeypatch, tmp_path)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"/specs/s": {"answers": {}}}), encoding="utf-8")
+
+    with routes._DECISIONS_LOCK:
+        store, usable = routes._read_decisions()
+
+    assert usable and store == {"/specs/s": {"answers": {}}}
+    assert path.is_file() and not legacy.exists()
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == (store, True)
+
+
+def test_a_record_planted_at_the_old_location_later_is_never_imported(tmp_path, monkeypatch):
+    """The old location is read once: with no earlier record, an empty one is settled.
+
+    Agents' shells can write the data home's ``trust/``, so a file that appears there
+    after the first read must not land in the fenced record as forged answers."""
+    legacy, path = _point_at_a_home(monkeypatch, tmp_path)
+
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == ({}, True)
+    assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"/specs/s": {"answers": {"q": "forged"}}}), encoding="utf-8")
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == ({}, True)
+    assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+
+def test_a_record_at_the_new_location_wins_over_an_old_one(tmp_path, monkeypatch):
+    """The old record is read only while the new one is absent."""
+    legacy, path = _point_at_a_home(monkeypatch, tmp_path)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"/old": {}}), encoding="utf-8")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"/new": {}}), encoding="utf-8")
+
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == ({"/new": {}}, True)
+    assert legacy.exists()
+
+
+def test_a_move_that_cannot_write_keeps_the_old_record(tmp_path, monkeypatch):
+    """A failed copy leaves the answers where they were, readable, for the next try."""
+    from kiro_crew.apps.builtins.spec_builder.backend import decisions
+
+    legacy, path = _point_at_a_home(monkeypatch, tmp_path)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"/specs/s": {}}), encoding="utf-8")
+
+    def refuse(*_a, **_k):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(decisions, "atomic_write", refuse)
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == ({"/specs/s": {}}, True)
+    assert legacy.exists() and not path.exists()
+
+
+def test_an_unreadable_old_record_is_an_unusable_store(tmp_path, monkeypatch):
+    """A record that exists but cannot be read must refuse writes, as the new one does."""
+    legacy, _path = _point_at_a_home(monkeypatch, tmp_path)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"\xff\xfe not utf-8")
+
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == ({}, False)
+
+
+@pytest.mark.parametrize("plant", ["symlink", "hardlink"])
+def test_a_link_planted_at_the_old_location_never_copies_its_target(tmp_path, monkeypatch, plant):
+    """Agents' shells can plant a link in the data home's ``trust/``: the move reads only a
+    regular file with one name, so a file agents cannot read never reaches the record.
+
+    On Windows the symlink case plants a junction instead: a file symlink needs a
+    privilege the runner may lack, and a junction is the reparse point any shell can
+    plant there, refused by the same no-reparse open."""
+    legacy, path = _point_at_a_home(monkeypatch, tmp_path)
+    hidden = tmp_path / "hidden.env"
+    hidden.write_text("TOKEN=not-for-agents\n", encoding="utf-8")
+    legacy.parent.mkdir(parents=True)
+    if plant == "symlink" and os.name == "nt":
+        make_dir_link(legacy, tmp_path)
+    else:
+        (os.symlink if plant == "symlink" else os.link)(hidden, legacy)
+
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == ({}, False)
+    assert not path.exists()
+
+
+def test_a_directory_planted_at_the_old_location_leaves_no_descriptor_open(tmp_path, monkeypatch):
+    """A refused old record keeps the store unusable and every read retries it, so the
+    refusal must close what it opened or each read leaks one descriptor."""
+    from kiro_crew.apps.builtins.spec_builder.backend import decisions
+
+    legacy, _path = _point_at_a_home(monkeypatch, tmp_path)
+    legacy.mkdir(parents=True)
+    opened: list[int] = []
+    real_open = decisions.platform_compat.open_file_no_reparse
+
+    def recording_open(*args, **kwargs):
+        opened.append(real_open(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(decisions.platform_compat, "open_file_no_reparse", recording_open)
+    with routes._DECISIONS_LOCK:
+        assert routes._read_decisions() == ({}, False)
+    planted = os.stat(legacy)
+    for fd in opened:
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            continue  # closed
+        assert (info.st_dev, info.st_ino) != (planted.st_dev, planted.st_ino), "fd leaked"
 
 
 @pytest.mark.asyncio
@@ -390,9 +533,10 @@ async def test_a_raised_index_removal_still_restores_the_answers(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_the_ledger_parent_is_created_on_first_write(tmp_path, monkeypatch):
-    """The ledger lives under ``trust/``, not this app's state dir, so on a fresh
-    install its parent may not exist yet -- and the app's own mkdir is the only thing
-    that creates it. Without this the FIRST answer of a new install fails to record."""
+    """The ledger lives under its own ``trust/`` directory, not this app's state dir, so
+    on a fresh install its parent may not exist yet -- and the app's own write is the
+    only thing that creates it. Without this the FIRST answer of a new install fails to
+    record."""
     _redirect_state(monkeypatch, tmp_path)
     # A parent that does not exist, exactly like a fresh install's trust root.
     ledger = tmp_path / "fresh-home" / "trust" / "spec-builder-decisions.json"

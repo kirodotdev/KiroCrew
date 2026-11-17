@@ -138,6 +138,15 @@ class TestProvision:
         publish_member_workspace(doc, "member-atlas", cfg.workspaces["member-atlas"])
         assert "member-atlas" in doc["workspaces"]
 
+    def test_a_stale_entry_with_an_embedded_nul_does_not_block_a_create(self):
+        # resolve() raises ValueError on an embedded NUL; skipped like the above.
+        cfg = _config(atlas=KiroCrewAgentConfig(workspace=AUTO_WORKSPACE))
+        cfg.workspaces["old"] = WorkspaceConfig(dir="bad\x00dir")
+        assert provision_member_workspace(cfg, "atlas") == "member-atlas"
+        doc = {"workspaces": {"old": {"dir": "bad\x00dir"}}}
+        publish_member_workspace(doc, "member-atlas", cfg.workspaces["member-atlas"])
+        assert "member-atlas" in doc["workspaces"]
+
     def test_retire_restores_the_snapshot(self):
         cfg = _config(atlas=KiroCrewAgentConfig(workspace=AUTO_WORKSPACE))
         name = provision_member_workspace(cfg, "atlas")

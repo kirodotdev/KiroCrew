@@ -124,6 +124,38 @@ def test_the_conductors_own_create_and_send_carry_the_worker_capabilities(
     assert "issuetracker" in reply
 
 
+def test_a_worker_server_its_session_could_not_sign_in_to_is_named_not_listed(
+    crewmate, gateway_has_issuetracker, pixel_file, monkeypatch  # noqa: F811
+):
+    """The worker's own ``tracker`` failed its sign-in in the worker's session."""
+    from kiro_crew.acp.mcp_session_report import McpSessionReport
+    from kiro_crew.acp.types import EVENT_MCP_SERVER_INIT_FAILURE, EVENT_MCP_SERVER_INITIALIZED
+    from kiro_crew.dashboard.crewmate_dispatch_capabilities import own_worker_note
+
+    # ``jira`` is declared but not mounted: the worker lacks it, so it is not named unusable.
+    spec = {"mcpServers": {"notes": {}, "tracker": {}, "jira": {}}, "tools": ["@notes", "@tracker"]}
+    monkeypatch.setattr(catalog_mod, "worker_spec", lambda member: spec)
+    state, caller, _execution = crewmate
+    created = _call(
+        handlers_sc.api_session_control_create,
+        _request(state, caller, "/api/session-control/create", {"title": "triage"}),
+    )
+    report = McpSessionReport()
+    report.begin_session([])
+    report.record_event(EVENT_MCP_SERVER_INITIALIZED, "notes")
+    report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, "tracker", "Authentication expired")
+    report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, "jira", "Authentication expired")
+    # A session that still re-attempts it leaves it out of ``restart_to_load``.
+    report.set_reattempting({"tracker"})
+    state.get_slot(created["target"]).set_mcp_report(report.payload(), "s-1")
+
+    note = asyncio.run(own_worker_note({}, state, slot_history_key(caller), created["target"]))
+    assert "Your worker's MCP servers: notes." in note
+    assert "tracker (sign-in missing or expired)" in note
+    assert "jira (" not in note
+    assert "Authentication expired" not in note
+
+
 def test_another_caller_gets_no_capability_line(crewmate, gateway_has_issuetracker):  # noqa: F811
     state, _caller, _execution = crewmate
     plain = state.get_or_create_slot("chat-plain")

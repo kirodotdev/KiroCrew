@@ -22,6 +22,7 @@
 
 import { useState } from 'react'
 import { api } from '../../api/client'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { isRegistrySourced } from '../../components/appstore/types'
 import { isTrustDeniedError, localOnlyTrustRepository } from '../../components/appstore/TrustAppModal'
@@ -216,7 +217,7 @@ export function useAppUpdates({
     // Neither is a failure, but the user must hear about every such app, not
     // be routed to the first.
     const notices: string[] = []
-    if (failed.length) notices.push(i18nT('pages.appsPage.failed_to_update', { names: failed.map(label).join(', ') }))
+    if (failed.length) notices.push(i18nT('pages.appsPage.failed_to_update', { names: fmtList(failed.map(label), { style: 'narrow' }) }))
     for (const name of needsTrust) {
       notices.push(i18nT('pages.appsPage.update_needs_trust', { name: label(name) }))
     }

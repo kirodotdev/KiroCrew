@@ -177,10 +177,25 @@ async def test_a_proxied_event_stream_outlives_the_total_bound(monkeypatch) -> N
 async def test_a_slow_non_stream_response_is_still_cut(monkeypatch) -> None:
     """The negative control: the bound is lifted for streams, not abolished.
 
-    A 504 rather than the backend's payload is the whole assertion. Without the
-    total bound this request would wait ``_BOUND * 6``, and the elapsed check
-    below fails on that even if the status somehow matched.
+    A 504 rather than the backend's payload, cut by the proxy's own total bound
+    armed at ``_PROXY_TIMEOUT``: the recorder below keeps every ``asyncio.timeout``
+    the proxy arms, and the one that cut this request is the one that expired.
+    Without the total bound this request would get the backend's payload after
+    ``_BOUND * 6``.
     """
+    armed: list[tuple[float | None, asyncio.Timeout]] = []
+    real_asyncio = routes.asyncio
+
+    class _RecordingAsyncio:
+        def __getattr__(self, name: str):
+            return getattr(real_asyncio, name)
+
+        @staticmethod
+        def timeout(delay: float | None) -> asyncio.Timeout:
+            bound = real_asyncio.timeout(delay)
+            armed.append((delay, bound))
+            return bound
+
     backend = TestServer(await _backend())
     await backend.start_server()
     try:
@@ -188,12 +203,13 @@ async def test_a_slow_non_stream_response_is_still_cut(monkeypatch) -> None:
         gateway = TestClient(TestServer(await _gateway(monkeypatch, base)))
         await gateway.start_server()
         try:
-            started = asyncio.get_running_loop().time()
-            resp = await gateway.get("/apps/demo/api/slow-headers")
-            elapsed = asyncio.get_running_loop().time() - started
+            with monkeypatch.context() as mp:
+                mp.setattr(routes, "asyncio", _RecordingAsyncio())
+                resp = await gateway.get("/apps/demo/api/slow-headers")
             assert resp.status == 504, await resp.text()
             assert (await resp.json())["error"] == "backend timeout"
-            assert elapsed < _BOUND * 4, f"cut took {elapsed:.2f}s, bound is {_BOUND}s"
+            expired = [delay for delay, bound in armed if bound.expired()]
+            assert expired == [_BOUND], f"armed {[d for d, _ in armed]}, expired {expired}"
         finally:
             await gateway.close()
     finally:

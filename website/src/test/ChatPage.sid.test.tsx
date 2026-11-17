@@ -451,7 +451,7 @@ describe('ChatPage ?sid= URL parameter', () => {
       expect(screen.queryByText(/session "chat-9-900" not found/i)).toBeNull()
 
       await act(async () => { store.dispatch(sseSlots([slot('chat-9-900', 'Late Session')])) })
-      await vi.advanceTimersByTimeAsync(50)
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) }) // the open takes its own turn; act runs the update it schedules
       expect(store.getState().chat.activeSlot).toBe('chat-9-900')
       vi.useRealTimers()
     })

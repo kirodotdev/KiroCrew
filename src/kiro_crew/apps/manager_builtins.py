@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from kiro_crew.apps import protected_app_state
+from kiro_crew.apps.builtin_fold import carry_folded_switch
 from kiro_crew.apps.discovery import discover_builtin_apps
 from kiro_crew.apps.manager_activation import _app_activation_denied
 from kiro_crew.apps.manager_records import (
@@ -29,10 +31,13 @@ from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
+    InstalledRecordShapeError,
+    _declared_grant_entries,
     _is_sidecar_entry,
     _now_iso,
     _read_installed,
     _update_in_progress,
+    _write_approved_grants,
     _write_installed,
     app_dir,
     apps_dir,
@@ -42,6 +47,7 @@ from kiro_crew.apps.manager_records import (
 )
 from kiro_crew.apps.manager_tree import _check_path_safety, gateway_data_dir_obstruction
 from kiro_crew.apps.manifest import app_name_error
+from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.pinned_fs import supports_pinned_walk
@@ -83,16 +89,7 @@ logger = logging.getLogger("kiro_crew.apps.manager")
 # both the hardcoded list and the file-based manifests read it from here, so a
 # builtin cannot become default-on in one registration path while the other
 # path's test still forbids it.
-_DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
-    {
-        "projects",  # Task Runner
-        # Command Bar replaces the quick-search (Cmd+K) surface rather than adding
-        # a sidebar entry, so shipping it off leaves the gesture on the legacy
-        # palette and the launcher unseen. Disabling the app is what restores the
-        # old surface, which is the opt-out this exemption trades for.
-        "command-bar",
-    }
-)
+_DEFAULT_ON_BUILTINS: frozenset[str] = frozenset()
 
 
 # Promotions still owed to installs that PREDATE them — a different question from
@@ -101,23 +98,20 @@ _DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
 # ``_DEFAULT_ON_BUILTINS`` answers "what does a FRESH install enable". This set
 # answers "which promotion has not yet reached installs that registered the app
 # while it was still default-off". Reading the first set for the second question
-# reverses deliberate opt-outs: ``projects`` (Task Runner) has shipped
-# ``defaultEnabled: true`` since it was aligned with the other builtins, long
-# before this allowlist existed, so it has been enabled and visible in the
-# sidebar on every existing install. A record showing ``enabled: false`` for it
-# is therefore a user who FOUND it and turned it off — the opposite of the
-# population a backfill exists to serve.
+# reverses deliberate opt-outs: an app that shipped ``defaultEnabled: true``
+# long before this allowlist existed has been enabled and visible in the sidebar
+# on every existing install, so a record showing ``enabled: false`` for it is a
+# user who FOUND it and turned it off, the opposite of the population a backfill
+# exists to serve.
 #
 # So a name belongs here only when both hold: a fresh install enables it (it is
 # in the set above), and existing installs were never in a position to choose.
-# ``command-bar`` qualifies because it was default-OFF at first registration for
-# those installs AND, replacing the quick-search surface rather than adding a
-# sidebar entry, it appears on no store or launcher surface they could have found
-# it on. An app already default-on when they installed it never qualifies.
+# An app already default-on when they installed it never qualifies.
 #
-# Entries are permanent, not cleaned up after a release: the marker is per
-# install, so a user restoring an old data home still gets the promotion once.
-_DEFAULT_ON_BACKFILL: frozenset[str] = frozenset({"command-bar"})
+# Empty since the one app it promoted, ``command-bar``, became a core setting: a
+# record of it still owed the promotion is read as on when that setting is carried
+# over (``apps/builtin_fold.py``), so dropping it here loses nobody's launcher.
+_DEFAULT_ON_BACKFILL: frozenset[str] = frozenset()
 
 
 @holds_app_record_locks
@@ -228,15 +222,11 @@ def _audit_default_on_backfill(name: str) -> None:
 # EMPTY, and that is a finished migration rather than an oversight. Every builtin now
 # ships as a file-based manifest under ``builtins/<dir>/app.json`` and is picked up by
 # ``discover_builtin_apps()``. ``agent-worlds`` and ``channels`` were the last two
-# hardcoded entries; they moved to ``builtins/agent_worlds/app.json`` and
-# ``builtins/channels/app.json`` with every field byte-identical, including the
-# ``defaultEnabled: false`` / ``hidden: true`` flags, which survive because
-# ``_manifest_to_builtin_dict`` copies ``AppManifest.extra`` verbatim.
-#
-# One thing JSON cannot carry came with them, so it is recorded here: ``channels`` sets
-# ``hidden: true`` to keep itself out of the App Store Browse grid only. Its code and
-# routes stay fully intact and it is enabled with ``kirocrew app enable channels``.
-# ``hidden`` gates store visibility, nothing else.
+# hardcoded entries; they moved to file manifests with every field byte-identical,
+# including the ``defaultEnabled: false`` / ``hidden: true`` flags, which survive
+# because ``_manifest_to_builtin_dict`` copies ``AppManifest.extra`` verbatim.
+# ``hidden`` gates store visibility, nothing else. ``channels`` has since folded into
+# core as the ``dashboard.channels_enabled`` setting (``builtins._FOLDED_BUILTIN_SWITCHES``).
 #
 # Why it had to happen for i18n: the display copy of a builtin is localised by the
 # ``APP_MANIFEST_KEY`` table in ``website/src/components/appstore/appManifest.ts``, and
@@ -818,6 +808,10 @@ def register_builtin_apps() -> int:
             existing.lifecycle = "locked"
             # Sync migratedTo from definition (overwrite stale values)
             existing.migratedTo = _effective_migrated_to(app_data)
+            # A built-in approves what it SHIPS, stored here at every start so the set
+            # follows an upgrade: the app.json copy below is agent-writable and grants
+            # nothing it adds.
+            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
             _write_installed(name, existing)
         else:
             # Use defaultEnabled from definition (defaults to True for backward compat)
@@ -856,6 +850,10 @@ def register_builtin_apps() -> int:
                 # record would claim it already had.
                 defaultOnBackfilled=default_enabled and name in _DEFAULT_ON_BACKFILL,
             )
+            # A built-in approves what it ships (see the branch above). Stored with the
+            # first record, so one registered after the one-time import is not left
+            # approving nothing.
+            _write_approved_grants(name, _declared_grant_entries(grant_source(app_data)))
             _write_installed(name, meta)
 
         # Persist manifest so dashboard can show full info
@@ -871,15 +869,18 @@ def register_builtin_apps() -> int:
         # loopback mcpServers URL (self-managed apps) — both go through the
         # proxy, which 502s without a secret, so both must get one.
         if _app_declares_backend(app_data):
-            secret_path = dest / ".app_secret"
-            if not secret_path.is_file():
-                # circular import: token_auth → app_secret_store → manager
-                # token_auth imports app_secret_store, which transitively
-                # imports the manager module's app-directory helpers.
-                # Importing at module scope here would create a cycle, so
-                # we defer to the function body.
-                from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
+            # circular import: token_auth → app_secret_store → manager
+            # token_auth imports app_secret_store, which transitively
+            # imports the manager module's app-directory helpers.
+            # Importing at module scope here would create a cycle, so
+            # we defer to the function body.
+            from kiro_crew.dashboard.token_auth import (
+                generate_app_secret,
+                read_app_secret,
+                write_app_secret,
+            )
 
+            if not read_app_secret(name):
                 write_app_secret(name, generate_app_secret())
             # Invalidate the proxy secret cache so the newly-written (or
             # pre-existing) secret is picked up on the next request.
@@ -956,7 +957,13 @@ def detect_orphaned_builtins(*, force_refresh: bool = False) -> set[str]:
     for entry in root.iterdir():
         if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
-        meta = _read_installed(entry.name)
+        try:
+            meta = _read_installed(entry.name)
+        except InstalledRecordShapeError as exc:
+            # Never an orphan: an orphan is torn down, and a damaged record says
+            # nothing about whether this app is one.
+            logger.warning("Skipping app %s in the orphan scan: %s", entry.name, exc)
+            continue
         if (
             meta
             and meta.origin == "builtin"
@@ -977,6 +984,11 @@ def invalidate_orphan_cache() -> None:
 # ---------------------------------------------------------------------------
 # Migration cleanup
 # ---------------------------------------------------------------------------
+
+#: Appended to ``installed.json`` and ``app.json`` when a migrated builtin's record
+#: is retired: the files stay beside ``data/`` as the record's backup, and nothing
+#: reads them as an installed app.
+RETIRED_RECORD_SUFFIX = ".retired"
 
 
 def migrated_builtin_cleanup_applies(name: str) -> bool:
@@ -1003,6 +1015,30 @@ def migrated_builtin_cleanup_applies(name: str) -> bool:
     )
 
 
+def folded_switch_state(name: str, meta: InstalledApp) -> bool:
+    """The state a folded app's feature had for this user on the build that shipped it.
+
+    A record of a promoted app (``_FOLDED_PROMOTED_BUILTINS``) still owed its
+    default-on promotion reads ``enabled: false``, but ``backfill_default_on_builtins``
+    turned it on at that build's next start unless the ``apps`` governance allowlist
+    denied the app, so it reads as on here too. The owner's own disable outranked
+    that promotion on that build (the protected store's disable is what every record
+    read applies), so it reads as off. Any other folded app's ``enabled: false`` is
+    the user's own opt-out.
+    """
+    from kiro_crew.apps.builtins import _FOLDED_PROMOTED_BUILTINS
+
+    if meta.enabled:
+        return True
+    if (
+        name not in _FOLDED_PROMOTED_BUILTINS
+        or meta.defaultOnBackfilled
+        or protected_app_state.owner_disabled(name)
+    ):
+        return False
+    return _app_activation_denied(name) is None
+
+
 def cleanup_migrated_builtin(name: str) -> AppResult:
     """Remove orphaned builtin metadata after its functionality was folded into core.
 
@@ -1010,7 +1046,8 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     the migration mechanism won't have migratedTo set. The presence of `name` in
     _MIGRATED_BUILTINS is the authoritative signal.
 
-    Preserves data/ directory. Removes installed.json and app.json only.
+    Preserves data/ directory. Retires installed.json and app.json only, by renaming
+    each to ``<file>.retired`` beside it, so the record stays on disk as a backup.
     Idempotent: returns ok=True if already cleaned up.
     """
     from kiro_crew.apps.builtins import _MIGRATED_BUILTINS
@@ -1036,16 +1073,30 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
             message="already migrated — standalone version is in place",
         )
 
-    # Perform cleanup — remove metadata files, preserve data/
+    # The record is the only copy of a folded app's on/off state, so that state
+    # is written to its core setting first, and a failed write keeps the record
+    # for the next start to try again.
+    try:
+        carry_folded_switch(name, folded_switch_state(name, meta))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("cleanup_migrated_builtin: kept %s, its setting was not saved: %s", name, exc)
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"failed to save the setting that replaces this app: {exc}",
+            error_code="io_error",
+        )
+
+    # Perform cleanup: move the metadata files aside, preserve data/. installed.json
+    # goes last, because its absence is what reads as "already cleaned up".
     dest = app_dir(name)
     installed_path = dest / INSTALLED_META_FILENAME
     manifest_path = dest / APP_MANIFEST_FILENAME
 
     try:
-        if manifest_path.is_file():
-            manifest_path.unlink()
-        if installed_path.is_file():
-            installed_path.unlink()
+        for path in (manifest_path, installed_path):
+            if path.is_file():
+                os.replace(path, path.with_name(path.name + RETIRED_RECORD_SUFFIX))
     except OSError as exc:
         logger.error("cleanup_migrated_builtin: failed to clean up %s: %s", name, exc)
         return AppResult(
@@ -1058,8 +1109,13 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     # Refresh declarations and orphan state after removing installed metadata.
     refresh_app_config_keys()
     invalidate_orphan_cache()
+    # The record moved aside without ``_write_installed``: ask for the same refresh
+    # (hidden chats, the tool gate's own-server sets) an uninstall asks for.
+    from kiro_crew.apps.hidden_sessions import request_hiding_refresh
 
-    logger.info("Cleaned up migrated builtin %s (data preserved)", name)
+    request_hiding_refresh()
+
+    logger.info("Cleaned up migrated builtin %s (data and a record backup preserved)", name)
     return AppResult(
         ok=True,
         name=name,

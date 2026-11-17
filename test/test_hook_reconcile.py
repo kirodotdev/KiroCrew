@@ -164,7 +164,7 @@ async def test_dashboard_enable_already_recorded_leaves_nothing_to_do(_harness):
 
 
 # ---------------------------------------------------------------------------
-# Admission re-check under the lock (GPT: revive-during-trust-withdrawal)
+# Admission re-check under the lock (revive during trust withdrawal)
 # ---------------------------------------------------------------------------
 
 

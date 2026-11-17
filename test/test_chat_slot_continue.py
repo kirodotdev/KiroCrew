@@ -290,19 +290,13 @@ class TestChatSlotContinue:
 
     @pytest.mark.asyncio
     async def test_parked_recovery_second_resume_returns_slot_queue_pending(self, monkeypatch):
-        # (c) Trace: second Resume on a slot whose recovery is parked.
+        # (c) Second Resume on a slot whose recovery is parked.
         #
-        # After the first Resume, continue_slot_turn inserts a recovery at
-        # the queue head (chat_handlers.py queue_insert call) and calls
-        # _start_next_queued_turn. If memory preparation is still running,
-        # _start_next_queued_turn returns False -- the recovery stays parked
-        # at position 0 with kind==SYNTHETIC_RECOVERY_KIND.
-        #
-        # A second Resume press re-enters continue_slot_turn. The queue_depth
-        # check: _is_interrupted is true (passes case 1); then case 1b fires:
-        # the recovery entry inserted by the first press has no RESTORED_QUEUE_KEY,
-        # so not all(e.get(RESTORED_QUEUE_KEY) ...) is True -> SlotContinueRefusal
-        # 409 slot_queue_pending. No second recovery inserted; queue length stays 2.
+        # The first Resume inserts a recovery at the queue head; with memory
+        # preparation still running, _start_next_queued_turn returns False and
+        # it stays parked there. The second press hits case 1b: that recovery
+        # has no RESTORED_QUEUE_KEY, so it is refused with 409
+        # slot_queue_pending and no second recovery is inserted.
         mock_sel = MagicMock()
         mock_sel.log_tool_invocation = MagicMock()
         # Parked: _start_next_queued_turn returns False; recovery stays at head.
@@ -340,18 +334,11 @@ class TestChatSlotContinue:
     async def test_live_queue_on_interrupted_slot_is_refused(self, _patched):
         # (d) Live (non-restored) queue entry on an interrupted slot is refused.
         #
-        # Distinguishing live from restored:
-        # - A restored entry has RESTORED_QUEUE_KEY=True (set by
-        #   sanitize_restored_queue on boot from the previous process's queue
-        #   file).
-        # - A live entry was added in THIS process; RESTORED_QUEUE_KEY is absent.
-        #   A live held entry (e.g. from a sign-in or memory-preparation hold,
-        #   chat_utils.py:1338) might be drained once the hold clears -- Resume
-        #   here would race with that drain.
-        #
-        # The backend check (chat_handlers.py):
-        #   not all(e.get(RESTORED_QUEUE_KEY) for e in slot._queue)
-        # is True when any entry lacks the tag -> case 1b -> SlotContinueRefusal.
+        # sanitize_restored_queue tags entries restored at boot with
+        # RESTORED_QUEUE_KEY; an entry added in THIS process has no tag. A live
+        # held entry (sign-in or memory-preparation hold) may drain once the
+        # hold clears, so Resume would race that drain: any untagged entry ->
+        # case 1b -> SlotContinueRefusal.
         slot = _ChatSlot("s")
         slot.append("user", "hi", "msg msg-u")
         slot.append(
@@ -742,6 +729,8 @@ class TestSessionStartFailureStreak:
                 "inject", '[Cron notification from "job"] …', "x", meta={"injectKind": "cron"}
             ),
             lambda slot: slot.append("inject", "synthesis", "x", meta={"injectKind": "synthesis"}),
+            lambda slot: slot.append("inject", "workflow", "x", meta={"injectKind": "workflow"}),
+            lambda slot: slot.append("inject", "heartbeat", "x", meta={"injectKind": "heartbeat"}),
             lambda slot: slot.append("nudge", "[auto-nudge cycle 2]", "x"),
             lambda slot: slot.append("subagent", "[Subagent completion event] …", "x"),
         ):
@@ -853,3 +842,24 @@ async def test_a_failing_audit_write_does_not_strand_the_queued_continue():
             assert resp.status == 200, await resp.text()
     mock_sel.log_tool_invocation.assert_called_once()
     started.assert_awaited_once()
+
+
+class TestContinueOfACardTurn:
+    """Resume and Continue re-run "the user's most recent request". When that request is a
+    Dashboard card's, the continuation is a card turn: the queued entry carries the mark
+    the drain reads, and it has no person's authority over session directives."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("card_row", [True, False])
+    async def test_the_queued_continuation_carries_the_cards_mark(self, _patched, card_row):
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+        slot = _ChatSlot("s")
+        meta = {CARD_ORIGIN_META_KEY: True} if card_row else None
+        slot.append("user", "[Dashboard card] go", "msg msg-u", meta=meta)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 200
+        (entry,) = list(slot._queue)
+        assert (entry.get("meta") or {}).get(CARD_ORIGIN_META_KEY) is (True if card_row else None)

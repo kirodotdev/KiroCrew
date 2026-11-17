@@ -26,6 +26,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import pytest
@@ -141,6 +142,10 @@ class _FakeBackend:
     control_plane = False
     control_plane_denial = ""
     quarantined = False
+    # What ``launch.bound_to_owner_port`` reads before each forward: a backend
+    # bound to no owner port, which no announce in these tests replaces.
+    pool_key = SimpleNamespace(server_name="")
+    owner_port = 0
 
     def __init__(self) -> None:
         self.callers: list[Any] = []
@@ -1118,13 +1123,27 @@ async def test_send_claim_aggregate_timeout_bound(monkeypatch: pytest.MonkeyPatc
         writer.close()
 
     server = await transport.serve(sock, _serve, limit=1 << 16)
+    budgets: list[float | None] = []
+    real_wait_for = asyncio.wait_for
+    # The patch replaces the stdlib's wait_for for every task and thread; record
+    # only this test's task (wait_for awaits in the caller's task on 3.12+, so a
+    # per-phase wait nested inside send_claim's is still seen).
+    me = asyncio.current_task()
+
+    async def _recording_wait_for(aw, timeout):
+        if asyncio.current_task() is me:
+            budgets.append(timeout)
+        return await real_wait_for(aw, timeout)
+
     try:
-        loop = asyncio.get_running_loop()
-        start = loop.time()
-        assert await claim_mod.send_claim(str(sock), 7, "dashboard:x") is False
-        elapsed = loop.time() - start
-        # Single aggregate bound: well under 2x the budget, never 3x.
-        assert elapsed < claim_mod._CLAIM_TIMEOUT_SECS * 2
+        with monkeypatch.context() as m:
+            m.setattr(claim_mod.asyncio, "wait_for", _recording_wait_for)
+            assert await claim_mod.send_claim(str(sock), 7, "dashboard:x") is False
+        # The whole round-trip ran under ONE wait of the budget, none per phase.
+        assert budgets == [claim_mod._CLAIM_TIMEOUT_SECS], (
+            f"send_claim bounded its round-trip with waits {budgets}, not one "
+            f"aggregate {claim_mod._CLAIM_TIMEOUT_SECS}s budget"
+        )
     finally:
         stalled.set()
         server.close()

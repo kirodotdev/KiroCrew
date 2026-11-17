@@ -169,7 +169,7 @@ class CancellationCoordinator(ManagerComponent):
                     info._session_sharing = False
                     info._shared_provider = None
                 # Re-acquire a slot through capacity, not blind increment:
-                # the old finally freed our slot and may have drained a queued
+                # the cancelled attempt's finally freed our slot and may have drained a queued
                 # spawn into it. Wait (bounded) for a free slot so recovery
                 # never pushes the pool past max_concurrent. The wait is measured
                 # on the monotonic clock: a wall-clock step forward (an NTP step,
@@ -459,6 +459,7 @@ class CancellationCoordinator(ManagerComponent):
             task=str(params.get("task") or "(stopped before start)"),
             parent_session_key=str(params.get("parent_session_key") or ""),
             agent=str(params.get("agent") or ""),
+            app=str(params.get("app") or ""),
             user_stopped=not error,
             error=error,
             queued=True,
@@ -703,6 +704,7 @@ class CancellationCoordinator(ManagerComponent):
         *,
         parent_session_key: str,
         verb: str = "",
+        reason: str = "",
         accepted_since: AbstractSet[str] | None = None,
         retry: bool = False,
     ) -> int:
@@ -862,7 +864,8 @@ class CancellationCoordinator(ManagerComponent):
                 if not info._reap_reason:
                     info._reap_reason = "parent_end"
                 if not info._stop_origin:
-                    info._stop_origin = f"parent conversation ended ({verb or 'unnamed'})"
+                    cause = f"{verb or 'unnamed'}: {reason}" if reason else verb or "unnamed"
+                    info._stop_origin = f"parent conversation ended ({cause})"
                 try:
                     if await self._manager.cancel(agent_id):
                         stopped += 1

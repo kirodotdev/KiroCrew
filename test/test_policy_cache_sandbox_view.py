@@ -299,6 +299,24 @@ class TestTheSandboxShowsTheCacheReadOnly:
         )
         assert sandbox.enterprise_policy_cache_view() == ()
 
+    def test_an_oss_sandbox_under_a_central_ceiling_shows_the_cache(self, monkeypatch):
+        """Its managed MCP children run cache-only, so they must read the cache."""
+        monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
+        assert sandbox.enterprise_policy_cache_view() == (_cache_target(),)
+
+    def test_an_oss_sandbox_under_a_central_ceiling_keeps_legacy_metadata_hidden(self, monkeypatch):
+        """The central lift keeps the LTS lift's refusals: a pre-signed URL is a credential."""
+        monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
+        pd.cache_dir().mkdir(parents=True)
+        (pd.cache_dir() / "policy.meta.json").write_bytes(
+            b'{"source": "https://policy.example/p?X-Amz-Signature=abc", "fetched_at": 1}'
+        )
+        assert sandbox.enterprise_policy_cache_view() == ()
+
+    def test_an_oss_sandbox_under_a_central_ceiling_keeps_a_callers_mask(self, monkeypatch):
+        monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
+        assert sandbox.enterprise_policy_cache_view("strict", (_cache_target(),)) == ()
+
     @pytest.mark.parametrize("lts_build", [True, False])
     def test_wrap_argv_hands_the_view_to_the_launcher_only_in_lts(
         self, lts_build, install_ceiling, monkeypatch

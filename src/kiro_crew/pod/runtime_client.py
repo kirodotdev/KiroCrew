@@ -187,7 +187,7 @@ def _attested_gateway_tcp_verifier(cfg: PodConfig, name: str, port: int):
 # who connected is never offered it, and neither is a credential mismatch: a live
 # second gateway in the same home produces one without the pod's state being wrong.
 _POD_RECREATE = (
-    "`kirocrew pod down {name} && kirocrew pod up {name}` — and `down` DELETES the "
+    "`kirocrew pod down {name}`, then `kirocrew pod up {name}` — and `down` DELETES the "
     "pod's HOME, so copy anything you still need out of it first"
 )
 
@@ -715,7 +715,8 @@ def pod_api(
             f"credential this command mints would be sent to whatever answered.\n"
             f"  Is it healthy? kirocrew pod status {name}\n"
             f"  Its logs:      kirocrew pod logs {name}\n"
-            f"  Restart it:    kirocrew pod down {name} && kirocrew pod up {name}"
+            f"  Restart it:    kirocrew pod down {name}\n"
+            f"                 kirocrew pod up {name}"
         )
     token = mint_token(cfg, name)
     verify_peer = _attested_gateway_verifier(cfg, name, port, socket_path)

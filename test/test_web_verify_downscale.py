@@ -40,6 +40,14 @@ mod = _load()
 
 
 class DownscaleTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # An agent shell inherits the ACP parent's interpreter; the launcher
+        # lookups below must run without it.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("KIROCREW_RUNTIME_PYTHON", None)
+
     def _png(self, tmp: Path, size: tuple[int, int], name: str = "shot.png") -> Path:
         p = tmp / name
         Image.new("RGB", size, "red").save(p)
@@ -202,6 +210,38 @@ class DownscaleTest(unittest.TestCase):
     def test_bundled_python_is_none_without_a_launcher(self) -> None:
         with mock.patch.object(mod.shutil, "which", return_value=None):
             self.assertIsNone(mod.bundled_python())
+
+    def test_the_acp_runtime_interpreter_wins_over_a_forwarder(self) -> None:
+        """Windows: the agent's kirocrew is ``kirocrew-bin\\kirocrew.cmd``,
+        a forwarder with no python.exe beside it, so the parent's interpreter
+        must be taken first."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            forwarder = Path(td) / "kirocrew-bin" / "kirocrew.cmd"
+            forwarder.parent.mkdir()
+            forwarder.write_text("")
+            runtime = Path(td) / "venv" / "python.exe"
+            runtime.parent.mkdir()
+            runtime.write_text("")
+            with mock.patch.dict(os.environ, {"KIROCREW_RUNTIME_PYTHON": str(runtime)}), \
+                    mock.patch.object(mod.shutil, "which", return_value=str(forwarder)):
+                self.assertEqual(mod.bundled_python(), str(runtime))
+
+    def test_a_missing_runtime_interpreter_falls_back_to_the_launcher(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            bindir = Path(td) / "venv" / "bin"
+            bindir.mkdir(parents=True)
+            (bindir / "kirocrew").write_text("")
+            (bindir / "python").write_text("")
+            gone = {"KIROCREW_RUNTIME_PYTHON": str(Path(td) / "gone" / "python")}
+            with mock.patch.dict(os.environ, gone), \
+                    mock.patch.object(mod.shutil, "which", return_value=str(bindir / "kirocrew")), \
+                    mock.patch.object(mod.os.path, "realpath", return_value=str(bindir / "kirocrew")), \
+                    mock.patch.object(mod.os, "name", "posix"):
+                self.assertEqual(mod.bundled_python(), str(bindir / "python"))
 
     def test_reexec_refuses_to_loop(self) -> None:
         """The guard that stops a Pillow-less venv re-execing forever."""

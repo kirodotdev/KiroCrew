@@ -1,9 +1,8 @@
-"""The section 3.9.6 output check's scanners for a warm task brief: the views
-of the posted text every scanner reads, and the pull-request, commit SHA and
-HH:MM checks over them, plus the unverified tag an unbacked SHA or time gets.
+"""The warm welcome's secret scan: the views of the posted text it reads, and
+the whole-string redaction every ledger string gets before any cut.
 
-They read only strings, so they live apart from the brief's flow and its
-dataclasses; ``warm_task_brief`` imports them under the same names.
+They read only strings, so they live apart from the welcome's flow;
+``warm_task_brief`` imports them under the same names.
 """
 
 from __future__ import annotations
@@ -13,15 +12,6 @@ import re
 import unicodedata
 
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
-
-# The section 3.9.6 output check: what the model may only repeat, never make up.
-# A commit SHA: 7 to 40 hex digits, not a `#` colour, with a digit and a letter.
-_SHA_RE = re.compile(r"(?<![#\w])([0-9a-f]{7,40})(?!\w)", re.IGNORECASE)
-_TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)")
-
-
-def _times_in(text: str) -> set[str]:
-    return {f"{int(h):02d}:{m}" for h, m in _TIME_RE.findall(text)}
 
 
 def _unescaped(text: str) -> str:
@@ -114,67 +104,14 @@ def _scan_views(text: str) -> tuple[str, ...]:
     return written, joined, _EMPHASIS_RE.sub("", joined)
 
 
-def _names_an_unknown_pr(posted: str, known: set[int]) -> bool:
-    """Whether *posted*, read as the page shows it (entities decoded), names a
-    pull request outside *known*: one read live, or named by the input or the
-    owner's request."""
-    named: set[int] = set()
-    for view in _scan_views(posted):
-        named |= inputs.pr_numbers(view)
-    return bool(named - known)
-
-
-def _unbacked_facts(posted: str, grounding: str, clocks: set[str]) -> list[str]:
-    """The commit SHAs and HH:MM times in *posted* that the input never gave
-    (section 3.9.6); unknown `#N` references are checked by
-    :func:`_names_an_unknown_pr`. *grounding* is the snapshot the prompt
-    carried; *clocks* the "as of" times the prompt stated."""
-    views = _scan_views(posted)
-    lowered = grounding.lower()
-    times = _times_in(grounding) | clocks
-    # Each SHA is named once, however many views or fields carry it.
-    shas = dict.fromkeys(sha for view in views for sha in _SHA_RE.findall(view))
-    bad = [
-        sha
-        for sha in shas
-        if any(c.isdigit() for c in sha)
-        and any(c.isalpha() for c in sha)
-        and sha.lower() not in lowered
-    ]
-    found = set().union(*(_times_in(view) for view in views))
-    bad += [t for t in sorted(found) if t not in times]
-    return bad
-
-
-def _tagged_re(tag: str) -> re.Pattern[str]:
-    """A SHA or time with *tag* right after it, as :func:`_mark` writes it."""
-    return re.compile(rf"(?:{_SHA_RE.pattern}|{_TIME_RE.pattern}) {re.escape(tag)}", re.IGNORECASE)
-
-
-# Where a tag may go: a value with only whitespace (or the field's start)
-# before it and whitespace, the end or plain sentence punctuation after it.
-# Anywhere else (``17:05:30``, ``**abc1234**def``, a link target, inline
-# code) the value stays untagged, so the recheck counts it as a miss.
-_BEFORE = r"(?<!\S)"
-_AFTER = r"(?=\s|$|[,;!?)]|\.(?!\w))"
-_SHA_TAG_RE = re.compile(_BEFORE + _SHA_RE.pattern + _AFTER, re.IGNORECASE)
-_TIME_TAG_RE = re.compile(_BEFORE + _TIME_RE.pattern + _AFTER)
-
-
-def _mark(text: str, bad: set[str], tag: str) -> str:
-    """*text* with *tag* after each SHA or HH:MM time in *bad* (lower case)
-    that sits at a clean boundary."""
-    text = _SHA_TAG_RE.sub(lambda m: f"{m[0]} {tag}" if m[1].lower() in bad else m[0], text)
-    return _TIME_TAG_RE.sub(
-        lambda m: f"{m[0]} {tag}" if f"{int(m[1]):02d}:{m[2]}" in bad else m[0], text
-    )
-
-
-# A fence or a widget anywhere in the body: its source a tag would break.
-_PICTURE_RE = re.compile(r"```|~~~|<mcwidget\b", re.IGNORECASE)
-
-
-def _mark_body(body: str, bad: set[str], tag: str) -> str:
-    """:func:`_mark` on a body with no picture in it. A body that holds one
-    stays untagged, so an unbacked value in it is a miss."""
-    return body if _PICTURE_RE.search(body) else _mark(body, bad, tag)
+def redact_whole(text: str) -> str:
+    """*text* with any credential that a scan view of the WHOLE string shows
+    redacted, before anything cuts it: a cut first can split a key (or move an
+    entity-encoded header off its body) into pieces no redactor recognises. Text
+    with nothing to redact comes back unchanged."""
+    for _ in range(3):  # each pass redacts the first view that still holds one
+        changed = next((r for v in _scan_views(text) if (r := inputs.redact(v)) != v), None)
+        if changed is None:
+            break
+        text = changed
+    return text

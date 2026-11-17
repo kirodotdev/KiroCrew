@@ -13,8 +13,6 @@ import json
 import logging
 from unittest.mock import patch
 
-import pytest
-
 from kiro_crew.config import loader as L
 from kiro_crew.config import validation
 from kiro_crew.config.loader import (
@@ -124,7 +122,6 @@ class TestEmptyAccountsAreNotMaterialized:
         written = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert "accounts" not in written["telegram"]
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_loading_an_empty_map_logs_no_deprecation(self, tmp_path, monkeypatch, caplog):
         """Until that save happens, the leftover key is not a deprecation either."""
         cfg_path = tmp_path / "config.json"
@@ -142,7 +139,6 @@ class TestEmptyAccountsAreNotMaterialized:
             "deprecated field 'telegram.accounts'" in r.getMessage() for r in caplog.records
         )
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     def test_a_populated_map_is_still_announced_as_deprecated(self, monkeypatch, caplog):
         """The notice keeps firing for the operator who does have a token to move."""
         monkeypatch.setattr(validation, "_REPORTED_DEPRECATED_FIELDS", set())

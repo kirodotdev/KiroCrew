@@ -15,7 +15,6 @@ import math
 import os
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -162,11 +161,18 @@ class TestUrlBoundary:
     def test_a_very_long_line_stays_linear(self, filler: str, glue: str) -> None:
         # A generated file can carry one enormous line. Quadratic backtracking here
         # would blow the CI job's timeout on input nobody can see is pathological.
-        line = filler * (200_000 // len(filler)) + glue + "KiroCrew is here"
-        started = time.monotonic()
-        found = _hits(line, path="big.md")
-        assert time.monotonic() - started < 2.0
-        assert found == ["KiroCrew"]
+        # The cost is inside the regex engine, which no work counter can see, so
+        # the shared ramp holds this thread's CPU to its 2 s budget
+        # (``REDOS_LARGE_BUDGET_SECONDS``, the constant this guard carries), one
+        # filler unit at a time and then at growing pumps.
+        from conftest import assert_rejected_without_backtracking
+
+        def reject(line: str) -> None:
+            assert _hits(line, path="big.md") == ["KiroCrew"]
+
+        assert_rejected_without_backtracking(
+            reject, lambda n: filler * n + glue + "KiroCrew is here"
+        )
 
     def test_many_brand_names_on_one_line_stay_linear(self) -> None:
         # The other axis: not one long line, but MANY matches on it. Any per-match
@@ -263,10 +269,17 @@ class TestUrlBoundary:
         )
 
     def test_many_backticks_stay_linear(self) -> None:
-        line = "`x`" * 30_000 + " KiroCrew"
-        started = time.monotonic()
-        assert _hits(line, path="big.md") == ["KiroCrew"]
-        assert time.monotonic() - started < 2.0
+        # Pairing the backtick runs must stay linear in their number. A rescan per
+        # run can sit in C (a slice, a regex), which no work counter can see, so
+        # the shared ramp holds this thread's CPU to its 2 s budget
+        # (``REDOS_LARGE_BUDGET_SECONDS``, the constant this guard carries), one
+        # ``x`` span at a time and then at growing pumps.
+        from conftest import assert_rejected_without_backtracking
+
+        def reject(line: str) -> None:
+            assert _hits(line, path="big.md") == ["KiroCrew"]
+
+        assert_rejected_without_backtracking(reject, lambda n: "`x`" * n + " KiroCrew")
 
 
 # ---------------------------------------------------------------------------

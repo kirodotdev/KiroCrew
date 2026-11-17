@@ -51,7 +51,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (
     _resolve_register_identity,
     _StubConn,
 )
-from kiro_crew.mcp_gateway.daemon.launch import TargetResolver
+from kiro_crew.mcp_gateway.daemon.launch import TargetResolver, bound_to_owner_port
 from kiro_crew.mcp_gateway.daemon.replacement import _ReplacementRefused
 from kiro_crew.mcp_gateway.daemon.wire import (
     _jsonrpc_error,
@@ -64,6 +64,7 @@ from kiro_crew.mcp_gateway.daemon.wire import (
 )
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore
+from kiro_crew.start_priority import priority_from_wire
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -193,6 +194,10 @@ async def _handle_connection(
     # It arrives over the uid socket from the stub the rewriter wrote, which is
     # what makes it an answer the governed agent cannot author.
     stub_agent = str(register.get("agent_name") or "")
+    # Where this stub's spawn waits in the gate's queue: the priority its
+    # session start has (``kiro_crew.start_priority``). Not a pool dimension. A
+    # frame without the field, as an older stub sends, is background.
+    start_priority = priority_from_wire(register.get("start_priority"))
     # Absent ``poolable`` means this connection gets its own backend. Absence is
     # the safe default in both directions: an overlay written before the flag
     # existed never silently starts sharing, and a malformed frame cannot widen
@@ -284,66 +289,79 @@ async def _handle_connection(
     conn = await _resolve_register_identity(register, writer, stub_uuid, pool_key)
     caller = conn.caller
 
-    # Register this connection for the keepalive probe. Scoped to the handler's
-    # own task so a dead transport can cancel exactly the coroutine that is
-    # parked on the read, letting its finally run the detach.
+    # Identity resolution already added conn to the claim index. Until bridge
+    # takes ownership, a failed reply or cancelled task must undo that entry
+    # and any probe this block created.
     _probe: Optional[_StubProbe] = None
-    _self_task = asyncio.current_task()
-    if _self_task is not None:
-        _probe = _StubProbe(stub_uuid, writer, _self_task)
-        _stub_probe_add(_probe)
+    try:
+        # Register this connection for the keepalive probe. Scoped to the handler's
+        # own task so a dead transport can cancel exactly the coroutine that is
+        # parked on the read, letting its finally run the detach.
+        _self_task = asyncio.current_task()
+        if _self_task is not None:
+            _probe = _StubProbe(stub_uuid, writer, _self_task)
+            _stub_probe_add(_probe)
 
-    # Provisional backend_id: the real pid isn't known until the backend
-    # spawns. Using the pool digest gives operators a stable grep key that
-    # ties together every stub sharing the same backend even before spawn.
-    provisional_id = f"pending-{pool_key.stable_hash()[:12]}"
-    await _write_json_line(
-        writer,
-        {
-            "type": "registered",
-            "backend_id": provisional_id,
-            "pool_label": pool_key.human_readable(),
-            # A Kiro Crew-owned stub requires an exact match before it entrusts
-            # its session to this broker. An older daemon omits this field, so a
-            # new stub takes its existing direct-exec fallback at cold start
-            # instead of mixing protocol generations after an in-place package
-            # upgrade; a stub reconnecting mid-session has no exec left and
-            # refuses that generation terminally rather than retrying it.
-            "fingerprint": code_fingerprint(),
-            # Capability advertisement: lets a new stub detect a
-            # new gateway and run the ensure_backend pre-flight. Absent on an
-            # old gateway, so the new stub skips the pre-flight (no 25s skew
-            # penalty) and falls back to the legacy lazy-spawn path.
-            #
-            # ``bridge_ping`` gates the stub's bridge-phase liveness monitor the
-            # same way. It must be negotiated rather than assumed: a daemon that
-            # outlived a package upgrade has no ``{"type": "ping"}`` handler, so
-            # the frame would fall through to the forward path and no pong would
-            # ever return — turning any call slower than the grace window into a
-            # forced degrade of a perfectly healthy pooled session.
-            "capabilities": list(REGISTERED_CAPABILITIES),
-        },
-    )
-    logger.info(
-        "registered stub_uuid=%s pool=%s",
-        stub_uuid,
-        pool_key.human_readable(),
-    )
-    # Accepting an identified stub is a permission decision; record it in the
-    # SEL alongside the denial path so the audit trail covers both outcomes.
-    facade._audit_peer_allowed(caller.session_key if caller else "", pool_key.human_readable())
+        # Provisional backend_id: the real pid isn't known until the backend
+        # spawns. Using the pool digest gives operators a stable grep key that
+        # ties together every stub sharing the same backend even before spawn.
+        provisional_id = f"pending-{pool_key.stable_hash()[:12]}"
+        await _write_json_line(
+            writer,
+            {
+                "type": "registered",
+                "backend_id": provisional_id,
+                "pool_label": pool_key.human_readable(),
+                # A Kiro Crew-owned stub requires an exact match before it entrusts
+                # its session to this broker. An older daemon omits this field, so a
+                # new stub takes its existing direct-exec fallback at cold start
+                # instead of mixing protocol generations after an in-place package
+                # upgrade; a stub reconnecting mid-session has no exec left and
+                # refuses that generation terminally rather than retrying it.
+                "fingerprint": code_fingerprint(),
+                # Capability advertisement: lets a new stub detect a
+                # new gateway and run the ensure_backend pre-flight. Absent on an
+                # old gateway, so the new stub skips the pre-flight (no 25s skew
+                # penalty) and falls back to the legacy lazy-spawn path.
+                #
+                # ``bridge_ping`` gates the stub's bridge-phase liveness monitor the
+                # same way. It must be negotiated rather than assumed: a daemon that
+                # outlived a package upgrade has no ``{"type": "ping"}`` handler, so
+                # the frame would fall through to the forward path and no pong would
+                # ever return — turning any call slower than the grace window into a
+                # forced degrade of a perfectly healthy pooled session.
+                "capabilities": list(REGISTERED_CAPABILITIES),
+            },
+        )
+        logger.info(
+            "registered stub_uuid=%s pool=%s",
+            stub_uuid,
+            pool_key.human_readable(),
+        )
+        # Accepting an identified stub is a permission decision; record it in the
+        # SEL alongside the denial path so the audit trail covers both outcomes.
+        facade._audit_peer_allowed(caller.session_key if caller else "", pool_key.human_readable())
 
-    # Warm-pool observation: tally this accepted register so the hottest
-    # PoolKeys can be prewarmed on the next startup. In-memory only here —
-    # O(1), no IO — so it never slows the handshake; persistence is batched
-    # by the flush sweeper. ``None`` when prewarming is disabled.
-    if hot_keys is not None:
-        hot_keys.record(register)
-        # Hit-rate metric: a warm backend already pooled for this key (from a
-        # prewarm or a prior chat) is a HIT; otherwise this register will fall
-        # through to a lazy spawn below — a MISS. ``get`` is a non-mutating
-        # lookup, so reading it here does not pin or alter the backend.
-        hot_keys.record_outcome(hit=await pool.get(pool_key) is not None)
+        # Warm-pool observation: tally this accepted register so the hottest
+        # PoolKeys can be prewarmed on the next startup. In-memory only here —
+        # O(1), no IO — so it never slows the handshake; persistence is batched
+        # by the flush sweeper. ``None`` when prewarming is disabled.
+        if hot_keys is not None:
+            hot_keys.record(register)
+            # Hit-rate metric: a warm backend already pooled for this key (from a
+            # prewarm or a prior chat) is a HIT; otherwise this register will fall
+            # through to a lazy spawn below — a MISS. ``get`` is a non-mutating
+            # lookup, so reading it here does not pin or alter the backend.
+            hot_keys.record_outcome(hit=await pool.get(pool_key) is not None)
+
+    except BaseException:
+        # No backend has been acquired yet. Undo only this registration's
+        # resources: releasing by UUID could reap an overlapping connection's
+        # private backend. Both discards are synchronous, even under cancellation.
+        _conn_index_discard(conn)
+        if _probe is not None:
+            _stub_probe_discard(_probe)
+        raise
 
     # Bridge phase — ensure any attach is undone even if we bail early.
     backend: Optional[Backend] = None
@@ -474,6 +492,7 @@ async def _handle_connection(
                                 admission=admission,
                                 wait_deadline=deadline,
                                 on_queued=_on_queued if queue_aware else None,
+                                priority=start_priority,
                             ),
                             stub_uuid=stub_uuid,
                         )
@@ -533,6 +552,7 @@ async def _handle_connection(
                                 if admission is None
                                 else time.monotonic() + _LEGACY_SPAWN_WAIT_SECS
                             ),
+                            priority=start_priority,
                         ),
                         stub_uuid=stub_uuid,
                     )
@@ -561,13 +581,25 @@ async def _handle_connection(
             if msg.get("method") == "initialize":
                 captured_init = dict(msg)
 
-            # ``caller`` itself stays tokenless for the life of the connection:
-            # the token is attached to a per-forward copy, decided against the
-            # backend that receives THIS frame. A respawn hands the tokenless
-            # base on and re-decides for the replacement.
-            forward_caller = _caller_for_backend(backend, caller, conn)
-
             try:
+                if not bound_to_owner_port(backend):
+                    # The owner announced a new port after this connection
+                    # attached (``control._apply_owner_port``). The pool hands
+                    # this backend to no one else, but this connection still
+                    # holds it, and it dials the old port. Replaced through the
+                    # respawn below BEFORE the forward, so neither this frame
+                    # nor the caller block it would carry reaches a process
+                    # bound to a port that another process can now bind.
+                    raise BackendGone(
+                        f"bound to owner port {backend.owner_port}, "
+                        f"which is now {facade._OWNER_PORT}"
+                    )
+                # ``caller`` itself stays tokenless for the life of the
+                # connection: the token is attached to a per-forward copy,
+                # decided against the backend that receives THIS frame. A
+                # respawn hands the tokenless base on and re-decides for the
+                # replacement.
+                forward_caller = _caller_for_backend(backend, caller, conn)
                 await backend.forward_from_stub(
                     stub_uuid, msg, caller=forward_caller, tenant_nonce=conn.tenant_nonce
                 )

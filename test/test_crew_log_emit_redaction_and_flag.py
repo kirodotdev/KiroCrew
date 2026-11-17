@@ -31,6 +31,7 @@ from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registe
     _tool_result_event,
     _typed,
 )
+from redaction_structured_cases import aws_secret
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit
@@ -67,7 +68,7 @@ def test_no_job_is_ever_submitted_without_a_session_key():
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(emit, "_submit", _spy)
-        # Every family this PR emits, driven through one turn.
+        # Every emitted family, driven through one turn.
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_request_configured(SESSION, 1, model="m", provider="p", context_window=1000)
         emit.on_context_composed(SESSION, 1, step=1, blocks={"steering": 40}, total_chars=40)
@@ -319,19 +320,21 @@ def test_a_credential_cannot_survive_the_overflow_split_at_any_offset():
     # what a per-delta streaming emitter could not offer, which is why there is
     # none: redacting each delta on its own leaves a credential split across two
     # of them intact in both, and the pieces concatenate.
-    marker = "A" + "KIA" + "IOSFODNN7" + "EXAMPLE" + "0" * 24
+    marker = aws_secret(seed=60)  # a synthetic 40-char AWS secret, built at runtime
     secret = "aws_secret" + "_access_key=" + marker
     # Walk the credential across a slice boundary one byte at a time.
     boundary = lg.MAX_ENTRY_BYTES - 4096
     for offset in range(0, len(secret) + 1, 7):
         emit.reset_caches()
         _open_session()
-        filler_before = "f" * max(0, boundary - offset)
+        # Blanks around it: a label glued to a word, or a value glued to the next,
+        # is no credential.
+        filler_before = "f" * max(0, boundary - offset - 1) + " "
         emit.on_message_sent(
             SESSION,
             1,
             step=1,
-            text=filler_before + secret + "t" * 8000,
+            text=filler_before + secret + " " + "t" * 7999,
         )
         assert_drained()
         blob = _log_path().read_text(encoding="utf-8")
@@ -350,7 +353,7 @@ def test_a_body_is_redacted_by_the_emitter_not_trusted_from_the_call_site():
     # Assembled at runtime, never written as one literal: a credential-shaped
     # string in a source file is what the content scan exists to stop, and a test
     # fixture is not an exception the scanner can see.
-    marker = "A" + "KIA" + "IOSFODNN7" + "EXAMPLE" + "0" * 24
+    marker = aws_secret(seed=60)  # a synthetic 40-char AWS secret, built at runtime
     secret = "aws_secret" + "_access_key=" + marker
     _typed(1, f"use {secret} please")
     emit.on_message_sent(SESSION, 1, text=f"ok, {secret}")

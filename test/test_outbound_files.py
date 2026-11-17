@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 from source_corpus import parsed_candidates
 
 from conftest import requires_symlinks
@@ -199,6 +200,17 @@ class TestDestinationForms:
         p = _png(tmp_path)
         result = extract_local_refs(f"![x](file://{p})")
         assert [f.path for f in result.files] == [str(p)]
+
+    def test_a_windows_file_uri_keeps_its_drive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, names ``C:/...``.
+
+        Cutting the scheme alone leaves the drive-less ``/C:/...``. A share is not rewritten.
+        """
+        from kiro_crew import file_uri
+
+        monkeypatch.setattr(file_uri, "IS_WINDOWS", True)
+        assert strip_url_syntax("file:///C:/x/y.png?a=1") == "C:/x/y.png"
+        assert strip_url_syntax("file:////server/share/y.png") == "//server/share/y.png"
 
     def test_the_walker_is_the_one_image_artifacts_uses(self) -> None:
         """Both directions share this parser, so it stays exercised from here too."""
@@ -399,7 +411,7 @@ class TestOutboundSecurity:
         assert module.local_destination("file:////attacker/share/a.png") is None
 
     def test_credential_in_raster_metadata_is_rejected(self, tmp_path: Path) -> None:
-        p = _png(tmp_path, body=_PNG + b"tEXtComment\0AKIAIOSFODNN7EXAMPLE")
+        p = _png(tmp_path, body=_PNG + b"tEXtComment\0" + _synth_token().encode())
         text = f"![x]({p})"
 
         result = extract_local_refs(text)
@@ -1281,10 +1293,9 @@ class TestRealLocalJunctionAncestor:
 # identical bytes either way, so the assertions are exactly as strong.
 
 
-def _synth_aws_key() -> str:
-    """An AWS-access-key-SHAPED token: fixed public prefix plus synthetic body."""
-    prefix = "A" + "KIA"
-    return prefix + hashlib.sha256(b"kc-outbound-wide").hexdigest().upper()[:16]
+def _synth_token() -> str:
+    """A GitHub-token-SHAPED value: fixed public prefix, synthetic body, valid checksum."""
+    return github_classic(seed=21)
 
 
 #: Wide encodings a credential can be written in inside a raster container. Both
@@ -1300,7 +1311,7 @@ def _wide_png(encoding: str) -> bytes:
     the raster gate and reach the content scan. The key's characters then arrive
     separated by NUL, which is what a single-byte projection cannot see.
     """
-    return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + _synth_aws_key().encode(encoding) + b"\x80\x81"
+    return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + _synth_token().encode(encoding) + b"\x80\x81"
 
 
 def _wide_clean_png(encoding: str) -> bytes:
@@ -1315,6 +1326,23 @@ def _wide_clean_png(encoding: str) -> bytes:
 #: ``HUFFVAL`` entries and ``\x83`` opens the following ones.
 _DHT_LEAD_OUT, _DHT_LEAD_IN = b"\x16\x17\x18\x19\x1a", b"\x83\x84\x85"
 
+#: The printable-ASCII tail of the standard baseline JPEG AC Huffman symbol table
+#: (ITU-T T.81 Annex K, Table K.5), assembled from its code-point ranges: six digits,
+#: a colon and thirty-two letters among them, which is no bot token in its published
+#: form.
+_BASELINE_SYMBOL_TABLE = "".join(
+    chr(code)
+    for low, high in (
+        (0x25, 0x2A),
+        (0x34, 0x3A),
+        (0x43, 0x4A),
+        (0x53, 0x5A),
+        (0x63, 0x6A),
+        (0x73, 0x7A),
+    )
+    for code in range(low, high + 1)
+)
+
 
 def _default_table_jpeg() -> bytes:
     """JPEG-shaped bytes carrying the standard symbol table and nothing sensitive.
@@ -1322,11 +1350,8 @@ def _default_table_jpeg() -> bytes:
     ``\\xff\\xd8\\xff\\xe0`` is the SOI/APP0 head a JPEG opens with; ``\\xff\\xc4``
     opens the ``DHT`` segment, and the table sits between the same non-printable
     ``HUFFVAL`` entries a real baseline image puts around it. The table is taken
-    from the product constant rather than restated, so this cannot pass against a
-    table the scanner does not pin itself to.
+    from the standard's code-point ranges above.
     """
-    from kiro_crew.security.redaction import _BASELINE_SYMBOL_TABLE
-
     return (
         b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\xff\xc4\x00\xb5\x00"
         + _DHT_LEAD_OUT
@@ -1342,12 +1367,10 @@ class TestSynthesizedMaterialActuallyTrips:
     def test_the_synth_key_is_detected_at_narrow_spacing(self) -> None:
         from kiro_crew import security
 
-        key = _synth_aws_key()
+        key = _synth_token()
         assert security.redact(key) != key
 
     def test_the_default_table_jpeg_is_a_raster_and_carries_the_table(self) -> None:
-        from kiro_crew.security.redaction import _BASELINE_SYMBOL_TABLE
-
         raw = _default_table_jpeg()
         assert sniff_raster_mime(raw[:SNIFF_BYTES]) == "image/jpeg"
         assert _BASELINE_SYMBOL_TABLE.encode("latin-1") in raw
@@ -1391,6 +1414,7 @@ class TestOneEgressScanOnEveryOutboundPath:
             "redact_credentials",
             "redact_exfiltration_urls",
             "redact_with_findings",
+            "refuses",
         }
     )
     _CANONICAL = frozenset({"binary_content_is_flagged", "wide_content_is_flagged"})
@@ -1548,13 +1572,12 @@ class TestSharedScanDecidesThisLeg:
         """An ordinary photo uploads, and the container's own table is why.
 
         A standard baseline JPEG's Huffman symbol table reads as six digits, a
-        colon and thirty-two letters -- the shape of an unlabelled bot token --
-        and essentially every image written with the default tables carries it.
-        This leg reads no consent store and refuses unconditionally, so a
-        false positive here has no remedy at all: the owner is told the file
-        failed a security check with nothing they can do about it. The shared
-        scan re-asks its positive with those tables masked, which is what makes
-        the difference.
+        colon and thirty-two letters, and essentially every image written with
+        the default tables carries it. This leg reads no consent store and
+        refuses unconditionally, so a false positive here has no remedy at all:
+        the owner is told the file failed a security check with nothing they can
+        do about it. A bot token is read only in its published form, which the
+        table is not.
         """
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "photo.jpg"
@@ -1575,7 +1598,7 @@ class TestSharedScanDecidesThisLeg:
         """
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "shot.png"
-            p.write_bytes(_PNG + b"tEXtComment\0" + _synth_aws_key().encode())
+            p.write_bytes(_PNG + b"tEXtComment\0" + _synth_token().encode())
 
             result = extract_local_refs(f"![x]({p})")
 

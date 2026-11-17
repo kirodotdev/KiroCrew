@@ -679,6 +679,30 @@ describe('InstancesViewport', () => {
     await waitFor(() => expect(lastModel()).toMatchObject({ type: 'mc-host-model', chatCompleteNotify: false }))
   })
 
+  it('relays an SSM crew to its pane under its instance id, the machine the local bar names (#34698)', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [{
+        id: 'cd-1', name: 'ec2-ssm', ssh_host: '', connection_method: 'ssm', ssm_target: 'i-0abc123def4567890',
+        remote_port: 7777, local_port: 7778, ttl: '20h', remote_bin: '',
+        status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 },
+      }],
+      warm_set_cap: 5,
+    } as unknown as Awaited<ReturnType<typeof api.listInstances>>)
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+    const post = vi.fn()
+    Object.defineProperty(document.querySelector('iframe'), 'contentWindow', { get: () => ({ postMessage: post }) })
+
+    // Any warm write re-broadcasts the model; the list arriving later does too.
+    act(() => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok' } })) })
+    await waitFor(() => expect(post.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: 'mc-host-model', tabs: [{ id: 'cd-1', sshHost: 'i-0abc123def4567890' }],
+    }))
+  })
+
   it('takes chrome visibility from the ACTIVE pane only', async () => {
     // A pane's peeked header is the only thing on screen when that pane fills the
     // window, so the host has to act on its report — the traffic lights are AppKit

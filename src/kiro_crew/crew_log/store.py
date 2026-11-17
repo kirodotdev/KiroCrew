@@ -152,13 +152,14 @@ from kiro_crew.crew_log.store_retention import (  # noqa: F401
     _scan_whole_for_types,
     _spawned_child_slot,
     _still_expired,
+    _type_needle,
     find_last_tree_edge,
     find_spawned_entries,
     read_last_tree_edge,
     sweep_expired,
-    tree_edge_scan_identity,
 )
 from kiro_crew.crew_log.store_segment_reads import (  # noqa: F401
+    _SEEK_SPAN,
     _TAIL_WINDOW,
     _anchor_exists,
     _Bounded,
@@ -166,6 +167,7 @@ from kiro_crew.crew_log.store_segment_reads import (  # noqa: F401
     _has_content,
     _iter_entries,
     _iter_entries_located,
+    _offset_below,
     _parses_to_object,
     _read_first_entry_seq,
     _read_header_line,

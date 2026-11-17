@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.mcp_providers.base import (
     McpInstallPlan,
@@ -310,12 +311,13 @@ class TestDiscoverSearch:
             await client.close()
 
     async def test_provider_strings_are_redacted(self, sandbox, fake_sel, reset_registry):
-        leaked = "creds AKIAIOSFODNN7EXAMPLE leaked"
+        secret = github_classic()
+        leaked = f"creds {secret} leaked"
         client = await _client(FakeOfficialProvider(results=[_search_result(description=leaked)]))
         try:
             resp = await client.get("/api/mcp/discover", params={"q": "weather"})
             body = await resp.text()
-            assert "AKIAIOSFODNN7EXAMPLE" not in body
+            assert secret not in body
         finally:
             await client.close()
 
@@ -466,6 +468,110 @@ class TestDiscoverInstall:
             # SEL-logged with the install operation.
             ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
             assert "mcp_discover_install" in ops
+        finally:
+            await client.close()
+
+    async def test_install_into_a_store_that_does_not_parse_is_refused(
+        self, sandbox, fake_sel, reset_registry
+    ):
+        """Nothing is written to a store cut off mid-write, so nothing is reported installed."""
+        raw = b'{"mcpServers": {"github": {"command": "gh-mcp"}'
+        sandbox.kirocrew_json.write_bytes(raw)
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 500
+            assert await resp.json() == {
+                "error": "cannot parse the Kiro Crew mcp.json",
+                "code": "config_corrupt",
+            }
+            assert sandbox.kirocrew_json.read_bytes() == raw
+            assert not sandbox.rebuild.called
+            outcomes = [c.kwargs.get("outcome") for c in fake_sel.log_api_access.call_args_list]
+            assert outcomes == ["error"]
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize(
+        "stub",
+        [
+            {"disabled": True},
+            {"disabledTools": ["x"]},
+            {},
+            {"command": "", "args": ["old"]},
+            {"url": "", "type": "sse"},
+        ],
+        ids=["off", "tools", "empty", "stale-invocation", "stale-transport"],
+    )
+    async def test_official_install_over_a_stub_entry_writes_the_spec(
+        self, sandbox, fake_sel, reset_registry, stub
+    ):
+        """A stub left by a scope-off or tool toggle has no command, so the spec
+        lookup cannot see it; the install must fill it in, not answer ok over it."""
+        sandbox.kirocrew_json.write_text(
+            json.dumps({"mcpServers": {"weather": dict(stub)}}), encoding="utf-8"
+        )
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 200
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
+            assert entry["command"] == "npx"
+            assert entry["args"] == ["-y", "@acme/weather-mcp@1.2.3"]
+            assert entry["disabled"] is True
+            assert "url" not in entry and "type" not in entry, "no stale launch key is kept"
+            for k, v in stub.items():
+                if k not in ("disabled", "command", "args", "url", "type"):
+                    assert entry[k] == v, "the stub's own overrides are kept"
+        finally:
+            await client.close()
+
+    async def test_install_over_a_registry_pointer_leaves_it_and_is_a_coded_409(
+        self, sandbox, fake_sel, reset_registry
+    ):
+        """A ``type: registry`` pointer has no command but is not a stub: the
+        catalog launches it, so the install must not replace it."""
+        pointer = {"type": "registry", "disabled": True}
+        sandbox.kirocrew_json.write_text(
+            json.dumps({"mcpServers": {"weather": pointer}}), encoding="utf-8"
+        )
+        raw = sandbox.kirocrew_json.read_bytes()
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 409
+            assert (await resp.json()).get("code") == "mcp_server_name_in_use"
+            assert sandbox.kirocrew_json.read_bytes() == raw
+        finally:
+            await client.close()
+
+    async def test_install_on_an_ambiguous_store_name_is_a_coded_409(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """Two store keys alias to the name: nothing is written, and the 409 carries
+        the same code the toggle answers for an ambiguous name."""
+        from kiro_crew.dashboard.handlers import mcp_discover
+
+        monkeypatch.setattr(mcp_discover, "_set_kirocrew_entry", lambda *a, **k: "ambiguous")
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 409
+            assert (await resp.json()).get("code") == "mcp_server_name_ambiguous"
         finally:
             await client.close()
 
@@ -765,6 +871,31 @@ class TestDiscoverInstall:
             assert synced == [("SomeBundleMCP", True)]
         finally:
             await client.close()
+
+    async def test_capability_install_failure_redacts_before_the_cut(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """Redact, then cut: cutting first splits a credential so no pattern
+        matches it, and its first part reaches the browser."""
+        from kiro_crew.dashboard.handlers import _shared as shared_mod
+        from kiro_crew.dashboard.handlers import mcp_discover as mod
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        token = github_classic(seed=75)
+
+        class _FailingManager:
+            async def install_mcp(self, server_id):
+                # The token spans char 500.
+                return CapabilityResult(ok=False, message="x" * 490 + " " + token + " tail")
+
+        monkeypatch.setattr(shared_mod, "_capability_manager", lambda: _FailingManager())
+        capability = MagicMock(is_available=lambda: True)
+        monkeypatch.setattr(mod, "_get_registry", lambda: MagicMock(get=lambda _: capability))
+        resp = await mod._install_via_capability(MagicMock(), "SomeBundleMCP")
+        assert resp.status == 500
+        error = json.loads(resp.body)["error"]
+        assert "ghp_" not in error
+        assert len(error) <= 500
 
     async def test_capability_install_rejects_unsafe_id_400(
         self, sandbox, fake_sel, reset_registry

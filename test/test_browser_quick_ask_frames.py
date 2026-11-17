@@ -381,6 +381,8 @@ class _SameProcessRelay:
             if expr.endswith(".snapshot(1400)"):
                 nodes = [{"depth": 0, "role": "textbox", "name": "Email", "ref": "e1"}]
                 return {"result": {"value": {"url": IDMSA, "nodes": nodes}}}
+            if '.resolve("e1", false)' in expr:
+                return {"result": {"value": {"ok": True, "x": 10, "y": 21}}}
             if '.resolve("e1")' in expr:
                 return {"result": {"value": {"ok": True, "x": 10, "y": 20}}}
             if expr == "[innerWidth, innerHeight]":
@@ -404,6 +406,8 @@ async def test_a_same_process_cross_origin_frame_is_read_in_its_own_walker_world
     assert nodes == [{"depth": 0, "role": "textbox", "name": "Email", "ref": "f1e1"}]
     # Its refs click at page pixels: the frame's point plus its owner's content corner.
     assert await fo.call(1, "resolve", "e1") == {"ok": True, "x": 110.0, "y": 220.0}
+    # A no-scroll re-measure reaches the frame's walker and re-adds the owner corner.
+    assert await fo.call(1, "resolve", "e1", False) == {"ok": True, "x": 110.0, "y": 221.0}
     # Its password boxes count toward the guards.
     assert await fo.count("passwordBoxes") == 1
     # Gone from the page: forgotten, not counted as unreadable forever.

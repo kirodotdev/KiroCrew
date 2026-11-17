@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         DASHBOARD_AUTHOR_AGENT_FILENAME,
         MAX_AGENT_SKILLS,
         TEMPLATE_DEFINITION_KEYS,
+        TEMPLATE_READ_ONLY_KEYS,
         CapabilityError,
         ControlPlaneNotDeclarable,
         DashboardState,
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
         clear_list_agents_cache,
         clear_model_pin,
         control_plane_declarations,
+        dashboard_author_ownership_digest,
         discovery_executor,
         enumerate_skill_catalog,
         is_markdown_spec,
@@ -177,13 +179,29 @@ async def api_agent_detail(request: web.Request) -> web.Response:
         try:
             patch_body = await request.json()
         except ValueError:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         # Valid JSON is not necessarily an object. A top-level array makes
         # ``"skills" in patch_body`` a LIST-membership test (true for
         # ``["skills"]``), and the subscript that follows then raises TypeError
         # -> HTTP 500. Reject the shape once, here, rather than per-field.
         if not isinstance(patch_body, dict):
-            return web.json_response({"error": "body must be a JSON object"}, status=400)
+            return web.json_response(
+                {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+            )
+        # A key this PATCH never writes is refused before any file is read, so a
+        # caller is told nothing was saved instead of getting a 200 that dropped it.
+        read_only_keys = sorted(TEMPLATE_READ_ONLY_KEYS & patch_body.keys())
+        if read_only_keys:
+            return web.json_response(
+                {
+                    "error": (
+                        f"{' and '.join(read_only_keys)} cannot be edited here; nothing was saved"
+                    ),
+                    "code": "definition_key_read_only",
+                    "keys": read_only_keys,
+                },
+                status=400,
+            )
 
     state: DashboardState = request.app["state"]
     # The directory walk and the per-file parse run in a thread: a large agents
@@ -481,8 +499,8 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             ):
                                 agent_state.begin_managed_write(
                                     f.stem,
-                                    agent_state.spec_digest(fresh),
-                                    current=agent_state.spec_digest(pre_write),
+                                    dashboard_author_ownership_digest(fresh),
+                                    current=dashboard_author_ownership_digest(pre_write),
                                 )
                                 _atomic_json_write(f, fresh)
                                 agent_state.finalize_managed_write(f.stem)
@@ -575,8 +593,18 @@ async def api_agent_detail(request: web.Request) -> web.Response:
             # The spec is otherwise passed through verbatim, so mask the one
             # value in it that is a credential (a pre-registered Connections
             # client's projected secret); this read is not owner-gated.
+            from kiro_crew.acp_backends import ACP_BACKEND_KAS
+            from kiro_crew.config import KiroCrewConfig
+            from kiro_crew.dashboard.agent_no_tools_notice import (
+                session_spec_lists_tools,
+                spec_lists_tools,
+            )
             from kiro_crew.mcp_utils import redact_oauth_client_secrets
 
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            session_lists_tools = spec_lists_tools(data)
+            if cfg.agent.acp_backend == ACP_BACKEND_KAS:
+                session_lists_tools = await asyncio.to_thread(session_spec_lists_tools, name, data)
             return web.json_response(
                 {
                     **redact_oauth_client_secrets(data),
@@ -590,6 +618,7 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     "model": spec_model(data),
                     "skills": keys,
                     "unmanaged_skills": unmanaged_uris,
+                    "session_lists_tools": session_lists_tools,
                 }
             )
         except (json.JSONDecodeError, OSError):

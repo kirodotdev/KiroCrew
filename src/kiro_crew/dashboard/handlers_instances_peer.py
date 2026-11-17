@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import unquote
 
 from aiohttp import web
@@ -344,6 +344,21 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
         _audit("capabilities", "denied", error="instances manager unavailable")
         return _manager_unavailable_response()
 
+    body = await read_peer_capabilities(mgr, instance_id)
+    # The remote pre-session picker can offer these levels before a live slot
+    # reports its config. Keep the hub's POST allowlist in sync with that offer.
+    if body["version_match"] and body["effort_levels"]:
+        body["effort_levels"] = register_reasoning_effort_values(body["effort_levels"])
+    _audit("capabilities", "success", request_id=instance_id)
+    return web.json_response(body)
+
+
+async def read_peer_capabilities(mgr: Any, instance_id: str) -> dict[str, Any]:
+    """The ``/capabilities`` reply body for *instance_id*, read through *mgr*.
+
+    Every peer string is clamped and redacted here. Also read by ``crew_list``
+    (``dashboard/handlers/remote_crew_list.py``), which shows a subset.
+    """
     paths = ("/api/version", "/api/agents", "/api/models", "/api/effort-levels", "/api/workspaces")
     results = await asyncio.gather(
         *(mgr.peer_capability(instance_id, path) for path in paths),
@@ -389,59 +404,51 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
     )
     version_match = versions_compatible(kiro_crew.__version__, peer_version)
     behind = _remote_is_behind(kiro_crew.__version__, peer_version)
-    # The remote pre-session picker can offer these levels before a live slot
-    # reports its config. Keep the hub's POST allowlist in sync with that offer.
-    if version_match and effort_levels:
-        effort_levels = register_reasoning_effort_values(effort_levels)
-
-    _audit("capabilities", "success", request_id=instance_id)
-    return web.json_response(
-        {
-            "instance_id": instance_id,
-            "version": peer_version,
-            "local_version": kiro_crew.__version__,
-            # The major.minor version gate, surfaced so the UI
-            # can explain a refusal BEFORE the user types a message rather than
-            # after their first send fails.
-            "version_match": version_match,
-            # Exact-version skew, independent of the compatibility gate above:
-            # a patch-behind peer still chats, but the header says it is behind.
-            "behind": behind,
-            # Mirror of behind: the peer runs a strictly newer build.
-            "ahead": _remote_is_behind(peer_version, kiro_crew.__version__),
-            "agents": _cap_rows(
-                _cap_list(agents_payload, "agents"),
-                {"name": 128, "description": _CAP_MAX_STR, "scope": 32, "model": 128},
-            ),
-            # What answers when the bound session has picked nothing. A local
-            # session falls back to THIS machine's default agent, which for a
-            # peer-bound session would name a crew the peer may not have — so the
-            # shelf needs the peer's own default to render honestly before the
-            # first pick.
-            "default_agent": (
-                _cap_str(agents_payload.get("default_agent"), 128)
-                if isinstance(agents_payload, dict)
-                else ""
-            ),
-            "models": _cap_rows(
-                _cap_list(raw.get("models"), "models"),
-                {
-                    "model_name": 128,
-                    "display_name": 128,
-                    "description": _CAP_MAX_STR,
-                    "context_window": 0,
-                },
-            ),
-            "effort_levels": effort_levels,
-            "workspaces": workspaces,
-            "default_workspace": (
-                _cap_str(workspaces_payload.get("default"), 128)
-                if isinstance(workspaces_payload, dict)
-                else ""
-            ),
-            "unavailable": unavailable,
-        }
-    )
+    return {
+        "instance_id": instance_id,
+        "version": peer_version,
+        "local_version": kiro_crew.__version__,
+        # The major.minor version gate, surfaced so the UI
+        # can explain a refusal BEFORE the user types a message rather than
+        # after their first send fails.
+        "version_match": version_match,
+        # Exact-version skew, independent of the compatibility gate above:
+        # a patch-behind peer still chats, but the header says it is behind.
+        "behind": behind,
+        # Mirror of behind: the peer runs a strictly newer build.
+        "ahead": _remote_is_behind(peer_version, kiro_crew.__version__),
+        "agents": _cap_rows(
+            _cap_list(agents_payload, "agents"),
+            {"name": 128, "description": _CAP_MAX_STR, "scope": 32, "model": 128},
+        ),
+        # What answers when the bound session has picked nothing. A local
+        # session falls back to THIS machine's default agent, which for a
+        # peer-bound session would name a crew the peer may not have — so the
+        # shelf needs the peer's own default to render honestly before the
+        # first pick.
+        "default_agent": (
+            _cap_str(agents_payload.get("default_agent"), 128)
+            if isinstance(agents_payload, dict)
+            else ""
+        ),
+        "models": _cap_rows(
+            _cap_list(raw.get("models"), "models"),
+            {
+                "model_name": 128,
+                "display_name": 128,
+                "description": _CAP_MAX_STR,
+                "context_window": 0,
+            },
+        ),
+        "effort_levels": effort_levels,
+        "workspaces": workspaces,
+        "default_workspace": (
+            _cap_str(workspaces_payload.get("default"), 128)
+            if isinstance(workspaces_payload, dict)
+            else ""
+        ),
+        "unavailable": unavailable,
+    }
 
 
 async def api_instances_approval_state(request: web.Request) -> web.Response:
@@ -679,6 +686,11 @@ def _clean_peer_slot(row: object) -> dict[str, object] | None:
     # reads it. Only a real ``True`` counts: a string or number is dropped.
     if row.get("crew_mode_root") is True:
         out["crew_mode_root"] = True
+    # The peer's ``slack.show_in_session_list`` stamp on a Slack-born row, so this
+    # dashboard's person list leaves it out as the peer's own list does. Only a real
+    # ``True`` counts, and it can only hide the peer's own row.
+    if row.get("slack_list_hidden") is True:
+        out["slack_list_hidden"] = True
     return out
 
 
@@ -694,7 +706,12 @@ class PeerSlotsUnavailable(Exception):
     """
 
     def __init__(
-        self, code: str, message: str, status: int, audit_detail: str, outcome: str = "failure"
+        self,
+        code: str,
+        message: str,
+        status: int,
+        audit_detail: str,
+        outcome: str = "failure",
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -1042,7 +1059,8 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
     if request.method.upper() not in _PROXY_METHODS:
         _audit("proxy", "denied", request_id=instance_id, error="method not allowed")
         return web.json_response(
-            {"error": "method not allowed", "code": "proxy_method_not_allowed"}, status=405
+            {"error": "method not allowed", "code": "proxy_method_not_allowed"},
+            status=405,
         )
     # The forwarded path is the CANONICAL one this returns, never the raw
     # match_info: vetting one string and sending another is the gap that let a
@@ -1114,9 +1132,17 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
                 async for chunk in upstream.content.iter_any():
                     raw += chunk
                     if len(raw) > PROXY_REDACT_BUFFER_MAX_BYTES:
-                        _audit("proxy", "denied", request_id=instance_id, error="reply too large")
+                        _audit(
+                            "proxy",
+                            "denied",
+                            request_id=instance_id,
+                            error="reply too large",
+                        )
                         return web.json_response(
-                            {"error": "peer reply too large", "code": "proxy_reply_too_large"},
+                            {
+                                "error": "peer reply too large",
+                                "code": "proxy_reply_too_large",
+                            },
                             status=502,
                         )
                 try:
@@ -1124,7 +1150,12 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
                         _redact_peer_payload, raw.decode("utf-8", "replace")
                     )
                 except ProxyReplyUnredactable:
-                    _audit("proxy", "denied", request_id=instance_id, error="reply unredactable")
+                    _audit(
+                        "proxy",
+                        "denied",
+                        request_id=instance_id,
+                        error="reply unredactable",
+                    )
                     return web.json_response(
                         {
                             "error": "peer reply could not be redacted",
@@ -1185,7 +1216,12 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
                     if len(pending) > PROXY_REDACT_BUFFER_MAX_BYTES:
                         # Fail closed: an event too large to redact is dropped
                         # with the rest of the stream, never forwarded raw.
-                        _audit("proxy", "partial", request_id=instance_id, error="event too large")
+                        _audit(
+                            "proxy",
+                            "partial",
+                            request_id=instance_id,
+                            error="event too large",
+                        )
                         return resp
                 if pending:
                     tail = pending.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
@@ -1193,7 +1229,10 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
                         await resp.write(await _redact_sse_event_async(tail))
                     except ProxyReplyUnredactable:
                         _audit(
-                            "proxy", "partial", request_id=instance_id, error="event unredactable"
+                            "proxy",
+                            "partial",
+                            request_id=instance_id,
+                            error="event unredactable",
                         )
                         return resp
             except ConnectionResetError:
@@ -1206,7 +1245,12 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
                 # that just refused a write raises again, and that second
                 # exception escapes the handler. There is also nothing to audit
                 # as a success — the response never completed.
-                _audit("proxy", "partial", request_id=instance_id, error="client disconnected")
+                _audit(
+                    "proxy",
+                    "partial",
+                    request_id=instance_id,
+                    error="client disconnected",
+                )
                 return resp
             await resp.write_eof()
             _audit("proxy", "success", request_id=instance_id)

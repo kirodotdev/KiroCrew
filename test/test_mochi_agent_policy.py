@@ -137,7 +137,7 @@ class TestBuildPolicy:
         assert "kirocrew-cron" not in chat["neutralize"]
         # ...and granted mountOnly, so the bridge keeps them off allowedTools:
         # spawn_run/cron_add route through the approval gate, never auto-approve
-        # on a ceiling-less host (this is the fix for the GPT-flagged bypass).
+        # on a ceiling-less host (otherwise the approval gate is bypassed).
         assert chat["servers"]["kirocrew-core"]["mountOnly"] is True
         assert chat["servers"]["kirocrew-cron"]["mountOnly"] is True
         # background: NEITHER granted, BOTH denied (bg reads untrusted content)

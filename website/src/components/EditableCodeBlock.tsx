@@ -135,6 +135,7 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
           it a definite max height, so it scrolls under the pointer. */}
       <PierreEditor
         file={{ name: `snippet.${lang || 'txt'}`, contents: code, cacheKey: `chat-edit:${lang}:${code.length}:${contentHash(code)}` }}
+        langHint={lang}
         onChange={v => { valueRef.current = v }}
         className="max-h-[480px]"
       />

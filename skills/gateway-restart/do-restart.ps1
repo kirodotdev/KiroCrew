@@ -86,8 +86,10 @@ $logLine = ""
 try {
     $output = & $bin restart 2>&1
     $status = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
-    # The restart verb prints a fresh dashboard token URL on success; the
-    # skill tells the resumed agent to quote this log, so redact the bearer.
+    # kirocrew restart prints a dashboard login link only to a terminal,
+    # and this capture is not one, so $output carries the kirocrew token
+    # hint instead. The skill tells the resumed agent to quote this log, so
+    # the -replace redacts any ?token= value as a guard.
     $redacted = "$output" -replace '([?&]token=)\S+', '$1REDACTED'
     $logLine = "$(Get-Date -Format o) exit=${status}: $redacted"
 } catch {

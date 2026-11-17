@@ -117,6 +117,16 @@
   --color-danger-fg: var(--danger-fg);
   --color-danger-subtle: var(--danger-subtle);
   --color-danger-text: var(--danger-text);
+  /* ErrorNotice colours per `impact` (index.css derives them; see
+     errorNoticeImpactContrast.test.ts). */
+  --color-danger-ink: var(--danger-ink);
+  --color-danger-body: var(--danger-body);
+  --color-danger-ink-nested: var(--danger-ink-nested);
+  --color-danger-body-nested: var(--danger-body-nested);
+  --color-minor-link: var(--minor-link);
+  --color-notice-btn-border: var(--notice-btn-border);
+  --color-notice-btn-border-hover: var(--notice-btn-border-hover);
+  --color-notice-ring: var(--notice-ring);
   --color-info: var(--info);
   --color-info-fg: var(--info-fg);
   --color-info-subtle: color-mix(in srgb, var(--info) 12%, transparent);

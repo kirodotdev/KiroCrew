@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { configureStore } from '@reduxjs/toolkit'
@@ -67,6 +67,12 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+/** Applies a cache change and lets it reach the screen: react-query hands
+ *  observers the change on a zero timeout, so a check right after a bare
+ *  `act` would still read the previous render. */
+const settleCache = (change: () => void) =>
+  act(async () => { change(); await new Promise(done => setTimeout(done, 0)) })
+
 /** Prints the router's current address, so a test can read where a click went. */
 function Where() {
   const loc = useLocation()
@@ -77,7 +83,9 @@ function Where() {
 function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', collapsed = false, surface = 'section' }: {
   url?: string; collapsed?: boolean; surface?: 'section' | 'tiles' | 'both'
 } = {}) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+  // The roster read retries on its own (`retryThroughRestart`); no backoff, so
+  // a read that keeps failing shows its notice at once.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, staleTime: Infinity } } })
   clients.push(qc)
   if (roster !== undefined) qc.setQueryData(MEMBERS_ROSTER_QUERY_KEY, roster)
   const liveStore = configureStore({ reducer: {
@@ -200,10 +208,31 @@ describe('DockMatesSection', () => {
     expect(within(screen.getByTestId('dock-mate-a')).getByRole('button')).not.toHaveAttribute('aria-current')
   })
 
-  it('marks a working mate before live slot data arrives', () => {
+  it('marks a working mate on its face, not with a dot, before live slot data arrives', () => {
     renderDock([row('busy', { starred: true, running: true }), row('idle', { starred: true })])
-    expect(within(screen.getByTestId('dock-mate-busy')).getByRole('status')).toBeInTheDocument()
-    expect(within(screen.getByTestId('dock-mate-idle')).queryByRole('status')).toBeNull()
+    expect(within(screen.getByTestId('dock-mate-busy')).getByTestId('face-busy')).toHaveAttribute('data-working', 'subtle')
+    expect(within(screen.getByTestId('dock-mate-busy')).queryByRole('status')).toBeNull()
+    expect(within(screen.getByTestId('dock-mate-idle')).getByTestId('face-idle')).toHaveAttribute('data-working', 'idle')
+  })
+
+  // jsdom computes no layout, so this pins the structure that makes overlap
+  // impossible: an in-flow dot after the truncating name, in one flex line.
+  it('gives the wide row\'s dot its own space after the name, so a long name truncates before it', () => {
+    const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a', display_name: 'Kiro Web Development' })])
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])); liveStore.dispatch(markSlotUnread('member-a')) })
+    const dot = within(screen.getByTestId('dock-mate-a')).getByRole('status', { name: 'Unread message' })
+    const name = within(screen.getByTestId('dock-mate-a')).getByText('Kiro Web Development')
+    expect(dot).not.toHaveClass('absolute')
+    expect(dot).toHaveClass('shrink-0')
+    expect(name).toHaveClass('truncate')
+    expect(dot.parentElement).toBe(name.parentElement)
+    expect(name.compareDocumentPosition(dot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps the narrow row\'s dot in the face\'s corner, where no name is drawn', () => {
+    const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { collapsed: true })
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])); liveStore.dispatch(markSlotUnread('member-a')) })
+    expect(within(screen.getByTestId('dock-mate-a')).getByRole('status', { name: 'Unread message' })).toHaveClass('absolute')
   })
 
   it('ignores overlapping drops until writes and the confirming roster read settle', async () => {
@@ -290,6 +319,19 @@ describe('DockMatesSection', () => {
     expect(screen.queryAllByTestId(/^rail-mate-/)).toHaveLength(0)
   })
 
+  it('never asks again for the roster a guest is refused', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const members = vi.spyOn(api, 'members').mockRejectedValue(new ApiError(403, 'owner only', '{"code":"owner_only"}'))
+    renderDock(undefined, { surface: 'both' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(members).toHaveBeenCalledTimes(1)
+    // Two 30s re-read periods pass with no further request.
+    await act(async () => { await vi.advanceTimersByTimeAsync(61_000) })
+    expect(members).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+  })
+
   it('still shows the notice for an expired session, which is not a guest refusal', async () => {
     vi.spyOn(api, 'members').mockRejectedValue(new ApiError(403, 'Session expired', '{"code":"owner_only"}', true))
     renderDock(undefined)
@@ -337,62 +379,119 @@ describe('DockMatesSection', () => {
     expect(handoff.prompts).toHaveLength(1)
     expect(handoff.prompts[0]).toContain('/api/members -> HTTP 503')
   })
+
+  it('rides out a short network drop: a re-read that fails twice and then lands shows no notice', async () => {
+    const roster = [row('a', { starred: true })]
+    const linkDown = () => new TypeError('Failed to fetch')
+    const members = vi.spyOn(api, 'members')
+      .mockRejectedValueOnce(linkDown())
+      .mockRejectedValueOnce(linkDown())
+      .mockResolvedValue(membersReply([...roster, row('b', { starred: true })]))
+    const { qc } = renderDock(roster)
+    await act(async () => { await qc.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }) })
+    // Wait for the read to settle on screen, whichever way it went.
+    await waitFor(() => expect(screen.queryByTestId('dock-mates-load-error') ?? screen.queryByTestId('dock-mate-b')).not.toBeNull())
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    expect(members).toHaveBeenCalledTimes(3)
+    expect(qc.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.status).toBe('success')
+    expect(dockNames()).toEqual(['a', 'b'])
+  })
+
+  it('re-reads a roster that stays failed every 30s, so its notice clears once a read lands', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const roster = [row('a', { starred: true })]
+    const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
+    const { qc } = renderDock(roster)
+    await act(async () => {
+      void qc.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    // The ladder is spent: the first read and its three retries all failed.
+    expect(members).toHaveBeenCalledTimes(4)
+    expect(screen.getByTestId('dock-mates-load-error')).toBeInTheDocument()
+    // Nothing else re-reads an idle page while the socket stays up.
+    members.mockResolvedValue(membersReply([...roster, row('b', { starred: true })]))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(members).toHaveBeenCalledTimes(5)
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    expect(dockNames()).toEqual(['a', 'b'])
+  })
+
+  it('keeps a dismissed notice away through a failed 30s re-read', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const roster = [row('a', { starred: true })]
+    const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
+    const { qc } = renderDock(roster)
+    await act(async () => {
+      void qc.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(members).toHaveBeenCalledTimes(4)
+    const notice = screen.getByTestId('dock-mates-load-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    // The re-read and its retries fail too: a new failure in the same outage.
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+    expect(members).toHaveBeenCalledTimes(8)
+    expect(qc.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.status).toBe('error')
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    expect(dockNames()).toEqual(['a'])
+  })
 })
 
 describe.each(['section', 'tiles'] as const)('live presence in %s', surface => {
-  it('updates both the dot and face from live activity rather than the HTTP snapshot', () => {
+  it('updates the face from live activity rather than the HTTP snapshot, with no dot for working', () => {
     const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a', running: true })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
     act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
-    expect(within(mate).queryByRole('status')).toBeNull()
     expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'idle')
     act(() => { liveStore.dispatch(sseSlots([slot('a', true)])) })
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
     expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
+    expect(within(mate).queryByRole('status')).toBeNull()
   })
 
-  it('resolves a new member slot by name and includes live child work', () => {
+  it('resolves a new member slot by name and includes live child work on the face', () => {
     const { liveStore } = renderDock([row('a', { starred: true })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
-    expect(within(mate).queryByRole('status')).toBeNull()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'idle')
     act(() => { liveStore.dispatch(sseSlots([slot('a', false, { subagents_running: 1 })])) })
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
     expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
     act(() => {
       liveStore.dispatch(sseSlots([slot('a', false)]))
       liveStore.dispatch(sseSubagentQueued({ slot: 'member-a', queued: 1 }))
     })
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
     act(() => { liveStore.dispatch(sseSubagentQueued({ slot: 'member-a', queued: 0 })) })
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'idle')
     expect(within(mate).queryByRole('status')).toBeNull()
   })
 
-  it('shows its one dot for an unread reply or a turn waiting on the person, and drops it after', () => {
+  it('shows the dot only for an unread reply, and drops it once read even while still working', () => {
     const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
     act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
     expect(within(mate).queryByRole('status')).toBeNull()
     act(() => { liveStore.dispatch(markSlotUnread('member-a')) })
     expect(within(mate).getByRole('status', { name: 'Unread message' })).toBeInTheDocument()
-    act(() => { liveStore.dispatch(sseSlots([slot('a', false, { needs_input: true })])) })
-    expect(within(mate).getAllByRole('status')).toHaveLength(1)
-    expect(within(mate).getByRole('status', { name: 'Needs your approval or answer' })).toBeInTheDocument()
-    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false, { subagents_running: 1 })])) })
     act(() => { liveStore.dispatch(markSlotRead('member-a')) })
     expect(within(mate).queryByRole('status')).toBeNull()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
   })
 
-  it('marks the mate when a session it dispatched waits on an approval', () => {
+  it('puts no dot on a mate whose turn or dispatched session waits on the person', () => {
     const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
     act(() => {
       liveStore.dispatch(sseSlots([
-        slot('a', false),
+        slot('a', false, { needs_input: true }),
         { key: 'chat-worker', agent: 'kirocrew', running: false, mate_root: 'member-a', pending_approval: true } as ChatSlot,
       ]))
     })
-    expect(within(mate).getByRole('status', { name: 'Needs your approval or answer' })).toBeInTheDocument()
+    expect(within(mate).queryByRole('status')).toBeNull()
   })
 })
 
@@ -433,9 +532,16 @@ describe('DockMatesTiles', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     showSurface(first)
     expect(screen.queryByRole('alert')).toBeNull()
-    // A distinct failure timestamp, without relying on wall-clock timing.
+    // Distinct timestamps, without relying on wall-clock timing. Another
+    // failure in the same outage keeps the dismiss.
     const query = qc.getQueryCache().find({ queryKey: MEMBERS_ROSTER_QUERY_KEY })!
-    act(() => { query.setState({ errorUpdatedAt: query.state.errorUpdatedAt + 1 }) })
+    const failedAt = query.state.errorUpdatedAt
+    await settleCache(() => query.setState({ errorUpdatedAt: failedAt + 1 }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    // A good read ends the outage; a failure after it shows the notice again.
+    await settleCache(() => query.setState({ status: 'success', error: null, data: query.state.data ?? [], dataUpdatedAt: failedAt + 2 }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    await settleCache(() => query.setState({ status: 'error', error: new Error('roster unavailable'), errorUpdatedAt: failedAt + 3 }))
     await screen.findByTestId('dock-mates-load-error')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
   })

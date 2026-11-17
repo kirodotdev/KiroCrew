@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
-from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -25,6 +25,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError, validate_file_path
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
+from kiro_crew.messaging.driver import strip_steering_markers
 from kiro_crew.security import (
     is_sensitive_path,
     is_sensitive_resolved_path,
@@ -35,6 +36,7 @@ from kiro_crew.shared_crew.turn_gate import TurnRefused
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import plan_to_yaml
 from kiro_crew.taskrunner import WorkflowInitializing
+from kiro_crew.taskrunner_switch import task_runner_off
 from kiro_crew.workflow_memory import capture_admission_execution
 
 if TYPE_CHECKING:
@@ -157,7 +159,7 @@ async def _require_taskrunner_owner(request: web.Request, operation: str) -> web
     the class ``is_owner_dashboard_request`` can rule on at all. The other two
     caller classes keep the control that already governs them -- an
     ``X-Internal-Secret`` loopback process (the ``task_run`` MCP tool) reaches
-    here with ``app`` ABSENT, and an app token (the Projects app declares
+    here with ``app`` ABSENT, and an app token (an app whose manifest declares
     ``/api/taskrunner``) is confined to its manifest's declared paths by
     ``_enforce_app_scope``.
     """
@@ -167,12 +169,14 @@ async def _require_taskrunner_owner(request: web.Request, operation: str) -> web
 
 
 async def _task_runner_disabled() -> web.Response | None:
-    """409 while Task Runner is off in Library: a run would have no page to watch or stop it."""
-    if not await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
+    """409 while Task Runner is turned off (``taskrunner.enabled``, or the ``apps`` policy).
+
+    The code stays ``app_disabled``, the answer every start gave while Task Runner was
+    an app, so a client reading it needs no change.
+    """
+    if (refusal := await asyncio.to_thread(task_runner_off)) is None:
         return None
-    return web.json_response(
-        {"error": TASK_RUNNER_DISABLED_MESSAGE, "code": "app_disabled"}, status=409
-    )
+    return web.json_response({"error": refusal, "code": "app_disabled"}, status=409)
 
 
 async def _gate_auto_approve(
@@ -411,6 +415,7 @@ async def _claim_plan_dir(work_dir: Path) -> tuple[str, Path]:
         try:
             _new_id, task_dir = worker.result()
         except Exception:
+            # The claim failed, so there is no directory to remove.
             pass
         else:
             try:
@@ -1225,7 +1230,10 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     agent = body.get("agent", "")
+    # bool("false") is True: the shared reader maps the usual spellings, and any
+    # other value keeps the same truth test as before.
     fresh = body.get("fresh", False)
+    fresh = _coerce_bool(fresh, bool(fresh))
     workspace_dir = body.get("workspace_dir", "")
     # Same provenance gate as /start: an app/proxy-embedded caller cannot mint
     # trust on the resume/execute path either (no source claim here — the run
@@ -1302,6 +1310,8 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     task_id = body.get("task_id", "")
     if not steps or not isinstance(steps, list):
         return web.json_response({"error": "steps array required"}, status=400)
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
     try:
         # This path allocates its own placeholder before calling update_plan.
         state.task_runner._require_workflow_ready()
@@ -1477,6 +1487,8 @@ async def _run_refine(
         state._refine_error = str(exc)
         state._refine_status = "error"
     finally:
+        # kiro-cli's [STEERING steer-…] ack is protocol: drop it before any await below.
+        state._refine_text = strip_steering_markers(state._refine_text)
         state._refine_answer_future = None  # type: ignore[attr-defined]
         state._refine_session_key = ""  # type: ignore[attr-defined]
         try:
@@ -1527,6 +1539,8 @@ async def api_taskrunner_refine(request: web.Request) -> web.Response:
     user_input = user_input.strip()
     if not user_input:
         return web.json_response({"error": "input is required"}, status=400)
+    if (disabled := await _task_runner_disabled()) is not None:
+        return disabled
 
     # Cancel any existing refine
     if state._refine_task and not state._refine_task.done():

@@ -11,7 +11,8 @@ response carries NO ``models`` object. The model list is the ``configOptions``
 On kiro-cli's relay route the dashboard picker reads ``kiro-cli chat
 --list-models`` (``dashboard/handlers/agents.py``), a catalog kiro-cli prints
 from its account API. On the bundle route there is no kiro-cli to ask, so the
-select IS the catalog. This module turns the select into rows shaped like that
+select IS the catalog, and so it is on a relay started on Crew's sign-in alone
+once kiro-cli's gate refuses. This module turns the select into rows shaped like that
 ``--list-models`` catalog (``model_id`` / ``model_name`` / ``display_name`` /
 ``description`` / ``rate_multiplier``), so the readers that already consume
 catalog rows -- ``model_registry.refresh_kiro_catalog`` for the ``acp``
@@ -21,7 +22,7 @@ session's advertised (entitlement) list; see model-selection.md, "KAS sends no
 ``models`` object". It is a catalog, read the way the kiro-cli catalog is.
 
 The last select a KAS session advertised is kept in memory, process-wide, for
-``GET /api/models`` on the bundle route (``dashboard/handlers/models_kas_bundle.py``).
+``GET /api/models`` on those routes (``dashboard/handlers/models_kas_bundle.py``).
 In memory only, like the catalog's prices: what the engine serves is a fact
 about the account signed in NOW, so a cold process has no catalog until a
 session advertises one. A select is what ONE account is served, so the
@@ -34,8 +35,9 @@ dashboard's sign-in card, or ``kirocrew kas login`` / ``kas logout`` in a shell
 -- and needs no notice from the writer.
 Recorded by the shared-runtime driver (``AcpSessionHandle.store_session_config``;
 KAS runs on ``AcpRuntime`` only, ``ACP_BACKENDS_ACP_RUNTIME``) on a positive KAS
-identity, so a KAS session on either route records; only the bundle-route picker
-READS it.
+identity, so a KAS session on either route records; the picker READS it on the
+bundle route, and on the relay only where that relay starts on Crew's sign-in
+alone and kiro-cli's gate refuses.
 """
 
 from __future__ import annotations

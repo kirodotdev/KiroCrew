@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.workflows.preview import (
     MAX_LABEL_CHARS,
     MAX_PHASE_TITLE_CHARS,
@@ -443,20 +444,18 @@ class TestACutNeverLeavesACredentialFragment:
     a cut that lands inside one leaves a fragment their patterns do not match -- the cut has
     to happen on already-redacted text, not before it.
 
-    Measured against the real redactor: of a 40-character ``ghp_`` token, a 33-character
-    prefix survives unredacted, and of a 20-character AWS key id a 19-character prefix
-    does. Each case below places the token so the cut leaves exactly that prefix, which
-    is the state a cut-then-redact order ships.
+    Measured against the real redactor: a 40-character ``ghp_`` token cut short fails
+    its checksum, so a 39-character prefix survives unredacted. Each case below places
+    the token so the cut leaves exactly that prefix, which is the state a
+    cut-then-redact order ships.
     """
 
     # (token, the longest prefix the redactor does NOT recognize)
-    TOKENS = (
-        ("ghp_" + "a" * 36, 33),
-        ("AKIAIOSFODNN7EXAMPLE", 19),
-    )
+    TOKENS = ((github_classic(seed=34), 39),)
 
     def _pad(self, token: str, survives: int, limit: int) -> str:
-        return "x" * (limit - survives)
+        # A blank ends the pad: a token glued to a letter is no token.
+        return "x" * (limit - survives - 1) + " "
 
     @pytest.mark.parametrize("token,survives", TOKENS)
     def test_an_agent_label_leaks_no_fragment(self, token, survives):
@@ -593,8 +592,15 @@ class TestThePreviewerTracksTheDSL:
 
         from kiro_crew.workflows import runner
 
-        expected = f"label or prompt[:{RUNNER_PROMPT_LABEL_CHARS}]"
-        assert expected in inspect.getsource(runner), (
-            f"the runner does not spell {expected!r}; find its current agent label "
-            "expression and move RUNNER_PROMPT_LABEL_CHARS to match"
+        # The runner labels an unlabeled call with
+        # ``label or _fallback_label(str(prompt))``; the helper takes the first N
+        # characters of the already-redacted prompt.
+        expected = f"prompt[:{RUNNER_PROMPT_LABEL_CHARS}]"
+        assert "label or _fallback_label(str(prompt))" in inspect.getsource(runner), (
+            "the runner no longer spells 'label or _fallback_label(str(prompt))'; find its "
+            "current agent label expression and update this guard"
+        )
+        assert expected in inspect.getsource(runner._fallback_label), (
+            f"the runner's fallback label does not spell {expected!r}; find its current "
+            "agent label expression and move RUNNER_PROMPT_LABEL_CHARS to match"
         )

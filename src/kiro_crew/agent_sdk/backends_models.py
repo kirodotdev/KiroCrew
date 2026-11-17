@@ -20,6 +20,7 @@ import os
 from typing import FrozenSet, Mapping
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -27,6 +28,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -51,11 +53,26 @@ logger = logging.getLogger("kiro_crew.agent_sdk.backends")
 # ``provider/model`` id pi resolved from its own ``models.json``
 # (``test/fixtures/acp_frames/pi/session-live.jsonl``).
 #
+# ``ACP_BACKEND_MIMOCODE`` is a member on the same evidence as opencode, whose ACP
+# server it forks: its ``session/new`` result advertises a ``model`` select whose
+# ``currentValue`` is the ``provider/model`` id named in ``MIMOCODE_CONFIG_CONTENT``
+# (``test/fixtures/acp_frames/mimocode/session-live.jsonl``).
+#
 # ``ACP_BACKEND_DEEPSEEK`` is a member on the same kind of evidence, with one shape
 # to respect: its ``model`` select carries OPAQUE values. Each is a JSON-encoded
 # ``[provider, model]`` pair -- ``["deepseek-official", "deepseek-v4-flash"]`` -- so
 # the value is passed through exactly as advertised rather than parsed. That is what
 # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` membership is for.
+#
+# ``ACP_BACKEND_COPILOT`` is a member on the Copilot CLI 1.0.107 capture
+# (``test/fixtures/acp_frames/copilot/model-effort.jsonl``), taken on an
+# account whose plan offers model choice: ``session/new`` advertises a ``model``
+# select (category ``model``) whose ``currentValue`` matches ``models.currentModelId``,
+# and a ``model`` write answers with the switched select. Its ``-32602`` reads as a
+# value refusal (``handshake-live.jsonl``: a refused ``allow_all`` value), and an
+# unknown option id answers "Unknown config option", so a session on a plan with
+# only ``auto`` -- whose ``session/new`` advertises no ``model`` select, as every
+# 1.0.100 capture beside it shows -- keeps its default when a pin is inherited.
 ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -64,6 +81,9 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_COPILOT,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -87,6 +107,28 @@ def model_refusal_phrase(backend: str) -> str:
     so it cannot describe a refused effort or any other option.
     """
     return _MODEL_REFUSAL_PHRASE_BY_BACKEND.get(backend, "")
+
+
+#: How a member of the effort channel below says the CURRENT MODEL takes no effort
+#: level, where the session advertises the option anyway. Copilot CLI 1.0.107 serves
+#: its ``reasoning_effort`` select on every session but answers a write on a model
+#: without that setting with ``-32603`` "Request session.model.setReasoningEffort
+#: failed with message: This model does not support reasoning_effort configuration."
+#: (``test/fixtures/acp_frames/copilot/model-effort.jsonl``). That is neither an
+#: unknown option nor a refused value, so no lower level can succeed either.
+_EFFORT_MODEL_REFUSAL_PHRASE_BY_BACKEND: Mapping[str, str] = {
+    ACP_BACKEND_COPILOT: "does not support reasoning_effort configuration",
+}
+
+
+def effort_refused_by_model(backend: str, exc: BaseException) -> bool:
+    """True when *exc* is *backend* saying its current model has no effort setting.
+
+    ``change_effort`` reads it as "this model has no effort setting": the stored
+    level and overlay roll back, and the change raises ``AcpCommandRefused``.
+    """
+    phrase = _EFFORT_MODEL_REFUSAL_PHRASE_BY_BACKEND.get(backend, "")
+    return bool(phrase) and phrase in str(exc).lower()
 
 
 # Backends that take a reasoning-effort change through
@@ -152,15 +194,32 @@ def model_refusal_phrase(backend: str) -> str:
 # the bare code is a value refusal there too. A ``model`` write resets the variant
 # to the new model's first one, which is why the live switch re-applies the level.
 # ``test/fixtures/acp_frames/opencode/effort-live.jsonl`` is the evidence.
+#
+# mimocode is NOT a member, though its parent is. On 0.1.15 the ``session/new`` result
+# carries a ``model`` select and a ``mode`` select and no effort option: a model's
+# reasoning variants are advertised as model ids of their own,
+# ``<provider>/<model>/<variant>`` (``acp/agent.ts:1686-1692``; seen live as
+# ``xiaomi/mimo-v2.6-flash/low`` beside ``xiaomi/mimo-v2.6-flash``), so the level is
+# chosen with the model and there is no separate option for this channel to write.
+# copilot IS a member, under ``reasoning_effort`` (category ``thought_level``),
+# offering low, medium, high, xhigh and max, on the Copilot CLI 1.0.107 capture
+# (``test/fixtures/acp_frames/copilot/model-effort.jsonl``). The
+# select is advertised on every session, but the setting is PER MODEL: on the
+# starting model a write answers ``-32603`` "This model does not support
+# reasoning_effort configuration" (``effort_refused_by_model``), and after a model
+# switch a write of ``high`` reads back as ``high``. A session on a plan with only
+# ``auto`` advertises no such select (the 1.0.100 captures), so it writes nothing.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
+        ACP_BACKEND_COPILOT,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KAS,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -176,9 +235,23 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
 # ids carry no suffix at all -- neither may inherit a split it never advertised.
 ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
 
+# Backends whose ``model`` config option takes ANY string. The push ladder reads a
+# harness's refusal of a value outside its own select as its signal to stay on the
+# backend's default; whether every other member of
+# ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`` refuses such a value was not measured here.
+# A member here answers success instead: MiMo Code 0.1.15's
+# ``setSessionConfigOption`` parses the value into ``provider/model`` and stores it
+# without looking it up. Measured live: an inherited ``claude-opus-5.5`` pin was
+# accepted, and every prompt after it failed inside the harness with
+# ``ProviderModelNotFoundError`` while the ACP turn ended ``end_turn`` with no
+# content, so the session looked like a model that answers nothing. On a member
+# the client therefore judges the value against the advertised select itself
+# before it writes, and a value the select does not carry is handled as refused.
+ACP_BACKENDS_MODEL_SELECT_UNCHECKED = frozenset({ACP_BACKEND_MIMOCODE})
+
 # The ``configId`` each backend spells its reasoning-effort option with. One home
 # for a fact that is per-harness vocabulary, not a constant: claude-agent-acp
-# advertises ``effort``, codex-acp advertises ``reasoning_effort``, KAS advertises
+# advertises ``effort``, codex-acp and Copilot CLI advertise ``reasoning_effort``, KAS advertises
 # ``effortLevel``, pi-acp advertises ``thought_level`` and goose advertises
 # ``thinking_effort`` (opencode takes the default ``effort``), and a session that
 # writes another one's spelling is answered with "unknown config option" and
@@ -194,10 +267,12 @@ ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS = frozenset({ACP_BACKEND_CODEX})
 # prevent. The function is the export.
 EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_CODEX: "reasoning_effort",
+    ACP_BACKEND_COPILOT: "reasoning_effort",
     ACP_BACKEND_DEEPSEEK: "reasoning_effort",
     ACP_BACKEND_GOOSE: "thinking_effort",
     ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
+    ACP_BACKEND_ANTIGRAVITY: "thinking_level",
 }
 
 #: The spelling used by every backend without a row in
@@ -261,8 +336,17 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # on no concrete id (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``) is the one case the
 # registry cannot name, and there the option the adapter built for that model
 # answers instead.
+#
+# mimocode is NOT a member: membership presumes the effort channel above, which it is
+# outside. Its levels are model ids, so no advertised effort option exists to read.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
-    {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+    }
 )
 
 # Backends whose unpinned session serves a pseudo-model rather than a concrete
@@ -275,6 +359,23 @@ ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
 # member on the pseudo-model that select answers whether a level applies
 # (``AcpProvider.supports_effort``); every concrete id keeps the registry answer.
 ACP_BACKENDS_DEFAULT_PSEUDO_MODEL = frozenset({ACP_BACKEND_CLAUDE})
+
+# Backends whose session offers the ``ultracode`` switch to the dashboard: it changes
+# how Claude Code plans work, not which tools run or how they are approved. Opt-in
+# (harness-parity H6); see claude-code-provider.md, "The ultracode switch".
+ACP_BACKENDS_ULTRACODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
+
+#: The ``configId`` of that switch.
+ULTRACODE_CONFIG_OPTION_ID = "ultracode"
+
+# Backends whose session offers the ``fast`` switch (Fast mode) to the dashboard: it
+# changes how fast the model answers and what a turn costs, not which tools run or how
+# they are approved. Opt-in (harness-parity H6); see claude-code-provider.md, "The Fast
+# mode switch".
+ACP_BACKENDS_FAST_MODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
+
+#: The ``configId`` of that switch.
+FAST_MODE_CONFIG_OPTION_ID = "fast"
 
 
 def effort_config_option_id(backend: str) -> str:
@@ -414,6 +515,13 @@ def effort_config_option_clear_value(backend: str) -> str | None:
 # is the only vocabulary its ``session/set_config_option`` accepts, and the static
 # registry names none of them.
 #
+# ``ACP_BACKEND_MIMOCODE`` is a member for the capture half for opencode's reason: its
+# ids are ``provider/model`` pairs from its own provider list, and a model's
+# reasoning variants are advertised as further rows of the same select
+# (``xiaomi/mimo-v2.6-pro/high``) rather than as a separate effort option, so the
+# advertised select is the only vocabulary its ``session/set_config_option``
+# accepts.
+#
 # ``ACP_BACKEND_PI`` is a member for the capture half too, and its ids come from
 # the same place opencode's do: ``provider/model`` pairs out of the operator's own
 # ``models.json`` (``ollama/llama3.2:3b`` for a local model), which no static
@@ -432,7 +540,8 @@ def effort_config_option_clear_value(backend: str) -> str | None:
 # from kiro-cli's ``--list-models`` catalog, which names models this harness does not
 # serve, so membership is what makes ``GET /api/models`` answer from copilot's own
 # namespace -- ``auto`` alone until a session advertises more, which a session on a
-# plan with model choice can, through the same capture every member uses.
+# plan with model choice does: on Copilot CLI 1.0.107 ``session/new`` carries a
+# ``models`` block and a ``model`` select (``copilot/model-effort.jsonl``).
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -442,8 +551,23 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
+
+# Backends whose ``configOptions`` ``model`` select is the canonical model
+# vocabulary even when the same session response also carries a ``models``
+# object. Most advertised-selection hosts advertise one list or the other; this
+# set exists for a host that advertises both with different values.
+#
+# Antigravity ACP 1.4.4 advertises ``models.availableModels`` as model+thinking
+# pairs (``gemini-3.8-flash-high``) while its ``model`` select accepts the bare
+# model id and its ``thinking_level`` select carries the effort. A write of the
+# pair returns success but leaves ``currentValue`` unchanged, so treating the
+# pair list as the picker vocabulary makes a model switch silently do nothing.
+# The select is therefore the authority for this host.
+ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL = frozenset({ACP_BACKEND_ANTIGRAVITY})
 
 # Backends that seed a per-session settings file — claude-agent-acp's
 # ``settings.local.json`` — to lock the model + permission surface. The file is
@@ -583,6 +707,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     ACP_BACKEND_OPENCODE: "opencode",
     # pi likewise: ``provider/model`` pairs from the operator's own models.json.
     ACP_BACKEND_PI: "pi",
+    # MiMo Code likewise, and not opencode's bucket even though it forks opencode:
+    # its provider list is its own (``xiaomi/…``, ``mimo/…``), so a shared bucket
+    # would let one harness's advertised ids replace what the picker offers for the
+    # other.
+    ACP_BACKEND_MIMOCODE: "mimocode",
     # goose likewise, and it is the sharpest case: its ``session/new`` advertises the
     # whole provider catalog it could reach, so sharing the ``acp`` bucket would not
     # merely mix two harnesses' ids -- it would replace kiro-cli's advertised catalog
@@ -601,6 +730,7 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # strands gets its own key: its ids are ``provider/model`` strings (or bare
     # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
     ACP_BACKEND_STRANDS: "strands",
+    ACP_BACKEND_ANTIGRAVITY: "antigravity",
 }
 
 
@@ -621,11 +751,18 @@ ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 #: applied at spawn and a change relaunches the process and reloads the session. A
 #: separate set from the model one because the two flags are separate facts of the
 #: CLI, and a harness can take one at launch and the other on the wire.
+#:
+#: antigravity is NOT a member of either launch set: Antigravity ACP 1.4.4
+#: advertises ``model`` and ``thinking_level`` select options on ``session/new``
+#: and ``session/load`` (``test/fixtures/acp_frames/antigravity/handshake-live.jsonl``)
+#: and is launched with no model or effort argument, so both change on the live
+#: session (:data:`ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`,
+#: :data:`ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`).
 ACP_BACKENDS_EFFORT_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 
 #: The levels each member of :data:`ACP_BACKENDS_EFFORT_AT_LAUNCH` takes on its argv.
 #: Strands: ``EFFORT_LEVELS`` in ``@strands-agents/harness``, read by
-#: ``cli/arguments.js`` in the pinned 0.2.3; each of Crew's own levels is spelled the
+#: ``cli/arguments.js`` in the pinned release; each of Crew's own levels is spelled the
 #: same there.
 EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND: Mapping[str, FrozenSet[str]] = {
     ACP_BACKEND_STRANDS: frozenset(

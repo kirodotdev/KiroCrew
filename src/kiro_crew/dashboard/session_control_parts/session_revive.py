@@ -41,9 +41,14 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import (
 )
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
-    MAX_SLOTS_PER_CREATOR,
     _normalize_slot_key,
     _safe_folder_tree,
+    count_restored_workers,
+    creator_slot_cap_refusal,
+    note_new_worker,
+    own_worker_member,
+    read_worker_execution,
+    worker_cap_refusal,
 )
 from kiro_crew.sel import sel
 
@@ -316,6 +321,9 @@ def _archived_target_refusal(
     if str(meta.get("memory_mode") or "persistent") != "persistent":
         return "incognito and temporary sessions are not addressable", "ephemeral_target"
     if meta.get("app"):
+        # Even for an app that lets the owner's chats reach its sessions
+        # (``app_reach``): that opt-in covers reading and sending to a LIVE session.
+        # Reviving puts back a session the app archived and does not track.
         return "app-scoped sessions are not addressable", "app_scoped_target"
     if meta.get("linked_session_key") or meta.get("channel_origin") or linked:
         # Both readings: the metadata line AND the gateway-owned session store,
@@ -537,17 +545,15 @@ async def revive_session(
         )
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         raise deny(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", status=409)
-    if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-        raise deny(
-            f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-            "creator_slot_cap_reached",
-            status=409,
-        )
+    if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+        raise deny(cap_reason, "creator_slot_cap_reached", status=409)
 
     def _plain(reason: str, code: str, status: int = 403) -> SessionControlError:
         # A non-auditing denier for the hook: its refusal is audited ONCE, by the
         # ``deny`` that raises it after the resume returns.
         return SessionControlError(reason, status=status, code=code)
+
+    revived_execution: list[Any] = [None]
 
     async def _containment(built: "_ChatSlot") -> ResumeRefusal | None:
         # The LAST gate, on the slot the resume hydrated and before it is
@@ -577,6 +583,11 @@ async def revive_session(
             return ResumeRefusal(
                 "sessions mirrored to a channel are not addressable", "mirrored_target", 403
             )
+        # A revived Bot worker takes a seat under its Bot's `max_workers`: its saved
+        # record is read here, and the seat is checked in `_final_check`.
+        revived_execution[0] = await asyncio.to_thread(read_worker_execution, history_key)
+        if own_worker_member(revived_execution[0]):
+            await count_restored_workers(state)
         claimed_creator = str(meta.get("created_by") or "")
         if not getattr(built, "_created_by", "") and claimed_creator:
             # Creator attribution restored the way a restart's rehydrate restores
@@ -613,12 +624,8 @@ async def revive_session(
         # is inclusive.
         if state.live_slot_count() > MAX_LIVE_SLOTS:
             return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
-        if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-            return ResumeRefusal(
-                f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-                "creator_slot_cap_reached",
-                409,
-            )
+        if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+            return ResumeRefusal(cap_reason, "creator_slot_cap_reached", 409)
         return None
 
     def _final_check(built: "_ChatSlot") -> ResumeRefusal | None:
@@ -636,12 +643,11 @@ async def revive_session(
             return ResumeRefusal(refusal[0], refusal[1], 403)
         if state.live_slot_count() > MAX_LIVE_SLOTS:
             return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
-        if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
-            return ResumeRefusal(
-                f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
-                "creator_slot_cap_reached",
-                409,
-            )
+        if (cap_reason := creator_slot_cap_refusal(state, caller_key)) is not None:
+            return ResumeRefusal(cap_reason, "creator_slot_cap_reached", 409)
+        if (worker_reason := worker_cap_refusal(state, revived_execution[0])) is not None:
+            return ResumeRefusal(worker_reason, "bot_worker_cap_reached", 409)
+        note_new_worker(built.key, revived_execution[0])
         from kiro_crew.dashboard.approval_inheritance import (
             inherit_posture,
             is_profile_worker,

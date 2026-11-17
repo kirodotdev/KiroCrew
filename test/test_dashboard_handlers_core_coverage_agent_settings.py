@@ -639,10 +639,10 @@ class TestSessionAgentPathIdValidation:
     validator runs.
     """
 
-    #: Rejected by ``_validate_id``: a space is outside the charset, and ``..``
-    #: is refused by name. Both survive aiohttp routing -- the default pattern
-    #: for ``{id}`` is ``[^{}/]+``, which admits a space and admits ``..``.
-    BAD_IDS = ("bad id", "..", "a\\b", "a%b")
+    #: Rejected by ``_validate_id``: a space is outside the charset, ``..`` is
+    #: refused by name, and ``D:x`` names another drive on Windows. All survive
+    #: aiohttp routing -- the default pattern for ``{id}`` is ``[^{}/]+``.
+    BAD_IDS = ("bad id", "..", "a\\b", "a%b", "D:x")
 
     @pytest.mark.parametrize("bad", BAD_IDS)
     @pytest.mark.asyncio

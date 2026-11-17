@@ -208,11 +208,6 @@ def test_mixed_audience_serializes_each_row_once(state, monkeypatch) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F7: main rebuilds every slot's links on every flush",
-)
 def test_warm_flush_builds_no_slot_links(state, spy) -> None:
     """A second flush with nothing changed: 0 link sets, 0 row summaries, 0 redactions.
 

@@ -50,7 +50,10 @@ export function useSharedCrewListView(): SharedCrewListView {
   const people = useSharedCrewPeople(attributes)
   // An initial unreadable mode has no guessed replacement. A cached mode keeps
   // the filter and bylines in place while the bar reports the failed refresh.
-  const modeFailed = attributes && queryReadFailed(modeQuery)
+  const modeReadFailed = useQueryReadFailed(modeQuery)
+  const capsReadFailed = useQueryReadFailed(caps)
+  const peopleReadFailed = useQueryReadFailed(people)
+  const modeFailed = attributes && modeReadFailed
   const team = showsTeamAttribution({ previewOn, attributes, mode: listMode(modeQuery.data, capabilities, people.data), joined: someoneJoined(people.data?.people) })
   const crewId = modeQuery.data?.crew_id ?? ''
   const viewer = modeQuery.data?.viewer
@@ -63,7 +66,7 @@ export function useSharedCrewListView(): SharedCrewListView {
     saveCreatorFilter(crewId, next)
   }, [crewId])
   const bylines = useMemo(() => ({ hidden: !team, viewerId }), [team, viewerId])
-  return { filterAvailable: team || modeFailed || queryReadFailed(caps) || (attributes && queryReadFailed(people)), filter: team ? filter : 'all', setFilter, bylines }
+  return { filterAvailable: team || modeFailed || capsReadFailed || (attributes && peopleReadFailed), filter: team ? filter : 'all', setFilter, bylines }
 }
 
 /** The mode the list reads, or `null` while the mode route has not answered. */
@@ -79,14 +82,23 @@ function listMode(
   })
 }
 
+type ReadQuery = { isError: boolean; isSuccess: boolean; isPending: boolean; errorUpdateCount: number; error: unknown }
+
 /** A read failed and has not succeeded since. A retry without cached data
  *  stays visibly failed while pending, rather than blinking out the notice.
  *  A permission refusal is not a failure: the mode and People reads answer 403
  *  `owner_only` to a caller who is not the owner (a relay teammate), and a
  *  "Try again" there can never succeed, so neither the bar nor a notice shows
- *  for it (#32031). */
-function queryReadFailed(q: { isError: boolean; isPending: boolean; errorUpdateCount: number; error: unknown }): boolean {
-  if (isPermissionRefusal(q.error)) return false
+ *  for it (#32031). That holds while the refused read refetches too: with no
+ *  cached data a refetch clears `error` while pending, so the last settled
+ *  error is remembered here rather than read from the query.
+ *  shortcut: the memory is per mounted consumer, so one that mounts mid-refetch
+ *  has not seen the refusal; key it by query if that case ever shows. */
+function useQueryReadFailed(q: ReadQuery): boolean {
+  const refused = useRef(false)
+  if (q.isError) refused.current = isPermissionRefusal(q.error)
+  else if (q.isSuccess) refused.current = false
+  if (refused.current) return false
   return q.isError || (q.isPending && q.errorUpdateCount > 0)
 }
 
@@ -98,12 +110,13 @@ export function CreatorFilterBar({ value, onChange }: { value: CreatorFilterValu
   const attributes = previewOn && capabilityUsable(caps.capabilities.attribution)
   const modeQuery = useSharedCrewMode(attributes, { fetchOnMount: false })
   const people = useSharedCrewPeople(attributes, { fetchOnMount: false })
+  const failed = [useQueryReadFailed(caps), useQueryReadFailed(modeQuery), useQueryReadFailed(people)]
   const failures = [
     // A failed capabilities read cannot say whether the preview is on, so it still shows.
     { query: caps, testId: 'creator-filter-capabilities-error', fallback: i18nT('sharedCrew.session_state_failed'), enabled: true },
     { query: modeQuery, testId: 'creator-filter-mode-error-notice', fallback: i18nT('sharedCrew.mode_failed'), enabled: attributes },
     { query: people, testId: 'creator-filter-people-error', fallback: i18nT('sharedCrew.people_failed'), enabled: attributes },
-  ].filter(({ query, enabled }) => enabled && queryReadFailed(query))
+  ].filter(({ enabled }, i) => enabled && failed[i])
   const team = showsTeamAttribution({ previewOn, attributes, mode: listMode(modeQuery.data, caps.capabilities, people.data), joined: someoneJoined(people.data?.people) })
   return (
     <>

@@ -37,19 +37,18 @@ _QUEUE_ALIASES = frozenset(("/queue",))
 _STEER_ALIASES = frozenset(("/steer",))
 _MID_TURN_ALIASES = _QUEUE_ALIASES | _STEER_ALIASES
 
-#: alias -> canonical name, and the one mapping :func:`parse_command` and
-#: :data:`_ALL_COMMANDS` both read, so a command reaching one and not the other
-#: cannot happen: an alias missing from the parser answers as ordinary chat, and
-#: one missing from the token set is answered with "unknown command".
+#: alias -> canonical name. :func:`parse_command` and :data:`_ALL_COMMANDS` both
+#: read this one mapping, so they cannot disagree (a parser miss would answer as
+#: chat, a token-set miss as "unknown command").
 #:
-#: The aliases stay as the named sets above rather than being spelled inline here,
-#: and ``_STOP_ALIASES`` MUST keep that name: a cross-channel tripwire ``getattr``s
-#: it off this module to check the shared cancel-during-a-governance-deny exemption
-#: covers every spelling this channel accepts. Inlining it costs nothing visible —
-#: the probe falls back to its default, and these two spellings are a subset of what
-#: the other channels contribute, so the union it asserts on does not move. The
-#: coverage just stops. The rest are named for symmetry; only that one has a reader
-#: outside this module.
+#: Keep the aliases as the named sets above, not inline here. Tests read them by
+#: name and fall back silently when one is missing, so inlining keeps them green
+#: while the coverage stops:
+#:
+#: * ``_STOP_ALIASES`` is ``getattr``-ed by a cross-channel tripwire that checks
+#:   the cancel-during-a-governance-deny exemption covers every stop spelling.
+#: * every ``*_ALIASES`` frozenset is collected by the quick-prompt
+#:   reserved-token test, so a Webex-only spelling added later is checked.
 _ALIAS_TO_COMMAND: dict[str, str] = {
     alias: canonical
     for canonical, aliases in (

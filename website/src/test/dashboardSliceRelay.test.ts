@@ -5,7 +5,8 @@
  * Instances hub can badge the chip. Only the non-secret count is sent.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import dashboardReducer, { markSlotUnread, markSlotRead } from '../store/dashboardSlice'
+import dashboardReducer, { markSlotUnread, markSlotRead, sseSlots } from '../store/dashboardSlice'
+import type { ChatSlot } from '../types'
 
 const realParent = window.parent
 const HUB = 'http://127.0.0.1:8899'
@@ -60,6 +61,26 @@ describe('dashboardSlice unread relay', () => {
     state = dashboardReducer(state, markSlotUnread({ slot: 'slot-2', ts: '2026-01-01T00:00:03Z' }))
     expect(postMessage.mock.calls.map(([p]) => p.count)).toEqual([1, 1, 2])
     expect(state.unreadSlots).toEqual(['slot-1', 'slot-2'])
+  })
+
+  it('relays the unread count when only a Bot thread session visibility stamp changes', () => {
+    const postMessage = vi.fn()
+    setReferrer(`${HUB}/chat`)
+    Object.defineProperty(window, 'parent', { value: { postMessage }, configurable: true })
+
+    const bot: ChatSlot = { key: 'bot', mode: 'member', messages: 0, running: false, show_sessions_in_list: false }
+    const session: ChatSlot = { key: 'bot-session', mate_root: bot.key, messages: 1, running: false }
+    let state = dashboardReducer(undefined, { type: '@@INIT' })
+    state = dashboardReducer(state, sseSlots([bot, session]))
+    state = dashboardReducer(state, markSlotUnread(session.key))
+    expect(postMessage).toHaveBeenLastCalledWith({ source: 'kirocrew', type: 'mc-unread-slots', count: 0 }, HUB)
+    postMessage.mockClear()
+
+    state = dashboardReducer(state, sseSlots([{ ...bot, show_sessions_in_list: true }, session]))
+    expect(postMessage).toHaveBeenLastCalledWith({ source: 'kirocrew', type: 'mc-unread-slots', count: 1 }, HUB)
+    state = dashboardReducer(state, sseSlots([bot, session]))
+    expect(postMessage.mock.calls.map(([payload]) => payload.count)).toEqual([1, 0])
+    expect(state.unreadSlots).toEqual([session.key])
   })
 
   it('does not post when not embedded (parent === window)', () => {

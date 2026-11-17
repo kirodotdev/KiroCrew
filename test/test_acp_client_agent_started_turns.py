@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.acp import client_transport
-from kiro_crew.acp.client import _CLIENT_OWNERS, AcpClient, AcpError
+from kiro_crew.acp.client import _CLIENT_OWNERS, AcpClient, AcpError, ClaudeAcpClient
 from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -36,7 +36,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
 )
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 _ACP_DIR = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp"
 # AcpClient binds members its owner modules define, so a stdout reader can live in any of them.
@@ -163,7 +163,43 @@ async def test_a_permission_request_between_turns_starts_a_turn() -> None:
     "kind", ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"]
 )
 def test_each_activity_kind_starts_a_turn(kind: str) -> None:
-    assert _starts_agent_turn(JsonRpcMessage.from_dict(_update({"sessionUpdate": kind})))
+    assert _starts_agent_turn(
+        JsonRpcMessage.from_dict(_update({"sessionUpdate": kind})), ACP_BACKEND_CLAUDE
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_notice_between_turns_hands_off_and_streams_as_the_turn_text() -> None:
+    """A client that declares ``session.notices`` is sent an advisory as a ``notice``
+    where claude-agent-acp would send it a chunk (``session-notices.js``
+    ``noticeOrTranscriptUpdate``), so the notice starts the turn a chunk would."""
+    turns: list[AcpClient] = []
+    client, reader, _proc = _client(on_turn=turns.append)
+    notice = {
+        "sessionUpdate": "notice",
+        "severity": "info",
+        "title": "Task stopped by user",
+        "description": "build watcher.",
+    }
+
+    await _handed_off(client, reader, _usage(), _update(notice))
+
+    assert turns == [client]
+    assert _kinds(client) == ["usage_update", "notice"]
+    async with contextlib.aclosing(
+        client.stream_unsolicited(timeout=FALLBACK_TIMEOUT_SECS)
+    ) as stream:
+        first = await stream.__anext__()
+        _feed(reader, _AUTONOMOUS_END)
+        rest = [e async for e in stream]
+
+    assert (first.kind, first.text) == (
+        EVENT_TEXT_CHUNK,
+        "\n\n> **Task stopped by user:** build watcher.\n\n",
+    )
+    assert first.harness_notice.title == "Task stopped by user"
+    assert [e.kind for e in rest] == [EVENT_COMPLETE]
+    await _stop_restarted_reader(client)
 
 
 @pytest.mark.parametrize(
@@ -473,6 +509,43 @@ async def test_the_reader_runs_after_a_cancelled_turn() -> None:
     assert turns == [client]
 
 
+async def _run_entry(client: AcpClient, entry: str) -> None:
+    if entry == "send_message":
+        await client.send_message("first", timeout=FALLBACK_TIMEOUT_SECS)
+        return
+    stream = getattr(client, entry)("first", timeout=FALLBACK_TIMEOUT_SECS)
+    async with contextlib.aclosing(stream):
+        async for _event in stream:
+            pass
+
+
+@pytest.mark.parametrize("failure", ["refused", "cancelled"])
+@pytest.mark.parametrize("entry", ["stream_events", "send_message_stream", "send_message"])
+@pytest.mark.asyncio
+async def test_a_prompt_that_never_went_out_leaves_the_reader_free_to_start(
+    entry: str, failure: str
+) -> None:
+    """A prompt entry that ends before its prompt is sent ends its turn too.
+
+    Otherwise ``_turn_done`` stays clear, the idle reader never starts, and the
+    reply the agent sends next (a background command finishing) waits in the pipe
+    for the next prompt, which shows it under that message.
+    """
+    turns: list[AcpClient] = []
+    client, reader, _sent = _steering_client(on_turn=turns.append)
+    raised: type[BaseException] = AcpError if failure == "refused" else asyncio.CancelledError
+    client._send_prompt = AsyncMock(side_effect=raised("not sent"))
+
+    with pytest.raises(raised):
+        await _run_entry(client, entry)
+
+    assert client._turn_done.is_set()
+    _feed(reader, _chunk("the background job finished"))
+    await _reader_exits(client)
+    assert turns == [client]
+    assert client._agent_turn_pending() is True
+
+
 @pytest.mark.parametrize("case", ["no_callback", "turn_in_flight", "dead"])
 @pytest.mark.asyncio
 async def test_no_idle_reader_when_nothing_could_take_the_turn(case: str) -> None:
@@ -601,7 +674,7 @@ def test_the_claude_adapter_binds_the_reader_once_across_respawns(monkeypatch, t
         claude_mod, "_resolve_claude_acp_bin", lambda: (["/opt/bin/claude-agent-acp"], "")
     )
     monkeypatch.setattr(claude_mod, "_claude_adapter_installed_version", lambda _argv: "0.87.0")
-    monkeypatch.setattr(AcpClient, "_seed_session_settings", AsyncMock())
+    monkeypatch.setattr(ClaudeAcpClient, "_seed_session_settings", AsyncMock())
     monkeypatch.setattr(AcpClient, "_prepare_session_mcp", AsyncMock())
     ctx = SpawnContext(
         agent="kirocrew", work_dir=tmp_path, model=None, environ={}, home=tmp_path, session=client

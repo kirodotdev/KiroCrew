@@ -76,6 +76,7 @@ from pathlib import Path
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
 from kiro_crew.platform.update_governance import nested_repo_exec_driver_reason
+from kiro_crew.platform_compat import is_link_or_junction
 
 #: Config-named host execution/read vectors, disabled on OUR argv (``-c`` beats any repo
 #: config). Hooks and fsmonitor are disabled; external attributes/excludes files are pinned
@@ -167,11 +168,12 @@ def _reject_link(path: Path) -> None:
         return
     except OSError as exc:
         raise GitSafetyError(f"cannot stat {path}: {exc}") from exc
-    if stat.S_ISLNK(st.st_mode):
-        raise GitSafetyError(f"refusing to follow a symlink at {path} while pinning git attributes")
-    # `.git` may legitimately be a FILE (linked worktree) or a DIR; `info` must be a real dir;
-    # `attributes` must be a real file. A reparse-point-backed dir (Windows junction) is not a
-    # plain directory and is rejected by the S_ISDIR checks in the caller.
+    # A Windows junction is not S_ISLNK (lstat reports a plain directory), so it needs the
+    # shared junction probe or the pin would be written through it.
+    if stat.S_ISLNK(st.st_mode) or is_link_or_junction(path):
+        raise GitSafetyError(
+            f"refusing to follow a symlink or junction at {path} while pinning git attributes"
+        )
 
 
 def _resolve_gitdir(git_dir_owner: Path | str) -> Path | None:

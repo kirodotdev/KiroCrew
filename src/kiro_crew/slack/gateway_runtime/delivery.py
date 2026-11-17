@@ -57,6 +57,23 @@ async def _open_dm_with_retry(
     )
 
 
+def _cron_dm_user(self: GatewayOrchestrator, job: CronJob) -> str:
+    """The Slack user a channel-less cron's result or failure alert is DM'd to.
+
+    ``created_by`` is the Slack user id of whoever scheduled the job from Slack.
+    A job an app registers for itself carries ``app:<name>`` there instead
+    (``CronSDK``), and an imported one ``import:<source>``: owner TAGS, which no
+    Slack user id ever looks like. Handing one to ``conversations.open`` fails
+    with ``user_not_found`` on every run, so the result reaches nobody. A tagged
+    or empty ``created_by`` therefore falls back to the install's owner, who is
+    the person an app's or an import's jobs run for.
+    """
+    created_by = job.created_by or ""
+    if not created_by or ":" in created_by:
+        return self._owner_id
+    return created_by
+
+
 def _record_cron_delivery(self: GatewayOrchestrator, job: CronJob, result_hash: str) -> None:
     """Advance the dedup anchor after a CONFIRMED delivery, on any surface.
 
@@ -292,11 +309,11 @@ def _cron_job_is_silent(self: GatewayOrchestrator, parent_key: str) -> bool:
 
     ``_deliver_cron_response`` routes a cron
     session's post-subagent-completion turn to its channel and to Slack,
-    gated on ``info.silent``, the *sub-agent's* flag. That flag is never set from
-    the parent cron's ``silent`` setting (``spawn`` defaults it False and
-    the spawn queue tuple doesn't carry it), so a silent cron's subagent
-    completions still reached Slack. The cron job's own ``silent`` flag is
-    the source of truth, so resolve it here. ``parent_key`` is
+    gated on ``info.silent``, the *sub-agent's* flag. Admission resolves that
+    flag from the parent cron's own ``silent`` setting
+    (``messaging_api/spawn.py::_parent_run_is_silent``); this live read stays
+    beside it for a run admitted before the job turned silent and for a run
+    whose row predates the admission rule. ``parent_key`` is
     ``cron:{job_id}`` or ``cron:{job_id}:{run_id}``.
     """
     if not parent_key.startswith("cron:") or self.cron_svc is None:

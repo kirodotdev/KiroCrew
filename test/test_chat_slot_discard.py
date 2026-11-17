@@ -1,7 +1,8 @@
 """``POST /api/chat/slots/{slot}/discard`` removes a session nothing was written in.
 
 The artifact companion chat creates its session when its panel opens and discards
-it, slot and history row, when the panel closes unused. The page's "unused" reading
+it, slot and history row, when the panel closes unused; the routed chat does the
+same for the session an app's draft launch created, when the user leaves it unsent. The page's "unused" reading
 comes from one window's copy of the slot, so the server decides on the live slot,
 and it deletes the history row only when the close it performed left the key free.
 """
@@ -79,6 +80,23 @@ async def test_an_empty_slot_is_closed_and_its_history_row_deleted(state):
         name = await _create(client)
         status, body = await _discard(client, name)
     assert status == 200 and body == {"ok": True}
+    assert name not in state._slots
+    assert not _history_row_exists(state, name)
+
+
+@pytest.mark.asyncio
+async def test_a_draft_launch_session_is_closed_and_leaves_no_history_row(state):
+    # The routed chat creates an app's draft launch session with the launch's memory
+    # mode and no session folder, and discards it when the user leaves it unsent.
+    async with _client(state) as client:
+        resp = await client.post(
+            "/api/chat/slots", json={"memory_mode": "persistent", "no_session_folder": True}
+        )
+        assert resp.status == 200
+        name = (await resp.json())["key"]
+        status, _ = await _discard(client, name)
+    # An untitled empty session saves no History row, so the delete finds none.
+    assert status == 200
     assert name not in state._slots
     assert not _history_row_exists(state, name)
 

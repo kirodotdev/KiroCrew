@@ -9,9 +9,14 @@ import re
 import subprocess
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import platform_compat
 from kiro_crew.testing.wait import await_until
+
+# A synthetic GitHub token the redactor removes; an AWS key ID or a bare 40-character
+# run stays visible.
+_SECRET = github_classic(seed=200)
 
 
 class TestTokenMint:
@@ -134,6 +139,17 @@ class TestTokenMint:
         # Sub-second values clamp up to ssh's integer floor of 1.
         argv = _build_ssh_argv("cd-1", "echo hi", connect_timeout_secs=0.2)
         assert "ConnectTimeout=1" in argv
+
+    def test_ssh_argv_drops_config_forwards(self):
+        # A `LocalForward` in the user's ssh_config for this host would make the
+        # one-shot ssh bind that port too. If the port is free it holds it,
+        # waits for the connections riding it after the command exits, and is
+        # killed at the timeout with all of them. The one-shot never needs one.
+        from kiro_crew.instances.token_mint import _build_ssh_argv
+
+        argv = _build_ssh_argv("cd-1", "echo hi")
+        at = argv.index("ClearAllForwardings=yes")
+        assert argv[at - 1] == "-o" and at < argv.index("cd-1")
 
     def test_mint_success_and_no_token_in_logs(self, monkeypatch, caplog):
         from kiro_crew.instances import token_mint as tm
@@ -740,7 +756,7 @@ class TestTokenMintGeneric:
             returncode = 255
 
             async def communicate(self):
-                return b"", b"WSSH error AKIAIOSFODNN7EXAMPLE banner"
+                return b"", f"WSSH error {_SECRET} banner".encode()
 
         async def fake_exec(*a, **k):
             return FakeProc()
@@ -748,27 +764,18 @@ class TestTokenMintGeneric:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
         rc, err = asyncio.run(tm.run_remote_kirocrew("cd-1", "restart"))
         assert rc == 255
-        assert "AKIAIOSFODNN7EXAMPLE" not in err
+        assert _SECRET not in err
         assert "[REDACTED: credential]" in err
 
-    def test_run_remote_kirocrew_redacts_urls_before_credentials(self, monkeypatch):
-        """Pin the ORDER of the redaction passes, not just the redaction.
-
-        The exfiltration-URL pass keys on the token-bearing URL shape, so
-        running the credential pass first substitutes a placeholder into the
-        query string and disarms it — the suspicious destination host then
-        survives into the returned tail. Each pass is green in isolation, so
-        only an input carrying a suspicious URL whose query string also carries
-        a credential distinguishes the two orders. This test fails if the
-        composition is ever reversed again.
-        """
+    def test_run_remote_kirocrew_masks_only_the_url_credential(self, monkeypatch):
+        """A URL in the tail is never replaced whole: only its credential value goes."""
         from kiro_crew.instances import token_mint as tm
 
         class FakeProc:
             returncode = 255
 
             async def communicate(self):
-                return b"", b"banner https://evil.example.com/x?token=AKIAIOSFODNN7EXAMPLE end"
+                return b"", f"banner https://evil.example.com/x?token={_SECRET} end".encode()
 
         async def fake_exec(*a, **k):
             return FakeProc()
@@ -776,24 +783,15 @@ class TestTokenMintGeneric:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
         rc, err = asyncio.run(tm.run_remote_kirocrew("cd-1", "restart"))
         assert rc == 255
-        # The URL pass must fire: the destination must be suppressed, not just
-        # the credential inside it. Under the reversed (credentials-first)
-        # order the URL survives as https://evil.example.com/x?token=[...].
-        assert "https://evil.example.com" not in err
-        assert "[REDACTED: suspicious URL" in err
-        assert "AKIAIOSFODNN7EXAMPLE" not in err
+        assert "https://evil.example.com/x?token=[REDACTED: credential] end" in err
+        assert _SECRET not in err
 
-    def test_stdout_tail_url_pass_not_disarmed_by_token_prescrub(self, monkeypatch):
-        """The stdout-tail site has a second disarm path — its own
-        ``_TOKEN_RE`` pre-scrub. Substituting ``token=<redacted>`` into a URL's
-        query string before the exfiltration-URL pass destroys the token-bearing
-        shape that pass keys on, so a suspicious destination would survive into
-        the raised TokenMintError even with the composed helper in place. Pins
-        that the generic redactors see the window before the token scrubs.
-        """
+    def test_stdout_tail_masks_only_the_url_credential(self, monkeypatch):
+        """The stdout-tail site has its own ``_TOKEN_RE`` pre-scrub as well; with it
+        the URL in the raised TokenMintError still keeps everything but the value."""
         from kiro_crew.instances import token_mint as tm
 
-        stdout = b"fail: see https://evil.example.com/x?token=AKIAIOSFODNN7EXAMPLE now"
+        stdout = f"fail: see https://evil.example.com/x?token={_SECRET} now".encode()
 
         class FakeProc:
             returncode = 1
@@ -808,9 +806,8 @@ class TestTokenMintGeneric:
         with pytest.raises(tm.TokenMintError) as excinfo:
             asyncio.run(tm.mint_remote_token("cd-1", ttl="20h"))
         msg = str(excinfo.value)
-        assert "https://evil.example.com" not in msg
-        assert "[REDACTED: suspicious URL" in msg
-        assert "AKIAIOSFODNN7EXAMPLE" not in msg
+        assert "https://evil.example.com/x?token=" in msg
+        assert _SECRET not in msg
 
     class _HangProc:
         """First ``communicate`` times out; the reap (a SECOND communicate)

@@ -15,10 +15,13 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew import platform_compat
 
@@ -454,8 +457,13 @@ class TestConcurrentWritesCannotRestoreAStaleCeiling(unittest.TestCase):
     most.
     """
 
+    @pytest.fixture(autouse=True)
+    def _per_test_home(self, tmp_path):
+        """Hand ``setUp`` pytest's per-test directory as the data home."""
+        self._tmp_path = tmp_path
+
     def setUp(self) -> None:
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = str(self._tmp_path)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
 
@@ -464,7 +472,6 @@ class TestConcurrentWritesCannotRestoreAStaleCeiling(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_a_concurrent_destination_write_cannot_restore_act(self):
         """The scenario review named: disable `act` while another key is being written."""
@@ -677,10 +684,13 @@ class TestPolicyLockdownOrdering(_HomeIsolated):
         )
 
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
 
         def _measuring(target):
-            sizes.append(os.stat(target).st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(os.stat(target).st_size)
             return real_restrict(target)
 
         with mock.patch("kiro_crew.platform_compat.restrict_to_owner", _measuring):

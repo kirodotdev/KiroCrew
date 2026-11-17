@@ -290,7 +290,8 @@ class TestContextBuilder:
         assert "tool result" in dash
         assert "END YOUR TURN" not in dash
         assert "NON-BLOCKING" not in dash
-        assert "[OPTIONS:]" in dash
+        # Ending with buttons is no cheaper than a card: the nudge does not steer to it.
+        assert "[OPTIONS:] is cheaper" not in dash
         # A card is an interruption, so the nudge must also carry the restraint
         # contract: silence is the default and only a human-only decision that
         # actually blocks the work earns the interruption.
@@ -1504,6 +1505,13 @@ class TestLoadAgentPrompt:
         self._write_spec(tmp_path, monkeypatch, f"file://{contract}")
         loaded = ContextBuilder._load_agent_prompt("test", owner_template=owner_template)
         assert loaded == "RESOLVED_CONTRACT"
+
+    def test_a_file_uri_spelled_prompt_reads_the_file_it_names(self, tmp_path, monkeypatch):
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is an absolute prompt."""
+        own = tmp_path / "own-prompt.md"
+        own.write_text("OWN_URI_PERSONA", encoding="utf-8")
+        self._write_spec(tmp_path, monkeypatch, "file:///" + own.as_posix().lstrip("/"))
+        assert ContextBuilder._load_agent_prompt("test") == "OWN_URI_PERSONA"
 
     def test_owner_template_custom_prompt_omitted(self, tmp_path, monkeypatch):
         """An owner template's own (non-managed) prompt reaches the model through

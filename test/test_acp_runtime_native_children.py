@@ -731,3 +731,153 @@ async def test_handle_owned_rejections_are_sel_audited():
 
     assert audited, "pre-turn drain reject was not SEL-audited"
     assert audited[0][2] == "stranded_request_pre_turn_drain"
+
+
+# ── whether a roster child's frames reach a session, said out loud ─────
+#
+# The per-call silence timer asks `routes_roster_children_to` before it judges a
+# native sub-agent call by its sub-agent's silence (`acp-client.md`, "Per-call
+# silence timer"). Each shape drives the REAL reader with a roster and then one child
+# update, and the answer must be what the reader then did with that update.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["alone", "beside-a-co-tenant", "roster-taken-while-shared"])
+async def test_the_roster_route_answer_is_what_the_reader_does(shape):
+    rt, reader, _proc = _make_runtime()
+    queues = _register(rt, "sA")
+    rt._turn_active_sessions.add("sA")
+    if shape != "alone":
+        _register(rt, "sB")
+    task = await _start_reader(rt)
+    try:
+        assert rt.routes_roster_children_to("sA") is (shape == "alone")
+        _feed(
+            reader,
+            {
+                "method": "_kiro.dev/subagent/list_update",
+                "params": {"subagents": [{"sessionId": "child-1"}]},
+            },
+        )
+        await _drain(reader)
+        if shape == "roster-taken-while-shared":
+            # The co-tenant leaves after the roster: sA is alone again, but the
+            # roster that names the child proved no owner, so the route stays shut.
+            rt.unregister_session("sB")
+        _feed(
+            reader,
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "child-1",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "working"},
+                    },
+                },
+            },
+        )
+        await _drain(reader)
+        reached = []
+        while not queues["sA"].empty():
+            msg = queues["sA"].get_nowait()
+            if (msg.params or {}).get("sessionId") == "child-1":
+                reached.append(msg)
+
+        assert bool(reached) is (shape == "alone")
+        assert rt.routes_roster_children_to("sA") is bool(reached)
+        assert rt.routes_roster_children_to("sB") is False
+    finally:
+        await _stop_reader(task)
+
+
+# ── how many frames naming a session reached none, counted ─────
+#
+# The per-call silence timer compares this count across a turn (`acp-client.md`,
+# "Per-call silence timer"): `routes_roster_children_to` answers for the instant it is
+# asked, and a co-tenant registered for less than one timer read is gone by the next.
+# Each shape drives the REAL reader with one child frame and asks what the count did.
+
+_CHILD_TOOL_CALL = {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+        "sessionId": "child-1",
+        "update": {"sessionUpdate": "tool_call", "toolCallId": "child-wait", "title": "wait"},
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("shape", "lost"),
+    [
+        ("routed-alone", 0),
+        ("dropped-beside-a-co-tenant", 1),
+        ("named-by-no-roster", 1),
+        ("asked-beside-a-co-tenant", 1),
+        ("asked-between-turns", 1),
+        ("ownerless-fanned-out", 0),
+    ],
+)
+async def test_unroutable_frames_naming_a_session_are_counted(shape, lost):
+    rt, reader, _proc = _make_runtime()
+    queues = _register(rt, "sA")
+    if shape != "asked-between-turns":
+        rt._turn_active_sessions.add("sA")
+    task = await _start_reader(rt)
+    try:
+        if shape != "named-by-no-roster":
+            _feed(
+                reader,
+                {
+                    "method": "_kiro.dev/subagent/list_update",
+                    "params": {"subagents": [{"sessionId": "child-1"}]},
+                },
+            )
+            await _drain(reader)
+        before = rt.unrouted_child_frames()
+        if shape in (
+            "dropped-beside-a-co-tenant",
+            "asked-beside-a-co-tenant",
+            "ownerless-fanned-out",
+        ):
+            _register(rt, "sB")
+        if shape in ("asked-beside-a-co-tenant", "asked-between-turns"):
+            _feed(
+                reader,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 98,
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": "child-1",
+                        "options": [
+                            {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}
+                        ],
+                    },
+                },
+            )
+        elif shape == "ownerless-fanned-out":
+            _feed(reader, {"method": "_kiro.dev/subagent/list_update", "params": {"subagents": []}})
+        else:
+            _feed(reader, _CHILD_TOOL_CALL)
+        await _drain(reader)
+        await _drain_audits(rt)
+        if "sB" in rt._session_queues:
+            rt.unregister_session("sB")
+
+        assert rt.unrouted_child_frames() - before == lost
+        if shape == "dropped-beside-a-co-tenant":
+            # Asked now, the route is open again: only the count says a frame was lost.
+            assert rt.routes_roster_children_to("sA") is True
+        reached = []
+        while not queues["sA"].empty():
+            msg = queues["sA"].get_nowait()
+            if (msg.params or {}).get("sessionId") == "child-1":
+                reached.append(msg)
+        assert bool(reached) is (shape == "routed-alone")
+    finally:
+        await _drain_audits(rt)
+        await _stop_reader(task)

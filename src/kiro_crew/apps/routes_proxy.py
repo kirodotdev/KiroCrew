@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import hmac as _hmac
 import logging
+import threading
 import time
 
 import aiohttp
@@ -23,7 +24,6 @@ from aiohttp import web
 
 from kiro_crew.apps.backend import get_app_backend_port
 from kiro_crew.apps.manager import (
-    apps_dir,
     get_app_manifest,
     is_app_enabled,
     resolve_mcp_backend_url,
@@ -72,27 +72,40 @@ def _is_event_stream(content_type: str) -> bool:
 # App secret cache — secrets don't change after install, no need to read
 # from disk on every proxied request.  Invalidated on install/uninstall.
 _app_secret_cache: dict[str, str] = {}
+#: Bumped by every invalidation, so a read that started before one never caches.
+_app_secret_generation: dict[str, int] = {}
+_app_secret_lock = threading.Lock()
 
 
 def _get_app_secret(name: str) -> str:
     """Read the app secret, using an in-memory cache.
 
     Empty values are NOT cached — the secret may be provisioned after
-    the first proxy attempt (e.g. install-from-source race).
+    the first proxy attempt (e.g. install-from-source race). The read runs in a
+    worker thread, so an invalidation can land while it is on disk; the value is
+    cached only when no invalidation happened since the read began.
     """
-    cached = _app_secret_cache.get(name)
+    with _app_secret_lock:
+        cached = _app_secret_cache.get(name)
+        generation = _app_secret_generation.get(name, 0)
     if cached:
         return cached
-    path = apps_dir() / name / ".app_secret"
-    secret = path.read_text().strip() if path.is_file() else ""
+    # circular import: token_auth -> app_secret_store -> manager -> routes
+    from kiro_crew.dashboard.token_auth import read_app_secret
+
+    secret = read_app_secret(name)
     if secret:
-        _app_secret_cache[name] = secret
+        with _app_secret_lock:
+            if _app_secret_generation.get(name, 0) == generation:
+                _app_secret_cache[name] = secret
     return secret
 
 
 def invalidate_app_secret_cache(name: str) -> None:
     """Remove a cached secret (call on install/uninstall)."""
-    _app_secret_cache.pop(name, None)
+    with _app_secret_lock:
+        _app_secret_generation[name] = _app_secret_generation.get(name, 0) + 1
+        _app_secret_cache.pop(name, None)
 
 
 _PROXY_HOP_HEADERS = frozenset(
@@ -237,6 +250,24 @@ def _proxy_principal(request: web.Request) -> tuple[str, str]:
     return PRINCIPAL_NONE, ""
 
 
+def _is_memory_provider_route(name: str, path: str) -> bool:
+    """Whether *path* falls under a memory provider route app *name* declares."""
+    manifest = get_app_manifest(name)
+    if manifest is None:
+        return False
+    # A URL path, read with POSIX path rules: empty and ``.`` segments drop out.
+    # Imported here: every module-level name of this owner is served by the
+    # ``apps.routes`` facade, and a stray import would join that surface.
+    from pathlib import PurePosixPath
+
+    parts = PurePosixPath(path.lstrip("/")).parts
+    for decl in manifest.contributes.memoryProviders.usable():
+        route = PurePosixPath(decl.route.lstrip("/")).parts
+        if route and parts[: len(route)] == route:
+            return True
+    return False
+
+
 async def handle_app_api_proxy(
     request: web.Request, *, read_body: bytes | None = None
 ) -> web.StreamResponse:
@@ -257,6 +288,26 @@ async def handle_app_api_proxy(
     # Path traversal guard (input validation first)
     if ".." in path:
         return web.json_response({"error": "invalid path"}, status=400)
+
+    # A declared memory provider route answers the gateway's own provider calls,
+    # which carry the store scope Crew resolved for the caller. The proxy signs
+    # with the same secret, so a proxied call could name any store; it is refused.
+    if await asyncio.to_thread(_is_memory_provider_route, name, path):
+        sel().log_api_access(
+            caller=request.get("app", "") or "dashboard",
+            operation="app_proxy_memory_provider_route",
+            outcome="denied",
+            source="app_routes",
+            resources=f"/apps/{name}/{path}",
+            error="memory provider routes are called by the gateway only",
+        )
+        return web.json_response(
+            {
+                "code": "memory_provider_route",
+                "error": "memory provider routes are called by the gateway only",
+            },
+            status=403,
+        )
 
     # Cross-app guard (CWE-269): if the caller authenticated with an APP token
     # (``request["app"]`` set by token_auth_middleware), it may only proxy into
@@ -358,7 +409,8 @@ async def handle_app_api_proxy(
     # using the app secret as key. Backend verifies by recomputing with its
     # copy of the secret and checking the timestamp is recent (±60s).
     try:
-        secret = _get_app_secret(name)
+        # Off the loop: an uncached read goes to the sealed store on disk.
+        secret = await asyncio.to_thread(_get_app_secret, name)
         if not secret:
             return web.json_response(
                 {"error": f"app {name!r} has no secret — cannot authenticate proxy request"},
@@ -436,7 +488,8 @@ async def handle_app_api_proxy(
         session = request.app.get("_proxy_session")
         owns_session = session is None or session.closed
         if owns_session:
-            session = aiohttp.ClientSession()
+            # As the shared session in routes.py: relay the encoded bytes as-is.
+            session = aiohttp.ClientSession(auto_decompress=False)
         try:
             async with asyncio.timeout(_PROXY_TIMEOUT) as total_bound:
                 async with session.request(

@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew import history_projection, name_grant, pinned_fs, platform_compat
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO
@@ -1379,9 +1380,9 @@ def test_a_credential_straddling_the_line_cap_is_scrubbed_before_the_cut():
     """The envelope leaves the dashboard's storage, so a crewmate row is redacted on
     the way out -- and BEFORE the per-line cap, or a secret straddling the cap would
     be cut to a fragment the redactor cannot recognise and leave as plain text."""
-    secret = "AKIA" + "Q" * 16
-    prefix = "x" * 30
-    cap = len(prefix) + 12  # the cut lands inside the key
+    secret = github_classic(seed=81)
+    prefix = "x" * 29 + " "  # a blank: a token glued to a letter is no token by its format
+    cap = len(prefix) + 12  # the cut lands inside the token
     line = chat_threads._line(chat_threads.ROLE_ASSISTANT, prefix + secret, cap)
     assert secret not in line and secret[:12] not in line
     assert len(line) <= len("You: ") + cap
@@ -1852,6 +1853,37 @@ async def test_a_crewmate_that_no_longer_resolves_gets_no_substitute_answer(tmp_
     assert final["content"] == chat_threads._CREWMATE_GONE_FALLBACK
     assert not any("message" in c for c in calls), "no turn ran under the substituted agent"
     assert _threads(state, slot) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_crewmate_written_after_the_snapshot_warmed_answers_after_one_rescan(
+    tmp_path, monkeypatch
+):
+    """A spec written by hand or by kiro-cli after the agent snapshot warmed is
+    missing from it while its file is on disk. The thread refreshes the snapshot
+    once and resolves again before refusing, so the crewmate answers."""
+    from kiro_crew.config import loader
+
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    _arm_turn(state, monkeypatch, answer=_ANSWER)
+    found = iter([False, True])
+    monkeypatch.setattr(
+        chat_threads,
+        "resolve_agent_bindings",
+        lambda cfg, agent, project, **kw: MagicMock(
+            kiro_agent="radar", requested_resolved=next(found)
+        ),
+    )
+    refreshes = MagicMock(return_value=True)
+    monkeypatch.setattr(loader, "refresh_materialized_agents", refreshes)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    refreshes.assert_called_once()
+    rows = [r for r in _threads(state, slot)[mid] if r["role"] == "assistant"]
+    assert [r["content"] for r in rows] == [_ANSWER]
 
 
 @pytest.mark.asyncio

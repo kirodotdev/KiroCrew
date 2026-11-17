@@ -47,6 +47,7 @@ from test_mcp_gateway_claim import (
 from test_mcp_gateway_session_inject import _PROBE_SCRIPT, REAL_CLI
 
 from kiro_crew import platform_compat
+from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.mcp_gateway import claim as claim_mod
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import stub as stub_mod
@@ -463,6 +464,9 @@ def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(
     class _Handle:
         stub_session_token = TOKEN_A
 
+        def mcp_session_report(self) -> McpSessionReport:
+            return McpSessionReport()
+
         def rebind_watchdog(self, *_a: Any, **_k: Any) -> None:
             pass
 
@@ -577,6 +581,9 @@ async def test_warm_reuse_claims_the_fresh_sessions_stubs(
             self.session_id = "fresh"
             self.destroyed = False
 
+        def mcp_session_report(self) -> McpSessionReport:
+            return McpSessionReport()
+
         async def destroy(self) -> None:
             self.destroyed = True
 
@@ -611,6 +618,7 @@ async def test_warm_reuse_claims_the_fresh_sessions_stubs(
     provider._runtime = _Runtime()
     provider._session_key = PARENT_KEY
     provider._channel_id = None
+    provider.kas_memory_mode = ""
     await provider.new_conversation()
 
     assert provider._handle is fresh

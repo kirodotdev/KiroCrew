@@ -12,7 +12,8 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.system_notices import is_system_notice
+from kiro_crew.dashboard.system_notices import is_harness_advisory_row, is_system_notice
+from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -149,13 +150,14 @@ def is_quiet_end_row(m: dict) -> bool:
     return tool in (None, "", QUIET_END_TOOL) and server in (None, "", QUIET_END_SERVER)
 
 
-def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dict[str, Any]:
+def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None = None) -> dict[str, Any]:
     """Build the ``chat_message`` broadcast note for an appended row.
 
     The ONE builder shared by the append door (``_broadcast_chat_message``) and
     the reader-suppressed frame in ``append_and_surface``, so a row leaves the
     backend in one form whichever door delivers it. *workspace* scopes the
-    allowed-link hosts, as in ``_prepare_messages``.
+    allowed link hosts of the row's blocked-link records, as in
+    ``_prepare_messages``.
     """
     role = msg.get("role", "")
     content = msg.get("content", "")
@@ -174,25 +176,10 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     from kiro_crew.dashboard.chat_utils import (
         redact_display_content,
         serialize_wire_content,
-        with_allowed_links_restored,
     )
 
-    restored_meta: dict | None = None
     if role != "user" and content:
-        # The same allowed-host scope as _prepare_messages, so the live
-        # frame and the history agree on an allowed link: its placeholder
-        # becomes the address again, then the display pass runs.
-        from kiro_crew.security.exfil import allowed_host_audit_epoch, scoped_exempt_hosts
-        from kiro_crew.security.redaction_allow import allowed_hosts_for, normalize_workspace
-
-        epoch = allowed_host_audit_epoch()
-        hosts = allowed_hosts_for(workspace)
-        with scoped_exempt_hosts(hosts, normalize_workspace(workspace), epoch):
-            if isinstance(content, str) and isinstance(msg.get("meta"), dict):
-                shown = with_allowed_links_restored({"content": content, "meta": msg["meta"]})
-                content = shown["content"]
-                restored_meta = shown["meta"]
-            content = redact_display_content(content)
+        content = redact_display_content(content)
     else:
         # The wire-string invariant covers EVERY row: a structured user
         # row or a falsy container serializes to text without redaction.
@@ -238,9 +225,31 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     # test_rehydrate_does_not_broadcast_replayed_messages and
     # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
     # it further without re-checking that meta is still absent.
-    direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
+    direct_meta = msg.get("meta")
     if direct_meta and isinstance(direct_meta, dict):
         payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
+    # The blocked-link records of the text this frame sends, under the same
+    # allowed-host scope as _prepare_messages, so the live frame and the history
+    # agree on which links render as a Blocked link card. A value the row's meta
+    # carries under the key is dropped either way (with_blocked_links).
+    from kiro_crew.dashboard.chat_utils import allowed_hosts_for, with_blocked_links
+    from kiro_crew.security.blocked_links import allowed_host_audit_epoch, allowed_link_hosts
+    from kiro_crew.security.redaction_allow import normalize_workspace
+
+    held = payload.get("meta")
+    base = held if isinstance(held, dict) else {}
+    from kiro_crew.dashboard.chat_utils_display import _renders_links
+
+    if _renders_links(role, content):
+        epoch = allowed_host_audit_epoch()
+        with allowed_link_hosts(
+            allowed_hosts_for(workspace), normalize_workspace(workspace), epoch
+        ):
+            shown = with_blocked_links(base, content)
+    else:
+        shown = with_blocked_links(base, None)
+    if shown is not base:
+        payload["meta"] = shown
     if role == "mcp_oauth" and isinstance(payload.get("meta"), dict):
         # An `mcp_oauth` row's meta carries the Authorize link the client draws.
         # A replayed transcript line (refresh_channel_window broadcasts the
@@ -309,7 +318,16 @@ def is_stop_event_row(m: dict) -> bool:
 #: turn; here the question is whether a dispatch happened that got no reply,
 #: and a recovery or replay dispatch that died is exactly such a turn.
 _TURN_INJECT_KINDS: frozenset[str] = frozenset(
-    {"cron", "mcp_app", "recovery", "user_replay", "synthesis", "automation_notice", "workflow"}
+    {
+        "cron",
+        "mcp_app",
+        "recovery",
+        "user_replay",
+        "synthesis",
+        "automation_notice",
+        "workflow",
+        "heartbeat",
+    }
 )
 
 
@@ -410,6 +428,9 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     # A drained sub-agent completion (role ``subagent``) opens a turn of its own,
     # so a refused-model card older than it settles only its own turn.
     saw_later_opener = False
+    # A harness's advisory of the newest turn answers it as an assistant row does,
+    # whichever side of an error row the runner landed it on.
+    saw_advisory = False
     for m in reversed(messages):
         role = m.get("role")
         meta = m.get("meta") or {}
@@ -449,15 +470,18 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
                 saw_compaction_result = True
             continue
         if role == "inject" and m.get("content") and _is_turn_inject(meta):
-            return True
+            return saw_trailing_error if saw_advisory else True
         if role == "subagent":
             saw_later_opener = True
         # A monitor loop's cycle row always dispatches a turn; unanswered, it
         # is the same shape as an unanswered user row.
         if role == "nudge" and m.get("content"):
-            return True
+            return saw_trailing_error if saw_advisory else True
+        if is_harness_advisory_row(m) and m.get("content"):
+            saw_advisory = True
+            continue
         if role in ("user", "assistant") and m.get("content"):
-            if role != "user":
+            if role != "user" or saw_advisory:
                 return saw_trailing_error
             # A ``/compact`` answered by its compaction notice is a FINISHED
             # turn -- unless an error row trails the notice, which is the same
@@ -486,6 +510,32 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     # the assistant branch above honors -- the turn ended in it and nothing
     # newer proves completion -- so it decides the same way.
     return saw_trailing_error
+
+
+#: How long an interrupted turn stays on offer to the bulk Resume: a week, the
+#: same window an ``[OPTIONS:]`` ending keeps its session in Waiting. A
+#: transcript is restored with its tail on every boot, so a turn cut short once
+#: would otherwise be offered for as long as the session exists.
+INTERRUPTED_BULK_RESUME_MAX_AGE_SECS = 7 * 24 * 3600
+
+
+def is_interruption_stale(messages: list[dict], now: float) -> bool:
+    """True when the newest durable row is older than the bulk-Resume window.
+
+    Only the bulk Resume (the sidebar's "Resume N sessions" row and
+    ``POST /api/chat/slots/resume-all``) reads this. The session still counts as
+    interrupted everywhere else, so its own composer keeps offering Resume.
+
+    The newest durable row is the same row the sidebar sorts by (``last_ts``):
+    a session someone touched since the turn was cut short is not stale. An
+    unreadable stamp is never stale, so the session stays on offer as before.
+    """
+    for m in reversed(messages):
+        if m.get("role") in _TRANSIENT_ROLES:
+            continue
+        bucket, at = transcript_sort_key(m.get("ts") or "")
+        return bucket == 0 and now - at > INTERRUPTED_BULK_RESUME_MAX_AGE_SECS
+    return False
 
 
 def _mark_permission_resolved(

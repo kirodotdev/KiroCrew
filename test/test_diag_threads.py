@@ -826,7 +826,9 @@ def test_the_stack_sampler_reports_per_thread_sample_counts() -> None:
     """
     sampler = perf_sampler.StackSampler(interval=0.002)
     sampler.start()
-    time.sleep(0.15)
+    # Wait for a sample rather than sleeping a fixed span: a loaded runner can
+    # leave the sampler thread unscheduled for the whole of it.
+    wait_until(lambda: sampler._samples > 0, describe=lambda: f"samples={sampler._samples}")
     report = sampler.stop()
 
     assert report.samples > 0

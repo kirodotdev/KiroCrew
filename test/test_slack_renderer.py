@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -69,8 +70,8 @@ class _RecSlack:
     async def update_message(self, channel, ts, text="", blocks=None):
         self.calls.append(("update_message", {"text": text}))
 
-    async def stop_stream(self, channel, ts, final_text=None):
-        self.calls.append(("stop_stream", {"final_text": final_text}))
+    async def stop_stream(self, channel, ts, final_text=None, blocks=None):
+        self.calls.append(("stop_stream", {"final_text": final_text, "blocks": blocks}))
         return True
 
     async def append_task(self, channel, ts, task_id, title, status, details="", output=""):
@@ -281,19 +282,20 @@ class TestSlackRendererMapping:
         )
         asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
         methods = [m for m, _ in rec.calls]
-        # The reply is held until the turn ends, then goes out in one append.
+        # The reply is held until the turn ends, then goes out in one append. The
+        # timing footer rides in the seal, so no separate footer post follows.
         assert methods == [
             "set_thread_status",
             "start_stream",
             "append_stream",
             "stop_stream",
             "set_thread_status",
-            "post_blocks",
         ]
         assert [kw["text"] for m, kw in rec.calls if m == "append_stream"] == ["Hello world"]
-        # stop_stream carries the clean final text
+        # stop_stream carries the clean final text and the footer
         stop = [kw for m, kw in rec.calls if m == "stop_stream"][0]
         assert stop["final_text"] == "Hello world"
+        assert "Finished in" in str(stop["blocks"])
 
     def test_shared_driver_strips_split_steering_marker(self):
         rec = _RecSlack()
@@ -1086,8 +1088,9 @@ class TestShowThinking:
     def test_thinking_reply_is_redacted(self):
         rec = _RecSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=True)
+        secret = github_classic(seed=43)
         events = [
-            AcpEvent(kind=EVENT_THINKING_CHUNK, text="key AKIA1234567890ABCDEX here"),
+            AcpEvent(kind=EVENT_THINKING_CHUNK, text=f"key {secret} here"),
             AcpEvent(kind=EVENT_TEXT_CHUNK, text="done"),
             AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
         ]
@@ -1096,7 +1099,7 @@ class TestShowThinking:
             kw["text"] for m, kw in rec.calls if m == "post_message" and kw["text"].startswith("💭")
         ]
         assert thinking, rec.calls
-        assert "AKIA1234567890ABCDEX" not in thinking[0]
+        assert secret not in thinking[0]
         assert "[REDACTED: credential]" in thinking[0]
 
 

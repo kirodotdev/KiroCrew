@@ -69,10 +69,12 @@ export function partitionBoardRows(items: readonly WorkBoardItem[]): BoardBands 
  * put a different word on the page from the one every tool and log reports.
  */
 export function rowKindLabelKey(item: WorkBoardItem): string | null {
+  // First, as in partitionBoardRows: a question closed without a decision still
+  // arrives with `outstanding`, and a finished row must not ask for a ruling.
+  if (item.terminal) return null
   if (item.orphaned) return 'pages.crewBoard.kind_orphaned'
   if (item.outstanding) return 'pages.crewBoard.kind_ruling'
   if (item.stale) return 'pages.crewBoard.kind_stale'
-  if (item.terminal) return null
   return 'pages.crewBoard.kind_working'
 }
 

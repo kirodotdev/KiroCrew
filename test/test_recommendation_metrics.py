@@ -453,7 +453,12 @@ def _tips_cache():
 
     cache = TipsCache()
     cache.catalog = [CatalogEntry(feature="Monitor loops", summary="s", doc="monitor-loops.md")]
-    cache.curated = [{"id": "split-view", "doc": "", "doc_link": ""}]
+    cache.curated = [
+        {"id": "split-view", "doc": "", "doc_link": ""},
+        {"id": "schedule-repeated-work", "doc": "", "doc_link": "cron-and-scheduling.md"},
+        # An edition can replace the curated pool; its ids are not shipped.
+        {"id": "edition-only-tip", "doc": "", "doc_link": "skills.md"},
+    ]
     cache.state = TipsState(
         tips=[{"id": "gen-1", "doc": "slack-integration.md"}],
         offered=_fallback_shape("monitor-loops.md", "Monitor loops"),
@@ -506,7 +511,12 @@ async def test_tips_feedback_counts_and_feeds_attribution(rec, metrics: list) ->
 @pytest.mark.parametrize(
     ("tip_id", "action", "source", "feature"),
     [
-        ("split-view", "dismiss", "curated", "other"),
+        # A shipped curated tip is named by its id: most carry no doc at all.
+        ("split-view", "dismiss", "curated", "split-view"),
+        ("split-view", "shown", "curated", "split-view"),
+        ("schedule-repeated-work", "ack", "curated", "schedule-repeated-work"),
+        # A curated id the package does not ship falls back to the doc.
+        ("edition-only-tip", "ack", "curated", "skills.md"),
         # In the stored pool but not the offered tip: its doc is read, its source is not.
         ("gen-1", "snooze", "other", "slack-integration.md"),
         ("", "optout", "other", "other"),
@@ -521,6 +531,37 @@ async def test_tips_feedback_labels_each_source(rec, tip_id, action, source, fea
     assert resp.status == 200
     [point] = [c for c in rec.counters if c["name"] == fu.TIPS_FEEDBACK]
     assert point["attrs"] == {"action": action, "source": source, "feature": feature}
+
+
+def test_every_shipped_curated_id_is_kept_as_the_feature():
+    ids = fu.shipped_curated_tip_ids()
+    assert "split-view" in ids
+    for tip_id in ids:
+        assert fu.tip_feature_label(tip_id) == tip_id
+    assert fu.tip_feature_label("edition-only-tip") == "other"
+
+
+@pytest.mark.asyncio
+async def test_a_clicked_curated_tip_is_credited_when_its_feature_is_reached(
+    rec, metrics: list
+) -> None:
+    """ack on a curated tip whose doc_link maps to a feature row reads ``tip``."""
+    from kiro_crew.tips import api_tips_feedback
+
+    state = types.SimpleNamespace(_tips_cache=_tips_cache())
+    resp = await api_tips_feedback(
+        _feedback_request(state, {"id": "schedule-repeated-work", "action": "ack"})
+    )
+    assert resp.status == 200
+    [point] = [c for c in rec.counters if c["name"] == fu.TIPS_FEEDBACK]
+    assert point["attrs"] == {
+        "action": "ack",
+        "source": "curated",
+        "feature": "schedule-repeated-work",
+    }
+    await async_wait_until(lambda: "scheduled-task" in m.load()["recommended"], off_loop=True)
+    await asyncio.to_thread(m.record, "scheduled-task")
+    assert _reached(metrics, "scheduled-task")[0]["recommended_by"] == "tip"
 
 
 @pytest.mark.asyncio

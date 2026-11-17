@@ -54,21 +54,53 @@ export interface CodeFenceSpan {
  *  what guarantees a routed comment lands on a block that actually renders
  *  as a `CodeBlock` — and that blocks rendering as something else (diff,
  *  mermaid, excalidraw, widget) are never claimed. */
+/** Line text bounds in `text` for CommonMark line endings (`\r\n`, `\r`,
+ *  `\n`), matching how `parseBlocks` splits lines. `starts[i]` and `ends[i]`
+ *  are the offsets of line i+1's first char and one past its last char. */
+function lineBounds(text: string): { starts: number[]; ends: number[] } {
+  const starts = [0]
+  const ends: number[] = []
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i)
+    if (ch === 10 || ch === 13) {
+      ends.push(i)
+      if (ch === 13 && text.charCodeAt(i + 1) === 10) i++
+      starts.push(i + 1)
+    }
+  }
+  ends.push(text.length)
+  return { starts, ends }
+}
+
+/** A CommonMark line break starts at `i`: `\n`, or a `\r` not followed by
+ *  `\n` (a `\r\n` pair counts once, at its `\n`). */
+function isLineBreakAt(text: string, i: number): boolean {
+  const ch = text.charCodeAt(i)
+  return ch === 10 || (ch === 13 && text.charCodeAt(i + 1) !== 10)
+}
+
+/** The furthest a stored quote may reach inside `span`. Anchors saved while
+ *  fences were split on `\n` alone end in the last line's `\r` of a CRLF
+ *  fence, one past `contentEnd`; they still belong to the fence. */
+function quoteEnd(source: string, span: CodeFenceSpan): number {
+  const e = span.contentEnd
+  return source.charCodeAt(e) === 13 && source.charCodeAt(e + 1) === 10 ? e + 1 : e
+}
+
 export function codeFenceSpans(source: string): CodeFenceSpan[] {
-  const lines = source.split('\n')
-  // Char offset of each 1-based line start; index 0 unused.
-  const lineOffset: number[] = new Array(lines.length + 2)
-  lineOffset[1] = 0
-  for (let i = 0; i < lines.length; i++) lineOffset[i + 2] = lineOffset[i + 1] + lines[i].length + 1
-  const offsetOf = (line: number) => Math.min(lineOffset[line] ?? source.length, source.length)
+  const { starts, ends } = lineBounds(source)
   const spans: CodeFenceSpan[] = []
   for (const b of parseBlocks(source, false)) {
     if (b.type !== 'code' || b.startLine == null) continue
-    const contentStart = offsetOf(b.startLine)
+    const first = b.startLine - 1
+    const contentStart = Math.min(starts[first] ?? source.length, source.length)
+    // Block content is joined with `\n`, so its line count, not its length,
+    // finds the end in a source with `\r\n` or lone `\r` endings.
+    const last = first + b.content.split('\n').length - 1
     spans.push({
       contentStartLine: b.startLine,
       contentStart,
-      contentEnd: Math.min(contentStart + b.content.length, source.length),
+      contentEnd: b.content === '' ? contentStart : Math.min(ends[last] ?? source.length, source.length),
     })
   }
   return spans
@@ -184,7 +216,7 @@ export function routeCodeComments(
       && source.startsWith(quote, a.start_offset)
       && contextMatches(source, a.start_offset, quote, a.prefix, a.suffix)
     ) {
-      const s = spans.find(sp => a.start_offset! >= sp.contentStart && a.start_offset! + quote.length <= sp.contentEnd)
+      const s = spans.find(sp => a.start_offset! >= sp.contentStart && a.start_offset! + quote.length <= quoteEnd(source, sp))
       if (s) { at = a.start_offset; span = s }
     }
     // Tier 2: drift (quote search, gated on the raw-source context signature).
@@ -192,7 +224,7 @@ export function routeCodeComments(
       let best: { at: number; span: CodeFenceSpan; dist: number } | null = null
       for (const sp of spans) {
         let idx = source.indexOf(quote, sp.contentStart)
-        while (idx !== -1 && idx + quote.length <= sp.contentEnd) {
+        while (idx !== -1 && idx + quote.length <= quoteEnd(source, sp)) {
           if (contextMatches(source, idx, quote, a.prefix, a.suffix)) {
             const dist = typeof a.start_offset === 'number' ? Math.abs(idx - a.start_offset) : idx
             if (!best || dist < best.dist) best = { at: idx, span: sp, dist }
@@ -213,11 +245,11 @@ export function routeCodeComments(
       : 0
     let line = 1
     const end = Math.min(at + Math.max(quote.length, storedLen), span.contentEnd)
-    // Every newline before `end` starts a new line, the last one included: a
-    // quote never carries its last line's terminator, so a trailing newline
+    // Every line ending before `end` starts a new line, the last one included: a
+    // quote never carries its last line's terminator, so a trailing break
     // means the range ends on a selected EMPTY line, and the chip goes there.
     for (let i = span.contentStart; i < end; i++) {
-      if (source.charCodeAt(i) === 10) line++
+      if (isLineBreakAt(source, i)) line++
     }
     const list = byFence.get(span.contentStartLine) ?? []
     list.push({
@@ -259,12 +291,13 @@ export function buildCodeCommentAnchor(
   end: number,
 ): { quote: string; prefix: string; suffix: string; startOffset: number; endOffset: number; line: number } | null {
   const content = source.slice(span.contentStart, span.contentEnd)
-  const lines = content.split('\n')
-  const s = Math.max(1, Math.min(Math.min(start, end), lines.length))
-  const e = Math.max(s, Math.min(Math.max(start, end), lines.length))
-  let off = span.contentStart
-  for (let i = 0; i < s - 1; i++) off += lines[i].length + 1
-  const quote = lines.slice(s - 1, e).join('\n')
+  const { starts, ends } = lineBounds(content)
+  const s = Math.max(1, Math.min(Math.min(start, end), starts.length))
+  const e = Math.max(s, Math.min(Math.max(start, end), starts.length))
+  const off = span.contentStart + starts[s - 1]
+  // Exact source text, original line endings included, so the stored quote
+  // matches the source when it is rescanned.
+  const quote = content.slice(starts[s - 1], ends[e - 1])
   if (!quote.trim()) return null
   return {
     quote,
@@ -317,11 +350,11 @@ export function postedCodeRange(
 ): PostedCodeRange | null {
   const { startOffset: at, quote, seq } = posted
   if (!quote || !source.startsWith(quote, at)) return null
-  const span = spans.find(s => at >= s.contentStart && at + quote.length <= s.contentEnd)
+  const span = spans.find(s => at >= s.contentStart && at + quote.length <= quoteEnd(source, s))
   if (!span) return null
   const lineAt = (off: number) => {
     let line = 1
-    for (let i = span.contentStart; i < off; i++) if (source.charCodeAt(i) === 10) line++
+    for (let i = span.contentStart; i < off; i++) if (isLineBreakAt(source, i)) line++
     return line
   }
   return { blockStartLine: span.contentStartLine, start: lineAt(at), end: lineAt(at + quote.length), seq }

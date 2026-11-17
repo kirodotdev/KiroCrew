@@ -37,6 +37,14 @@ name: Build Desktop (reusable)
 on:
   workflow_call:
     inputs:
+      edition:
+        description: >-
+          Edition to stamp into the build: oss (the default) or lts. Only
+          release-lts.yml passes lts; every other caller leaves it unset, so
+          their builds are oss exactly as before.
+        required: false
+        default: oss
+        type: string
       version:
         description: "Semver version to stamp (electron package.json + __init__.py)"
         required: true
@@ -84,6 +92,15 @@ on:
         required: false
         default: false
         type: boolean
+      build_channel:
+        description: >-
+          Release lane baked into each backend's _build_info.BUILD_CHANNEL
+          (scripts/stamp-distribution.sh, read by kiro_crew.build_channel).
+          nightly.yml passes nightly, which makes a nightly build default
+          agent.kas_bundle on. Empty (the default) stamps no lane.
+        required: false
+        default: ""
+        type: string
       ui_index_strict:
         description: >-
           Fail the frontend build when the committed find_ui index
@@ -100,6 +117,12 @@ on:
   # validate packaging changes (e.g. a new platform lane) before merge.
   workflow_dispatch:
     inputs:
+      edition:
+        description: "Edition to build: oss or lts (a build-only LTS probe; nothing publishes)"
+        required: false
+        default: oss
+        type: choice
+        options: [oss, lts]
       version:
         description: >-
           Semver version to stamp. Use a REALISTIC channel-shaped stamp
@@ -146,6 +169,15 @@ on:
         required: false
         default: false
         type: boolean
+      build_channel:
+        description: >-
+          Release lane baked into each backend's _build_info.BUILD_CHANNEL
+          (scripts/stamp-distribution.sh, read by kiro_crew.build_channel).
+          nightly.yml passes nightly, which makes a nightly build default
+          agent.kas_bundle on. Empty (the default) stamps no lane.
+        required: false
+        default: ""
+        type: string
       ui_index_strict:
         description: >-
           Fail the frontend build when the committed find_ui index
@@ -165,6 +197,11 @@ permissions:
 # packaging/build-desktop.sh): empty warns on a stale find_ui index, 1 fails.
 env:
   KC_UI_INDEX_STRICT: ${{ inputs.ui_index_strict && '1' || '' }}
+  # The edition stamp (setup.py build_py, packaging/build-desktop.sh). Empty for
+  # every caller but release-lts.yml, which both readers take as oss.
+  KIROCREW_BUILD_EDITION: ${{ inputs.edition == 'lts' && 'lts' || '' }}
+  # Read by scripts/stamp-distribution.sh: the lane baked into _build_info.py.
+  KC_BUILD_CHANNEL: ${{ inputs.build_channel }}
 
 jobs:
   build-desktop:
@@ -192,7 +229,8 @@ jobs:
     # every input they need, which is the whole of #2645.
     continue-on-error: ${{ inputs.soft_fail_arm64 == true && matrix.soft_fail_eligible == true }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Per leg: a leg that states `timeout_minutes` gets it, every other leg 60.
+    timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
     strategy:
       max-parallel: 4
       fail-fast: false
@@ -205,6 +243,11 @@ jobs:
             # artifacts on the run page with equal prominence, so the name is
             # the only place to signal that.
             artifact-name: unsigned-build-darwin-universal
+            # The slowest leg: it builds both per-arch backends and merges two
+            # apps into one, and has taken 55 minutes on a slow runner against
+            # about 13 for a single-arch build. 90 keeps a slow runner from
+            # cancelling it; the Linux legs keep the 60 default.
+            timeout_minutes: 90
             # Stated on every leg rather than only where it is true: an absent
             # matrix key evaluates to empty, which reads the same as false and
             # hides which leg the switch was meant for. `soft_fail_arm64` can

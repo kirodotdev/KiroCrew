@@ -34,6 +34,14 @@ class TestPureHelpers:
         result, unknown = h._build_phase_emojis({"error": None})
         assert result["error"] is None and unknown == []
 
+    @staticmethod
+    def _streamed(text: str) -> str:
+        """What the stream sends for *text*: the filter, then the end-of-turn settle."""
+        hold, buf = h._filter_options_brackets(text, "", "")
+        hold, released = h._resolve_options_hold(hold, buf)
+        assert hold == ""
+        return buf + released
+
     def test_filter_options_brackets_drops_options_tag(self):
         hold, buf = h._filter_options_brackets("hi [OPTIONS: a | b] bye", "", "")
         assert hold == "" and buf == "hi  bye"
@@ -45,6 +53,38 @@ class TestPureHelpers:
     def test_filter_options_brackets_holds_open_bracket(self):
         hold, buf = h._filter_options_brackets("tail [OPTI", "", "")
         assert hold == "[OPTI" and buf == "tail "
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # A "[" that opens no tag goes out as soon as it cannot spell one.
+            "Use the range [0, 10). Then run it.",
+            # A head the grammar refuses (unmatched "[", text after the closer, a
+            # nested pair deeper than one level) is text, all of it.
+            "Pick:\n[OPTIONS: Fix [x logging | Skip]\n\nThanks!",
+            "[OPTIONS: Fix [x logging | Skip] Then restart the service.",
+            "Pick: [OPTIONS: Fix list[dict[str, Any]] now | Skip] and more.",
+            # A reply that ends on a head prefix keeps it.
+            "end [OPTI",
+        ],
+    )
+    def test_text_the_marker_grammar_refuses_is_streamed_whole(self, text):
+        assert self._streamed(text) == text
+
+    @pytest.mark.parametrize(
+        ("text", "streamed"),
+        [
+            ("Pick:\n[OPTIONS: Fix list[0] | Skip]", "Pick:\n"),
+            ("Pick:\n[OPTIONS: Retry | Abort\u3011", "Pick:\n"),
+            ("a [[OPTIONS: x]", "a ["),
+            # A wrapped marker with a lookalike closer is accepted only with its
+            # leading wrapper, which has already streamed; the marker is withheld.
+            ("Pick:\n**[OPTIONS: Retry | Abort\u3011**\nThanks", "Pick:\n**\nThanks"),
+            ("Pick:\n**[OPTIONS: Retry | Abort\u3011**", "Pick:\n**"),
+        ],
+    )
+    def test_a_marker_the_grammar_accepts_is_withheld_whole(self, text, streamed):
+        assert self._streamed(text) == streamed
 
     def test_timing_footer_seconds_and_minutes(self):
         _, text = h.build_timing_footer(42.0)

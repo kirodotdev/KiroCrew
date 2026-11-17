@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from subagent_coverage_helpers import _info, _manager
 
 from conftest import absent_sysconf
@@ -882,10 +883,9 @@ class TestReadSurfaces:
 
     def test_running_agents_for_redacts_task(self) -> None:
         mgr = _manager()
-        mgr._agents["a"] = _info(
-            "a", task="use AKIAIOSFODNN7EXAMPLE now", parent_session_key="dash:1"
-        )
-        assert "AKIAIOSFODNN7EXAMPLE" not in mgr.running_agents_for("dash:1")[0]["task"]
+        cred = github_classic(seed=42)
+        mgr._agents["a"] = _info("a", task=f"use {cred} now", parent_session_key="dash:1")
+        assert cred not in mgr.running_agents_for("dash:1")[0]["task"]
 
     def test_task_memory_rows_reports_sampled_flag(self) -> None:
         mgr = _manager()
@@ -974,15 +974,16 @@ class TestReadSurfaces:
         """A credential straddling the 80-char cut must not leak a fragment.
 
         Redacting after slicing would leave a cut key the credential regex cannot match.
-        The AKIA-shaped literal is inlined because a ``secret``-named variable trips
-        CodeQL's name-based sensitive-source heuristic.
+        The fabricated token is not held in a ``secret``-named variable, which
+        would trip CodeQL's name-based sensitive-source heuristic.
         """
-        # cut lands 8 chars into the fabricated 20-char key
-        task = "x" * 72 + "AKIAIOSFODNN7EXAMPLE" + " trailing"
+        cred = github_classic(seed=43)
+        # cut lands 8 chars into the fabricated 40-char token
+        task = "x" * 72 + cred + " trailing"
         mgr = _manager()
         mgr._agents["a"] = _info("a", task=task, parent_session_key="dash:1")
         row = {r["id"]: r for r in mgr.task_memory_rows()}["a"]
-        assert "AKIA" not in row["task"]
+        assert cred[:8] not in row["task"]
         assert len(row["task"]) <= 80
 
     def test_task_memory_rows_plain_task_truncation_unchanged(self) -> None:

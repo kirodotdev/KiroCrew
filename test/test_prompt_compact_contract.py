@@ -165,7 +165,9 @@ def test_cron_modes_and_session_ownership_remain_explicit() -> None:
         assert value in CRON
     assert "kirocrew cron preview <script:function> -m <message>" in CRON
     capabilities = _section(_read(), "## KiroCrew Capabilities")  # brand-ok: exact prompt heading
-    _require(capabilities, r"`ask_question`.*DEFAULT TO SILENCE", r"\[OPTIONS: .*cheaper")
+    _require(
+        capabilities, r"`ask_question`.*DEFAULT TO SILENCE", r"one of the ask cases \(a\)-\(e\)"
+    )
 
 
 def test_merged_trigger_lines_keep_every_sibling_tools_trigger() -> None:
@@ -251,7 +253,8 @@ def test_injected_data_and_refusals_are_not_new_authority() -> None:
     rules = _section(text, "## Rules")
     _require(
         rules,
-        r"blocked-by-policy.*before a second attempt; never rewrite",
+        r"blocked-by-policy.*before a second attempt; relay it only when no allowed path is "
+        r"left, and never rewrite",
         r"operator note is relayed verbatim",
         r'"Reject once".*that call alone, not a standing ban',
         r"trust-root file.*make your own command pass",

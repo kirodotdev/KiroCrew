@@ -41,6 +41,8 @@ import { i18nT } from '../../i18n/t'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
+import { TaskRunnerSetting } from './TaskRunnerSetting'
+import { ChannelsSetting } from './ChannelsSetting'
 import ErrorNotice from '../../components/ErrorNotice'
 import { REMOTE_EDITORS } from '../../utils/remoteEditorUrl'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -49,6 +51,7 @@ import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
 import { useTrayIcon } from '../../hooks/useTrayIcon'
+import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -133,6 +136,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
   const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
+  // "Show search in the top bar", on by default. useAppShell reads the same key
+  // to draw the header, and usePersistedBool keeps the two readers in step.
+  const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -238,6 +244,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     dashboard?: {
       recent_tint_count?: number
       show_unread_dot?: boolean
+      command_bar_enabled?: boolean
       milestones_enabled?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
       remote_editor?: { editor?: string; host?: string }
@@ -290,6 +297,21 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.show_unread_dot', value),
     onFailure: () => setUnreadDotError(i18nT('pages.settings.displayPanel.show_unread_dot_save_failed')),
     onSupersede: () => setUnreadDotError(null),
+  }))
+
+  // What the quick-search shortcut opens (dashboard.command_bar_enabled): the
+  // Command Bar launcher, or with it off the search palette. On by default; only a
+  // literal `false` is off, the same rule the shell reads.
+  const shownCommandBar = overlay.shown('dashboard.command_bar_enabled', mcQ.data?.dashboard?.command_bar_enabled !== false)
+  const [commandBarError, setCommandBarError] = useState<string | null>(null)
+  const commandBarMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.command_bar_enabled', value),
+    path: () => 'dashboard.command_bar_enabled',
+    displayValue: v => v,
+    applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.command_bar_enabled', value),
+    onFailure: () => setCommandBarError(i18nT('pages.settings.displayPanel.command_bar_save_failed')),
+    onSupersede: () => setCommandBarError(null),
   }))
 
   // Explore (RFC "Milestones for New-User Feature Discovery" 4.9): the main
@@ -759,6 +781,30 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={setLiquidGlass}
           />
           <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {/* The top bar's search box, on by default. Browser-local like the
+              switch above, because it is about how much room this window gives
+              the top bar: off, the box's centre track goes to the controls on
+              either side (`.topbar-no-search`), so the CPU/MEM/DSK readouts stay
+              inline in narrower windows. The search shortcut does not read it. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_topbar_search')}
+            hint={i18nT('pages.settings.displayPanel.show_topbar_search_desc')}
+            checked={topbarSearch}
+            onChange={setTopbarSearch}
+          />
+          {/* Saved in config.json, unlike the switch above: it decides which surface
+              the shortcut opens for this crew, on every browser. */}
+          <SettingsToggle
+            configKey="dashboard.command_bar_enabled"
+            label={i18nT('pages.settings.displayPanel.command_bar')}
+            description={i18nT('pages.settings.displayPanel.command_bar_desc')}
+            checked={shownCommandBar}
+            onChange={v => commandBarMut.mutate(v)}
+            disabled={commandBarMut.isPending || !mcQ.isSuccess}
+          />
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={commandBarError} variant="inline" />
           {milestonesSupported && (
           <SettingsToggle
             configKey="dashboard.milestones_enabled"
@@ -772,6 +818,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
               on this panel that navigation would discard. */}
           <ErrorNotice message={milestonesError} variant="inline" />
+          <TaskRunnerSetting />
+          <ChannelsSetting />
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main

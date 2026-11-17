@@ -405,14 +405,14 @@ class TestWrite:
         from kiro_crew.decisions import consent as module
 
         consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
-        real_write = module.atomic_write
+        real_write = module.rewrite_in_place
 
         def _slow_keeper_write(path, text, **kwargs):
             if '"history_budget_chars": 2000' in text:
                 time.sleep(0.3)
             return real_write(path, text, **kwargs)
 
-        monkeypatch.setattr(module, "atomic_write", _slow_keeper_write)
+        monkeypatch.setattr(module, "rewrite_in_place", _slow_keeper_write)
         errors: list[BaseException] = []
 
         def _keep():
@@ -447,7 +447,7 @@ class TestWrite:
         """The read and the write are inside the same acquisition, not two."""
         held: list[bool] = []
         real_read = consent.read_state_strict
-        real_write = consent.atomic_write
+        real_write = consent.rewrite_in_place
 
         def _read_under_the_lock():
             held.append(consent._SAVE_LOCK.locked())
@@ -459,7 +459,7 @@ class TestWrite:
 
         with (
             patch.object(consent, "read_state_strict", _read_under_the_lock),
-            patch.object(consent, "atomic_write", _write_under_the_lock),
+            patch.object(consent, "rewrite_in_place", _write_under_the_lock),
         ):
             consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
 
@@ -548,6 +548,9 @@ class TestHandler:
             "endpoint": "",
             "configured_endpoint": DEFAULT_ENDPOINT,
             "permits": False,
+            # No policy refuses the configured model: ``permits`` is false for want
+            # of consent, not because the administrator withdrew it.
+            "withdrawn": False,
             "history_budget_chars": 0,
             # Reported so the card draws the scope actually recorded rather than
             # inferring it from ``enabled``; absent on this keystone reads false.
@@ -572,6 +575,7 @@ class TestHandler:
         configured(CUSTOM)
         body = json.loads((await api_decisions_consent_get(_request())).text)
         assert body["enabled"] is True and body["permits"] is False
+        assert body["withdrawn"] is False, "a moved address is not a refusal"
         assert body["endpoint"] == DEFAULT_ENDPOINT and body["configured_endpoint"] == CUSTOM
         # Every successful read is audited too, with the address it reported.
         assert [(r["operation"], r["outcome"]) for r in audit] == [

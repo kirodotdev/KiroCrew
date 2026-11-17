@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactElement } from 'react'
 import ArtifactDeployPage from '../pages/ArtifactDeployPage'
+import { i18next } from '../i18n/all'
 
 // ArtifactDeployPage talks to the app backend + core artifacts API via raw fetch —
 // route responses by URL.
@@ -235,5 +236,24 @@ describe('ArtifactDeployPage (Artifact Deploy console)', () => {
     renderPage(<ArtifactDeployPage />)
     await waitFor(() => expect(screen.getByText(/Deployments \(2\)/)).toBeInTheDocument())
     expect(screen.queryByText(/Ready to deploy/)).toBeNull()
+  })
+})
+
+// The count tiles printed the raw JS number, so Bengali read Latin digits
+// beside translated labels (#33237).
+describe('ArtifactDeployPage stat counts', () => {
+  beforeEach(() => vi.unstubAllGlobals())
+  // In act: the page is still mounted, and a language switch re-renders it.
+  afterEach(async () => { await act(async () => { await i18next.changeLanguage('en') }) })
+
+  it('formats the profile, deployment and ready-to-deploy counts in the reader\'s numerals', async () => {
+    await i18next.changeLanguage('bn')
+    const draft = deployedWebapp('draft-app', 0.5)
+    draft.webapp_metadata.deploy_target.public_url = ''
+    // 2 profiles; 1 static site + 1 live webapp deployed; 1 draft ready.
+    mockFetch([draft, deployedWebapp('live-app', 0.01)])
+    renderPage(<ArtifactDeployPage />)
+    // The profiles, sites and artifacts queries settle independently.
+    await waitFor(() => expect(screen.getAllByTestId('stat-card-value').slice(0, 3).map(v => v.textContent)).toEqual(['২', '২', '১']))
   })
 })

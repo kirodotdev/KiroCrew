@@ -189,8 +189,8 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
-| P1 | `capabilities-connections` | As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need. | `/capabilities` | connections-two | smoke | 3 |
-| P2 | `connections-mcp-management` | As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/capabilities` | connections-two | nightly | 3 |
+| P1 | `capabilities-connections` | As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need. | `/mcp` | connections-two | smoke | 3 |
+| P2 | `connections-mcp-management` | As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/mcp` | connections-two | nightly | 3 |
 
 ## Memory, lessons & usage (`memory`)
 
@@ -396,7 +396,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 | P2 | `settings-notifications-play-sound-toggle` | As a dashboard user, I want to toggle notification sounds and adjust Volume, so that alerts are audible at my preferred level. | `/settings/notifications` | minimal | nightly | 4 |
 | P2 | `settings-notifications-sources-mute` | As a dashboard user, I want to mute a noisy notification source in Settings > Notifications > Sources, so that it stops badging and sounding. | `/settings/notifications` | crons-active | nightly | 4 |
 | P2 | `settings-privacy-usage-heartbeat-toggle` | As a user, I want to opt in or out of the anonymous usage heartbeat, so that I decide whether a beacon is sent on launch. | `/settings/privacy` | minimal | nightly | 3 |
-| P2 | `settings-releases` | As a user, I want a release channel, update check and changelog, so that I stay current on my terms. | `/settings/releases` | minimal | nightly | 3 |
+| P2 | `settings-releases` | As a user, I want a release channel, update check and the release notes in one place, so that I stay current on my terms. | `/settings/about` | minimal | nightly | 3 |
 | P2 | `settings-shortcuts-ctrl-for-chat-tabs` | As a Mac user, I want chat-tab switching bound to Ctrl+digit instead of Option+digit, so that it does not conflict with typing special characters. | `/settings/shortcuts` | sessions-a-few | nightly | 4 |
 | P2 | `settings-shortcuts-search-everywhere-preset` | As a keyboard user, I want to pick double-Shift, Cmd/Ctrl+K or record a custom chord for Search Everywhere, so that the palette opens with my preferred keys. | `/settings/shortcuts` | minimal | nightly | 5 |
 | P2 | `settings-voice-auto-speak-toggle` | As a dashboard user, I want to enable Auto-speak Responses, so that every assistant reply is read aloud. | `/settings/voice` | minimal | nightly | 3 |

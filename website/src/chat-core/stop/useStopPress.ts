@@ -38,7 +38,8 @@
  *   same warning. The press after a decline is sent as a plain stop: the
  *   backend's marker is what turns it into the reset.
  *
- * ChatPane passes neither, so its behaviour is the protocol above unchanged.
+ * Both hosts pass `turnScoped`: a WS host also misses a turn boundary when a
+ * slow stop reply outlives its turn (#34416). Only the embed reads the decline.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { handleStopPress, isEscalationState } from '../../utils/stopDebounce'

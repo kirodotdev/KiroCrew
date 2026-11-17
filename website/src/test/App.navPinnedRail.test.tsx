@@ -83,6 +83,8 @@ vi.mock('../api/client', () => ({
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     approvals: vi.fn().mockResolvedValue([]),
+    // The mates dock's roster read retries 1s, 2s, 4s through a failure, past SHELL_QUERIES_SETTLED, so it is answered.
+    members: vi.fn().mockResolvedValue({ members: [] }),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class extends Error { status: number; constructor(s: number, m: string) { super(m); this.status = s } },

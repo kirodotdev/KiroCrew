@@ -20,6 +20,7 @@ from chat_mirror_helpers import (
 )
 
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class TestMirrorLinkEdgeCases:
@@ -430,9 +431,11 @@ class TestMirrorBackfillFidelity:
     async def test_credentials_are_redacted(self, tmp_path, monkeypatch):
         state, transport = self._linked(tmp_path, monkeypatch)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        # A 40-char AWS secret after its label; an AWS key ID is kept visible and a
+        # bare 40-character run is no credential, so neither can stand in.
+        secret = SAMPLE_AWS_SECRET
         slot.append("user", "creds")
-        slot.append("assistant", f"key is {secret}")
+        slot.append("assistant", f"aws_secret_access_key={secret}")
         slot.drain()
 
         await self._link(state)

@@ -1,12 +1,12 @@
 ---
 title: Work-report wake_at -- a worker that waits on a time says when, and the conductor is woken then
-status: accepted
+status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-11-03
-last-audited: 2026-11-03
-audited-at: 41bade9256
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [33477]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Work-report `wake_at`
 
-- Status: accepted. The repository owner chose this design on 2026-11-03, over the two alternatives in section 6. Nothing is built. This document lands on its own first, as GOVERNANCE.md asks of an RFC, because it adds a field to the worker contract and to a crew-log entry. The implementation follows in its own pull request and references this one.
+- Status: partial. The repository owner chose this design on 2026-11-03, over the two alternatives in section 6. [#33477](https://github.com/kirodotdev/KiroCrew/pull/33477) (merged 2026-11-09) ships the `wake_at` field on `work_report`, its storage and the staleness deferral (§3.1, §3.2's storage, §3.4); the `wait_due` wake (§3.3), the patrol text (§3.5) and the board line (§3.2) are not built: `wait_due` has no code hit outside a comment in `src/kiro_crew/ledger_wake.py`. This document lands on its own first, as GOVERNANCE.md asks of an RFC, because it adds a field to the worker contract and to a crew-log entry. The implementation follows in its own pull request and references this one.
 - Amends [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the `work_report` fields) and [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (which reports wake the conductor) in the one place section 3 names: a `progress` report that carries `wake_at` wakes the conductor once, at that time.
 - Related: [rfc-work-ledger-person-wait-hold.md](rfc-work-ledger-person-wait-hold.md) added `reason` to `work_report` the same way this adds `wake_at`; [rfc-conductor-default-patrol.md](rfc-conductor-default-patrol.md) owns the patrol text this changes.
 - Measured at `41bade9256`.
@@ -30,7 +30,7 @@ Nothing then wakes anyone at the right time:
 1. `progress` never wakes the conductor. `WORK_WAKE_STATUSES` in `src/kiro_crew/work_vocab.py` is `done`, `blocked`, `question`, `reply`, and `is_actionable_event` in `src/kiro_crew/ledger_wake.py` refuses `progress` by status alone. That is deliberate: most `progress` reports need nothing.
 2. The stall wake fires once per report. In `observe` in `src/kiro_crew/probes/work_ledger.py`, a stale item spends the token `stall:<last_report_at>` through `_spend`, and a spent token never wakes again while the item is open. The stale window is 900 s (`DEFAULT_STALE_WINDOW_SECS` in `src/kiro_crew/work_ledger_records.py`). A wait longer than 15 minutes gets its one stall wake before the moment it waits for.
 3. The conductor's patrol text says "Ignore progress." (`PATROL_MESSAGE` in `src/kiro_crew/conductor_patrol.py`), and the goal-conductor skill's status table says `progress` means "nothing" (`src/kiro_crew/builtin_skills/goal-conductor/SKILL.md`, step 2). So the one stall wake does nothing either.
-4. After that the ledger reads idle, and an idle work-ledger watch waits `_IDLE_LEDGER_QUIET_FLOOR` (40) quiet ticks before its floor turn (`src/kiro_crew/autonudge_service/gate.py`). At the 600 s patrol interval (`PATROL_INTERVAL_SECS` in `conductor_patrol.py`) that is about 6.7 hours.
+4. After that the ledger reads idle, and an idle work-ledger watch waits `_IDLE_LEDGER_QUIET_FLOOR` (40) quiet ticks before its floor turn (`src/kiro_crew/autonudge_service/gate.py`). At the 600 s patrol interval of the time (`PATROL_INTERVAL_SECS` in `conductor_patrol.py`, 300 s since) that was about 6.7 hours.
 
 On 2026-11-02 this left a worker idle for about 6.7 hours. It reported `progress` at 23:18 UTC, waiting for a rate-limit reset at 00:03. The single stall wake reached the conductor at 23:38, 25 minutes too early, and the conductor correctly found nothing to do. The next conductor turn was the floor turn, after 05:20 the next morning.
 
@@ -91,6 +91,8 @@ A new `wait_brief` in `src/kiro_crew/ledger_wake.py`, next to `stall_brief`, wri
 ### 3.4 Staleness
 
 `is_stale` in `src/kiro_crew/work_ledger_rules.py` returns false for an item whose `wake_at` is still in the future. The worker said when it would be back, so silence before then is expected. Once `wake_at` passes, the quiet window is measured from the later of `last_report_at` and `wake_at`. So the `wait_due` wake comes first, and if the conductor's nudge does not get the worker moving, the stall wake still fires one window later. This uses the same exemption shape as `worker_looping`.
+
+Amended 2026-11-11: the exemption does not hold while the worker's session has an ACTIVE loop that cannot fire (held on an unanswered approval, or past its runtime budget or cycle cap; `ledger_wake.worker_loop_held`). Such a report leans on a loop that wakes nobody, so `wake_at` is ignored and the normal window runs. A worker with no loop, or a stopped one, keeps the exemption: its wait is the plain time wait this section describes, and `wait_due` ends it. On 2026-11-10 a worker's `wake_at` 7.5 h ahead hid a dead test queue for about 5 h while its loop sat held.
 
 ### 3.5 Conductor and worker text
 

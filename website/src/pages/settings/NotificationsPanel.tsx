@@ -19,13 +19,13 @@ import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
 import { AppSessionMuteSection } from './AppSessionMuteSection'
 import { DeliverToControl, type BridgePatch } from './NotificationsBridgeRoute'
-import { saveChatCompleteNotify, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
+import { saveChatCompleteMinSeconds, saveChatCompleteNotify, useChatCompleteMinSeconds, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
-import { fmtTime } from '../../i18n/format'
+import { compareText, fmtTime, fmtUnit } from '../../i18n/format'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -187,6 +187,19 @@ const muteLabel = (choice: MuteChoice, now: number): string => {
   }
 }
 
+/** Shortest-turn choices for the toast, in seconds; `0` means every turn. A
+ *  stored value outside this list is still offered, so the select never hides
+ *  what is saved. */
+const MIN_TURN_CHOICES = [0, 15, 60, 300] as const
+
+const minTurnLabel = (seconds: number): string => {
+  if (seconds === 0) return i18nT('pages.settings.notificationsPanel.notify_min_turn_every')
+  const duration = seconds % 60 === 0
+    ? fmtUnit(seconds / 60, 'minute', { unitDisplay: 'long' })
+    : fmtUnit(seconds, 'second', { unitDisplay: 'long' })
+  return i18nT('pages.settings.notificationsPanel.notify_min_turn_longer_than', { duration })
+}
+
 /** Shared style for the sound-preview buttons: the Sound card's "Test
  *  notification" button and the per-category "Test" buttons must stay
  *  visually identical, so both compose from this one string. */
@@ -204,6 +217,9 @@ const CHANNEL_LABELS: Record<string, () => string> = {
   // handoffs) and is jargon besides -- this channel carries the bell entry a chat
   // raises when it STOPS with an error, so it is labelled in task language.
   'system.turn': () => i18nT('pages.settings.notificationsPanel.channel_turn'),
+  // The bare id is "memory", which reads as memory in general; this channel
+  // carries only the opt-in weekly note that tool failures keep coming back.
+  'system.memory': () => i18nT('pages.settings.notificationsPanel.channel_memory'),
 }
 
 /** Catalog KEY for each system channel's "when does this fire?" tip, one entry
@@ -228,6 +244,7 @@ const CHANNEL_TIP_KEY: Record<string, string> = {
   'system.member': 'pages.settings.notificationsPanel.channel_tip_member',
   'system.apps': 'pages.settings.notificationsPanel.channel_tip_apps',
   'system.turn': 'pages.settings.notificationsPanel.channel_tip_turn',
+  'system.memory': 'pages.settings.notificationsPanel.channel_tip_memory',
 }
 
 /** Human label for a channel within its group (drop the source prefix apps
@@ -268,9 +285,10 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
   })
   const channels = channelsQuery.data?.channels
   const bridgeTransports = channelsQuery.data?.bridge_transports
-  // Channels with a route save still in flight (its refetch included: onSettled
-  // awaits it). A route is written whole, so a later save the server handled
-  // first would be undone by the earlier one; the row holds new picks until then.
+  // Channels with a route save still in flight (its refetch included when
+  // onSettled runs one: it awaits it). A route is written whole, so a later
+  // save the server handled first would be undone by the earlier one; the
+  // row holds new picks until then.
   const routeSaving = new Set(useMutationState({
     filters: { mutationKey: CHANNEL_PATCH_KEY, status: 'pending' },
     select: m => m.state.variables as { channel: string; settings: ChannelPatch } | undefined,
@@ -304,7 +322,7 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
   }
 
   const sources = Array.from(new Set(channels.map(c => c.source)))
-    .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
+    .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : compareText(a, b)))
 
   return (
     <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')} hint={i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}>
@@ -423,6 +441,8 @@ function SystemNotificationsRow() {
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const notifyChatComplete = useChatCompleteNotify()
+  const minTurnSeconds = useChatCompleteMinSeconds()
+  const minTurnChoices = [...new Set<number>([...MIN_TURN_CHOICES, minTurnSeconds])].sort((a, b) => a - b)
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
   const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
 
@@ -684,10 +704,19 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   // server may never have held.
   const persistedRef = useRef(new Map<string, { value: unknown; pending: number }>())
   const fieldKey = (channel: string, k: string) => JSON.stringify([channel, k])
+  // Each channel's latest save and its PUT. A channel's saves go out one at a
+  // time, each once the one before it answered, so the server handles the
+  // later click last and keeps it; other channels' saves do not wait.
+  const lastSave = useRef(new Map<string, { vars: object; put: Promise<unknown> }>())
   const patchMut = useMutation({
     mutationKey: CHANNEL_PATCH_KEY,
-    mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
-      api.updateNotificationChannelSettings(channel, settings),
+    mutationFn: (vars: { channel: string; settings: ChannelPatch }) => {
+      const put = (lastSave.current.get(vars.channel)?.put ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() => api.updateNotificationChannelSettings(vars.channel, vars.settings))
+      lastSave.current.set(vars.channel, { vars, put })
+      return put
+    },
     // Optimistic update; the PUT is authoritative — a failure rolls back the
     // fields this patch set and the refetch below re-syncs with the server.
     onMutate: ({ channel, settings }) => {
@@ -749,12 +778,17 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
         }),
       })
     },
-    onSettled: (_data, _err, { channel }, ctx) => {
+    onSettled: (_data, _err, vars, ctx) => {
+      const { channel } = vars
       for (const k of ctx?.touched ?? []) {
         const key = fieldKey(channel, k)
         const entry = persistedRef.current.get(key)
         if (entry && --entry.pending <= 0) persistedRef.current.delete(key)
       }
+      // Only the channel's latest save re-reads the list. A read now, with a
+      // later save of this channel still to land, would show the earlier
+      // click again; that later save re-reads when it settles.
+      if (lastSave.current.get(channel)?.vars !== vars) return
       return qc.invalidateQueries({ queryKey: CHANNELS_KEY })
     },
   })
@@ -831,6 +865,15 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             hint={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
             checked={notifyChatComplete}
             onChange={saveChatCompleteNotify}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.notificationsPanel.notify_min_turn')}
+            hint={i18nT('pages.settings.notificationsPanel.notify_min_turn_description')}
+            value={String(minTurnSeconds)}
+            options={minTurnChoices.map(String)}
+            optionLabels={minTurnChoices.map(minTurnLabel)}
+            onChange={v => saveChatCompleteMinSeconds(Number(v))}
+            disabled={!notifyChatComplete}
           />
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting')}

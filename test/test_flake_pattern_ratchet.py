@@ -32,6 +32,13 @@ from pathlib import Path
 import pytest
 import yaml
 from flake_pattern_js_detectors import JS_DETECTORS
+from flake_pattern_k8 import K8_CASES, k8_duration_bound
+from flake_pattern_shared_total import (
+    K21_CASES,
+    K21_FIXTURE_WALK,
+    K21_TRIGGERS,
+    k21_shared_total_pin,
+)
 from source_corpus import repo_files, repo_root
 from test_ratchet_scope import (
     _GIT_COMMAND_LINE_CONFIG,
@@ -119,11 +126,6 @@ _CLOCK_ATTRS = {
     "asyncio": frozenset({"sleep"}),
     "datetime": frozenset({"datetime", "date"}),
 }
-_CLOCK_CALLS = frozenset({"monotonic", "perf_counter", "time", "monotonic_ns", "perf_counter_ns"})
-_DELTA_NAMES = re.compile(r"(elapsed|duration|took|delta|wall)", re.IGNORECASE)
-_STAMP_NAMES = re.compile(
-    r"^(start|started|end|ended|before|after|began|finished|now|then|t\d|t_\w+|\w+_at)$"
-)
 _TIMEOUT_ERRORS = frozenset({"TimeoutError", "asyncio.TimeoutError", "futures.TimeoutError"})
 #: Calls that open a listener: a literal port handed to one is the D9 shape.
 _LISTENERS = frozenset(
@@ -354,36 +356,6 @@ def _k6_raw_environ_write(module: _Module) -> Iterable[ast.AST]:
             if isinstance(target, ast.Subscript) and _dotted(target.value) == "os.environ":
                 yield node
                 break
-
-
-def _is_clock_delta(node: ast.AST) -> bool:
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
-        for side in (node.left, node.right):
-            if isinstance(side, ast.Call) and _dotted(side.func).rsplit(".", 1)[-1] in _CLOCK_CALLS:
-                return True
-        names = [_dotted(side).rsplit(".", 1)[-1] for side in (node.left, node.right)]
-        if all(names) and all(_STAMP_NAMES.match(name) for name in names):
-            return True
-    if isinstance(node, (ast.Name, ast.Attribute)):
-        return bool(_DELTA_NAMES.search(_dotted(node)))
-    return False
-
-
-def _k8_duration_bound(module: _Module) -> Iterable[ast.AST]:
-    for node in module.asserts:
-        if not isinstance(node.test, ast.Compare):
-            continue
-        compare = node.test
-        left = compare.left
-        for op, right in zip(compare.ops, compare.comparators):
-            if (
-                isinstance(op, (ast.Lt, ast.LtE))
-                and _is_clock_delta(left)
-                and _number(right) is not None
-            ):
-                yield node
-                break
-            left = right
 
 
 def _literal_timeout(call: ast.Call, position: int) -> float | None:
@@ -938,17 +910,20 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K18-xfail-strict-false": ("xfail",),
     "K19-short-literal-duration-arg": ("(",),
     "K20-on-loop-session-write": ("update_metadata",),
+    "K21-shared-total-pin": K21_TRIGGERS,
 }
 
 #: The classes whose detector also reads the source text.
-_READS_SOURCE = frozenset({"K3-stdlib-clock-patch", "K14-unpaused-crew-log-rmtree"})
+_READS_SOURCE = frozenset(
+    {"K3-stdlib-clock-patch", "K14-unpaused-crew-log-rmtree", "K21-shared-total-pin"}
+)
 
 #: class -> detector.
 PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K3-stdlib-clock-patch": _k3_stdlib_clock_patch,
     "K5-sys-modules-eviction": _k5_sys_modules_eviction,
     "K6-raw-environ-write": _k6_raw_environ_write,
-    "K8-duration-upper-bound": _k8_duration_bound,
+    "K8-duration-upper-bound": k8_duration_bound,
     "K9-short-literal-wait": _k9_short_literal_wait,
     "K11-literal-listener-port": _k11_literal_listener_port,
     "K13-fixed-flush-ceiling": _k13_fixed_flush_ceiling,
@@ -958,6 +933,7 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K18-xfail-strict-false": _k18_xfail_strict_false,
     "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
     "K20-on-loop-session-write": _k20_on_loop_session_write,
+    "K21-shared-total-pin": k21_shared_total_pin,
 }
 
 
@@ -1256,17 +1232,7 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         ("import os\ndef test_x():\n    os.environ['A'] = '1'\n",),
         "import os\ndef test_x(monkeypatch):\n    monkeypatch.setenv('A', '1')\n    x = os.environ['A']\n",
     ),
-    "K8-duration-upper-bound": (
-        (
-            "import time\ndef test_x():\n    t = time.monotonic()\n    run()\n"
-            "    assert time.monotonic() - t < 1.0\n",
-            "def test_x():\n    assert (\n        elapsed < 5.0\n    ), 'took too long'\n",
-            "def test_x():\n    assert 0.15 < elapsed < 1.0\n",
-            "def test_x():\n    assert after - before < 0.05\n",
-        ),
-        "import time\ndef test_x():\n    t = time.monotonic()\n    run()\n"
-        "    assert time.monotonic() - t < LOST_RUN_SECS\n    assert elapsed > 0.1\n",
-    ),
+    "K8-duration-upper-bound": K8_CASES,
     "K9-short-literal-wait": (
         (
             "def test_x():\n    thread.join(0.5)\n",
@@ -1427,7 +1393,15 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    await asyncio.to_thread(lambda: log.update_metadata(k, {}))\n"
         "    def seed():\n        log.update_metadata(k, {})\n",
     ),
+    "K21-shared-total-pin": K21_CASES,
 }
+
+
+def test_k21_reads_only_a_module_that_walks_the_product_tree() -> None:
+    assert count_python(K21_FIXTURE_WALK)[0]["K21-shared-total-pin"] == 0
+    tree = K21_FIXTURE_WALK.replace("parent / 'fixtures'", "parents[1] / 'src'")
+    assert count_python(tree)[0]["K21-shared-total-pin"] == 2
+
 
 #: Sources the pinned semgrep reads no line of, each holding one ``time`` patch.
 _UNREAD = (

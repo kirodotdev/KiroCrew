@@ -386,6 +386,13 @@ async def _wake_crew_body(
             reason or "signal",
         )
         return False
+    # A turn that started during the awaits above makes this wake a drop, not a
+    # queued prompt: a queued wake would run outside the consumption bookkeeping
+    # that a carried mention ask relies on, and the sweep would ask it again.
+    # Nothing awaits from here to the dispatch, so the check holds there.
+    if getattr(slot, "running", False):
+        logger.info("issue-radar crew %s: mid-turn at dispatch, wake dropped", crew.get("id"))
+        return False
     # The model this turn runs on, from the ledger read above and the record just
     # re-read. Synchronous, and nothing awaits between it and the dispatch, so no
     # other turn can start on the slot in between.
@@ -621,7 +628,8 @@ async def refresh_crew_loop_message(
 
     An idle-timer fire sends the loop's stored message, composed at launch or at
     the last wake. A record edit that changes what a turn is told (the operator's
-    ``extra_prompt``) reaches neither, so the crew update route calls this and the
+    ``extra_prompt``, or ``auto_merge`` and with it the merge rule) reaches
+    neither, so the crew update route calls this and the
     next timer turn carries the edit. Returns whether a loop was updated.
     """
     svc = _autonudge_instance() if _autonudge_instance is not None else None

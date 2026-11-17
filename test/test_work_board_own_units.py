@@ -528,10 +528,17 @@ def test_a_binding_cycle_never_folds_a_boards_own_record_twice(_live_crew_log):
 
 
 def _size(unit: str) -> int:
-    from kiro_crew.crew_log.store_paths import _store_name, crew_log_root
+    """The unit's log bytes: its segments and its cut counter.
 
-    store = crew_log_root(lg.KIND_SESSION) / _store_name(unit)
-    return sum(f.stat().st_size for f in store.rglob("*") if f.is_file())
+    Not ``slot-projections/``: a savepoint written beside a unit that stopped being newest
+    is a read cache, not an entry landing in that unit.
+    """
+    from kiro_crew.crew_log.store_cuts import _CUTS_FILE
+    from kiro_crew.crew_log.store_paths import crew_log_dir, segment_paths
+
+    cuts = crew_log_dir(lg.KIND_SESSION, unit) / _CUTS_FILE
+    files = [*segment_paths(lg.KIND_SESSION, unit), *([cuts] if cuts.is_file() else [])]
+    return sum(f.stat().st_size for f in files)
 
 
 def test_after_a_restart_reports_and_relays_land_in_the_new_unit(_live_crew_log):

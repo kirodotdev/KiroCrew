@@ -11,6 +11,7 @@ mutation carrying only the fields that action set, and the rebuild round trip.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -36,6 +37,7 @@ from work_ledger_projection_helpers import (
 from kiro_crew import work_ledger as wl
 from kiro_crew.crew_log import projection
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.testing.wait import until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
@@ -160,9 +162,10 @@ async def test_each_write_records_one_entry_with_the_fields_it_set(recorded):
 @pytest.mark.asyncio
 async def test_caller_text_is_redacted_before_both_cache_and_log_are_written(recorded):
     """Both route entry points cross the same boundary before their fit probes
-    and commits, so secrets and suspicious URLs reach neither durable copy."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
-    url = "https://evil.example.com/steal?data=" + "A" * 250
+    and commits, so secrets, a credential inside a URL included, reach neither
+    durable copy."""
+    secret = github_classic(seed=95)
+    url = "https://evil.example.com/steal?access_token=" + "A" * 250
     acceptance = {"kind": "human_approval", "notes": [secret, url]}
 
     status, body = await _record(
@@ -220,7 +223,7 @@ async def test_caller_text_is_redacted_before_both_cache_and_log_are_written(rec
 
 @pytest.mark.asyncio
 async def test_credential_in_artifact_key_is_redacted_before_storage(recorded):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=95)
     item_id = await _board()
 
     status, body = await _report(
@@ -243,7 +246,7 @@ async def test_credential_in_artifact_key_is_redacted_before_storage(recorded):
 
 @pytest.mark.asyncio
 async def test_cache_and_crew_log_keep_byte_identical_redacted_fields(recorded):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=95)
     item_id = await _board()
 
     status, body = await _report(
@@ -452,14 +455,13 @@ def test_a_rebuild_sets_the_create_counter_to_what_the_record_holds(monkeypatch)
     assert wl.read_conductor(CONDUCTOR).created_total == 2
 
 
-def _seed_cached_cap(goal_version: int, item_cap: int, base: int, concurrency_cap: int = 6) -> None:
-    """Write a cached header carrying the goal's caps, as goal writes would leave it."""
+def _seed_cached_cap(goal_version: int, base: int, concurrency_cap: int = 6) -> None:
+    """Write a cached header carrying the goal's cap, as goal writes would leave it."""
     wl.ensure_conductor(CONDUCTOR, goal="ship it")
     header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
     stored = json.loads(header_path.read_text(encoding="utf-8"))
     stored.update(
         goal_version=goal_version,
-        item_cap=item_cap,
         concurrency_cap=concurrency_cap,
         goal_items_base=base,
     )
@@ -475,10 +477,10 @@ def test_a_clean_rebuild_keeps_the_cached_goal_caps(monkeypatch):
         "read_slot_projection",
         lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
     )
-    _seed_cached_cap(goal_version=1, item_cap=50, base=1, concurrency_cap=9)
+    _seed_cached_cap(goal_version=1, base=1, concurrency_cap=9)
     wl.rebuild_from_projection(CONDUCTOR)
     header = wl.read_conductor(CONDUCTOR)
-    assert (header.item_cap, header.concurrency_cap, header.goal_items_base) == (50, 9, 1)
+    assert (header.concurrency_cap, header.goal_items_base) == (9, 1)
 
 
 def test_a_clean_rebuild_of_an_upgraded_header_counts_from_the_upgrade(monkeypatch):
@@ -490,7 +492,7 @@ def test_a_clean_rebuild_of_an_upgraded_header_counts_from_the_upgrade(monkeypat
         "read_slot_projection",
         lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
     )
-    _seed_cached_cap(goal_version=1, item_cap=20, base=0)
+    _seed_cached_cap(goal_version=1, base=0)
     header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
     stored = json.loads(header_path.read_text(encoding="utf-8"))
     stored.pop("goal_items_base")
@@ -513,13 +515,12 @@ def test_a_dirty_rebuild_drops_a_refused_goal_writes_caps_and_count_start(monkey
         "read_slot_projection",
         lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
     )
-    _seed_cached_cap(goal_version=2, item_cap=200, base=1, concurrency_cap=30)
+    _seed_cached_cap(goal_version=2, base=1, concurrency_cap=30)
     wl.mark_cache_dirty(CONDUCTOR, "an unrecorded write could not be undone")
     wl.rebuild_from_projection(CONDUCTOR)
     header = wl.read_conductor(CONDUCTOR)
     assert header.goal == "ship it"
-    assert (header.item_cap, header.concurrency_cap, header.goal_items_base) == (
-        wl.DEFAULT_GOAL_ITEM_CAP,
+    assert (header.concurrency_cap, header.goal_items_base) == (
         wl.DEFAULT_GOAL_CONCURRENCY_CAP,
         0,
     )
@@ -801,6 +802,164 @@ async def test_the_rebuild_route_rebuilds_the_callers_own_board_from_real_units(
     assert item is not None and item.title == "item one"
 
 
+@pytest.mark.asyncio
+async def test_a_reported_wake_at_rides_the_record_and_the_next_report_clears_it(monkeypatch):
+    """The fold the sidebar reads holds the declared wait, so a rebuild keeps
+    it, and a later report without one clears it there as it does in the cache."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    wake = (datetime.now(timezone.utc) + timedelta(hours=3)).replace(microsecond=0).isoformat()
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": "waiting", "wake_at": wake}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.wake_at == wake
+    status, body = await _report(WORKER, {"status": "progress", "summary": "moving"})
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.wake_at is None
+
+
+#: A discussion at the shape a hosting worker reports it.
+_DISCUSSION: dict[str, Any] = {
+    "phase": "talking",
+    "round": 2,
+    "minutes": 6,
+    "direction": "who writes the welcome page's facts",
+    "agreed": ["the gateway stamps every time"],
+    "disputed": [{"point": "who renders counts", "sides": "A: gateway; B: conductor"}],
+    "checking": ["does the Board fold read ask"],
+    "recent": [{"who": "A", "text": "the fold already holds it"}],
+    "thread": "/artifacts/abc123",
+}
+
+
+@pytest.mark.asyncio
+async def test_a_reported_discussion_rides_the_record_and_the_next_report_replaces_it(
+    monkeypatch,
+):
+    """The fold the Board reads holds the worker's discussion whole, so a rebuild
+    keeps it; the next report replaces it, and one without it clears it."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": "round 2", "discussion": _DISCUSSION}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion == _DISCUSSION
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": "round 3", "discussion": {"phase": "asking"}}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion is not None
+    assert item.discussion["phase"] == "asking" and item.discussion["agreed"] == []
+    status, body = await _report(WORKER, {"status": "progress", "summary": "plain"})
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion is None
+    assert "discussion" not in item.to_dict()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("part", "code", "field"),
+    [
+        ({"agreed": ["x" * 121]}, "field_too_long", "discussion.agreed[0]"),
+        ({"agreed": ["a"] * 9}, "field_too_long", "discussion.agreed"),
+        (
+            {"recent": [{"who": "A", "text": "y" * 201}]},
+            "field_too_long",
+            "discussion.recent[0].text",
+        ),
+        ({"disputed": [{"point": "p"}]}, "invalid_value", "discussion.disputed[0].sides"),
+        ({"thread": "/home/me/thread.md"}, "invalid_value", "discussion.thread"),
+        ({"phase": "arguing"}, "invalid_value", "discussion.phase"),
+        ({"mood": "calm"}, "invalid_value", "discussion.mood"),
+    ],
+)
+async def test_a_discussion_over_a_cap_is_refused_by_name_and_writes_nothing(
+    monkeypatch, part, code, field
+):
+    """Refused whole, naming the part, before the cache or the record moves."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    before = wl.read_work_item(CONDUCTOR, item_id)
+    status, body = await _report(
+        WORKER,
+        {"status": "progress", "summary": "s", "discussion": {**_DISCUSSION, **part}},
+    )
+    assert (status, body["code"], body["field"]) == (400, code, field), body
+    assert wl.read_work_item(CONDUCTOR, item_id) == before
+
+
+@pytest.mark.asyncio
+async def test_a_discussion_at_every_cap_in_chinese_fits_one_record_line(monkeypatch):
+    """Every cap at once, in CJK (six bytes a character in the record), still fits
+    the 64 KB line beside a full summary, so a real discussion is never refused for size."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    ch = "\u4e2d"
+    widest = {
+        "phase": "talking",
+        "round": 99,
+        "minutes": 1440,
+        "direction": ch * 200,
+        "agreed": [ch * 120] * 8,
+        "disputed": [{"point": ch * 120, "sides": ch * 160}] * 5,
+        "checking": [ch * 120] * 3,
+        "recent": [{"who": ch * 20, "text": ch * 200}] * 6,
+        "thread": "/artifacts/" + "a" * 501,
+    }
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": ch * 500, "discussion": widest}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.discussion == widest
+
+
+@pytest.mark.asyncio
+async def test_an_ask_record_rides_the_record_and_decide_clears_it_there(monkeypatch):
+    """The ask record the route commits is the one a rebuild restores, and a later
+    decide clears it in the fold as it does in the cache."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    status, body = await _record(
+        CONDUCTOR,
+        {
+            "action": "ask",
+            "item_id": item_id,
+            "what": "Merge it?",
+            "why": "Only you merge.",
+            "options": [{"label": "Merge", "outcome": "ships"}, {"label": "Hold"}],
+            "pick": "Merge",
+            "pick_why": "green",
+        },
+    )
+    assert status == 200, body
+    committed = wl.read_work_item(CONDUCTOR, item_id)
+    assert committed is not None and committed.ask is not None
+    wl.rebuild_from_projection(CONDUCTOR)
+    rebuilt = wl.read_work_item(CONDUCTOR, item_id)
+    assert rebuilt is not None and rebuilt.ask == committed.ask
+    status, body = await _record(
+        CONDUCTOR, {"action": "decide", "item_id": item_id, "decision": "merge"}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask is None
+
+
 # -- the record is refused before the commit, and answered for after it -------
 
 
@@ -918,12 +1077,65 @@ async def test_an_unconfirmed_append_is_answered_as_a_failure_naming_the_committ
 
     status, body = await _report(WORKER, {"status": "progress", "summary": "half"})
     assert (status, body["code"], body["item_id"]) == (503, "crew_log_unrecorded", item_id), body
+    # The text says what happened: the write was undone, not stored.
+    assert body["error"] == "the write was not recorded and has been undone; retry it"
     status, body = await _record(
         CONDUCTOR, {"action": "create", "title": "item two", "acceptance": ACCEPTANCE}
     )
     assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
-    # The create was undone with the refusal: the id is returned, the item is gone.
-    assert body["item_id"] != item_id and wl.read_work_item(CONDUCTOR, body["item_id"]) is None
+    # The create was undone with the refusal: the item is gone, so no id names it.
+    assert body["item_id"] is None
+    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [item_id]
+
+
+@pytest.mark.asyncio
+async def test_a_create_whose_undo_fails_still_names_its_item(recorded, monkeypatch):
+    """The item may still be on the board, so the answer keeps the id to look for."""
+    await _board()
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+
+    def _fail(*_args, **_kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(wl, "restore_snapshot", _fail)
+    status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "item two", "acceptance": ACCEPTANCE}
+    )
+    assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
+    assert body["item_id"] and wl.read_work_item(CONDUCTOR, body["item_id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_unrecorded_write_whose_undo_fails_says_it_was_not_undone(recorded, monkeypatch):
+    await _board()
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+
+    def _fail(*_args, **_kwargs):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(wl, "restore_snapshot", _fail)
+    status, body = await _report(WORKER, {"status": "progress", "summary": "half"})
+    assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
+    assert body["error"] == (
+        "the write was not recorded and could not be undone; read the board before retrying"
+    )
+    assert wl.cache_dirty(CONDUCTOR), "the failed undo flags the board"
+
+
+@pytest.mark.asyncio
+async def test_a_partial_undo_is_not_reported_as_undone(recorded, monkeypatch):
+    """A restore that passes over a file another gateway changed returns normally
+    and flags the cache; the answer must not say the write was undone."""
+    await _board()
+    monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: False)
+
+    def _partial(slot, *_args, **_kwargs):
+        wl.mark_cache_dirty(slot, "an unrecorded write was passed over in 1 of its files")
+
+    monkeypatch.setattr(wl, "restore_snapshot", _partial)
+    status, body = await _report(WORKER, {"status": "progress", "summary": "half"})
+    assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
+    assert "could not be undone" in body["error"], body
 
 
 def test_on_work_recorded_acknowledges_only_an_append_that_landed(monkeypatch):
@@ -1314,7 +1526,7 @@ async def test_a_legacy_items_first_conductor_write_keeps_the_whole_baseline(rec
 
 @pytest.mark.asyncio
 async def test_a_legacy_stored_baseline_is_redacted_before_recording(recorded):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=95)
     acceptance = {"kind": "human_approval", "notes": [f"inspect {secret}"]}
     wl.ensure_conductor(CONDUCTOR, goal="old goal")
     old = wl.apply_conductor_action(
@@ -1343,12 +1555,11 @@ async def test_a_legacy_stored_baseline_is_redacted_before_recording(recorded):
 
 @pytest.mark.asyncio
 async def test_a_legacy_baseline_key_collision_is_refused_before_writing(recorded):
-    first = "AKIAIOSFODNN7EXAMPLE"
-    # Assembled rather than written out: the internal content scan flags an AKIA
-    # literal in an added line, and only the well-known documentation key above is
-    # allowlisted. The redactor sees a real credential shape at runtime, which is what
-    # this test needs, while no line here carries one. Do not inline this back.
-    second = "AKIA" + "Z" * 16
+    first = github_classic(seed=95)
+    # Synthetic 40-character GitHub tokens built at run time, so no line carries a
+    # credential shape. The redactor sees the value at runtime, which is
+    # what this test needs. Do not inline this back.
+    second = github_classic(seed=96)
     wl.ensure_conductor(CONDUCTOR, goal="old goal")
     old = wl.apply_conductor_action(
         CONDUCTOR,
@@ -1461,7 +1672,7 @@ async def test_a_board_born_in_a_failed_request_leaves_nothing_behind(monkeypatc
     )
     assert (status, body["code"]) == (503, "crew_log_unrecorded"), body
     assert wl.read_conductor(CONDUCTOR) is None
-    assert wl.read_work_item(CONDUCTOR, body["item_id"]) is None
+    assert body["item_id"] is None and wl.list_work_items(CONDUCTOR) == []
 
 
 @pytest.mark.asyncio

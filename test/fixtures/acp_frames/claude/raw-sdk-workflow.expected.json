@@ -1,0 +1,564 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Workflow",
+        "tool_call_id": "toolu_probe_1",
+        "tool_kind": "other",
+        "wire_title": "Workflow"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "script": "export const meta = {\n  name: 'tiny-greet',\n  description: 'One Greet phase with two agents (a, b) that each reply with one word',\n  phases: [{ title: 'Greet' }],\n}\nphase('Greet')\nconst results = await parallel([\n  () => agent('Reply with exactly one word (a greeting). Do not use any tools.', { label: 'a', phase: 'Greet' }),\n  () => agent('Reply with exactly one word (a greeting). Do not use any tools.', { label: 'b', phase: 'Greet' }),\n])\nreturn { a: results[0], b: results[1] }\n"
+        },
+        "tool_call_id": "toolu_probe_1",
+        "tool_input": "{\n  \"script\": \"export const meta = {\\n  name: 'tiny-greet',\\n  description: 'One Greet phase with two agents (a, b) that each reply with one word',\\n  phases: [{ title: 'Greet' }],\\n}\\nphase('Greet')\\nconst results = await parallel([\\n  () => agent('Reply with exactly one word (a greeting). Do not use any tools.', { label: 'a', phase: 'Greet' }),\\n  () => agent('Reply with exactly one word (a greeting). Do not use any tools.', { label: 'b', phase: 'Greet' }),\\n])\\nreturn { a: results[0], b: results[1] }\\n\"\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "One Greet phase with two agents (a, b) that each reply with one word",
+        "prompt": "export const meta = {\n  name: 'tiny-greet',\n  description: 'One Greet phase with two agents (a, b) that each reply with one word',\n  phases: [{ title: 'Greet' }],\n}\nphase('Greet')\nconst results = await parallel([\n  () => agent('Reply with exactly one word (a greeting). Do not use any tools.', { label: 'a', phase: 'Greet' }),\n  () => agent('Reply with exactly one word (a greeting). Do not use any tools.', { label: 'b', phase: 'Greet' }),\n])\nreturn { a: results[0], b: results[1] }\n",
+        "run_id": "0mwgeeqi9-afabab17",
+        "session_id": "claude-session-raw-sdk-workflow",
+        "subtype": "task_started",
+        "task_id": "wy57uompy",
+        "task_type": "local_workflow",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "uuid": "probe-msg-1",
+        "workflow_name": "tiny-greet"
+      },
+      "sessionId": "claude-session-raw-sdk-workflow"
+    },
+    "raw_sdk_subtype": "task_started"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_1",
+        "tool_final": true,
+        "tool_output": "Workflow launched in background. Task ID: wy57uompy\nSummary: One Greet phase with two agents (a, b) that each reply with one word\nRun ID: wf_4fc89a32-ca7\n\nYou will be notified when it completes. Use /workflows to watch live progress.",
+        "tool_output_bytes": 233,
+        "tool_output_digest": "b6623345e20d6f4569ec1c300708556d0d4d6e1f62cf4cbbecf7223ab78e1d39",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Greet: a",
+        "last_tool_name": "a",
+        "run_id": "0mwgeeqi9-afabab17",
+        "session_id": "claude-session-raw-sdk-workflow",
+        "subtype": "task_progress",
+        "summary": "One Greet phase with two agents (a, b) that each reply with one word",
+        "task_id": "wy57uompy",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "usage": {
+          "duration_ms": 55,
+          "tool_uses": 0,
+          "total_tokens": 0
+        },
+        "uuid": "probe-msg-2",
+        "workflow_progress": [
+          {
+            "index": 1,
+            "title": "Greet",
+            "type": "workflow_phase"
+          },
+          {
+            "agentId": "a03ccb341194641db",
+            "attempt": 1,
+            "index": 1,
+            "label": "a",
+            "lastProgressAt": 1794660305890,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word (a greeting). Do not use any tools.",
+            "queuedAt": 1794660305884,
+            "startedAt": 1794660305889,
+            "state": "start",
+            "type": "workflow_agent"
+          },
+          {
+            "index": 2,
+            "label": "b",
+            "lastProgressAt": 1794660305884,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptPreview": "Reply with exactly one word (a greeting). Do not use any tools.",
+            "queuedAt": 1794660305884,
+            "state": "start",
+            "type": "workflow_agent"
+          }
+        ]
+      },
+      "sessionId": "claude-session-raw-sdk-workflow"
+    },
+    "raw_sdk_subtype": "task_progress",
+    "workflow_cards": [
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "label": "Greet: a",
+        "model": "probe-model",
+        "result": "",
+        "sessionId": "wy57uompy:a03ccb341194641db",
+        "sessionName": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "working"
+        }
+      },
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "label": "Greet: b",
+        "model": "probe-model",
+        "result": "",
+        "sessionId": "wy57uompy:2",
+        "sessionName": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "working"
+        }
+      }
+    ]
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Greet: a",
+        "last_tool_name": "a",
+        "run_id": "0mwgeeqi9-afabab17",
+        "session_id": "claude-session-raw-sdk-workflow",
+        "subtype": "task_progress",
+        "summary": "One Greet phase with two agents (a, b) that each reply with one word",
+        "task_id": "wy57uompy",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "usage": {
+          "duration_ms": 1838,
+          "tool_uses": 0,
+          "total_tokens": 38522
+        },
+        "uuid": "probe-msg-3",
+        "workflow_progress": [
+          {
+            "index": 1,
+            "title": "Greet",
+            "type": "workflow_phase"
+          },
+          {
+            "agentId": "a03ccb341194641db",
+            "attempt": 1,
+            "durationMs": 1783,
+            "index": 1,
+            "label": "a",
+            "lastProgressAt": 1794660307673,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word (a greeting). Do not use any tools.",
+            "queuedAt": 1794660305884,
+            "resultPreview": "Hello",
+            "startedAt": 1794660305889,
+            "state": "done",
+            "tokens": 38522,
+            "toolCalls": 0,
+            "type": "workflow_agent"
+          },
+          {
+            "agentId": "a9097f9d7de32956a",
+            "attempt": 1,
+            "index": 2,
+            "label": "b",
+            "lastProgressAt": 1794660307630,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word (a greeting). Do not use any tools.",
+            "queuedAt": 1794660305884,
+            "startedAt": 1794660305889,
+            "state": "start",
+            "type": "workflow_agent"
+          }
+        ]
+      },
+      "sessionId": "claude-session-raw-sdk-workflow"
+    },
+    "raw_sdk_subtype": "task_progress",
+    "workflow_cards": [
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "label": "Greet: a",
+        "model": "probe-model",
+        "result": "Hello",
+        "sessionId": "wy57uompy:a03ccb341194641db",
+        "sessionName": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "completed"
+        }
+      },
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "label": "Greet: b",
+        "model": "probe-model",
+        "result": "",
+        "sessionId": "wy57uompy:a9097f9d7de32956a",
+        "sessionName": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "working"
+        }
+      }
+    ]
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_1",
+        "text": "The workflow is running. I"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The workflow is running. I",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_1",
+        "text": "'ll reply WFDON"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "'ll reply WFDON",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_1",
+        "text": "E once"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "E once",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_1",
+        "text": " it fin"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " it fin",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_1",
+        "text": "ishes."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ishes.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      88384,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      4,
+      383,
+      101541,
+      74072
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "Greet: b",
+        "last_tool_name": "b",
+        "run_id": "0mwgeeqi9-afabab17",
+        "session_id": "claude-session-raw-sdk-workflow",
+        "subtype": "task_progress",
+        "summary": "One Greet phase with two agents (a, b) that each reply with one word",
+        "task_id": "wy57uompy",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "usage": {
+          "duration_ms": 3608,
+          "tool_uses": 0,
+          "total_tokens": 77044
+        },
+        "uuid": "probe-msg-4",
+        "workflow_progress": [
+          {
+            "index": 1,
+            "title": "Greet",
+            "type": "workflow_phase"
+          },
+          {
+            "agentId": "a03ccb341194641db",
+            "attempt": 1,
+            "durationMs": 1783,
+            "index": 1,
+            "label": "a",
+            "lastProgressAt": 1794660307673,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word (a greeting). Do not use any tools.",
+            "queuedAt": 1794660305884,
+            "resultPreview": "Hello",
+            "startedAt": 1794660305889,
+            "state": "done",
+            "tokens": 38522,
+            "toolCalls": 0,
+            "type": "workflow_agent"
+          },
+          {
+            "agentId": "a9097f9d7de32956a",
+            "attempt": 1,
+            "durationMs": 1810,
+            "index": 2,
+            "label": "b",
+            "lastProgressAt": 1794660309440,
+            "model": "probe-model",
+            "phaseIndex": 1,
+            "phaseTitle": "Greet",
+            "promptFramed": true,
+            "promptPreview": "Reply with exactly one word (a greeting). Do not use any tools.",
+            "queuedAt": 1794660305884,
+            "resultPreview": "Hello",
+            "startedAt": 1794660305889,
+            "state": "done",
+            "tokens": 38522,
+            "toolCalls": 0,
+            "type": "workflow_agent"
+          }
+        ]
+      },
+      "sessionId": "claude-session-raw-sdk-workflow"
+    },
+    "raw_sdk_subtype": "task_progress",
+    "workflow_cards": [
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "label": "Greet: a",
+        "model": "probe-model",
+        "result": "Hello",
+        "sessionId": "wy57uompy:a03ccb341194641db",
+        "sessionName": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "completed"
+        }
+      },
+      {
+        "agentName": "workflow",
+        "background": true,
+        "initialQuery": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "label": "Greet: b",
+        "model": "probe-model",
+        "result": "Hello",
+        "sessionId": "wy57uompy:a9097f9d7de32956a",
+        "sessionName": "Reply with exactly one word (a greeting). Do not use any tools.",
+        "status": {
+          "message": "",
+          "type": "completed"
+        }
+      }
+    ]
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "patch": {
+          "end_time": 1794660310610,
+          "status": "completed"
+        },
+        "run_id": "0mwgeeqi9-afabab17",
+        "session_id": "claude-session-raw-sdk-workflow",
+        "subtype": "task_updated",
+        "task_id": "wy57uompy",
+        "type": "system",
+        "uuid": "probe-msg-5"
+      },
+      "sessionId": "claude-session-raw-sdk-workflow"
+    },
+    "raw_sdk_subtype": "task_updated"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "output_file": "<tasks>/wy57uompy.output",
+        "run_id": "0mwgeeqi9-afabab17",
+        "session_id": "claude-session-raw-sdk-workflow",
+        "status": "completed",
+        "subtype": "task_notification",
+        "summary": "Dynamic workflow \"One Greet phase with two agents (a, b) that each reply with one word\" completed",
+        "task_id": "wy57uompy",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "usage": {
+          "duration_ms": 4751,
+          "tool_uses": 0,
+          "total_tokens": 77044
+        },
+        "uuid": "probe-msg-6"
+      },
+      "sessionId": "claude-session-raw-sdk-workflow"
+    },
+    "raw_sdk_subtype": "task_notification"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "Both agents said \"Hello"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Both agents said \"Hello",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "\" and used no tools."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\" and used no tools.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_probe_2",
+        "text": "\n\nWFDONE"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n\nWFDONE",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      89415,
+      1000000
+    ],
+    "usage_cost": null
+  }
+]

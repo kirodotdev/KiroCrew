@@ -22,7 +22,8 @@ The ladder, in order:
    blocks. The first admitted hit is held;
 4. the interject may tear the request down;
 5. a held hit is approved; otherwise the first attended responder asks the
-   person; otherwise the unattended refusal answers.
+   person (a prompt whose window closes with nobody answering is the host's
+   refusal, ``approval_expired``); otherwise the unattended refusal answers.
 
 A policy with :attr:`Policy.stopping` reads it live before the first stage,
 before a person is asked, and at the commit point of an approval, with nothing
@@ -61,6 +62,7 @@ notice is built and scrubbed by ``llm_helpers._steer_host_deny``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -70,10 +72,14 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Literal, Protocol
 
 from kiro_crew import name_grant
-from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE, DENY_CAUSE_POLICY
+from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_BATCH_READ_WRITE,
+    DENY_CAUSE_POLICY,
+)
 from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, identity_grant_covers_child
-from kiro_crew.llm_helpers import _steer_host_deny
+from kiro_crew.llm_helpers import _steer_host_deny, approval_expiry_watch
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR, ApprovalWithdrawn
 from kiro_crew.tool_gate_busy import TOOL_GATE_BUSY_REASON
 
@@ -166,9 +172,14 @@ class Notice:
 
 @dataclass(frozen=True)
 class Answer:
-    """A responder's answer: whether the person approved."""
+    """A responder's answer: whether the person approved.
+
+    *expired* is set when the prompt's window closed with nobody answering, so
+    the refusal is the host's, not the person's.
+    """
 
     approved: bool
+    expired: bool = False
 
 
 Outcome = Literal["approved", "auto_approved", "refused", "rejected", "floor_refused", "bailed"]
@@ -207,10 +218,13 @@ class Ask:
     The fidelity facts are read from the event once, on first use.
     """
 
-    def __init__(self, event: Any, wire: Wire, session_key: str) -> None:
+    def __init__(self, event: Any, wire: Wire, session_key: str, agent: str = "") -> None:
         self.event = event
         self.wire = wire
         self.session_key = session_key
+        #: The agent the session runs, when the caller knows it: a session key
+        #: with no execution record (a task-runner step) names its Bot this way.
+        self.agent = agent
 
     @property
     def request_id(self) -> Any:
@@ -408,6 +422,12 @@ def _gate_unjudged(waited: float) -> Refusal:
     return Refusal.host("hook_deny", TOOL_GATE_BUSY_REASON, DENY_CAUSE_POLICY)
 
 
+#: A person's prompt that closed with nobody answering: the host declined.
+_APPROVAL_EXPIRED = Refusal.host(
+    "approval_expired", "the approval prompt went unanswered", DENY_CAUSE_APPROVAL_TIMEOUT
+)
+
+
 async def settle(ask: Ask, policy: Policy) -> Settled:
     """Decide, audit and answer *ask* under *policy*; see the module docstring."""
     if _stopping(policy):
@@ -424,7 +444,14 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
         return await _refuse(ask, policy, verdict)
     low = _low_fidelity(ask, policy)
     held: Hit | None = None
-    for grant in policy.child.grants if low else policy.grants:
+    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``):
+    # no grant answers a call it covers; only a person can.
+    from kiro_crew import mate_held_rules
+
+    bot_held = mate_held_rules.current_held() or await asyncio.to_thread(
+        mate_held_rules.held_for, ask.event, session_key=ask.session_key, agent=ask.agent
+    )
+    for grant in () if bot_held else (policy.child.grants if low else policy.grants):
         hit = verdict if grant is GATE_GRANT else await grant.offer(ask)
         if hit is not None and await _admitted(ask, policy, hit, low):
             held = hit
@@ -441,9 +468,17 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
             return await bail(ask, policy, "stopped")
         if low and policy.child.annotate is not None:
             ask.event.title = policy.child.annotate(ask.event.title)
-        answer = await responder.ask(ask)
+        if bot_held:
+            # The responder is asked as a person's: an approver that would answer
+            # on its own (``turn_approvals._interactive_approval``) reads this.
+            with mate_held_rules.held_call(bot_held):
+                answer = await responder.ask(ask)
+        else:
+            answer = await responder.ask(ask)
         if answer.approved:
             return await _allow(ask, policy, responder.name, "approved", "person")
+        if answer.expired:
+            return await _refuse(ask, policy, _APPROVAL_EXPIRED)
         return await _refuse(ask, policy, Refusal.person(responder.name))
     if low:
         assert policy.child.unattended is not None  # Policy.__post_init__
@@ -541,7 +576,13 @@ async def _allow(
         take = getattr(ask.wire, "batch_refusal", None)
         reason = take(ask) if take is not None else None
         if reason:
-            return Settled("refused", rung, "host", DENY_CAUSE_BATCH_READ_WRITE, reason)
+            # The guard's cause rides its audit labels; read through the SDK, the
+            # one way application code reaches the ACP layer.
+            from kiro_crew import agent_sdk
+
+            _outcome, labels = agent_sdk.batch_guard_refusal_outcome(reason)
+            cause = (labels or {}).get("cause") or DENY_CAUSE_BATCH_READ_WRITE
+            return Settled("refused", rung, "host", cause, reason)
     settled = Settled(outcome if sent else "floor_refused", rung, by)
     policy.audit.approved(ask, settled)
     return settled
@@ -717,7 +758,8 @@ class ApprovalWatch(Protocol):
     """Observes a person being asked: :meth:`opened` before the wait, :meth:`closed` after.
 
     *by* is ``""`` when a person answered and ``"host"`` when the wait ended with
-    no answer (the approver raised, or the wait was cancelled).
+    no answer (the approver raised, the wait was cancelled, or its prompt's
+    window closed unanswered).
     """
 
     def opened(self, ask: Ask) -> object: ...
@@ -761,12 +803,15 @@ class CallbackResponder:
         decision, by = "rejected", "host"
         try:
             try:
-                approved = bool(await approve(ask.event))
+                with approval_expiry_watch() as expired:
+                    approved = bool(await approve(ask.event))
             except Exception:
                 if self._on_error is None:
                     raise
                 self._on_error()
                 return Answer(approved=False)
+            if not approved and expired:
+                return Answer(approved=False, expired=True)
             decision, by = ("approved" if approved else "rejected"), ""
             return Answer(approved=approved)
         finally:
@@ -844,6 +889,7 @@ _SUBAGENT_REFUSALS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "child": ("child_interactive_rejected", ""),
         "factory": ("", "factory_rejected"),
         "callback": ("", ""),
+        "approval_expired": ("", "approval_expired"),
         "headless": ("", "no_policy_deny_default"),
         "turn_limit": ("turn_limit", ""),
         "child_escalation_limit": ("child_escalation_limit", ""),
@@ -929,6 +975,7 @@ _TASKRUNNER_REFUSALS: Mapping[str, tuple[str, str, str]] = MappingProxyType(
         "hook_deny": ("denied", "hook_deny", ""),
         "context_overflow": ("rejected", "", "context_overflow"),
         "responder": ("rejected", "", ""),
+        "approval_expired": ("rejected", "", "approval_expired"),
         "headless": ("rejected", "", "headless_no_authorization"),
     }
 )

@@ -380,6 +380,19 @@ def _run_marker_clause(subcommand: str, port: int) -> str:
     )
 
 
+def custom_remote_bin(remote_bin: str) -> str | None:
+    """The user's ``remote_bin`` as the remote shell spells it, or None for the candidate search.
+
+    Empty and the default sentinel mean "try every candidate". A custom path has a
+    leading ``~/`` rewritten to ``$HOME/``, because tilde does not expand inside the
+    double quotes the path is embedded in. *remote_bin* must already be
+    charset-validated.
+    """
+    if not remote_bin or remote_bin == DEFAULT_REMOTE_BIN:
+        return None
+    return re.sub(r"^~/", "$HOME/", remote_bin)
+
+
 def build_remote_command(
     remote_bin: str,
     subcommand: str,
@@ -395,9 +408,9 @@ def build_remote_command(
     never overridden by the marker. *remote_bin* must already be charset-validated;
     *subcommand* is a fixed/validated literal.
     """
-    if not remote_bin or remote_bin == DEFAULT_REMOTE_BIN:
+    expanded = custom_remote_bin(remote_bin)
+    if expanded is None:
         return build_candidate_command(subcommand, candidates, marker_port=marker_port)
-    expanded = re.sub(r"^~/", "$HOME/", remote_bin)
     return f'"{expanded}" {subcommand}'
 
 
@@ -446,6 +459,11 @@ def _build_ssh_argv(
     caller here is interactive, and a user's ``RequestTTY yes`` otherwise
     prints "Pseudo-terminal will not be allocated" first on stderr, which then
     reads as the failure reason.
+    ``ClearAllForwardings=yes`` drops any ``LocalForward``/``RemoteForward``/
+    ``DynamicForward`` the user's ssh_config sets for the host: with one, this
+    one-shot ssh would bind that port whenever it is free, wait after the
+    remote command exits for the connections riding it, and be killed at the
+    caller's timeout with all of them. No caller here wants a forward.
     ``ssh_host`` is validated by the caller (registry / tunnel manager) before
     reaching here.
     """
@@ -459,6 +477,8 @@ def _build_ssh_argv(
         f"ConnectTimeout={max(1, round(connect_timeout_secs))}",
         "-o",
         "AddressFamily=inet",
+        "-o",
+        "ClearAllForwardings=yes",
         ssh_host,
         remote_command,
     ]

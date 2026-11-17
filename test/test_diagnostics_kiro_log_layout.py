@@ -11,8 +11,10 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from conftest import make_dir_link
-from kiro_crew import agent_scratch, diagnostics, release_channel
+from kiro_crew import agent_scratch, diagnostics, platform_compat, release_channel
 
 _NESTED = ("kiro-log", "logs")
 
@@ -110,6 +112,24 @@ def test_one_level_wins_for_mcp_and_lsp(tmp_path, monkeypatch):
     monkeypatch.setenv("TMP", str(tmp_path / "second"))
 
     assert diagnostics._kiro_cli_extra_logs() == [flat_mcp]
+
+
+@pytest.mark.parametrize("windows, probed", [(True, False), (False, True)])
+def test_fixed_tmp_candidate_is_probed_off_windows_only(tmp_path, monkeypatch, windows, probed):
+    temp = tmp_path / "temp"
+    for key in ("XDG_RUNTIME_DIR", "TMPDIR", "KIRO_CHAT_LOG_FILE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("TEMP", str(temp))
+    monkeypatch.setenv("TMP", str(temp))
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+    # Every candidate counts as present, so the list is what gets probed whatever
+    # the test host's /tmp holds.
+    monkeypatch.setattr(diagnostics, "_usable_dir", lambda p: True)
+
+    dirs = diagnostics._kiro_log_dirs()
+
+    assert temp / "kiro-log" in dirs
+    assert (Path("/tmp") / "kiro-log" in dirs) is probed
 
 
 def test_nested_chat_log_never_reaches_the_protocol_log_reader(tmp_path, monkeypatch):

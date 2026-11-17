@@ -19,11 +19,15 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.defaults import DefaultSkillDiscoveryProvider
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 #: The built-in catalog, in registration order: the public registry and the
 #: GitHub-repo importer. Named once because every assertion below means "the
 #: built-ins" rather than one particular provider.
 _BUILTIN = ["skillsh", "github"]
+
+#: A synthetic GitHub token the redactor removes; a bare 40-character run stays visible.
+_TOKEN = github_classic(seed=122)
 
 
 class _FakeProvider:
@@ -316,13 +320,13 @@ def test_display_name_is_scrubbed_and_falls_back(monkeypatch) -> None:
     class _SecretLabel(_FakeProvider):
         @property
         def display_name(self) -> str:
-            return "Catalog key=AKIAIOSFODNN7EXAMPLE"
+            return "Catalog key=" + _TOKEN
 
     reg = ProviderRegistry()
     reg.register(_RaisingLabel(name="edition-raises"), name="edition-raises")
     reg.register(_SecretLabel(name="edition-secret"), name="edition-secret")
     assert discover._display_name(reg, "edition-raises") == "edition-raises"
-    assert "AKIAIOSFODNN7EXAMPLE" not in discover._display_name(reg, "edition-secret")
+    assert _TOKEN not in discover._display_name(reg, "edition-secret")
     assert discover._display_name(reg, "unregistered") == "unregistered"
 
 

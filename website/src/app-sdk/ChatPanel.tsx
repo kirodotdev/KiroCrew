@@ -13,6 +13,9 @@
  * last-used session, so the panel adds a placeholder row first, the same way
  * the artifact companion does, and refreshes the list to fill the row in.
  *
+ * `expandSteps` opens the transcript's reasoning and tool rows for this panel
+ * only, through ExpandStepsContext, without writing the user's chat settings.
+ *
  * Usage:
  *   const { ChatPanel } = window.__kirocrew_modules['@kirocrew/app-sdk']
  *   <ChatPanel slotKey="coder-abc123" />
@@ -25,15 +28,17 @@ import ChatPage from '../pages/ChatPage'
 import ErrorNotice from '../components/ErrorNotice'
 import { Btn } from '../components/ui'
 import { useOwnSlotChat } from '../hooks/useOwnSlotChat'
+import { ExpandStepsContext } from '../hooks/useToolCallsStartExpanded'
 
 import { i18nT } from '../i18n/t'
 
 export interface ChatPanelProps {
   slotKey: string
   conversationOnly?: boolean
+  expandSteps?: boolean
 }
 
-export default function ChatPanel({ slotKey, conversationOnly = false }: ChatPanelProps) {
+export default function ChatPanel({ slotKey, conversationOnly = false, expandSteps = false }: ChatPanelProps) {
   const dispatch = useAppDispatch()
   const store = useAppStore()
   const prevSlotRef = useRef<string | null>(null)
@@ -80,11 +85,13 @@ export default function ChatPanel({ slotKey, conversationOnly = false }: ChatPan
           footer={<Btn type="button" onClick={retry}>{i18nT('components.webPreviewPanel.try_again')}</Btn>}
         />
       ) : showChat ? (
-        <ChatPage
-          embedded
-          embedMode={conversationOnly ? 'chat' : undefined}
-          noUrlSync={conversationOnly || undefined}
-        />
+        <ExpandStepsContext.Provider value={expandSteps}>
+          <ChatPage
+            embedded
+            embedMode={conversationOnly ? 'chat' : undefined}
+            noUrlSync={conversationOnly || undefined}
+          />
+        </ExpandStepsContext.Provider>
       ) : null}
     </div>
   )

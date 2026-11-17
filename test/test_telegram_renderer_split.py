@@ -36,6 +36,7 @@ from kiro_crew.telegram.renderer import (
     safe_split_offset,
 )
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class TestTableAwareSplitting:
@@ -368,6 +369,9 @@ class TestRotationSeamCredentialSafety:
     """
 
     _CAP = 400
+    # A GitHub token the plan redacts (a bare 40-character run is no credential by
+    # itself), with no `/` or `+`.
+    _KEY = github_classic(seed=11)
 
     def _renderer(self, monkeypatch: pytest.MonkeyPatch) -> tuple[TelegramRenderer, FakeClient]:
         cli = FakeClient()
@@ -424,7 +428,9 @@ class TestRotationSeamCredentialSafety:
         assert any(_default_redactor(r) != r for r in rejoined), "fixture is not a straddle"
 
         r, cli = self._renderer(monkeypatch)
-        r._buf = [self._straddling_source(head, tail)]
+        # A non-word filler: a run of letters glued to the key would make one long
+        # credential-class run the splitter never cuts inside.
+        r._buf = [self._straddling_source(head, tail, filler=".")]
 
         async def _go() -> None:
             await r._rotate_on_length()
@@ -477,7 +483,8 @@ class TestRotationSeamCredentialSafety:
         is deterministic it would get the same answer on every later rotation: the
         segment would never go out at all.
         """
-        raw = "a" * (self._CAP - 8) + "AKIAIOSF" + "\n    ODNN7EXAMPLE" + " tail" * 40
+        key = self._KEY
+        raw = "a" * (self._CAP - 9) + " " + key[:8] + "\n    " + key[8:] + " tail" * 40
         raw_offset = safe_split_offset(raw, self._CAP, _default_redactor)
         assert not joins_to_a_credential(
             raw[:raw_offset], raw[raw_offset:], _default_redactor
@@ -512,7 +519,16 @@ class TestRotationSeamCredentialSafety:
         """
         bar = "-" * 120
         pad = "a" * 330
-        return pad + "\nAKIAIOS\n\n" + bar + "\n\nFODNN7\n\n" + bar + "\n\nEXAMPLE\n" + "b" * 330
+        k = self._KEY
+        return (
+            pad
+            + f"\n{k[:13]}\n\n"
+            + bar
+            + f"\n\n{k[13:26]}\n\n"
+            + bar
+            + f"\n\n{k[26:]}\n"
+            + "b" * 330
+        )
 
     def test_the_held_image_prefix_is_graded_as_a_sequence(
         self, monkeypatch: pytest.MonkeyPatch

@@ -181,8 +181,13 @@ describe("gateway supervisor wiring (source pins)", () => {
     const body = fnBody("probeLockHolderPid");
     assert.match(
       body,
-      /gatewayCliInvocation\(bin,\s*\["gateway-pid"\],\s*path\)/,
+      /gatewayCliInvocation\(\s*bin,[^;]*\["gateway-pid"\],?\s*path,?\s*\)/,
       "the lock-holder probe must invoke `kirocrew gateway-pid` through the Windows-safe helper",
+    );
+    assert.match(
+      body,
+      /Number\.isInteger\(port\) && port > 0 \? \["gateway-pid", "--port", String\(port\)\] : \["gateway-pid"\]/,
+      "`--port` is passed only for a real port, so every other caller keeps the bare probe",
     );
     assert.match(
       body,

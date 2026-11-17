@@ -1033,6 +1033,49 @@ def reap_scopes(
     return summary
 
 
+def kept_scopes(
+    slice_dir: Path,
+    *,
+    tracked_pids: set[int],
+    now_monotonic: float,
+    proc_root: Path,
+) -> list[tuple[str, str, float]]:
+    """``(unit, category, age)`` of each runtime scope past the floor the reaper never stops.
+
+    The accepted residual of rule (ii): no agent-runtime anchor is left, or a member
+    is not attributable to this install. What is left can be a server an agent was
+    asked to keep, so ``kirocrew doctor`` lists these for a person to stop; nothing
+    here signals. Only ``kirocrew-rt-*`` scopes are judged, because a caller outside
+    the gateway has no live-provider set and a live runtime there is a tracked pid,
+    and only a name a spawn could have minted, since the caller prints it in a command.
+    """
+    from kiro_crew.sandbox_slice import _SCOPE_UNIT_PREFIX, scope_unit_name
+
+    kept = []
+    for scope_dir in sorted(slice_dir.glob(f"{_SCOPE_UNIT_PREFIX}*.scope")):
+        if scope_unit_name(scope_dir.stem[len(_SCOPE_UNIT_PREFIX) :]) != scope_dir.name:
+            continue
+        _ok, reason, age = _scope_reclaimable(
+            scope_dir,
+            proc_root=proc_root,
+            active_pids=set(),
+            tracked_pids=tracked_pids,
+            gateway_boot_us=None,
+            min_age_secs=_REAP_MIN_AGE_SECS,
+            now_monotonic=now_monotonic,
+            active_enter_us=_scope_active_enter_us,
+            reads=_ProcReads(proc_root),
+        )
+        category = _skip_reason_category(reason)
+        if (
+            category in ("no-runtime-anchor", "unowned")
+            and age is not None
+            and age > _REAP_MIN_AGE_SECS
+        ):
+            kept.append((scope_dir.name, category, age))
+    return kept
+
+
 def instance_slice_pids() -> set[int]:
     """Every pid the kernel currently places inside THIS install's agent slice.
 

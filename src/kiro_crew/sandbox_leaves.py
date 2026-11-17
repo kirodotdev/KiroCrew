@@ -103,6 +103,14 @@ _LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
 #: needs no backend carve-out to hand the directory back to a sandboxed app.
 _AUTH_STORE_STAGING_LEAF: str = "auth-store-staging"
 
+#: The masked DIRECTORY the self-update engine downloads a release wheel into
+#: (``platform.wheel_engine_transfer._staging_dir``). The wheel's SHA-256 is checked as it
+#: lands and pip opens the same path seconds later, so a sandboxed writer that can reach
+#: the directory could replace the checked file before pip reads it. It is not under
+#: ``trust/``, which stays sandbox read-write for SEL. A top-level directory mask covers
+#: every name inside it, present and future, and the gateway is its only writer.
+_UPDATE_STAGING_LEAF: str = "update-staging"
+
 #: The mediated-secret request directory (``secrets_mediation.provenance.
 #: REQUEST_POLICY_DIRNAME``): the owner-signed authorization policy and its
 #: authorize lock. Hidden as a WHOLE directory and
@@ -201,7 +209,7 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``/api/tasks`` all live in the gateway process and open it directly.
     "tasks",
     # The per-process scratch root (``agent_scratch``): every kiro-cli session
-    # and every shared runtime gets ``<home>/scratch/<label>-<rand>`` as its
+    # and every shared runtime gets ``<home>/scratch/<rand>`` as its
     # ``TMPDIR``. Masked as a WHOLE so one session tree cannot open another's
     # scratch; each spawn passes its OWN directory back through
     # ``extra_private_dirs`` (``acp/client.py``, ``acp/runtime.py``) -- a
@@ -211,6 +219,7 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # as a second such window, so ``$KIROCREW_SCRATCH`` names one place for the
     # whole tree. Siblings from other trees stay hidden either way.
     "scratch",
+    "scratch/.trees.json",
     # The cross-process work root (``work_root``): ``<home>/work/<key>``, for
     # state that must OUTLIVE the process that created it. Masked as a whole and
     # given NO window, which is the difference from ``scratch`` above: the only
@@ -239,10 +248,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The Notes state files' old bare spellings: kept masked for a copy not yet moved,
     # and never carved back (the backend reads only the state directory).
     *_MD_NOTEBOOK_RETIRED_STATE_LEAVES,
-    # The Notes state DIRECTORY, masked whole. It is OWNED by the md-notebook backend,
-    # itself a sandboxed spawn (`apps/backend.py`), which gets it back through
-    # :func:`app_backend_visible_targets`; the mask still applies to every OTHER
-    # sandboxed process.
+    # The Notes state DIRECTORY of the previous layout, masked whole and handed back to
+    # no spawn. ``md_notebook_state`` copies its state into the app's own declared
+    # ``data/state/`` and empties the PAT here; the registry and settings copies it keeps
+    # for a rollback, and the marker that closes the copy, stay behind this mask.
     _MD_NOTEBOOK_STAGING_LEAF,
     # Browser session material an earlier version's browser CLI wrote: a storage
     # state (cookies), its extension token and three retired markers. No reader is
@@ -403,6 +412,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # in-flight temp -- which holds the same key and chain-state bytes as the two leaves
     # above -- and any crash orphan are covered at every name, present and future.
     _AUTH_STORE_STAGING_LEAF,
+    # The self-update engine's wheel download directory (see ``_UPDATE_STAGING_LEAF``).
+    _UPDATE_STAGING_LEAF,
+    # Gateway-only import extraction: a sandboxed writer must not swap a directory
+    # between archive validation, path rewriting and installation into the data home.
+    "import-staging",
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",
@@ -522,6 +536,33 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # is being prompt-injected through. The read-only mount is the load-bearing
     # half; the shell gate matches no paths.
     "decisions_consent.json",
+    # Recorded consent to send memory to a provider app that keeps it elsewhere.
+    # Same class as ``decisions_consent.json`` above: a writable grant lets an
+    # auto-approved agent consent, for itself, to its memory leaving the machine.
+    "memory_provider_consent.json",
+    # Memory move jobs and their id ledgers (``memory_provider.migration``). A
+    # rollback deletes from the provider every id the ledger marks inserted, so a
+    # writable ledger lets an agent have Crew delete provider items of its choosing.
+    # The gateway's ``/api/memory/provider/migrations`` routes are the only writer.
+    "memory_provider_migrations",
+    # Provider benchmark runs, their scratch-store ledgers and own-memory eval sets
+    # (``eval.bench.provider_run``). A cleanup resets every store a ledger lists, so a
+    # writable ledger lets an agent point a reset at a store of its choosing; the
+    # gateway's ``/api/memory/provider/bench`` routes are the only writer.
+    "memory_provider_bench",
+    # The update armed for the next start (``update_next_start``). The boot-time
+    # apply installs on the strength of this record alone, so a writable copy lets
+    # a sandboxed shell skip the step-up, the self-protection deny floor and the
+    # operator's unattended-apply switch. Every writer is the gateway or the
+    # operator's own ``kirocrew update``, outside the sandbox; in-sandbox code may
+    # read the arm and the error the last apply left.
+    "update_next_start.json",
+    # The steering files each chat switched off (``steering_off``). A writable
+    # record lets an agent switch off, for its own chat, a steering rule the
+    # operator wrote; the gateway's dashboard route is the only writer. Same hold
+    # as the consent records here: this kernel write-denial is the load-bearing
+    # half, since the shell gate matches no paths.
+    "chat_steering_off.json",
     # The owner's Shared Crew preview switch. A writable record lets an
     # auto-approved agent choose whether the Crew opens to other people on its
     # next start. The read-only mount is the load-bearing half; the shell gate
@@ -588,6 +629,9 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # gate matches no paths, so the read-only mount is what holds regardless of how
     # a command spells the way there.
     "ssh_auth_sock_consent.json",
+    # The owner's per-folder project-hooks choice. Same class: a writable record
+    # lets a prompt-injected agent turn a checkout's own spec hooks on for itself.
+    "project_hooks_consent.json",
     # The owner's credential-redaction switch. Same class as the consent
     # records above: a writable record lets a prompt-injected agent switch off
     # the credential pass in the owner's dashboard file viewer, the one surface
@@ -596,6 +640,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # what keeps the switch the owner's regardless of how a command spells the
     # way there.
     "credential_redaction.json",
+    # The MCP message-body fields the owner allowed. Same class: a writable list
+    # lets an agent allow its own fields past the tool_input size ceiling. Read
+    # only by the gateway's gate; an absent or unreadable file reads as no rows.
+    "mcp_body_fields.json",
     # The Browser Harness prefix (``browser_harness.install.PREFIX_LEAF``): the
     # venv whose interpreter the unsandboxed gateway EXECUTES for the daemon and
     # the helper worker, plus Kiro's Chromium beside it. A write would choose the
@@ -672,6 +720,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # and environment a later server start runs, so it is sealed. Pre-created and
     # no-follow for the ``pi-gate`` reasons above.
     "kas-mcp-launch",
+    # Crew-owned Connection bridge snapshots (``kas_env_shim.BRIDGE_LEAF``): a slug,
+    # the gateway port and a per-bridge token, no vendor credential. Sealed for the
+    # ``kas-mcp-launch`` reason: a write would choose what a later bridge connects as.
+    "crew-oauth-bridge",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -941,6 +993,12 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # leave no record. One member's silo holding another's preferences and lessons is
     # worth a denial that costs nothing.
     "memory_stores",
+    # Memory move jobs: counts, ids and text hashes the gateway alone reads and
+    # writes, withheld on the same ground as ``memory_stores``.
+    "memory_provider_migrations",
+    # Benchmark runs and own-memory eval sets (a copy of the owner's memory), withheld
+    # on the same ground: the gateway alone reads and writes them.
+    "memory_provider_bench",
     # The microvm lane's crew records, withheld on the same ground as ``memory_stores``
     # and for the same reason it cannot be classified readable: no in-sandbox reader
     # breaks without it, because the gateway owns every read and every write -- the
@@ -968,8 +1026,10 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "decisions_consent.json",
+    "memory_provider_consent.json",
     "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
+    "project_hooks_consent.json",
     "credential_redaction.json",
     # The paid-AWS consent grant. Unlike its sibling consent records this one stores
     # IDENTIFIERS as well as a decision -- ``Grant.to_dict`` writes ``account`` and
@@ -1026,6 +1086,13 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # The empty directory a launch copy's kiro-cli starts in. It holds nothing, so a
     # foreign child that reads it learns nothing.
     "app-agent-launch",
+    # Crew-owned Connection bridge snapshots. The bridge every bridged harness's child
+    # starts must read its own; each holds a slug, a port and a per-bridge token, no
+    # vendor credential and no other server's env (those stay in ``kas-mcp-launch``).
+    # A token read from another session's file is useful only with that bridge's pid
+    # pin and an approval Crew's gate minted for that session, tool and arguments.
+    # Read-gate fenced, so the agent's own file tools still cannot open it.
+    "crew-oauth-bridge",
     # The KAS engine bundle a sandboxed KAS process must read and execute. The only
     # entry here the read gate also fences, so the only one whose exclusion changes
     # what an enforced child can open; the rest are already outside the mask. (The
@@ -1063,6 +1130,14 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Allowed hosts for the exfiltration check. Host names, not credentials; the
     # risk is a write, answered by the read-only seal.
     "redaction-allow",
+    # The steering files each chat switched off: resolved paths keyed by session key,
+    # no credential and no consent. Unlike the withheld consent records it settles
+    # nothing about the agent's own ceiling, and the gateway reads it outside the
+    # sandbox. The risk is a write, answered by the read-only seal.
+    "chat_steering_off.json",
+    # The owner's MCP message-body fields: server, tool and field names, no
+    # credential. The risk is a write, answered by the read-only seal.
+    "mcp_body_fields.json",
     # The operator's cloud configuration and the launch record beside it. Neither holds
     # a credential (``CloudConfig`` documents the file as the operator's own, with none),
     # and in-sandbox code READS both: the provisioner selector resolves the Fargate block
@@ -1072,6 +1147,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # the product depends on and buy nothing.
     "cloud.json",
     "cloud_launch_state.json",
+    # The arm record: a version, a timestamp and an error line, no credential. The
+    # risk is a write, answered by the read-only seal.
+    "update_next_start.json",
     # The runtime config and its overlay. NOT credential-free, unlike ``cloud.json``:
     # a channel bot token stored inline (``telegram.bot_token``, ``discord.bot_token``,
     # ``weixin``/``webex``; the ``sensitive`` fields in ``config/sections_*.py``) lives

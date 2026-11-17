@@ -310,18 +310,27 @@ def test_operator_help_states_the_floor_and_the_override() -> None:
     assert _ENV in help_text
 
 
-def test_operator_kiro_bin_override_refuses_deferral_without_probing(tmp_path, monkeypatch) -> None:
+def test_an_operator_kiro_bin_override_is_judged_as_one_file(tmp_path, monkeypatch) -> None:
+    """The override's own version decides; nothing beside it is probed."""
     pinned = tmp_path / "kiro-cli"
     pinned.write_text("executable")
     pinned.chmod(0o755)
+    sibling = tmp_path / "kiro-cli-chat"
+    sibling.write_text("executable")
+    sibling.chmod(0o755)
     monkeypatch.setenv("KIROCREW_KIRO_BIN", str(pinned))
     monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(pinned), False))
+    probed = []
 
-    def probe(_binary):
-        pytest.fail("An operator override must not be probed")
+    def probe(binary):
+        if binary != str(pinned):
+            pytest.fail(f"A path derived from an operator override was probed: {binary}")
+        probed.append(binary)
+        return (3, 0, 0)
 
     monkeypatch.setattr(kiro_cli, "kiro_cli_version_at", probe)
-    assert kiro_cli.mandatory_mcps_drop_allowed(str(pinned)) is False
+    assert kiro_cli.mandatory_mcps_drop_allowed(str(pinned)) is True
+    assert probed == [str(pinned)]
 
 
 @pytest.mark.parametrize(
@@ -441,10 +450,15 @@ def test_a_resolved_install_that_fails_any_check_keeps_crew_servers(case, manage
     assert kiro_cli.mandatory_mcps_drop_allowed(spawned) is False
 
 
-def test_an_operator_kiro_bin_override_refuses_before_resolving(
+def test_an_operator_kiro_bin_override_over_a_managed_launcher_is_one_file(
     managed_launcher, monkeypatch
 ) -> None:
+    """Judged by the install the launcher resolves to, alone: a 2.x launcher stays
+    resident and the ``kiro-cli-chat`` beside it is never probed."""
     monkeypatch.setenv("KIROCREW_KIRO_BIN", managed_launcher["shim"])
     assert kiro_cli.mandatory_mcps_drop_allowed(managed_launcher["shim"]) is False
-    assert managed_launcher["resolver"].calls == []
-    assert managed_launcher["probed"] == []
+    assert managed_launcher["probed"] == [managed_launcher["real"]]
+
+    managed_launcher["versions"][managed_launcher["real"]] = (3, 0, 0)
+    assert kiro_cli.mandatory_mcps_drop_allowed(managed_launcher["shim"]) is True
+    assert managed_launcher["chat"] not in managed_launcher["probed"]

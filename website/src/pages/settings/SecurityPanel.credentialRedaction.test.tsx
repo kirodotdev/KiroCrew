@@ -1,17 +1,17 @@
 /**
- * Credential redaction switch (Settings -> Security).
+ * Credential redaction toggle (Settings -> Security -> Redaction).
  *
- * The card is a VIEW over the switch the `/api/security/credential-redaction`
+ * The section is a VIEW over the one setting the `/api/security/credential-redaction`
  * endpoints own, so what is pinned here is what a UI can get wrong in a way that
  * MISLEADS an owner about a security control, not the backend's rules (those are
- * in test/test_credential_redaction_switch.py):
+ * in test/test_redaction_one_setting.py):
  *
  *  - The recorded position is what renders, and flipping it sends exactly that
  *    boolean to the writer.
- *  - OFF is loud: a notice with the time it was switched off, so an owner who
- *    forgot cannot mistake the page for the default.
- *  - A FAILED READ renders NO switch. Showing the default (ON) for a state we
- *    could not read is the reassuring direction of wrong, and the dangerous one.
+ *  - It is ONE labelled switch: no engine selector, no second switch, no notice.
+ *  - A policy that keeps redaction on LOCKS the switch, with one line saying why.
+ *  - A FAILED READ renders NO switch. Showing a default for a state we could not
+ *    read is the reassuring direction of wrong, and the dangerous one.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
@@ -48,21 +48,25 @@ vi.mock('../../api/client', async () => ({
 import { api } from '../../api/client'
 import { SecurityPanel } from './SecurityPanel'
 
-const ON: CredentialRedactionState = { enabled: true, changed_at: '' }
-const OFF: CredentialRedactionState = { enabled: false, changed_at: '2026-09-24T23:00:00+00:00' }
-
+const ON: CredentialRedactionState = { enabled: true, changed_at: '', locked_by_policy: false }
+const OFF: CredentialRedactionState = { enabled: false, changed_at: '2026-09-24T23:00:00+00:00', locked_by_policy: false }
+const LOCKED: CredentialRedactionState = { enabled: true, changed_at: '', locked_by_policy: true }
+const LOCKED_LINE = 'An administrator controls this setting.'
 async function renderRedaction(state: CredentialRedactionState) {
   ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(state)
   const utils = renderWithProviders(<SecurityPanel />, { route: '/?section=redaction', queryDefaults: { retryDelay: 0 } })
-  await screen.findByTestId('credential-redaction-row')
+  await screen.findByRole('switch', { name: LABEL })
   return utils
 }
 
+const LABEL = 'Redact credentials'
+
+/** The one switch of the section, found by its accessible name. */
 function toggle(): HTMLElement {
-  return screen.getByRole('switch')
+  return screen.getByRole('switch', { name: LABEL })
 }
 
-describe('SecurityPanel - credential redaction switch', () => {
+describe('SecurityPanel - credential redaction toggle', () => {
   beforeEach(() => {
     cleanup()
     vi.clearAllMocks()
@@ -80,34 +84,91 @@ describe('SecurityPanel - credential redaction switch', () => {
     })
   })
 
-  it('renders the recorded position, ON by default, with no off-notice', async () => {
+  it('renders the recorded position: ON', async () => {
     await renderRedaction(ON)
     expect(toggle()).toHaveAttribute('aria-checked', 'true')
-    expect(screen.queryByTestId('credential-redaction-off-notice')).toBeNull()
   })
 
-  it('switching off sends exactly {enabled: false} and shows the off-notice with the time', async () => {
+  it('renders the recorded position: OFF, which is the default of a fresh install', async () => {
+    await renderRedaction(OFF)
+    expect(toggle()).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('is one labelled switch and nothing else: no engine selector, no second switch, no notice', async () => {
+    await renderRedaction(OFF)
+    expect(screen.getAllByRole('switch')).toHaveLength(1)
+    expect(toggle()).toHaveAccessibleName(LABEL)
+    for (const gone of [/keep ids readable/i, /AI model and server logs/i, /off since/i, /unredacted/i]) {
+      expect(screen.queryByText(gone)).toBeNull()
+    }
+    expect(screen.queryByTestId('credential-redaction-off-notice')).toBeNull()
+    expect(screen.queryByTestId('credential-redaction-seams-row')).toBeNull()
+    expect(screen.queryByTestId('credential-redaction-engine-row')).toBeNull()
+    expect(screen.queryByTestId('credential-redaction-locked')).toBeNull()
+  })
+
+  it('has a keyboard-reachable switch whose one sentence sits behind the info tip, as on Settings > Browser', async () => {
+    await renderRedaction(OFF)
+    expect(toggle().tabIndex).toBeGreaterThanOrEqual(0)
+    // No line of prose under the label: the sentence is the info tip's text.
+    expect(screen.queryByText(/keys, tokens and passwords/i)).toBeNull()
+    expect(screen.getByTitle(/^Hides keys, tokens and passwords in chat, messaging channels/)).toBeTruthy()
+  })
+
+  it('is locked, with one line saying an administrator controls it, when policy keeps redaction on', async () => {
+    await renderRedaction(LOCKED)
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+    expect(toggle()).toHaveAttribute('aria-disabled', 'true')
+    // Out of the tab order, and the switch's description is the locked line.
+    expect(toggle().tabIndex).toBe(-1)
+    const line = screen.getByTestId('credential-redaction-locked')
+    expect(line.textContent).toBe(LOCKED_LINE)
+    expect(toggle().getAttribute('aria-describedby')).toBe(line.id)
+    // Neither the switch nor its row writes anything.
+    fireEvent.click(toggle())
+    fireEvent.click(screen.getByText(LABEL))
+    fireEvent.keyDown(toggle(), { key: ' ' })
+    expect(api.setCredentialRedaction).not.toHaveBeenCalled()
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('is not locked when policy allows it', async () => {
+    await renderRedaction(ON)
+    expect(toggle().hasAttribute('aria-disabled')).toBe(false)
+    expect(toggle().hasAttribute('aria-describedby')).toBe(false)
+    expect(screen.queryByTestId('credential-redaction-locked')).toBeNull()
+  })
+
+  it('a write refused by policy (403 credential_redaction_locked_by_policy) shows the locked line, not a save failure', async () => {
+    ;(api.setCredentialRedaction as ReturnType<typeof vi.fn>).mockRejectedValue(new ApiError(403, 'locked by policy', JSON.stringify({ code: 'credential_redaction_locked_by_policy' })))
+    await renderRedaction(ON)
+    // The read did not know yet; the re-read on settlement does.
+    ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(LOCKED)
+    fireEvent.click(toggle())
+    await waitFor(() => expect(api.setCredentialRedaction).toHaveBeenCalledWith(false))
+    expect((await screen.findByTestId('credential-redaction-locked')).textContent).toBe(LOCKED_LINE)
+    expect(screen.queryByTestId('credential-redaction-write-failed')).toBeNull()
+    await waitFor(() => expect(toggle()).toHaveAttribute('aria-disabled', 'true'))
+    expect(toggle()).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getAllByTestId('credential-redaction-locked')).toHaveLength(1)
+  })
+
+  it('switching on sends exactly {enabled: true}', async () => {
+    ;(api.setCredentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(ON)
+    await renderRedaction(OFF)
+    ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(ON)
+    fireEvent.click(toggle())
+    await waitFor(() => expect(api.setCredentialRedaction).toHaveBeenCalledWith(true))
+    await waitFor(() => expect(toggle()).toHaveAttribute('aria-checked', 'true'))
+  })
+
+  it('switching off sends exactly {enabled: false}', async () => {
     ;(api.setCredentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(OFF)
     await renderRedaction(ON)
-    // The card re-reads on settlement, so the read must now report the new state,
-    // as the real backend does.
     ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(OFF)
     fireEvent.click(toggle())
     await waitFor(() => expect(api.setCredentialRedaction).toHaveBeenCalledWith(false))
     await waitFor(() => expect(toggle()).toHaveAttribute('aria-checked', 'false'))
-    const notice = await screen.findByTestId('credential-redaction-off-notice')
-    expect(notice.textContent).toMatch(/off/i)
-    expect(notice.textContent).toMatch(/2026/)
-  })
-
-  it('switching back on sends exactly {enabled: true} and clears the notice', async () => {
-    ;(api.setCredentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(ON)
-    await renderRedaction(OFF)
-    expect(screen.getByTestId('credential-redaction-off-notice')).toBeTruthy()
-    ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(ON)
-    fireEvent.click(toggle())
-    await waitFor(() => expect(api.setCredentialRedaction).toHaveBeenCalledWith(true))
-    await waitFor(() => expect(screen.queryByTestId('credential-redaction-off-notice')).toBeNull())
   })
 
   it('a non-owner sees the owner-only notice, read once: no Retry, no hand-off, one audited refusal', async () => {
@@ -121,8 +182,6 @@ describe('SecurityPanel - credential redaction switch', () => {
     expect(screen.queryByTestId('credential-redaction-read-failed')).toBeNull()
     expect(screen.queryByRole('switch')).toBeNull()
     expect(screen.getByText('Open a chat with the agent about this error')).toBeTruthy()
-    // The recipe names 'the switch below'; a refused viewer has none, so it is hidden.
-    expect(screen.queryByText('Turn off the switch below.')).toBeNull()
   })
 
   it('a stale pre-owner session (401 stale_session_reauth) is the same refusal: owner-only notice, read once', async () => {
@@ -148,7 +207,7 @@ describe('SecurityPanel - credential redaction switch', () => {
     await screen.findByTestId('credential-redaction-loading')
     expect(screen.queryByRole('switch')).toBeNull()
     resolve(ON)
-    await screen.findByTestId('credential-redaction-row')
+    await screen.findByRole('switch', { name: LABEL })
     expect(screen.queryByTestId('credential-redaction-loading')).toBeNull()
   })
 
@@ -157,7 +216,6 @@ describe('SecurityPanel - credential redaction switch', () => {
     renderWithProviders(<SecurityPanel />, { route: '/?section=redaction', queryDefaults: { retryDelay: 0 } })
     await screen.findByTestId('credential-redaction-read-failed')
     expect(screen.queryByRole('switch')).toBeNull()
-    expect(screen.queryByTestId('credential-redaction-row')).toBeNull()
     // The hand-off says what it does, not the shared bare "Ask the agent".
     expect(screen.getByText('Open a chat with the agent about this error')).toBeTruthy()
   })
@@ -168,7 +226,7 @@ describe('SecurityPanel - credential redaction switch', () => {
     await screen.findByTestId('credential-redaction-read-failed')
     ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(ON)
     fireEvent.click(screen.getByTestId('credential-redaction-retry'))
-    await screen.findByTestId('credential-redaction-row')
+    await screen.findByRole('switch', { name: LABEL })
     expect(toggle().getAttribute('aria-checked')).toBe('true')
     expect(screen.queryByTestId('credential-redaction-read-failed')).toBeNull()
   })
@@ -204,7 +262,6 @@ describe('SecurityPanel - credential redaction switch', () => {
     ;(api.credentialRedaction as ReturnType<typeof vi.fn>).mockResolvedValue(OFF)
     fireEvent.click(toggle())
     await waitFor(() => expect(toggle()).toHaveAttribute('aria-checked', 'false'))
-    await screen.findByTestId('credential-redaction-off-notice')
   })
 
   it('a failed write keeps the position in force and says so', async () => {
@@ -214,6 +271,5 @@ describe('SecurityPanel - credential redaction switch', () => {
     await waitFor(() => expect(api.setCredentialRedaction).toHaveBeenCalledWith(false))
     await screen.findByTestId('credential-redaction-write-failed')
     expect(toggle()).toHaveAttribute('aria-checked', 'true')
-    expect(screen.queryByTestId('credential-redaction-off-notice')).toBeNull()
   })
 })

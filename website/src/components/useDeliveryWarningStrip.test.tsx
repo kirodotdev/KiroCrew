@@ -7,7 +7,7 @@ import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { Provider } from 'react-redux'
 import { store } from '../store'
-import { appendSlotMessage, confirmOptimisticSend, selectSlotMessages, selectSlotRunEpoch, sseChatMessage, startLocalTurn } from '../store/chatSlice'
+import { appendSlotMessage, confirmOptimisticSend, selectPendingTurn, selectSlotMessages, selectSlotRunEpoch, startLocalTurn } from '../store/chatSlice'
 import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
 import { removedSendsFor, warnDeliveryUnconfirmed, type DeliveryWarningSurface } from '../utils/deliveryWarning'
 import { i18nT } from '../i18n/t'
@@ -74,10 +74,10 @@ describe('useDeliveryWarningStrip', () => {
     const slot = 'hook-slot-g'
     pendingRow(slot, 'h9')
     warnDeliveryUnconfirmed(slot, { sendId: 'h9', surface: 'page', epoch: selectSlotRunEpoch(store.getState(), slot), sent: 'late echo' })
-    for (let i = 0; i < 55; i++) {
-      store.dispatch(appendSlotMessage({ slot, message: { role: 'assistant', content: `row ${i}`, cls: 'msg msg-a' } }))
-    }
-    store.dispatch(sseChatMessage({ slot, role: 'user', content: 'did this land?', meta: { sendId: 'h9', mid: 'm9' } }))
+    // A second row for the same send, confirmed: the backward scan confirms the
+    // newest copy, so the older optimistic one is left standing beside it.
+    store.dispatch(appendSlotMessage({ slot, message: { role: 'user', content: 'did this land?', cls: 'msg msg-u', meta: { sendId: 'h9' } } }))
+    store.dispatch(confirmOptimisticSend({ slot, sendId: 'h9', mid: 'm9' }))
     expect(userRows(slot, 'h9').map(r => !!r.meta?.optimistic)).toEqual([true, false])
     const m = mount(slot)
     expect(m.hook.result.current.show).toBe(false)
@@ -105,9 +105,9 @@ describe('useDeliveryWarningStrip', () => {
     store.dispatch(startLocalTurn(slot))
     warnDeliveryUnconfirmed(slot, { sendId: 'h4', surface: 'page', epoch: selectSlotRunEpoch(store.getState(), slot), sent: 'gone' })
     const m = mount(slot)
-    expect(store.getState().chat.pendingTurnSlot).toBe(slot)
+    expect(selectPendingTurn(store.getState(), slot)).toBe(true)
     act(() => { m.hook.result.current.onDismiss() })
-    expect(store.getState().chat.pendingTurnSlot).toBeNull()
+    expect(selectPendingTurn(store.getState(), slot)).toBe(false)
   })
 
   it('leaves a newer turn running when an older warned send is removed', () => {
@@ -120,7 +120,7 @@ describe('useDeliveryWarningStrip', () => {
     act(() => { m.hook.result.current.onDismiss() })
     expect(m.restored).toEqual([[slot, 'older']])
     expect(userRows(slot, 'h10')).toHaveLength(0)
-    expect(store.getState().chat.pendingTurnSlot).toBe(slot)
+    expect(selectPendingTurn(store.getState(), slot)).toBe(true)
   })
 
   it('a disabled host neither shows the strip nor removes anything', () => {

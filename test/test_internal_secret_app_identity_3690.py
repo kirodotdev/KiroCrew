@@ -126,7 +126,7 @@ class TestAnAppOwnedCallerIsResolved:
         assert store.get("app") == "file-explorer", (
             "an app agent reaching a dashboard route over the internal secret was "
             "published as the dashboard user; every request['app'] ownership check "
-            "is a no-op for it (issue #3690)"
+            "is a no-op for it"
         )
 
     @pytest.mark.asyncio

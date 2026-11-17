@@ -1,18 +1,27 @@
+import { BUILTIN_OVERLAY_REGISTRY, type LazyOverlay } from './overlayRegistry'
 import { resolveSlotOverlays, type OverlayAppRecord } from './overlaySlots'
 
 /**
  * Unit tests for host overlay slot resolution — a pure function over the
- * `/api/apps` subset, no React and no registry mutation.
+ * `/api/apps` subset, no React. The shipped registry is empty (the Command Bar is
+ * the shell's own launcher now), so one synthetic overlay is registered for the
+ * file and removed after it.
  */
+beforeAll(() => {
+  BUILTIN_OVERLAY_REGISTRY['launcher'] = (() => null) as unknown as LazyOverlay
+})
+afterAll(() => {
+  delete BUILTIN_OVERLAY_REGISTRY['launcher']
+})
 
 function app(over: Partial<OverlayAppRecord> = {}): OverlayAppRecord {
   return {
-    name: 'command-bar',
+    name: 'launcher',
     enabled: true,
     // The shipped claimant is a builtin; provenance is what the slot check turns on.
     origin: 'builtin',
     manifest: {
-      ui: { overlays: [{ id: 'command-bar', replaces: 'quick-search' }] },
+      ui: { overlays: [{ id: 'launcher', replaces: 'quick-search' }] },
     },
     ...over,
   }
@@ -21,8 +30,8 @@ function app(over: Partial<OverlayAppRecord> = {}): OverlayAppRecord {
 describe('resolveSlotOverlays', () => {
   it('gives the slot to an enabled app that claims it', () => {
     expect(resolveSlotOverlays([app()])['quick-search']).toEqual({
-      app: 'command-bar',
-      overlayId: 'command-bar',
+      app: 'launcher',
+      overlayId: 'launcher',
 
     })
   })
@@ -43,7 +52,7 @@ describe('resolveSlotOverlays', () => {
     const noId = app({
       manifest: { ui: { overlays: [{ replaces: 'quick-search' }] } },
     })
-    const noSlot = app({ manifest: { ui: { overlays: [{ id: 'command-bar' }] } } })
+    const noSlot = app({ manifest: { ui: { overlays: [{ id: 'launcher' }] } } })
     expect(resolveSlotOverlays([noId])['quick-search']).toBeUndefined()
     expect(resolveSlotOverlays([noSlot])['quick-search']).toBeUndefined()
   })
@@ -56,7 +65,7 @@ describe('resolveSlotOverlays', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const bogus = app({
       manifest: {
-        ui: { overlays: [{ id: 'command-bar', replaces: 'not-a-real-slot' }] },
+        ui: { overlays: [{ id: 'launcher', replaces: 'not-a-real-slot' }] },
       },
     })
     expect(() => resolveSlotOverlays([bogus])).not.toThrow()
@@ -82,13 +91,13 @@ describe('resolveSlotOverlays', () => {
     const rival = app({
       name: 'zzz-other',
       manifest: {
-        ui: { overlays: [{ id: 'command-bar', replaces: 'quick-search' }] },
+        ui: { overlays: [{ id: 'launcher', replaces: 'quick-search' }] },
       },
     })
     const forward = resolveSlotOverlays([app(), rival])['quick-search']
     const reversed = resolveSlotOverlays([rival, app()])['quick-search']
-    expect(forward?.app).toBe('command-bar')
-    expect(reversed?.app).toBe('command-bar')
+    expect(forward?.app).toBe('launcher')
+    expect(reversed?.app).toBe('launcher')
     warn.mockRestore()
   })
 
@@ -96,8 +105,8 @@ describe('resolveSlotOverlays', () => {
     // The reachable bypass this closes: an overlay id only resolves to a component
     // in this bundle, so a third party cannot supply its own -- but it can NAME a
     // builtin's id. A self-managed app persists its own manifest through the
-    // register path, so without a provenance check, declaring `command-bar` would
-    // replace Cmd+K while the Command Bar app is disabled, defeating the opt-in.
+    // register path, so without a provenance check, declaring a builtin's overlay id
+    // would replace Cmd+K while that builtin is disabled, defeating the opt-in.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     for (const origin of ['external', 'registry', 'local', undefined]) {
       const intruder = app({ name: 'other-app', origin })

@@ -10,10 +10,10 @@ The instance store is two modules and one route, each with one job:
 | Piece | Where | What it owns |
 |---|---|---|
 | registry | `dashboard_templates/catalog.py` | the built-in templates and the operator's own, one loader |
-| instance | `dashboard_templates/instance.py` | the copy, its versions, rollback, state, history |
+| instance | `dashboard_templates/instance.py`, with `instance_adopt.py` for the adopt-only-while-empty form and `instance_read.py` for the link-refusing opens of a reader without the lock | the copy, its versions, rollback, state, history |
 | route | `dashboard/handlers/member_dashboard.py` | what the frame reads |
 
-The agent-facing surface is separate and MCP-only: `dashboard/handlers/agent_panel_dashboard.py`, behind the `dashboard/handlers/agent_panel.py` facade, serves the `/api/agent-panel/dashboard/{fields,write,templates,preview,apply,rollback}` routes, `dashboard_agentic.py` checks and records agentic field writes and the mistake book, and `dashboard_feed.py` is the O(fields) subscription channel a filled page reads fold values through.
+The agent-facing surface is separate and MCP-only: `dashboard/handlers/agent_panel_dashboard.py`, behind the `dashboard/handlers/agent_panel.py` facade, serves the `/api/agent-panel/dashboard/{fields,types,write,save,templates,preview,apply,rollback}` routes (`record` and `snapshot` have their own modules, `agent_panel_record.py` and `agent_panel_snapshot.py`), `dashboard_agentic.py` checks and records agentic field writes and the mistake book, and `dashboard_feed.py` is the O(fields) subscription channel a filled page reads fold values through.
 
 An array or object field is emptied with `dashboard_write` `clear: true` and no
 `value`. The MCP server (`mcp_panel.py`) reads the field's declared type from the
@@ -103,13 +103,13 @@ Bot's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped 
 match by name; an operator's page never does. The read route and the `[DASHBOARD]` turn
 block both resolve through it, and nothing is written. No shipped page may be named
 `default`.
-A ROOT session running the Ultra Mode conductor template (`crew_mode.runs_crew_mode`) gets the same
+A ROOT session running the conductor template of conductor mode (`crew_mode.runs_crew_mode`) gets the same
 `[DASHBOARD]` block on every dashboard turn, keyed by its own store key
 (`session_turn_block`), but only once a page is ADOPTED: the default page it is shown
 while `empty` asks nothing of it, so it gets no block. A root session on any other agent
-(not in Ultra Mode) or on a Bot (`agent_kind == "member"`), a dispatched or adopted
+(not in conductor mode) or on a Bot (`agent_kind == "member"`), a dispatched or adopted
 session, and a Bot DM get no session block; the page itself is left as it is.
-Switching a root session to the Ultra Mode conductor template (Ultra Mode on) adopts `goal-board` through the ordinary
+Switching a root session to the conductor template of conductor mode (conductor mode on) adopts `goal-board` through the ordinary
 `adopt` (`adopt_crew_mode_board_on_switch`, called by `switch_slot_agent`), only while the
 page is `empty`, so a page already chosen is kept and switching away changes nothing.
 It applies to a Persistent chat only (an unset memory mode counts as one): an Incognito
@@ -120,8 +120,8 @@ pointer. A shipped page named for the Bot is drawn as before. The decision is ma
 ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record `empty`,
 no page named for the slug, no package on screen): the read route sends it as
 `suggestions: true` and the website draws what that says, and `turn_block` asks the same
-function, with the same package lookup (`dashboard_agentic.bound_package`) and the same
-lock rule as the route. There is no field to write either: `dashboard_fields` says the
+function, with the same package lookup (`dashboard_agentic.bound_package`) as the
+route. There is no field to write either: `dashboard_fields` says the
 Bot has no dashboard yet, `dashboard_write` is refused `no_instance`, and the
 profile's upkeep view shows nothing. A value written before a Bot lost its default
 stays in the crew log; nothing here deletes or migrates it.
@@ -187,6 +187,11 @@ could load AND the problems it could not. A registry that raises on the worst me
 a set stops working the first time somebody hand-edits a file, and a directory omitted
 rather than reported makes a template somebody just got wrong indistinguishable from one
 that was never written.
+
+**One leading byte-order mark is not a break.** Windows editors save UTF-8 "with BOM"
+by default, so `manifest.json` is parsed through `user_json.loads_user_json` both where
+the catalog loads it and where an instance copies it on preview and adopt. Any other
+encoding, and invalid JSON after the mark, is still a problem.
 
 **The directory name is the id.** A directory holding a manifest naming a different id
 is two names for one template, and a lookup would find or miss it depending on which
@@ -254,7 +259,7 @@ listing a chronology without opening every file.
 
 `GET /api/members/{slug}/dashboard` is the one route the frame reads, and its body is
 `{instance_version, template: {id, version}, html, manifest, state}` plus
-`state_reason` and `structure_locked`.
+`state_reason`.
 
 `?member=` is REQUIRED on every route, exactly as the briefing and rules reads require
 it. Slugification is lossy, so two crew names can reach one slug; an instance is one
@@ -262,53 +267,35 @@ directory per slug, so for a colliding slug the instance belongs to neither Bot,
 serving it to both -- with an editor -- would let them overwrite each other's dashboard.
 The exact name must derive this slug, exist in config, and be the only name that does.
 
-Both the READ and every WRITE are owner-gated, the same boundary `work_ledger_board`
-draws: the body carries this Bot's work-ledger and crew-log data (task titles,
-summaries, PR links), so arriving as rendered html does not make it a wider audience's. A
-non-owner is refused rather than served an empty read, which would show its numbers as
-stale when the truth is that they were withheld. A write mutates a stored page the
-gateway later renders. App tokens are denied outright -- an app
+Every WRITE is owner-gated, and so is the READ for everyone but one caller -- the same
+boundary `work_ledger_board` draws: the body carries this Bot's work-ledger and crew-log
+data (task titles, summaries, PR links), so arriving as rendered html does not make it a
+wider audience's. Any other non-owner is refused rather than served an empty read, which
+would show its numbers as stale when the truth is that they were withheld. A write
+mutates a stored page the gateway later renders. App tokens are denied outright -- an app
 token scoped to `/api/members` reaches these by prefix.
+
+The one caller is a team Crew teammate the Kiro relay verified, on a Bot in their roster
+(`member_dashboard._teammate_reader`, which calls `members_access._teammate_admitted` and
+audits `members.dashboard` under `resources="relay_teammate"`). They already run that
+Bot's turns and can ask it for any value its page shows, so they read the APPLIED page
+only: a staged page (`?preview=1`) and its Keep and Discard stay owner-only. Their read is
+one-shot. It never arms, replaces or evicts the live page the owner's tabs are pushed
+from, so the owner keeps its own language and version counter; the teammate's page is
+armed and disarmed in one worker call. A teammate's tab therefore gets no pushed frames
+and refreshes through its own timed re-read, and `/refetch`, which recovers a gap in
+those pushes, stays owner-only.
 
 All five rules live in one `_resolve` chokepoint, so a route added later cannot forget
 one of them, and a test reads the handlers' own syntax trees to assert every one calls it
 and every write calls the owner gate.
 
 The page is scrubbed before it is served, in both halves of the body (the raw `html` and the
-composed `rendered_html`), by `_template_text_safe`. Markup, attributes and prose get every
-redaction pass. The text of a `<script>` or `<style>` element gets every pass but the
-bare-secret guess for two shapes, so a page's code arrives as its author wrote it (a long alphabet to index
-into, a base64 data URI) while a key id, PEM block, JWT or prefixed token written into that
-code is still masked.
-
-`dashboard_frame.map_page_text` takes the full pass over the whole page as its baseline, and the
-one change it allows is to put the code pass's result for a script or style element's text where
-the baseline had the full pass's. So the page differs from the baseline only inside that text,
-and only by an ordered alphabet and a data URI payload, the two shapes the code pass spares. The baseline is cut at that text and the pieces are
-scrubbed one by one; a rule that reaches across a cut (a PEM block, a labelled value) makes them
-differ from the baseline, and then the baseline is the answer. The browser reads the page that
-comes out, so the result is scanned again, and unless the kept text is still exactly its script
-and style text the baseline is the answer as well. A page the full pass leaves alone, or with no
-such text, is the baseline.
-
-`dashboard_frame.code_spans` finds that text, and what it finds is a licence to apply a
-weaker rule, so it reads the page the way the HTML tokenizer does where that decides what is
-code: a `<script` inside a comment, a quoted attribute value or a `<textarea>` opens nothing,
-a `>` inside a quoted value does not end its tag, a bare value runs to white space or `>`, a
-script that holds `<!--` ends where the tokenizer's escape states end it (a `</script>` that
-closes a nested `<script>` does not), and names fold ASCII case and split on ASCII white space
-only. Where the tree builder decides
-instead, the scan reads a simple `<svg>` or `<select>` (text and ordinary tags up to its end
-tag) whole and goes on; any other `<svg>` or `<select>`, and every `<math>` and `<template>`
-(a column group inside one ignores a `<style>`), ends the scan.
-A frame may run with scripting on or off, and `<noscript>` holds text in one and markup in the
-other, so the scan ends at it too. It also ends at anything it cannot read (an element or tag
-that never ends, `<script/>` in HTML, `<plaintext>`) and after `_MAX_SCAN_STEPS` constructs.
-Everything after that point keeps every pass, as does every element past the first
-`MAX_CODE_PIECES`, so a page the scan doubts gets more masking, never less. A key in any other shape, labelled or not, is masked as it is anywhere. A key-shaped window inside
-a data URI payload of 64 characters or more is served as written, and a shuffled table is rewritten
-as before. A base64 data URI in an attribute (an `img` `src`) is markup, so it still gets every
-pass.
+composed `rendered_html`), by `_template_text_safe`: `redact_via_context` over the whole page,
+markup, attributes, prose and the text of every `<script>` and `<style>` element alike. The rule
+table masks only values that are credentials by themselves, so a page's code arrives as its author
+wrote it (a long alphabet to index into, a base64 data URI) while a PEM block, a signed JWT or a
+vendor token written into that code is masked.
 
 ## The staged preview is beside the record, never in it
 
@@ -380,14 +367,13 @@ the `staged_ms` the preview read returned; the route calls `apply_preview(...,
 expected_staged_ms=...)`, which refuses `PreviewChanged` (409 `preview_changed`)
 inside the instance lock when a different page was staged after the one shown. That
 is the button's version of `dashboard_apply`'s guarantee: what lands is what was
-drawn. Nothing staged answers 404 `no_preview` and a locked layout 423
-`dashboard_locked`. Discard posts `.../preview/discard` with the same `staged_ms`;
+drawn. Nothing staged answers 404 `no_preview`. Discard posts `.../preview/discard` with the same `staged_ms`;
 `discard_shown_preview` drops only that page, refuses `preview_changed` for one staged
 since, and answers ok when nothing is staged any more. The route reads back and
 answers 500 `dashboard_failed` if a page is still there. The `staged_ms` the host sends
 is the one of the document the frame has MOUNTED, never a newer read still being
 minted, so both buttons stay disabled until the frame shows the page they would act
-on. Both carry the lock route's gates: an internal-secret caller is
+on. Both are person-only: an internal-secret caller is
 refused `human_only` first, then the owner gate, then the CSRF middleware every
 cookie POST passes. On a successful Keep the host leaves preview mode at once
 (dropping `?dashboard=preview`) and refetches the live page, with one line saying
@@ -396,54 +382,23 @@ any other way (the agent's `dashboard_apply`, a discard, expiry), the preview vi
 hands over to the live page the same way, with a line that says so. Template
 previews only: a session's page has no person route.
 
-## The structure lock is the person's, and only theirs
+## There is no structure lock
 
-The person's structure lock freezes WHICH page the tab shows. They set it with the
-**Lock dashboard layout** switch on the Bot's Profile tab (the settings
-rows under Permissions, Model and Effort); the Dashboard tab carries only a small
-**Layout locked — unlock on Profile** badge-button that opens the Profile tab when clicked, never a toggle. While it is set,
-`_commit` refuses every new version with `InstanceLocked`, so adopt, apply, edit
-and rollback all fail, and the agent surface answers `dashboard_locked` (423) with a
-sentence telling the agent to ask the person. The check sits in `_commit`, under the
-instance lock every writer already holds, so a lock set between a caller's read and
-its write still refuses it. Staging a preview and writing agentic values are not
-structure changes and keep working.
+A Bot's page changes only through its own `dashboard_apply`, `dashboard_rollback` and
+the person's Keep, and every version stays on disk, so `dashboard_rollback` is how a
+change is undone. The person's structure lock that once froze the page, its
+**Lock dashboard layout** switch, its badge, its `POST /api/members/{slug}/dashboard/lock`
+route and its LOCKED turn-block line are gone.
 
-`set_structure_lock` is the only writer of the flag for a live Bot, and
-`POST /api/members/{slug}/dashboard/lock` is its only caller: owner-gated, and it
-refuses an internal-secret caller (`human_only`) before anything else, because that
-caller is an MCP server acting for an agent. No MCP tool sets the lock.
+A `crew-panels/<slug>.dashboard-lock` file written before the removal is neither read
+nor rewritten, and no migration runs: `read` serves `instance.json`, every commit goes
+through, and the page in force is the record. While a lock held, `_commit` refused every
+version, so the record still names the page the lock held unless the Bot's own shell
+rewrote `instance.json`; that version is still in `versions/`, so `dashboard_rollback`
+reaches it. A record written before the `package` key existed now follows the older
+package rule (`keeps_older_package_rule`) whether or not a lock file is beside it, as an
+unlocked record always did. Deleting a Bot leaves such a file where it is.
 
-Deleting a Bot (`DELETE /api/agents/{name}`) removes its lock file through
-`structure_lock_removal.remove_structure_lock`, so a later Bot deriving the same slug does not start
-out locked to the old one's page. The slug comes from the config captured while the
-record existed, and the removal is decided the way the crew-log reclaim is: under
-`memory_store_namespace_lock` and the lock's own guard, and only while no crew in the
-roster on disk still derives that slug. A slug a live Bot still claims keeps its
-lock. Only the lock file goes; its `.guard` file stays, because another writer may be
-holding it. A Bot that never locked creates nothing in `crew-panels` on delete.
-
-The lock is a file, `crew-panels/<slug>.dashboard-lock`, and NOT a field of
-`instance.json`: `members/<slug>/` is writable by the Bot's own sandboxed shell,
-so a flag there could be cleared by editing a file. `crew-panels` is masked in the
-sandbox, fenced by the file-tool gate and refused when aliased, and the gateway is its
-only reader and writer. Locking SNAPSHOTS the current record into that file, and
-while it exists `read` serves the snapshot, so copying an old version over
-`instance.json` cannot change the locked page. Only a missing file is unlocked; any
-other read error reads as locked, and a lock file with no readable snapshot serves
-the error state rather than `instance.json`. Unlocking removes the lock file and
-writes nothing under `members/<slug>/`, which the Bot's shell can redirect.
-It is never part of a version, so a rollback cannot restore an old lock state, and
-it holds for a Bot that never adopted. A lock change is NOT a history row: the
-history savepoint lives under `members/<slug>/`, and the lock file is the record.
-
-The lock is keyed by the member slug, which is the Bot's immutable `member_id`
-wherever one is persisted, so a rename keeps it. It is no part of any DM session or
-of `members/<slug>/`, so a cleared chat, a new DM, a wiped member dashboard folder
-and a gateway restart all leave it set. The member record does not grow.
-While locked, the Bot's `[DASHBOARD]` turn block carries a LOCKED line telling
-it not to apply, roll back or propose another page, while noting that previewing for
-the person to look at still works.
 ## Every commit syncs the upkeep helpers
 
 A fold field fills itself from the crew log; an agentic field is the Bot's to
@@ -500,7 +455,21 @@ an agentic field the Bot has not rewritten within its `stale_after_s` (24 hours 
 default, `0` for never) carries an "updated <age> · the Bot is asked to update it" label
 on its bound element, from the read's `stale_after` map, while the Bot's `[DASHBOARD]`
 turn names the same field. It covers only values the Bot itself asserts, which no fold
-keeps current; fold fields keep the rule above. A task's own "gone quiet"
+keeps current; fold fields keep the rule above. That turn block, and the Daily Goal
+Reminder and Heartbeat wakes, reach only a Bot that has a turn; a Bot with neither
+check-in on would keep an out-of-date field until someone talks to it. A second opt-in
+preview, `dashboard_stale_wake` (it needs `dashboard_stale_fields`), closes that: one
+gateway-owned cron job (installer key `dashboard-stale-wake`, every 10 minutes, present
+only while the preview is on) looks at every Bot and starts one hidden turn in its own
+thread naming the stale fields and asking it to write them with `dashboard_write`
+(`dashboard/stale_wake.py`). One wake per field per stale period: a book under the data
+home keeps the write stamp each field was woken for, so only a new write re-arms it;
+fields stale at the same tick share one wake; and no Bot is woken twice within 30
+minutes. A Bot mid-turn, with a turn already queued in its thread, held by a crew pause
+or driven by a monitor loop is tried again on the next tick. Each wake is a model turn the person pays for, so it is recorded on the
+Bot's log as `dashboard/stale_wake` (actor `gateway`, reason `stale_fields`, the field
+names). A tick that wakes no one writes no row in the cron run history, so the
+ten-minute job does not fill the shared history index. A task's own "gone quiet"
 status on a row is the task's state, not the page's freshness, and stays; a read that cannot be
 serialized is sent as an empty one, and the page draws its own empty state.
 
@@ -533,8 +502,8 @@ left out: a fold with no value yet is not a broken binding, and a fresh Bot on i
 shipped page is in that state; once the fold has a value, a wrong path shows as
 `path_missing`. A `panel` field reads `fold_unseen` until the Bot has published, since
 the empty record has none of a published record's paths. The line is absent when nothing
-fixable is left, so it leaves on the first turn after the fix. No read is made on a
-locked page or with `agent.crew_panel` off, where the Bot cannot call the tools the line
+fixable is left, so it leaves on the first turn after the fix. No read is made with
+`agent.crew_panel` off, where the Bot cannot call the tools the line
 names. A V1 Bot (no `member_id`) carries its member section only at session start,
 resume or re-injection, so on its WARM turns `turn_message` adds the line alone through
 `dashboard_agentic.unresolved_notice`, under the same gates and the desk gate; a V2 Bot's
@@ -561,7 +530,7 @@ the page and the read below both refuse a slug alone (`missing_member`).
 To fill the frame, the tab reads
 `GET /api/members/{slug}/dashboard?member=<name>&preview=1`, which serves the staged
 page through the same renderer, the same masking pass and the same owner gate as the
-live one, with `preview: true` in the body and `instance_version` left at the current
+live one (a relay teammate admitted to the live page is refused the staged one), with `preview: true` in the body and `instance_version` left at the current
 version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
 was kept, discarded or expired) with the same way back to the live page.
 

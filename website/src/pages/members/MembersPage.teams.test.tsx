@@ -26,6 +26,8 @@ import {
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The owner check behind Import from file (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn(() => Promise.resolve(true)),
     // The roster's team grouping reads the team list; "no teams" keeps the
     // list flat, which is the shape every case here was written against.
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })), create: vi.fn(), update: vi.fn(), remove: vi.fn() },
@@ -763,9 +765,11 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
   it('an initial roster failure is said in an open team pane instead of calling the team empty', async () => {
     vi.mocked(api.members).mockRejectedValue(new Error('boom'))
     vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    // The roster read retries on its own (`retryThroughRestart`); no backoff,
+    // so the failure shows at once.
     renderWithProviders(
       <NavigationLeaveGuardProvider><MembersPage /></NavigationLeaveGuardProvider>,
-      { route: '/members?team=abc123abc123' },
+      { route: '/members?team=abc123abc123', queryDefaults: { retryDelay: 0 } },
     )
     const notice = await screen.findByTestId('team-view-roster-error')
     expect(notice).toHaveTextContent(/Could not load your Bots/i)

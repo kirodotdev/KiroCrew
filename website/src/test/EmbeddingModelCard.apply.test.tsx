@@ -163,6 +163,27 @@ describe('EmbeddingModelCard Apply label follows the path it will submit', () =>
   })
 })
 
+describe('EmbeddingModelCard reports an unapplied path as unsaved work (#32024)', () => {
+  it('is unsaved while the field differs from the configured path, until Apply lands', async () => {
+    setStatus(CUSTOM_OK)
+    const onDirtyChange = vi.fn()
+    renderWithProviders(<EmbeddingModelCard onDirtyChange={onDirtyChange} />)
+    const input = await screen.findByDisplayValue('/models/model.gguf')
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+
+    fireEvent.change(input, { target: { value: '/models/other.gguf' } })
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    fireEvent.change(input, { target: { value: '/models/model.gguf' } })
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+    fireEvent.change(input, { target: { value: '/models/other.gguf' } })
+    fireEvent.click(applyButton())
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Change model' }))
+
+    await waitFor(() => expect(api.vectorApplyEmbedModel).toHaveBeenCalledWith('/models/other.gguf'))
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))
+  })
+})
+
 describe('EmbeddingModelCard keeps a known-bad path gated until the live check has a verdict', () => {
   const error = 'The model path points at a file that does not exist'
   const PATH_MISSING = {

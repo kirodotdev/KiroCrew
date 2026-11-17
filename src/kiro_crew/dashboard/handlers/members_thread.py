@@ -29,7 +29,9 @@ from kiro_crew.dashboard.handlers.members_access import (
     _deny_app_caller,
     _member_names_for_slug,
     _sel,
+    _teammate_admitted,
 )
+from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
 from kiro_crew.members import MemberSlugError
 
@@ -167,9 +169,12 @@ async def api_member_thread(request: web.Request) -> web.Response:
     # identity but a non-owner subject (the `!dashboard` Slack case), which
     # would otherwise bind a session slot to a crew member. Kept below the app
     # denial so app callers keep the 404 they get on every other member route.
-    owner_denied = await require_owner_dashboard_request(request, "members.thread")
-    if owner_denied is not None:
-        return owner_denied
+    # A team Crew teammate opens a person-created Bot's chat as they open a session.
+    admitted = await _teammate_admitted(request, "members.thread", slug=request.match_info["slug"])
+    if not admitted:
+        owner_denied = await require_owner_dashboard_request(request, "members.thread")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState | None = request.app.get("state")
     if state is None:
         return web.json_response(
@@ -394,21 +399,12 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
     # The thread is named after its crewmate, as a final title no background
     # path rewrites (see chat_title.name_member_thread). The first crewmate with no
-    # display name reads "Mate", as it does in the sidebar.
-    from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, is_assistant_member
+    # display name reads "Bot", as it does in the sidebar.
+    from kiro_crew.agent_files import member_label
     from kiro_crew.dashboard.chat_title import name_member_thread
 
     named_crew = cfg.agents[member_name]
-    name_member_thread(
-        state,
-        slot,
-        getattr(named_crew, "display_name", "")
-        or (
-            ASSISTANT_DEFAULT_DISPLAY_NAME
-            if is_assistant_member(member_name, named_crew)
-            else member_name
-        ),
-    )
+    name_member_thread(state, slot, member_label(member_name, named_crew))
 
     if not minted:
         # Live (restart-restored) and rehydrated threads alike: the fresh mint
@@ -611,38 +607,12 @@ def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
     """
     if slot._member_approval_seeded:
         return
-    from kiro_crew.approval_mode_policy import clamp_session_mode, verdict_pending
+    from kiro_crew.approval_mode_policy import verdict_pending
 
     if verdict_pending():
         # The policy answer is not final yet: seed on a later open or turn, rather
         # than commit a passing deny as this thread's mode.
         return
     slot._member_approval_seeded = True
-
-    # The Profile cannot raise a thread above what the policy allows.
-    effective = clamp_session_mode(mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE)
-    if effective == "normal" or slot._trust or slot._trust_reads or slot._trust_scope:
-        return
-    key = effective_session_key(slot)
-    for sharing in state._slots.values():
-        if effective_session_key(sharing) == key:
-            if effective == "trust":
-                sharing._trust = True
-            else:
-                sharing._trust_reads = True
-            # The Profile decides this slot's mode, not its creator's changes.
-            sharing._posture_inherited = False
-    # Keyed on what the slot actually holds: the setter refuses a denied grant.
-    held_trust = any(
-        s._trust_held for s in state._slots.values() if effective_session_key(s) == key
-    )
-    state.sessions.set_approval_policy(key, "auto" if held_trust else "")
-    try:
-        _sel().log_api_access(
-            caller="dashboard:member_profile",
-            operation=f"mode_change:{effective}",
-            outcome="enabled",
-            resources=slot.key,
-        )
-    except Exception:  # pragma: no cover - audit must never change the outcome
-        logger.warning("SEL audit failed for member approval seed", exc_info=True)
+    effective = mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+    seed_slot_approval(state, slot, effective, caller="dashboard:member_profile", sel=_sel)

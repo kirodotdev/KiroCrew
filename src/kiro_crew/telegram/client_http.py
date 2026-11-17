@@ -217,7 +217,14 @@ async def _ensure_session(self: TelegramClient) -> aiohttp.ClientSession:
     ``_invoke_callback`` handler task also calls it. Guard the lazy init
     with a lock (double-checked) so two coroutines can't each build a
     session and leak one unclosed.
+
+    Once ``close()`` has closed the session, a turn that is still finishing must
+    not open a new one: nothing would close it, and the send would go out on a
+    stopped channel. The turn's send fails like any transport error instead, so
+    its own teardown (permit release, renderer cleanup) still runs.
     """
+    if self._closed and (self._session is None or self._session.closed):
+        raise aiohttp.ClientConnectionError("Telegram client is closed")
     if self._session is None or self._session.closed:
         async with self._session_lock:
             if self._session is None or self._session.closed:
@@ -327,8 +334,9 @@ async def _api_request(
     cool-down once and retry instead.
 
     ``err_out``, when supplied, is populated with ``error_code`` and
-    ``description`` on a Telegram-level failure. Callers use it to tell a
-    PERMANENT failure (the method does not exist on this server) apart from
+    ``description`` on a Telegram-level failure, and with ``transport_error``
+    (the exception's class name) on a network failure. Callers use it to tell
+    a PERMANENT failure (the method does not exist on this server) apart from
     a transient one (rate limit, network), so they can stop re-probing an
     unsupported method without disabling it on a blip.
 
@@ -336,6 +344,9 @@ async def _api_request(
     streamed request body (a multipart form) is rebuilt for the retry
     instead of replayed empty.
     """
+    if self._closed and (self._session is None or self._session.closed):
+        logger.debug("telegram: %s skipped, client is closed", method)
+        return None
     session = await self._ensure_session()
 
     url = _api_base().format(token=self._token, method=method)
@@ -364,17 +375,20 @@ async def _api_request(
                 try:
                     data = await resp.json(content_type=None)
                 except ValueError:
-                    # A body that is not JSON (an HTML error page from the edge
-                    # or a proxy) is a failed call like any other. Its HTTP
-                    # status stands in for the error code the body did not
-                    # carry, so the failure path below records and reports it.
-                    # That status is not the Bot API's verdict, and err_out
-                    # says so (``body_is_json``).
+                    data = None
+                if not isinstance(data, dict) or "ok" not in data:
+                    # A body that is not a Bot API reply (an HTML error page, an
+                    # empty body, or JSON without ``ok`` from the edge or a
+                    # proxy) is a failed call like any other. Its HTTP status
+                    # stands in for the error code the body did not carry, so
+                    # the failure path below records and reports it. That
+                    # status is not the Bot API's verdict, and err_out says so
+                    # (``body_is_json``).
                     body_is_json = False
                     data = {
                         "ok": False,
                         "error_code": resp.status,
-                        "description": "response body is not JSON",
+                        "description": "response body is not a Bot API reply",
                     }
                 if data and data.get("ok"):
                     if record:
@@ -430,6 +444,8 @@ async def _api_request(
                     err_code=None,
                     timed_out=isinstance(exc, asyncio.TimeoutError),
                 )
+            if err_out is not None:
+                err_out["transport_error"] = type(exc).__name__
             # Log only the exception type — its str() can embed the request
             # URL, which contains the bot token (a registered credential).
             logger.warning("Telegram API %s transport error: %s", method, type(exc).__name__)

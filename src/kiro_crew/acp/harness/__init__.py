@@ -19,6 +19,7 @@ REFUSES a backend with no harness rather than serving it as kiro-cli.
 
 from __future__ import annotations
 
+from kiro_crew.acp.harness.antigravity import AntigravityLaunch
 from kiro_crew.acp.harness.base import (
     HarnessAdapter,
     LaunchAdapter,
@@ -31,17 +32,19 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
-from kiro_crew.acp.harness.claude import ClaudeLaunch
+from kiro_crew.acp.harness.claude import ClaudeHarness, ClaudeLaunch
 from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.acp.harness.copilot import CopilotLaunch
-from kiro_crew.acp.harness.deepseek import DeepseekLaunch
-from kiro_crew.acp.harness.goose import GooseLaunch
+from kiro_crew.acp.harness.deepseek import DeepseekHarness, DeepseekLaunch
+from kiro_crew.acp.harness.goose import GooseHarness, GooseLaunch
 from kiro_crew.acp.harness.kas import KasHarness
 from kiro_crew.acp.harness.kiro import KiroHarness
+from kiro_crew.acp.harness.mimocode import MimoCodeLaunch
 from kiro_crew.acp.harness.opencode import OpencodeLaunch
 from kiro_crew.acp.harness.pi import PiLaunch
 from kiro_crew.acp.harness.strands import StrandsLaunch
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -49,21 +52,27 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
 )
 
 __all__ = [
+    "AntigravityLaunch",
+    "ClaudeHarness",
     "ClaudeLaunch",
     "CodexHarness",
     "CopilotLaunch",
+    "DeepseekHarness",
     "DeepseekLaunch",
+    "GooseHarness",
     "GooseLaunch",
     "HarnessAdapter",
     "KasHarness",
     "KiroHarness",
     "LaunchAdapter",
+    "MimoCodeLaunch",
     "NotificationAliases",
     "OpencodeLaunch",
     "PiLaunch",
@@ -90,6 +99,17 @@ _HARNESSES: dict[str, type[HarnessAdapter]] = {
     # a harness unreachable to its own tests, and would leave the runtime resolving
     # one that exists on disk but not in the table.
     ACP_BACKEND_CODEX: CodexHarness,
+    # Not in ``ACP_BACKENDS_ACP_RUNTIME``: only a dashboard chat that gets a shared
+    # placement takes the shared runtime for claude
+    # (``ACP_BACKENDS_SHARED_RUNTIME_ONLY_FOR_CHATS``); every other claude session
+    # is a process-per-session client launched through ``ClaudeLaunch`` below.
+    ACP_BACKEND_CLAUDE: ClaudeHarness,
+    # The same: no goose session is routed to the shared runtime yet, and a
+    # process-per-session client still launches goose through ``GooseLaunch``.
+    ACP_BACKEND_GOOSE: GooseHarness,
+    # The same for deepseek: a process-per-session client still launches it
+    # through ``DeepseekLaunch``.
+    ACP_BACKEND_DEEPSEEK: DeepseekHarness,
 }
 
 
@@ -115,6 +135,7 @@ def harness_for(backend: str) -> HarnessAdapter:
 #: adapter. kiro-cli is not here: the client spawns it through its own explicit arm,
 #: which keeps the Kiro construction path the client always had (harness-parity H13).
 _PROCESS_ADAPTERS: dict[str, type[ProcessAdapter]] = {
+    ACP_BACKEND_ANTIGRAVITY: AntigravityLaunch,
     ACP_BACKEND_CLAUDE: ClaudeLaunch,
     ACP_BACKEND_OPENCODE: OpencodeLaunch,
     ACP_BACKEND_GOOSE: GooseLaunch,
@@ -122,6 +143,7 @@ _PROCESS_ADAPTERS: dict[str, type[ProcessAdapter]] = {
     ACP_BACKEND_DEEPSEEK: DeepseekLaunch,
     ACP_BACKEND_COPILOT: CopilotLaunch,
     ACP_BACKEND_STRANDS: StrandsLaunch,
+    ACP_BACKEND_MIMOCODE: MimoCodeLaunch,
 }
 
 

@@ -22,6 +22,7 @@ from meetings_helpers import (  # noqa: F401
     reset_module_state_fixture,
     root_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import llm_helpers
 from kiro_crew.apps import agent_turn_sdk
@@ -86,11 +87,6 @@ class TestNoiseFilter:
         # broadcast() handles the empty case separately; is_noise must not claim
         # an empty string is a noise FRAGMENT (all() over [] is vacuously true).
         assert sess.is_noise("") is False
-
-
-class TestSlotKey:
-    def test_shape(self):
-        assert sess.slot_key("note-taker", "standup") == "meetings-note-taker-standup"
 
 
 class TestAgentQueue:
@@ -870,8 +866,9 @@ class TestPrompts:
         assert "/tmp/spec.md" in context
 
     def test_context_redacts_credentials(self):
-        context = sess.build_meeting_context({"title": "AKIAIOSFODNN7EXAMPLE"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in context
+        token = github_classic(seed=164)
+        context = sess.build_meeting_context({"title": token})
+        assert token not in context
 
     def test_context_skips_malformed_attachment(self):
         context = sess.build_meeting_context({"title": "T", "attachments": ["oops", None]})

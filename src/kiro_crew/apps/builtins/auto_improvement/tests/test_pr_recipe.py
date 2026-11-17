@@ -18,6 +18,11 @@ import pytest
 from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import pr_recipe as pr
 from kiro_crew.apps.builtins.auto_improvement.spine.pr_pipeline import CrPipeline
 from kiro_crew.apps.builtins.auto_improvement.spine.profile import PRRecipe, StubPRRecipe
+from kiro_crew.testing.synthetic_credentials import aws_secret, synth
+
+#: GitLab tokens in their published format (``glpat-`` and 20 or more characters).
+_PAT = "glpat-" + synth(20, seed=13)
+_PAT2 = "glpat-" + synth(20, seed=14)
 
 
 def _broken_scanner(_text: str) -> str:
@@ -406,12 +411,13 @@ class TestPushedContentIsScanned:
         return recipe
 
     def test_a_credential_in_the_pushable_diff_refuses_the_push(self, tmp_path) -> None:
-        leaked = "+AWS_SECRET_ACCESS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'\n"
+        # A synthetic secret: the documentation example key is kept visible.
+        leaked = f"+AWS_SECRET_ACCESS_KEY = '{aws_secret(seed=73)}'\n"
         ok, note = self._recipe(tmp_path, leaked)._scan_pushable_content()
         assert ok is False
         assert "credential" in note
         # The note must not quote the secret it is reporting.
-        assert "wJalrXUtnFEMI" not in note
+        assert aws_secret(seed=73)[:13] not in note
 
     def test_a_clean_diff_is_allowed(self, tmp_path) -> None:
         clean = "--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-return None\n+return 0\n"
@@ -451,9 +457,9 @@ class TestPushedContentIsScanned:
 
         # The credential scanner anchors on an assignment, which is the shape an agent
         # actually pastes into a PR body when quoting the code it changed.
-        body = "Repro steps:\naws_access_key_id=glpat-IOSFODNN7EXAMPLE\nthen run the suite.\n"
+        body = f"Repro steps:\naws_access_key_id={_PAT}\nthen run the suite.\n"
         out = _redact_prose(body)
-        assert "glpat-IOSFODNN7EXAMPLE" not in out
+        assert _PAT not in out
         assert "then run the suite." in out, "surrounding prose must survive"
 
     def test_a_scanner_that_cannot_run_refuses_rather_than_returning_the_text(
@@ -470,7 +476,7 @@ class TestPushedContentIsScanned:
             _redact_prose,
         )
 
-        secret = "aws_access_key_id=glpat-IOSFODNN7EXAMPLE"
+        secret = f"aws_access_key_id={_PAT}"
         monkeypatch.setattr(security_mod, "redact", _broken_scanner)
         with pytest.raises(ProseRedactionUnavailable):
             _redact_prose(secret)
@@ -497,7 +503,7 @@ class TestPushedContentIsScanned:
         out = recipe.draft(
             fingerprint="fp-unscannable",
             summary="fix: 保存候選 🚀",
-            description="說明 🧪 with aws_access_key_id=glpat-IOSFODNN7EXAMPLE",
+            description=f"說明 🧪 with aws_access_key_id={_PAT}",
             diff="--- a\n+++ b\n+新增 🛠️\n",
         )
 
@@ -580,9 +586,9 @@ class TestEveryPushPathScansContent:
             scan_content_for_secrets,
         )
 
-        ok, note = scan_content_for_secrets("+aws_access_key_id=glpat-IOSFODNN7EXAMPLE\n")
+        ok, note = scan_content_for_secrets(f"+aws_access_key_id={_PAT}\n")
         assert ok is False
-        assert "glpat-IOSFODNN7EXAMPLE" not in note, "the note must not echo the secret"
+        assert _PAT not in note, "the note must not echo the secret"
 
     def test_scanner_allows_a_clean_diff_and_empty_input(self) -> None:
         from kiro_crew.apps.builtins.auto_improvement.spine.push_policy import (
@@ -700,8 +706,9 @@ class TestEveryPushPathScansContent:
         git("add", "-A")
         git("commit", "-qm", "base")
         # The verified fix commits a credential (the exact thing the gate must catch).
+        # An AWS secret of the real shape: after its label only that shape is removed.
         (tmp_path / "f.txt").write_text(
-            "aws_secret_access_key=glpat-IOSFODNN7EXAMPLE\n", encoding="utf-8"
+            f"aws_secret_access_key={aws_secret(seed=74)}\n", encoding="utf-8"
         )
         git("add", "-A")
         git("commit", "-qm", "the fix")
@@ -712,7 +719,7 @@ class TestEveryPushPathScansContent:
 
         # The fixed range carries the commit, and the scanner refuses it.
         scanned = git("diff", "HEAD~1..HEAD").stdout
-        assert "glpat-IOSFODNN7EXAMPLE" in scanned, "the scanned range is empty — the gate is blind"
+        assert aws_secret(seed=74) in scanned, "the scanned range is empty — the gate is blind"
         assert scan_content_for_secrets(scanned)[0] is False, "the credential was not refused"
 
     def test_scanner_fails_closed_without_the_security_module(self, monkeypatch) -> None:
@@ -753,7 +760,7 @@ class TestScanNotesCarryNoScannedContent:
             scan_content_for_secrets,
         )
 
-        secret = "glpat-IOSFODNN7EXAMPLE"
+        secret = _PAT
         ok, code = scan_content_for_secrets(f"+aws_access_key_id={secret}\n")
         assert ok is False
         # A fixed CODE crosses out, not a message and not even the count: a count is
@@ -845,7 +852,7 @@ class TestScannerReturnsCodesNotMessages:
             scan_content_for_secrets,
         )
 
-        for text in ("", "   ", "clean line\n", "+aws_access_key_id=glpat-IOSFODNN7EXAMPLE\n"):
+        for text in ("", "   ", "clean line\n", f"+aws_access_key_id={_PAT}\n"):
             _, code = scan_content_for_secrets(text)
             assert code in SCAN_REASON_TEXT, f"unknown code {code!r} for {text!r}"
 
@@ -880,7 +887,7 @@ class TestLoggedStringsAreRebuiltFromConstants:
             _locus,
         )
 
-        messy = "src/pkg/mod.py::Class.method aws_key='glpat-IOSFODNN7EXAMPLE'\n\t"
+        messy = f"src/pkg/mod.py::Class.method aws_key='{_PAT}'\n\t"
         out = _locus(messy)
         assert set(out) <= set(_LOCUS_ALPHABET), out
         # A real locus survives byte-identical — the sanitizer must not damage evidence.

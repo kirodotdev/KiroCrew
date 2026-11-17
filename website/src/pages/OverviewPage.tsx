@@ -8,6 +8,8 @@ import { useUptime } from '../hooks/useUptime'
 import { Uptime } from '../components/Uptime'
 import { api } from '../api/client'
 import type { WakaTimeStats } from '../api/client'
+import { reportsDollars } from '../api/acpBackend'
+import type { AcpBackendConfig } from '../api/acpBackend'
 import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
@@ -20,10 +22,12 @@ import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
 import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
 import { providerUsageQuery } from '../api/providerUsageQuery'
+import { failedWithNoData } from '../api/queryState'
+import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber } from '../i18n/format'
+import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber, fmtPercentFloor } from '../i18n/format'
 import { formatCost } from '../utils/formatCost'
 
 // The record editor and recovery tools are needed only inside this drill-in.
@@ -83,8 +87,22 @@ function DrillIn({ title, onBack, children, hideTitle = false }: { title: string
 function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
   const provider = useProvider()
   const { data, isError, error } = useQuery(providerUsageQuery(provider))
+  const cfgQuery = useQuery<AcpBackendConfig>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
   const b = data?.billing
   const today = data?.sessions.today
+  // Today's tokens and cost, from the bucket of the gateway's own local day
+  // (the token history's totals cover 30 days, and the browser may sit in
+  // another zone), and only on a harness that bills in dollars: a credit-billed
+  // install's Today line stays sessions and messages.
+  // With no config ever read, the harness is unknown and the Today line drops
+  // its tokens and cost; the notice says so instead of leaving them silently off.
+  const harnessUnread = failedWithNoData(cfgQuery)
+  const todayTokens = reportsDollars(cfgQuery.data) && data?.localDay
+    ? data.tokenDailyHistory?.find(d => d.date === data.localDay)
+    : undefined
   return (
     <Card>
       <CardTitle>
@@ -96,6 +114,9 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
       {provider.capabilities.usageBilling && isError && (
         <ErrorNotice title={data ? i18nT('pages.sessionsTab.could_not_refresh') : undefined} message={error?.message} askAgent testId="overview-usage-error" />
       )}
+      {provider.capabilities.usageBilling && harnessUnread && (
+        <ErrorNotice message={i18nT('pages.overviewPage.today_harness_unread')} report={reportForError(cfgQuery.error)} askAgent testId="overview-usage-harness-unread" />
+      )}
       {!provider.capabilities.usageBilling ? (
         <div className="text-[13px] text-muted">{i18nT('pages.overview.usageTab.usage_tracking_is_not_available_for', { provider: provider.displayName })}</div>
       ) : !data ? (
@@ -106,7 +127,12 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
             <div data-testid="overview-usage-refreshing" className="skeleton h-4 rounded max-w-[320px]" />
           ) : (
             <div className="text-[13px] text-muted">
-              {todayLine(today?.sessions, today?.messages, data.tokens?.total, data.costUsd)}
+              {todayLine(
+                today?.sessions,
+                today?.messages,
+                todayTokens && todayTokens.input + todayTokens.output + todayTokens.cacheCreate + todayTokens.cacheRead,
+                todayTokens?.costUsd,
+              )}
             </div>
           )}
           {b?.plan && (
@@ -117,7 +143,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
                   <div className="flex-1 h-1.5 rounded-full bg-bg-elevated overflow-hidden max-w-[220px]">
                     <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.max(0, b.percentUsed))}%` }} />
                   </div>
-                  <span>{Math.round(b.percentUsed)}%</span>
+                  <span>{fmtPercentFloor(b.percentUsed / 100)}</span>
                 </>
               )}
             </div>
@@ -229,6 +255,9 @@ export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  // Moves on every turn end: the Memory view re-reads its store list on it, and
+  // the rest of the view when that list changed.
+  const liveRefreshTrigger = useAppSelector(s => s.dashboard.liveRefreshTrigger)
   const [params, setParams] = useSearchParams()
 
   const rawView = params.get('view')
@@ -243,7 +272,7 @@ export default function OverviewPage() {
   if (view === 'memory') {
     const selectedStore = params.get('store') || ''
     return <DrillIn title={i18nT('pages.overviewPage.memory')} hideTitle={!!selectedStore && selectedStore !== 'default'} onBack={() => setView(null)}>
-      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} selectedStore={selectedStore} focus={params.get('focus')} onStoreNavigate={store => setParams(previous => {
+      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} liveRefreshTrigger={liveRefreshTrigger} selectedStore={selectedStore} focus={params.get('focus')} onStoreNavigate={store => setParams(previous => {
         const next = new URLSearchParams(previous)
         if (store) next.set('store', store)
         else next.delete('store')
@@ -291,12 +320,12 @@ export default function OverviewPage() {
           { id: 'cronJobs', value: status?.cron_jobs },
           { id: 'subagents', value: status?.subagents },
           { id: 'lessons', value: status?.lessons },
-        ] as { id: StatId; value?: string | number | null; accent?: boolean }[]).map((s, i) => (
+        ] as { id: StatId; value?: number | null; accent?: boolean }[]).map((s, i) => (
           // Keyed on the stable id, not the label: a language switch changes the
           // label, which would remount every tile and replay the stagger animation.
           s.id === 'uptime'
             ? <UptimeStatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} accent={s.accent} delay={i * 60} />
-            : <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value} accent={s.accent} delay={i * 60} />
+            : <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value == null ? s.value : fmtNumber(s.value)} accent={s.accent} delay={i * 60} />
         ))}
         <TunnelStatus delay={6 * 60} />
         {/* Extension slot: downstream-registered status cards (e.g. an edition

@@ -39,6 +39,31 @@ logger = logging.getLogger(__name__)
 _ATTR = "code_channel_status"
 
 _slack_provider: Callable[[], Any] | None = None
+#: A status the agent chose for after its turn (``suspended``: it asked a question
+#: and waits on the people in the channel); the turn end shows it instead of
+#: ``active``. Cleared when the next turn starts.
+_held: dict[str, str] = {}
+#: What the bound session's last turn end left showing, until its next turn
+#: starts: the workspace's worker status keeps a ``suspended`` conductor suspended.
+_after_turn: dict[str, str] = {}
+
+
+def after_turn(channel_id: str) -> str:
+    """What the conductor's last turn end showed (``""`` while a turn runs or none ended)."""
+    return _after_turn.get(channel_id, "")
+
+
+def hold_after_turn(channel_id: str, status: str | None) -> None:
+    """Show *status* when the current turn ends (``None`` = the usual ``active``)."""
+    if status:
+        _held[channel_id] = status
+    else:
+        _held.pop(channel_id, None)
+
+
+def held(channel_id: str) -> str:
+    """The status the agent holds the channel at between its turns (``""`` = none)."""
+    return _held.get(channel_id, "")
 
 
 def _gate() -> bool:
@@ -56,6 +81,18 @@ def driver_for(slack: Any) -> AgentSessionStatus | None:
         driver = AgentSessionStatus(slack, gate=_gate, own_latch=True)
         setattr(slack, _ATTR, driver)
     return driver
+
+
+def move_driver(old: Any, new: Any) -> None:
+    """Move *old*'s driver onto *new*, the client a reconnect published in its place.
+
+    Its records come along, so a turn that went ``processing`` before the
+    reconnect sends its turn-end ``active`` through *new*.
+    """
+    driver = getattr(old, _ATTR, None)
+    if isinstance(driver, AgentSessionStatus):
+        driver._client = new
+        setattr(new, _ATTR, driver)
 
 
 def set_slack_provider(provider: Callable[[], Any] | None) -> None:
@@ -83,18 +120,31 @@ def owes_clear(channel_id: str) -> bool:
 
 
 async def settle_after_stop(channel_id: str) -> None:
-    """Move a stopped channel to ``active`` (Slack never clears it after Stop)."""
+    """Move a stopped channel to ``active`` (Slack never clears it after Stop).
+
+    What the stopped session's last turn end left showing goes too, so the
+    worker status hands back ``active``, not a ``suspended`` the Stop undid.
+    """
+    _after_turn.pop(channel_id, None)
     driver = _driver()
     if driver is not None:
         await driver.settle_after_stop(channel_id, None)
 
 
 async def _on_start(binding: Binding, _event: hooks.TurnEvent) -> None:
+    _held.pop(binding.channel_id, None)
+    _after_turn.pop(binding.channel_id, None)
     await set_status(binding.channel_id, SESSION_STATUS_PROCESSING)
 
 
 async def _on_end(binding: Binding, _event: hooks.TurnEvent) -> None:
-    await set_status(binding.channel_id, SESSION_STATUS_ACTIVE)
+    # The hold stays until the next bound turn starts, so the workers' status
+    # updates between turns honour it too (see held()).
+    shown = _held.get(binding.channel_id, SESSION_STATUS_ACTIVE)
+    if len(_after_turn) > 4096:
+        _after_turn.clear()
+    _after_turn[binding.channel_id] = shown
+    await set_status(binding.channel_id, shown)
 
 
 def install(slack_provider: Callable[[], Any]) -> None:

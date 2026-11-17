@@ -123,6 +123,41 @@ def test_a_non_utf8_manifest_is_refused_as_a_manifest_error(tmp_path):
         load_template(tmp_path)
 
 
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def test_an_operator_page_whose_manifest_has_a_utf8_bom_is_listed(tmp_path):
+    """Windows editors save UTF-8 "with BOM"; the one leading mark is not content."""
+    from kiro_crew.dashboard_templates.catalog import USER_SOURCE, _scan
+
+    page = tmp_path / "goal-board"
+    page.mkdir()
+    (page / "template.html").write_text(PAGE)
+    manifest = json.dumps(_raw(source="user")).encode("utf-8")
+    (page / "manifest.json").write_bytes(_UTF8_BOM + manifest)
+    entries, problems = _scan(tmp_path, USER_SOURCE)
+    assert problems == [] and [e.id for e in entries] == ["goal-board"]
+
+    (page / "manifest.json").write_bytes(_UTF8_BOM + b"{not json")
+    entries, problems = _scan(tmp_path, USER_SOURCE)
+    assert entries == [] and [name for name, _ in problems] == ["goal-board"]
+
+
+def test_the_manifest_an_instance_copies_reads_past_a_utf8_bom(tmp_path):
+    """Preview and adopt re-read the file, so a page the catalog lists must read there too."""
+    from kiro_crew.dashboard_templates.catalog import CatalogEntry
+    from kiro_crew.dashboard_templates.instance import InstanceRefused, _manifest_json
+
+    raw = _raw(source="user")
+    (tmp_path / "manifest.json").write_bytes(_UTF8_BOM + json.dumps(raw).encode("utf-8"))
+    entry = CatalogEntry(manifest=parse_manifest(raw), html=PAGE, directory=tmp_path, origin="user")
+    try:
+        copied = _manifest_json(entry)
+    except InstanceRefused as exc:
+        pytest.fail(f"preview and adopt refuse a page the catalog lists: {exc}")
+    assert copied == raw
+
+
 def test_a_trailing_newline_cannot_pass_an_id_a_field_or_a_path():
     """``\\Z``, not ``$``: Python's ``$`` also matches before a trailing newline.
 

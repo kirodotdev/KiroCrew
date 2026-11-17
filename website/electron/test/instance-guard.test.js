@@ -52,6 +52,50 @@ test("cross family prompts: prod shell over nightly gateway", () => {
   assert.equal(d.otherFamily, "nightly");
 });
 
+test("the lts edition is its own family; a missing edition reads as oss", () => {
+  assert.equal(identityFamily("0.1.0", "lts"), "lts");
+  assert.equal(identityFamily("0.1.0", "oss"), "prod");
+  assert.equal(identityFamily("0.1.0", undefined), "prod");
+  assert.equal(identityFamily("", "lts"), null);
+  assert.equal(FAMILY_META.lts.appName, "KiroCrew LTS"); // brand-ok
+  assert.equal(FAMILY_META.lts.displayName, "Kiro Crew LTS");
+});
+
+test("cross family prompts: lts shell over an oss gateway of the same version", () => {
+  // Without the edition the two read as one prod family, and the LTS shell
+  // would adopt the oss gateway on the shared port.
+  const oss = { ok: true, app: "kirocrew", version: "0.1.0" };
+  const d = decideGatewayAction("0.1.0", oss, { ...LOCAL, ownEdition: "lts" });
+  assert.equal(d.action, "takeover-prompt");
+  assert.equal(d.otherFamily, "prod");
+  const legacy = decideGatewayAction("0.1.0", { ...oss, edition: "oss" }, { ...LOCAL, ownEdition: "lts" });
+  assert.equal(legacy.otherFamily, "prod");
+});
+
+test("cross family prompts: oss shell over an lts gateway; lts over lts reuses", () => {
+  const lts = { ok: true, app: "kirocrew", version: "0.1.0", edition: "lts" };
+  const d = decideGatewayAction("0.1.0", lts, LOCAL);
+  assert.equal(d.action, "takeover-prompt");
+  assert.equal(d.otherFamily, "lts");
+  const same = decideGatewayAction("0.1.0", lts, { ...LOCAL, ownEdition: "lts" });
+  assert.equal(same.action, "reuse");
+  assert.equal(same.reason, "same-family");
+});
+
+test("a service-managed gateway of the other edition prompts; a service of the same edition reuses", () => {
+  // Reusing a service across editions would put the LTS app on the oss backend.
+  const SERVICE = { localOwner: "service" };
+  const oss = { ok: true, app: "kirocrew", version: "0.1.0" };
+  const lts = { ...oss, edition: "lts" };
+  const ltsShell = decideGatewayAction("0.1.0", oss, { ...SERVICE, ownEdition: "lts" });
+  assert.deepEqual(ltsShell, { action: "takeover-prompt", otherFamily: "prod", otherVersion: "0.1.0", holder: "service" });
+  assert.equal(decideGatewayAction("0.1.0", lts, SERVICE).holder, "service");
+  assert.equal(decideGatewayAction("0.1.0", lts, { ...SERVICE, ownEdition: "lts" }).action, "reuse");
+  // Nightly and production keep their historical service reuse.
+  const nightly = { ...oss, version: "0.1.0-nightly.20260722120000" };
+  assert.equal(decideGatewayAction("0.1.0", nightly, SERVICE).action, "reuse");
+});
+
 test("legacy gateway without identity fields reuses (historical behavior)", () => {
   assert.equal(decideGatewayAction("0.1.0-nightly.20260722120000", { ok: true }).action, "reuse");
 });

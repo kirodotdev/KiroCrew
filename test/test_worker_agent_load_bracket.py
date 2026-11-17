@@ -450,11 +450,15 @@ def test_every_set_mode_send_goes_through_the_one_bracketed_helper():
     """A ``set_mode`` naming an agent is a load of that agent's spec, so it needs the
     same bracket the spawn has -- and there is exactly ONE body that provides it. Both
     session-start paths (create and resume) reach it; no body on either path sends the
-    mode method itself. A protocol written twice is two protocols the moment one copy is
-    edited, so the pin is on the single helper plus the rule that nothing else sends the
-    method. Activation may sit in a body the entry point hands off to -- ``create_session``
-    finishes in ``_finish_create_session``, which the late-adoption collector calls too --
-    so the walk FOLLOWS the ``self`` calls instead of naming one method."""
+    mode method itself, but one: a re-open's parking step, which switches only to the
+    host's start agent, an entry Kiro Crew builds in code with no spec to load, and keeps
+    the re-open's fallback when that switch fails. A protocol written twice is two
+    protocols the moment one copy is edited, so the pin is on the single helper plus the
+    rule that nothing else sends the method, with that one exception named and held to
+    the one id. Activation may sit in a body the entry point hands off to --
+    ``create_session`` finishes in ``_finish_create_session``, which the late-adoption
+    collector calls too -- so the walk FOLLOWS the ``self`` calls instead of naming one
+    method."""
     import ast
     import inspect
     import textwrap
@@ -482,7 +486,17 @@ def test_every_set_mode_send_goes_through_the_one_bracketed_helper():
         )
 
     helper = runtime_mod.AcpRuntime._activate_mode_bracketed
-    for entry in (runtime_mod.AcpRuntime.create_session, runtime_mod.AcpRuntime.load_session):
+    # The one other sender. A re-open's parking step switches the stored session
+    # to the host's start agent (``acp.kas_start_agent``), Kiro Crew's own entry
+    # built in code: no spec file, no tool, no server, so there is no spec load
+    # to bracket. It stays outside the helper because a failed switch there must
+    # keep the re-open's fallback (the load in its old order), where the helper
+    # ends the session. Pinned below to send only that one id.
+    parking = runtime_mod.AcpRuntime._park_in_start_agent
+    for entry, allowed in (
+        (runtime_mod.AcpRuntime.create_session, [helper.__name__]),
+        (runtime_mod.AcpRuntime.load_session, sorted([helper.__name__, parking.__name__])),
+    ):
         on_path: set[str] = set()
         pending = [entry.__name__]
         while pending:
@@ -496,11 +510,44 @@ def test_every_set_mode_send_goes_through_the_one_bracketed_helper():
         senders_on_path = sorted(
             n for n in on_path if _sends_the_mode(getattr(runtime_mod.AcpRuntime, n))
         )
-        assert senders_on_path == [
-            helper.__name__
-        ], f"{entry.__qualname__} sends set_mode outside the helper: {senders_on_path}"
+        assert (
+            senders_on_path == allowed
+        ), f"{entry.__qualname__} sends set_mode outside the helper: {senders_on_path}"
 
-    # The whole module SENDS the method from exactly one place: the helper. The
+    # The parking step's every send names the start agent and nothing else, read
+    # from its source: a ``modeId`` that is not that constant is a spec load the
+    # helper has to bracket.
+    from kiro_crew.acp import runtime_session_load
+
+    parking_tree = ast.parse(inspect.getsource(runtime_session_load._park_in_start_agent))
+    parking_sends = [
+        n
+        for n in ast.walk(parking_tree)
+        if isinstance(n, ast.Call)
+        and any(isinstance(a, ast.Name) and a.id == "METHOD_SET_MODE" for a in n.args)
+    ]
+    parking_payloads = [a for n in parking_sends for a in n.args if isinstance(a, ast.Dict)]
+    # One literal payload per send, every key a written string: no ``**`` spread and
+    # no computed key that could carry another id.
+    assert len(parking_payloads) == len(parking_sends), "a parking set_mode payload is not literal"
+    assert all(
+        isinstance(key, ast.Constant) and isinstance(key.value, str)
+        for d in parking_payloads
+        for key in d.keys
+    ), "a parking set_mode payload has a key that is not a written string"
+    parking_modes = [
+        value
+        for d in parking_payloads
+        for key, value in zip(d.keys, d.values)
+        if isinstance(key, ast.Constant) and key.value == "modeId"
+    ]
+    assert parking_modes, "the parking step's set_mode names no modeId the pin can read"
+    assert all(
+        isinstance(v, ast.Name) and v.id == "START_AGENT_ID" for v in parking_modes
+    ), "the parking step may switch only to the start agent"
+
+    # The whole module SENDS the method from exactly two places: the helper and the
+    # parking step above. The
     # transport's own method-name table (a dict literal mapping the constant to a
     # log label) names it too, so the walk counts CALLS that carry the constant as an
     # argument, not every mention.
@@ -521,7 +568,7 @@ def test_every_set_mode_send_goes_through_the_one_bracketed_helper():
                     isinstance(arg, ast.Name) and arg.id == "METHOD_SET_MODE" for arg in n.args
                 ):
                     senders.append(node.name)
-    assert senders == [helper.__name__], senders
+    assert sorted(senders) == sorted([helper.__name__, parking.__name__]), senders
 
 
 def test_the_bracketed_helper_orders_gate_send_and_check_by_consumption_point():
@@ -754,6 +801,12 @@ class _FakeHandle:
         return self
 
     def begin_session(self, servers):
+        return None
+
+    def fold_mark(self):
+        return 0
+
+    def forget_reported(self, before):
         return None
 
     def record_mcp_launches(self, spec, wire_servers):

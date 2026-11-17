@@ -105,7 +105,11 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "natural alphabetical, created = newest first); the header line names "
                 "the active mode. In custom mode the sequence you read here is the "
                 "one the person sees, which is what makes it safe to pick a "
-                "``before``/``after`` anchor for chat_folder_move. In name or created "
+                "``before``/``after`` anchor for chat_folder_move. One exception this "
+                "listing cannot see: the person may turn on a browser-only sidebar view "
+                "that draws folders holding unread chats above that order; an anchor "
+                "still sets the stored position, and the view moves only while a "
+                "folder has unread chats. In name or created "
                 "mode the listing says so and warns that an anchor sets the stored "
                 "position without changing the displayed order. Returns per "
                 "folder: id, human path, project directory, default "
@@ -769,6 +773,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _first_message_line,
     _pending_approval_phrase,
     _RefusalCodes,
+    _render_session_queue,
     _render_session_summary,
     _resolve_folder_for_new_session,
     _run_session_adopt,
@@ -781,6 +786,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_generate_title,
     _run_session_handoff,
     _run_session_history_list,
+    _run_session_queue,
     _run_session_read_message,
     _run_session_release,
     _run_session_reload,
@@ -790,10 +796,12 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_send,
     _run_session_set_color,
     _run_session_set_model,
+    _run_session_set_note,
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
     _run_work_dispatch,
+    _status_activity_suffix,
     _summary_time,
     _worker_capabilities_line,
 )
@@ -853,13 +861,20 @@ def _list_tools() -> list[dict[str, Any]]:
 
     Reaching this process at all means an agent spec referenced this server, so
     the assignment already happened; there is nothing left to gate here. The one
-    conditional part is the ``crew`` argument on the five session tools, which is
-    advertised only while ``work_ledger.remote_dispatch`` is on.
+    conditional parts are the ``crew`` argument on the five session tools and the
+    ``crew_list`` tool, advertised only while ``work_ledger.remote_dispatch`` is
+    on, and ``backend`` on
+    ``session_create`` / ``work_dispatch``, only while the ``session_harness``
+    feature preview is on.
     """
+    from kiro_crew.mcp_crew_list import with_crew_list
     from kiro_crew.mcp_session_crew import with_crew_schema
     from kiro_crew.remote_dispatch import remote_dispatch_enabled
+    from kiro_crew.session_harness_preview import session_harness_enabled, with_backend_schema
 
-    return with_crew_schema(TABLE.list(), remote_dispatch_enabled())
+    crew = remote_dispatch_enabled()
+    tools = with_crew_list(with_crew_schema(TABLE.list(), crew), crew)
+    return with_backend_schema(tools, session_harness_enabled())
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -962,6 +977,7 @@ if TYPE_CHECKING:  # the project names this module imported that only its owners
         _folder_owner_app,
         _subtree_holds_foreign_folder,
     )
+    from kiro_crew.mcp_crew_list import crew_list_tool  # noqa: F401
     from kiro_crew.mcp_tools.dashboard_client import DashboardClient, DashboardError  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.sel import sel  # noqa: F401

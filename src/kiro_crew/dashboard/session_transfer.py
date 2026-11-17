@@ -730,7 +730,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kas_sessions_root,
         _read_kas_layer_b,
         _rewrite_layer_b_envelope,
-        _slot_runs_kas,
+        _slot_starts_on,
         _snapshot_events_file,
         _unlink_layer_b_files,
         _write_kas_layer_b,

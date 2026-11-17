@@ -1028,6 +1028,7 @@ class RunnerAdmission:
         ev = self._wake_event(handle.task_id)
         ev.clear()
         parked = True
+        store_down = False
         owns_dependency_wake = False
         try:
             if self._coordinator is not None:
@@ -1064,11 +1065,16 @@ class RunnerAdmission:
                     )
                 except TaskStoreUnavailable:
                     parked = False
+                    store_down = True
                 owns_dependency_wake = parked
             if store is None or not parked:
-                # Nothing persisted: honour the signal's own retry instant locally.
+                # Nothing persisted: honour the signal's own retry instant locally,
+                # with no store or with one that could not take the write. A wait
+                # the store refused (a fenced generation) keeps its immediate retry.
                 wait = (
-                    max(0.0, float(signal.retry_at or 0.0) - self.now()) if store is None else 0.0
+                    max(0.0, float(signal.retry_at or 0.0) - self.now())
+                    if store is None or store_down
+                    else 0.0
                 )
                 if signal.retry_at is not None:
                     await self._sleep(wait)

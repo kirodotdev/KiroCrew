@@ -1,12 +1,12 @@
 ---
 title: Native OpenTelemetry traces for every turn, step and session, with credits and correlation IDs
-status: draft
+status: partial
 author: kyleseaman, with devmate
 created: 2026-11-05
-last-audited: 2026-11-06
-audited-at: 9996c57111
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-12
+audited-at: 386875ed0d
+doc-pr: 31433
+implementation-prs: [31460, 35077]
 tracking-issues: [1643]
 supersedes: []
 superseded-by: []
@@ -14,9 +14,18 @@ superseded-by: []
 
 # RFC: Native OpenTelemetry traces
 
-- Status: draft. Nothing is built. Code facts are measured at `9996c57111`.
-- Tracking issue: [#1643](https://github.com/kirodotdev/KiroCrew/issues/1643) (`tier:T3`: a maintainer's design
-  sign-off is needed before any change merges).
+- Status: partial. The whole RFC, every phase, was accepted on 2026-11-11 by the RFC's author and owner Kyle
+  Seaman (@kyleseaman), recorded publicly in
+  [a comment on #1643](https://github.com/kirodotdev/KiroCrew/issues/1643#issuecomment-6827891210). This extends the
+  phase 1a acceptance of 2026-11-10
+  ([#34685](https://github.com/kirodotdev/KiroCrew/pull/34685)). Phases 1a and 1b are on main, via
+  [#31460](https://github.com/kirodotdev/KiroCrew/pull/31460) and
+  [#35077](https://github.com/kirodotdev/KiroCrew/pull/35077). Phases 2 to 9 are not built; they land PR by PR on this
+  design. Phase 9, opt-in content capture (§9.1), still goes through Sensitive Change Review when it is built. Code
+  facts are measured at `9996c57111`, before phase 1a; the status was re-verified at `386875ed0d`.
+- Tracking issue: [#1643](https://github.com/kirodotdev/KiroCrew/issues/1643) (`tier:T3`). A maintainer signed off
+  on phases 1a and 1b, when bolichen97 approved #31460 and #35077; each later phase still needs a maintainer's
+  approval on its PR.
 - Related: [#24884](https://github.com/kirodotdev/KiroCrew/pull/24884) (execution correlation identities in hooks;
   open). This design uses its field names but does not depend on it.
   [rfc-crew-log-telemetry-export.md](rfc-crew-log-telemetry-export.md) (crew-log folds for metrics; draft).
@@ -220,14 +229,16 @@ ultra round <N>                         anchor; trace = (conductor, goal, round)
   work_item <item_id>                   anchor per item
     invoke_agent kirocrew-worker        chat ; execute_tool ... ; kirocrew.work.report
     work_item outcome <state>           verdict, fails, roll-up totals
-  ultra round outcome <state>
+  ultra outcome <closed|advanced>
 ```
 
 - **Why a round, not a turn or a goal.** Neither backend draws links as a waterfall, which rules out a trace per
   turn. A goal can run for weeks, past X-Ray's 7-day window. A round is the conductor's own dispatch unit, and R2
   and R5 handle a long round. Rounds of one goal share `kirocrew.work.goal_id` and link in order.
 - **IDs.** The round trace is `H(trace.ultra, conductor key, goal_id, round, continuation)`, the item anchor is
-  `H(work.item, item_id, generation)`, and each outcome is keyed by the ledger's own `work_event_id`.
+  `H(work_item, item_id, generation, goal_id, round, 1)` in its round's trace (an item still open when the round
+  moves on gets an anchor in the next round's trace too), and each outcome is keyed by the ledger's own
+  `work_event_id`.
   - `goal_id` is a new random id the work ledger mints when a new goal is set. Until it exists, the board
     generation plus the goal's item-count base stand in.
 - **No goal text** in names or attributes. The round is named `ultra round N`.
@@ -320,7 +331,7 @@ esc(p)   = "%" -> "%25", "|" -> "%7C"
 | workflow `invoke_agent` | `run_id`, `agent_id` (`a{call_index}`) | cached results on resume are not re-emitted |
 | sub-agent turns | parent's trace; `turn_id`, `attempt` under the spawn tool span | continue and retry are new children; the completion-event turn joins (R4) |
 | `ultra round` anchor | `conductor key`, `goal_id`, `round`, continuation | a round bump starts a new trace; rollover bumps the continuation |
-| `work_item` anchor | `item_id`, `generation` | a re-plan keeps the id |
+| `work_item` anchor | `item_id`, `generation`, `goal_id`, `round` | a re-plan keeps the id; a round change gives an open item an anchor in the new round |
 | `<kind> outcome` | the run key; for items, the ledger's `work_event_id` | one per run end |
 | cron run | `job_id`, `run_id`, fire time | a catch-up fire is a new run |
 | session lifecycle | Crew session key, `acp_session_id`, event, seq | one per ACP session per event |

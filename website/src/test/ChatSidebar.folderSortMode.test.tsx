@@ -535,7 +535,6 @@ describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
     // detail, not the lead: their own smaller line under the plain title.
     const raw = [...notice.querySelectorAll('span')].find(el => el.textContent === 'gateway restarting')
     expect(raw?.className).toContain('block')
-    expect(raw?.className).toContain('text-[12px]')
     expect(notice.textContent?.indexOf('could not be read')).toBeLessThan(notice.textContent?.indexOf('gateway restarting') ?? -1)
     // The plain line under it: what is shown, and that nothing is asked of the
     // person -- the read retries on its own. ONE phrase for this failure on

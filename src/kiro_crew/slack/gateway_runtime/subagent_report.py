@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         OUTCOME_STOPPED,
         SUBAGENT_BATCH_COMPLETION_PREFIX,
         SUBAGENT_COMPLETION_PREFIX,
+        UNVERIFIED_MODEL_NOTE,
         Any,
         GatewayOrchestrator,
         SubagentDelivery,
@@ -213,6 +214,9 @@ def _compose_subagent_completion(info: SubagentInfo, *, _flush_only: bool) -> _S
     if single_outcome == OUTCOME_OK and not _flush_only and info.leaked_tool_call:
         _leak_note = f"⚠ Agent `{info.id}` {LEAKED_TOOL_CALL_NOTE}"
         no_tools_note = f"{no_tools_note}\n{_leak_note}" if no_tools_note else _leak_note
+    if single_outcome == OUTCOME_OK and not _flush_only and info.served_model_unverified:
+        _model_note = f"⚠ Agent `{info.id}` {UNVERIFIED_MODEL_NOTE}"
+        no_tools_note = f"{no_tools_note}\n{_model_note}" if no_tools_note else _model_note
     announce = (
         f"{SUBAGENT_COMPLETION_PREFIX}\n"
         f"Agent `{info.id}`"

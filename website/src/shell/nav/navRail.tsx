@@ -38,7 +38,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavOpen, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
-    appsExpanded, toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
+    appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates,
     commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
@@ -368,7 +368,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               {isMobile && (
                 <NavItem
                   path="#"
-                  label={slotOwners['quick-search'] ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
+                  label={quickSearchLauncher ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
                   icon={<SearchIcon size={20} />}
                   active={false}
                   collapsed={effectiveCollapsed}
@@ -405,7 +405,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 active={activePath === s.path || activePath.startsWith(s.path + '/')}
                 collapsed={effectiveCollapsed}
                 onClick={closeMobileNav}
-                badge={settingsDotLabel ? <span title={settingsDotLabel.title} role="status" aria-label={settingsDotLabel.label} className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined}
+                badge={settingsDotLabel ? <span title={settingsDotLabel.title} role="status" aria-label={settingsDotLabel.label} className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'shrink-0 w-2 h-2 bg-accent rounded-full'} /> : undefined}
               />
               <RailCommunityLinks effectiveCollapsed={effectiveCollapsed} setReportProblemOpen={setReportProblemOpen} />
             </div>

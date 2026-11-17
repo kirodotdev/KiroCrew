@@ -637,7 +637,7 @@ class TestLazyLoadContext:
         loader = self._make(tmp_path, n_on_demand=30)
         budget = 1200
         ctx = loader.get_context(budget=budget)
-        # Regression (footer-truncation bug): get_context reserves room for the
+        # get_context reserves room for the
         # footer + wrapper, so the FINAL block stays within budget and the
         # caller's backstop never chops the "...N more / skill_search" footer.
         assert len(ctx) <= budget

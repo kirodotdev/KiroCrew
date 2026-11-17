@@ -3,7 +3,8 @@
 A fork is born titled ``↳ Fork of <parent>``, which names the parent's topic,
 and keeps that name until the person sends the child its first message. That
 send runs ONE background title pass (``chat_title.refresh_forked_title``) over
-the message just sent, never over a question copied from the parent.
+the newest window of the child, which ends with the message just sent. A
+question copied from the parent never starts the pass.
 
 Invariants locked here:
 
@@ -40,10 +41,17 @@ from kiro_crew.dashboard.chat_title import (
     title_then_refresh,
 )
 from kiro_crew.history import HUMAN_TURN_META_KEY
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _HUMAN = {HUMAN_TURN_META_KEY: True}
 _FIRST = "write the database failover drill"
+# What a fork of ``_seeded_state``'s parent holds before its first message.
+_COPIED = [
+    "how do I rotate the log files",
+    "use logrotate",
+    "now plan the canary deploy for the API",
+    "here is a plan",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -97,7 +105,7 @@ class _Generator:
         if getattr(self, "_hold", False):
             gate = asyncio.Event()
             self.release.append(gate)
-            await asyncio.wait_for(gate.wait(), TURN_WAIT_SECS)
+            await await_until(gate, what="the release of a held title generation")
         reply = self.replies.pop(0) if self.replies else ""
         if isinstance(reply, Exception):
             raise reply
@@ -168,8 +176,9 @@ async def test_the_first_message_names_the_child(tmp_path, monkeypatch) -> None:
     child = state._slots[body["key"]]
     assert child.title == "↳ Database failover drill"
     assert child._title_origin == _TITLE_ORIGIN_AUTO
-    # Only the message sent to the child, never a question copied from the parent.
-    assert gen.calls == [[_FIRST]]
+    # The message sent to the child, read after the turns copied from the parent.
+    assert len(gen.calls) == 1
+    assert gen.calls[0][:5] == [*_COPIED, _FIRST]
     assert (child.key, "↳ Database failover drill") in pushes
     assert parent.title == "Rotating log files"
     assert [(m["role"], m["content"]) for m in parent.messages] == parent_rows
@@ -194,7 +203,8 @@ async def test_a_tail_fork_is_named_by_its_first_message(tmp_path, monkeypatch) 
         await _send(client, body["key"])
         await drain_background_tasks(state)
 
-    assert gen.calls == [[_FIRST]]
+    assert len(gen.calls) == 1
+    assert gen.calls[0][:5] == [*_COPIED, _FIRST]
     assert state._slots[body["key"]].title == "↳ Database failover drill"
 
 
@@ -213,7 +223,7 @@ async def test_a_queued_first_message_is_named_at_chat_done(tmp_path, monkeypatc
     child.append("assistant", "on it", "msg msg-a")
     await title_then_refresh(state, child)
 
-    assert gen.calls == [[_FIRST]]
+    assert gen.calls == [[*_COPIED, _FIRST, "on it"]]
     assert child.title == "↳ Database failover drill"
 
 
@@ -420,7 +430,9 @@ async def test_a_newer_child_question_while_pending_wins(tmp_path, monkeypatch) 
         gen.release[1].set()
         await drain_background_tasks(state)
 
-    assert gen.calls == [[_FIRST], ["actually, write the rollback plan"]]
+    assert len(gen.calls) == 2
+    assert "actually, write the rollback plan" not in gen.calls[0]
+    assert "actually, write the rollback plan" in gen.calls[1]
     assert child.title == "↳ Rollback plan"
 
 
@@ -560,3 +572,69 @@ async def test_a_later_refresh_keeps_the_fork_marker(tmp_path, monkeypatch) -> N
 
     assert seen == ["Database failover drill"], "the model judges the name without the marker"
     assert child.title == "↳ Failover drill and rollback"
+
+
+@pytest.mark.asyncio
+async def test_a_short_follow_up_is_named_with_the_turns_before_it(tmp_path, monkeypatch) -> None:
+    """A first message such as "yes do that" names nothing alone; the turns the
+    fork copied say what it is about, inside the usual title window."""
+    gen = _Generator(["Canary deploy plan"])
+    monkeypatch.setattr(chat_title, "_generate_title_via_kiro", gen)
+    state = _seeded_state(tmp_path)
+    for i in range(8):
+        state._slots["parent"].append("user", f"question {i}", "msg msg-u", meta=_HUMAN)
+        state._slots["parent"].append("assistant", f"answer {i}", "msg msg-a")
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        body = await _fork(client)
+        await _send(client, body["key"], "yes do that")
+        await drain_background_tasks(state)
+
+    assert len(gen.calls) == 1
+    window = gen.calls[0]
+    assert len(window) == chat_title._TITLE_PROMPT_WINDOW
+    assert "answer 7" in window
+    assert "yes do that" in window
+    assert state._slots[body["key"]].title == "↳ Canary deploy plan"
+
+
+@pytest.mark.asyncio
+async def test_a_fork_of_a_fork_is_named_the_same_way(tmp_path, monkeypatch) -> None:
+    gen = _Generator(["Database failover drill"])
+    monkeypatch.setattr(chat_title, "_generate_title_via_kiro", gen)
+    state = _seeded_state(tmp_path)
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        first = await _fork(client)
+        resp = await client.post(f"/api/chat/slots/{first['key']}/fork", json={})
+        assert resp.status == 200
+        second = await resp.json()
+        await _send(client, second["key"])
+        await drain_background_tasks(state)
+
+    assert second["title"] == "↳ Fork of Fork of Rotating log files"
+    assert len(gen.calls) == 1
+    assert gen.calls[0][:5] == [*_COPIED, _FIRST]
+    assert state._slots[second["key"]].title == "↳ Database failover drill"
+    assert state._slots[first["key"]].title == "↳ Fork of Rotating log files"
+
+
+@pytest.mark.asyncio
+async def test_a_temporary_fork_is_named_from_its_own_copy(tmp_path, monkeypatch) -> None:
+    """A temporary session forks into a temporary child, and the pass reads the
+    child's own rows, as the title pass of any temporary session does."""
+    gen = _Generator(["Database failover drill"])
+    monkeypatch.setattr(chat_title, "_generate_title_via_kiro", gen)
+    state = _seeded_state(tmp_path)
+    state._slots["parent"].memory_mode = "temporary"
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        body = await _fork(client)
+        await _send(client, body["key"])
+        await drain_background_tasks(state)
+
+    child = state._slots[body["key"]]
+    assert child.memory_mode == "temporary"
+    assert gen.calls[0][:5] == [*_COPIED, _FIRST]
+    assert child.title == "↳ Database failover drill"
+    assert state._slots["parent"].title == "Rotating log files"

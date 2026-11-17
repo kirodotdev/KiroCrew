@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from file_change_snapshots_helpers import short_tmp_dir_fixture  # noqa: F401
 from file_change_snapshots_helpers import _make_slot_with_assistant_message
+from redaction_structured_cases import aws_secret
 from turn_harness import SlotSpec, TurnScript, run_turn
 
 from conftest import requires_symlinks
@@ -54,6 +55,8 @@ from kiro_crew.dashboard.chat_runner import (
     _truncate_snapshot,
 )
 from kiro_crew.dashboard.state import _ChatSlot, row_mid
+
+_AWS_SECRET = aws_secret(seed=54)
 
 # ── _truncate_snapshot ──────────────────────────────────────────────────────
 
@@ -539,24 +542,22 @@ class TestFlushFileChanges:
 
     def test_redacts_credentials_in_after_content(self, tmp_path: Path):
         f = tmp_path / "config.ini"
-        f.write_text("aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n")
+        f.write_text(f"aws_secret_access_key={_AWS_SECRET}\n")
         slot = _make_slot_with_assistant_message()
         slot._file_changes = [{"path": str(f), "content": "(empty)"}]
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
-        # AKIA key is scrubbed before reaching the UI.
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["after"]
+        # The AWS secret is scrubbed before reaching the UI.
+        assert _AWS_SECRET not in changes[0]["after"]
 
     def test_redacts_credentials_in_before_content(self, tmp_path: Path):
         f = tmp_path / "post-edit.ini"
         f.write_text("clean\n")
         slot = _make_slot_with_assistant_message()
-        slot._file_changes = [
-            {"path": str(f), "content": "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE\n"}
-        ]
+        slot._file_changes = [{"path": str(f), "content": f"aws_secret_access_key={_AWS_SECRET}\n"}]
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+        assert _AWS_SECRET not in changes[0]["before"]
 
     def test_an_unchanged_credential_line_is_not_turned_into_a_phantom_diff(
         self, tmp_path: Path
@@ -572,7 +573,7 @@ class TestFlushFileChanges:
         review it.
         """
         f = tmp_path / "AGENTS.md"
-        unchanged = '  "headers": { "Authorization": "Bearer lp_dummy_placeholder_value" }\n'
+        unchanged = '  "headers": { "Authorization": "Bearer lp_Q7mVx9pLw2Kd8Rt4Ny6s" }\n'
         f.write_text(unchanged, encoding="utf-8")
         slot = _make_slot_with_assistant_message()
         # Same bytes on both sides: the turn touched the file without changing
@@ -584,21 +585,21 @@ class TestFlushFileChanges:
             changes[0]["before"] == changes[0]["after"]
         ), "identical text redacted asymmetrically -> the UI shows a diff on an unchanged line"
         # The guard is only meaningful because the redactor DID fire here.
-        assert "lp_dummy_placeholder_value" not in changes[0]["after"]
+        assert "lp_Q7mVx9pLw2Kd8Rt4Ny6s" not in changes[0]["after"]
 
     def test_a_real_change_beside_a_credential_line_still_redacts_both_sides(
         self, tmp_path: Path
     ) -> None:
         """The symmetry guard must not be satisfiable by skipping redaction."""
-        cred = '  "Authorization": "Bearer lp_dummy_placeholder_value"\n'
+        cred = '  "Authorization": "Bearer lp_Q7mVx9pLw2Kd8Rt4Ny6s"\n'
         f = tmp_path / "conf.json"
         f.write_text(cred + "changed-line\n", encoding="utf-8")
         slot = _make_slot_with_assistant_message()
         slot._file_changes = [{"path": str(f), "content": cred + "original-line\n"}]
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
-        assert "lp_dummy_placeholder_value" not in changes[0]["before"]
-        assert "lp_dummy_placeholder_value" not in changes[0]["after"]
+        assert "lp_Q7mVx9pLw2Kd8Rt4Ny6s" not in changes[0]["before"]
+        assert "lp_Q7mVx9pLw2Kd8Rt4Ny6s" not in changes[0]["after"]
         # The genuine change survives redaction on both sides.
         assert "original-line" in changes[0]["before"]
         assert "changed-line" in changes[0]["after"]
@@ -1159,25 +1160,19 @@ class TestContentBlockRedactionAndTruncation:
 
         slot = _make_slot_with_assistant_message()
         # Before content contains a credential (from content block)
-        slot._file_changes = [
-            {"path": str(f), "content": "aws_access_key_id=AKIAIOSFODNN7EXAMPLE\n"}
-        ]
+        slot._file_changes = [{"path": str(f), "content": f"aws_secret_access_key={_AWS_SECRET}\n"}]
         _flush_file_changes(slot)
         meta = slot.messages[-1].get("meta", {})
         assert "file_changes" in meta
         changes = meta["file_changes"]
-        # The AKIA key in before must be scrubbed
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
+        # The AWS secret in before must be scrubbed
+        assert _AWS_SECRET not in changes[0]["before"]
 
     def test_chip_scrub_is_the_exfil_first_composition(self, short_tmp_dir: Path):
-        """A long-query exfil URL in chip content loses its WHOLE url.
+        """A credential in a URL in chip content loses its value, not the link.
 
-        `redact_exfiltration_urls` classifies partly by query length and
-        replaces the entire url; a hand-sequenced creds-first pair here would
-        shorten `?token=<long>` first and defeat it, leaking the destination
-        and payload parameters into the chip diff (the same seam
-        `discover.py`'s TestRedactExternalLayerOrder pins). The scrub must
-        stay the canonical `security.redact()` composition.
+        The scrub must stay the canonical `security.redact()` composition, which
+        masks the `?token=` value and keeps the rest of the URL as written.
         """
         d = short_tmp_dir
         f = d / "notes.md"
@@ -1192,10 +1187,11 @@ class TestContentBlockRedactionAndTruncation:
         _flush_file_changes(slot)
         changes = slot.messages[-1]["meta"]["file_changes"]
         before = changes[0]["before"]
-        assert "corp-laptop" not in before
-        assert "/home/alice/.aws/credentials" not in before
-        assert "?token=" not in before
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in before
+        assert "aB3" * 4 not in before
+        assert (
+            "https://collect.attacker.example/?token=[REDACTED: credential]&host=corp-laptop"
+            in before
+        )
 
     def test_sensitive_path_refused_even_with_diff_old_text(self):
         """Even when diff_old_text is provided, sensitive paths are refused

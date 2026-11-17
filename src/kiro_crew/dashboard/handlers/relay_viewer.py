@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from contextvars import copy_context
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
 
 from aiohttp import web
@@ -31,6 +32,7 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
 from kiro_crew.dashboard.origin import is_loopback
 from kiro_crew.dashboard.token_auth import _ct_eq
+from kiro_crew.executors import local_auth_executor, relay_viewer_executor
 
 if TYPE_CHECKING:
     from kiro_crew.relay_viewer import cps
@@ -70,7 +72,14 @@ def _ok(body: dict[str, Any]) -> web.Response:
     return web.json_response(body, headers=_NO_STORE)
 
 
-def _error(error: str, code: str, status: int) -> web.Response:
+def _error(error: str, code: str, status: int, request_id: Optional[str] = None) -> web.Response:
+    if request_id:
+        # CPS's request ID (checked in ``relay_viewer.cps``), so a failure can be reported.
+        return web.json_response(
+            {"error": error, "code": code, "requestId": request_id},
+            status=status,
+            headers=_NO_STORE,
+        )
     return web.json_response({"error": error, "code": code}, status=status, headers=_NO_STORE)
 
 
@@ -78,10 +87,21 @@ def _refused(exc: cps.CpsRefused) -> web.Response:
     if exc.code == "THROTTLED":
         retry = exc.retry_after
         headers = {**_NO_STORE, **({"Retry-After": str(int(retry))} if retry is not None else {})}
+        if exc.request_id:
+            return web.json_response(
+                {
+                    "error": str(exc),
+                    "code": exc.code,
+                    "retryAfter": retry,
+                    "requestId": exc.request_id,
+                },
+                status=429,
+                headers=headers,
+            )
         return web.json_response(
             {"error": str(exc), "code": exc.code, "retryAfter": retry}, status=429, headers=headers
         )
-    return _error(str(exc), exc.code, _STATUS.get(exc.code, 403))
+    return _error(str(exc), exc.code, _STATUS.get(exc.code, 403), exc.request_id)
 
 
 def _off() -> web.Response:
@@ -94,9 +114,15 @@ def _load_tunnel() -> Any:
     return KiroCrewConfig.load().tunnel
 
 
+async def _off_loop(func: Callable[..., _T], /, *args: Any) -> _T:
+    return await asyncio.get_running_loop().run_in_executor(
+        relay_viewer_executor(), copy_context().run, func, *args
+    )
+
+
 async def _settings() -> Optional[tuple[str, str, str]]:
     """``(cps_url, credential_ref, crew_domain)`` while the viewer is on, else ``None``."""
-    tunnel = await asyncio.to_thread(_load_tunnel)
+    tunnel = await _off_loop(_load_tunnel)
     if getattr(tunnel, "relay_viewer_enabled", False) is not True:
         return None
     url = getattr(tunnel, "relay_viewer_cps_url", "")
@@ -119,11 +145,13 @@ def _may_force(identity: str) -> bool:
     return True
 
 
-async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
-    """``(credential, token_type)`` CPS is called with. Raises :class:`cps.CpsRefused`.
+async def _bearer(ref: str, rejected: str = "") -> tuple[str, str, str]:
+    """``(credential, token_type, profile_arn)`` CPS is called with. Raises :class:`cps.CpsRefused`.
 
     *token_type* is ``EXTERNAL_IDP`` for an external IdP sign-in, else empty (the
-    test credential and every other sign-in send no ``TokenType``).
+    test credential and every other sign-in send no ``TokenType``). *profile_arn*
+    is the profile the sign-in stored, else empty (the test credential, and a
+    sign-in with no profile of its own such as Builder ID).
 
     *rejected* is a sign-in CPS just answered 401. The vault is read again, and if it
     still holds that sign-in it is refreshed, at most once per cooldown. Inside the
@@ -136,14 +164,16 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
         from kiro_crew.relay_client.lease import LeaseCredentialError, read_lease_credential
 
         try:
-            return await asyncio.to_thread(read_lease_credential, ref), ""
+            return await _off_loop(read_lease_credential, ref), "", ""
         except LeaseCredentialError:
             raise cps.CpsRefused(cps.NOT_SET_UP, "the relay viewer credential can't be read")
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
 
-    provider = KasAuthProvider(default_token_store(), allow_env_api_key=False)
+    provider = KasAuthProvider(
+        default_token_store(), allow_env_api_key=False, executor=relay_viewer_executor()
+    )
     try:
         token = await provider.current()
         if rejected and token.access_token == rejected:
@@ -161,11 +191,12 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
     except Exception as exc:  # noqa: BLE001 - a transient refresh failure; type only, no message
         logger.info("relay viewer: sign-in refresh failed (%s)", type(exc).__name__)
         raise cps.CpsRefused(cps.UNREACHABLE, "your Kiro sign-in couldn't be refreshed")
-    return token.access_token, ("EXTERNAL_IDP" if token.auth_method == "external_idp" else "")
+    token_type = "EXTERNAL_IDP" if token.auth_method == "external_idp" else ""
+    return token.access_token, token_type, token.profile_arn or ""
 
 
-async def _with_sign_in(ref: str, call: Callable[[str, str], Awaitable[_T]]) -> _T:
-    """``call(bearer, token_type)``, sent again once when CPS answers it 401.
+async def _with_sign_in(ref: str, call: Callable[[str, str, str], Awaitable[_T]]) -> _T:
+    """``call(bearer, token_type, profile_arn)``, sent again once when CPS answers it 401.
 
     Only a 401 from a CPS call does this, once per request: the sign-in is read again
     (refreshed if CPS refused the stored one, see :func:`_bearer`) and *call* resent
@@ -174,17 +205,17 @@ async def _with_sign_in(ref: str, call: Callable[[str, str], Awaitable[_T]]) -> 
     """
     from kiro_crew.relay_viewer import cps
 
-    bearer, token_type = await _bearer(ref)
+    bearer, token_type, profile_arn = await _bearer(ref)
     try:
-        return await call(bearer, token_type)
+        return await call(bearer, token_type, profile_arn)
     except cps.CpsRefused as exc:
         if exc.status != 401 or ref:
             raise
         refused = exc
-    fresh, token_type = await _bearer(ref, rejected=bearer)
+    fresh, token_type, profile_arn = await _bearer(ref, rejected=bearer)
     if fresh == bearer:
         raise refused
-    return await call(fresh, token_type)
+    return await call(fresh, token_type, profile_arn)
 
 
 async def _sign_in_marker(ref: str) -> Optional[str]:
@@ -200,13 +231,14 @@ async def _sign_in_marker(ref: str) -> Optional[str]:
         return None
     from kiro_crew.auth.bridge import vault_identity_fingerprint
 
-    fingerprint = await asyncio.to_thread(vault_identity_fingerprint)
+    fingerprint = await _off_loop(vault_identity_fingerprint)
     if not fingerprint:
         return None
     return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
 
 
-def _entry(crew: cps.CrewEndpoint) -> dict[str, str]:
+def _entry(crew: cps.CrewEndpoint) -> dict[str, Optional[str | int]]:
+    seen = crew.last_seen_at
     return {
         "endpointId": crew.endpoint_id,
         "name": crew.name,
@@ -214,6 +246,7 @@ def _entry(crew: cps.CrewEndpoint) -> dict[str, str]:
         "presence": crew.presence,
         "relayConnectionStatus": crew.relay_connection_status,
         "crewUrl": crew.crew_url,
+        "lastSeenAt": None if seen is None else int(seen),
     }
 
 
@@ -235,7 +268,7 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     try:
         crews = await _with_sign_in(
             ref,
-            lambda bearer, token_type: cps.list_crew_endpoints(
+            lambda bearer, token_type, _profile_arn: cps.list_crew_endpoints(
                 cps_url, bearer, crew_domain=crew_domain, token_type=token_type
             ),
         )
@@ -275,7 +308,9 @@ async def _local_main_refusal(request: web.Request) -> Optional[web.Response]:
         return _error("invalid secret", "invalid_secret", 403)
     from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
 
-    provenance = await asyncio.to_thread(local_owner_bootstrap_provenance, request)
+    provenance = await asyncio.get_running_loop().run_in_executor(
+        local_auth_executor(), local_owner_bootstrap_provenance, request
+    )
     # Only the desktop app's own main process needs this, never an app backend.
     if provenance is None or provenance.app:
         _audit(request, "denied", "unverified-owner-process")
@@ -308,12 +343,18 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     ):
         return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a sign-in marker"))
     cps_url, ref, crew_domain = settings
+    # The desktop app opens only https://<endpointId>.<relay domain>, so with no
+    # domain no token is minted: the answer says what is missing instead.
+    if not crew_domain:
+        return _refused(
+            cps.CpsRefused(cps.NOT_SET_UP, "tunnel.relay_viewer_relay_domain is not set")
+        )
 
     async def _list_then_mint(
-        bearer: str, token_type: str
+        bearer: str, token_type: str, profile_arn: str
     ) -> tuple[cps.CrewEndpoint, cps.CrewAccessToken]:
-        # Listed again on each call, so the Crew must still be granted and its
-        # URL is the one CPS gives now.
+        # Listed again on each call because the list is the only source of the
+        # Crew's URL (and its domain check), so the URL is the one CPS gives now.
         crew = next(
             (
                 c
@@ -326,8 +367,12 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         )
         if crew is None:
             raise cps.CpsRefused(cps.CREW_ACCESS_NOT_GRANTED, "this Crew isn't in your list")
+        # CPS opens a personal Crew only for its profile. A team Crew's mint is unchanged.
+        profile = profile_arn if crew.crew_type == "PERSONAL" else ""
+        if crew.crew_type == "PERSONAL" and not profile:
+            logger.info("relay viewer: personal Crew, but the sign-in has no profile")
         grant = await cps.create_crew_access_token(
-            cps_url, bearer, endpoint_id, token_type=token_type
+            cps_url, bearer, endpoint_id, token_type=token_type, profile_arn=profile
         )
         return crew, grant
 
@@ -386,6 +431,9 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             "renewInSeconds": grant.renew_in_seconds,
             "serverDate": grant.server_date,
             "crewUrl": crew.crew_url,
+            # The desktop app sends the token only to exactly
+            # https://<endpointId>.<relayDomain>, so it opens no Crew while this is empty.
+            "relayDomain": crew_domain,
             "name": crew.name,
             "signInMarker": marker,
         }

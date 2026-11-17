@@ -42,9 +42,10 @@ def _home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     monkeypatch.setattr(wp, "_PUBLISHED", published)
     (home / "config.json").write_text(json.dumps({"agent": {}}), encoding="utf-8")
     yield home
-    for _replaced, _ident, fds in published.values():
-        for fd in fds:
-            os.close(fd)
+    for run in published.values():
+        for _replaced, _ident, fds in run:
+            for fd in fds:
+                os.close(fd)
 
 
 def _as_the_pass_records_it(path: Path) -> list[int]:
@@ -182,27 +183,125 @@ def test_a_file_swapped_in_right_after_the_publish_is_not_vouched_for(
     assert reason is not None and "DIFFERENT object" in reason
 
 
-def test_only_the_latest_save_is_vouched_for_and_held_open(_home: Path) -> None:
-    """The record lists one identity per name, the live one, with a descriptor held on it."""
+def test_two_gateway_writes_after_the_pass_do_not_refuse_the_seal(
+    tmp_path: Path, _home: Path
+) -> None:
+    """A burst of the gateway's own saves inside one spawn's window is still its own write.
+
+    On a fresh host the boot writers save ``config.json`` in quick succession while the
+    first sandboxed spawns (a default install's registry clone) run, so a pass can see a
+    file two saves older than the one its pin meets.
+    """
+    sealed = _home / "config.json"
+    carried = _as_the_pass_records_it(sealed)
+
+    _gateway_write(_home)
+    _gateway_write(_home)
+
+    reason, libc = _seal(tmp_path, sealed, carried)
+    assert reason is None, f"two routine config writes refused the spawn: {reason}"
+    assert identity(sealed) in [call.target_id for call in libc.calls]
+
+
+def test_a_pass_from_the_middle_of_a_burst_does_not_refuse_either(
+    tmp_path: Path, _home: Path
+) -> None:
+    sealed = _home / "config.json"
+    _gateway_write(_home)
+    carried = _as_the_pass_records_it(sealed)
+    _gateway_write(_home)
+    _gateway_write(_home)
+
+    reason, _ = _seal(tmp_path, sealed, carried)
+    assert reason is None, f"a pass inside a burst of saves refused the spawn: {reason}"
+
+
+def test_a_rewrite_the_gateway_did_not_publish_inside_a_burst_still_refuses(
+    tmp_path: Path, _home: Path
+) -> None:
+    """A foreign rewrite between two gateway saves breaks the run: nothing before it is vouched.
+
+    The foreign file is held open so its inode number is not handed to a later file.
+    """
+    sealed = _home / "config.json"
+    carried = _as_the_pass_records_it(sealed)
+    _gateway_write(_home)
+    staged = sealed.with_name("config.json.terminal")
+    staged.write_text(sealed.read_text(encoding="utf-8"), encoding="utf-8")
+    os.replace(staged, sealed)
+    with open(sealed, "rb"):
+        _gateway_write(_home)
+
+        reason, _ = _seal(tmp_path, sealed, carried)
+    assert reason is not None and "DIFFERENT object" in reason
+
+
+def test_an_older_file_of_the_run_put_back_still_refuses(tmp_path: Path, _home: Path) -> None:
+    """Only the run's LATEST file is vouched for; an earlier one restored is a rollback."""
+    sealed = _home / "config.json"
+    carried = _as_the_pass_records_it(sealed)
+    _gateway_write(_home)
+    older = sealed.with_name("config.json.kept")
+    os.link(sealed, older)
+    _gateway_write(_home)
+    os.replace(older, sealed)
+
+    reason, _ = _seal(tmp_path, sealed, carried)
+    assert reason is not None and "DIFFERENT object" in reason
+
+
+def test_the_record_points_every_file_of_the_run_at_the_latest_and_holds_them_open(
+    _home: Path,
+) -> None:
+    sealed = _home / "config.json"
+    seen = [identity(sealed)]
     for _ in range(3):
         _gateway_write(_home)
-    before = identity(_home / "config.json")
-    _gateway_write(_home)
-    (pdev, pino), (dev, ino), (fd, prev_fd) = wp._PUBLISHED["config.json"]
-    info = os.fstat(fd)
-    prev = os.fstat(prev_fd)
-    assert (prev.st_dev, prev.st_ino) == (pdev, pino)
-    assert (info.st_dev, info.st_ino) == (dev, ino) == identity(_home / "config.json")
-    assert (pdev, pino) == before
+        seen.append(identity(sealed))
+    run = wp._PUBLISHED["config.json"]
+    assert [entry[0] for entry in run] == seen[:-1]
+    assert [entry[1] for entry in run] == seen[1:]
+    for replaced, published, (fd, prev_fd) in run:
+        assert (os.fstat(fd).st_dev, os.fstat(fd).st_ino) == published
+        assert (os.fstat(prev_fd).st_dev, os.fstat(prev_fd).st_ino) == replaced
+    dev, ino = seen[-1]
     lines = wp.record_path().read_text(encoding="utf-8").splitlines()
-    assert lines[1:] == [f"config.json {pdev} {pino} {dev} {ino}"]
+    assert lines[1:] == [f"config.json {pdev} {pino} {dev} {ino}" for pdev, pino in seen[:-1]]
+
+
+def test_the_run_is_bounded_and_releases_what_it_drops(
+    tmp_path: Path, _home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass more saves back than the record carries refuses, as before the record."""
+    monkeypatch.setattr(wp, "_MAX_RUN", 2)
+    sealed = _home / "config.json"
+    carried = _as_the_pass_records_it(sealed)
+    closed: list[tuple[int, ...]] = []
+    real_close = wp._close
+
+    def _close(fds: tuple[int, ...]) -> None:
+        closed.append(fds)
+        real_close(fds)
+
+    monkeypatch.setattr(wp, "_close", _close)
+    with open(sealed, "rb"):
+        _gateway_write(_home)
+        first = wp._PUBLISHED["config.json"][0]
+        _gateway_write(_home)
+        _gateway_write(_home)
+        assert first not in wp._PUBLISHED["config.json"]
+        assert len(wp._PUBLISHED["config.json"]) == 2
+        assert closed == [first[2]]
+
+        reason, _ = _seal(tmp_path, sealed, carried)
+    assert reason is not None and "DIFFERENT object" in reason
 
 
 def test_the_replaced_file_is_held_open_so_its_number_is_not_reused(_home: Path) -> None:
     """With the replaced file gone from the name, its inode stays allocated to it."""
     sealed = _home / "config.json"
     _gateway_write(_home)
-    (pdev, pino), _ident, fds = wp._PUBLISHED["config.json"]
+    (pdev, pino), _ident, fds = wp._PUBLISHED["config.json"][-1]
     assert len(fds) == 2
     for _ in range(20):
         probe = _home / "probe"

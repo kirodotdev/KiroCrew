@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from taskrunner_switch_helpers import turn_task_runner_off
 
 import kiro_crew.messaging.commands as commands
 from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
@@ -50,6 +51,7 @@ from kiro_crew.messaging.commands import (
 )
 from kiro_crew.messaging.queue_drain import owner_token
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, receipt_text
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class _Surface:
@@ -562,11 +564,27 @@ class TestLayering:
         """The module the channel reply reads the kinds from imports nothing from
         ``kiro_crew`` itself, so reading it can never grow into the edge above;
         and it agrees with what ``kiro_crew.subagent`` re-exports."""
-        import importlib
+        import kiro_crew.subagent_wait_reasons as leaf
 
-        leaf = importlib.import_module("kiro_crew.subagent_wait_reasons")
-        tree = ast.parse(Path(leaf.__file__).read_text(encoding="utf-8"))
-        edges = [
+        assert self._kiro_crew_imports(leaf.__file__) == []
+        from kiro_crew import subagent as sub
+
+        assert sub.DEFERRED_QUEUED_REASONS is leaf.DEFERRED_QUEUED_REASONS
+        assert leaf.QUEUED_REASON_CONCURRENCY_LIMIT not in leaf.DEFERRED_QUEUED_REASONS
+
+    def test_the_host_spawn_decision_comes_from_a_leaf_module(self) -> None:
+        """The spawn-approval seam returns ``HostSpawnDecision`` from a module that
+        imports nothing from ``kiro_crew``, the same class the facade re-exports."""
+        import kiro_crew.subagent_host_decision as leaf
+        from kiro_crew import subagent as sub
+
+        assert self._kiro_crew_imports(leaf.__file__) == []
+        assert sub.HostSpawnDecision is leaf.HostSpawnDecision
+
+    @staticmethod
+    def _kiro_crew_imports(path: str | None) -> list[str]:
+        tree = ast.parse(Path(str(path)).read_text(encoding="utf-8"))
+        return [
             (node.module or "")
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("kiro_crew")
@@ -577,11 +595,6 @@ class TestLayering:
             for a in node.names
             if a.name.startswith("kiro_crew")
         ]
-        assert edges == [], edges
-        from kiro_crew import subagent as sub
-
-        assert sub.DEFERRED_QUEUED_REASONS is leaf.DEFERRED_QUEUED_REASONS
-        assert leaf.QUEUED_REASON_CONCURRENCY_LIMIT not in leaf.DEFERRED_QUEUED_REASONS
 
     def test_the_allowed_edge_list_has_no_stale_entries(self) -> None:
         """An exception that does not exist must be deleted, not left to rot.
@@ -604,7 +617,9 @@ class TestLayering:
         assert not stale, f"remove these from _ALLOWED_SURFACE_EDGES: {stale}"
 
 
-_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+# A synthetic 40-char AWS secret the credential plan redacts.
+#: A GitHub token: a bare 40-character run is no credential by itself.
+_TOKEN = github_classic(seed=88)
 
 #: A non-Slack conversation key. Namespaced rather than a bare id because this is
 #: the shape every channel's session key has, and the value is forwarded verbatim.
@@ -739,14 +754,14 @@ class TestSpawn:
         # task is free-form text a user typed or an LLM proposed.
         manager = MagicMock(max_concurrent=2)
         manager.spawn.return_value = SimpleNamespace(id="r1")
-        out = await spawn_task_reply(f"push with {_AWS_KEY}", manager) or ""
-        assert _AWS_KEY not in out
+        out = await spawn_task_reply(f"push with {_TOKEN}", manager) or ""
+        assert _TOKEN not in out
 
     @pytest.mark.asyncio
     async def test_a_listed_task_is_redacted(self) -> None:
-        agent = SimpleNamespace(id="a1", started=time.time(), task=f"key {_AWS_KEY}")
+        agent = SimpleNamespace(id="a1", started=time.time(), task=f"key {_TOKEN}")
         out = await spawn_task_reply("list", MagicMock(running=[agent])) or ""
-        assert _AWS_KEY not in out
+        assert _TOKEN not in out
 
 
 class TestCron:
@@ -768,8 +783,8 @@ class TestCron:
     @pytest.mark.asyncio
     async def test_a_job_message_is_redacted_in_the_listing(self) -> None:
         svc = MagicMock()
-        svc.list_jobs.return_value = [_job("j1", message=f"post {_AWS_KEY}")]
-        assert _AWS_KEY not in (await cron_command_reply("cron list", svc) or "")
+        svc.list_jobs.return_value = [_job("j1", message=f"post {_TOKEN}")]
+        assert _TOKEN not in (await cron_command_reply("cron list", svc) or "")
 
     @pytest.mark.parametrize(
         "verb,enabled,mark",
@@ -814,9 +829,9 @@ class TestCron:
     @pytest.mark.asyncio
     async def test_remove_all_redacts_each_job_name(self) -> None:
         svc = MagicMock()
-        svc.list_jobs.return_value = [_job("j1", name=f"leak {_AWS_KEY}")]
+        svc.list_jobs.return_value = [_job("j1", name=f"leak {_TOKEN}")]
         svc.remove_jobs = AsyncMock(return_value=(["j1"], []))
-        assert _AWS_KEY not in (await cron_remove_all_reply(svc) or "")
+        assert _TOKEN not in (await cron_remove_all_reply(svc) or "")
 
     @pytest.mark.asyncio
     async def test_every_channel_forwards_delete_attribution_not_only_slack(self) -> None:
@@ -877,18 +892,14 @@ class TestCron:
 
 class TestTaskRunner:
     @pytest.mark.asyncio
-    async def test_a_disabled_task_runner_app_refuses_the_start(self, tmp_path: Any) -> None:
+    async def test_task_runner_turned_off_refuses_the_start(self, tmp_path: Any) -> None:
         spec = tmp_path / "plan.yaml"
         spec.write_text("steps: []", encoding="utf-8")
         runner = MagicMock(running=False)
         runner.start_background = AsyncMock()
-        with patch(
-            "kiro_crew.apps.manager._read_installed",
-            return_value=SimpleNamespace(enabled=False),
-        ) as read:
-            out = await task_command_reply(f"task run {spec}", runner) or ""
-        assert "Task Runner is disabled" in out
-        read.assert_called_once_with("projects")
+        turn_task_runner_off()
+        out = await task_command_reply(f"task run {spec}", runner) or ""
+        assert "Task Runner is turned off" in out
         runner.start_background.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -953,9 +964,9 @@ class TestTaskRunner:
         spec = tmp_path / "plan.yaml"
         spec.write_text("steps: []", encoding="utf-8")
         runner = MagicMock(running=False)
-        runner.start_background = AsyncMock(side_effect=RuntimeError(f"bad {_AWS_KEY}"))
+        runner.start_background = AsyncMock(side_effect=RuntimeError(f"bad {_TOKEN}"))
         out = await task_command_reply(f"task run {spec}", runner) or ""
-        assert "Failed to start" in out and _AWS_KEY not in out
+        assert "Failed to start" in out and _TOKEN not in out
 
     @pytest.mark.asyncio
     async def test_the_keyword_grammar_carries_the_session_key(self, tmp_path: Any) -> None:

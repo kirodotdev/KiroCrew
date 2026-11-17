@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { createHangRecovery, DEFAULT_GRACE_MS } = require("../hang-recovery");
+const { createHangRecovery, endHungRenderer, DEFAULT_GRACE_MS } = require("../hang-recovery");
 
 // A coordinator wired entirely to fakes: Electron main is not available here,
 // and a real hung WebContents cannot be simulated in a unit test at all. Timers
@@ -167,4 +167,65 @@ test("the default grace is sane and overridable", () => {
   });
   rec.handleUnresponsive();
   assert.deepStrictEqual(captured, [250]);
+});
+
+// A WebContents double that records which kill path was taken.
+function fakeContents(pid = 4242) {
+  const calls = [];
+  return {
+    calls,
+    forcefullyCrashRenderer: () => calls.push("forcefullyCrashRenderer"),
+    getOSProcessId: () => pid,
+  };
+}
+
+test("a native app ends a hung renderer with forcefullyCrashRenderer", () => {
+  const wc = fakeContents();
+  const kills = [];
+  const outcome = endHungRenderer(wc, {
+    underTranslation: false,
+    kill: (pid, sig) => kills.push([pid, sig]),
+  });
+  assert.strictEqual(outcome, "force-crashed");
+  assert.deepStrictEqual(wc.calls, ["forcefullyCrashRenderer"]);
+  assert.deepStrictEqual(kills, []);
+});
+
+test("under Rosetta a hung renderer is killed by pid, never force-crashed", () => {
+  // forcefullyCrashRenderer's Crashpad dump aborts a translated main process.
+  const wc = fakeContents(4242);
+  const kills = [];
+  const outcome = endHungRenderer(wc, {
+    underTranslation: true,
+    kill: (pid, sig) => kills.push([pid, sig]),
+  });
+  assert.strictEqual(outcome, "killed");
+  assert.deepStrictEqual(kills, [[4242, "SIGKILL"]]);
+  assert.deepStrictEqual(wc.calls, [], "the crashing path is not taken");
+});
+
+test("under Rosetta a renderer with no process is left alone", () => {
+  const wc = fakeContents(0);
+  const kills = [];
+  const outcome = endHungRenderer(wc, {
+    underTranslation: true,
+    kill: (pid, sig) => kills.push([pid, sig]),
+  });
+  assert.strictEqual(outcome, "no-process");
+  assert.deepStrictEqual(kills, []);
+  assert.deepStrictEqual(wc.calls, []);
+});
+
+test("the main window routes its hang kill through endHungRenderer with the macOS Rosetta flag", () => {
+  const fs = require("fs");
+  const path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "window-lifecycle.js"), "utf8");
+  assert.ok(
+    !src.includes("webContents.forcefullyCrashRenderer("),
+    "window-lifecycle must not force-crash directly: under Rosetta that aborts the app",
+  );
+  assert.match(
+    src,
+    /endHungRenderer\(mainWindow\.webContents,\s*\{\s*underTranslation:\s*process\.platform === "darwin" && app\.runningUnderARM64Translation === true/,
+  );
 });

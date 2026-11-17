@@ -1318,8 +1318,10 @@ async def api_project_git_repos(request: web.Request) -> web.Response:
     listed = 0
     refused = False
     project_shown = False
+    from kiro_crew.security import refuses
+
     if project_root:
-        if _redact_project_path(project) == project:
+        if not refuses(project, _redact_project_path):
             repos.append({"path": project, "source": "project"})
             project_shown = True
         else:
@@ -1328,7 +1330,7 @@ async def api_project_git_repos(request: web.Request) -> web.Response:
         if root == project_root and project_shown:
             listed += 1
             continue
-        if _redact_project_path(root) != root:
+        if refuses(root, _redact_project_path):
             refused = True
             continue
         repos.append({"path": root, "source": "agent"})
