@@ -1,0 +1,6 @@
++27
+The paren walk resumes at a span's open: `_quote_states` records the quote state a
+walk from offset 0 holds at each step, `_matching_close_paren` starts there for
+`_substitution_bodies` and `shell_commands.without_substitutions`, and
+`_iter_shell_chars` takes a start offset instead of a copied slice. Same verdicts,
+less work.
