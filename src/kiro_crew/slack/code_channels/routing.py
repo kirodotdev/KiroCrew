@@ -29,7 +29,7 @@ import os
 import re
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -1844,24 +1844,6 @@ async def _deliver_first_turn(
 # ── Stop ──────────────────────────────────────────────────────────────────
 
 
-def _idle_stop_text(binding: Binding | None, link_for: Callable[[str], str]) -> str:
-    """The answer to a Stop while the channel's own session is idle.
-
-    A Stop stops only that session, so helper agents still running are named,
-    each linked to its chat (:func:`~.board.render.idle_stop_text`). Synchronous:
-    the helpers are read, under the board's scope check, right before the send.
-    """
-    from kiro_crew.slack.code_channels.board import render
-    from kiro_crew.slack.code_channels.workspace import core as workspace
-
-    try:
-        service = workspace.service()
-        helpers = service.running_helpers(binding) if service is not None and binding else []
-    except Exception:
-        helpers = []
-    return render.idle_stop_text(helpers, link_for, str(getattr(binding, "session_key", "") or ""))
-
-
 async def _stop_bound(
     orch: Any,
     binding: Binding | None,
@@ -1871,7 +1853,8 @@ async def _stop_bound(
     source: str,
     say_idle: bool = True,
 ) -> str:
-    from kiro_crew.slack.code_channels import surface
+    """Stop the channel's session, its helper agents and their sub-agents (:mod:`.stop_helpers`)."""
+    from kiro_crew.slack.code_channels import stop_helpers, surface
 
     # First, before any await: work admitted before this press (an in-flight
     # tool call, a wrap-up) writes nothing more to Slack.
@@ -1879,42 +1862,9 @@ async def _stop_bound(
     from kiro_crew.slack.code_channels.status import hold_after_turn
 
     hold_after_turn(channel, None)  # a Stop clears the agent's "suspended" hold
-    state = _dashboard_state()
-    slot = bound_slot(state, binding) if binding is not None else None
-    if state is None or slot is None or not getattr(slot, "running", False):
-        _audit(sender_id, source, "allowed", f"channel={channel} result=idle")
-        # Nothing to stop, but Slack never clears "processing" by itself.
-        from kiro_crew.slack.code_channels.status import settle_after_stop
-
-        await settle_after_stop(channel)
-        if binding is not None:
-            # Stop set the status itself: the watch's record of what it showed is
-            # stale, so its next pass shows the helper agents' state again.
-            from kiro_crew.slack.code_channels.workspace import core as workspace
-
-            service = workspace.service()
-            if service is not None:
-                service._forget_worker_status(binding)
-        if say_idle:
-            from kiro_crew.slack.code_channels.board import links
-
-            link_for = await asyncio.to_thread(links.link_builder)
-            # No await from here to the raw send: the helpers named are the ones
-            # the board's scope admits when the reply goes out.
-            await _post(orch, channel, _idle_stop_text(binding, link_for), None)
-        return "idle"
-    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
-
-    # Each call is a person's own press: a redelivered ``!stop`` is answered from
-    # ``inbound_gate``'s per-message memory and a redelivered native Stop is
-    # dropped by its ``event_ts`` before reaching here, so a second call is a
-    # second decision and may take the escalation (the compaction escape too).
-    result = await stop_slot_turn(state, slot, source="slack", escalate=True)
-    info = str(result.get("info") or "stopping")
-    _audit(sender_id, source, "allowed", f"channel={channel} slot={slot.key} result={info}")
-    if result.get("compacting"):
-        await _post(orch, channel, COMPACTING_STOP_TEXT, None)
-    return info
+    return await stop_helpers.stop_channel(
+        orch, binding, sender_id, channel, source=source, say_idle=say_idle
+    )
 
 
 def channel_session_running(channel: str) -> bool:

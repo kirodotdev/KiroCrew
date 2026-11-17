@@ -1127,58 +1127,6 @@ async def test_bang_stop_in_a_code_channel_stops_the_bound_session(env: Env) -> 
     assert env.slack.posts == [("C0CODE", "Nothing running.", None)]
 
 
-async def test_bang_stop_with_helper_agents_running_says_where_to_stop_one(
-    env: Env, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """UX review on 71814c435c: the reply sent people to a board row with no link."""
-    from kiro_crew.slack.code_channels.board import links
-    from kiro_crew.slack.code_channels.workspace import core as workspace
-
-    helpers = SimpleNamespace(
-        running_helpers=lambda binding: [("chat-w1", "Fix login"), ("chat-w2", "")],
-        _forget_worker_status=lambda binding: None,
-    )
-    monkeypatch.setattr(workspace, "service", lambda: helpers)
-    monkeypatch.setattr(links, "link_builder", lambda: lambda key: f"https://dash.example/{key}")
-    _bind(env)
-    env.info("C0CODE")
-    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
-    assert (await _gate(env, event)).gate is Gate.DROP
-    [(_channel, text, _ts)] = env.slack.posts
-    assert text.startswith(
-        "This channel's session isn't running, but 2 helper agents still are: "
-        "<https://dash.example/chat-w1|Fix login> and 1 more. To stop one, open it (the rest "
-        "from <https://dash.example/"
-    )
-    assert "work board" not in text and "*Stop generation*" in text
-
-
-async def test_an_idle_stop_names_helpers_only_if_the_board_still_admits_them_at_the_send(
-    env: Env, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GPT on f4d2c8f6aa: the channel turned shared during the link builder's await."""
-    from kiro_crew.slack.code_channels.board import links
-    from kiro_crew.slack.code_channels.workspace import core as workspace
-
-    admitted = [True]
-    helpers = SimpleNamespace(
-        running_helpers=lambda binding: [("chat-w1", "Fix login")] if admitted[0] else [],
-        _forget_worker_status=lambda binding: None,
-    )
-
-    def builder():
-        admitted[0] = False  # the audience refresh lands while the builder runs
-        return lambda key: f"https://dash.example/{key}"
-
-    monkeypatch.setattr(workspace, "service", lambda: helpers)
-    monkeypatch.setattr(links, "link_builder", builder)
-    _bind(env)
-    env.info("C0CODE")
-    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "!stop"}
-    assert (await _gate(env, event)).gate is Gate.DROP
-    assert env.slack.posts == [("C0CODE", "Nothing running.", None)]
-
-
 async def test_an_idle_stop_lets_the_watch_show_the_helper_agents_state_again(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1188,7 +1136,6 @@ async def test_an_idle_stop_lets_the_watch_show_the_helper_agents_state_again(
 
     forgot: list[str] = []
     helpers = SimpleNamespace(
-        running_helpers=lambda binding: [("chat-w1", "")],
         _forget_worker_status=lambda binding: forgot.append(binding.channel_id),
     )
     monkeypatch.setattr(workspace, "service", lambda: helpers)
