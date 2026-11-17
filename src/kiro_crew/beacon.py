@@ -151,7 +151,9 @@ DO_NOT_TRACK_ENV = "DO_NOT_TRACK"
 # ``PRIVACY_NOTICE_VERSION`` in ``website/src/components/privacyNotice.ts``; a
 # test pins the two together. Bump both when the notice says something new.
 # Version 3 names the built-in Kiro telemetry destination (metrics/kiro_export.py).
-PRIVACY_NOTICE_VERSION = 3
+# Version 4 names the apps it counts: built-in apps when installed or used, and
+# store apps by their public store name once installed (``kirocrew.app.installed``).
+PRIVACY_NOTICE_VERSION = 4
 
 # Env vars marking an automated environment. CI installs are not humans using
 # the product; counting them would inflate DAU with every pipeline run.

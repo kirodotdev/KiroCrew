@@ -8478,6 +8478,7 @@
     "privacyChapter": {
       "changeLater": "설정 > 개인정보 보호에서 언제든지 변경할 수 있습니다. 성능 메트릭은 '메트릭 기록' 스위치, 하트비트는 '익명 사용 하트비트 전송' 스위치입니다.",
       "collectedFeatures": "기능 사용 빈도, 오류 및 재시도",
+      "collectedApps": "설치되었거나 사용된 기본 제공 앱과 설치된 스토어 앱(스토어의 공개 이름). 다른 곳에서 추가한 앱은 이름 없이 집계됩니다.",
       "collectedInstallId": "사용자와 연결되지 않는 무작위 설치 ID",
       "collectedTimings": "시작, 응답, 작업 등에 걸리는 시간",
       "collectedTitle": "수집하는 항목",

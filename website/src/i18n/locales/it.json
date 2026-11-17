@@ -8910,6 +8910,7 @@
     "privacyChapter": {
       "changeLater": "Puoi cambiare questa scelta in qualsiasi momento in Impostazioni > Privacy: le metriche di prestazione sono l'interruttore «Registra le metriche» e l'heartbeat è l'interruttore «Invia segnale di utilizzo anonimo».",
       "collectedFeatures": "Quanto spesso vengono usate le funzioni, più errori e nuovi tentativi",
+      "collectedApps": "Quali app integrate sono installate o usate e quali app dello store sono installate, con il loro nome pubblico nello store. Le app che aggiungi da qualsiasi altra fonte vengono contate senza nome.",
       "collectedInstallId": "Un ID di installazione casuale non collegato a te",
       "collectedTimings": "Quanto tempo richiedono le operazioni, come l'avvio, le risposte e le azioni",
       "collectedTitle": "Cosa viene raccolto",

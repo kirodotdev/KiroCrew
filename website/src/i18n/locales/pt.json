@@ -8910,6 +8910,7 @@
     "privacyChapter": {
       "changeLater": "Você pode mudar isso a qualquer momento em Configurações > Privacidade: as métricas de desempenho são o interruptor “Registrar métricas” e o sinal é o interruptor “Enviar sinal de uso anônimo”.",
       "collectedFeatures": "Com que frequência os recursos são usados, além de erros e novas tentativas",
+      "collectedApps": "Quais apps integrados estão instalados ou são usados, e quais apps da loja estão instalados, pelo nome público na loja. Apps que você adiciona de qualquer outro lugar são contados sem nome.",
       "collectedInstallId": "Um ID de instalação aleatório que não está vinculado a você",
       "collectedTimings": "Quanto tempo as coisas levam, como a inicialização, as respostas e as ações",
       "collectedTitle": "O que é coletado",

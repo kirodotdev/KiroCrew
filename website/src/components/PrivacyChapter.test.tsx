@@ -76,6 +76,8 @@ describe('PrivacyChapter', () => {
     expect(screen.getByText(/records performance metrics on this machine/)).toBeInTheDocument()
     expect(screen.getByText('What is collected')).toBeInTheDocument()
     expect(screen.getByText('A random install ID that is not linked to you')).toBeInTheDocument()
+    // App names can leave the machine as product metrics, so the list says so.
+    expect(screen.getByText(/Which built-in apps are installed or used, and which store apps are installed, by their public store name\./)).toBeInTheDocument()
     expect(screen.getByText('What is never collected')).toBeInTheDocument()
     expect(screen.getByText("Your prompts or the model's replies")).toBeInTheDocument()
     expect(screen.getByText('Where it goes')).toBeInTheDocument()

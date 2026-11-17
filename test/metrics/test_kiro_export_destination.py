@@ -102,6 +102,16 @@ class TestWhoSends:
     def test_a_new_install_exports_once_the_notice_was_shown(self, home, monkeypatch):
         assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
 
+    def test_a_v3_ack_still_exports_after_the_notice_moves_on(self, home, monkeypatch):
+        """The line naming it shipped in notice 3; a later notice does not pause export."""
+        assert kiro_export.NOTICE_VERSION == 3 < beacon.PRIVACY_NOTICE_VERSION
+        _write_config(home, {}, ack=3, kiro_ack=3)
+        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
+
+    def test_an_ack_of_the_current_notice_exports(self, home, monkeypatch):
+        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION)
+        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
+
     def test_a_notice_ack_that_did_not_name_it_does_not_count(self, home, monkeypatch):
         """Acknowledged under a non-default home, where the chapter never named it."""
         _write_config(home, {}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
@@ -278,7 +288,9 @@ class TestNotice:
         assert notice.maybe_print_notice(stream=out, headless=True) is True
         assert out.getvalue().strip() == notice.NOTICE_TEXT_KIRO
         assert notice.stamped_version() == beacon.PRIVACY_NOTICE_VERSION
-        assert notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == kiro_export.NOTICE_VERSION
+        assert (
+            notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == beacon.PRIVACY_NOTICE_VERSION
+        )
         assert kiro_export.notice_shown() is True
         assert notice.maybe_print_notice(stream=io.StringIO(), headless=True) is False
 
@@ -319,7 +331,7 @@ class TestNotice:
 
         _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
         assert core_handlers._theme_payload(KiroCrewConfig.load())["privacy_ack_version"] == 0
-        _write_config(home, {})
+        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION)
         assert (
             core_handlers._theme_payload(KiroCrewConfig.load())["privacy_ack_version"]
             == beacon.PRIVACY_NOTICE_VERSION
@@ -449,7 +461,7 @@ class TestOffOffer:
         elif case == "heartbeat_off":
             self._old_default(home, beacon_enabled=False)
         elif case == "acked":
-            _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
+            _write_config(home, {"enabled": False}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
         elif case == "unset":
             _write_config(home, {}, ack=2, kiro_ack=0)
             monkeypatch.setattr(pm, "_consent_enabled", lambda tel: False)
@@ -480,7 +492,7 @@ class TestOffOffer:
         assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
 
     def test_keep_off_is_not_asked_again_and_sends_nothing(self, home, monkeypatch):
-        _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
+        _write_config(home, {"enabled": False}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
         assert kiro_export.off_offer_due() is False
         assert _built(monkeypatch, home) == (False, [])
 

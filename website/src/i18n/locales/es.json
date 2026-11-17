@@ -8910,6 +8910,7 @@
     "privacyChapter": {
       "changeLater": "Puedes cambiarlo cuando quieras en Configuración > Privacidad: las métricas de rendimiento son el interruptor «Registrar métricas» y el latido es el interruptor «Enviar señal de uso anónima».",
       "collectedFeatures": "Con qué frecuencia se usan las funciones, además de errores y reintentos",
+      "collectedApps": "Qué apps integradas están instaladas o se usan, y qué apps de la tienda están instaladas, con su nombre público en la tienda. Las apps que añades desde cualquier otro sitio se cuentan sin nombre.",
       "collectedInstallId": "Un ID de instalación aleatorio que no está vinculado a ti",
       "collectedTimings": "Cuánto tardan las cosas, como el inicio, las respuestas y las acciones",
       "collectedTitle": "Qué se recopila",

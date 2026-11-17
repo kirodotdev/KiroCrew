@@ -8478,6 +8478,7 @@
     "privacyChapter": {
       "changeLater": "你可以随时在“设置 > 隐私”中更改：性能指标对应“记录指标”开关，心跳对应“发送匿名使用心跳”开关。",
       "collectedFeatures": "功能的使用频率，以及错误和重试",
+      "collectedApps": "安装了或使用了哪些内置应用、安装了哪些商店应用，按它们在商店中的公开名称记录。从其他来源添加的应用只计数，不记录名称。",
       "collectedInstallId": "一个与你无关联的随机安装 ID",
       "collectedTimings": "各项操作的耗时，例如启动、回复和各类动作",
       "collectedTitle": "会收集什么",
