@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -42,6 +43,7 @@ def _pause_store(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_pause, "_records", {})
     _floor_monkeypatch.setattr(crew_pause, "_stored", {}, raising=False)
     _floor_monkeypatch.setattr(crew_pause, "_memory_only", {}, raising=False)
+    _floor_monkeypatch.setattr(crew_pause, "_spilled", {}, raising=False)
     _floor_monkeypatch.setattr(crew_pause, "_resuming", {})
     _floor_monkeypatch.setattr(crew_pause, "_unsaved", False)
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", set())
@@ -54,6 +56,7 @@ def _forget_memory() -> None:
     crew_pause._records = {}
     crew_pause._stored = {}
     crew_pause._memory_only = {}
+    crew_pause._spilled = {}
     crew_pause._resuming = {}
     crew_pause._loaded_from = None
 
@@ -304,6 +307,85 @@ def test_a_refused_continue_fits_back_beside_another_owed_turn_kept_in_memory(
     assert rec["stopped"] == sorted(["w2", _LONG]) and _LONG in rec["held"]
     _restart()
     assert _LONG in crew_pause.record("root")["stopped"]
+
+
+def test_a_refused_continue_fits_back_after_another_crews_continue_stored_an_owed_turn(
+    _pause_store, monkeypatch
+):
+    owed = "chat-" + "b" * 100  # smaller than _LONG's record, bigger than c1's entries
+    # Crew a: a Resume all left only _LONG held, so its Continue ends the record.
+    crew_pause.keep_pending("a", [_LONG], root_pending=False)
+    crew_pause.pause("b", ["b1", owed], ["b1"])
+    crew_pause.pause("c", ["c1", "c2"], ["c1"])
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+    assert crew_pause.owe_turn(owed) is True  # the cap refused it: memory only
+    removed = crew_pause.release(_LONG)  # a's room stays free for its undo
+    assert crew_pause._memory_only == {"b": {"owed": [owed], "stopped": [owed]}}
+    # Crew c's own Continue lands while a's is still being decided: it stores
+    # b's owed turn in the room a freed.
+    assert crew_pause.release("c1")
+    assert crew_pause._memory_only == {}
+    # a's Continue is refused: a comes back, and b's owed turn, once refused by the
+    # file, goes back to memory only to make the room.
+    crew_pause.rehold(_LONG, removed)
+    assert crew_pause.holds_turn(_LONG) and _LONG in crew_pause.record("a")["held"]
+    assert crew_pause.record("b")["owed"] == [owed]
+    assert crew_pause._memory_only == {"b": {"owed": [owed], "stopped": [owed]}}
+    _restart()
+    assert _LONG in crew_pause.record("a")["held"]
+
+
+def test_a_pause_at_the_cap_never_drops_an_owed_turn_a_later_write_stored(
+    _pause_store, monkeypatch
+):
+    owed = "chat-" + "o" * 60
+    crew_pause.pause("root", ["w1", owed], ["w1"])
+    crew_pause.pause("big", [f"chat-member-{i}" for i in range(40)], [])
+    _owe_at_the_cap(_pause_store, monkeypatch, owed)
+    assert crew_pause.resume("big") is not None  # frees room, kept for its undo
+    assert crew_pause.owe_turn(owed) is True  # the gate's next refusal stores it
+    assert crew_pause._memory_only == {}
+    # A Pause all of another crew would fit only by dropping that stored turn.
+    grown = crew_pause._copy_records()
+    grown["new"] = {
+        "tree": ["n1"],
+        "held": ["n1"],
+        "stopped": [],
+        "owed": [],
+        "paused_at": datetime.now(timezone.utc).isoformat(),
+        "root_released": False,
+    }
+    trimmed = crew_pause._without(grown, {"root": {"owed": [owed], "stopped": [owed]}})
+    # The slack covers the timestamp's optional microseconds, not the two entries.
+    cap = len(crew_pause._body(trimmed, {}).encode("utf-8")) + 16
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", cap)
+    with pytest.raises(OSError):
+        crew_pause.pause("new", ["n1"], [])
+    _restart()
+    assert crew_pause.record("new") is None
+    assert crew_pause.record("root")["owed"] == [owed]
+
+
+def test_a_refused_continue_fits_back_after_another_refused_continue_stored_its_owed_turn(
+    _pause_store, monkeypatch
+):
+    owed = "chat-" + "b" * 100  # smaller than _LONG's record
+    # Crew a: a Resume all left only _LONG held, so its Continue ends the record.
+    crew_pause.keep_pending("a", [_LONG], root_pending=False)
+    crew_pause.pause("b", ["b1", owed], ["b1"])
+    monkeypatch.setattr(crew_pause, "MAX_FILE_BYTES", _pause_store.stat().st_size)
+    assert crew_pause.owe_turn(owed) is True  # the cap refused it: memory only
+    removed_a = crew_pause.release(_LONG)  # a's room stays free for its undo
+    removed_b = crew_pause.release(owed)
+    # b's Continue is refused first: its undo stores b's owed turn in a's room.
+    crew_pause.rehold(owed, removed_b)
+    assert crew_pause._memory_only == {}
+    # a's Continue is refused too: b's owed turn goes back to memory only to fit.
+    crew_pause.rehold(_LONG, removed_a)
+    assert crew_pause.holds_turn(_LONG) and crew_pause.holds_turn(owed)
+    assert crew_pause.record("b")["owed"] == [owed]
+    _restart()
+    assert _LONG in crew_pause.record("a")["held"]
 
 
 @pytest.mark.parametrize(
