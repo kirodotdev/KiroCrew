@@ -339,6 +339,7 @@ export default function ChatTranscriptView({
             disclosureKey={`ctg-${vi.key}`}
             hasPermission={false}
             isRunning={slotRunning && displayIdx === renderedDisplayItems.length - 1}
+            runningTool={item.msgs.findLast(m => m.role === 'tool')}
             permissionMeta={unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined}
             pendingPermCount={unresolvedGroupPerms.length}
             onApprove={(() => {

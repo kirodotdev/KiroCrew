@@ -24,6 +24,10 @@ interface CollapsibleToolGroupProps {
   disclosureKey?: string
   hasPermission?: boolean
   isRunning?: boolean
+  /** The newest tool row in the group. While running, the header names its step
+   *  ("Drive browser", "Read src/a.ts") instead of "Running tools" when a title
+   *  can be derived for it. */
+  runningTool?: { content: string; meta?: Record<string, unknown> }
   children: ReactNode
   /** Permission message meta — used to extract command preview when approval pending. */
   permissionMeta?: Record<string, unknown>
@@ -117,10 +121,32 @@ function derivedHeading(meta?: Record<string, unknown>): string {
   return d.derived ? d.title : ''
 }
 
+/**
+ * The step a running tool row performs, in the same words its own row uses
+ * (`Drive browser`, `Read src/a.ts`), or '' when no title can be derived and
+ * the header keeps its generic "Running tools". Reads the meta `_tool_meta`
+ * persists on the row (chat_turn/tool_rows.py), as ToolCallLine does for a
+ * replayed row.
+ */
+function runningStep(row?: { content: string; meta?: Record<string, unknown> }): string {
+  if (!row) return ''
+  const meta = row.meta || {}
+  const str = (v: unknown) => (typeof v === 'string' ? v : '')
+  const d = deriveToolCallTitle({
+    title: row.content.replace(/^🔧\s*/, ''),
+    kind: str(meta.kind),
+    rawInput: meta.input,
+    isShell: meta.kind === 'execute',
+    toolName: str(meta.tool_name),
+    mcpServer: str(meta.mcp_server),
+  })
+  return d.derived ? sanitizeLlmOutput(d.title) : ''
+}
+
 /** Collapsible row that wraps tool/thinking/permission messages — collapsed unless autoExpand or the
  *  "Tool calls start expanded" chat setting is on (for a reasoning-only group, or "Reasoning starts
  *  expanded"). */
-const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoningOnly = false, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, askAgent = true, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoningOnly = false, autoExpand, disclosureKey, hasPermission, isRunning, runningTool, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, askAgent = true, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // The chat setting (#18254) raises the resting state from collapsed to
   // expanded; liveness (autoExpand) can still open a row on top of it.
@@ -169,18 +195,19 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
   // `api.decideApproval` never offers the Trust button, so it can
   // never wear a "Trusted" label it did not earn (#5400, #5434).
   const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trusted')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.rejected')}</> }
+  const runningLabel = (isRunning && runningStep(runningTool)) || i18nT('pages.chat.collapsibleToolGroup.running_tools')
   const labelNode = localResolved
     ? (decisionLabel[localResolved] || <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.resolved')}</>)
     : headerPending
       ? (pendingPermCount && pendingPermCount > 1 ? <><AlertTriangle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approvals_pending_count', { count: pendingPermCount })}</> : <><AlertTriangle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approval_needed')}</>)
       : isRunning
-        ? <><Wrench className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.running_tools')}</>
+        ? <><Wrench className="lucide-inline" /> {runningLabel}</>
         : reasoningOnly
           ? <>{i18nT('pages.chat.turnBlock.worked_through_step', { count })}</>
           : <><Wrench className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })}</>
   const labelText = localResolved
     ? (localResolved === 'approved' ? i18nT('pages.chat.collapsibleToolGroup.approved') : localResolved === 'trust' ? i18nT('pages.chat.collapsibleToolGroup.trusted') : i18nT('pages.chat.collapsibleToolGroup.rejected'))
-    : headerPending ? i18nT('pages.chat.collapsibleToolGroup.approval_needed') : isRunning ? i18nT('pages.chat.collapsibleToolGroup.running_tools') : reasoningOnly ? i18nT('pages.chat.turnBlock.worked_through_step', { count }) : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })
+    : headerPending ? i18nT('pages.chat.collapsibleToolGroup.approval_needed') : isRunning ? runningLabel : reasoningOnly ? i18nT('pages.chat.turnBlock.worked_through_step', { count }) : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })
 
   const preview = needsAttention ? sanitizeLlmOutput(extractPreview(permissionMeta)) : ''
   // Heading over the single-call preview; '' when the command is already the

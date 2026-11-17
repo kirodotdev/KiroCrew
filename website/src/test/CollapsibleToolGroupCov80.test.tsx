@@ -34,6 +34,21 @@ describe('CollapsibleToolGroup header label', () => {
     expect(screen.getByLabelText(T('running'))).toBeInTheDocument()
   })
 
+  it('names the running step when the newest call has a title, and says running tools when not', () => {
+    const browser = { content: '🔧 browser', meta: { tool_name: 'browser', mcp_server: 'kirocrew-core', input: '{"action":"tabs"}' } }
+    const { unmount } = renderWithProviders(<CollapsibleToolGroup count={1} isRunning runningTool={browser}><div>zzq-child</div></CollapsibleToolGroup>)
+    expect(header().textContent).toContain('Drive browser')
+    expect(screen.queryByText(T('running_tools'))).toBeNull()
+    expect(header().getAttribute('aria-label')).toContain('Drive browser')
+    unmount()
+    // A finished group counts its calls again; an underivable call keeps the generic words.
+    const { unmount: u2 } = renderWithProviders(<CollapsibleToolGroup count={1} runningTool={browser}><div>zzq-child</div></CollapsibleToolGroup>)
+    expect(header().textContent).toContain(T('tool_call', { count: 1 }))
+    u2()
+    renderWithProviders(<CollapsibleToolGroup count={1} isRunning runningTool={{ content: '🔧 some_tool' }}><div>zzq-child</div></CollapsibleToolGroup>)
+    expect(screen.getByText(T('running_tools'))).toBeInTheDocument()
+  })
+
   it('asks for approval, and reports the queue depth when more than one is pending', () => {
     const { unmount } = renderWithProviders(
       <CollapsibleToolGroup count={1} hasPermission onApprove={() => {}}><div>zzq-child</div></CollapsibleToolGroup>,
