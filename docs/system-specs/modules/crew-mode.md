@@ -440,7 +440,8 @@ project checkout or the edition can supply a name the directory never declared.
 Every binding writer answers the same `409 lineage_unverifiable` when it cannot
 verify whether its target is another crew's private copy: crew create
 (`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}` and `PUT /api/agents` (name in body)), the
-default-agent write, publish and reset. Its `error` sentence depends on the
+default-agent write, fork (`POST /api/agents/detail/{name}/fork`), publish and
+reset. Its `error` sentence depends on the
 cause, which `_UnverifiableLineage.reason` classifies, because only one cause
 clears by itself:
 `ambiguous_template_name` (two or more spec files resolve to the target and at
