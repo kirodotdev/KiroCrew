@@ -1,7 +1,8 @@
 import { forwardRef, type ForwardedRef } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavigate } from 'react-router-dom'
-import { useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector } from '../../store'
+import { setActiveId } from '../../store/instancesSlice'
 import { getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount } from '../../surfaces/registry'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Bot } from 'lucide-react'
@@ -207,7 +208,11 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   const shortcut = useNavShortcutHint(path)
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
+  const dispatch = useAppDispatch()
+  // The rail stays on screen over a relay tab; what a row opens is in the local Crew.
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
   const activate = () => {
+    if (relayCovered) dispatch(setActiveId(null))
     // Navigating swaps the whole page, and the page leaving may hold a draft the
     // user typed — `beforeunload` cannot defend it, because a client-side route
     // change never unloads the document. Ask its guard first.

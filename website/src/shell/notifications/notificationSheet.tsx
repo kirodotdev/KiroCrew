@@ -237,11 +237,13 @@ export function useNotificationSheet() {
   // local one and hides with it, so a tap there brings the local Crew forward:
   // opening the sheet out of sight would retire the banner and ack the note.
   const crewHidden = useLocalCrewHidden()
+  // A relay tab covers <main> without hiding the local overlay root, so it is read on its own.
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
   const openPanelOn = useCallback((ts: string) => {
-    if (crewHidden) dispatch(setActiveId(null))
+    if (crewHidden || relayCovered) dispatch(setActiveId(null))
     openPanel()
     setSelectedTs(ts)
-  }, [openPanel, crewHidden, dispatch])
+  }, [openPanel, crewHidden, relayCovered, dispatch])
   // Lives with the bell because it reads the bell's notes: a cron run's note is
   // read when the user opens its chat or it arrives while a pane shows that
   // chat (#23564), never behind a remote Crew, while a crew window covers the

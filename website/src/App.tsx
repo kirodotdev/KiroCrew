@@ -80,6 +80,9 @@ import { mainStackingClass } from './utils/terminalFullscreen'
 import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from './utils/themeConsent'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
+import { relayPaneBridge } from './lib/relayCrewPanes'
+// Only while the hidden relay pane key is on, so its code stays out of the first load.
+const RelayCrewPaneHost = lazy(() => import('./components/RelayCrewPaneHost'))
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
 import KiroSignInNoticeFallback from './components/KiroSignInNoticeFallback'
 import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
@@ -428,6 +431,10 @@ export default function App() {
   // no stacking context, so a page-level inline modal (fixed inset-0 z-[100])
   // still paints over the dock as it does elsewhere.
   const terminalFullscreen = useTerminalFullscreen()
+  // A relay Crew tab covers <main> with its pane; <main> stays laid out, so the
+  // pane can take its rect, but hidden and inert under it.
+  const relayActive = useAppSelector(s => s.instances.relayActive ?? null)
+  const [relayPanesOn] = useState(() => relayPaneBridge() !== null)
   // Read during render, so turning the part off never mounts an overlay for one frame.
   const overlaysOn = useSyncExternalStore(
     useCallback((onChange: () => void) => subscribeExperience(colorTheme, onChange), [colorTheme]),
@@ -928,6 +935,7 @@ export default function App() {
           }
           : { gridArea: 'content' }}
       >
+        {relayPanesOn && <Suspense fallback={null}><RelayCrewPaneHost /></Suspense>}
         <div className={`relative flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         {/* Mounted for the page's life in a relay Crew window, so its live
             region exists before the drop; the host view joins it on a drop. */}
@@ -938,7 +946,7 @@ export default function App() {
             the tabIndex={-1} page headings do. Inert while the reconnecting
             view covers it, so focus and keystrokes cannot reach a composer
             the user cannot see. */}
-        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered)} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
+        <main id="main-content" tabIndex={-1} {...hiddenChromeProps(contentCovered || relayActive !== null)} style={relayActive !== null ? { visibility: 'hidden' } : undefined} className={`outline-hidden ${mainStackingClass({ isTerminalFullscreen: terminalFullscreen, terminalEnabled, terminalPoppedOut, relayRetrying: contentCovered })} flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           {/* Inert does not reach what main portals out (the guide pill, a
               link preview, a page's Modal): take those off screen with it. */}
           <OffScreenOverlayScope offScreen={contentCovered}>
