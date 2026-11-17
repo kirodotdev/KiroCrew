@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { ShieldAlert, ChevronDown, CheckCircle, Clock } from 'lucide-react'
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuItem
 } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
+import { CuedMenuContent, PendingCallItem, type PendingCall } from './chat-input/CuedScrollBox'
 
 /** One plain-language line on what a rule FAMILY protects, keyed by the slug the
  *  server sends (`deny_override_family`, from `dashboard.deny_override
@@ -97,6 +98,15 @@ interface DenyOverrideDropdownProps {
   /** The rule's family slug; picks what the "Allow for this session" row names. */
   family?: string
   onAction: (action: DenyOverrideAction) => void
+  /** The refused call as the card shows it: its command and the rest of its
+   *  input. Either row runs it. The command is also in the warning under the
+   *  buttons, which this menu never covers, but the rest of the input sits in
+   *  the card's region under the menu, so when there is any the menu prints the
+   *  whole call at its top. */
+  pendingCall?: PendingCall
+  /** Passed to the menu: the approval card sets it so that, on touch, an
+   *  outside tap only closes the menu (see `DropdownMenu`). */
+  modal?: boolean
 }
 
 /**
@@ -112,11 +122,14 @@ interface DenyOverrideDropdownProps {
  *
  * Allow once is first because it is the narrower grant.
  */
-export default function DenyOverrideDropdown({ disabled, className, family, onAction }: DenyOverrideDropdownProps) {
+export default function DenyOverrideDropdown({ disabled, className, family, onAction, pendingCall, modal }: DenyOverrideDropdownProps) {
   const [open, setOpen] = useState(false)
+  // The refused command alone is in the warning under the buttons, which this
+  // menu never covers; anything more, or a call with no command, is printed here.
+  const showCall = !!pendingCall && (!!pendingCall.input || (!pendingCall.command && !!pendingCall.tool?.name))
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={setOpen} modal={modal}>
       <DropdownMenuTrigger asChild>
         <button
           disabled={disabled}
@@ -132,7 +145,9 @@ export default function DenyOverrideDropdown({ disabled, className, family, onAc
           <ChevronDown size={12} className="shrink-0" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="end" className="min-w-[240px] max-w-[min(420px,calc(100vw-2rem))]">
+      {/* Fades the edge its own scroll hides, as the Trust menu does. */}
+      <CuedMenuContent side="top" align="end" data-testid="deny-override-menu">
+        {showCall && pendingCall && <PendingCallItem testId="deny-override-pending-call" label={i18nT('components.denyOverride.pending_call_label')} call={pendingCall} />}
         <DropdownMenuItem onSelect={() => onAction('deny_override_once')}>
           <CheckCircle size={12} className="shrink-0 text-warn" />
           <span className="min-w-0 text-[12px]">{i18nT('components.denyOverride.allow_once')}</span>
@@ -141,7 +156,7 @@ export default function DenyOverrideDropdown({ disabled, className, family, onAc
           <Clock size={12} className="shrink-0 text-warn" />
           <span className="min-w-0 text-[12px]">{denyOverrideSessionLabel(family)}</span>
         </DropdownMenuItem>
-      </DropdownMenuContent>
+      </CuedMenuContent>
     </DropdownMenu>
   )
 }

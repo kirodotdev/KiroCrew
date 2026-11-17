@@ -1,5 +1,9 @@
-import { useId, useMemo, useRef, type ReactNode } from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
+import { useCallback, useId, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
+import { motion, useIsPresent } from 'framer-motion'
+import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { CuedScrollBox, edgeAttrs, edgeMask } from './CuedScrollBox'
+import { useRequestRegionCap } from './requestRegionCap'
 import { Plug, Target, Terminal } from 'lucide-react'
 import DenyOverrideDropdown, { DenyOverrideWarning } from '../DenyOverrideDropdown'
 import RejectDropdown from '../RejectDropdown'
@@ -31,12 +35,61 @@ const STATUS_CLASS: Record<ApprovalState, string> = {
   rejected: 'bg-[color-mix(in_srgb,var(--text)_10%,transparent)] text-muted',
 }
 
-/** Where the request stands, in words. The dot breathes only while a decision
- *  is still owed, and holds still for a reader who asked for less motion. */
-export function ApprovalStatusPill({ state }: { state: ApprovalState }) {
-  const still = useReducedMotion() || state !== 'waiting'
+/** The shared-layout id one request's waiting pill and its receipt's pill use,
+ *  so the pill the user just read moves into the receipt and turns into its
+ *  verdict instead of vanishing with the card. Per slot and per request: the
+ *  next card's pill never shares a layout stack with the last one's receipt,
+ *  which Framer Motion would otherwise animate out of it. */
+export const approvalPillLayoutId = (slot: string | null, request: string) => `approval-status-pill:${slot ?? ''}:${request}`
+
+/** One calm timing for the card leaving, the pill moving and the receipt
+ *  arriving: slow enough to follow, eased at both ends, never a spring that
+ *  overshoots. Under reduced motion none of it runs: the card and the receipt
+ *  swap at once (`settleMotion`). */
+export const APPROVAL_SETTLE = { duration: 0.45, ease: [0.4, 0, 0.2, 1] } as const
+
+/** Fade props for the card and the receipt, or none when the reader asked for
+ *  less motion. `data-motion` names which, so the reduced path is checkable. */
+export function settleMotion(reduced: boolean) {
+  return reduced
+    ? { initial: false as const, animate: { opacity: 1 }, exit: { opacity: 0, transition: { duration: 0 } }, transition: { duration: 0 }, 'data-motion': 'instant' }
+    : { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: APPROVAL_SETTLE, 'data-motion': 'settle' }
+}
+
+/** The card's fade-in. Its controls take no input until the fade ends: a button
+ *  at near-zero opacity is one a person can hit, or reach by keyboard, before
+ *  they can read what it allows. `inert` holds both, and is set before the first
+ *  paint. Under reduced motion there is no fade, so nothing waits. A card
+ *  fading out takes no input either, and one that comes back before its fade-out
+ *  ends (the next request lands within it) fades in again and waits again. */
+export function ApprovalCardMotion({ reduced, children }: { reduced: boolean; children: ReactNode }) {
+  const isPresent = useIsPresent()
+  const [settled, setSettled] = useState(reduced)
+  const [wasPresent, setWasPresent] = useState(isPresent)
+  if (wasPresent !== isPresent) {
+    setWasPresent(isPresent)
+    if (isPresent) setSettled(reduced)
+  }
+  const live = settled && isPresent
+  const [el, setEl] = useState<HTMLDivElement | null>(null)
+  useLayoutEffect(() => { if (el) el.inert = !live }, [el, live])
   return (
-    <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] leading-4 font-body font-medium whitespace-nowrap ${STATUS_CLASS[state]}`}>
+    <motion.div ref={setEl} data-testid="approval-card-motion" data-settling={live ? undefined : ''} {...settleMotion(reduced)} onAnimationComplete={() => { if (isPresent) setSettled(true) }}>
+      {children}
+    </motion.div>
+  )
+}
+
+/** Where the request stands, in words. The dot breathes only while a decision
+ *  is still owed, and holds still for a reader who asked for less motion, who
+ *  also gets no shared-layout move. */
+export function ApprovalStatusPill({ state, layoutId }: { state: ApprovalState; layoutId?: string }) {
+  const reduced = useReducedMotion()
+  const still = reduced || state !== 'waiting'
+  return (
+    // Keyed on the id it holds: Framer Motion reads `layoutId` only at mount, so
+    // a pill whose request changes under the same card remounts to take its id.
+    <motion.span key={reduced ? 'still' : layoutId} layoutId={reduced ? undefined : layoutId} data-layout-id={reduced ? undefined : layoutId} transition={{ layout: APPROVAL_SETTLE }} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] leading-4 font-body font-medium whitespace-nowrap ${STATUS_CLASS[state]}`}>
       <motion.span
         aria-hidden
         className="size-1.5 rounded-full bg-current"
@@ -44,18 +97,21 @@ export function ApprovalStatusPill({ state }: { state: ApprovalState }) {
         transition={still ? { duration: 0 } : { duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
       />
       {i18nT(STATUS_LABEL_KEY[state])}
-    </span>
+    </motion.span>
   )
 }
 
 /** What a decision made in this tab did: the verdict as the card's own pill,
  *  then one line on what was granted and when it ends. */
-export function ApprovalReceipt({ kind, children }: { kind: 'granted' | 'rejected'; children: ReactNode }) {
+/** `request`: the answered request's key, so the receipt's pill shares a
+ *  layout id with that request's card pill and no other. */
+export function ApprovalReceipt({ kind, slot, request, children }: { kind: 'granted' | 'rejected'; slot: string | null; request: string; children: ReactNode }) {
+  const reduced = useReducedMotion()
   return (
-    <div role="status" data-testid="approval-receipt" className="flex items-center gap-2 flex-wrap px-4 py-2 mb-1 rounded-lg bg-[color-mix(in_srgb,var(--text)_5%,transparent)]">
-      <ApprovalStatusPill state={kind === 'granted' ? 'approved' : 'rejected'} />
+    <motion.div {...settleMotion(reduced)} role="status" data-testid="approval-receipt" className="flex items-center gap-2 flex-wrap px-4 py-2 mb-1 rounded-lg bg-[color-mix(in_srgb,var(--text)_5%,transparent)]">
+      <ApprovalStatusPill state={kind === 'granted' ? 'approved' : 'rejected'} layoutId={approvalPillLayoutId(slot, request)} />
       <span className="min-w-0 text-muted text-[13px]">{children}</span>
-    </div>
+    </motion.div>
   )
 }
 
@@ -67,23 +123,47 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
   approvalMode?: string
 }) {
   const {
-    approvalId, approvalMid, approvalSubmitting, setApprovalPickerSignal, approvalModeAdjusted, approvalNudgeActive,
+    approvalKey, approvalSubmitting, setApprovalPickerSignal, approvalModeAdjusted, approvalNudgeActive,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalAlwaysAllowRef, approvalAlwaysAllowRefusal,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalToolCallId, approvalTs, approvalTitle, approvalMcpServer, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
+    approvalToolCallId, approvalTs, approvalTitle, approvalMcpServer, approvalToolName, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
   } = approval
-  const commandRef = useRef<HTMLPreElement>(null)
-  const commandId = useId()
+  // The exact command Allow once runs is read here, so the box fades at the
+  // edge that hides text (a clean cut at a newline never reads as the end of
+  // the command), and is keyed per request, so the next request opens at its
+  // own first line with its edges measured afresh.
+  const [attachCommandEdges, commandEdges] = useScrollEdgesY<HTMLPreElement>()
+  // The request region (kind chips, command, arguments) is one scroller capped
+  // so the card never rises past the pane's top or under the title overlay
+  // (requestRegionCap.ts); it cues whatever the cap hides.
+  const [cardEl, setCardEl] = useState<HTMLDivElement | null>(null)
+  const [regionEl, setRegionEl] = useState<HTMLDivElement | null>(null)
+  const [attachRegionEdges, regionEdges, , attachRegionContent] = useScrollEdgesY<HTMLDivElement>()
+  const setRegion = useCallback((node: HTMLDivElement | null) => { setRegionEl(node); attachRegionEdges(node) }, [attachRegionEdges])
+  const regionCap = useRequestRegionCap(cardEl, regionEl)
+  // Too little room even for the region's floor: part of the request is past
+  // the pane's top or under the title overlay, where no edge cue reaches. The
+  // controls that approve hold until the room returns, and say why; Reject,
+  // which runs nothing, stays.
+  const cramped = regionCap?.cramped ?? false
+  const crampedId = useId()
 
   const kindLabel = approvalIsShell
     ? i18nT('components.chatInput.approval_kind_shell')
     : approvalMcpServer ? i18nT('components.chatInput.approval_kind_mcp', { server: approvalMcpServer }) : ''
   const KindIcon = approvalIsShell ? Terminal : Plug
+  // A shell call is named by its command box; any other tool by its own name,
+  // since the heading above may be the agent's description of the call. Not
+  // repeated when the heading already is that name.
+  const toolName = approvalIsShell || approvalToolName === approvalTitle ? '' : approvalToolName
   const canShowInChat = showGhost && !!approvalToolCallId
   // An override card states the refused command in its own warning below.
   const command = approvalDenyRule ? '' : approvalFullCommand
+  // The string the card already shows whole, in the command box or the
+  // override warning, and so leaves out of the payload.
+  const shownCommand = approvalDenyRule ? approvalDenyCommand : command
   const commandKey = i18nT(approvalIsShell ? 'components.chatInput.approval_command_key' : 'components.chatInput.approval_call_key')
   // A shell call's command is already in the command box, so it is not printed
   // again; whatever else the call carries (a working directory, a timeout) is
@@ -91,38 +171,56 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
   // tool's arguments, a command the gateway could not give a grantable form)
   // is shown as the transcript shows it.
   const payload = useMemo(() => {
-    if (!approvalIsShell || !command) return approvalToolInput
+    if (!approvalIsShell || !shownCommand) return approvalToolInput
+    // Input the card cannot split shows as it came, unless it is only the command.
+    const whole = approvalToolInput.trim() === shownCommand.trim() ? '' : approvalToolInput
     try {
       const parsed: unknown = JSON.parse(approvalToolInput)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return ''
-      // Only the entry that IS the command is dropped; a string that differs
-      // from it in any way stays on the card.
-      const rest = Object.entries(parsed).filter(([, value]) => !(typeof value === 'string' && value.trim() === command.trim()))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return whole
+      // Only the `command` field, the one the gateway reads the command from,
+      // is dropped, and only when it is the string shown. Every other field
+      // stays, even one whose value happens to equal the command (a `cwd` of
+      // `make` beside `make`): it changes what the command does.
+      const rest = Object.entries(parsed).filter(([key, value]) => !(key === 'command' && typeof value === 'string' && value.trim() === shownCommand.trim()))
       return rest.length > 0 ? JSON.stringify(Object.fromEntries(rest)) : ''
     } catch {
-      // Not an object the card can split: the command box stands alone.
-      return ''
+      // Not JSON: shown as it came, unless it is only the command.
+      return whole
     }
-  }, [approvalIsShell, command, approvalToolInput])
+  }, [approvalIsShell, shownCommand, approvalToolInput])
+  // The call every Trust row and override row also approves, as shown above:
+  // the menus that open over this region print it themselves.
+  // A call with no command is named by its kind and tool chips, also under the menu.
+  const pendingCall = { command: shownCommand ?? '', input: payload, tool: { kind: kindLabel, name: approvalToolName } }
 
   return (
-    <div className={`bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] ${showGhost ? 'rounded-2xl' : 'rounded-t-2xl border-b border-[color:var(--glass-edge)]'} transition-[border-radius,border-color,border-width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]`}>
+    <div ref={setCardEl} className={`bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] ${showGhost ? 'rounded-2xl' : 'rounded-t-2xl border-b border-[color:var(--glass-edge)]'} transition-[border-radius,border-color,border-width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]`}>
       <div className="flex items-start gap-2 px-3.5 pt-2.5">
-        <ApprovalStatusPill state="waiting" />
+        <ApprovalStatusPill state="waiting" layoutId={approvalPillLayoutId(activeSlot, approvalKey)} />
         {/* Prose, so the body face: the command itself is below, in the one
             place it is set in mono. */}
         <span data-testid="approval-title" className="flex-1 min-w-0 pt-px text-[13px] leading-5 font-body font-medium text-text break-words line-clamp-2">{approvalTitle}</span>
         <RaisedBy name={approvalRaisedBy} />
       </div>
-      <div className="px-3.5">
-        <div className="mt-2 mb-2.5 ml-1.5 border-l-2 pl-3 flex flex-col gap-2" style={{ borderLeftColor: 'color-mix(in srgb, var(--warn) 70%, transparent)' }}>
-          {(kindLabel || approvalIsReadOnly || approvalTs > 0 || canShowInChat) && (
+      <div
+        // Per request, so the next one opens at its top with its edges measured afresh.
+        key={approvalKey}
+        ref={setRegion}
+        data-testid="approval-request-region"
+        {...edgeAttrs(regionEdges)}
+        // 40svh, or less where the pane is shorter: see requestRegionCap.ts.
+        style={{ maxHeight: regionCap === null ? '40svh' : `min(40svh, ${regionCap.cap}px)` }}
+        className={`px-3.5 overflow-y-auto ${edgeMask(regionEdges)}`}
+      >
+        <div ref={attachRegionContent} className="mt-2 mb-2.5 ml-1.5 border-l-2 pl-3 flex flex-col gap-2" style={{ borderLeftColor: 'color-mix(in srgb, var(--warn) 70%, transparent)' }}>
+          {(kindLabel || toolName || approvalIsReadOnly || approvalTs > 0 || canShowInChat) && (
             <div className="flex items-center gap-2 flex-wrap select-none">
               {kindLabel && (
                 <span data-testid="approval-kind" className={`${CHIP_CLASS} font-body font-medium text-text`}>
                   <KindIcon size={11} className="shrink-0 text-muted" />{kindLabel}
                 </span>
               )}
+              {toolName && <span data-testid="approval-tool" className={`${CHIP_CLASS} min-w-0 font-mono text-text break-all`}>{toolName}</span>}
               {approvalIsReadOnly && (
                 <span data-testid="approval-read-only" className="inline-flex items-center px-2 py-0.5 rounded-md border border-[color-mix(in_srgb,var(--ok)_30%,transparent)] bg-ok-subtle text-ok-text text-[11px] leading-4 font-body font-medium">
                   {i18nT('components.chatInput.approval_read_only')}
@@ -148,41 +246,45 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
           {command && (
             <div className="flex gap-3 rounded-md border border-border bg-bg-elevated px-2.5 py-2 text-[12px] leading-5 font-mono">
               <span className="shrink-0 select-none" style={{ color: 'var(--json-key)' }}>{commandKey}</span>
-              {/* THE WHOLE COMMAND, AS SENT. The Trust menu's exact-command row
-                  grants an exact-STRING match and names no command itself, so
-                  this is where the string being consented to is read, and the
-                  menu lifts itself clear of this element (`keepClear`). Hence
+              {/* THE WHOLE COMMAND, AS SENT: this is where the string Allow once
+                  runs is read (the Trust menu's exact-command row prints it
+                  too). Hence
                   no shortening and no highlighter between the string and the
-                  reader; `whitespace-pre-wrap` because collapsing a run of
-                  spaces shows a different command than the one granted, and
+                  reader; `whitespace-break-spaces` because collapsing a run of
+                  spaces, or hanging one at a soft wrap, shows a different
+                  command than the one granted, and
                   `break-all` so an unspaced run (a sha, a base64 argument)
                   wraps rather than widening the card. Bounded and scrollable,
                   as the override card's command is: a pathological command must
                   not push the buttons out of the pane. */}
               {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users scroll the exact command. */}
-              <pre ref={commandRef} id={commandId} tabIndex={0} role="region" aria-label={commandKey} data-testid="approval-command" className="m-0 flex-1 min-w-0 max-h-[30vh] overflow-y-auto whitespace-pre-wrap break-all font-mono text-text">{command}</pre>
+              <pre key={approvalKey} ref={attachCommandEdges} tabIndex={0} role="region" aria-label={commandKey} data-testid="approval-command" {...edgeAttrs(commandEdges)} className={`m-0 flex-1 min-w-0 max-h-[30vh] overflow-y-auto whitespace-break-spaces break-all font-mono text-text ${edgeMask(commandEdges)}`}>{command}</pre>
             </div>
           )}
           {payload && (
-            <div className="max-h-[160px] overflow-y-auto [&>div]:my-0" data-testid="approval-input">
+            <CuedScrollBox key={approvalKey} className="max-h-[160px] [&>div]:my-0" testId="approval-input">
               <FormattedPayloadCard text={payload}>
-                <pre className="m-0 px-2 py-2 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 font-mono whitespace-pre-wrap break-all">{payload}</pre>
+                <pre className="m-0 px-2 py-2 rounded-md border border-border bg-bg-elevated text-[12px] leading-5 font-mono whitespace-break-spaces break-all">{payload}</pre>
               </FormattedPayloadCard>
-            </div>
+            </CuedScrollBox>
           )}
         </div>
       </div>
       {/* `data-approval-actions` is the probe `queryPendingApprovalAction`
           resolves, and the reject chord's event arrives on the row. A `data-`
-          hook rather than button text because every catalog translates the labels. */}
+          hook rather than button text because every catalog translates the labels.
+          Each menu here is `modal`: it opens over the request, so on touch an
+          outside tap only closes it and never also lands on Allow once. */}
+      {cramped && <p id={crampedId} role="status" data-testid="approval-cramped" className="m-0 px-3.5 pb-1.5 text-[12px] text-warn-text select-none">{i18nT('components.chatInput.approval_cramped')}</p>}
       <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center justify-end px-3.5 pb-2.5 select-none">
         {approvalDenyRule ? (
-          <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} />
+          // Keyed per card row, as Trust and Reject are: a menu left open never acts for the next request.
+          <DenyOverrideDropdown key={`override:${activeSlot}:${approvalKey}`} modal disabled={approvalSubmitting || cramped} className={approvalBtnClass} family={approvalDenyFamily} pendingCall={pendingCall} onAction={(action) => { handleApprovalAction(action) }} />
         ) : null}
         {/* Keyed per card row: a typed reason never reaches another card. */}
         <RejectDropdown
-          key={`${activeSlot}:${approvalId}:${approvalMid ?? ''}`}
-          disabled={approvalSubmitting} takesReason={approvalTakesReason}
+          key={`${activeSlot}:${approvalKey}`}
+          modal disabled={approvalSubmitting} takesReason={approvalTakesReason}
           className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
           onAction={(action, reason) => { handleApprovalAction(action, undefined, undefined, reason) }}
         />
@@ -191,27 +293,30 @@ export function ToolApprovalCard({ approval, activeSlot, approvalMode }: {
               keeps its place disabled: `max-two-buttons-per-row` grandfathers Reject + Trust + Allow once; no fourth. */}
           {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly || !!approvalAlwaysAllowRef || !!approvalAlwaysAllowRefusal) ? (
             <TrustDropdown
+              // Keyed per card row, as Reject is: an armed confirmation or a
+              // chosen lifetime belongs to this request and never reaches another.
+              key={`${activeSlot}:${approvalKey}`}
               fullCommand={approvalFullCommand}
               baseCommand={approvalBaseCommand}
               isShell={approvalIsShell && approvalTrustBaseGrantable}
               hasCommand={approvalTrustCommandGrantable}
               trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
               showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
-              disabled={approvalSubmitting}
+              disabled={approvalSubmitting || cramped}
               className={approvalBtnClass}
               timedGrants
+              modal
+              pendingCall={pendingCall}
               alwaysAllowTool={approvalAlwaysAllowRef}
               alwaysAllowRefusal={approvalAlwaysAllowRefusal}
               commandNoun={approvalIsShell ? 'command' : 'call'}
-              keepClear={() => commandRef.current}
-              commandDescribedBy={commandId}
               onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
             />
           ) : <TrustUnavailable className={approvalBtnClass} />}
           {/* The one filled control, last in the row and so nearest the
               composer. `data-approval-primary` is where the focus-approval
               chord lands; a trust grant is never one keystroke from it. */}
-          <button data-approval-primary disabled={approvalSubmitting} className={approvalPrimaryBtnClass} onClick={() => handleApprovalAction('approved')}>{i18nT('components.chatInput.allow_once')}</button>
+          <button data-approval-primary disabled={approvalSubmitting || cramped} aria-describedby={cramped ? crampedId : undefined} className={approvalPrimaryBtnClass} onClick={() => handleApprovalAction('approved')}>{i18nT('components.chatInput.allow_once')}</button>
         </>}
       </div>
       {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} />}
