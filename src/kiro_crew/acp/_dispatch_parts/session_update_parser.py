@@ -24,6 +24,7 @@ from kiro_crew.acp._dispatch_parts.surfaced_text import (
 )
 from kiro_crew.acp._dispatch_parts.tool_call_identity import (
     classify_tool_call,
+    claude_mcp_stamp,
     stated_harness_tool_name,
 )
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import (
@@ -391,6 +392,7 @@ def _build_tool_call_event(
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
         harness_tool_id=_event_tool_id,
+        claude_mcp_tool_name=claude_mcp_stamp(update, _stated_tool_name, backend=harness_backend),
     )
 
 

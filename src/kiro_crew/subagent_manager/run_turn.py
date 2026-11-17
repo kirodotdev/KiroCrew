@@ -1089,6 +1089,18 @@ async def _run_inner_impl(
     # The harness the run is on: opencode names a Crew tool only in its title.
     _harness = getattr(getattr(client, "client", None), "backend", None)
     _harness = _harness if isinstance(_harness, str) else None
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_PI
+
+    def _harness_servers() -> tuple[str, ...]:
+        # pi and claude name a Crew tool only by a fused name, read as Crew's only
+        # for a server the session handed the harness; read at each dispatch, since
+        # a respawn hands the servers again.
+        names = getattr(getattr(client, "client", None), "_harness_mcp_server_names", None)
+        if _harness not in (ACP_BACKEND_PI, ACP_BACKEND_CLAUDE) or not callable(names):
+            return ()
+        found = names()
+        return tuple(found) if isinstance(found, (tuple, list)) else ()
+
     async for event in _stream_with_transient_retry():
         # Refresh the activity clock for every event kind that BELONGS to
         # this session (thinking chunks, tool-call updates, etc.) before
@@ -1259,7 +1271,7 @@ async def _run_inner_impl(
             # increment is parent-scoped.
             info.last_tool = event.title or ""
             info.last_tool_call_id = event.tool_call_id or ""
-            self._manager._note_tool_dispatch(info, event, _harness)
+            self._manager._note_tool_dispatch(info, event, _harness, _harness_servers())
             _card_titles.note_call(event)
             # Persist turn state for orphan recovery diagnostics. Off-loop
             # and drained on cancellation via _write_state_off_loop — the
@@ -1354,7 +1366,7 @@ async def _run_inner_impl(
             info.last_tool = event.title or info.last_tool
             if event.title:
                 info.last_tool_call_id = event.tool_call_id or ""
-            self._manager._note_tool_dispatch(info, event, _harness)
+            self._manager._note_tool_dispatch(info, event, _harness, _harness_servers())
             _card_titles.note_call(event)
             await self._manager._fire_event(
                 "subagent_tool",

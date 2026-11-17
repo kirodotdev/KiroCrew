@@ -132,6 +132,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         child_calls_marked=e.child_calls_marked,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
+        # Dropping this would cost a claude worker's Crew wait its trusted identity,
+        # so the stall monitor could read a long wait as stuck.
+        claude_mcp_tool_name=e.claude_mcp_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh
         # composition reach the gate's other read-only proofs.
         deepseek_read_only_issue=e.deepseek_read_only_issue,
