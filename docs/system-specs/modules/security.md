@@ -1264,7 +1264,12 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   permalinks, public OAuth values such as `code` and `state`, image data URIs, SSH
   fingerprints, documentation example keys, temp paths); `protection.py` hands them
   to a later pass as masks. Every unit has a size bound and fails closed past it, so
-  `stream.py` yields the whole-text result for any split. `compat.py` is the seam
+  `stream.py` yields the whole-text result for any split, except that a `Cookie:`
+  line still running 8 KiB after its name has the rest of its line masked in a
+  stream (the stream holds the name to read later pairs, and that hold is bounded)
+  even where the whole text leaves it unchanged; the same goes for the rest of a
+  running Cookie line whose 4096-character token ceiling fires after its name, and
+  for a Cookie name followed by more than 64 blanks and quotes before its separator. `compat.py` is the seam
   the credential plan reads (`compat.credential_plan`): the detectors read the text,
   each Secret hit's VALUE becomes a span replaced by the credential tag (a base64 or
   hex run whose decoded text holds a credential by `[REDACTED: encoded credential]`),

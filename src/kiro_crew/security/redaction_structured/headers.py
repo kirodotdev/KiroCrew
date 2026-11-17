@@ -33,7 +33,7 @@ import base64
 import binascii
 from collections.abc import Callable
 
-from .charsets import ALNUM
+from .charsets import ALNUM, ascii_lower
 from .checks import (
     _SHORTCUT_MIN,
     MASK_CHARS,
@@ -44,7 +44,7 @@ from .checks import (
     reads_as_words,
     session_name,
 )
-from .model import PLAN_TAGS, Hit
+from .model import PLAN_TAGS, TAIL_LINE, Hit
 from .table import HeaderRow
 
 # A name is read where it is not the tail of a longer one: ``x-api-key`` is not ``api-key``,
@@ -79,6 +79,12 @@ _NETRC_PAIRS = frozenset({"login", "account"})
 _NETRC_TOKENS = 6
 # A Basic value longer than this is not decoded to look for a placeholder.
 _BASIC_DECODE_MAX = 512
+# How many blanks and quotes a stream holds after a Cookie name while its separator
+# has not arrived yet.
+_SEPARATOR_MAX = 64
+# How much of a running Cookie line a stream holds, from the header name: 8 KiB, a
+# common server limit for one request header line.
+COOKIE_LINE_HOLD = 8192
 
 
 class _Open(Exception):
@@ -443,14 +449,49 @@ def _walk_keep(text: str, start: int, end: int, row: HeaderRow, walk: _Walk) -> 
     return not cookie_value_is_placeholder(text, start, end, has_mask, has_trigger, walk.classify)
 
 
+def opens_cookie_header(text: str, start: int, end: int) -> bool:
+    """Whether a ``Cookie`` header name in ``text[start:end]`` reads as one, by the
+    cookie reader's own grammar: not the tail of a longer name (``Set-Cookie``), and
+    followed by its separator (:func:`_after_name`: a quote, blanks, ``:`` or ``=``)."""
+    low = ascii_lower(text[start:end])
+    at = low.find("cookie")
+    while at != -1:
+        pos = start + at
+        left_ok = pos == 0 or text[pos - 1] not in _NAME_CHARS
+        if left_ok and _after_name(text, pos + len("cookie")) is not None:
+            return True
+        at = low.find("cookie", at + 1)
+    return False
+
+
 def _cookies(text: str, at: int, name: str, row: HeaderRow, final: bool, walk: _Walk) -> list[Hit]:
     i = walk.after_name(at + len(name))
     if i is None:
+        # The window ends between the name and its separator: the separator
+        # still decides whether the line is a Cookie header, so hold the name.
+        # The shared ``nonblank`` finder reads the run, so anchors stay linear.
+        end = at + len(name)
+        k = end + 1 if end < len(text) and text[end] in _QUOTES else end
+        if not final and walk.nonblank(k) == len(text):
+            if len(text) - end <= _SEPARATOR_MAX:
+                raise _Open
+            # Past the bound the separator is still undecided: fail closed and
+            # drop the rest of the line rather than release the name.
+            return [Hit(end, len(text), row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE)]
         return []
     n = len(text)
     line_end = walk.breaks(i)
     hits: list[Hit] = []
     first_only = name == "set-cookie"
+    if not final and line_end == n and not first_only and n - at >= COOKIE_LINE_HOLD:
+        # A running Cookie line is held from its name for at most COOKIE_LINE_HOLD
+        # characters; past that the rest of the line is a Secret (fail closed) and
+        # the stream drops it to its CR or LF.
+        return [Hit(i, n, row.id, row.tier, "cookie", "known_key", tail=TAIL_LINE)]
+    # The header name decides a Cookie pair, so a stream keeps it uncommitted until
+    # the pair is: a later window must read the pair from it again. Set-Cookie reads
+    # only the pair right after its name, so it needs no anchor.
+    anchor = -1 if first_only else at
     seen: list[int] = []
     try:
         while i < line_end:
@@ -468,13 +509,17 @@ def _cookies(text: str, at: int, name: str, row: HeaderRow, final: bool, walk: _
             if ve == n and not (final or line_end < n):
                 raise _Open
             if walk.session(i, eq) and _walk_keep(text, vs, ve, row, walk):
-                hits.append(Hit(vs, ve, row.id, row.tier, "cookie", "known_key"))
+                hits.append(Hit(vs, ve, row.id, row.tier, "cookie", "known_key", anchor=anchor))
             if first_only:
                 break
             semi = walk.semis(ve)
             if semi >= line_end:
                 break
             i = walk.nonblank(semi + 1)
+        if not final and line_end == n and not first_only:
+            # The header line is still running: a later pair is read from the header
+            # name, so the name is held until the line ends.
+            raise _Open
     except _Open:
         walk.walked.update(dict.fromkeys(seen, True))
         raise

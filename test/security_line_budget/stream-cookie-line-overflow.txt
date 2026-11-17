@@ -1,0 +1,7 @@
++60
+When the stream's token-length ceiling fires inside a Cookie line that is still open,
+the drop runs through the end of that line rather than only the token run, so a later
+cookie pair on the same line is not released without its header name. A Cookie line drop is read as it goes and carried through a private-key block
+anchored on the line (the structured stream's shared line drop).
+At that ceiling the line drop is built and reads the dropped window before the look-behind
+loses it, so a private-key block anchored earlier on the line is carried to its END.
