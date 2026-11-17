@@ -137,4 +137,51 @@ describe('peerFoldersOf', () => {
       { id: 'c', name: 'C', order: 0 },
     ])
   })
+
+  it('keeps a valid rank and drops one that validRank refuses', () => {
+    expect(peerFoldersOf([
+      { id: 'ok', name: 'OK', order: 1, rank: 'V' },
+      { id: 'num', name: 'Num', order: 2, rank: 5 },
+      { id: 'empty', name: 'Empty', order: 3, rank: '' },
+      { id: 'zero', name: 'Zero', order: 4, rank: 'a0' },
+      { id: 'char', name: 'Char', order: 5, rank: 'a-b' },
+      { id: 'long', name: 'Long', order: 6, rank: 'x'.repeat(49) },
+    ])).toEqual([
+      { id: 'ok', name: 'OK', order: 1, rank: 'V' },
+      { id: 'num', name: 'Num', order: 2 },
+      { id: 'empty', name: 'Empty', order: 3 },
+      { id: 'zero', name: 'Zero', order: 4 },
+      { id: 'char', name: 'Char', order: 5 },
+      { id: 'long', name: 'Long', order: 6 },
+    ])
+  })
+})
+
+describe('crewSpaces peer position', () => {
+  const rows = [row('1', 'a'), row('2', 'c'), row('3', 'b'), row('4', 'kid2'), row('5', 'kid1')]
+
+  it('draws ranked peer folders in rank order when the legacy order says otherwise', () => {
+    // A drag on the peer moved C above A: it wrote ranks and left every order as it was.
+    const t = crewSpaces(peerFoldersOf([
+      { id: 'a', name: 'A', order: 0, rank: 'V' },
+      { id: 'b', name: 'B', order: 1, rank: 'k' },
+      { id: 'c', name: 'C', order: 2, rank: 'G' },
+      { id: 'kid1', name: 'Kid1', order: 0, rank: 'm', parent_id: 'b' },
+      { id: 'kid2', name: 'Kid2', order: 1, rank: 'H', parent_id: 'b' },
+    ]), rows)
+    expect(t.children.get('')?.map(f => f.id)).toEqual(['c', 'a', 'b'])
+    expect(t.children.get('b')?.map(f => f.id)).toEqual(['kid2', 'kid1'])
+  })
+
+  it('sorts an older peer\'s unranked folders by order', () => {
+    const t = crewSpaces(peerFoldersOf([
+      { id: 'c', name: 'C', order: 2 },
+      { id: 'b', name: 'B', order: 1 },
+      { id: 'a', name: 'A', order: 0 },
+      { id: 'kid2', name: 'Kid2', order: 1, parent_id: 'b' },
+      { id: 'kid1', name: 'Kid1', order: 0, parent_id: 'b' },
+    ]), rows)
+    expect(t.children.get('')?.map(f => f.id)).toEqual(['a', 'b', 'c'])
+    expect(t.children.get('b')?.map(f => f.id)).toEqual(['kid1', 'kid2'])
+  })
 })

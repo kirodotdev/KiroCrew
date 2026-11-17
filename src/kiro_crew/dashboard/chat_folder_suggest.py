@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.folder_rank import tree_order
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
@@ -84,6 +85,13 @@ def _eligible_folders(state: DashboardState) -> list[dict[str, Any]]:
     skipped because ``load_folders`` does no validation, so a hand-edited or
     legacy ``folders.json`` can contain either.
 
+    The order is the sidebar's tree walk, ``folder_rank.tree_order``, which
+    ``chat_folder_tree`` also uses. Sorting the flat cross-parent list with the
+    sibling key instead would put every ranked nested folder ahead of every
+    unranked top-level one and could push top-level folders past the cap. A
+    hidden folder is dropped but its descendants are still listed, matching the
+    previous flat filter.
+
     A Bot's home folder and every folder inside it are excluded too: only that
     Bot files a chat there, so ``_refuse_mate_move_out`` refuses the card's
     Move with ``mate_home_locked`` and the suggestion could never be taken.
@@ -93,16 +101,13 @@ def _eligible_folders(state: DashboardState) -> list[dict[str, Any]]:
 
     folders = [f for f in state._folders if isinstance(f, dict)]
     locked = mate_home_subtree_ids(folders)
-    out = [
+    return [
         f
-        for f in folders
-        if f.get("id")
-        and str(f.get("name") or "").strip()
+        for f, _depth in tree_order(folders)
+        if str(f.get("name") or "").strip()
         and not f.get("hidden")
         and str(f.get("id")) not in locked
-    ]
-    out.sort(key=lambda f: (int(f.get("order") or 0), str(f.get("name") or "")))
-    return out[:_MAX_FOLDERS]
+    ][:_MAX_FOLDERS]
 
 
 def _folder_sample_titles(state: DashboardState) -> dict[str, list[str]]:

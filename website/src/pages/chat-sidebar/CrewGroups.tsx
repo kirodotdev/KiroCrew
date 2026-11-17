@@ -101,8 +101,8 @@ export function crewSpaces<R extends { peer_folder_id?: string }>(folders: reado
       total.set(cur.id, (total.get(cur.id) ?? 0) + list.length)
     }
   }
-  // The sidebar's own tree walk (`orderFoldersWithPaths`): stored order, then
-  // name; orphans and cycle members at the top; depth-guarded. It returns the
+  // The sidebar's own tree walk (`orderFoldersWithPaths`): rank, then the legacy
+  // order, then name; orphans and cycle members at the top; depth-guarded. It returns the
   // shown folders in pre-order with a depth, rebuilt here into the parent ->
   // children map the group renders.
   const children = new Map<string, PeerFolder[]>()
