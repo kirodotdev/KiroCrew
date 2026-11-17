@@ -3815,8 +3815,11 @@ Contract:
   its pictures. A Slack message routed to a linked dashboard slot is stored the same
   way before the hand-off, through `ConversationLog.store_ingested_images(key,
   content, images)` (the slot saves its own window, so this is the store without the
-  append); see [slack-gateway](slack-gateway.md). The other channels still persist the
-  temp path.
+  append); see [slack-gateway](slack-gateway.md). Telegram calls the same method
+  ahead of its append, because a resumed turn also shows the row in a live dashboard
+  window, which re-serializes its rows on every flush: both of its writers get the
+  stored text, and a failed store leaves them the text as it came in. The other
+  channels still persist the temp path.
 - **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
   `![` openers is left as written without scanning: the reference scanner is
   quadratic in the opener count and this runs under the session lock on
