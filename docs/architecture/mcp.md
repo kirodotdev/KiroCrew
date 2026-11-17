@@ -175,6 +175,33 @@ two entries match apart from `disabledTools`
 collision handling. The merged entry is the one read, so a Kiro global guard on the
 raw key survives a store entry that omits the field.
 
+**A raw store key adopts its own rendering.** Switching such a row off writes
+`disabled: true` onto the raw store entry, which then differs from the previous
+rendering under the alias. Before the store merge, `_adopt_stale_alias_rendering`
+moves that rendering back under the raw key, so the server mounts once, switched
+off, rather than running beside a muted `playwright-mcp-2`. It adopts only when the
+store holds one raw key for the alias, the rendering launches the store entry's own
+program, and no app and no scope global declares a server (a `command` or `url`)
+under the alias. The stub a tool toggle leaves there (`{"disabledTools": [...]}`,
+or `{}` once the tool is back on) declares nothing, so it does not block adoption.
+The `timeout` and `disabled` it reconciled onto the rendering stay, and a switch
+written onto the stub mutes that one mount. The adopted entry is then reconciled as
+a slash-free store key's previous rendering is: when no source claimed the alias in
+the pass, `timeout` and `disabled` follow the store entry, and one it leaves out is
+removed. That includes a `timeout` the agent spec wrote on the alias, since nothing
+records which side wrote it. `disabledTools` is decided after that, and dropped only
+when `mcp_aliases.raw_tools_project_onto_alias()`, the call the raw-key list
+projection above makes, says the entry is the raw key's: no scope holds the alias,
+and apart from the launch (already compared) and `disabled` (the shared-server
+sync's) the two entries match except for that list. Then a store entry with no list
+clears it, and an entry with its own `autoApprove` keeps its list. An app server whose raw key
+renders as the same alias claims it, so the store never adopts an app's rendering. A `playwright-mcp-2` that is only a muted copy of the
+same rendering, left by an older build, is folded into the one mount, and its
+`tools` and `allowedTools` refs (bare and per-tool) move to `playwright-mcp` through
+the helpers key normalization uses for a duplicate's refs
+(`mcp_aliases.mcp_ref_owner()`, `mcp_aliases.rewrite_mcp_ref()`); the
+disabled-server sync then revokes the grants a muted server may not keep.
+
 **Resolution-aware fallback.** The same server can be defined in several sources
 with different commands. If the merged winner's `command` does not resolve (a
 bare command whose binary is not on the rebuild PATH), the rebuild retries the
