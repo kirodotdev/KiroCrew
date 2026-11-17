@@ -1,9 +1,9 @@
 """A disposable OpenCode or pi session leaves no record of itself in the harness's store.
 
 OpenCode keeps sessions in its SQLite ``opencode.db``; the schema below is the part of
-opencode 1.19.1's that holds a session (copied from a live store). pi deletes its own
-record through ``session/delete``. Every test also proves the rows or calls of a session
-Crew must keep are untouched.
+opencode 1.19.1's that holds a session (copied from a live store). pi and goose delete
+their own records through ``session/delete``. Every test also proves the rows or calls of
+a session Crew must keep are untouched.
 """
 
 from __future__ import annotations
@@ -249,6 +249,7 @@ def _provider(backend: str, memory_mode: str, client: object, **extra: object) -
         is_codex_backend=False,
         is_opencode_backend=backend == "opencode",
         is_pi_backend=backend == "pi",
+        is_goose_backend=backend == "goose",
         memory_mode=memory_mode,
         session_id=extra.pop("session_id", _GONE),
         _client=client,
@@ -342,3 +343,37 @@ async def test_a_failed_pi_delete_still_shuts_down() -> None:
     client._read_message.side_effect = RuntimeError("boom")
     await acp_lifecycle.shutdown(_provider("pi", "incognito", client, session_id=_PI_SID))
     client.shutdown.assert_awaited_once()
+
+
+# goose 1.50.1's live handshake (test/fixtures/acp_frames/goose/handshake-live.jsonl).
+_GOOSE_CAPS = {"list": {}, "delete": {}, "close": {}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_a_disposable_goose_chat_asks_goose_to_delete_before_the_process_ends(
+    mode: str,
+) -> None:
+    client = _pi_client()
+    client.initialize_result = {"agentCapabilities": {"sessionCapabilities": _GOOSE_CAPS}}
+    await acp_lifecycle.shutdown(_provider("goose", mode, client, session_id=_PI_SID))
+    client._send_request.assert_awaited_once_with(METHOD_SESSION_DELETE, {"sessionId": _PI_SID})
+    assert client.order == ["delete", "shutdown"]
+
+
+@pytest.mark.asyncio
+async def test_a_persistent_goose_chat_sends_no_delete() -> None:
+    client = _pi_client()
+    await acp_lifecycle.shutdown(_provider("goose", "persistent", client, session_id=_PI_SID))
+    client._send_request.assert_not_called()
+    client.shutdown.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_opencode_chat_that_advertises_delete_is_not_asked(store: Path) -> None:
+    client = _pi_client()
+    client._extra_env = _env(store)
+    await acp_lifecycle.shutdown(_provider("opencode", "incognito", client))
+    client._send_request.assert_not_called()
+    assert _rows(store, _GONE) == 0
+    assert _rows(store, _KEPT) == 6
