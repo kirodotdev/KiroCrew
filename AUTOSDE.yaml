@@ -515,6 +515,21 @@ custom-rules:
           running the trap. Also flag a stop of that stand-in bounded by a
           product grace constant instead of the suite's safety net
           (testing-conventions § Shell stand-ins that trap a group signal).
+      16. An assertion of WHICH check refused an input (`_denied_by(x) ==
+          "<rule-id>"`, `"<reason text>" in verdict`) where another check on
+          the path could answer first: the test's name or comment says its
+          point is only that the input is refused ("is refused", "without an
+          exception"), or the input is past the named rule's own bound with no
+          asserted precondition that it stays inside every OTHER limit. A
+          change that adds an earlier cap is green on its base, and once both
+          land the test reds every PR although nothing got through (#37820's
+          128-level nest, refused first by #37875's 32-level gate cap, fixed
+          in #37964). Assert the refusal alone (`is_denied(x) is not None`),
+          or test the rule at its own bound with the precondition asserted
+          (`depth <= _MAX_SUBSTITUTION_DEPTH`). A test whose subject is the
+          ordering of the checks, or a table whose rows each carry their
+          expected rule at that rule's bound, is fine (testing-conventions §
+          Refusal tests).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
