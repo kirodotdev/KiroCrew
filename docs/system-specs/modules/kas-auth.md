@@ -49,6 +49,9 @@
 > names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
 > recognises it), so the dashboard draws it in the user's language, led by the
 > route in plain words; beside the card's sign-in button the copy points at that button.
+> The sentence counts when it leads the row, alone or followed by more text after a
+> space: the ACP error formatter appends its model-switch note and a request id. The
+> translated copy leaves that tail out; the row's own text keeps it.
 > Any other wording, the launcher form included, keeps its English. `kirocrew doctor`'s
 > `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
 > Kiro sign-in when kiro-cli's own store is what answers. A terminal names the card
