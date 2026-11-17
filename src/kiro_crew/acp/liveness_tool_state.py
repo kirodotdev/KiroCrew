@@ -10,9 +10,14 @@ re-exports every name here.
 from __future__ import annotations
 
 import string
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-from kiro_crew.acp.harness_tool_names import opencode_fused_mcp_tool
+from kiro_crew.acp.harness_tool_names import (
+    claude_fused_mcp_tool,
+    opencode_fused_mcp_tool,
+    pi_fused_mcp_tool,
+)
 from kiro_crew.acp.liveness_command import (
     MAX_RETAINED_NAME_CHARS,
     MAX_RETAINED_TITLE_CHARS,
@@ -28,7 +33,7 @@ from kiro_crew.acp.liveness_evidence import (
     WAIT_TOOL_SLACK_SECS,
 )
 from kiro_crew.acp.liveness_interactive import INTERACTIVE_NONE
-from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS
 from kiro_crew.session_directive import CORE_MCP_SERVER
 
@@ -110,8 +115,8 @@ class ToolCallState:
     # Trusted MCP server from the adapter identity channel, set only when the
     # tool_call frame's identity is provenance-verified
     # (``AcpEvent.mcp_identity_trusted``), is KAS's half-identity for a
-    # ``kirocrew-core`` call, or is opencode's fused ``kirocrew-core_<tool>``
-    # title (:meth:`identity_of`); empty otherwise
+    # ``kirocrew-core`` call, or is opencode's, pi's or claude's fused name for
+    # one (:meth:`identity_of`); empty otherwise
     # (fail-closed). Read by
     # :meth:`is_trusted_wait`, and by the ``remote_flat`` scan, which reads only
     # the subtree of the server this names.
@@ -137,11 +142,13 @@ class ToolCallState:
     activity_parked: float = 0.0
 
     @staticmethod
-    def identity_of(event: object, *, backend: str | None = None) -> tuple[str, str]:
+    def identity_of(
+        event: object, *, backend: str | None = None, servers: Iterable[str] = ()
+    ) -> tuple[str, str]:
         """``(mcp_server_name, tool_name)`` a state retains for a dispatch *event*.
 
         A provenance-verified pair (``mcp_identity_trusted``) is kept as it is.
-        Otherwise the server is dropped, except for two shapes, both for the
+        Otherwise the server is dropped, except for these shapes, all for the
         ``kirocrew-core`` server alone. KAS names the
         server on a ``tool_call`` frame (``_meta.kiro.serverName``) but stamps
         no tool name there, so a Trust-mode call, which gets no permission
@@ -154,6 +161,13 @@ class ToolCallState:
         *backend* of opencode the pair is read from the fused ``kirocrew-core_<tool>``
         wire title opencode writes as the tool's id
         (:func:`~kiro_crew.acp.harness_tool_names.opencode_fused_mcp_tool`).
+        pi and claude name the call only by a fused ``mcp__<server>__<tool>``:
+        pi in its wire title, claude in its adapter stamp
+        (``claude_mcp_tool_name``). On those backends the pair is read from it
+        only when ``kirocrew-core`` is one of *servers*, the servers this
+        session handed the harness, and on pi only when no other of them spells
+        the same (:func:`~kiro_crew.acp.harness_tool_names.pi_fused_mcp_tool`,
+        :func:`~kiro_crew.acp.harness_tool_names.claude_fused_mcp_tool`).
         The display ``title`` is never read.
         """
         server = getattr(event, "mcp_server_name", "") or ""
@@ -170,6 +184,23 @@ class ToolCallState:
             named = (
                 opencode_fused_mcp_tool(title, kind, CORE_MCP_SERVER)
                 if isinstance(title, str) and isinstance(kind, str)
+                else ""
+            )
+            return (CORE_MCP_SERVER, named) if ToolCallState._is_core_tool_name(named) else ("", "")
+        if backend == ACP_BACKEND_PI and not server:
+            title = getattr(event, "wire_title", "")
+            kind = getattr(event, "tool_kind", "")
+            named = (
+                pi_fused_mcp_tool(title, kind, CORE_MCP_SERVER, servers)
+                if isinstance(title, str) and isinstance(kind, str)
+                else ""
+            )
+            return (CORE_MCP_SERVER, named) if ToolCallState._is_core_tool_name(named) else ("", "")
+        if backend == ACP_BACKEND_CLAUDE and not server:
+            stamp = getattr(event, "claude_mcp_tool_name", "")
+            named = (
+                claude_fused_mcp_tool(stamp, CORE_MCP_SERVER, servers)
+                if isinstance(stamp, str)
                 else ""
             )
             return (CORE_MCP_SERVER, named) if ToolCallState._is_core_tool_name(named) else ("", "")

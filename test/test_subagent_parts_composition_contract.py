@@ -691,7 +691,8 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "_note_startup_progress": ("method", "(self, info: 'SubagentInfo') -> 'None'"),
     "_note_tool_dispatch": (
         "staticmethod",
-        "(info: 'SubagentInfo', event: 'Any', backend: 'str | None' = None) -> 'None'",
+        "(info: 'SubagentInfo', event: 'Any', backend: 'str | None' = None, "
+        "servers: 'tuple[str, ...]' = ()) -> 'None'",
     ),
     "_note_tool_result": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
     "_note_tool_update": ("staticmethod", "(info: 'SubagentInfo', event: 'Any') -> 'None'"),
