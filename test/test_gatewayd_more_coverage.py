@@ -1053,7 +1053,44 @@ class TestDisconnectTeardown:
             "prompts/list",
             "resources/list",
             "resources/templates/list",
+            "server/discover",
+            "subscriptions/listen",
         }
+
+    def test_an_open_subscription_listen_does_not_count_as_tool_work(self):
+        backend = _fake_backend()
+        backend._pending_requests["f1"] = _PendingRequest(
+            stub_uuid=_STUB, original_id=2, method="subscriptions/listen"
+        )
+        assert not has_recyclable_in_flight(backend._pending_requests, _STUB)
+
+    @pytest.mark.asyncio
+    async def test_a_session_left_with_its_listen_open_keeps_the_backend(
+        self, peer_ok, monkeypatch
+    ):
+        """The reported shape: the session's discover was answered, its
+        listen is still open when it disconnects. The listen is cancelled
+        and the backend stays pooled for the next stub."""
+        backend = _fake_backend()
+        backend._pending_requests["gw-1-2"] = _PendingRequest(
+            stub_uuid=_STUB, original_id=2, method="subscriptions/listen"
+        )
+        recycle = AsyncMock(return_value=True)
+        backend.recycle_if_idle = recycle  # type: ignore[method-assign]
+        monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(return_value=(backend, True)))
+
+        await _handle(
+            _ScriptedReader(_register_frame(), {"type": "ensure_backend"}),
+            _FakeWriter(),
+            _fake_pool(),
+        )
+
+        sent = [call.args[0] for call in backend.stdin.write.call_args_list]
+        assert any(
+            b"notifications/cancelled" in payload and b"gw-1-2" in payload for payload in sent
+        )
+        assert backend.refcount == 0
+        recycle.assert_not_awaited()
 
     def test_tool_work_alongside_a_listing_still_counts(self):
         backend = _fake_backend()
