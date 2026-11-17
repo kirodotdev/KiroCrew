@@ -155,8 +155,9 @@ export function useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, e
   // Dock position (right column vs bottom row). Bottom dock is height-
   // resizable instead of width-resizable, so it carries its own persisted
   // dimension. Kept separate from width so flipping back and forth restores
-  // each orientation's last size.
-  const [dock, setDock] = useSidePanelDock()
+  // each orientation's last size. A reported fold holds the dock at the right
+  // (`dockLocked`) and the stored choice is left as it is.
+  const [dock, setDock, dockLocked] = useSidePanelDock()
   const MIN_H = 200
   const [heightBySlot, setHeightBySlot] = useState<Record<string, number>>({})
   const height = useMemo(
@@ -377,7 +378,7 @@ export function useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, e
   easingRef.current = dimTransition !== undefined
   effectiveRef.current = { width: effectiveWidth, height: effectiveHeight }
   return {
-    rootRef, isMobile, isBottom, setDock, effectiveWidth, effectiveHeight, dimTransition,
+    rootRef, isMobile, isBottom, setDock, dockLocked, effectiveWidth, effectiveHeight, dimTransition,
     resizing, slotSwitched, dimAnimating, panelResize, panelResizeV,
   }
 }

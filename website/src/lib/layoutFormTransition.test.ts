@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { COMPOSER_ATTR, leadingEdge, runLayoutFormChange, TRANSCRIPT_ATTR } from './layoutFormTransition'
+import { COMPOSER_ATTR, leadingEdge, runLayoutFormChange, runPaneAllocationChange, TRANSCRIPT_ATTR } from './layoutFormTransition'
 
 type Transition = { finished: Promise<void>; resolve: () => void }
 let started: Array<() => void> = []
@@ -54,6 +54,7 @@ afterEach(async () => {
   root.removeAttribute('dir')
   delete root.dataset.layoutMorph
   delete root.dataset.layoutMorphEdge
+  delete root.dataset.layoutMorphPanel
 })
 
 describe('runLayoutFormChange', () => {
@@ -191,6 +192,56 @@ describe('leading edge', () => {
     expect(leadingEdge(root)).toBe('right')
     runLayoutFormChange(vi.fn(), { toNarrow: false, cause: 'resize' })
     expect(root.dataset.layoutMorphEdge).toBe('right')
+  })
+})
+
+describe('runPaneAllocationChange', () => {
+  it('the side panel opening beside a fold moves the transcript inside one morph and slides the list out', async () => {
+    const { scroller, dock } = transcript()
+    const apply = vi.fn()
+    runPaneAllocationChange(apply, true)
+    expect(apply).not.toHaveBeenCalled()
+    expect(started).toHaveLength(1)
+    expect(root.dataset.layoutMorph).toBe('fold')
+    expect(root.dataset.layoutMorphPanel).toBeUndefined()
+    expect(scroller.hasAttribute(TRANSCRIPT_ATTR)).toBe(true)
+    expect(dock.hasAttribute(COMPOSER_ATTR)).toBe(true)
+    started[0]()
+    expect(apply).toHaveBeenCalledTimes(1)
+    transitions[0].resolve()
+    await transitions[0].finished
+    await Promise.resolve()
+    expect(root.dataset.layoutMorph).toBeUndefined()
+    expect(scroller.hasAttribute(TRANSCRIPT_ATTR)).toBe(false)
+  })
+
+  it('the panel closing marks its column out of the new layout only, until the morph ends', async () => {
+    transcript()
+    let markedAtApply: string | undefined
+    runPaneAllocationChange(() => { markedAtApply = root.dataset.layoutMorphPanel }, false)
+    expect(root.dataset.layoutMorph).toBe('unfold')
+    // The old snapshot is taken before the update: the panel is still in it.
+    expect(root.dataset.layoutMorphPanel).toBeUndefined()
+    started[0]()
+    expect(markedAtApply).toBe('closing')
+    transitions[0].resolve()
+    await transitions[0].finished
+    await Promise.resolve()
+    expect(root.dataset.layoutMorphPanel).toBeUndefined()
+  })
+
+  it('snaps under reduced motion and without the API, applying in the caller (no flushSync)', () => {
+    setReducedMotion(true)
+    const apply = vi.fn()
+    runPaneAllocationChange(apply, true)
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(started).toHaveLength(0)
+    expect(root.dataset.layoutMorph).toBeUndefined()
+    setReducedMotion(false)
+    delete (document as unknown as { startViewTransition?: unknown }).startViewTransition
+    runPaneAllocationChange(apply, false)
+    expect(apply).toHaveBeenCalledTimes(2)
+    expect(root.dataset.layoutMorphPanel).toBeUndefined()
   })
 })
 

@@ -42,8 +42,71 @@ const chat = [
 const members = readMembersPage()
 const hook = readFileSync(resolve(__dirname, '../hooks/useDrawerSwipe.ts'), 'utf8')
 
+/** Index just past the `>` that ends the opening tag starting at `open`, and
+ *  whether that tag closes itself. `>` inside a `{...}` prop or an arrow does
+ *  not end it. */
+function tagEnd(src: string, open: number): { end: number; selfClosing: boolean } {
+  let depth = 0
+  let quote = ''
+  for (let i = open + 1; i < src.length; i++) {
+    const c = src[i]
+    if (quote) { if (c === quote && src[i - 1] !== '\\') quote = ''; continue }
+    if (depth > 0 && (c === "'" || c === '"' || c === '`')) { quote = c; continue }
+    if (c === '{') depth++
+    else if (c === '}') depth--
+    else if (c === '>' && depth === 0 && src[i - 1] !== '=') return { end: i + 1, selfClosing: src[i - 1] === '/' }
+  }
+  throw new Error(`unterminated <tag at ${open}`)
+}
+
+/** Index just past the closing tag of the `<tag` element opening at `open`,
+ *  counting nested elements of the same name. */
+function elementEnd(src: string, open: number, tag: string): number {
+  const first = tagEnd(src, open)
+  if (first.selfClosing) return first.end
+  const opener = new RegExp(`<${tag.replace('.', '\\.')}(?=[\\s>/])|</${tag.replace('.', '\\.')}>`, 'g')
+  opener.lastIndex = first.end
+  let depth = 0
+  for (let m = opener.exec(src); m; m = opener.exec(src)) {
+    if (m[0].startsWith('</')) {
+      if (depth === 0) return m.index + m[0].length
+      depth--
+    } else {
+      const t = tagEnd(src, m.index)
+      if (!t.selfClosing) depth++
+      opener.lastIndex = t.end
+    }
+  }
+  throw new Error(`no </${tag}> for the element at ${open}`)
+}
+
+/** The `<tag` element whose opening tag holds `marker`, from that tag to its
+ *  own closing tag. `from` starts the slice at the marker instead. */
+function elementAt(src: string, marker: string, tag: string, from: 'tag' | 'marker' = 'tag'): string {
+  const at = src.indexOf(marker)
+  expect(at).toBeGreaterThan(0)
+  const open = src.lastIndexOf(`<${tag}`, at)
+  expect(open).toBeGreaterThanOrEqual(0)
+  return src.slice(from === 'tag' ? open : at, elementEnd(src, open, tag))
+}
+
+/** The call that opens at the first `(` at or after `start`, through its own `)`. */
+function callFrom(src: string, start: number): string {
+  let depth = 0
+  let quote = ''
+  for (let i = src.indexOf('(', start); i < src.length; i++) {
+    const c = src[i]
+    if (quote) { if (c === quote && src[i - 1] !== '\\') quote = ''; continue }
+    if (c === "'" || c === '"' || c === '`') { quote = c; continue }
+    if (c === '(') depth++
+    else if (c === ')' && --depth === 0) return src.slice(start, i + 1)
+  }
+  throw new Error(`unterminated call at ${start}`)
+}
+
 describe('mobile nav drawer (left) — compositor pairing', () => {
-  const drawer = app.slice(app.indexOf('key="mobile-nav-drawer"'), app.indexOf('key="mobile-nav-drawer"') + 900)
+  // From the key to the drawer element's own closing tag.
+  const drawer = elementAt(app, 'key="mobile-nav-drawer"', 'motion.nav', 'marker')
 
   it('slides a plain <nav>, not a framer-owned motion.nav', () => {
     expect(app.indexOf('key="mobile-nav-drawer"')).toBeGreaterThan(0)
@@ -65,7 +128,7 @@ describe('mobile nav drawer (left) — compositor pairing', () => {
   })
 
   it('the scrim has no framer fade of its own (animateDrawer owns it)', () => {
-    const scrim = app.slice(app.indexOf('data-testid="nav-backdrop"') - 400, app.indexOf('data-testid="nav-backdrop"') + 400)
+    const scrim = elementAt(app, 'data-testid="nav-backdrop"', 'motion.div')
     expect(scrim).toContain('ref={mobileNavScrimRef}')
     expect(scrim).not.toContain('initial={{ opacity')
   })
@@ -75,9 +138,10 @@ describe('mobile nav drawer (left) — compositor pairing', () => {
     // of the tab order and the accessibility tree (a focusable full-screen
     // scrim is a giant tab stop), so the keyboard path is an Escape handler
     // gated on the drawer being open — both halves pinned here.
-    const scrim = app.slice(app.indexOf('data-testid="nav-backdrop"') - 400, app.indexOf('data-testid="nav-backdrop"') + 400)
+    const scrim = elementAt(app, 'data-testid="nav-backdrop"', 'motion.div')
     expect(scrim).toContain('aria-hidden="true"')
-    const esc = app.slice(app.indexOf("mobileNavPhase !== 'open'") - 200, app.indexOf("mobileNavPhase !== 'open'") + 400)
+    // The effect that holds the check, start to end.
+    const esc = callFrom(app, app.lastIndexOf('useEffect(', app.indexOf("mobileNavPhase !== 'open'")))
     expect(esc).toContain("e.key === 'Escape'")
     expect(esc).toContain('closeMobileNavDrawer()')
   })
@@ -85,13 +149,18 @@ describe('mobile nav drawer (left) — compositor pairing', () => {
 
 describe('inline side panel (right) — mobile overlay pairing', () => {
   const start = chat.indexOf('key="side-panel-inline"')
-  // The mount predicate (with the keep-alive arm) sits a few hundred chars ABOVE the key.
-  const block = chat.slice(start - 1400, start + 2400)
+  // From the mount predicate (with the keep-alive arm) to the inline panel's own
+  // closing tag: the fold attributes lengthen the element, so no character count holds it.
+  const mount = chat.indexOf('const sidePanelMounted =')
+  const inline = chat.lastIndexOf('<motion.div', start)
+  const block = chat.slice(mount, elementEnd(chat, inline, 'motion.div'))
 
   it('mobile branch never animates width (layout animation)', () => {
     expect(start).toBeGreaterThan(0)
     // The width tween survives ONLY behind the desktop/embed ternary arm.
-    expect(block).toContain('initial={isMobile ? false : { width: 0 }}')
+    // `isMobile` alone resolves `initial` to false; beside a fold the desktop
+    // form's inline panel is placed with no reveal either (`foldPlaced`).
+    expect(block).toMatch(/initial=\{isMobile(?: \|\| foldPlaced)? \? false : \{ width: 0 \}\}/)
     expect(block).toContain('animate={isMobile ? undefined : {')
   })
 
@@ -185,7 +254,7 @@ describe('the sessions drawer travels its own width', () => {  // The drawer is 
     // Scoped to the call site, not the whole file: the constant's own comment
     // names the class it replaced, and a file-wide match would read that prose
     // as live code.
-    const call = chat.slice(chat.indexOf('<OverlayDrawer open='), chat.indexOf('<OverlayDrawer open=') + 900)
+    const call = elementAt(chat, '<OverlayDrawer open=', 'OverlayDrawer')
     expect(call).toContain('width={isMobile ? Math.max(0, winW - DRAWER_UNCOVERED_PX)')
     // The class that used to state the same width a second way is gone.
     expect(call).not.toContain('max-w-[calc(')
@@ -217,8 +286,7 @@ describe('the sessions drawer travels its own width', () => {  // The drawer is 
   it('hands that one travel to every consumer of the offset', () => {
     // Five of them, and a miss in any one desynchronises the panel's edge, the
     // scrim's zero, the drag's clamp or the commit point.
-    const start = chat.indexOf('registerDrawerTargets(drawerX')
-    expect(chat.slice(start, start + 320)).toContain('travel: drawerTravel')
+    expect(callFrom(chat, chat.indexOf('registerDrawerTargets(drawerX'))).toContain('travel: drawerTravel')
     expect(chat).toContain('x / Math.max(1, drawerTravel())')
     expect(chat).toContain('drawerX.set(-drawerTravel())')
     expect(chat).toContain('animateDrawer(drawerX, -drawerTravel()')

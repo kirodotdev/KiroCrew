@@ -7,6 +7,7 @@ import { CHAT_PANE_MIN_W } from '../chat/SidePanel'
 import { useRailWidth } from '../../hooks/useRailWidth'
 import { useWindowWidth } from '../../hooks/useWindowWidth'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
+import { useSafeInsets } from '../../hooks/useDrawerSwipe'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { SIDEBAR_LS_KEY, SIDEBAR_PRE_BOARD_LS_KEY } from './persistence'
 
@@ -68,11 +69,12 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
   // back when the device is flattened. An embedded chat or a popout keeps its
   // own width.
   const segments = useViewportSegments()
+  const safeInsets = useSafeInsets()
   const foldLocked = segments !== null && !fillsHost && !embedded
   const foldLockedRef = useRef(foldLocked)
   foldLockedRef.current = foldLocked
   const paintedSidebarWidth = foldLocked && segments
-    ? foldSidebarWidth({ segments, railW: railWidth, leading: leadingEdge() })
+    ? foldSidebarWidth({ segments, railW: railWidth, leading: leadingEdge(), insets: safeInsets })
     : sidebarPaintWidth({ stored: seatWidth, winW, railW: railWidth, chatMin })
   // The root's inline style. A switch between list and board view repaints at
   // once, as main's board auto-widen and its restore already do.

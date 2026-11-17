@@ -91,6 +91,13 @@ interface ChatSidePanelsProps {
   sideOverlayPhase: 'open' | 'closed' | 'closing'
   sideOverlayX: MotionValue<number>
   panelFillWidth: number | undefined
+  /** Beside a reported fold: the trailing segment's width, which the panel
+   *  takes instead of a fill (paneLayout.tsx). Undefined without a fold. */
+  panelFoldWidth?: number
+  /** The space the column keeps clear before the panel on its fold side: the
+   *  reported fold gap (paneLayout.tsx), and right to left the chat pane's
+   *  collapsed reclaim (ChatPage). */
+  panelFoldInset?: number
   panelMaximized: boolean
   pinSummary: boolean
   trackpad: ChatPanelTrackpadSwipe
@@ -113,14 +120,23 @@ export default function ChatSidePanels({
   handleOpenWorkingTreeDiff, hasBrowserTab, hasLiveAppTab, panelIssues, panelSources, dismissSource, reconcileIssueUrl, reconcileSourceUrl, search, selectedIssueUrl, selectedSourceUrl, selectIssueUrl,
   selectSourceUrl, tabsCtl, submitComments, currentSlot, handleAddToContext, sidePanelDock, sidePanelDockAnim, effectiveSidebarWidth, toggleAct, chatNav, chatPins, chatPinsLoading, handleJumpToPin, handlePutPinInComposer,
   handleUnpinById, historyActions, activeSlotTitle, activitySlot, panelInline, refreshActivitySlot, embedded, chatPaneEl, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized,
-  pinSummary, trackpad,
+  pinSummary, trackpad, panelFoldWidth, panelFoldInset,
 }: ChatSidePanelsProps) {
   const { deskSlide, deskSpacerW, deskPanelWrapRef } = trackpad
   // The render that hands a settled drag back to the column must not run the
   // column's width reveal: the column already stands at the panel's width.
   const wasDeskSliding = useRef(false)
-  const instantPlacement = deskSlide || wasDeskSliding.current
+  // Beside a fold the panel is placed, never revealed: the fold owns its width,
+  // and a panel opening or closing there moves the panes inside a morph
+  // (runPaneAllocationChange) whose snapshots must see the panel at its place.
+  const foldPlaced = panelFoldWidth !== undefined && !deskSlide
+  // The render that closes a fold-placed panel already reads no fold width; its
+  // exit is still a placement, not a reveal, so it leaves at once too.
+  const wasFoldPlaced = useRef(false)
+  const foldExit = foldPlaced || wasFoldPlaced.current
+  const instantPlacement = deskSlide || wasDeskSliding.current || foldPlaced
   useEffect(() => { wasDeskSliding.current = deskSlide })
+  useEffect(() => { wasFoldPlaced.current = foldPlaced })
   const dispatch = useAppDispatch()
   const activeTab = tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)
   const browserBehind = hasBrowserTab && activeTab?.kind !== 'browser'
@@ -209,11 +225,16 @@ export default function ChatSidePanels({
           <motion.div
             key="side-panel-inline"
             data-testid="side-panel-inline"
+            // Beside a fold this is the panel the closing morph leaves out of
+            // its new snapshot, as the column's is (layout-morph.css).
+            data-vt-panel={!isMobile && foldExit ? '' : undefined}
             ref={isMobile ? sideOverlayPanelRef : undefined}
-            initial={isMobile ? false : { width: 0 }}
+            // Beside a fold the inline panel (a touch-first phone in its desktop
+            // form) is placed, not revealed, like the column's below.
+            initial={isMobile || foldPlaced ? false : { width: 0 }}
             animate={isMobile ? undefined : { width: 'auto' }}
             exit={isMobile ? undefined : { width: 0 }}
-            transition={isMobile ? undefined : { duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
+            transition={isMobile ? undefined : foldExit ? INSTANT : { duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
             // Below the 42px app topbar, like the sessions drawer — the panel
             // takes over the CONTENT area, not the shell chrome. The history
             // search in front is the one exception: it covers the topbar too,
@@ -238,7 +259,8 @@ export default function ChatSidePanels({
               ? (sideOverlayPhase === 'closed'
                   ? { display: 'none' } // keep-alive: mounted for the iframe, invisible
                   : { x: sideOverlayX })
-              : (isSidePanelHidden(mountInput) ? { display: 'none' } : undefined)}
+              : (isSidePanelHidden(mountInput) ? { display: 'none' }
+                  : foldPlaced && panelFoldInset ? { paddingInlineStart: panelFoldInset } : undefined)}
           >
             <SidePanel
               tabsCtl={tabsCtl}
@@ -256,7 +278,7 @@ export default function ChatSidePanels({
               pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onPutPinInComposer={handlePutPinInComposer && putPinInComposer} onUnpin={handleUnpinById}
               slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
               expanded={panelMaximized}
-              fillWidth={panelFillWidth}
+              fillWidth={panelFoldWidth ?? panelFillWidth}
               extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
               canDockBottom={false}
               onOpenHistorySearch={activeSlot ? search.open : undefined}
@@ -282,9 +304,9 @@ export default function ChatSidePanels({
               // window onto the panel as wide as its visible part, the panel
               // pinned at its left edge, so the panel's edge and the chat's
               // follow the fingers. Swaps in and out with no reveal of its own.
-              initial={deskSlide ? false : sidePanelDockAnim.initial}
+              initial={deskSlide || foldPlaced ? false : sidePanelDockAnim.initial}
               animate={deskSlide ? DESK_SLIDE_MOTION.animate : instantPlacement ? { ...sidePanelDockAnim.animate, transition: INSTANT } : sidePanelDockAnim.animate}
-              exit={deskSlide ? DESK_SLIDE_MOTION.exit : sidePanelDockAnim.exit}
+              exit={deskSlide ? DESK_SLIDE_MOTION.exit : foldExit ? { ...sidePanelDockAnim.exit, transition: INSTANT } : sidePanelDockAnim.exit}
               transition={SIDE_PANEL_DOCK_TRANSITION}
               className={deskSlide
                 // While it slides the panel keeps its size and only moves: its own
@@ -292,8 +314,11 @@ export default function ChatSidePanels({
                 // without repainting or re-laying out its content each frame.
                 ? 'h-full relative overflow-hidden flex [&>:first-child]:absolute [&>:first-child]:inset-y-0 [&>:first-child]:left-0 [&>:first-child]:will-change-transform [&>:first-child]:[contain:layout_paint]'
                 : sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
-              style={!deskSlide && isSidePanelHidden(mountInput) ? { display: 'none' } : undefined}
+              style={!deskSlide && isSidePanelHidden(mountInput)
+                ? { display: 'none' }
+                : foldPlaced && panelFoldInset ? { paddingInlineStart: panelFoldInset } : undefined}
               data-testid="side-panel-column"
+              data-vt-panel=""
               data-sliding={deskSlide ? 'true' : undefined}
               // A native Browser view (useNativeBrowser) is a layer over the
               // panel's last reported rect, and a slide moves the panel without
@@ -317,7 +342,7 @@ export default function ChatSidePanels({
                 pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onPutPinInComposer={handlePutPinInComposer && putPinInComposer} onUnpin={handleUnpinById}
                 slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
                 expanded={panelMaximized}
-                fillWidth={panelFillWidth}
+                fillWidth={panelFoldWidth ?? panelFillWidth}
                 extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
                 onOpenHistorySearch={activeSlot ? search.open : undefined}
                 leadingTabs={leadingTabs}

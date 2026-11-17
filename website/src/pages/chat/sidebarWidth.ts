@@ -5,6 +5,7 @@
  * `{ default, SIDEBAR_MIN, SIDEBAR_MAX }`, so anything else imported from it is
  * `undefined` at run time -- silent for a constant, a crash for a function.
  */
+import { segmentContentWidth, type SafeInsets } from '../../lib/foldCompanion'
 
 export const SIDEBAR_MIN = 180
 /** The view ceiling in the list views, which gain nothing from a wider
@@ -14,21 +15,23 @@ export const SIDEBAR_MAX = 1400
 
 /**
  * The width that ends the sessions list at a reported fold: the leading
- * segment (the right-hand one in a right-to-left document) less the nav rail,
- * floored at `SIDEBAR_MIN`. Segments are listed left to right.
+ * segment's part inside the shell's content box (the right-hand segment in a
+ * right-to-left document; `segmentContentWidth`) less the nav rail, floored
+ * at `SIDEBAR_MIN`. Segments are listed left to right.
  */
 export function foldSidebarWidth(
-  { segments, railW, leading }: { segments: readonly { width: number }[]; railW: number; leading: 'left' | 'right' },
+  { segments, railW, leading, insets }: { segments: readonly { x: number; width: number }[]; railW: number; leading: 'left' | 'right'; insets?: SafeInsets },
 ): number {
-  return Math.max(SIDEBAR_MIN, leadingSegment(segments, leading).width - railW)
+  return Math.max(SIDEBAR_MIN, segmentContentWidth(leadingSegment(segments, leading), segments, insets) - railW)
 }
 
 /** Whether the rail must stay compact beside a fold: expanded, it would leave
- *  the leading segment less than `SIDEBAR_MIN`, so the list would cross the fold. */
+ *  the leading segment less than the pane beside it needs (`paneMin`, the
+ *  sessions list's `SIDEBAR_MIN` by default), so that pane would cross the fold. */
 export function foldHoldsRailCompact(
-  { segments, expandedRailW, leading }: { segments: readonly { width: number }[]; expandedRailW: number; leading: 'left' | 'right' },
+  { segments, expandedRailW, leading, paneMin = SIDEBAR_MIN, insets }: { segments: readonly { x: number; width: number }[]; expandedRailW: number; leading: 'left' | 'right'; paneMin?: number; insets?: SafeInsets },
 ): boolean {
-  return leadingSegment(segments, leading).width < expandedRailW + SIDEBAR_MIN
+  return segmentContentWidth(leadingSegment(segments, leading), segments, insets) < expandedRailW + paneMin
 }
 
 function leadingSegment<T>(segments: readonly T[], leading: 'left' | 'right'): T {
