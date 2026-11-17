@@ -40,6 +40,7 @@ DECLARED_SITES = frozenset(
         ("acp/skill_projection_parts/side_files.py", "_scan_lease_dir"),
         ("acp/skill_projection_parts/side_files.py", "_unlink_alias_if_unchanged"),
         ("acp/skill_projection_parts/side_files.py", "_unlink_projection_lease_if_unchanged"),
+        ("acp/skill_projection_parts/view_ownership.py", "_check_current_publication"),
         ("acp/skill_projection_parts/view_ownership.py", "_is_current_publication"),
         ("acp/skill_projection_parts/view_ownership.py", "_sidecar_record_in"),
         ("agent_parts/kirocrew_launcher.py", "refresh_own_kirocrew_link"),
