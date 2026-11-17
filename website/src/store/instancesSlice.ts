@@ -223,6 +223,35 @@ interface InstancesState {
   pendingPaneSlot: PendingPaneSlot | null
   host: HostModel | null
   crewForms: CrewFormState
+  /** Relay Crew tabs in opening order, after the SSH tabs. Optional because tests preload partial slices. */
+  relayTabs?: RelayTab[]
+  /** Relay Crews with a pane open, most recent first: the same Crews as relayTabs. */
+  relayLive?: string[]
+  /** The relay Crew filling <main>, or null. */
+  relayActive?: string | null
+}
+
+/** A relay Crew tab: its endpoint ID and the name it was opened under. */
+export interface RelayTab { id: string; name: string }
+
+/** Whether a remote Crew, SSH or relay, covers the local one: `setActiveId(null)` brings it forward. */
+export const localCovered = (s: { instances?: Pick<InstancesState, 'activeId' | 'relayActive'> }) =>
+  s.instances?.activeId != null || s.instances?.relayActive != null
+
+// Switch the page body to instance `id`, or to the local dashboard for null.
+function activate(state: InstancesState, id: string | null) {
+  // Leaving a crew drops its connect failure: coming back shows what
+  // happens next, not the old refusal.
+  if (state.activeId && state.activeId !== id && state.connectError) {
+    delete state.connectError[state.activeId]
+  }
+  state.activeId = id
+  if (state.pendingPaneSlot && state.pendingPaneSlot.id !== id) state.pendingPaneSlot = null
+  if (id) {
+    state.mru = [id, ...state.mru.filter(x => x !== id)]
+    // Selecting an instance clears its unread badge.
+    if (state.unread[id]) state.unread[id] = 0
+  }
 }
 
 const initialState: InstancesState = {
@@ -273,18 +302,25 @@ const instancesSlice = createSlice({
       state.connectError[action.payload.id] = action.payload.error
     },
     setActiveId(state, action: PayloadAction<string | null>) {
-      // Leaving a crew drops its connect failure: coming back shows what
-      // happens next, not the old refusal.
-      if (state.activeId && state.activeId !== action.payload && state.connectError) {
-        delete state.connectError[state.activeId]
-      }
-      state.activeId = action.payload
-      if (state.pendingPaneSlot && state.pendingPaneSlot.id !== action.payload) state.pendingPaneSlot = null
-      if (action.payload) {
-        state.mru = [action.payload, ...state.mru.filter(x => x !== action.payload)]
-        // Selecting an instance clears its unread badge.
-        if (state.unread[action.payload]) state.unread[action.payload] = 0
-      }
+      activate(state, action.payload)
+      state.relayActive = null
+    },
+    /** A relay Crew's pane opened, or came forward from another tab: it fills
+     *  <main> under the local top bar, so no instance is active. */
+    relayPaneOpened(state, action: PayloadAction<RelayTab>) {
+      const { id } = action.payload
+      const tabs = state.relayTabs ?? []
+      if (!tabs.some(t => t.id === id)) state.relayTabs = [...tabs, action.payload]
+      state.relayLive = [id, ...(state.relayLive ?? []).filter(x => x !== id)]
+      activate(state, null)
+      state.relayActive = id
+    },
+    /** A pane closed, by main, its tab's close or the warm cap: its tab goes with it. */
+    relayPaneClosed(state, action: PayloadAction<string>) {
+      const id = action.payload
+      state.relayLive = (state.relayLive ?? []).filter(x => x !== id)
+      state.relayTabs = (state.relayTabs ?? []).filter(t => t.id !== id)
+      if (state.relayActive === id) state.relayActive = null
     },
     /** Pure client-state teardown for one connection (no API call). */
     removeWarm(state, action: PayloadAction<string>) {
@@ -377,6 +413,8 @@ export const {
   setWarm,
   setConnectError,
   setActiveId,
+  relayPaneOpened,
+  relayPaneClosed,
   removeWarm,
   setPendingPaneSlot,
   setPaneReady,

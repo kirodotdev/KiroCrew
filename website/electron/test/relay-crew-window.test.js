@@ -570,7 +570,7 @@ const PANE_NOTICE = { title: "t", body: "", check: "Check again", close: "Close"
 function openPane(f, extra = {}) {
   const parent = extra.parent || new f.deps.BaseWindow({});
   const dashboard = extra.dashboard || {
-    webContents: { focused: 0, focus() { this.focused += 1; }, isDestroyed: () => false },
+    webContents: Object.assign(new EventEmitter(), { focused: 0, focus() { this.focused += 1; }, isDestroyed: () => false }),
   };
   const handle = openRelayCrewPane({
     endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN,
@@ -703,6 +703,21 @@ test("pane: leaving the screen while it holds the keyboard hands focus back to t
   assert.strictEqual(p.dashboard.webContents.focused, 3, "closing a focused pane hands focus back");
 });
 
+test("pane: a dashboard reload or a gone renderer closes it, and a closed pane leaves no listener behind", () => {
+  for (const event of ["did-navigate", "render-process-gone"]) {
+    const f = fakeDeps();
+    const p = openPane(f);
+    p.dashboard.webContents.emit(event);
+    const closed = p.handle.isClosed();
+    const onWindow = p.parent.children.includes(p.view);
+    const left = p.dashboard.webContents.listenerCount(event);
+    p.handle.close();
+    assert.strictEqual(closed, true, event);
+    assert.strictEqual(onWindow, false, event);
+    assert.strictEqual(left, 0, event);
+  }
+});
+
 test("pane: an overlay and an inactive tab each hide it; it shows once both are off, and focus keeps the overlay", () => {
   const f = fakeDeps();
   const p = openPane(f);
@@ -775,7 +790,7 @@ test("pane: close takes its views off the window, clears the partition, runs onc
   assert.strictEqual(again.handle.isClosed(), true);
 });
 
-test("pane: only main's IPC opens it, and no dashboard code calls it yet, so the window stays the only way a Crew opens", () => {
+test("pane: only main's IPC opens it, and from the dashboard only the key-gated pane helper calls it", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const callers = [];
@@ -796,11 +811,15 @@ test("pane: only main's IPC opens it, and no dashboard code calls it yet, so the
   callers.length = 0;
   const dashboard = path.join(shell, "..", "src");
   walk(dashboard, [".ts", ".tsx"], "relayCrewAPI", dashboard);
-  const paneCalls = /\b(openPane|setPaneBounds|setPaneOverlay|closePane)\b/;
+  const paneCalls = /\b(openPane|setPaneBounds|setPaneOverlay|setPaneInactive|closePane)\b/;
   const users = callers.filter((f) => !/\.test\.tsx?$/.test(f)
     && paneCalls.test(fs.readFileSync(path.join(dashboard, f), "utf8")));
   assert.ok(callers.length > 0, "the scan finds the dashboard's relayCrewAPI users");
-  assert.deepStrictEqual(users, []);
+  assert.deepStrictEqual(users, [path.join("lib", "relayCrewPanes.ts")]);
+  // That helper hands out the bridge only while the hidden key reads "1".
+  const helper = fs.readFileSync(path.join(dashboard, "lib", "relayCrewPanes.ts"), "utf8");
+  assert.ok(helper.includes("RELAY_CREW_PANE_KEY = 'mc-relay-crew-pane'"));
+  assert.ok(helper.includes("if (safeGetItem(RELAY_CREW_PANE_KEY) !== '1') return null"));
 });
 
 test("window and pane: the handle and the attached Crew's log lines name the Crew", () => {

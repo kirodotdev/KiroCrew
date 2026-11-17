@@ -20,8 +20,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Users } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
-  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrew, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
+  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
+import { useAppDispatch } from '../store'
 import { Btn, Card } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
@@ -86,12 +87,14 @@ export default function SharedCrewsCards() {
   const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
   const [refusals, setRefusals] = useState<Record<string, string>>({})
   const queryClient = useQueryClient()
+  const dispatch = useAppDispatch()
   const onOpen = useCallback((endpointId: string) => {
     setRefusals(prev => {
       const { [endpointId]: _dropped, ...rest } = prev
       return rest
     })
-    void openRelayCrew(endpointId).then(res => {
+    const name = crews.find(c => c.endpointId === endpointId)?.name ?? ''
+    void openRelayCrewTab(endpointId, name, dispatch).then(res => {
       if (!res.ok) {
         setRefusals(prev => ({ ...prev, [endpointId]: relayRefusalText(res.error) }))
         return
@@ -102,7 +105,7 @@ export default function SharedCrewsCards() {
         if (failed) setRefusals(prev => ({ ...prev, [endpointId]: i18nT('components.relayCrews.seen_not_saved') }))
       })
     })
-  }, [queryClient])
+  }, [crews, dispatch, queryClient])
   if (hidden) return null
   return (
     <>

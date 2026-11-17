@@ -498,17 +498,22 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   const parentEvents = [["minimize", true], ["hide", true], ["restore", false], ["show", false]]
     .map(([event, away]) => [event, () => { parentAway = away; sync(); }]);
   for (const [event, fn] of parentEvents) parent.on(event, fn);
+  // A new document in the dashboard (a reload, or its renderer gone) starts with
+  // no relay tabs, so nothing could steer or close this pane: it goes too.
+  const dashboardEvents = ["did-navigate", "render-process-gone"];
   const close = () => {
     if (isClosed()) return;
     const reclaim = viewHoldsFocus(view);
     for (const [event, fn] of parentEvents) parent.removeListener(event, fn);
     parent.removeListener("closed", close);
+    for (const event of dashboardEvents) dashboard.webContents.removeListener(event, close);
     openPanes.delete(endpointId);
     try { parent.contentView.removeChildView(view); } catch { /* mid-teardown */ }
     crew.teardown("pane");
     if (reclaim) handBack();
   };
   parent.on("closed", close);
+  for (const event of dashboardEvents) dashboard.webContents.on(event, close);
   // Focus the page takes while off screen goes back, a tick later, and only
   // while the main window is the active one.
   wc.on("focus", () => setImmediate(() => {

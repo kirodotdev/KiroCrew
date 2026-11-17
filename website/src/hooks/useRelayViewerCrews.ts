@@ -12,6 +12,8 @@ import { api, ApiError, type RelayCrewEntry, type RelayViewerAccount } from '../
 import { parseErrorCode, parseErrorField } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import { timeAgo } from '../utils/timeAgo'
+import type { AppDispatch } from '../store'
+import { openRelayPane, relayPaneBridge } from '../lib/relayCrewPanes'
 
 export type RelayCrewOpenResult = { ok: boolean; error?: string }
 type RelayCrewBridge = { open: (endpointId: string) => Promise<RelayCrewOpenResult> }
@@ -32,6 +34,13 @@ export async function openRelayCrew(endpointId: string): Promise<RelayCrewOpenRe
   } catch {
     return { ok: false, error: 'UNAVAILABLE' }
   }
+}
+
+/** Open a relay Crew as a tab in this window while the hidden pane key is on,
+ *  else in its own window through `openRelayCrew`, as before. */
+export function openRelayCrewTab(endpointId: string, name: string, dispatch: AppDispatch): Promise<RelayCrewOpenResult> {
+  const bridge = relayPaneBridge()
+  return bridge ? openRelayPane(bridge, { id: endpointId, name }, dispatch) : openRelayCrew(endpointId)
 }
 
 /** Ask the desktop shell to close every relay Crew window now, after this

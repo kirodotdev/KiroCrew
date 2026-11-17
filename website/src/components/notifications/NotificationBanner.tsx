@@ -324,7 +324,10 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
   // The banner shows over every Crew, but its actions land in the local one (a
   // navigation, the leave-guard prompt), so over a remote Crew each brings the
   // local Crew forward first.
-  const crewHidden = useLocalCrewHidden()
+  // A relay tab covers <main> without hiding the local overlay root, so it is read on its own.
+  const localHidden = useLocalCrewHidden()
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
+  const crewHidden = localHidden || relayCovered
   const showLocalCrew = useCallback(() => {
     if (crewHidden) dispatch(setActiveId(null))
   }, [crewHidden, dispatch])
@@ -463,6 +466,8 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
                 // took its close click (the click expanded the deck instead).
                 style={{ zIndex: 10 - idx, ...(deck ? { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 } : { position: 'relative' }) }}
                 data-testid="notification-banner-card"
+                // A relay Crew pane hides under a showing card (lib/relayCrewPanes.ts).
+                data-relay-pane-overlay=""
                 data-priority={prio}
                 data-deck={deck ? 'true' : undefined}
                 className="rounded-2xl"
