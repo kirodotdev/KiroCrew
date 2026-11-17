@@ -5950,8 +5950,19 @@ host that draws the reply as a bordered card (`data-bordered`, such as a Bot's
 chat) keeps its table inside the card. Prose and the composer keep
 the configured reading width. `TranscriptScrollShell` publishes the scroller's
 `clientWidth` as the inherited `--chat-pane-width` custom property
-(`PANE_WIDTH_PROPERTY`) from its own ResizeObserver, undebounced, and the table
-rules under `.chat-container` size against it. The scroller must not establish a
+(`PANE_WIDTH_PROPERTY`) from its own ResizeObserver, and the table
+rules under `.chat-container` size against it. The property is inherited, so
+each publish restyles every element under the scroller; the only rule that reads
+it is the one for a table the reader widened (`.markdown-table[data-expanded]`).
+While such a table is mounted in the scroller, every resize publishes at once,
+so the table reflows with the pane. With none mounted, the width is published
+once it has held still for `PANE_WIDTH_REST_MS` (50ms): a side panel or sessions
+sidebar that opens or closes with a click resizes the scroller on every frame of
+its tween and publishes once, after it. That rest is shorter than the 200ms
+cache-scope settle below, so the published width is in place before a new scope
+accepts a measurement. A panel sliding under a trackpad drag (`utils/panelSlide`)
+holds the width until the slide ends, and a publish still waiting when the slide
+starts is dropped. The scroller must not establish a
 containing block that can trap `position: fixed` descendants (no query container
 or `contain` on it): `McpAppFrame` promotes its full-screen sheet in place, and a
 containing scroller would centre it on the pane and clip it. Off-screen row measurement inherits the same property

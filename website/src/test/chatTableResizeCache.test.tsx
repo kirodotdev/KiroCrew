@@ -23,7 +23,7 @@ import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { HeightCache } from '../hooks/virtualizer/HeightCache'
 import { HeightIndex } from '../hooks/virtualizer/HeightIndex'
 import VirtualTranscript from '../chat-core/transcript/VirtualTranscript'
-import TranscriptScrollShell, { PANE_WIDTH_PROPERTY, useTranscriptWidth } from '../pages/chat/TranscriptScrollShell'
+import TranscriptScrollShell, { PANE_WIDTH_PROPERTY, PANE_WIDTH_REST_MS, useTranscriptWidth } from '../pages/chat/TranscriptScrollShell'
 
 const items: DisplayItem[] = Array.from({ length: 120 }, (_, idx) => ({
   kind: 'single', idx, msg: { role: 'assistant', content: 'table', ts: `m${idx}` },
@@ -154,7 +154,12 @@ describe.each(hosts)('%s width-cache ownership', (sessionId, prefix) => {
     act(() => { currentRows().fire() })
     expect(persisted(`${prefix}:w1024`, 0)).toBeUndefined()
     expect(live.get(sessionId)!.farmRecord(110, 'row-m110', 410)).toBe(false)
+    // No widened table is mounted, so the publisher waits for the width to rest.
     act(() => { widths[0].fire(); currentRows().fire() })
+    expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
+    expect(persisted(`${prefix}:w1024`, 0)).toBeUndefined()
+    act(() => { vi.advanceTimersByTime(PANE_WIDTH_REST_MS); currentRows().fire() })
+    expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1020px')
     expect(persisted(`${prefix}:w1024`, 0)).toBe(300)
     expect(persisted(`${prefix}:w1216`, 0)).toBe(100)
   })
@@ -188,6 +193,9 @@ describe.each(hosts)('%s width-cache ownership', (sessionId, prefix) => {
       for (const observer of rowObservers) observer.fire()
     }
     act(() => { resize(1020) })
+    // The width rests, then is published: well inside the 200ms scope settle.
+    expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
+    act(() => { vi.advanceTimersByTime(PANE_WIDTH_REST_MS) })
     expect(shell.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1020px')
     expect(persisted(oldScope, 0)).toBe(100)
     expect(virt().farmRecord(110, 'row-m110', 410)).toBe(false)
@@ -199,7 +207,7 @@ describe.each(hosts)('%s width-cache ownership', (sessionId, prefix) => {
     expect(row(0)).toBeNull()
     expect(row(60)).not.toBeNull()
     expect(persisted(oldScope, 60)).toBeUndefined()
-    act(() => { vi.advanceTimersByTime(199) })
+    act(() => { vi.advanceTimersByTime(199 - PANE_WIDTH_REST_MS) })
     expect(persisted(oldScope, 0)).toBe(100)
     act(() => { vi.advanceTimersByTime(1) })
     // No new RO callback: the scope-change remeasurement must seed row 60.
