@@ -9,10 +9,11 @@ fail") from state readable on this host, and returns one finding::
 ``fix`` is ``{"card": {"kind", "params"}}`` when a change card can make the
 change, or ``{"steps": [...]}`` for something only a person can do.
 
-Every probe is strictly read-only: it never calls a ``_doctor_*`` function or
-anything with a repair or atomic-write path, opens SQLite read-only (reading a
-live write-ahead log when one exists), and never returns a secret value, a
-token or a whole MCP spec. Each
+Every probe leaves settings and data as they were: it never calls a
+``_doctor_*`` function or anything with a repair path, opens SQLite read-only
+(reading a live write-ahead log when one exists), and never returns a secret
+value, a token or a whole MCP spec. The one write is in the crew-log probe: the
+first listing of a unit writes its ``status`` savepoint beside the log. Each
 runs under its own deadline on a worker thread, and a probe that raises or
 overruns reports ``unknown`` instead of failing the diagnosis.
 """
