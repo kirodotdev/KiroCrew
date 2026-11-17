@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { FileCard } from '../components/FileCard'
 
 describe('FileCard', () => {
@@ -18,6 +18,38 @@ describe('FileCard', () => {
     const video = document.querySelector('video')
     expect(video).toBeInTheDocument()
     expect(video?.src).toContain('/api/outbox/clip.mp4')
+  })
+
+  it('holds a 16:9 box for a video it has not seen, then the clip\'s own ratio on every later mount', () => {
+    const file = { filename: 'reserve-me.mp4', content_type: 'video/mp4' }
+    const first = render(<FileCard file={file} />)
+    const video = first.container.querySelector('video')!
+    // Before the metadata arrives a <video> is 150px tall whatever the clip.
+    expect(video.className).toContain('aspect-video')
+    expect(video.style.aspectRatio).toBe('')
+
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 720 })
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 1280 })
+    fireEvent.loadedMetadata(video)
+    expect(video.className).not.toContain('aspect-video')
+    expect(Number.parseFloat(video.style.aspectRatio)).toBeCloseTo(720 / 1280)
+    first.unmount()
+
+    // A virtualized row mounts its card again each time it scrolls back in.
+    const again = render(<FileCard file={file} />).container.querySelector('video')!
+    expect(again.className).not.toContain('aspect-video')
+    expect(Number.parseFloat(again.style.aspectRatio)).toBeCloseTo(720 / 1280)
+  })
+
+  it('takes the player\'s natural size when the metadata reports no picture size', () => {
+    const { container } = render(<FileCard file={{ filename: 'audio-only.mp4', content_type: 'video/mp4' }} />)
+    const video = container.querySelector('video')!
+    expect(video.className).toContain('aspect-video')
+    // A `video/*` file with no picture: an empty 16:9 box would be taller than
+    // the player the card shows for it without one.
+    fireEvent.loadedMetadata(video)
+    expect(video.className).not.toContain('aspect-video')
+    expect(video.style.aspectRatio).toBe('')
   })
 
   it('keeps long descriptions on their own wrapping line', () => {

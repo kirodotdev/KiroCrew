@@ -288,7 +288,14 @@ function localMediaUrl(path: string, version: string | null): string {
 
 /** Inline player for a local video or audio file referenced with image syntax.
  *  Same size caps as a transcript image, so a clip takes the space a
- *  screenshot would. A `<span>` wrapper because it renders inside a `<p>`. */
+ *  screenshot would. A `<span>` wrapper because it renders inside a `<p>`.
+ *
+ *  A video reserves its box the way a transcript image does (see `imgStyle`
+ *  in ImgWithFallback): until its metadata arrives a `<video>` is 300x150
+ *  whatever the clip, and the row it sits in is mounted again each time the
+ *  virtualized window scrolls back over it. The size learned on the first
+ *  load reserves the exact box on every later mount; before anything is
+ *  learned, the same fixed pending box an unloaded image gets. */
 function LocalMedia({ kind, src, label, title, compact, onError }: {
   kind: 'video' | 'audio'
   src: string
@@ -297,6 +304,10 @@ function LocalMedia({ kind, src, label, title, compact, onError }: {
   compact: boolean
   onError: () => void
 }) {
+  // `sizedSrc` is the src whose metadata this instance has seen: a reused
+  // instance handed another clip is unsized again without an effect.
+  const [sizedSrc, setSizedSrc] = useState<string | null>(null)
+  const learned = kind === 'video' ? getImageDims(src) : undefined
   return (
     <span className="block my-2">
       {kind === 'video'
@@ -309,9 +320,15 @@ function LocalMedia({ kind, src, label, title, compact, onError }: {
             aria-label={label}
             title={title}
             onError={onError}
-            className={compact
+            onLoadedMetadata={(e) => {
+              const el = e.currentTarget
+              rememberImageDims(src, el.videoWidth, el.videoHeight)
+              setSizedSrc(src)
+            }}
+            className={`${learned ? reservedImageClass(compact) + ' ' : ''}${compact
               ? 'ms-auto block max-w-[240px] max-h-[180px] rounded-md border border-border bg-bg-elevated'
-              : 'block max-w-[min(100%,760px)] max-h-[60vh] rounded-md border border-border bg-bg-elevated'}
+              : 'block max-w-[min(100%,760px)] max-h-[60vh] rounded-md border border-border bg-bg-elevated'}`}
+            style={learned ? reservedImageStyle(learned) : (sizedSrc === src ? undefined : pendingImageBoxStyle(compact))}
           />
         )
         : (

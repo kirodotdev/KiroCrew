@@ -373,6 +373,16 @@ set.
 surface without the wrapper keeps each message's own set. A preview that fails
 to load becomes an inline `ErrorNotice` and is no longer a control.
 
+For a video, `FileCard` holds the player's box before the clip's metadata
+arrives, so the card does not grow under the reader each time its virtualized
+row mounts. The player is as wide as the card, so the box is an aspect ratio:
+the clip's own once it is known, from the record a transcript image's natural
+size is kept in (`utils/imageDims.ts`, keyed by the outbox URL), else 16:9. When
+the metadata reports no picture size the player takes its natural size. A local
+clip a message references in markdown (`ImgWithFallback`'s `LocalMedia`) uses
+the same record, keyed by its `/api/file-stream` URL, and before its first load
+holds the fixed pending box an unloaded transcript image gets.
+
 Every Save on a `FileCard` links to `/api/outbox/<filename>?download=1`, which
 the gateway answers with `Content-Disposition: attachment`. The `download`
 attribute alone is not enough: a browser that ignores it follows the header,
