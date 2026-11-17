@@ -479,10 +479,10 @@ def status() -> str:
     for user in (False, True):
         state = _unit_state(user=user)
         lines = [state.headline()]
-        lines += [f"  ⚠️  {line}" for line in _stale_unit_lines(state)]
+        lines += [f"  Warning: {line}" for line in _stale_unit_lines(state)]
         restart_line = _restart_policy_line(state)
         if restart_line:
-            lines.append(f"  ⚠️  {restart_line}")
+            lines.append(f"  Warning: {restart_line}")
         if state.installed:
             res = _systemctl(
                 "status", f"{SERVICE_NAME}.service", "--no-pager", sudo=False, user=user

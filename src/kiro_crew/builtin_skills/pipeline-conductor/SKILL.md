@@ -309,7 +309,7 @@ via `monitor_update`, see "Live steering"):
 > LEDGER FIRST: one `session_ledger_read` — the injected `[work ledger]` block
 > is a truncated teaser, and every disposition below is a comparison against the
 > recorded item state.
-> THEN PROBE: one `fleet_probe.py --config <path>` call. Act only on 🔔/BANNED
+> THEN PROBE: one `fleet_probe.py --config <path>` call. Act only on ALERT/BANNED
 > lines: ERR → batch resume; PR → record; GREEN → verify independently then
 > digest + backfill; STANDDOWN/PROPOSAL → disposition + backfill; TERMINAL →
 > close it out, never nudge; BLOCKED → adjudicate; IDLE → intervention ladder;
@@ -1103,7 +1103,7 @@ with the ledger's open sessions (add on dispatch, drop on close). Fired lines
 carry **metadata only** — the probe never emits transcript text:
 
 ```
-🔔 <key>  <age>s <TAG> i=<index> d=<digest12>
+ALERT <key>  <age>s <TAG> i=<index> d=<digest12>
 BANNED pid=<pid> rule=<regex|argv:<shape>> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown cmd=<program,flags,+withheld>
 OK <n> watched, <m> fired | load/cpu <x> (ok|hot)|n/a | mem <n>G|n/a | banned <n>|n/a | foreign <n>|n/a | deliver init-timeout <a>, watchdog <b>
 ```

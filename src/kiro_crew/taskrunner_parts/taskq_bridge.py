@@ -125,7 +125,7 @@ async def adopt_task_rows(self: TaskRunner) -> "_runner_adapter.AdoptReport | No
                 logger.warning("taskq adopt: could not resume run %s: %s", run_id, exc)
                 continue
             await self._notify(
-                "\u25b6\ufe0f Resumed after a gateway restart",
+                "Resumed after a gateway restart",
                 "The gateway stopped while this run was running. It continues from its "
                 "checkpoint: steps that passed are kept.",
                 run=self._runs.get(run_id),
@@ -140,7 +140,7 @@ async def adopt_task_rows(self: TaskRunner) -> "_runner_adapter.AdoptReport | No
         run = self._runs.get(rec_id[len(_runner_adapter.TASKRUNNER_ID_PREFIX) :])
         if run is not None and run.status == "paused":
             await self._notify(
-                "\u23f8\ufe0f Run not auto-resumed",
+                "Run not auto-resumed",
                 "The interrupted step may have had a side effect (no git worktree "
                 "to checkpoint against). Review the workspace and resume manually.",
                 run=run,
@@ -152,7 +152,7 @@ async def adopt_task_rows(self: TaskRunner) -> "_runner_adapter.AdoptReport | No
         run = self._runs.get(owner[1]) if owner is not None else None
         if run is not None and run.status == "paused":
             await self._notify(
-                "\u23f8\ufe0f Run not auto-resumed",
+                "Run not auto-resumed",
                 f"This run was resumed automatically {_taskq_model.RECOVERY_MAX_ATTEMPTS} "
                 "times after the gateway stopped, and the gateway stopped again before it "
                 "finished, so it is not resumed again. The limit counts every gateway stop, "

@@ -117,10 +117,10 @@ class TestNumberedPicker:
         assert asked == ["  ? Choose 1-3 [2]: "]
         assert capsys.readouterr().out == (
             "  Size\n"
-            "    ○ Small\n"
+            "    ( ) Small\n"
             "       2 vCPU\n"
-            "    ◉ Medium (recommended)\n"
-            "    ○ Large\n"
+            "    (*) Medium (recommended)\n"
+            "    ( ) Large\n"
             "       8 vCPU\n"
         )
 
@@ -130,8 +130,8 @@ class TestNumberedPicker:
         assert ui.choose("Size", OPTIONS) == 2
         assert len(asked) == 4
         out = capsys.readouterr().out
-        assert out.count("⚠ Enter a number.\n") == 1
-        assert out.count("⚠ Enter a number between 1 and 3.\n") == 2
+        assert out.count("Warning: Enter a number.\n") == 1
+        assert out.count("Warning: Enter a number between 1 and 3.\n") == 2
 
     def test_eof_takes_the_recommended_option(self, monkeypatch) -> None:
         _answers(monkeypatch, [EOFError])
@@ -149,7 +149,7 @@ class TestNumberedPicker:
         assert ui.choose("Size", OPTIONS, default_index=1) == 1
         assert len(asked) == 1
         out = capsys.readouterr().out
-        assert out.endswith(f"⚠ {bad!r} is not a choice; using 2 (Medium).\n")
+        assert out.endswith(f"Warning: {bad!r} is not a choice; using 2 (Medium).\n")
         assert "Enter a number" not in out
 
     def test_a_good_piped_answer_is_taken(self, monkeypatch) -> None:
@@ -247,10 +247,10 @@ class TestKeysAndLines:
         assert lines == [
             "  Size",
             "    Use ↑/↓ and Enter, or press 1-3.",
-            "    ◉ Small (recommended)",
+            "    (*) Small (recommended)",
             "       2 vCPU",
-            "    ○ Medium",
-            "    ○ Large",
+            "    ( ) Medium",
+            "    ( ) Large",
             "       8 vCPU",
         ]
 
@@ -279,7 +279,7 @@ class TestOutput:
         ui.fail("f")
         ui.detail("d")
         ui.note("n")
-        assert capsys.readouterr().out == "  → i\n  ✓ o\n  ⚠ w\n  ✗ f\n    d\n  n\n"
+        assert capsys.readouterr().out == "  → i\n  OK o\n  Warning: w\n  Error: f\n    d\n  n\n"
 
 
 class TestSpinner:

@@ -172,7 +172,7 @@ async def test_agent_command_switches_through_the_pickers_transaction(tmp_path, 
     state.sessions.reset.assert_awaited()
     assert slot.agent == WORKER
     assert slot.agent_kind == "template"
-    assert _last_assistant(slot) == f"🔄 Switched to agent: {WORKER}"
+    assert _last_assistant(slot) == f"Switched to agent: {WORKER}"
     execution = read_session_execution("dashboard:template-chat")
     assert execution is not None and execution.selection_kind == "template"
 
@@ -294,7 +294,7 @@ async def test_announce_appends_the_same_line_the_in_turn_command_does(tmp_path,
     assert status == 200 and body["ok"], body
     assert slot.agent == WORKER
     assert _assistant_rows(slot) == [*before, switch_announcement(WORKER)]
-    assert switch_announcement(WORKER) == f"🔄 Switched to agent: {WORKER}"
+    assert switch_announcement(WORKER) == f"Switched to agent: {WORKER}"
 
 
 @pytest.mark.asyncio

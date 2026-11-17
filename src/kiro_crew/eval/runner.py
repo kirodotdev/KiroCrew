@@ -576,7 +576,7 @@ class EvalRunner:
         for scenario in scenarios:
             result = await self.run_scenario(scenario)
             results.append(result)
-            status = "✅" if result.passed else "❌"
+            status = "PASS" if result.passed else "FAIL"
             # A log line reaches the console with `-v`, and scenario text can come from a
             # file someone else wrote: every value is shown through `safe_terminal_line`.
             logger.info(
@@ -858,7 +858,7 @@ def format_results(results: list[ScenarioResult]) -> str:
         lines.append("")
 
     for r in results:
-        status = "✅" if r.passed else "❌"
+        status = "PASS" if r.passed else "FAIL"
         lines.append(f"## {status} {r.name}")
         if r.description:
             lines.append(f"_{r.description}_")
@@ -872,22 +872,22 @@ def format_results(results: list[ScenarioResult]) -> str:
             lines.append(f"Dimensions: {', '.join(r.dimensions)}")
         if r.consolidation_failures > 0:
             lines.append(
-                f"⚠️  {r.consolidation_failures} consolidation failure(s) — "
+                f"Warning: {r.consolidation_failures} consolidation failure(s) — "
                 f"cross-session memory may be incomplete"
             )
         lines.append("")
 
         for si, sr in enumerate(r.sessions):
-            s_status = "✅" if sr.passed else "❌"
+            s_status = "PASS" if sr.passed else "FAIL"
             lines.append(f"### {s_status} Session {si + 1}: {sr.name}")
             for ti, tr in enumerate(sr.turns):
-                t_status = "✅" if tr.passed else "❌"
+                t_status = "PASS" if tr.passed else "FAIL"
                 lines.append(f"  {t_status} Turn {ti + 1}: `{tr.user_message[:60]}`")
                 if tr.tool_calls:
                     names = ", ".join(_tool_label(n) for n in tr.tool_calls[:5])
                     lines.append(f"     Tools: {names}")
                 for i, (assertion, ok) in enumerate(tr.assertion_results):
-                    a_status = "✅" if ok else "❌"
+                    a_status = "PASS" if ok else "FAIL"
                     label = safe_terminal_line(_redacted(assertion.label))[:50]
                     note = tr.assertion_notes[i] if i < len(tr.assertion_notes) else ""
                     lines.append(

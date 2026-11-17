@@ -205,7 +205,7 @@ def summarize(findings: list[Finding]) -> str:
     for f in findings:
         by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
     counts = ", ".join(f"{n} {k}" for k, n in sorted(by_kind.items()))
-    lines = [f"⚠️ {len(findings)} potential issue(s) before publishing publicly: {counts}.",
+    lines = [f"Warning: {len(findings)} potential issue(s) before publishing publicly: {counts}.",
              "Review each — publishing makes this content world-readable:"]
     for f in findings[:20]:
         snippet = redact(f.snippet)

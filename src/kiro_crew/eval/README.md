@@ -159,18 +159,18 @@ Running: smoke_test (2 turns)
 |-----------|--------|-------|------|
 | memory_recall | 1 | 2 | 50% |
 
-## ❌ smoke_test
+## FAIL smoke_test
 _Minimal 2-session smoke test. Teach one fact, recall it next session._
 Assertions: 1/2 | Time: 30.2s
 Dimensions: memory_recall
 
-### ✅ Session 1: teach
-  ✅ Turn 1: `Remember: my favorite fruit is mango.`
-     ✅ contains: `mango`
+### PASS Session 1: teach
+  PASS Turn 1: `Remember: my favorite fruit is mango.`
+     PASS contains: `mango`
 
-### ❌ Session 2: recall
-  ❌ Turn 1: `What is my favorite fruit?`
-     ❌ contains: `mango`
+### FAIL Session 2: recall
+  FAIL Turn 1: `What is my favorite fruit?`
+     FAIL contains: `mango`
      Response: I don't have any information about your favorite fruit.
               I don't have access to personal preferences unless you've
               shared them with me in this conversation. What is it?

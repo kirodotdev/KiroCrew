@@ -1778,7 +1778,7 @@ class TestWatchdogLoop:
         assert runner._sessions.reset.await_args.args == ("taskrunner:plan_1:task4",)
         assert notify.sent == [
             (
-                "[demo] 💀 Watchdog: ACP process died",
+                "[demo] Error: Watchdog: ACP process died",
                 "Task 4 sub-agent is not running. Resetting session to trigger recovery.",
             )
         ]
