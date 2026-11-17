@@ -671,7 +671,8 @@ contribute nothing: the key is only added to the payload when non-empty.
 A session control is a compact chip the dashboard renders in the composer bar,
 beside the agent, model and project chips. It shows in an ordinary chat and in a
 Bot's thread on the Bots page, where it is bound to that thread's session; a
-split-view pane does not draw its own. Opening it mounts the app's own ESM
+split-view pane does not draw its own. Backend calls into a Bot thread need `permissions.sessionApproval` + `permissions.memberThreads`.
+Opening it mounts the app's own ESM
 module and hands it **the identity of the chat the user is currently in** -- which
 is the reason the slot exists, because nothing else in the app surface reports
 that. `ui.pages` is routed and session-blind, so a per-chat setting placed there
