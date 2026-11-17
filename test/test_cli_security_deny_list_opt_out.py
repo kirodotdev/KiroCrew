@@ -115,3 +115,67 @@ def test_enforced_regex_rules_match_the_gate(
         r.pattern for r in BUILTIN_DENIED_RULES if r.id in floor_enforced_builtin_command_ids()
     }
     assert set(enforced) - floor == _gate_builtin_set() - floor
+
+
+_PROFILE_ONLY = (
+    "🔐 Built-in deny patterns turned off but kept on only for sessions "
+    "bound to a governance profile that pins them:"
+)
+
+
+def test_profile_only_pin_is_not_listed_as_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A rule pinned by one profile only is enforced for sessions bound to it, not
+    for an unbound session, so it must not appear under the unscoped heading."""
+    from kiro_crew.security import denied_rules
+
+    rid = "credential-exfil-s3-cp"
+    monkeypatch.setattr(denied_rules, "pinned_builtin_command_ids", lambda: set())
+    monkeypatch.setattr(denied_rules, "pinned_builtin_command_ids_for_snapshot", lambda: {rid})
+    _run(tmp_path, monkeypatch, {"disabled_ids": [rid]})
+    out = capsys.readouterr().out
+    enforced, off = _sections(out)
+    pattern = _rule(rid)
+    assert pattern not in enforced
+    assert pattern not in off
+    assert f"{_PROFILE_ONLY}\n  ~ {pattern}" in out
+    assert pattern not in _gate_builtin_set()
+
+
+def test_ceiling_pin_stays_enforced_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kiro_crew.security import denied_rules
+
+    rid = "credential-exfil-s3-cp"
+    monkeypatch.setattr(denied_rules, "pinned_builtin_command_ids", lambda: {rid})
+    _run(tmp_path, monkeypatch, {"disabled_ids": [rid]})
+    out = capsys.readouterr().out
+    enforced, off = _sections(out)
+    pattern = _rule(rid)
+    assert pattern in enforced and pattern not in off
+    assert f"  ✗ {pattern}  (kept on: governance pin)" in out
+    assert _PROFILE_ONLY not in out
+    assert pattern in _gate_builtin_set()
+
+
+def test_lock_note_only_on_a_rule_the_operator_turned_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pinned rule nobody turned off is on anyway, so it gets no lock note even
+    when another rule is opted out."""
+    from kiro_crew.security import denied_rules
+
+    off_id = "credential-exfil-s3-cp"
+    pinned_id = next(r.id for r in BUILTIN_DENIED_RULES if r.id != off_id)
+    monkeypatch.setattr(denied_rules, "pinned_builtin_command_ids", lambda: set())
+    monkeypatch.setattr(
+        denied_rules, "pinned_builtin_command_ids_for_snapshot", lambda: {pinned_id}
+    )
+    _run(tmp_path, monkeypatch, {"disabled_ids": [off_id]})
+    out = capsys.readouterr().out
+    enforced, _ = _sections(out)
+    pattern = _rule(pinned_id)
+    assert pattern in enforced
+    assert f"  ✗ {pattern}\n" in out
