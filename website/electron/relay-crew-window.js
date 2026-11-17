@@ -28,7 +28,8 @@ const { normalizeBounds, viewHoldsFocus, computeVisible } = require("./browser-v
  *
  * The window also watches the page's two retry loops (the `/api/ws` socket and
  * the `/api/status` probe) and reports the Crew unreachable once they have
- * failed for the cap in relay-crew-reachability.js, or at once when the relay
+ * failed for the cap in relay-crew-reachability.js (sooner when the relay says
+ * it has no host connection for the Crew), or at once when the relay
  * answers the page load itself with a 5xx or the load fails. Its notice is a
  * local page in a second view over the Crew's: showing it unloads the Crew's
  * page, which is what stops that page's retries.
@@ -199,6 +200,23 @@ function createRelayCrewView({ endpointId, crewUrl, relayDomain, getToken }, dep
 
 // A request on the Crew's origin as one of the page's retry attempts: its
 // path, or null for anything else.
+// The relay names why it could not serve a request in this header (relay
+// protocol v1, section 7 typed reasons); `crew_not_connected` means it holds no
+// host connection for the Crew. Never a Crew's own: the relay drops a Crew's
+// x-kiro-relay-* response headers.
+const RELAY_ERROR_HEADER = "x-kiro-relay-error";
+const CREW_NOT_CONNECTED = "crew_not_connected";
+
+function relayError(responseHeaders) {
+  if (!responseHeaders || typeof responseHeaders !== "object") return null;
+  for (const [name, value] of Object.entries(responseHeaders)) {
+    if (name.toLowerCase() !== RELAY_ERROR_HEADER) continue;
+    const first = Array.isArray(value) ? value[0] : value;
+    return typeof first === "string" ? first.trim() : null;
+  }
+  return null;
+}
+
 function retryPath(origin, rawUrl) {
   try {
     const url = new URL(rawUrl);
@@ -256,7 +274,9 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     log(`crew unreachable (${why})`);
     notify(unreachableListeners);
   };
-  const failedAttempt = () => { if (watch.fail()) unreachable("retries ran out"); };
+  const failedAttempt = (hostGone = false) => {
+    if (watch.fail(hostGone)) unreachable(hostGone ? "host not connected" : "retries ran out");
+  };
   // The socket's upgrade is a wss: request, which an https: pattern does not match.
   // `origin` passed crewOrigin(), so it always starts with https:.
   const wssOrigin = "wss:" + origin.slice("https:".length);
@@ -268,8 +288,15 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
       if (details.statusCode >= 500) unreachable(`main frame ${details.statusCode}`);
       return;
     }
-    if (!retryPath(origin, details.url)) return;
-    if (details.statusCode >= 400) failedAttempt();
+    if (!retryPath(origin, details.url)) {
+      // Any other read the Crew answered (not a cached copy) proves its host is there.
+      if (details.statusCode >= 200 && details.statusCode < 300 && !details.fromCache) watch.ok();
+      return;
+    }
+    // The relay accepts a socket upgrade even with no host and then closes it
+    // with 4404 (`crew_not_connected`), so an upgrade's 101 proves nothing.
+    if (details.statusCode === 101) return;
+    if (details.statusCode >= 400) failedAttempt(relayError(details.responseHeaders) === CREW_NOT_CONNECTED);
     else watch.ok();
   });
   ses.webRequest.onErrorOccurred(watched, (details) => {
