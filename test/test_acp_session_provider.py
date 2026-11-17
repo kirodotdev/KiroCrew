@@ -22,7 +22,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 
 
 def _make_handle(
@@ -580,21 +580,18 @@ class TestAcpSessionProviderCancelOverRealHandle:
             # streaming meanwhile: the write returns only once the dispatch loop
             # has ended the turn itself. Ageing the cancel's own stamp by the
             # grace is that slow write, without a short window or a clock patch.
+            # The streamed frame wakes the loop, whose next pass finds the grace
+            # spent and ends the turn.
             handle._cancel_ts -= handle._cancel_grace_secs
-
-            async def pump() -> None:
-                while not handle._turn_done.is_set():
-                    queue.put_nowait(_chunk_frame())
-                    await asyncio.sleep(0.005)
-
-            await asyncio.wait_for(pump(), timeout=5.0)
+            queue.put_nowait(_chunk_frame())
+            await await_until(handle._turn_done, what="the unacked-cancel terminal")
 
         runtime.send_notification.side_effect = frames_flow_until_the_loop_gives_up
         consumer = asyncio.create_task(self._consume(handle))
         provider = _stopper(via, AcpSessionProvider(handle, runtime))
 
         outcome = await provider.cancel(wait_ack_timeout=FALLBACK_TIMEOUT_SECS)
-        events = await asyncio.wait_for(consumer, timeout=5.0)
+        events = await await_until(consumer, what="the dispatch loop's terminal")
 
         assert events[-1].kind == EVENT_COMPLETE
         assert events[-1].stop_reason == STOP_REASON_CANCEL_UNACKED
@@ -616,7 +613,7 @@ class TestAcpSessionProviderCancelOverRealHandle:
         provider = _stopper(via, AcpSessionProvider(handle, runtime))
 
         outcome = await provider.cancel(wait_ack_timeout=FALLBACK_TIMEOUT_SECS)
-        events = await asyncio.wait_for(consumer, timeout=5.0)
+        events = await await_until(consumer, what="the dispatch loop's terminal")
 
         assert events[-1].stop_reason == STOP_REASON_CANCELLED
         assert outcome == "acked"
