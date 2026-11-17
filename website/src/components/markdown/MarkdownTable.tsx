@@ -160,8 +160,8 @@ export function MarkdownTable({ node, children }: { node?: HastElement; children
           accessibility tree are all untouched — no overlay, no extra node.
 
           The scroller stays `.markdown-table`'s DIRECT child with
-          `relative overflow-x-auto` and keeps the sr-only copy-status region,
-          so the breakout containing-block contract holds unchanged.
+          `relative overflow-x-auto`, so any absolute descendant keeps a local
+          containing block and the breakout contract holds unchanged.
 
           `data-overflow` ('', 'left', 'right', 'both') drives the mask-image
           fade from the stylesheet (index.css, `.markdown-table
