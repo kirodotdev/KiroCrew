@@ -7,7 +7,7 @@ const {
   openExternalSafely,
 } = require("./external-scheme");
 const { createReachabilityWatch } = require("./relay-crew-reachability");
-const { normalizeBounds, viewHoldsFocus } = require("./browser-view");
+const { normalizeBounds, viewHoldsFocus, computeVisible } = require("./browser-view");
 
 /**
  * A window that shows a remote Crew's dashboard through the Kiro relay.
@@ -434,6 +434,10 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   wc.setUserAgent(`${parts.session.getUserAgent()} ${RELAY_PANE_UA_MARKER}`);
   let rect = null;
   let shown = true;
+  // A local menu or dialog over the pane, and another tab in front of it: either
+  // one hides it, as the Preview panel's computeVisible decides.
+  let overlay = false;
+  let inactive = false;
   let parentAway = false;
   let reportedHidden = false;
   parent.contentView.addChildView(view);
@@ -456,6 +460,7 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   // As for the Preview panel (browser-view.js): decide the hand-back before
   // the hide, and make it after.
   const sync = () => {
+    shown = computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
     const reclaim = !shown && viewHoldsFocus(view);
     for (const v of crew.views()) v.setVisible(shown);
     if (reclaim) handBack();
@@ -497,13 +502,15 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
       if (parent.isMinimized()) parent.restore();
       parent.show();
       parent.focus();
-      shown = true;
+      // Brings its tab to the front; a local overlay still up keeps it hidden.
+      inactive = false;
       sync();
       wc.focus();
     },
     close,
     setBounds: (next) => { if (!isClosed()) setBounds(next); },
-    setVisible: (visible) => { if (isClosed()) return; shown = visible === true; sync(); },
+    setOverlay: (active) => { if (isClosed()) return; overlay = active === true; sync(); },
+    setInactive: (value) => { if (isClosed()) return; inactive = value === true; sync(); },
     onChord: (cb) => { chordListeners.push(cb); },
   };
   openPanes.set(endpointId, handle);

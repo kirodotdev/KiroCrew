@@ -635,17 +635,17 @@ test("pane: hidden parks renewal as a minimized window does, and its notice hide
   const p = openPane(f);
   const seen = [];
   p.handle.onVisibilityChange((hidden) => seen.push(hidden));
-  p.handle.setVisible(false);
-  p.handle.setVisible(false);
+  p.handle.setInactive(true);
+  p.handle.setInactive(true);
   assert.strictEqual(p.view.visible, false);
   p.handle.showNotice(PANE_NOTICE);
   const notice = f.views[1];
   assert.strictEqual(notice.visible, false, "a notice shown while hidden stays hidden");
-  p.handle.setVisible(true);
+  p.handle.setInactive(false);
   assert.strictEqual(notice.visible, true);
   p.parent.emit("minimize");
   p.parent.emit("restore");
-  p.handle.setVisible(false);
+  p.handle.setInactive(true);
   p.parent.emit("restore");
   assert.deepStrictEqual(seen, [true, false, true, false, true]);
   p.handle.close();
@@ -658,11 +658,11 @@ test("pane: leaving the screen while it holds the keyboard hands focus back to t
   const p = openPane(f);
   const wc = p.view.webContents;
   wc.hasFocus = true;
-  p.handle.setVisible(false);
+  p.handle.setInactive(true);
   assert.strictEqual(p.dashboard.webContents.focused, 1);
-  p.handle.setVisible(true);
+  p.handle.setInactive(false);
   wc.hasFocus = false;
-  p.handle.setVisible(false);
+  p.handle.setInactive(true);
   assert.strictEqual(p.dashboard.webContents.focused, 1, "no hand-back when the pane did not hold focus");
   wc.emit("focus");
   await new Promise((r) => setImmediate(r));
@@ -673,6 +673,25 @@ test("pane: leaving the screen while it holds the keyboard hands focus back to t
   assert.deepStrictEqual(p.parent.calls, ["show", "focus"]);
   p.handle.close();
   assert.strictEqual(p.dashboard.webContents.focused, 3, "closing a focused pane hands focus back");
+});
+
+test("pane: an overlay and an inactive tab each hide it; it shows once both are off, and focus keeps the overlay", () => {
+  const f = fakeDeps();
+  const p = openPane(f);
+  p.handle.setOverlay(true);
+  assert.strictEqual(p.view.visible, false);
+  p.handle.setInactive(true);
+  p.handle.setOverlay(false);
+  assert.strictEqual(p.view.visible, false, "still behind another tab");
+  p.handle.setOverlay(true);
+  p.handle.setInactive(false);
+  assert.strictEqual(p.view.visible, false, "still under the overlay");
+  p.handle.setInactive(true);
+  p.handle.focus();
+  assert.strictEqual(p.view.visible, false, "focus brings its tab forward, and the overlay still hides it");
+  p.handle.setOverlay(false);
+  assert.strictEqual(p.view.visible, true);
+  p.handle.close();
 });
 
 test("pane: main reads the Crew-switch chord before the page and reports its tab index", () => {
