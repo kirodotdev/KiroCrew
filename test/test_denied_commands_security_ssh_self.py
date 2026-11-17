@@ -742,20 +742,127 @@ class TestSandboxEscapeSshSelf:
             "0 9 * * 1-5",
             "*/15 * * * *",
             "it runs on the cron schedule 0 * * * * (top of every hour).",
-            # The residual this costs: a bare glob verb and its glob host both
-            # expand in a working directory the caller filled, which already
-            # makes a lone ``*`` the whole connection.
-            "s?h local*",
+            # A bare glob verb that is another program's operand is a filename,
+            # so the glob after it is one too.
+            "tar -czf out.tgz s* *.*",
+            "git add s* README.md",
+            "find s* l*",
+            # A glob operand glued to the ``;`` that ends its command.
+            "git add sc?; curl -s localhost:3000/healthz",
+            # A ``case`` arm pattern sits where a program would, but is not run.
+            'case "$f" in *.md) ;; s*) wc -l *.* ;; esac',
+            # The program of a ``$(`` substitution glued to an assignment is
+            # the word after ``$(`` (``ls``), so the globs after it are its operands.
+            "files=$(ls s* l*)",
+            "hashes=$(sha256sum s* *.*)",
+            "n=$(ls s* *.* | wc -l)",
+            "count=$(ls r* *.* 2>/dev/null | wc -l)",
+            'echo "$(ls s* *.*)"',
             "git add * *.* -f",
             "tar -czf site.tgz * *.* -p",
             "zip -r bundle.zip * *.* -j",
             "python3 scripts/lint.py * *.* -o report.txt",
+            # A backtick assignment runs its substitution in its own frame, where
+            # ``ls`` is the program and the globs are operands; the assignment
+            # word is not a run position.
+            "n=`ls s* *.* | wc -l`",
+            # An array literal element is data, not a program.
+            'files=( s* *.* ); printf "%s\\n" "${files[@]}"',
+            'targets=( r* l* ); tar -czf handoff.tgz "${targets[@]}"',
+            "bash -c 'files=( s* *.* ); tar -czf handoff.tgz \"${files[@]}\"'",
+            # A ``case`` arm's pattern list is matched against the case word, not
+            # run; the ``|`` is case alternation, not a pipe.
+            'case "$f" in s* | r* ) wc -l *.* ;; esac',
+            'for f in *; do case "$f" in docs ) ls docs ;; s* | r* ) wc -l *.* ;; esac; done',
+            # ``;&`` (fall through to the next arm) ends an arm like ``;;`` does.
+            'case "$f" in docs) echo d ;& s* | r* ) wc -l *.* ;; esac',
+            'case "$f" in docs) echo d;& s* | r* ) wc -l *.* ;; esac',
+            # An arm body's first word is its program; the globs after it are operands.
+            'case "$f" in docs) ls s* *.* ;; esac',
+            # A case that an arm body or an ``if`` body opens is a case statement too.
+            'case "$a" in x) case "$b" in s* | r* ) wc -l *.* ;; esac ;; esac',
+            'if true; then case "$f" in s* | r* ) wc -l *.* ;; esac; fi',
+            # A wrapper's option is read in its own case: ``sudo -H`` and
+            # ``sudo -E`` take no value, so ``ls`` / ``du`` is the program and the
+            # globs are its operands.
+            "sudo -H ls -l s* *.*",
+            "sudo -H du -sh s* l*",
+            "sudo -E ls s* *.*",
+            # ``sudo -e`` edits its operands and runs no program.
+            "cd /etc/ssh && sudo -e s* *.*",
+            "sudo -e s*",
+            # The cased words go through the same body masking as the lowered ones.
+            "echo \"$(date '+%F x')\" s; sudo -H ls -l s* *.*",
         ],
     )
     def test_a_glob_host_after_a_glob_verb_is_not_this_host(self, text):
         # One filesystem expansion per connection: two wildcard words in a row
         # are every five-field cron schedule, not ``ssh localhost``.
         assert _denied_by(text) is None, text
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # In a directory holding files named ``ssh`` and ``localhost`` (an
+            # agent can create both), bash expands each of these into an ssh
+            # connection to this host: the glob verb is RUN, in program position
+            # or as the program a wrapper runs.
+            "s?h -F /dev/null local* id",
+            "s?h local*",
+            "s?h local* id",
+            "s[s]h local* id",
+            "env s?h local*",
+            "sudo s?h local*",
+            "time s?h local*",
+            "xargs s?h local*",
+            # A glob verb glued to a substitution opener, a subshell or a
+            # separator is still the program bash runs.
+            "echo $(s?h local* id)",
+            "x=$(s?h local* id)",
+            "(s?h local* id)",
+            "cd /tmp;s?h local*",
+            "echo $(s?h localhost id)",
+            # Bash runs a ``$(`` inside double quotes as a command line of its own.
+            'echo "$(s?h localhost id)"',
+            'echo "$(s?h local* id)"',
+            'x="$(s?h local* id)"',
+            # A substitution that closes inside the assignment word leaves the
+            # next word the program of the command.
+            "x=$(true) s?h local* id",
+            # ``case`` as an argument opens no case statement, so the next
+            # command's program is still run.
+            "echo case in x; s?h local* id",
+            "echo test case in prod; s?h local* id",
+            # A closed case statement leaves the next command's program run.
+            "case x in a) :;; esac; s?h local* id",
+            # A word that starts a command in an arm body is a program, not a pattern.
+            "case x in a) true; s?h local* id;; esac",
+            # So is the arm body's first word, right after the arm's ``)``.
+            "case x in x) s?h -F /dev/null local* id;; esac",
+            "case x in x) env s?h local* id;; esac",
+            "case x in (x) s?h local* id ;; esac",
+            "case x in a) :;; x) s?h local* id;; esac",
+            # A wrapper's upper-case value option takes its value, so the word
+            # after the value is the program the wrapper runs.
+            "env -C . s?h local*",
+            "sudo -D /tmp s?h local*",
+            "xargs -P 4 s?h local*",
+            # ``sudo -H`` and ``sudo -E`` take no value and run the next word.
+            "sudo -H s?h local* id",
+            "sudo -E s?h local* id",
+        ],
+    )
+    def test_a_run_glob_verb_keeps_its_glob_host(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        ["SUDO s?h local* id", "Env s?h local*", "SSH.EXE localhost id", "Ssh localhost id"],
+    )
+    def test_an_upper_case_program_or_verb_is_still_read(self, cmd):
+        # Only a wrapper's option words keep their case; program and verb names
+        # match in any case, as bash on a case-insensitive filesystem runs them.
+        assert _denied_by(cmd) == self._RULE, cmd
 
     @pytest.mark.parametrize(
         "cmd",
@@ -1384,6 +1491,29 @@ class TestSandboxEscapeSshSelf:
     )
     def test_a_quoted_default_opener_does_not_hide_a_later_ssh(self, line):
         assert is_denied(line)
+
+    @pytest.mark.parametrize(
+        "line", ['echo "x#"s?h localhost', "echo '{'s?h localhost", 'echo "x#s?h"']
+    )
+    def test_the_early_check_agrees_with_the_gate_on_a_quoted_word_break(self, line):
+        # The gate ends a word at a masked ``#`` or ``{``, so the early check may
+        # not skip a line whose masked reading passes the gate.
+        probe = _argv_floor._decode_shell_quoted_literals(_argv_floor._mask_quoted_separators(line))
+        probe = probe.replace('"', "").replace("'", "").replace("\\", "")
+        assert _argv_floor._glob_can_name_ssh_verb(probe) is True
+        assert _argv_floor._cannot_name_ssh_verb(line) is False
+
+    def test_one_gate_call_keeps_a_verdict_per_casing(self):
+        # ``sudo -H`` takes no value and ``sudo -h`` does, so the same lowered line
+        # has two verdicts; the second reading must not reuse the first.
+        lowered = "sudo -h s?h local* id"
+        previous = _CALL_VIEWS.get()
+        _CALL_VIEWS.set({})
+        try:
+            assert _argv_floor._reaches_self_over_ssh(lowered, "sudo -H s?h local* id") is True
+            assert _argv_floor._reaches_self_over_ssh(lowered, lowered) is False
+        finally:
+            _CALL_VIEWS.set(previous)
 
     def test_every_line_main_refuses_stays_refused(self):
         # The floor refuses when either its quote-aware reading or main's reading does.

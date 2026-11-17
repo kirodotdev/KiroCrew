@@ -30,7 +30,8 @@ Four families make up the floor:
 Each family lives in an owner module beside this one, and this module is the
 import path of every name they define: ``argv_floor_git`` holds release
 detection, ``argv_floor_self`` the subcommand floors and the credential-mint
-predicates, ``argv_floor_ssh`` the ssh self-target floor, and
+predicates, ``argv_floor_ssh`` the ssh self-target floor, ``argv_floor_ssh_gate`` the
+gate that decides whether a line can run an ssh verb, and
 ``argv_floor_hosts`` the names and addresses that floor counts as this host.
 A read through this module answers with the owner's object, and a write
 reaches every owner that binds the name (:mod:`kiro_crew._facade_mirror`).
@@ -74,12 +75,14 @@ logger = logging.getLogger(__name__)
 #   ``argv_floor_self`` -- the product's own subcommand floors and the credential-mint
 #   predicates
 #   ``argv_floor_hosts`` -- the names and addresses the ssh floor counts as this host
+#   ``argv_floor_ssh_gate`` -- the gate that decides whether a line can run an ssh verb
 #   ``argv_floor_ssh`` -- the ssh self-target floor
 #   ``argv_floor_git`` -- release detection and the protected-branch push target
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.argv_floor_self",
     "kiro_crew.security.argv_floor_hosts",
+    "kiro_crew.security.argv_floor_ssh_gate",
     "kiro_crew.security.argv_floor_ssh",
     "kiro_crew.security.argv_floor_git",
 )  # the loop below imports them in this order
@@ -228,10 +231,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LINE_ASSIGNMENT_RE,
         _MAIN_READING,
         _MAX_SSH_READING_DEPTH,
-        _QUOTED_SEP_SENTINELS,
         _RSYNC_RSH_ASSIGN_RE,
         _SSH_COMMAND_OPTION_KEYS,
-        _SSH_FAMILY_VERBS,
         _SSH_FORWARD_OPT_LETTERS,
         _SSH_ROUTING_OPTION_KEYS,
         _SSH_VALUELESS_SHORT_FLAGS,
@@ -242,10 +243,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _bounded_ssh_reading,
         _brace_alternatives,
         _brace_expansions,
-        _cannot_name_ssh_verb,
         _command_value_names_self_endpoint,
         _function_call_binds_self,
-        _glob_can_name_ssh_verb,
         _is_ssh_to_self,
         _judge_ssh_to_self,
         _mask_quoted_separators,
@@ -261,8 +260,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ssh_verb_basename,
         _unmask_separators,
     )
+    from kiro_crew.security.argv_floor_ssh_gate import (  # noqa: F401
+        _GATE_WORD_SEPARATORS,
+        _QUOTED_SEP_SENTINELS,
+        _SSH_FAMILY_VERBS,
+        _cannot_name_ssh_verb,
+        _gate_words,
+        _glob_can_name_ssh_verb,
+    )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
+    from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,

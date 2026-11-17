@@ -28,12 +28,21 @@ from typing import Callable
 # the reader module rather than bound here at import: the facade mirrors a patch
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
+from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
     _quoted_assignment_scripts,
     _self_token_frames,
     _static_substitution_output,
+)
+from .argv_floor_ssh_gate import (  # noqa: F401  (served under these names from here too)
+    _GATE_WORD_SEPARATORS,
+    _QUOTED_SEP_SENTINELS,
+    _SSH_FAMILY_VERBS,
+    _cannot_name_ssh_verb,
+    _gate_words,
+    _glob_can_name_ssh_verb,
 )
 from .shell_commands import (
     _double_quoted_substitution_bodies,
@@ -125,27 +134,12 @@ _HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
 _FLAT_SUBSTITUTION_RE = re.compile(r"\$\(([^()`$]*)\)|`([^`()$]*)`")
 
 
-def _glob_can_name_ssh_verb(probe: str) -> bool:
-    """True when a glob word in *probe* can expand to an ssh-family program."""
-    for word in probe.split():
-        if not _GLOB_CHARS.intersection(word):
-            continue
-        base = word.rsplit("/", 1)[-1]
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return True
-    return False
-
-
 # ``${VAR:-word}`` / ``${VAR:=word}`` / ``${VAR:+word}`` — bash substitutes the
 # embedded WORD before exec, so a self-host hiding in the default IS the
 # destination when the variable is unset (``ssh "${TARGET:-localhost}"``).
 # The word is statically visible, so it is checked; a bare ``$VAR`` whose
 # value only exists at run time remains the documented fail-open residual.
 _EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
-
-
-_SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
 
 
 # Verbs that place a copy (or a link) of their SOURCE operand at their
@@ -171,58 +165,6 @@ _ENV_ASSIGN_PREFIX_RE = re.compile(r"[a-z_][a-z0-9_]*=")
 # (``GIT_SSH_COMMAND`` and the like) stay a documented residual, deliberately
 # out of this floor's scope.
 _RSYNC_RSH_ASSIGN_RE = re.compile(r"^(rsync_rsh|rsync_connect_prog)=(.+)$", re.IGNORECASE)
-
-
-# Sentinel bytes standing in for an ``_ends_argv`` boundary character that was
-# QUOTED or backslash-escaped in the raw source, so it is literal DATA rather
-# than a command separator.  ``_self_tokens`` runs shlex, which resolves quotes
-# BEFORE the operand walk in ``_is_ssh_to_self`` runs, so by token time a quoted
-# ``a;b`` is indistinguishable from a glued unquoted operator ``a;b`` -- yet the
-# first is one operand and the second is a command boundary.  The distinguishing
-# information exists only in the SOURCE, before tokenization, so the raw text is
-# scanned there and every data separator is rewritten to a sentinel that
-# ``_ends_argv`` does not treat as a boundary.  A real, unquoted separator keeps
-# its character and still ends the walk.  The table covers EVERY character that
-# can make ``_ends_argv`` end the walk (``;`` ``|`` ``&`` newline ``#`` ``(``
-# ``{``) -- covering only a subset would let a quoted spelling of the missing
-# one hide a self-host operand behind a fake boundary (``scp '&' localhost:/x``
-# stops the walk at ``&`` with the target unexamined).  Control bytes are used
-# because a real shell command never contains them.
-_QUOTED_SEP_SENTINELS = {
-    ";": "\x00",
-    "|": "\x01",
-    "&": "\x02",
-    "\n": "\x03",
-    "#": "\x04",
-    "(": "\x05",
-    "{": "\x06",
-}
-
-
-def _cannot_name_ssh_verb(text: str) -> bool:
-    """Whether the verb gate in :func:`_is_ssh_to_self` must fail on *text* however
-    :func:`_mask_quoted_separators` masks it, so the quoted-body readers that the
-    mask needs can be skipped. Each body re-reads the rest of the line, so their
-    cost grows with the square of the body count.
-
-    A mask turns some of the :data:`_QUOTED_SEP_SENTINELS` keys into control bytes.
-    None of those keys is a letter, so a verb substring is the same either way. A
-    mask can change two readings, and each makes this return False:
-    a ``${`` default (a masked ``{`` changes what ``_resolve_param_defaults``
-    deletes), and a ``[`` class in a word that holds a key (``[{-~]`` widens when
-    its ``{`` becomes a control byte, and a masked newline joins two words).
-    ``*`` and ``?`` match the same either way.
-    """
-    probe = _decode_shell_quoted_literals(text)
-    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
-    if "${" in probe or any(verb in probe for verb in _SSH_FAMILY_VERBS):
-        return False
-    # A masked newline can join words, so a word here runs up to any other space.
-    spaced = "".join(" " if ch.isspace() and ch != "\n" else ch for ch in probe)
-    for word in spaced.split(" "):
-        if "[" in word and any(key in word for key in _QUOTED_SEP_SENTINELS):
-            return False
-    return not _glob_can_name_ssh_verb(probe)
 
 
 def _mask_quoted_separators(text: str, *, blank_bodies: bool = False) -> str:
@@ -998,16 +940,21 @@ def _function_call_binds_self(text: str) -> bool:
 _MAIN_READING = contextvars.ContextVar("ssh_floor_main_reading", default=False)
 
 
-def _reaches_self_over_ssh(text_lower: str) -> bool:
+def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bool:
     """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
     read whole: the separator mask would turn a script's own separators into data. Either
-    the quote-aware reading or main's unchanged one (*_MAIN_READING*) refusing refuses."""
+    the quote-aware reading or main's unchanged one (*_MAIN_READING*) refusing refuses.
+    *raw_text* is the command as submitted, for the wrapper option words."""
     scripts = _quoted_assignment_scripts(text_lower)
-    if _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts)):
+    if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
+        map(_is_ssh_to_self, scripts)
+    ):
         return True
     token = _MAIN_READING.set(True)
     try:
-        return _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts))
+        return _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
+            map(_is_ssh_to_self, scripts)
+        )
     finally:
         _MAIN_READING.reset(token)
 
@@ -1025,13 +972,13 @@ def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
     """*read*, refused (True) once ``_MAX_SSH_READING_DEPTH`` readings are open."""
 
     @functools.wraps(read)
-    def bounded(text_lower: str, *, own_line: bool = False) -> bool:
+    def bounded(text_lower: str, *, own_line: bool = False, raw_text: "str | None" = None) -> bool:
         depth = _ssh_reading_depth.get()
         if depth >= _MAX_SSH_READING_DEPTH:
             return True
         token = _ssh_reading_depth.set(depth + 1)
         try:
-            return read(text_lower, own_line=own_line)
+            return read(text_lower, own_line=own_line, raw_text=raw_text)
         finally:
             _ssh_reading_depth.reset(token)
 
@@ -1039,22 +986,31 @@ def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
 
 
 @_bounded_ssh_reading
-def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
+def _is_ssh_to_self(
+    text_lower: str, *, own_line: bool = False, raw_text: "str | None" = None
+) -> bool:
     """:func:`_judge_ssh_to_self`, read once per gate call: a bound body re-reads the
-    bodies nested in it. The key holds the reading and its depth, so a reused verdict
-    is the one this depth would give."""
+    bodies nested in it. The key holds the reading, its depth and the submitted text,
+    so a reused verdict is the one this depth and this casing would give."""
     from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
 
     memo = _CALL_VIEWS.get()
-    key = ("ssh_to_self", text_lower, own_line, _MAIN_READING.get(), _ssh_reading_depth.get())
+    key = (
+        "ssh_to_self",
+        text_lower,
+        own_line,
+        raw_text,
+        _MAIN_READING.get(),
+        _ssh_reading_depth.get(),
+    )
     if memo is None:
-        return _judge_ssh_to_self(text_lower, own_line)
+        return _judge_ssh_to_self(text_lower, own_line, raw_text)
     if key not in memo:
-        memo[key] = _judge_ssh_to_self(text_lower, own_line)
+        memo[key] = _judge_ssh_to_self(text_lower, own_line, raw_text)
     return bool(memo[key])
 
 
-def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
+def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" = None) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
     Structural for the same reason the other floors are: the target hides
@@ -1103,6 +1059,9 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
     # has no live substitution opener before the splices below rewrite it: a spliced
     # static output (``x'y``) could otherwise pair into quotes around a live one.
     literal = own_line and _only_single_quoted_openers(text_lower)
+    # The words as written, when the line had upper case (see the frame loop).
+    cased_text = raw_text if raw_text is not None and raw_text != text_lower else None
+    same_case = raw_text is not None and cased_text is None
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
@@ -1190,8 +1149,30 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    for tokens in _self_token_frames(text_lower, literal):
+    frames = _self_token_frames(text_lower, literal)
+    # A wrapper's option words are read in the case they were written in
+    # (``sudo -H`` takes no value, ``sudo -h`` does), so the caller's own line
+    # goes through the same rewrites into frames that keep its case.  A line
+    # with no upper case is its own cased frames.  Where a cased frame does not
+    # lower to the frame read here word for word (a rewrite that only matched
+    # one spelling), that frame keeps today's lowered reading; so does every
+    # line the floor reaches by recursion, which has no submitted text.
+    cased_frames: "list[list[str] | None]" = [tokens if same_case else None for tokens in frames]
+    if cased_text is not None:
+        cased_text = _EMPTY_EXPANSION_RE.sub("", cased_text)
+        cased_text = _FLAT_SUBSTITUTION_RE.sub(_splice_static_substitution, cased_text)
+        cased_text = _mask_quoted_separators(
+            _resolve_line_assignments(cased_text), blank_bodies=True
+        )
+        cased_all = _self_token_frames(cased_text, literal)
+        if len(cased_all) == len(frames):
+            cased_frames = [
+                cased if [t.lower() for t in cased] == tokens else None
+                for cased, tokens in zip(cased_all, frames)
+            ]
+    for tokens, cased_tokens in zip(frames, cased_frames):
         programs = _argv_programs(tokens)
+        executed = _argv_rules._executed_program_indices(tokens, cased_tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb
         # so the operand walk below never sees it.  When rsync runs live, that
@@ -1228,19 +1209,35 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
             verb = _ssh_family_verb(token)
-            # A verb read through a bare glob (``s?h``, a lone ``*``) expands only
-            # in the working directory, so it already spends the one filesystem
-            # expansion this floor models and a glob operand after it is not read
-            # as this host.  Two wildcard words in a row are every five-field cron
+            # A glob that bash does not run and that ends its command (``git add
+            # *; curl localhost:3000``) is that command's last operand, not an
+            # ssh verb whose operand scan would run on past the ``;``.
+            if (
+                verb is not None
+                and _ssh_verb_basename(token) != verb
+                and i not in executed
+                and token.endswith((";", "|"))
+            ):
+                verb = None
+            # A bare glob (``s?h``) that bash RUNS -- program
+            # position, or the program a wrapper runs (``env s?h``) -- is an ssh
+            # verb whose glob operands (``local*``) keep host glob matching.  The
+            # same glob as another program's operand (``tar … s* *.*``,
+            # ``find s* l*``) is a filename: it already spends the one filesystem
+            # expansion this floor models, so a glob after it is not read as this
+            # host.  Two wildcard words in a row are every five-field cron
             # schedule (``0 * * * *``), and a working directory that expands both
             # into a self connection also makes a lone ``*`` that whole command
             # line, which no static floor reads.  A verb glob with a directory part
             # (``/usr/bin/s?h``) expands outside it, so its operands keep glob
-            # host matching.
+            # host matching.  A word of only ``*`` keeps the filename reading
+            # wherever it sits: it is the field of a cron schedule
+            # (``* * * * * root …``) far more often than a program.
             glob_verb = (
                 verb is not None
                 and _ssh_verb_basename(token) != verb
                 and not any(sep in token for sep in "/\\")
+                and (i not in executed or not token.strip("*"))
             )
             if verb is None and bound_program_verbs:
                 stripped_prog = token.strip("\"'")
