@@ -665,6 +665,72 @@ describe('DisplayPanel – desktop app tray icon row', () => {
   })
 })
 
+// Settings > Display > View > Desktop app > Minimize to tray (#21924). Offered
+// only where a tray can bring the window back, and locked off while the tray
+// icon is hidden; the row reads its state again whenever the icon changes.
+describe('DisplayPanel – desktop app minimize to tray row', () => {
+  const TRAY_LABEL = 'Show tray icon'
+  const MINIMIZE_LABEL = 'Minimize to tray'
+  const BRIDGES = ['closeActionAPI', 'trayIconAPI', 'minimizeToTrayAPI'] as const
+
+  // A stand-in for the main process whose close button quits, so the icon can be hidden.
+  function fakeMain(offered: boolean) {
+    const state = { show: true, on: false }
+    const minimize = () => ({ on: state.show && state.on, offered, canEnable: offered && state.show })
+    const minimizeToTrayAPI = {
+      get: vi.fn(async () => minimize()),
+      set: vi.fn(async (on: boolean) => {
+        if (!on || minimize().canEnable) state.on = on
+        return minimize()
+      }),
+    }
+    const w = window as unknown as Record<(typeof BRIDGES)[number], unknown>
+    w.closeActionAPI = { get: vi.fn(async () => 'quit'), set: vi.fn(async (value: string) => value) }
+    w.trayIconAPI = {
+      get: vi.fn(async () => ({ show: state.show, canHide: true })),
+      set: vi.fn(async (show: boolean) => { state.show = show; return { show, canHide: true } }),
+    }
+    w.minimizeToTrayAPI = minimizeToTrayAPI
+    return minimizeToTrayAPI
+  }
+
+  beforeEach(() => {
+    displaySub = 'view'
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+  afterEach(() => {
+    const w = window as unknown as Record<string, unknown>
+    for (const bridge of BRIDGES) delete w[bridge]
+  })
+
+  it('turns on, and is locked off with its reason while the tray icon is hidden', async () => {
+    const minimizeToTrayAPI = fakeMain(true)
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('switch', { name: MINIMIZE_LABEL }))
+    expect(minimizeToTrayAPI.set).toHaveBeenCalledWith(true)
+    await waitFor(() => expect(screen.getByRole('switch', { name: MINIMIZE_LABEL })).toHaveAttribute('aria-checked', 'true'))
+
+    fireEvent.click(await screen.findByRole('switch', { name: TRAY_LABEL }))
+    await waitFor(() => expect(screen.getByRole('switch', { name: MINIMIZE_LABEL })).toHaveAttribute('aria-disabled', 'true'))
+    const minimize = screen.getByRole('switch', { name: MINIMIZE_LABEL })
+    expect(minimize).toHaveAttribute('aria-checked', 'false')
+    const note = screen.getByText(/Turn on Show tray icon to use this/)
+    expect(minimize.getAttribute('aria-describedby')).toContain(note.id)
+  })
+
+  it('is not offered where no tray can bring the window back', async () => {
+    const minimizeToTrayAPI = fakeMain(false)
+    renderPanel()
+
+    await screen.findByRole('switch', { name: TRAY_LABEL })
+    await waitFor(() => expect(minimizeToTrayAPI.get).toHaveBeenCalled())
+    await act(async () => { await minimizeToTrayAPI.get.mock.results[0]?.value })
+    expect(screen.queryByRole('switch', { name: MINIMIZE_LABEL })).toBeNull()
+  })
+})
+
 describe('DisplayPanel – zoom setting', () => {
   beforeEach(() => {
     displaySub = 'zoom'

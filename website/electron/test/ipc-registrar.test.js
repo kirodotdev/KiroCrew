@@ -1419,7 +1419,7 @@ test("pane:clear-http-cache is gated to the local dashboard sender", async () =>
   assert.equal(purges.length, 0);
 });
 
-// ── close-action:* (#12204) and tray-icon:* (#21924) ────────────────────────
+// ── close-action:* (#12204), tray-icon:* and minimize-to-tray:* (#21924) ────
 //
 // The settings sit in the MAIN window's Settings, beside its close button, so
 // every channel answers only that window's own top frame on its dashboard
@@ -1431,6 +1431,8 @@ const MAIN_WINDOW_SETTING_CHANNELS = [
   ["close-action:set", ["quit"]],
   ["tray-icon:get", []],
   ["tray-icon:set", [false]],
+  ["minimize-to-tray:get", []],
+  ["minimize-to-tray:set", [true]],
 ];
 const MAIN_WINDOW_ONLY = (channel) => ({
   message: `${channel} is restricted to the main window's dashboard`,
