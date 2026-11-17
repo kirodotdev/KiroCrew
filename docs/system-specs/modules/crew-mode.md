@@ -4699,7 +4699,8 @@ interval band, the final report before the stop, acceptance by `accept_eval.py`,
 reading the `goal-conductor` skill before acting on a goal and again after a
 compaction, and the long-task and
 team rules every turn needs: the item budget, one owner per file and one
-integrator per output, merging two lines, the plan reviewer, the `pr_merged` bar,
+integrator per output, merging two lines, reusing a finished worker only for the
+next step of its own line, the plan reviewer, the `pr_merged` bar,
 the hourly check on a quiet wake, routine incidents, reporting before a park, and
 the one-line reply on a patrol wake that has nothing the person must see) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
@@ -4722,7 +4723,8 @@ at the shared rules ("your prompt's ... rule") instead of restating them, so a
 `kirocrew-team-lead` that `agent.crew_mode_agent` names carries every shared rule
 in its own prompt (`_SHARED_CONDUCTOR_RULES_BLOCK`, the same text). The same test
 fails when the team lead's installed prompt lacks a shared rule, and when the
-skill drops one of its pointers (`SKILL_POINTERS`).
+skill drops one of its pointers (`SKILL_POINTERS`), and when `goal-conductor` or
+`team-lead` copies a shared rule's sentence instead of pointing at it.
 
 **The two workers stay in step.** `kirocrew-worker` and `kirocrew-mate-worker`
 both work one item for a conductor through `work_brief` and `work_report`, from

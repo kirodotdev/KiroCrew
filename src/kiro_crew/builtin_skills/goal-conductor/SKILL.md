@@ -527,7 +527,8 @@ Each cycle:
    finally done with — that is what ends it. An item that passed is already
    closed by step 3's one write; a separate `close` is for `rejected` and
    `abandoned`. **Closing the item and closing
-   its session happen together.** When a work item reaches a terminal verdict
+   its session happen together**, unless your prompt's worker-reuse rule gives
+   that worker the next item. When a work item reaches a terminal verdict
    (accepted, rejected, abandoned/void) and its loop is stopped,
    `session_close` that child session in the same cycle — a finished worker
    has nothing left to re-arm. That `session_close` and your next
@@ -538,15 +539,16 @@ Each cycle:
    actively driving, and never a session you did not dispatch. **Closing an item cuts its worker's
    report channel**: from then on its `work_report` is refused `item_closed`,
    and it cannot `session_send` to you. The close reply warns when that
-   worker's session is still open. If the worker still has work for you,
-   `create` a new item and `bind` it to the SAME session, then `session_send`
-   it the new item's goal; its `work_brief` and `work_report` resolve to the
+   worker's session is still open. Whether that session takes the next item or
+   a fresh one does is your prompt's worker-reuse rule. To reuse it, `create`
+   the new item, `bind` it to that session, then `session_send` it the new
+   item's goal; its `work_brief` and `work_report` resolve to the
    new item. A session holds one open item at a time, so binding one whose
    item is still open is refused `worker_already_dispatched`. `action=decide` records an
    instruction you want the worker to read out of `work_brief`; it is the ONE
    field the worker treats as an instruction, so keep it to a decision.
-5. `session_read_message` for detail the record does not carry — a question's
-   substance, a stall's shape. Never for a verdict: the ledger is that.
+5. `session_read_message` for detail the record does not carry, as your
+   prompt's read-message rule says.
 
    **Check each worker for drift.** A report is the worker's own claim, so a
    worker building the wrong thing looks fine until acceptance. On every patrol
@@ -665,7 +667,9 @@ carry on in the same chat and try again at the next round close.
 
 The user can message you any time. Apply a changed goal **at the round
 boundary** — that is the re-plan point, and cancelling mid-round throws away
-finished work.
+finished work. A request that adds separate work is not a changed goal for the
+running items: make it its own item now, as your prompt's worker-reuse rule
+says.
 
 **Record the goal first, every time it changes.** When the user gives a new goal
 or changes the scope, call `work_ledger_record` `action=goal` FIRST, before you
@@ -758,10 +762,9 @@ alone). A `pending_overdue` item is never asked: `references/rare-cases.md` give
 4. **The loop is never stopped for a question.** It stays armed, and the first
    cycle after the user answers picks the answer up and resumes the item.
 
-On one of the two signals, end the patrol in two steps. First send the user
-ONE final report: what landed, what is left, and the links. Then, in a later
-step, call `autonudge_stop`. The final report is your last message to the
-user. Before that final report, `session_close` each one whose item is
+On one of the two signals, end the patrol as your prompt's patrol rules say:
+ONE final report, then `autonudge_stop` in a later step. Before that final
+report, `session_close` each one whose item is
 terminal, and leave open any child still holding a pending human question or
 driving an unmerged PR (Patrol step 4).
 

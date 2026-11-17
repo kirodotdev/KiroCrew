@@ -659,6 +659,9 @@ SKILL_POINTERS: dict[str, str] = {
     "plan_reviewer": "as your prompt's plan-reviewer rule says",
     "wake_check": "a wake with no news is a check, as your prompt's rule says",
     "patrol_reply": "as your prompt's patrol-reply rule says",
+    "reuse_worker": "your prompt's worker-reuse rule",
+    "read_message_detail": "as your prompt's read-message rule says",
+    "patrol_final_report": "end the patrol as your prompt's patrol rules say",
 }
 
 
@@ -707,3 +710,72 @@ def test_a_team_lead_set_as_the_conductor_reaches_goal_conductor(
     service_agents._install_team_lead_agent()
     spec = json.loads((tmp_path / TEAM_LEAD_AGENT_FILENAME).read_text(encoding="utf-8"))
     assert {"team-lead", "goal-conductor"} <= _skill_keys(spec)
+
+
+# -- Worker reuse ---------------------------------------------------------------- #
+
+
+def test_the_worker_reuse_rule_reaches_every_conductor(
+    specs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a finished worker gets the next item is one shared rule: the root
+    conductor's spec, a Bot's ledger patrol and the team lead all carry it, and
+    no Bot piece or skill still tells the conductor to reuse a worker without
+    its limits."""
+    root_spec, _mate = specs
+    rule = agent._LEDGER_CONDUCTOR_RULES["reuse_worker"].strip()
+    assert "reuse_worker" in crewmate_prompts.placeholders(_MATE_PIECE)
+    for side, text in (
+        (_ROOT, root_spec["prompt"]),
+        ("kirocrew-mate-conductor", _mate_ledger_text()),
+        ("kirocrew-team-lead", _team_lead_prompt(tmp_path, monkeypatch)),
+    ):
+        assert rule in text, f"{side} lacks the reuse_worker rule"
+    # The unconditional reuse lines the rule replaced.
+    assert "bind it to the same session" not in _skill_text("goal-conductor")
+    assert "give the worker its next step," not in _words(
+        crewmate_prompts.text("conductor.operating_mode")
+    )
+    assert "when a worker needs its next step," not in _words(
+        crewmate_prompts.text("worker_report.guidance")
+    )
+    assert "keep open only a worker you will send to again" not in _words(
+        crewmate_prompts.text("conductor.how_you_work")
+    )
+
+
+def test_the_worker_reuse_check_sees_a_bot_without_the_rule(
+    specs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive control: a Bot patrol that stops naming the rule is reported."""
+    from kiro_crew.context_assembly import member
+
+    real = member.ledger_rules_block
+    rule = agent._LEDGER_CONDUCTOR_RULES["reuse_worker"].strip()
+    monkeypatch.setattr(member, "ledger_rules_block", lambda key: real(key).replace(rule, ""))
+    with pytest.raises(AssertionError, match="kirocrew-mate-conductor lacks the reuse_worker"):
+        test_the_worker_reuse_rule_reaches_every_conductor(specs, tmp_path, monkeypatch)
+
+
+def _shared_rule_copies(text: str) -> list[str]:
+    flat = _words(text)
+    return sorted(
+        f"{name}: {sentence[:60]!r}"
+        for name, rule in agent._LEDGER_CONDUCTOR_RULES.items()
+        for sentence in _sentences(rule)
+        if sentence in flat
+    )
+
+
+@pytest.mark.parametrize("skill", ["goal-conductor", "team-lead"])
+def test_no_conductor_skill_restates_a_shared_rule(skill: str) -> None:
+    """Every agent that reads these skills carries the shared rules in its prompt,
+    so a sentence copied into a skill is a second copy that can drift. The skill
+    points at the rule instead."""
+    text = (_SKILLS_DIR / skill / "SKILL.md").read_text(encoding="utf-8")
+    assert _shared_rule_copies(text) == []
+
+
+def test_the_skill_copy_check_sees_a_copied_rule() -> None:
+    """Positive control."""
+    assert _shared_rule_copies(agent._LEDGER_CONDUCTOR_RULES["own_files"])
