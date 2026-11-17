@@ -1,6 +1,6 @@
 # OpenCode frame corpus
 
-Eight files, all live. Read `../README.md` first for what a fixture is and what
+Ten files, all live. Read `../README.md` first for what a fixture is and what
 the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
@@ -14,8 +14,9 @@ the corpus does and does not prove.
 | `effort-live.jsonl` | live | `session/set_config_option` results for the per-model `effort` select (low, medium, high and default on a reasoning model, absent on a plain one), a `-32602` refusal of an unoffered level, and the reset to the first level after a model switch |
 | `crew-oauth-bridge-args-live.jsonl` | live (1.19.1) | `permission: ask`: an MCP `tool_call` and its `session/request_permission`, both with `rawInput` `{}`, then the in-progress update that carries the arguments the stub server received; the evidence opencode stays out of `ACP_BACKENDS_CREW_OAUTH_BRIDGE` |
 | `write-edit-live.jsonl` | live (1.19.1, stub model) | a slice: the initialize response, then the `tool_call` and updates of a `write` call (`rawInput` `{filePath, content}`) and an `edit` call (`{filePath, oldString, newString}`) on one file; the shapes `dashboard/chat_turn/file_change_shapes.py` reads for the file-change chip |
+| `crew-wait-live.jsonl` | live (1.19.1) | Crew's own `wait` through `kirocrew-core`: a `tool_call` named only by the fused `kirocrew-core_wait` title with kind `other`, its `session/request_permission`, and the `in_progress` and terminal updates; the evidence `ToolCallState.identity_of` reads an opencode wait's identity from that title |
 
-Re-captured off `opencode acp` 1.19.1, the release the Real Adapter Contract lane pins, with each file's `initialize` frame kept so its version is read off the wire. Five drive a local Ollama model (llama3.2 3b, 16k context); `effort-live.jsonl` and `mcp-directive-call-live.jsonl` drive a local OpenAI-compatible stub instead. Every capture ran in a throwaway home and a scratch project, and was reduced at capture through `scripts/capture_acp_compaction.py`'s own reduction: the working directory reads `<cwd>`, the home directory `~`, session and message ids are synthetic, the local model id is the synthetic `local/model-1`, the command inventory is dropped and each `configOptions` select is cut to its current option -- except in `effort-live.jsonl`, whose selects ARE the evidence and keep their stub models and levels. `tool-call-live.jsonl` and `compact-live.jsonl` are **slices**, and each fixture's own `_meta.note` says what was omitted.
+Re-captured off `opencode acp` 1.19.1, the release the Real Adapter Contract lane pins, with each file's `initialize` frame kept so its version is read off the wire. Five drive a local Ollama model (llama3.2 3b, 16k context); `effort-live.jsonl`, `mcp-directive-call-live.jsonl` and `crew-wait-live.jsonl` drive a local OpenAI-compatible stub instead. Every capture ran in a throwaway home and a scratch project, and was reduced at capture through `scripts/capture_acp_compaction.py`'s own reduction: the working directory reads `<cwd>`, the home directory `~`, session and message ids are synthetic, the local model id is the synthetic `local/model-1`, the command inventory is dropped and each `configOptions` select is cut to its current option -- except in `effort-live.jsonl`, whose selects ARE the evidence and keep their stub models and levels. `tool-call-live.jsonl` and `compact-live.jsonl` are **slices**, and each fixture's own `_meta.note` says what was omitted.
 
 ## What the permission capture establishes
 

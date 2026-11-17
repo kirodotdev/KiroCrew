@@ -915,6 +915,7 @@ class SubagentManager:
     _is_startup_stalled = _monitor_surface._is_startup_stalled
     _note_tool_dispatch = staticmethod(_monitor_surface._note_tool_dispatch)
     _note_tool_result = staticmethod(_monitor_surface._note_tool_result)
+    _note_tool_update = staticmethod(_monitor_surface._note_tool_update)
     _clear_tool_dispatch = staticmethod(_monitor_surface._clear_tool_dispatch)
     _retire_subagent_oracle = staticmethod(_monitor_surface._retire_subagent_oracle)
     _stall_verdict = _monitor_surface._stall_verdict
