@@ -550,7 +550,7 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
         if self.dashboard_state:
             self.dashboard_state.push_refresh("update_available")
     else:
-        print("Already on latest version")
+        print("👻 Already on latest version")
 
 
 async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
@@ -871,7 +871,7 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             # `handlers/updates_check.py` exists to prevent.
             logger.info("Update check did not complete (%s)", info.get("error_code"))
         elif info.get("check_status") == CHECK_SUCCEEDED:
-            print("Already on latest version")
+            print("👻 Already on latest version")
         else:
             # DEFERRED (a desktop bundle whose own updater owns this), or a
             # check that never ran. Neither carries an `error_code`, so keying

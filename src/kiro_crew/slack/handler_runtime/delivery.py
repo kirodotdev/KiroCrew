@@ -451,7 +451,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             try:
                 await slack.post_message(
                     channel,
-                    "Error: Something went wrong delivering the reply. Please try again.",
+                    "🔧 Something went wrong delivering the reply. Please try again.",
                     reply_ts,
                 )
             except Exception:
@@ -551,7 +551,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                         logger.warning("Failed to post thinking message", exc_info=True)
         elif answer.thinking_ts:
             # Placeholder was posted but no reasoning was captured — remove it so
-            # the thread isn't left with a dangling "Thinking…".
+            # the thread isn't left with a dangling "💭 Thinking…".
             try:
                 await slack.delete_message(channel, answer.thinking_ts)
             except Exception:

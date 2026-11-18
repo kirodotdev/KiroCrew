@@ -273,7 +273,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
         return False
     try:
         await self._socket_client.connect()
-        print("Kiro Crew gateway connected to Slack")
+        print("👻 Kiro Crew gateway connected to Slack")
         return True
     except Exception as exc:
         # Keep a short reason for status surfaces (settings badge). Slack
@@ -295,7 +295,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
             exc_info=True,
         )
         print(
-            "Warning: Slack connect failed — running dashboard-only "
+            "⚠️  Slack connect failed — running dashboard-only "
             "(check network/proxy; details in gateway.log)"
         )
         return False

@@ -97,8 +97,8 @@ class TestSessionTaskCard:
     @pytest.mark.parametrize(
         ("status", "emoji"),
         [
-            pytest.param("active", "(active)", id="test_active_status_emoji"),
-            pytest.param("paused", "(paused)", id="test_paused_status_emoji"),
+            pytest.param("active", "🟢", id="test_active_status_emoji"),
+            pytest.param("paused", "⏸️", id="test_paused_status_emoji"),
         ],
     )
     def test_status_emoji(self, status, emoji):
@@ -212,9 +212,9 @@ class TestHandleInlineStop:
             await interactions._handle_inline_stop(payload, action, "C1", "msg_ts", "U_OWNER")
 
         # Immediate feedback: "Stopping..."
-        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="_Stopping…_")
+        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="⏹ _Stopping…_")
         # on_soft callback: "Execution stopped."
-        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="Execution stopped.")
+        mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="⏹ Execution stopped.")
         # SEL tool invocation logged
         mock_sel.return_value.log_tool_invocation.assert_called_once()
         assert _rows(audit) == [
@@ -242,7 +242,7 @@ class TestHandleInlineStop:
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
 
         mock_orch.slack.update_message.assert_any_call(
-            "C1", "ts1", text="Execution stopped — session reset."
+            "C1", "ts1", text="⛔ Execution stopped — session reset."
         )
         assert _rows(audit) == [
             ("slack.inline_stop", "U_OWNER", "allowed"),

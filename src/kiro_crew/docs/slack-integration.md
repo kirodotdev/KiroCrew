@@ -120,12 +120,12 @@ order once the turn stops: everybody in a thread shares its session, so that
 stop only withdraws what its caller sent. A stop that escalates to a hard
 stop, and **Kill Now**, still tear the session down with its whole queue,
 every member's messages included. Three
-answers, one per outcome: "Execution stopped." when the turn stopped
-cooperatively, "Execution stopped — session reset." when it had to be
+answers, one per outcome: "⏹ Execution stopped." when the turn stopped
+cooperatively, "⛔ Execution stopped — session reset." when it had to be
 escalated to a hard stop, and "Nothing running." when no turn was active.
 
 Authorization: owner and allowed users. Unauthorized callers get
-"Blocked: Not authorized." and an audit log entry under `slack.stop_command`.
+"⛔ Not authorized." and an audit log entry under `slack.stop_command`.
 
 ## Streaming
 

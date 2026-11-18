@@ -137,7 +137,7 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 #: Generic reply for a failed transport turn whose error text is not meant for
 #: the user (see ``_transport_error_text``).
-_TRANSPORT_ERROR_TEXT = "Error: Something went wrong (transport path). Please try again."
+_TRANSPORT_ERROR_TEXT = "🔧 Something went wrong (transport path). Please try again."
 
 #: Longest error detail posted to Slack, the cap the native path applies to its
 #: ``UnknownMemoryStore`` refusal.
@@ -166,7 +166,7 @@ def _transport_error_text(exc: BaseException) -> str:
 
     A classified backend ``AcpError`` (see ``is_user_worded_failure``) carries a
     user-readable reason, for example a usage limit that retrying cannot fix, so
-    that reason is shown under the same ``Error:`` prefix the native path uses. The
+    that reason is shown under the same ``❌`` prefix the native path uses. The
     message can still quote a host path or a credential from the backend, so it
     goes through the same redaction and length cap as the ``UnknownMemoryStore``
     refusal. Every other failure, including an unclassified ``AcpError``, keeps
@@ -175,7 +175,7 @@ def _transport_error_text(exc: BaseException) -> str:
     if isinstance(exc, (UnknownMemoryStore, EmbedAdmissionTimeout)):
         return _redacted_error_detail(exc)
     if is_user_worded_failure(exc):
-        return f"Error: {_redacted_error_detail(exc)}"
+        return f"❌ {_redacted_error_detail(exc)}"
     return _TRANSPORT_ERROR_TEXT
 
 
@@ -428,7 +428,7 @@ async def handle_message_transport(
                     continue
                 _hydrate_conv_flags(sessions, candidate_key)
                 logger.info(
-                    "Slack thread %s owned by %s (at %s) — routing there",
+                    "🔗 Slack thread %s owned by %s (at %s) — routing there",
                     session_key,
                     candidate_key,
                     stage,

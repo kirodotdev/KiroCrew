@@ -113,7 +113,7 @@ class TestRestartSlashCommand:
         ):
             await _handle_restart(orch, "U_OWNER", "", respond)
         mock_exit.assert_called_once_with(1)
-        respond.assert_called_with("Restarting gateway…")
+        respond.assert_called_with("♻️ Restarting gateway…")
         orch.sessions.close_all.assert_awaited_once()
         # The approved-restart audit event must be drained before os._exit()
         # (which skips atexit / the async SEL writer drain). The restart path

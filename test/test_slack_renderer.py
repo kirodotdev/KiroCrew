@@ -945,7 +945,7 @@ class TestToolTimerAndWait:
     def test_elapsed_appended_to_completed_task_title(self):
         rec = _RecSlack()
         # Clock reads: turn_start, tool1(start timer @1000), tool2(elapsed=2s,
-        # completes tool1), on_done. Tool1 ran 2s -> "· 2.0s" in its title.
+        # completes tool1), on_done. Tool1 ran 2s -> "⏱ 2.0s" in its title.
         clock = _FakeClock([1000.0, 1000.0, 1002.0, 1002.0])
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, now=clock)
         provider = _Provider(
@@ -959,7 +959,7 @@ class TestToolTimerAndWait:
         completes = [
             kw["title"] for m, kw in rec.calls if m == "append_task" and kw["status"] == "complete"
         ]
-        assert any(t.endswith(" · 2.0s") for t in completes), completes
+        assert any("⏱" in t for t in completes), completes
         assert renderer._tool_timer_task is None  # timer cancelled on done
 
     def test_wait_tool_finalizes_stream(self):

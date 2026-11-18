@@ -665,5 +665,5 @@ def test_the_hand_off_refusal_names_the_owner(world, monkeypatch):
     ts = _issue(world)
     asyncio.run(handoff.handle_handoff_click(None, _click(OTHER, ts=ts)))
     assert world.slack.ephemerals[-1][2] == (
-        f"Blocked: Only the Kiro Crew owner (<@{OWNER}>) can turn on helper agents."
+        f":no_entry: Only the Kiro Crew owner (<@{OWNER}>) can turn on helper agents."
     )

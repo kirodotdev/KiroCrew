@@ -362,7 +362,7 @@ class _AnswerStream:
         self.use_slack_stream = False
         self.stream_ts: str | None = None
         self.rotated_ts: list[str] = []  # stream messages ``rotate`` replaced, oldest first
-        self.thinking_ts: str | None = None  # Thinking placeholder, posted above the answer
+        self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
         self.show_thinking = show_thinking
         # kiro-cli's [STEERING steer-…] ack is protocol: held across chunks and
         # dropped before it reaches Slack, ahead of redaction as TurnDriver does.
@@ -421,7 +421,7 @@ class _AnswerStream:
         transport that does not would send the exception up into the streaming
         loop, where the typed ``except`` arms are all ``kiro_crew.acp.client``
         errors — it reaches the generic ``except Exception`` catch-all, renders
-        the terminal "Error: Something went wrong" message, and records a session
+        the terminal "🔧 Something went wrong" message, and records a session
         failure on a turn that is still live. A failed rotation is the existing,
         handled outcome (``new_ts`` None → demote to chat.update), so map a
         raise onto it.
@@ -695,7 +695,7 @@ class _AnswerStream:
         # typed ``except`` arms of the turn loop in ``_run_turn`` are all
         # ``kiro_crew.acp.client`` errors, so it reaches the generic
         # ``except Exception`` catch-all, which
-        # renders the terminal "Error: Something went wrong" message and records a
+        # renders the terminal "🔧 Something went wrong" message and records a
         # session failure — on a turn that is still live and will finish. The
         # card is decorative (no answer text is withheld), so swallow the failure
         # here, logging the traceback at WARNING for diagnosis.
@@ -717,10 +717,10 @@ class _AnswerStream:
                 time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
                 # Elapsed goes in the TITLE (Slack replaces title on same
                 # task_id) — NOT details, which Slack APPENDS, causing the
-                # "30s 1m 0s 1m 30s" accumulation bug.
+                # "⏱ 30s ⏱ 1m 0s ⏱ 1m 30s" accumulation bug.
                 await self.append_task(
                     self.active_task_id,
-                    f"{self.active_task_title} · {time_str}",
+                    f"{self.active_task_title}  ⏱ {time_str}",
                     "in_progress",
                 )
 
@@ -745,8 +745,8 @@ class _AnswerStream:
             return ""
         mins, secs = divmod(elapsed, 60)
         if mins:
-            return f"{int(mins)}m {secs:.1f}s"
-        return f"{secs:.1f}s"
+            return f"⏱ {int(mins)}m {secs:.1f}s"
+        return f"⏱ {secs:.1f}s"
 
     async def ensure_started(self) -> None:
         """Lazy-start the stream on first event. Falls back to chat.update."""
@@ -757,7 +757,7 @@ class _AnswerStream:
             self.stream_ts = _REVIEW_PLACEHOLDER_TS
             self.use_slack_stream = False
             return
-        # Reserve the Thinking slot ABOVE the answer *before* the response
+        # Reserve the 💭 reasoning slot ABOVE the answer *before* the response
         # message is created. This must run regardless of which
         # event arrived first: if a text/tool event precedes the first
         # reasoning chunk, posting the placeholder here is the only way to keep
@@ -796,7 +796,7 @@ class _AnswerStream:
             # A raise here escapes the streaming loop while the ACP turn is still
             # live and reaches the turn loop's generic ``except Exception`` catch-all in
             # ``_run_turn`` (the typed arms are all ``kiro_crew.acp.client`` errors),
-            # rendering the terminal "Error: Something went wrong" message on a run
+            # rendering the terminal "🔧 Something went wrong" message on a run
             # that is still succeeding. Keep it best-effort. On failure leave
             # ``stream_ts`` as ``None``: there is no placeholder to update, and
             # every downstream reader treats falsy as "no placeholder"
@@ -883,9 +883,9 @@ class _AnswerStream:
             self.last_edit = now
 
     async def on_thinking(self, event: LLMEvent) -> None:
-        """Accumulate a reasoning chunk and claim the Thinking slot above the answer."""
+        """Accumulate a reasoning chunk and claim the 💭 slot above the answer."""
         self.thinking_accumulated += event.text
-        # Claim the Thinking slot as soon as reasoning starts so it appears
+        # Claim the 💭 slot as soon as reasoning starts so it appears
         # promptly during a long thinking phase (early feedback). This
         # is an optimization for the common reasoning-first case; the
         # ordering guarantee itself lives in ensure_started,
@@ -912,7 +912,7 @@ class _AnswerStream:
         tool_name, _ = redact_credentials(tool_name)
         tool_kind = event.tool_kind or ""
         tool_detail = event.tool_purpose or tool_kind
-        tool_status = f"\nTool: `{tool_name}`\n"
+        tool_status = f"\n🫆 `{tool_name}`\n"
         await self.ensure_started()
         if self.use_slack_stream:
             # Best-effort: MUST NOT raise. Decoration
@@ -938,7 +938,7 @@ class _AnswerStream:
                 _elapsed = self.tool_elapsed_str()
                 self.cancel_tool_timer()
                 _ct = (
-                    f"{self.active_task_title} · {_elapsed}" if _elapsed else self.active_task_title
+                    f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
                 )
                 await self.append_task(self.active_task_id, _ct, "complete")
             self.task_counter += 1
@@ -979,7 +979,7 @@ class _AnswerStream:
                 _elapsed = self.tool_elapsed_str()
                 self.cancel_tool_timer()
                 _ct = (
-                    f"{self.active_task_title} · {_elapsed}" if _elapsed else self.active_task_title
+                    f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
                 )
                 await self.append_task(self.active_task_id, _ct, "complete")
                 self.active_task_id = ""
@@ -1090,7 +1090,7 @@ class _AnswerStream:
             await self.append_task(self.active_task_id, self.active_task_title, "error")
             self.active_task_id = ""
         if not self.use_slack_stream:
-            self.accumulated += "\n_Tool use rejected._"
+            self.accumulated += "\n🚫 _Tool use rejected._"
 
     async def finish(self, untrimmed: str) -> None:
         """Complete the last task card and send what the stream still holds.
@@ -1105,7 +1105,7 @@ class _AnswerStream:
         if self.active_task_id:
             _elapsed = self.tool_elapsed_str()
             self.cancel_tool_timer()
-            _ct = f"{self.active_task_title} · {_elapsed}" if _elapsed else self.active_task_title
+            _ct = f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
             await self.append_task(self.active_task_id, _ct, "complete")
         self.bracket_hold, _released = _resolve_comment_hold(self.bracket_hold, untrimmed)
         self.stream_buffer += _released

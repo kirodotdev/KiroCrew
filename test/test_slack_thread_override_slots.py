@@ -573,7 +573,7 @@ async def test_each_refusal_writes_an_audit_record_without_the_over_limit_value(
     argument = "x" if command == "!ta" else str(project)
     await run(f"{command} {argument}", slack, AsyncMock(), "C0SYNTH01", "t1", "m1", key, "U1", None)
     replies = [call.args[1] for call in slack.post_message.await_args_list]
-    assert any(text.startswith("Error: Not set") for text in replies), replies
+    assert any(text.startswith("❌ Not set") for text in replies), replies
     records = [call.kwargs for call in audit.log_tool_invocation.call_args_list]
     assert records, f"{command} refused ({setup}) with no audit record"
     (record,) = records
@@ -628,7 +628,7 @@ async def test_ta_off_on_a_thread_with_a_recorded_template_stays_reset_after_evi
     )
     assert log.get_metadata(chosen)["agent"] == ""
     assert session_agent_from_metadata(log.get_metadata(chosen)) == "reviewer"
-    assert slack.post_message.await_args_list[0].args[1] == "Thread agent reset."
+    assert slack.post_message.await_args_list[0].args[1] == "🔄 Thread agent reset."
     for i in range(1, THREAD_SLOTS + 1):
         await handler._hydrate_thread_overrides(_key(i), None)
     await handler._hydrate_thread_overrides(chosen, log)

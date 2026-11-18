@@ -346,7 +346,7 @@ async def _deliver_cron_agent_result(
                 parts = render_for_slack(
                     _cron_body,
                     limit=_CRON_MSG_LIMIT,
-                    header=f"*Cron: {job.name}*\n\n",
+                    header=f"⏰ *Cron: {job.name}*\n\n",
                 )
                 # First part as Block Kit message with ack button
                 blocks: list[dict] = [
