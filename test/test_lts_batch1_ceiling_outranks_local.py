@@ -21,8 +21,9 @@ term, and one that names none of them (the LTS baseline answers). The local tier
 tried: the env policy (``KIROCREW_SECURITY_POLICY``), the home policy file, a
 governance profile bound to the host surface, and user config.
 
-shortcut: no install case reads the skills inside a package; add those cases here
-once install checks each skill a package holds.
+The install cases drive the Discover skill install (``/api/skills/-/discover/install``)
+and the official MCP registry plan (``mcp_discover.official_install_plan``). User
+config has no install setting, so only the three policy tiers are tried there.
 """
 
 from __future__ import annotations
@@ -30,11 +31,17 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 from governance_distribution_helpers import _hermetic_governance_globals  # noqa: F401
 from governance_distribution_helpers import install_ceiling_fixture  # noqa: F401
 from governance_distribution_helpers import profiles_dir_fixture  # noqa: F401
@@ -49,15 +56,21 @@ from kiro_crew.config.sections import (
     DecisionProviderConfig,
     DecisionsConfig,
 )
+from kiro_crew.dashboard.handlers import discover as discover_mod
+from kiro_crew.dashboard.handlers import mcp_discover
 from kiro_crew.decisions import capability
 from kiro_crew.decisions import gate as decisions_gate
 from kiro_crew.extension_governance import app_version_denied, extension_install_denied
 from kiro_crew.hook_event_governance import event_refusal
+from kiro_crew.mcp_providers.base import McpInstallPlan, McpServerDetail
+from kiro_crew.mcp_providers.base import ProviderRegistry as McpProviderRegistry
 from kiro_crew.platform import enterprise_policy_fetch as epf
 from kiro_crew.platform import enterprise_policy_translate as ept
 from kiro_crew.platform import governance
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform import policy_distribution as pd
+from kiro_crew.skill_providers.base import ProviderRegistry as SkillProviderRegistry
+from kiro_crew.skills import SkillsLoader
 
 _ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEFGHIJKL"
 _HOST = gp.HOST_SESSION_KEY
@@ -99,6 +112,39 @@ rules:
 """
 
 _REMOTES = {"grants": _GRANTS, "denies": _DENIES, "absent": _ABSENT}
+
+#: Replies for the Discover install cases. ``skill`` names skills while the install id
+#: is a package, so each skill a package holds is checked. An ``mcp`` grant names a
+#: whole registry server (``<id>/*``). ``allow all`` and ``allow builtin`` grant
+#: install (RFC D13, owner decision D1).
+_INSTALL_REMOTES = {
+    "install_deny": """\
+version: "0.1"
+rules:
+  - {capability: skill, effect: allow}
+  - {capability: skill, effect: deny, match: [evil]}
+  - {capability: mcp, effect: allow}
+  - {capability: mcp, effect: deny, match: ["io.github.acme/evil"]}
+""",
+    "install_allow": """\
+version: "0.1"
+rules:
+  - {capability: skill, effect: allow, match: [fake-skill, good]}
+  - {capability: skill, effect: deny, exclude: [fake-skill, good]}
+  - {capability: mcp, effect: allow, match: ["io.github.acme/tool/*"]}
+  - {capability: mcp, effect: deny, exclude: ["io.github.acme/tool/*"]}
+""",
+    "allow_all": """\
+version: "0.1"
+rules:
+  - {capability: all, effect: allow}
+""",
+    "allow_builtin": """\
+version: "0.1"
+rules:
+  - {capability: builtin, effect: allow}
+""",
+}
 
 #: Harnesses a local tier tries to add: two in the closed list, two outside it.
 _HARNESS_WIDEN = ["claude", "codex", "goose"]
@@ -193,7 +239,7 @@ def cps_fixture(monkeypatch, remote):
 
     def answer(req, timeout):
         requests.append(req)
-        return _Resp(_envelope(_REMOTES[remote]))
+        return _Resp(_envelope({**_REMOTES, **_INSTALL_REMOTES}[remote]))
 
     monkeypatch.setattr(pd, "_open", answer)
     return requests
@@ -467,3 +513,271 @@ class TestOssIgnoresTheRemotePath:
         assert capability.provider_id(_HAND_WRITTEN, "") is None
         assert not capability.edition_refuses(capability.PROVIDER_HOSTED)
         assert not capability.edition_refuses("custom")
+
+
+# --- Discover install: each skill a package holds, and the official MCP registry ---
+
+_GOOD = ("SKILL.md", "---\nname: fake-skill\ndescription: A fake skill\n---\n# Fake")
+_GOOD_SUB = ("sub/SKILL.md", "---\nname: good\n---\n# Good")
+_EVIL = ("extras/evil/SKILL.md", "---\nname: evil\n---\n# Evil")
+_OTHER = ("extras/other/SKILL.md", "---\nname: other\n---\n# Other")
+_NO_SKILL = ("README.md", "# no skill file")
+
+#: What a local tier writes to try to open install back up.
+_INSTALL_WIDENING = {
+    "capabilities": {
+        "extension_install": {
+            "enabled": True,
+            "scopes": {"extensions": {"mode": "allow", "allow": ["*"]}},
+        }
+    }
+}
+
+#: What a local tier writes to narrow install under a remote that allows all.
+_INSTALL_NARROWING = {
+    "capabilities": {
+        "extension_install": {
+            "enabled": True,
+            "scopes": {
+                "extensions": {"mode": "deny", "deny": ["skill:evil", "mcp:io.github.acme/tool"]}
+            },
+        }
+    }
+}
+
+_INSTALL_TIERS = [None, *_TIERS]
+
+
+@pytest.fixture(name="discover_env")
+def discover_env_fixture(tmp_path, monkeypatch):
+    """A temporary home for the skills directory, a stand-in SEL, and the provider
+    registries put back after the test."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("KIROCREW_HOME", str(home / ".kiro" / "crew"))
+    monkeypatch.setattr(Path, "home", lambda: home)
+    import kiro_crew.sel as sel_mod
+
+    fake = MagicMock()
+    monkeypatch.setattr(sel_mod, "sel", lambda: fake)
+    monkeypatch.setattr(discover_mod, "_sel", lambda: fake)
+    monkeypatch.setattr(discover_mod, "_registry", discover_mod._registry)
+    monkeypatch.setattr(mcp_discover, "_registry", mcp_discover._registry)
+    return home
+
+
+class _SkillProvider:
+    name = "fakeprov"
+    display_name = "Fake Provider"
+
+    def __init__(self, bundle: list) -> None:
+        self._bundle = bundle
+        self.fetched = 0
+
+    def is_available(self) -> bool:
+        return True
+
+    async def search(self, query, *, limit=20):
+        return []
+
+    async def fetch_skill_content(self, skill_id):
+        return None
+
+    async def fetch_skill_bundle(self, skill_id):
+        self.fetched += 1
+        return list(self._bundle)
+
+
+async def _install_skill(home: Path, bundle: list) -> tuple:
+    """POST one Discover install of *bundle*; ``(status, body, installed)``."""
+    skills_dir = home / ".kiro" / "crew" / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    provider = _SkillProvider(bundle)
+    registry = SkillProviderRegistry()
+    registry.register(provider)
+    discover_mod._registry = registry
+    state = MagicMock(_slots={}, context_builder=None)
+    state._standalone_skills = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+    state.owner_id = ""
+    app = web.Application()
+    app["state"] = state
+    as_owner(app)
+    app.router.add_post("/api/skills/-/discover/install", discover_mod.api_skills_discover_install)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        resp = await client.post(
+            "/api/skills/-/discover/install",
+            json={"provider": "fakeprov", "skill_id": "fake-skill"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+    target = skills_dir / "fakeprov" / "fake-skill"
+    installed = (target / "SKILL.md").is_file()
+    if resp.status != 200:
+        # A refusal writes nothing: no skill and no leftover stage.
+        assert not target.exists()
+        if target.parent.exists():
+            assert not [p for p in target.parent.iterdir() if p.name.startswith(".")]
+        assert body["code"] == "blocked_by_policy"
+    return resp.status, body, installed
+
+
+class _Official:
+    name = "official"
+    display_name = "MCP Registry"
+
+    def __init__(self) -> None:
+        self.fetched: list = []
+
+    def is_available(self) -> bool:
+        return True
+
+    async def search(self, query: str, *, limit: int = 20) -> list[Any]:
+        return []
+
+    async def fetch_detail(self, server_id: str) -> McpServerDetail | None:
+        self.fetched.append(server_id)
+        plan = McpInstallPlan(method="uvx", spec={"command": "uvx", "args": [server_id]})
+        return McpServerDetail(
+            id=server_id, name=server_id, description="", provider="official", install_plan=plan
+        )
+
+
+async def _plans_mcp(server_id: str) -> bool:
+    """Whether the official registry plan installs *server_id*; a refusal fetches nothing."""
+    official = _Official()
+    registry = McpProviderRegistry()
+    registry.register(official)
+    mcp_discover._registry = registry
+    try:
+        await mcp_discover.official_install_plan(server_id)
+    except mcp_discover.OfficialPlanError as err:
+        assert (err.status, err.code) == (403, "blocked_by_policy")
+        assert official.fetched == []
+        return False
+    assert official.fetched == [server_id]
+    return True
+
+
+#: Per install reply: bundles that install, bundles that are refused, and the
+#: registry servers that are planned and refused.
+_INSTALL_EXPECTED = {
+    "install_deny": {
+        "installs": [[_GOOD], [_GOOD, _GOOD_SUB, _OTHER]],
+        "refused": [[_GOOD, _EVIL], [_GOOD_SUB, _EVIL, _OTHER], [_NO_SKILL]],
+        "planned": ["io.github.acme/tool", "github"],
+        "denied": ["io.github.acme/evil"],
+    },
+    "install_allow": {
+        "installs": [[_GOOD], [_GOOD, _GOOD_SUB]],
+        "refused": [[_GOOD, _OTHER], [_GOOD, _EVIL], [_NO_SKILL]],
+        "planned": ["io.github.acme/tool"],
+        "denied": ["io.github.acme/other", "github"],
+    },
+    "allow_all": {
+        "installs": [[_GOOD, _EVIL, _OTHER]],
+        "refused": [[_NO_SKILL]],
+        "planned": ["io.github.acme/tool", "io.github.acme/evil"],
+        "denied": [],
+    },
+    "allow_builtin": {
+        "installs": [[_GOOD, _EVIL, _OTHER]],
+        "refused": [[_NO_SKILL]],
+        # ``builtin`` does not reach ``mcp``, so MCP install stays off.
+        "planned": [],
+        "denied": ["io.github.acme/tool"],
+    },
+}
+
+
+@pytest.mark.asyncio
+class TestDiscoverInstallFollowsTheRemote:
+    @pytest.mark.parametrize("remote", sorted(_INSTALL_REMOTES), indirect=True)
+    @pytest.mark.parametrize("tier", _INSTALL_TIERS)
+    async def test_a_local_tier_cannot_widen_skill_install(
+        self, discover_env, boot, remote, tier, tmp_path, monkeypatch, profiles_dir
+    ):
+        if tier is not None:
+            _local_tier(tier, _INSTALL_WIDENING, tmp_path, monkeypatch, profiles_dir)
+        boot()
+        expected = _INSTALL_EXPECTED[remote]
+        for bundle in expected["installs"]:
+            status, body, installed = await _install_skill(discover_env, bundle)
+            assert (status, installed) == (200, True), (remote, tier, bundle, body)
+            # Remove it, so the next install starts from nothing.
+            shutil.rmtree(discover_env / ".kiro" / "crew" / "skills" / "fakeprov")
+        for bundle in expected["refused"]:
+            status, body, installed = await _install_skill(discover_env, bundle)
+            assert (status, installed) == (403, False), (remote, tier, bundle)
+
+    @pytest.mark.parametrize("remote", ["install_deny"], indirect=True)
+    @pytest.mark.parametrize("tier", _INSTALL_TIERS)
+    async def test_the_refusal_names_the_denied_skill_or_the_unread_package(
+        self, discover_env, boot, tier, tmp_path, monkeypatch, profiles_dir
+    ):
+        if tier is not None:
+            _local_tier(tier, _INSTALL_WIDENING, tmp_path, monkeypatch, profiles_dir)
+        boot()
+        _status, body, _installed = await _install_skill(discover_env, [_GOOD, _EVIL])
+        assert "'evil'" in body["error"], tier
+        _status, body, _installed = await _install_skill(discover_env, [_NO_SKILL])
+        assert "cannot list the skills" in body["error"], tier
+
+    @pytest.mark.parametrize("remote", sorted(_INSTALL_REMOTES), indirect=True)
+    @pytest.mark.parametrize("tier", _INSTALL_TIERS)
+    async def test_a_local_tier_cannot_widen_official_mcp_install(
+        self, discover_env, boot, remote, tier, tmp_path, monkeypatch, profiles_dir
+    ):
+        if tier is not None:
+            _local_tier(tier, _INSTALL_WIDENING, tmp_path, monkeypatch, profiles_dir)
+        boot()
+        expected = _INSTALL_EXPECTED[remote]
+        for server in expected["planned"]:
+            assert await _plans_mcp(server), (remote, tier, server)
+        for server in expected["denied"]:
+            assert not await _plans_mcp(server), (remote, tier, server)
+
+    @pytest.mark.parametrize("remote", ["absent"], indirect=True)
+    @pytest.mark.parametrize("tier", _INSTALL_TIERS)
+    async def test_with_no_install_rule_nothing_installs(
+        self, discover_env, boot, tier, tmp_path, monkeypatch, profiles_dir
+    ):
+        if tier is not None:
+            _local_tier(tier, _INSTALL_WIDENING, tmp_path, monkeypatch, profiles_dir)
+        boot()
+        status, _body, installed = await _install_skill(discover_env, [_GOOD])
+        assert (status, installed) == (403, False), tier
+        assert not await _plans_mcp("io.github.acme/tool"), tier
+
+
+@pytest.mark.asyncio
+class TestDiscoverInstallCanNarrow:
+    @pytest.mark.parametrize("remote", ["allow_all"], indirect=True)
+    @pytest.mark.parametrize("tier", _TIERS)
+    async def test_a_local_deny_narrows_allow_all(
+        self, discover_env, boot, tier, tmp_path, monkeypatch, profiles_dir
+    ):
+        _local_tier(tier, _INSTALL_NARROWING, tmp_path, monkeypatch, profiles_dir)
+        boot()
+        status, _body, installed = await _install_skill(discover_env, [_GOOD, _OTHER])
+        assert (status, installed) == (200, True), tier
+        shutil.rmtree(discover_env / ".kiro" / "crew" / "skills" / "fakeprov")
+        status, body, installed = await _install_skill(discover_env, [_GOOD, _EVIL])
+        assert (status, installed) == (403, False), tier
+        assert "'evil'" in body["error"], tier
+        assert not await _plans_mcp("io.github.acme/tool"), tier
+        assert await _plans_mcp("io.github.acme/other"), tier
+
+
+@pytest.mark.asyncio
+class TestOssDiscoverInstallIgnoresTheRemote:
+    @pytest.mark.parametrize("remote", ["install_deny"], indirect=True)
+    async def test_no_fetch_and_no_package_check(self, discover_env, signed_in, cps):
+        assert governance.load_security_policy() is None
+        status, _body, installed = await _install_skill(discover_env, [_GOOD, _EVIL])
+        assert (status, installed) == (200, True)
+        assert await _plans_mcp("io.github.acme/evil")
+        assert cps == []
