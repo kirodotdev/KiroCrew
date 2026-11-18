@@ -357,6 +357,21 @@ test("entryUrl preserves an initial path/query", () => {
   assert.strictEqual(result.searchParams.has("token"), false);
 });
 
+test("entryUrl keeps a deep link with query and hash", () => {
+  const { supervisor } = harness();
+  assert.strictEqual(
+    supervisor.entryUrl("http://localhost:5476", "/chat?sid=a#h"),
+    "http://localhost:5476/chat?sid=a#h",
+  );
+});
+
+test("entryUrl sends a path that leaves the gateway origin to the root", () => {
+  const { supervisor } = harness();
+  for (const path of ["//evil/x", "/\\evil/x", "/\t/evil"]) {
+    assert.strictEqual(supervisor.entryUrl("http://localhost:5476", path), "http://localhost:5476/");
+  }
+});
+
 test("disabled local gateway does not spawn when the backend is unreachable", async () => {
   let probes = 0;
   const { supervisor, spawnCalls, logs } = harness({
