@@ -1108,6 +1108,15 @@ async def _start_next_queued_turn(
         _pop_send_id = normalize_send_id((item.get("meta") or {}).get("sendId"))
         if _pop_send_id:
             _pop_meta["sendId"] = _pop_send_id
+        # The entry's server-stamped Shared Crew author, so the rebuilt row
+        # names its sender as the stored row and a `chat_message` echo do.
+        # Without it a teammate's queued send shows no byline on an open tab
+        # until a reload.
+        from kiro_crew.shared_crew.attribution import message_author
+        from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY
+
+        if isinstance((item.get("meta") or {}).get(MESSAGE_AUTHOR_META_KEY), dict):
+            _pop_meta[MESSAGE_AUTHOR_META_KEY] = message_author(item["meta"]).to_public_dict()
         # A peer's queued ``session_send`` names its sender (``meta.relay``, set
         # only by the gateway's delivery path; an edit drops it). The rebuilt row
         # is that one entry's text, so its own sender rides its own pop, and the

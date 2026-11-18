@@ -7,6 +7,8 @@ import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../components/KiroAccountModal'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { api, type KasLoginStatus } from '../api/client'
+import { RELAY_VIEWER_CREWS_KEY } from '../hooks/useRelayViewerCrews'
+import { KAS_LOGIN_STATUS_KEY } from '../hooks/useKasLogin'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -34,6 +36,9 @@ vi.mock('../api/client', async importOriginal => {
       kasLoginPoll: vi.fn().mockResolvedValue({ status: 'pending' }),
       kasLoginBeginLoopback: vi.fn(),
       kasLoginCancel: vi.fn().mockResolvedValue({ ok: true }),
+      // A landed sign-in asks for a fresh credit reading. Refused by default, so a
+      // test that does not care keeps the plain re-read fallback and no network.
+      sessionsUsageRefresh: vi.fn().mockRejectedValue(new Error('no refresh in this test')),
     },
   }
 })
@@ -343,8 +348,75 @@ describe('KiroSignInCard', () => {
     expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
     // The previous account's usage reading names it: dropped, not shown until the next poll (#36156).
-    expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
+    await waitFor(() => expect(queryClient.getQueryData(['kiro-usage'])).toBeNull())
     vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('an authorized sign-in puts a fresh reading in the top bar and re-reads the Team Crews list at once', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    vi.mocked(api.sessionsUsageRefresh).mockClear()
+    // The gateway's own refresh answers with the new account's plan; its cached
+    // GET would still have said "sign in" until the bar's next 30 s poll.
+    vi.mocked(api.sessionsUsageRefresh).mockResolvedValueOnce({
+      usage: { available: true, credits_used: 3, credits_plan: 50, email: 'grace@example.com' },
+    } as Awaited<ReturnType<typeof api.sessionsUsageRefresh>>)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    queryClient.setQueryData(['kiro-usage'], 'signin-required')
+    const reset = vi.spyOn(queryClient, 'resetQueries')
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() => expect(api.sessionsUsageRefresh).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(queryClient.getQueryData(['kiro-usage'])).toMatchObject({ used: 3, limit: 50, email: 'grace@example.com' }),
+    )
+    expect(reset).toHaveBeenCalledWith({ queryKey: RELAY_VIEWER_CREWS_KEY })
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('a top-bar usage poll still in flight when the sign-in lands cannot put the previous reading back', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    vi.mocked(api.sessionsUsageRefresh).mockClear()
+    vi.mocked(api.sessionsUsageRefresh).mockResolvedValueOnce({
+      usage: { available: true, credits_used: 3, credits_plan: 50, email: 'grace@example.com' },
+    } as Awaited<ReturnType<typeof api.sessionsUsageRefresh>>)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    // The bar's GET left before the sign-in and answers for the previous account
+    // only after the refresh has published the new one.
+    let answerStalePoll: (state: typeof ADA) => void = () => {}
+    void queryClient
+      .fetchQuery({ queryKey: ['kiro-usage'], queryFn: () => new Promise<typeof ADA>(r => { answerStalePoll = r }) })
+      .catch(() => {})
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() =>
+      expect(queryClient.getQueryData(['kiro-usage'])).toMatchObject({ email: 'grace@example.com' }),
+    )
+    await act(async () => { answerStalePoll(ADA) })
+    expect(queryClient.getQueryData(['kiro-usage'])).toMatchObject({ used: 3, limit: 50, email: 'grace@example.com' })
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('a status refetch in flight under a cancel cannot overwrite the fresh signed-in answer', async () => {
+    // The poll never answers 'authorized': only the cancel's own read sees the sign-in.
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    await openSignIn()
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    // A status refetch that left before the token landed, still unanswered.
+    let answerStaleStatus: (s: KasLoginStatus) => void = () => {}
+    void queryClient
+      .fetchQuery({ queryKey: KAS_LOGIN_STATUS_KEY, queryFn: () => new Promise<KasLoginStatus>(r => { answerStaleStatus = r }) })
+      .catch(() => {})
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    fireEvent.click(cancel)
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
+    await act(async () => { answerStaleStatus(SIGNED_OUT) })
+    expect(queryClient.getQueryData(KAS_LOGIN_STATUS_KEY)).toMatchObject({ authenticated: true })
+    expect(screen.getByTestId('kiro-sign-in-summary')).toBeInTheDocument()
   })
 
   it('a cancel that finds the sign-in already landed drops the previous account\'s model list too', async () => {

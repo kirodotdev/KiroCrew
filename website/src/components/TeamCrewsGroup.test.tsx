@@ -1,5 +1,5 @@
 /**
- * The desktop app's relay Crew list as the Crew switcher's Team Crews group:
+ * The desktop app's relay Crew list as the Crew switcher's Remote Crews group:
  * hidden unless the desktop bridge exists, the crews route answers and it lists
  * a Crew or a refusal (sign-in and load failures stay on screen), offline
  * Crews shown greyed (not hidden), each typed refusal shown as its plain text,
@@ -77,7 +77,7 @@ async function openGroup(u: ReturnType<typeof userEvent.setup>) {
   return screen.findByTestId('team-crews-group')
 }
 
-const row = (name: string) => screen.getByRole('menuitem', { name: `Open ${name}` })
+const row = (name: string) => screen.getByRole('menuitem', { name: `Connect ${name}` })
 
 beforeEach(() => {
   localStorage.clear()
@@ -153,13 +153,16 @@ describe('TeamCrewsGroup', () => {
     const u = userEvent.setup()
     const group = await openGroup(u)
     expect(screen.getByText('This computer')).toBeTruthy()
-    expect(within(group).getByText('Team Crews')).toBeTruthy()
+    expect(within(group).getByText('Remote Crews')).toBeTruthy()
+    expect(within(group).queryByText('From your Kiro account')).toBeNull()
+    expect(group.getAttribute('aria-label')).toBe('Remote Crews you can open through the relay')
     // The Local row keeps its name; "This computer" is the group's name only.
     expect(screen.getByRole('menuitemradio', { name: /Local/ })).toBeTruthy()
     // Team rows are plain items, not destinations: no radio, no pin.
     expect(within(group).queryAllByRole('menuitemradio')).toHaveLength(0)
     expect(within(group).queryAllByRole('menuitemcheckbox')).toHaveLength(0)
-    expect(within(group).getByTitle('Opens in its own window')).toBeTruthy()
+    // The row's one visible action is a small Connect, and only a click runs it.
+    expect(within(group).getByTestId('relay-crew-connect').textContent).toBe('Connect')
   })
 
   it('names My Crews only when SSH Crews are listed', async () => {
@@ -182,7 +185,7 @@ describe('TeamCrewsGroup', () => {
     await waitFor(() => expect(client.getQueryState(['instances'])?.status).toBe('error'))
     const u = userEvent.setup()
     const group = await openGroup(u)
-    expect(within(group).getByRole('menuitem', { name: 'Open Build box' })).toBeTruthy()
+    expect(within(group).getByRole('menuitem', { name: 'Connect Build box' })).toBeTruthy()
   })
 
   it("leaves Team Crews out of the caret's unread count", async () => {
@@ -192,7 +195,7 @@ describe('TeamCrewsGroup', () => {
     const u = userEvent.setup()
     // The Team rows must be on screen first, or the count could pass before they exist.
     const group = await openGroup(u)
-    expect(within(group).getAllByRole('menuitem', { name: /^Open / })).toHaveLength(2)
+    expect(within(group).getAllByRole('menuitem', { name: /^Connect / })).toHaveLength(2)
     await u.keyboard('{Escape}')
     expect(await screen.findByRole('button', { name: 'Switch crew, 2 unread elsewhere' })).toBeTruthy()
   })
@@ -212,9 +215,37 @@ describe('TeamCrewsGroup', () => {
     const group = await openGroup(userEvent.setup())
     const rows = within(group).getAllByTestId('relay-crew-row')
     expect(rows.map(r => r.dataset.online)).toEqual(['true', 'false'])
-    expect(within(rows[1]).getByText(/Team · offline/)).toBeTruthy()
+    expect(within(rows[1]).getByText(/Shared · offline/)).toBeTruthy()
     expect(rows[1].className).toContain('opacity-40')
     expect(rows[0].className).not.toContain('opacity-40')
+  })
+
+  it('types each row Shared with a group icon or Private with a lock, and keeps the own-window arrow', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({
+      crews: [
+        crew({ endpointId: 'ep-1', name: 'Payments', crewType: 'TEAM' }),
+        crew({ endpointId: 'ep-2', name: 'My desk', crewType: 'PERSONAL' }),
+        crew({ endpointId: 'ep-3', name: 'Odd', crewType: 'FUTURE' }),
+      ],
+    })
+    mount()
+    const group = await openGroup(userEvent.setup())
+    const rows = within(group).getAllByTestId('relay-crew-row')
+    const status = rows.map(r => r.querySelector('.text-\\[12px\\]')?.textContent)
+    expect(status).toEqual(['Shared · online', 'Private · online', 'FUTURE · online'])
+    expect(within(group).queryByText(/Personal|Team ·/)).toBeNull()
+    const icon = (r: HTMLElement) => r.querySelector('[data-testid="relay-crew-type-icon"]')
+    expect(icon(rows[0])?.getAttribute('class')).toContain('lucide-users')
+    expect(icon(rows[1])?.getAttribute('class')).toContain('lucide-lock')
+    // A type this build does not know keeps its own text and gets no icon.
+    expect(icon(rows[2])).toBeNull()
+    // The own-window arrow is unchanged on every row, and no row gains a pin.
+    for (const r of rows) {
+      const arrow = r.querySelector('[title="Opens in its own window"]')
+      expect(arrow?.querySelector('svg')?.getAttribute('class')).toContain('lucide-external-link')
+    }
+    expect(within(group).queryAllByRole('menuitemcheckbox')).toHaveLength(0)
   })
 
   it('lets a Crew be opened only while its relay connection is CONNECTED, whatever its presence', async () => {
@@ -277,13 +308,13 @@ describe('TeamCrewsGroup', () => {
       .map(r => r.querySelector('.text-\\[12px\\]')?.textContent)
     const ago = `last seen ${timeAgo(seen)}`
     expect(status).toEqual([
-      'Personal · online',
-      `Personal · reconnecting · last seen ${timeAgo(recent)}`,
-      'Personal · reconnecting',
-      `Personal · offline · ${ago}`,
-      'Personal · offline',
-      'Personal · offline',
-      `Personal · offline · ${ago}`,
+      'Private · online',
+      `Private · reconnecting · last seen ${timeAgo(recent)}`,
+      'Private · reconnecting',
+      `Private · offline · ${ago}`,
+      'Private · offline',
+      'Private · offline',
+      `Private · offline · ${ago}`,
     ])
   })
 
@@ -339,14 +370,22 @@ describe('TeamCrewsGroup', () => {
     expect(openPane).not.toHaveBeenCalled()
   })
 
+  it('never connects a listed Crew on its own', async () => {
+    const open = withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    mount()
+    await openGroup(userEvent.setup())
+    expect(open).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['CREW_ACCESS_NOT_GRANTED', 'You no longer have access to this Crew.'],
     ['ACCESS_DENIED', "Couldn't open this Crew."],
     ['REMOTE_ACCESS_DISABLED', 'Remote access is turned off for this account.'],
     ['CREW_OFFLINE', 'This Crew is offline.'],
     ['THROTTLED', 'Too many requests. Try again in a minute.'],
-    ['SIGNED_OUT', 'Sign in to Kiro to see your Team Crews.'],
-    ['NOT_SET_UP', "Team Crews over the relay aren't set up."],
+    ['SIGNED_OUT', 'Sign in to Kiro to see your Shared Crews.'],
+    ['NOT_SET_UP', "Shared Crews over the relay aren't set up."],
     ['INVALID_REQUEST', "Couldn't open this Crew."],
     ['SERVICE_ERROR', "Couldn't open this Crew."],
     ['UNREACHABLE', "Couldn't open this Crew."],
@@ -390,7 +429,7 @@ describe('TeamCrewsGroup', () => {
     await openGroup(userEvent.setup())
     const item = await screen.findByRole('menuitem', { name: 'Ask the agent' })
     expect(item.getAttribute('aria-describedby')).toBe('relay-crews-list-refusal')
-    expect(document.getElementById('relay-crews-list-refusal')?.textContent).toContain("Couldn't load your Team Crews.")
+    expect(document.getElementById('relay-crews-list-refusal')?.textContent).toContain("Couldn't load your Shared Crews.")
   })
 
   it('arrow keys skip the refusal notice under a row and reach its Ask the agent item', async () => {
@@ -420,7 +459,7 @@ describe('TeamCrewsGroup', () => {
     mount()
     await openGroup(userEvent.setup())
     expect((await screen.findByTestId('relay-crews-list-refusal')).textContent)
-      .toContain('Sign in to Kiro to see your Team Crews.')
+      .toContain('Sign in to Kiro to see your Shared Crews.')
     expect(screen.queryByTestId('relay-crew-row')).toBeNull()
     // Signing in is the fix, so it comes first; the agent hand-off stays after it
     // for a backend that does not run on the Kiro sign-in.
@@ -497,7 +536,7 @@ describe('TeamCrewsGroup', () => {
     mount()
     await openGroup(userEvent.setup())
     expect((await screen.findByTestId('relay-crews-list-refusal')).textContent)
-      .toContain("Couldn't load your Team Crews.")
+      .toContain("Couldn't load your Shared Crews.")
   })
 
   const refused = (status: number, body: Record<string, unknown>) =>
@@ -568,7 +607,7 @@ describe('TeamCrewsGroup', () => {
     await u.click(retry)
     await waitFor(() => expect(screen.getByTestId('relay-crews-list-retry').getAttribute('aria-disabled')).toBe('true'))
     // The refusal Try again was clicked from stays up during its own read.
-    expect(screen.getByTestId('relay-crews-list-refusal').textContent).toContain("Couldn't load your Team Crews.")
+    expect(screen.getByTestId('relay-crews-list-refusal').textContent).toContain("Couldn't load your Shared Crews.")
   })
 
   it('does not bring back an older request ID on a later read once a retry failed again', async () => {
@@ -669,7 +708,7 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [fresh()] })
     const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
     mountAt('/')
-    const caret = await screen.findByRole('button', { name: 'Switch crew, new Team Crew' })
+    const caret = await screen.findByRole('button', { name: 'Switch crew, new Shared Crew' })
     expect(screen.getByTestId('crew-switcher-new-dot')).toBeTruthy()
     const u = userEvent.setup()
     await u.click(caret)
@@ -756,7 +795,7 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
     const { queryClient } = mountAt('/')
     const u = userEvent.setup()
-    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Shared Crew' }))
     await screen.findByTestId('team-crews-group')
     // A poll goes out while the menu is open, answering with the pre-save list.
     read.mockReturnValueOnce(new Promise(r => { release = r }))
@@ -785,7 +824,7 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockRejectedValue(new ApiError(503, 'not saved', '{}'))
     mountAt('/')
     const u = userEvent.setup()
-    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Shared Crew' }))
     await screen.findByTestId('team-crews-group')
     await waitFor(() => expect(seen).toHaveBeenCalled())
     expect((await screen.findByTestId('relay-crews-seen-failed')).textContent)
@@ -802,7 +841,7 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     vi.spyOn(api, 'relayViewerCrewsSeen').mockReturnValue(new Promise(r => { reply = r }))
     mountAt('/')
     const u = userEvent.setup()
-    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Shared Crew' }))
     await screen.findByTestId('team-crews-group')
     await u.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByTestId('team-crews-group')).toBeNull())
@@ -819,7 +858,7 @@ describe('TeamCrewsGroup: a Team Crew the person has not seen yet', () => {
     const seen = vi.spyOn(api, 'relayViewerCrewsSeen').mockResolvedValue({ ok: true })
     mountAt('/')
     const u = userEvent.setup()
-    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Team Crew' }))
+    await u.click(await screen.findByRole('button', { name: 'Switch crew, new Shared Crew' }))
     await screen.findByTestId('team-crews-group')
     await waitFor(() => expect(seen).toHaveBeenCalledTimes(3))
     expect(seen.mock.calls.map(c => c[0].length)).toEqual([200, 200, 50])
@@ -844,7 +883,7 @@ describe('TeamCrewsGroup account line', () => {
     vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})], account } as never)
     mount()
     const group = await openGroup(userEvent.setup())
-    await within(group).findByRole('menuitem', { name: 'Open Build box' })
+    await within(group).findByRole('menuitem', { name: 'Connect Build box' })
     return within(group).queryByTestId('team-crews-account')?.textContent ?? null
   }
 
@@ -899,7 +938,7 @@ describe('TeamCrewsSwitcher with an empty list', () => {
     const group = await openGroup(userEvent.setup())
     const line = within(group).getByTestId('team-crews-account')
     expect(line.textContent).toBe('Signed in with Builder ID')
-    const empty = within(group).getByText('No Team Crews to open.')
+    const empty = within(group).getByText('No Shared Crews to open.')
     expect(line.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 

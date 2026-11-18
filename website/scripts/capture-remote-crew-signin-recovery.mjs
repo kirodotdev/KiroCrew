@@ -74,7 +74,7 @@ const STEPS_REGISTERED = [
     key: 'connect',
     label: 'Connect',
     state: 'done',
-    detail: 'Added to Your crews. Sign in to Kiro on the crew after you connect.',
+    detail: 'Added to My Crews. Sign in to Kiro on the crew after you connect.',
   },
 ]
 

@@ -106,7 +106,7 @@ const STEPS_REGISTERED = [
     key: 'connect',
     label: 'Connect',
     state: 'done' as const,
-    detail: 'Added to Your crews. Sign in to Kiro on the crew after you connect.',
+    detail: 'Added to My Crews. Sign in to Kiro on the crew after you connect.',
   },
 ]
 const UNSIGNED_JOB = {
@@ -177,7 +177,7 @@ beforeEach(() => {
 
 /** Open the setup tab, where the launch progress card lives. */
 const openSetup = async (u: ReturnType<typeof userEvent.setup>) => {
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 }
 
 describe('a crew created without a Kiro sign-in — the progress card', () => {
@@ -203,7 +203,7 @@ describe('a crew created without a Kiro sign-in — the progress card', () => {
 
     const icon = await screen.findByTestId('step-waiting-connect')
     const row = icon.closest('li')
-    expect(row).toHaveTextContent(/Added to Your crews\./i)
+    expect(row).toHaveTextContent(/Added to My Crews\./i)
     expect(row?.querySelector('.text-ok')).toBeNull()
     // A warn-tinted hollow circle, deliberately NOT the key: the key marks the
     // step in the user's court; this step ran and is only held.
@@ -404,6 +404,8 @@ describe('what Cancel destroys', () => {
     })
     renderWithProviders(<RemoteCrewPanel />)
 
+    // The Setting up row's status opens its steps and the Cancel.
+    fireEvent.click(await screen.findByRole('button', { name: /Setting up/ }))
     const cancel = await screen.findByRole('button', {
       name: /Cancel setup of kc-5e10bb and remove the crew/i,
     })
@@ -487,7 +489,7 @@ describe('the restart, and the state before a code exists', () => {
   })
 })
 
-describe('Your crews — an unsigned cloud crew', () => {
+describe('My Crews — an unsigned cloud crew', () => {
   beforeEach(() => {
     vi.mocked(api.listInstances).mockResolvedValue(
       { active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE] } as never,
@@ -1196,7 +1198,7 @@ describe('the step details these fixtures put on screen', () => {
   // The card renders `step.detail` verbatim, so a fixture that invents one tests
   // — and screenshots — a screen that does not ship. Both fixtures drifted once:
   // they still said "Added to your crews." after the backend had moved to
-  // "Added to Your crews.". Pin them to their source instead.
+  // "Added to My Crews.". Pin them to their source instead.
   const read = (rel: string): string =>
     readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
   const details = STEPS_REGISTERED.flatMap(step =>

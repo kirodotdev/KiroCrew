@@ -98,6 +98,16 @@ _EAGER_SPAWN_BACKOFF_MAX_SECS = 300.0
 #: Bound on the last-error text the stop notice carries into the chat.
 _EAGER_SPAWN_ERROR_DETAIL_MAX_CHARS = 500
 
+#: The stop row's English, filled with the failure count and the last error. A
+#: module template rather than an inline f-string because a host sandbox refusal
+#: prefixes the same sentence with its typed code, and the frontend's legacy
+#: pattern for ``eager_spawn_stopped`` is pinned against this template
+#: (``test_transient_notice_parity``).
+EAGER_SPAWN_STOPPED_TEXT = (
+    "This chat's agent failed to start {failures} times in a row, so it will not be "
+    "started again in the background. Send a message to try again. Last error: {detail}"
+)
+
 
 def _eager_spawn_backoff_secs(failures: int) -> float:
     """Seconds the next background start waits after *failures* in a row."""
@@ -148,20 +158,23 @@ def _note_eager_spawn_failure(slot: "_ChatSlot", exc: BaseException) -> None:
     detail = redact_and_truncate(str(exc), _EAGER_SPAWN_ERROR_DETAIL_MAX_CHARS)
     try:
         from kiro_crew.dashboard import gateway_notice as gn
+        from kiro_crew.dashboard import host_sandbox_refusal as hsr
 
         _last_error = detail or type(exc).__name__
-        slot.append(
-            "error",
-            f"This chat's agent failed to start {failures} times in a row, so it "
-            "will not be started again in the background. Send a message to try "
-            f"again. Last error: {_last_error}",
-            "msg msg-err",
-            meta=gn.gateway_notice_meta(
-                gn.GATEWAY_NOTICE_EAGER_SPAWN_STOPPED,
-                failures=failures,
-                detail=_last_error,
-            ),
+        _stop_meta = gn.gateway_notice_meta(
+            gn.GATEWAY_NOTICE_EAGER_SPAWN_STOPPED,
+            failures=failures,
+            detail=_last_error,
         )
+        _stop_text = EAGER_SPAWN_STOPPED_TEXT.format(failures=failures, detail=_last_error)
+        _host_refusal = hsr.host_sandbox_refusal(exc)
+        if _host_refusal is not None:
+            # The last error is the host's sandbox runbook: typed in the meta and
+            # by the content prefix (a path with no row meta reads the prefix), so
+            # a reader who is not the machine owner gets the plain line instead.
+            _stop_meta.update(hsr.row_meta(_host_refusal))
+            _stop_text = hsr.row_text(_stop_text)
+        slot.append("error", _stop_text, "msg msg-err", meta=_stop_meta)
     except Exception:
         logger.debug("Eager spawn: could not post the stop notice for %s", slot.key, exc_info=True)
 

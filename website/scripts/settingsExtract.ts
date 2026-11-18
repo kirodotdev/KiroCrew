@@ -261,10 +261,13 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
   'RemoteCrewPanel.tsx': 'instances',
-  // RemoteCrewPanel.tsx's component owners (the setup tab's cards, one crew row,
-  // the not-active-yet banner).
+  // RemoteCrewPanel.tsx's component owners (one crew row, the Setting up row and
+  // launch cards, the setup form's two cards, the page sections and the Add
+  // Crew modal, the not-active-yet banner).
   'RemoteCrewPanelLaunch.tsx': 'instances',
   'RemoteCrewPanelCrewRow.tsx': 'instances',
+  'RemoteCrewPanelSetupCards.tsx': 'instances',
+  'RemoteCrewPanelSections.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide

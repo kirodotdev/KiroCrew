@@ -63,7 +63,7 @@ export function RemoteControlCard() {
   // cached: that cached status may be stale, and hiding the error would hide that.
   const readFailed =
     Boolean(loadError) && !(loadError instanceof ApiError && loadError.status === 403)
-  // No hand-off: the Remote Crew panel below this card can hold an unsaved add-crew
+  // No hand-off: the Remote Crew panel above this card can hold an unsaved add-crew
   // form, and opening a chat would unmount it.
   const readError = readFailed ? (
     <ErrorNotice

@@ -11,8 +11,9 @@ import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
-import { fetchHistory, deleteHistorySession, switchSlot, resumeFromHistory, clearHistorySessions, requestFolderReveal } from '../store/chatSlice'
-import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from './chat-sidebar/CreatorFilter'
+import { fetchHistory, deleteHistorySession, switchSlot, clearHistorySessions, requestFolderReveal } from '../store/chatSlice'
+import { SharedCrewReadNotices, useSharedCrewListView } from './chat-sidebar/CreatorFilter'
+import { useSidebarCreators } from './chat-sidebar/creators'
 import { PEOPLE_POLL_ID, PEOPLE_REFRESH_MS, sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { requestRefresh } from '../lib/pollRule'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
@@ -54,8 +55,7 @@ import { makeSidebarSearchView, SearchFailedNotice, SearchFolderHits, SearchPend
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { isPeerRow, sessionRowIdentity } from './chat-sidebar/rowIdentity'
-import { normalizeRunSessionKey } from '../components/workflows/runModel'
-import { buildSidebarRows, guideStepOnRowControl, opensElsewhereOf, type RowScene, type RowShell, type SidebarRows } from './chat-sidebar/rows'
+import { buildSidebarRows, guideStepOnRowControl, type RowScene, type RowShell, type SidebarRows } from './chat-sidebar/rows'
 import { useSessionSources } from './chat-sidebar/sessionSources'
 import { crewSpaceChain, useCollapsedCrews, useCollapsedCrewSpaces, useCrewEnable } from './chat-sidebar/CrewGroups'
 import { crewOf, type CrewGroup } from '../hooks/useInstanceSessions'
@@ -307,17 +307,14 @@ function ChatSidebar({
   } = useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilters, enableFilter, localSlots, disableFilter })
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
-  // Shared Crew creator filter: server-side, so a non-All value swaps the lanes
-  // for the server's filtered page instead of hiding rows already loaded.
-  // The selection is remembered per Crew; a personal Crew shows no filter or bylines.
+  // Shared Crew "Started by" filter: a client-side filter dimension like the
+  // model one (`./chat-sidebar/creators`). The selection is remembered per Crew;
+  // a personal Crew shows no section, chip or bylines.
   const creatorView = useSharedCrewListView()
-  const { filterAvailable: creatorFilterAvailable, filter: creatorFilter, setFilter: setCreatorFilter } = creatorView
-  const creatorFilterOn = creatorFilterAvailable && creatorFilter !== 'all'
+  const { creatorFilterShown, creatorKeys, toggleCreator, clearCreators } = creatorView
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   useEffect(() => {
-    // Catalog writes and live slot/history updates affect every creator page,
-    // including cached filters that are not currently mounted.
-    void queryClient.invalidateQueries({ queryKey: sharedCrewKeys.sessionsAll })
+    // New sessions change who has started what, so People re-reads.
     requestRefresh(queryClient, PEOPLE_POLL_ID, sharedCrewKeys.people, PEOPLE_REFRESH_MS)
   }, [queryClient, localSlots, history, refreshTrigger])
   // An offline refusal stops being true once the gateway is back, so retire it on
@@ -400,6 +397,9 @@ function ChatSidebar({
   // whose keys no session uses any more must not draw a ticked invert row (or
   // mark rows as hidden) while the next tick would narrow to "only X".
   const modelFilterInverted = filterModelsExcluded && activeModelKeys.size > 0
+  const { creatorFilterRows, activeCreatorKeys, activeCreatorRows, creatorFilterPasses } = useSidebarCreators({
+    shown: creatorFilterShown, selectedKeys: creatorKeys, people: creatorView.people, viewerIds: creatorView.viewerIds, rows: allRows,
+  })
   const {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
     hideEmptyFolderBody, countSubfolderContents, hideEmptyFolders, orderedColumns,
@@ -524,17 +524,21 @@ function ChatSidebar({
     filters: {
       tags: { resolved: activeTagIds, raw: filterTagIds },
       models: { passes: modelFilterPasses, active: activeModelKeys.size > 0 },
+      creators: { passes: creatorFilterPasses, active: activeCreatorKeys.size > 0 },
       search: { text: slotFilter, folderMatches: folderNameMatchIds },
       status: { active: activeFilters, hidden: hiddenFilters, paused: pausedFilters, recentWindowMs },
       folders: { hiddenSubtree: filterHiddenSubtree, pinnedSubtree: pinnedFolderSubtree, active: folderFilterActive },
     },
-    clears: { tags: clearTagFilter, models: clearModelFilter, search: clearSearch, status: clearAllFilters, folder: clearFolderHide, hides: clearHiddenFilters },
+    clears: { tags: clearTagFilter, models: clearModelFilter, creators: clearCreators, search: clearSearch, status: clearAllFilters, folder: clearFolderHide, hides: clearHiddenFilters },
     crewGroups: shownCrewGroups,
     sortKey,
     clock: Date.now,
     frozen: dragFrozen,
   }, previousRowsRef.current)
   previousRowsRef.current = sidebarRows
+  const creatorFilter = useMemo(() => ({
+    rows: creatorFilterRows, activeRows: activeCreatorRows, counts: sidebarRows.creatorCounts, toggle: toggleCreator, clear: clearCreators,
+  }), [creatorFilterRows, activeCreatorRows, sidebarRows.creatorCounts, toggleCreator, clearCreators])
   const { listNarrowed, pinnedExemptNarrowing, revealBlockingFilters, laneOrder, isRowFolderHidden, isRowStatusHidden } = sidebarRows
   // "Group by kind" (the filter menu's view option). Off while a search ranks the
   // list: the ranking is the answer, and splitting it would bury the best match.
@@ -839,31 +843,6 @@ function ChatSidebar({
   const navigateRef = useRef(navigate)
   navigateRef.current = navigate
   const openElsewhere = useCallback((path: string) => { navigateRef.current(path) }, [])
-  // A creator-filtered row opens the way a lane row does: an open session on
-  // another page goes there, an open one switches and tells the host
-  // (`onSelectSlot` runs the open-in-tab, leave-Split-View and embed navigation
-  // rules), and a closed one resumes first and tells the host only when the
-  // resume left it active.
-  // The catalog names a session by its transcript key (`dashboard_<slot>`), and the
-  // live roster includes slots the chat-only list leaves out (a crewmate DM), so
-  // the match runs on the normalized key over every local live slot.
-  const openFilteredSession = useCallback((key: string, title: string) => {
-    const want = normalizeRunSessionKey(key)
-    const roster: Slot[] = [...localSlots, ...(store.getState().dashboard.slots as Slot[])]
-    const open = roster.find(s => !s.peer_id && normalizeRunSessionKey(s.key) === want)
-    if (open) {
-      const elsewhere = opensElsewhereOf(open)
-      if (elsewhere) { openElsewhere(elsewhere); return }
-      dispatch(switchSlot({ key: open.key, announceOnMissing: true, gesture: true }))
-      onSelectSlot?.(open.key)
-      return
-    }
-    void dispatch(resumeFromHistory({ key, title })).then(result => {
-      if (!resumeFromHistory.fulfilled.match(result) || !result.payload.ok) return
-      const resumed = result.payload.key
-      if (store.getState().chat.activeSlot === resumed) onSelectSlot?.(resumed)
-    })
-  }, [localSlots, openElsewhere, dispatch, onSelectSlot, store])
   // The caller's source-reveal handler is rebuilt whenever its own inputs move,
   // and a new identity here would rebuild `rowActions` and re-render every row.
   // Rows only ever CALL it, so they get a stable forwarder to the latest one;
@@ -992,7 +971,7 @@ function ChatSidebar({
       <SearchResultsHeader
         count={flatSlots.length + shownCrewRowCount}
         filtersOn={sidebarRows.filtersNarrowing}
-        onClearFilters={() => { clearAllFilters(); clearHiddenFilters(); clearTagFilter(); clearModelFilter() }}
+        onClearFilters={() => { clearAllFilters(); clearHiddenFilters(); clearTagFilter(); clearModelFilter(); clearCreators() }}
         failed={slotSearchFailed}
         scan={slotSearch?.scan ?? null}
       />
@@ -1013,7 +992,7 @@ function ChatSidebar({
     broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
     closeRefused, collapseAllFolders, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
-    columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount,
+    columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount, creatorFilter,
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
     createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
@@ -1116,7 +1095,7 @@ function ChatSidebar({
           edge (8 + 1px border) — the same as its 9px gap to the top edge
           (1px border + mt-0.5 + 6px of the h-10 row around the h-7 button). */}
       {renderSidebarHeader(scope)}
-      {creatorFilterAvailable && <CreatorFilterBar value={creatorFilter} onChange={setCreatorFilter} />}
+      {creatorView.noticesAvailable && <SharedCrewReadNotices />}
 
       {/* Split View (session grid) has no entry here on purpose: this sidebar is a
        *  navigation surface, and the grid's own affordances live next to the
@@ -1163,19 +1142,9 @@ function ChatSidebar({
           every lane's scroller pads its top by the dock's live height. */}
       <ListDock {...searchDock} shelf={<>
         {searchDock.shelf}
-        {searchSent && !searchActive && !creatorFilterOn && <SearchPendingLine />}
-        {searchSent && slotSearchFailed && !creatorFilterOn && <SearchFailedNotice />}
+        {searchSent && !searchActive && <SearchPendingLine />}
+        {searchSent && slotSearchFailed && <SearchFailedNotice />}
       </>}>
-      {creatorFilterOn ? (
-        <CreatorFilteredSessions
-          key={`${creatorFilter}\u0000${slotFilter.trim()}`}
-          creator={creatorFilter}
-          q={slotFilter}
-          connected={connected}
-          onOpen={openFilteredSession}
-          onClear={() => setCreatorFilter('all')}
-        />
-      ) : (
       <LayoutGroup id="chat-slots">
         {conductorLaneActive ? (
           <SidebarSearchContext.Provider value={searchView}>{lanes.renderConductorLane()}</SidebarSearchContext.Provider>
@@ -1187,7 +1156,6 @@ function ChatSidebar({
           board.renderBoardLane()
         )}
       </LayoutGroup>
-      )}
       </ListDock>
 
       {/* Drag-move confirmation + undo. Deliberately a SIBLING of the lanes and

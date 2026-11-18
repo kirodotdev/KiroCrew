@@ -1,7 +1,7 @@
 /** The sidebar header: the Sessions title, the list menu (dashboards, board
  *  toggle, cleanup, model switch, tags, PR status refresh) and the split New
  *  button with its create menu (folders, private chats, import, chat in a folder
- *  or on a crew). */
+ *  or on a crew), then, on a team Crew, the identity row (`SidebarIdentityRow`). */
 import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronsDownUp, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
@@ -19,6 +19,7 @@ import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
 import { isMateManaged } from '../../utils/mateFolders'
 import { errMessage } from '../../utils/thunkError'
+import { SidebarIdentityRow } from './SidebarIdentityRow'
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
@@ -38,6 +39,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
   const tinyHeader = paintedSidebarWidth < 200
 
   return (
+    <>
       <div className={LIST_HEADER_CLS}>
         <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-9' : 'pl-1.5'}`}>
           {!tinyHeader && <span className={LIST_TITLE_CLS}>{i18nT('pages.chatSidebar.sessions')}</span>}
@@ -376,5 +378,7 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
           </div>
         </div>
       </div>
+      <SidebarIdentityRow />
+    </>
   )
 }

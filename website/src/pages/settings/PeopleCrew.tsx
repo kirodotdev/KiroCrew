@@ -1,37 +1,40 @@
-/** Settings > People on a Crew shared over Tailscale.
+/** Settings > People: the one People list, below the connection sources
+ *  (`PeopleSources.tsx`).
  *
- *  Top to bottom: a connect card (the one Invite… entry, then the Crew link to
- *  send), then the People list. Labels and states only.
+ *  Each row carries a chip naming the source the person came in through
+ *  (`sharedCrewUi.personSource`), so the same person can be a row once per
+ *  source; the heading counts distinct people. Invites nobody has used yet are
+ *  rows of the same list, with their source chip, and are not counted.
+ *
+ *  Remove sits where it works: an SSM person and an unopened SSM invite
+ *  ("Revoke invite"), and a person or invite of a single-use Tailscale invite.
+ *  Any other Tailscale person links to Tailscale's users page ("Manage in
+ *  Tailscale"); a person your organization manages reads "Managed by admin".
  *
  *  Any admitted person can edit any person's display name and picture (the ✎ on
  *  each row with a known Tailscale user id). It is display only: the verified
- *  login stays on the row, and who can connect is decided in Tailscale. */
+ *  login stays on the row, and who can connect is decided by the source. */
 import { useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Copy, ExternalLink, Pencil } from 'lucide-react'
+import { ExternalLink, Pencil } from 'lucide-react'
 import { api } from '../../api/client'
-import type { SetupPathCapability, TailnetDirect } from '../../api/sharedCrew'
 import { AVATAR_MAX_BYTES, AVATAR_TYPES, avatarPreviewUri, avatarUrl, fileToBase64, inviteErrorCode } from '../../api/sharedCrewInvites'
 import { ssmInviteFor, waitingSsmInvites, type SsmInvite } from '../../api/sharedCrewSsm'
-import { principalInitials, principalName, waitingInvites, type PeopleRow } from '../../api/sharedCrewUi'
+import { distinctPeopleCount, personSource, principalInitials, principalName, waitingInvites, type PeopleRow, type PersonSource } from '../../api/sharedCrewUi'
 import { SettingsCard, SettingsSection } from '../../components/settings'
-import { Badge, Btn, Input, PanelSectionHeader } from '../../components/ui'
+import { Badge, Btn, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
-import { tailnetDirectActive } from '../../components/TailnetDirectLink'
 import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
 import { fmtDateTime, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import { copyToClipboard } from '../../utils/clipboard'
-import { TAILSCALE_USERS_URL, statusBadge } from './PeopleModes'
+import { TAILSCALE_USERS_URL } from './PeopleModes'
+import { SourceChip } from './SharedAccessSetup'
 import type { TailscaleInvite } from '../../api/sharedCrewInvites'
 import { SsmInviteRow, useSsmStatus } from './SsmInvite'
-import { CopyInviteMessage, InviteEntry, InviteRow, RevokeControl, inviteErrorText, useCanInvite, useInvites, useOwnerRead } from './TailscaleInvites'
+import { InviteRow, RevokeControl, inviteErrorText, useInvites, useOwnerRead } from './TailscaleInvites'
 
-export { useCanInvite, useOwnerRead }
-
-/** At most this many faces in the "here now" stack; the count says the rest. */
-const STACK_MAX = 4
+export { useOwnerRead }
 
 /** The owner's row before anyone names them carries only this machine's name (a
  *  hostname such as an EC2 private DNS name), which reads as a stranger. */
@@ -64,98 +67,6 @@ function HereDot({ label }: { label: string }) {
   return <span className="inline-block w-2 h-2 rounded-full bg-ok shrink-0" role="img" aria-label={label} />
 }
 
-/** The connect card. `canInvite` is true only for the owner (the invite read
- *  answered): the owner gets the Invite… entry and the invite message, a
- *  teammate only the Crew link. */
-export function ShareHero({ direct, tailscale, people, canInvite, viewerOwns = true }: {
-  direct: TailnetDirect | undefined
-  tailscale: SetupPathCapability | undefined
-  people: PeopleRow[]
-  canInvite: boolean
-  /** False for a teammate: Tailscale setup is the owner's, and a teammate is
-   *  already in through some path, so they see the Crew as shared instead. */
-  viewerOwns?: boolean
-}) {
-  const [copied, setCopied] = useState<boolean | null>(null)
-  const active = tailnetDirectActive(direct)
-  const here = people.filter(isHere)
-  const [primary, ...fallbacks] = active ? direct.urls : []
-  const copy = async () => {
-    let ok = false
-    try { ok = await copyToClipboard(primary) } catch { ok = false }
-    setCopied(ok)
-    if (ok) setTimeout(() => setCopied(null), 2000)
-  }
-  return (
-    // One bordered card: the settings cards are frameless, and this one is the
-    // page's summary, so it carries its own surface.
-    <div className="rounded-lg border border-border bg-card p-4 animate-rise">
-      <div className="flex flex-col gap-3 min-w-0" data-testid="share-hero">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          {active || !viewerOwns ? (
-            <span className="inline-flex items-center gap-2 text-sm font-semibold text-text-strong" data-testid="share-hero-state">
-              <HereDot label={i18nT(active ? 'sharedCrew.hero_shared' : 'sharedCrew.hero_shared_team')} />
-              {i18nT(active ? 'sharedCrew.hero_shared' : 'sharedCrew.hero_shared_team')}
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-2 text-sm font-semibold text-text-strong" data-testid="share-hero-state">
-              {i18nT('sharedCrew.setup_tailscale')} {statusBadge(tailscale)}
-            </span>
-          )}
-          {here.length > 0 && (
-            <span className="ml-auto inline-flex items-center gap-2 min-w-0" data-testid="share-hero-here">
-              <span className="inline-flex gap-1">
-                {here.slice(0, STACK_MAX).map(row => (
-                  <span key={row.principal.id} className="rounded-full" title={displayName(row)}><Avatar row={row} size={24} /></span>
-                ))}
-              </span>
-              <span className="text-[13px] text-muted">{i18nT('sharedCrew.here_now', { n: fmtNumber(here.length) })}</span>
-            </span>
-          )}
-        </div>
-        <InviteEntry>
-          <a className="inline-flex items-center gap-1 text-[13px] text-accent" href={TAILSCALE_USERS_URL} target="_blank" rel="noopener noreferrer" data-testid="share-hero-manage">
-            {i18nT('sharedCrew.adapter_tailscale_manage')}
-            <ExternalLink size={12} className="lucide-inline" aria-hidden />
-          </a>
-        </InviteEntry>
-        {active && (
-          <div className="flex flex-col gap-2 min-w-0" data-testid="share-hero-link-row">
-            <div className="flex items-center gap-2 min-w-0 flex-wrap">
-              <Input
-                readOnly
-                value={primary}
-                onFocus={e => e.currentTarget.select()}
-                aria-label={i18nT('sharedCrew.direct_link_label')}
-                className="flex-1 min-w-[12rem] font-mono text-[12px]"
-                data-testid="share-hero-link"
-              />
-              {canInvite ? (
-                <CopyInviteMessage primary testId="share-hero-copy-message" />
-              ) : (
-                <Btn primary onClick={() => { void copy() }} data-testid="share-hero-copy">
-                  {copied ? <Check size={14} className="lucide-inline" aria-hidden /> : <Copy size={14} className="lucide-inline" aria-hidden />}
-                  {' '}{copied ? i18nT('sharedCrew.invite_copied') : i18nT('sharedCrew.hero_copy_link')}
-                </Btn>
-              )}
-            </div>
-            {/* No hand-off: an invite draft may be open in the dialog. */}
-            {copied === false && <ErrorNotice variant="inline" message={i18nT('sharedCrew.direct_link_copy_failed')} testId="share-hero-copy-error" />}
-            {fallbacks.length > 0 && (
-              <details className="text-[12px] text-muted">
-                <summary className="cursor-pointer">{i18nT('sharedCrew.direct_link_fallbacks')}</summary>
-                <ul className="flex flex-col gap-1 pt-1 font-mono break-all">
-                  {fallbacks.map(url => <li key={url}>{url}</li>)}
-                </ul>
-              </details>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 /** The row's state: what they are doing now, when they were last here, or
  *  "Sent" for a person Tailscale shares this machine with who has not
  *  connected. Empty for anyone else never seen. */
@@ -173,13 +84,8 @@ function activityText(row: PeopleRow, usageAvailable: boolean): string {
   return row.sources.includes('tailscale_share') ? i18nT('sharedCrew.invite_status_sent') : ''
 }
 
-/** The owner's way to remove someone: Remove on a person who came in by a
- *  single-use invite, else a link to the Tailscale users page, labelled as the
- *  link it is. A reusable link admitted many people, so revoking it would remove
- *  them all. */
-function RemovePerson({ invite, name, member, children }: { invite: TailscaleInvite | undefined; name: string; member: boolean; children?: ReactNode }) {
-  // The row's other button hides while the revoke confirm shows, so a row never holds three.
-  if (invite && !invite.multi_use) return <RevokeControl inviteId={invite.id} name={name} state={member ? 'member' : 'sent'}>{children}</RevokeControl>
+/** The link to Tailscale's users page, where a Tailscale person is managed. */
+function ManageInTailscale({ children }: { children?: ReactNode }) {
   return (
     <>
       <a className="inline-flex items-center gap-1 text-[13px] text-accent" href={TAILSCALE_USERS_URL} target="_blank" rel="noopener noreferrer" data-testid="person-remove">
@@ -191,15 +97,47 @@ function RemovePerson({ invite, name, member, children }: { invite: TailscaleInv
   )
 }
 
+/** The row's one way to remove or manage the person, by where it works:
+ *  - an SSM person: Remove, which revokes the invite they opened;
+ *  - a person who came in by a single-use Tailscale invite: Remove, which
+ *    revokes it. A reusable link admitted many people, so revoking it would
+ *    remove them all, and such a person is managed in Tailscale instead;
+ *  - any other Tailscale person: Manage in Tailscale, for the owner (*canManage*);
+ *  - a person your organization manages: "Managed by admin", read-only;
+ *  - anyone else, the owner and the viewer: nothing to remove.
+ *  *children* (the row's ✎) stays beside it, and hides while a confirm shows. */
+function PersonAction({ row, source, name, invite, ssmInvite, canManage, children }: {
+  row: PeopleRow
+  source: ReturnType<typeof personSource>
+  name: string
+  invite: TailscaleInvite | undefined
+  ssmInvite: SsmInvite | undefined
+  canManage: boolean
+  children?: ReactNode
+}) {
+  if (source === 'organization') {
+    return <><span className="text-[13px] text-muted" data-testid="person-managed">{i18nT('sharedCrew.managed_by_admin')}</span>{children}</>
+  }
+  if (row.is_owner || row.is_viewer) return <>{children}</>
+  if (ssmInvite) return <RevokeControl inviteId={ssmInvite.id} name={name} transport="ssm" state="member">{children}</RevokeControl>
+  if (!canManage) return <>{children}</>
+  if (invite && !invite.multi_use) return <RevokeControl inviteId={invite.id} name={name} state={row.member?.invite_id ? 'member' : 'sent'}>{children}</RevokeControl>
+  // Only someone Tailscale shares this machine with is managed there. A session
+  // creator, a machine, or a person on another source has nothing to manage.
+  if (source === 'tailscale' || row.member?.invite_id || invite) return <ManageInTailscale>{children}</ManageInTailscale>
+  return <>{children}</>
+}
+
 /** One person. *invite* (Tailscale) or *ssmInvite* is the invite they came in by,
  *  known only to the owner, who is also the only one offered a way to remove
- *  them (*canRemove*, or the SSM invite itself). */
-function PersonLine({ row, usageAvailable, invite, ssmInvite, canRemove, onEdit }: {
+ *  them (*canManage*, or the SSM invite itself). */
+function PersonLine({ row, usageAvailable, invite, ssmInvite, canManage, fallbackSource, onEdit }: {
   row: PeopleRow
   usageAvailable: boolean
   invite: TailscaleInvite | undefined
   ssmInvite: SsmInvite | undefined
-  canRemove: boolean
+  canManage: boolean
+  fallbackSource: PersonSource | null
   onEdit: (row: PeopleRow) => void
 }) {
   const name = displayName(row)
@@ -207,16 +145,17 @@ function PersonLine({ row, usageAvailable, invite, ssmInvite, canRemove, onEdit 
   const login = ownerKnownOnlyByMachine(row) ? principalName(row.principal) : row.principal.display.login
   const activity = activityText(row, usageAvailable)
   const showLogin = !!login && login !== name
-  // Tailscale lets an invite be accepted from any account: say so when the
-  // person who got in is not the address the owner invited.
-  // Only someone Tailscale shares this machine with can be removed there: a member
-  // or a person with an invite. A session creator or a machine has nothing to remove.
-  const removable = canRemove && !row.is_owner && !row.is_viewer && !!(row.member?.invite_id || invite)
+  const source = personSource(row, fallbackSource)
+  // Remove reads the provenance the server derived. A chip taken from the one
+  // source that is on labels the row; only "Managed by admin" may follow it.
+  const actionSource = source === 'organization' ? source : personSource(row)
   const edit = row.tailscale_user_id ? (
     <Btn onClick={() => onEdit(row)} aria-label={i18nT('sharedCrew.edit_person', { name })} data-testid="person-edit">
       <Pencil size={14} aria-hidden />
     </Btn>
   ) : null
+  // Tailscale lets an invite be accepted from any account: say so when the
+  // person who got in is not the address the owner invited.
   const otherAccount = invite?.email && login && invite.email.trim().toLowerCase() !== login.trim().toLowerCase() ? invite.email : ''
   return (
     <li className="flex flex-wrap items-center gap-3 py-2 min-w-0" data-testid={`person-${row.principal.id}`}>
@@ -230,6 +169,7 @@ function PersonLine({ row, usageAvailable, invite, ssmInvite, canRemove, onEdit 
               ? <Badge variant="muted">{i18nT('sharedCrew.you')}</Badge>
               : row.is_owner && !ownerKnownOnlyByMachine(row) && <Badge variant="muted">{i18nT('sharedCrew.crew_owner')}</Badge>}
           {row.principal.kind === 'machine' && <Badge variant="muted">{i18nT('sharedCrew.kind_machine')}</Badge>}
+          {source && <SourceChip id={source} />}
         </div>
         {(showLogin || activity) && (
           <span className="text-[12px] text-muted truncate" data-testid="person-activity">
@@ -241,9 +181,7 @@ function PersonLine({ row, usageAvailable, invite, ssmInvite, canRemove, onEdit 
         {otherAccount && <span className="text-[12px] text-muted" data-testid="person-other-account">{i18nT('sharedCrew.invite_other_account', { email: otherAccount })}</span>}
       </div>
       {isHere(row) && <HereDot label={i18nT('sharedCrew.here_now_label')} />}
-      {ssmInvite && !row.is_owner && !row.is_viewer
-        ? <RevokeControl inviteId={ssmInvite.id} name={name} transport="ssm" state="member">{edit}</RevokeControl>
-        : removable ? <RemovePerson invite={invite} name={name} member={!!row.member?.invite_id}>{edit}</RemovePerson> : edit}
+      <PersonAction row={row} source={actionSource} name={name} invite={invite} ssmInvite={ssmInvite} canManage={canManage}>{edit}</PersonAction>
     </li>
   )
 }
@@ -348,31 +286,29 @@ function EditPersonDialog({ row, onClose }: { row: PeopleRow; onClose: () => voi
   )
 }
 
-/** "Invites · N": invites whose person is not a row yet, below the people
- *  they are not counted in. */
-function NotJoined({ invites, ssmInvites }: { invites: TailscaleInvite[]; ssmInvites: SsmInvite[] }) {
-  const total = invites.length + ssmInvites.length
-  if (total === 0) return null
+/** Invites nobody has used yet, as rows of the People list with their source
+ *  chip. They are not people yet, so the heading does not count them. */
+function InviteRows({ invites, ssmInvites }: { invites: TailscaleInvite[]; ssmInvites: SsmInvite[] }) {
   return (
     <>
-      <PanelSectionHeader label={i18nT('sharedCrew.invites_title')} count={fmtNumber(total)} className="pt-3" />
-      <ul className="flex flex-col divide-y divide-border" data-testid="people-waiting">
-        {invites.map(invite => <InviteRow key={invite.id} invite={invite} />)}
-        {ssmInvites.map(invite => <SsmInviteRow key={invite.id} invite={invite} />)}
-      </ul>
+      {invites.map(invite => <InviteRow key={invite.id} invite={invite} chip={<SourceChip id="tailscale" />} />)}
+      {ssmInvites.map(invite => <SsmInviteRow key={invite.id} invite={invite} chip={<SourceChip id="ssm" />} />)}
     </>
   )
 }
 
-/** "People · N": everyone connected or seen, then email invites nobody has
- *  accepted yet. N counts people; an invite is not one yet. A current member
- *  hides their own invite, so each person is one row. */
-export function PeopleList({ people, usageAvailable, notes = [], footer }: {
+/** "People · N": everyone connected or seen, each with the source they came in
+ *  through, then invites nobody has used yet. N counts distinct people: one
+ *  person on two sources is two rows and one person, and an invite is not one
+ *  yet. A current member hides their own invite. *fallbackSource*: the chip a
+ *  row with no provenance takes (`sharedCrewMode.rowSourceFallback`). */
+export function PeopleList({ people, usageAvailable, notes = [], footer, fallbackSource = null }: {
   people: PeopleRow[]
   usageAvailable: boolean
   /** States the owner must see (Tailscale was not running, no work counts), one line each. */
   notes?: string[]
   footer?: ReactNode
+  fallbackSource?: PersonSource | null
 }) {
   const [editing, setEditing] = useState<PeopleRow | null>(null)
   const invites = useInvites()
@@ -381,18 +317,20 @@ export function PeopleList({ people, usageAvailable, notes = [], footer }: {
   const ssm = useSsmStatus()
   const ssmInvites = ssm.data?.invites ?? []
   const waitingSsm = waitingSsmInvites(people, ssmInvites)
-  const count = people.length
-  const canRemove = !!invites.data
+  const count = distinctPeopleCount(people)
+  const canManage = !!invites.data
+  const title = i18nT('sharedCrew.people_title', { n: fmtNumber(count) })
   return (
-    <SettingsSection title={i18nT('sharedCrew.people_title', { n: fmtNumber(count) })}>
+    <SettingsSection title={title}>
       <SettingsCard>
+        <p className="text-[13px] text-muted pb-2 m-0" data-testid="people-list-note">{i18nT('sharedCrew.people_list_note')}</p>
         {notes.map(note => <p key={note} className="text-[13px] text-muted pb-2" data-testid="people-note">{note}</p>)}
-        {count + waiting.length + waitingSsm.length === 0 ? (
+        {people.length + waiting.length + waitingSsm.length === 0 ? (
           !invites.isLoading && (!invites.isError || inviteErrorCode(invites.error) === 'owner_only') && !invites.data?.sync?.error
             ? <p className="text-[13px] text-muted">{i18nT('sharedCrew.people_seen_empty')}</p>
             : null
         ) : (
-          <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.people_title', { n: fmtNumber(count) })} data-testid="people-list">
+          <ul className="flex flex-col divide-y divide-border" aria-label={title} data-testid="people-list">
             {people.map(row => (
               <PersonLine
                 key={row.principal.id}
@@ -400,13 +338,14 @@ export function PeopleList({ people, usageAvailable, notes = [], footer }: {
                 usageAvailable={usageAvailable}
                 invite={all.find(i => i.id === row.member?.invite_id)}
                 ssmInvite={ssmInviteFor(row, ssmInvites)}
-                canRemove={canRemove}
+                canManage={canManage}
+                fallbackSource={fallbackSource}
                 onEdit={setEditing}
               />
             ))}
+            <InviteRows invites={waiting} ssmInvites={waitingSsm} />
           </ul>
         )}
-        <NotJoined invites={waiting} ssmInvites={waitingSsm} />
         {footer}
       </SettingsCard>
       {editing && <EditPersonDialog row={editing} onClose={() => setEditing(null)} />}
@@ -414,10 +353,18 @@ export function PeopleList({ people, usageAvailable, notes = [], footer }: {
   )
 }
 
-/** The invite rows when there is no People list (personal mode), so an
- *  invite nobody accepted can still be resent or removed, over either path. */
+/** The invite rows when there is no People list (a Crew that cannot say who
+ *  people are), so an invite nobody accepted can still be resent or removed,
+ *  over either path. */
 export function PersonalWaiting() {
   const invites = useInvites()
   const ssm = useSsmStatus()
-  return <NotJoined invites={waitingInvites([], invites.data?.invites ?? [])} ssmInvites={waitingSsmInvites([], ssm.data?.invites ?? [])} />
+  const waiting = waitingInvites([], invites.data?.invites ?? [])
+  const waitingSsm = waitingSsmInvites([], ssm.data?.invites ?? [])
+  if (waiting.length + waitingSsm.length === 0) return null
+  return (
+    <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('sharedCrew.invites_title')} data-testid="people-waiting">
+      <InviteRows invites={waiting} ssmInvites={waitingSsm} />
+    </ul>
+  )
 }

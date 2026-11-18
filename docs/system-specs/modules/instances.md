@@ -1022,8 +1022,9 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 1. **Enable** on the hub: `kirocrew config set instances.enabled true && kirocrew restart`
    (or the Settings → Remote Crew toggle, then a restart).
 2. Open the dashboard and go to **Settings → Remote Crew**. This panel is the
-   control plane only; it does not embed remote dashboards.
-3. **Add** an instance:
+   control plane only; it does not embed remote dashboards. See
+   [The Remote Crew page](#the-remote-crew-page) for its layout.
+3. **Add** an instance: **+ Add Crew → Connect a machine you have**.
    - *Name*: any label.
    - *SSH host / alias*: what you would type after `ssh` (see §9).
    - *Remote port*: the port the remote gateway listens on. Instances may share
@@ -1041,10 +1042,63 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
    dropdown click — see [Pinned crew chips](#pinned-crew-chips). While a crew's
    pane fills the page, the browser tab is titled with that crew's name instead
    of the hidden local page.
-6. **Diagnose** a flaky instance (runs the ladder), or **Disconnect** from its
-   row. **Edit settings** / **Remove** live in the row's overflow menu — a row
-   shows two primary actions plus that menu, so everything past them is one
-   menu deep.
+6. **Diagnose** a flaky instance (runs the ladder), or **Disconnect** it, from
+   its row's details. A row shows one main action for its state; **Diagnose**,
+   **Edit settings**, **Remove** and the rest sit behind the row's chevron, so
+   everything past the main action is one click deep.
+
+### The Remote Crew page
+
+`RemoteCrewPanel` (`website/src/pages/settings/`) draws three sections and one
+modal (#38790):
+
+- **My Crews** — every crew this gateway added or launched, and a launch still
+  creating its machine. The header carries the count, Refresh and **+ Add Crew**.
+- **Shared with me** — the Shared Crews this person can open over the relay
+  (`SharedCrewsCards`, the list behind the header switcher's Remote Crews
+  group); hidden while the relay viewer is off.
+- **Settings** — **Auto-connect crews** and the default destination crew.
+  The personal **Remote Control** card (Turn off) sits below it, at the foot
+  of the page: Settings > Advanced is not routed, so it cannot move there.
+
+**+ Add Crew** opens a modal with two choices. **Set up a new Crew** shows the
+built-in launcher (the AWS prerequisites checklist, the launch form and the
+progress card) or the lane an edition draws; **Connect a machine you have**
+shows the add form. Both forms' state is held by the panel and the store
+(`crewForms`), so closing the modal and opening it again loses nothing, and the
+setup form's provisioner and preflight queries run only while it is on screen. A
+successful add closes the modal: the crew is a row of My Crews. A launch keeps
+running when the modal closes, and shows as a row of My Crews. A
+`kirocrew://remote-crew/add` link opens the modal on the add form.
+
+A crew row, collapsed, shows its icon, name, status (Connected, Disconnected,
+Stopped, Connections: Off) and source badges (**EC2** and **SSM** or **SSH**),
+any blocking tag (**Needs sign-in**, **Can't connect** for a tunnel error, the
+**Behind** version badge), and ONE main action for its state, in this order:
+an armed confirm or a teardown in progress holds the slot; then **Start** for
+a stopped cloud crew (before sign-in: signing in needs it running), **Sign in**
+(opens the details on the sign-in block), nothing for a crew switched off, **Diagnose** for a tunnel error, the
+**Update** control while the crew is behind, **Open** (switches to the crew
+as its switcher entry does, `useSelectInstance`) for a connected crew with a
+dashboard, with a finished update's outcome beside it, and otherwise **Connect**. A connected fargate crew has no main
+action: it has no dashboard to open.
+
+The chevron (a disclosure button with `aria-expanded`) opens the details: the
+instance or host with its region, the port, the Connections switch, who manages
+the crew, why it needs attention (the tunnel error, the stopped note or the
+missing sign-in), a contribution's detail, the fargate turn URL, the sign-in
+block, and the other actions: Connect or Disconnect, Diagnose, Edit settings,
+then Stop / Start / Delete… for a correlated cloud crew or Remove… for any other.
+These replace the old overflow menu; a contributed provisioner's menu items keep
+a small menu of their own there (`remoteCrewRowActions`). A row that needs
+sign-in opens with its details showing, also when the box check reports it
+signed out after the row first drew. While a confirm is armed or a teardown
+runs, the other actions stand down.
+
+A launch still creating its machine is a **Setting up** row. Its status (for
+example "Setting up · 2 of 4") is a disclosure button that opens the launch
+steps, "Keeps running if you leave this page." and the Cancel that removes the
+crew.
 
 Every configured row carries separate source and transport badges from the
 instance record. `connection_method="ssm"` shows **SSM**; every other transport
@@ -1100,8 +1154,8 @@ minute. If the record changed meanwhile, the shared Rebase path reconciles the
 restored draft with the record that exists now.
 
 An unsaved edit is held by the PANEL, keyed by crew, not by the form component.
-The crew list unmounts for any number of reasons the form cannot see — switching
-to the **Set up a new one** tab is enough — and an edit whose only home was the
+The crew list unmounts for any number of reasons the form cannot see — the agent
+hand-off navigates out of Settings, and so does any sidebar click — and an edit whose only home was the
 form's own state came back silently reverted to the stored record. Because a
 guard can only refuse the exits it enumerates, the values are lifted instead of
 defended: the form is re-seeded from that draft when it remounts. The draft carries
@@ -1148,7 +1202,7 @@ rather than guessing from which fields changed, so a name-or-ttl-only edit (whic
 tears nothing down) keeps its working pane. Opening a DIFFERENT crew's editor while one
 holds unsaved changes is still refused outright — that is about two editors being
 open at once, not about the unmount — and the refusal renders at the row that was
-clicked, since the menu has already closed by then.
+clicked, so it reads beside the Edit settings button that was pressed.
 
 > Prerequisite: you can already `ssh <ssh_host>` non-interactively from the hub
 > (a valid key or cert in your `ssh-agent`, no password prompt), and the remote
@@ -1191,8 +1245,10 @@ reads its own URL, so a browser opening the same address fills in nothing.
 
 The add form holds one draft, so the newest link replaces whatever it held,
 typed values included. Each link bumps a counter that keys the Remote Crew
-panel, so a panel already open remounts on **Your crews** with the newest
-values, and the form scrolls into view once on that mount. The link stays on the
+panel, so a panel already open remounts with the Add Crew modal open on the add
+form with the newest values, and the form scrolls into view once on that mount.
+A later visit, with the link's values already taken by the form, does not open
+the modal on its own. The link stays on the
 draft while the user edits it, so the line naming it stays too; a successful Add
 or a form cleared back to its defaults drops both. A link opened while Remote
 Crew is turned off waits in the draft until the add form can show it.
@@ -1392,14 +1448,14 @@ persisted in the config dir — normally nothing, since nothing there could have
 created a job, though a config dir carried over from a POSIX host still reports
 its real jobs.
 
-**On a Windows gateway the Set-up tab shows one notice, not the AWS checklist.**
+**On a Windows gateway the Set up a new Crew form shows one notice, not the AWS checklist.**
 `RemoteCrewWindowsNotice` replaces the built-in lane's prerequisites card and
 launch form when the gateway platform reads `windows` (`useGatewayPlatform`), or
 when the preflight answers `400 posix_host_required` (the platform signal may not
 be cached yet). A known-Windows gateway does not send the preflight at all. The
 refusal comes before any AWS call, so the notice says the profile was not used
 and is not the problem, and never shows the credentials row or a disabled Launch. When the refusal is how
-the tab learned it, that sentence renders through `ErrorNotice` with the
+the form learned it, that sentence renders through `ErrorNotice` with the
 rejection's report and the agent hand-off; a known-Windows gateway gets it as
 plain text. It names the two ways forward: `kirocrew cloud launch` in PowerShell,
 which runs on Windows (by its full path from a desktop install, which adds nothing
@@ -1414,7 +1470,7 @@ On a host with no sandbox backend and `allow_unsandboxed_exec` unset that raises
 the preflight, the task read and stop/start/delete answer it as a `503` carrying
 `code: sandbox_unavailable`, the exception's `kind`, `detail` and `remedy`, and
 an `error` that says the credentials were not checked and points at `kirocrew
-doctor` (#32068). The Set-up tab keys on the code to show that sentence in the
+doctor` (#32068). The setup form keys on the code to show that sentence in the
 reader's language. When the preflight fails for any reason, its no-result line
 says the check did not run instead of "check your credentials".
 
@@ -1423,7 +1479,7 @@ says the check did not run instead of "check your credentials".
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |
 | `GET /api/cloud/identity` | The launching machine's own Kiro sign-in (from `kiro-cli whoami`), so the launch form can preselect a sign-in target. A suggestion only: never a credential and never the launch's authority. |
 | `GET /api/cloud/iam-policy` | The minimum IAM policy document to paste into the user's account. |
-| `GET /api/cloud/provisioners` | The lanes the Set-up tab may offer: `{id, kind, label, posix_only, steps}` per provisioner, from the CPP `remote_provisioners` seam ([platform-context.md](platform-context.md)). The stock build lists the single `aws_ec2` lane. Answers on every platform, like the two history routes: the tab needs it to pick a form, and each row's `posix_only` carries the platform answer for that lane. Adding a lane: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md). |
+| `GET /api/cloud/provisioners` | The lanes the Set up a new Crew form may offer: `{id, kind, label, posix_only, steps}` per provisioner, from the CPP `remote_provisioners` seam ([platform-context.md](platform-context.md)). The stock build lists the single `aws_ec2` lane. Answers on every platform, like the two history routes: the tab needs it to pick a form, and each row's `posix_only` carries the platform answer for that lane. Adding a lane: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md). |
 | `GET /api/cloud/launch` | List launch jobs, in progress and finished. |
 | `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. Body `{provider_id?, profile, region, size_key, subnet_id?, login_target?, confirm_recipient?}`; `provider_id` defaults to `aws_ec2`, and an id the seam does not list or cannot back answers `400 unknown_provisioner` before any job file exists. `subnet_id` pins a built-in EC2 launch to that subnet; an invalid one, or one sent with any other provisioner, answers `400 invalid_subnet`. The job carries `provider_id` and `subnet_id`, and its step labels are the provisioner's. |
 | `GET /api/cloud/launch/{id}` | Poll one job: per-step state plus the device-code prompt while signing in. |

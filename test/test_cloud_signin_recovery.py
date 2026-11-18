@@ -1633,7 +1633,7 @@ class TestSigninPromptReprobe:
         store = state.cloud_launch_store
         job.error = "Interrupted — Kiro Crew restarted while the Kiro sign-in was running."
         job.step(lj.STEP_CONNECT).detail = (
-            "Added to Your crews. Sign in to Kiro on the crew after you connect."
+            "Added to My Crews. Sign in to Kiro on the crew after you connect."
         )
         store.save(job)
 
@@ -1643,7 +1643,7 @@ class TestSigninPromptReprobe:
         out = store.get(job.id)
         assert out.signin_detected is True
         assert out.error == "", f"stale error survived a confirmed sign-in: {out.error!r}"
-        assert out.step(lj.STEP_CONNECT).detail == "Added to Your crews."
+        assert out.step(lj.STEP_CONNECT).detail == "Added to My Crews."
         assert out.step(lj.STEP_SIGNIN).state == lj.STEP_DONE
         assert out.step(lj.STEP_SIGNIN).detail == "Signed in."
 

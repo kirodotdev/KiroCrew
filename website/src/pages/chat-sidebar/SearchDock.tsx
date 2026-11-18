@@ -1,8 +1,9 @@
 /** The dock over the lanes. Its field is the search row's controls: the lane
  *  cycle button and the sort and filter menu (status chips with the Recent
- *  window, sort, folder order, dormant collapse, tags, models, folders), with
- *  the label tables its rows and chips name. Its shelf, under the search
- *  capsule, holds the active filter chips (tags, models, status, hides) and the
+ *  window, sort, folder order, dormant collapse, tags, models, "Started by",
+ *  folders), with the label tables its rows and chips name. Its shelf, under the
+ *  search capsule, holds the active filter chips (tags, models, "Started by",
+ *  status, hides) and the
  *  list-level notices (seed, crew names, read failures, close refusal, folder
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment, useLayoutEffect, useRef } from 'react'
@@ -33,6 +34,7 @@ import { fmtList } from '../../i18n/format'
 import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
+import { CreatorFilterChip, CreatorFilterSection } from './creatorFilterMenu'
 import { DisclosureChevron } from './chrome'
 import { keepRowInMenuView } from '../../lib/menuRowReveal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
@@ -185,7 +187,7 @@ function RemoteCrewNamesError() {
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
     availableLanes, boardLaneActive, changeRecentUnit, clearHiddenFilters, clearModelFilter, clearTagFilter,
-    closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
+    closeRefused, columnsError, columnsFailed, creatorFilter, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
     dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
@@ -965,6 +967,9 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     })}
                   </>
                 )}
+                {/* "Started by", on a Shared Crew only: a session property like the
+                    model, so not gated on the lane either. */}
+                <CreatorFilterSection view={creatorFilter} />
                 {/* Folders sit LAST on purpose: the list grows with the user's
                     folder count, so anything below it would get pushed out of
                     easy reach. Being last, it can simply overflow into the
@@ -1142,6 +1147,8 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           </div>
         )
       })()}
+      {/* The "Started by" chip, in its own row for the same AUTOSDE reason. */}
+      <CreatorFilterChip view={creatorFilter} />
       {/* The Crew Mode chip in its own row, above the status chips, for the same
           AUTOSDE reason as the tag, model and hides chips: the status-chip row
           below holds the base branch's four filter chips and must not grow

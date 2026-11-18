@@ -258,8 +258,19 @@ async def api_shared_crew_mode(request: web.Request) -> web.Response:
         crew_id=crew_id,
         creators=creators,
         owner_id=_owner_id(request),
+        owner_label=owner_label.owner_name(),
+        relay_team=_relay_team_crew(request),
     )
     return web.json_response(body)
+
+
+def _relay_team_crew(request: web.Request) -> bool:
+    """Whether this Crew's relay client holds a host connection as a team Crew."""
+    from kiro_crew.dashboard.kiro_relay.caller import CrewKind
+    from kiro_crew.dashboard.kiro_relay.ingress import RELAY_INGRESS_APP_KEY
+
+    binding = getattr(request.app.get(RELAY_INGRESS_APP_KEY), "binding", None)
+    return getattr(binding, "crew_kind", None) is CrewKind.TEAM
 
 
 def register(app: web.Application) -> None:
