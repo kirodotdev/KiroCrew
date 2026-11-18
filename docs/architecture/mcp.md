@@ -2256,7 +2256,9 @@ KAS subtracts from its projection the names of exactly the entries it returned
 after those stubs were picked, so a stub whose server that later read drops,
 mutes or marks registry-governed is withdrawn (`SessionExtras.withdrawn_stub_names`)
 and both session start paths remove it from the session-level array before the
-hoist: a mute or a `type: registry` saved while a worker starts still takes effect. claude's mirrored worker path is
+hoist: a mute or a `type: registry` saved while a worker starts still takes effect. The
+same captured names reach the KAS projection for the background helper
+`kirocrew-lite`, which withdraws every stub its spec does not mount. claude's mirrored worker path is
 unchanged.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
