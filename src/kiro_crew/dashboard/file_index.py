@@ -426,14 +426,17 @@ class FileIndexRegistry:
         initial walk. Once the index is ready, subsequent calls return it and
         trigger a background TTL refresh if it has gone stale. A build still in
         flight also returns ``None``. The build runs outside the lock so other
-        roots are not blocked behind one large tree.
+        roots are not blocked behind one large tree. Raises ``_PathProbeBusy``
+        when the probe pool cannot take the root's resolve.
         """
         # ``realpath`` stats every component of the root, so a slow or dead mount
-        # would stall the loop. Run it on the request-path probe pool, which
-        # keeps a wedged call off the shared default executor.
-        root = await executors.run_in_cron_pool(
-            os.path.realpath, root, timeout=None, executor=executors.path_probe_executor()
-        )
+        # would stall the loop. It goes through the file API's probe chokepoint,
+        # like the search handler's own root checks: a bounded wait for a worker,
+        # then ``_PathProbeBusy``, which the handler answers with its coded busy
+        # response. Imported here because that module imports this one.
+        from kiro_crew.dashboard.handlers.files import _run_path_probe
+
+        root = await _run_path_probe(os.path.realpath, root)
         async with self._lock:
             idx = self._indexes.get(root)
             if idx is None:
