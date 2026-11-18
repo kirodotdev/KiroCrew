@@ -42,6 +42,16 @@ def head_count(text: str) -> int:
     return sum(folded.count(head) for head in MARKER_HEADS)
 
 
+def option_labels(labels: str) -> list[str]:
+    """The choices a marker's label text offers, in order.
+
+    Split on ``|`` when the text holds one, else on ``,``: the web parser's
+    ``optionsOf`` rule, so a pipe keeps a comma inside a label whole.
+    """
+    sep = "|" if "|" in labels else ","
+    return [o.strip() for o in labels.split(sep) if o.strip()]
+
+
 def closer_continues(text: str, i: int, openers: str, closers: str) -> bool:
     """Whether the closer at *i* is label text because the list goes on after it.
 

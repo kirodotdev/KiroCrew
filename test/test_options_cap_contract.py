@@ -480,26 +480,24 @@ class TestOnlyOneTrailerParseExists:
             f"hide_partial= to messaging.renderer.split_options_trailer: {sorted(offenders)}"
         )
 
-    def test_only_the_shared_helper_and_slack_split_the_choice_group(self) -> None:
-        # Slack and the dashboard keep their own because their GRAMMAR differs
-        # (OPTIONS_RE_LINE, end-of-line). The dashboard's ``_parse_options``
-        # always re-derived this split; the named-``labels`` spelling merely
-        # makes it visible to this needle.
-        allowed = {
-            "messaging/renderer.py",
-            "slack/format.py",
-            "dashboard/state_parts/slot_transcript.py",
-        }
-        offenders = self._hits('group("labels").split("|")') - allowed
+    def test_no_reader_splits_the_choice_group_itself(self) -> None:
+        # Every reader, whatever its grammar, splits through ``option_labels`` so
+        # the pipe-else-comma rule cannot drift from the web's ``optionsOf``.
+        offenders = self._hits('group("labels").split(')
         assert not offenders, (
             "these re-derive the choice split instead of calling "
-            f"messaging.renderer.split_options_trailer: {sorted(offenders)}"
+            f"option_marker_scan.option_labels: {sorted(offenders)}"
         )
 
     def test_the_ratchet_is_not_vacuous(self) -> None:
         """A grep that matches nothing would make both checks pass forever."""
         assert "messaging/renderer.py" in self._hits('rfind("[OPTIONS")')
-        assert "messaging/renderer.py" in self._hits('group("labels").split("|")')
+        assert self._hits("option_labels(") >= {
+            "messaging/renderer.py",
+            "slack/format.py",
+            "dashboard/state_parts/slot_transcript.py",
+            "constants.py",
+        }
 
 
 class TestRenderOptionsAsText:

@@ -168,16 +168,11 @@ _PRESSED_STATUSES = frozenset({"applied", "partial", "failed", "cancelled"})
 def chip_bar_options(text: str) -> list[str]:
     """The last marker's choices, split as the chip bar splits them.
 
-    Pipes when the marker's own line has one, else commas. The one rule both
-    the warm brief's copy and this reader use, so they cannot disagree.
+    The warm brief's copy and this reader both call it, so they cannot disagree.
     """
     from kiro_crew.dashboard.state import _parse_options
 
-    options = _parse_options(text)
-    marker = text[text.rfind("[OPTION") :].split("\n", 1)[0]
-    if len(options) == 1 and "|" not in marker:
-        options = [o.strip() for o in options[0].split(",") if o.strip()]
-    return options
+    return _parse_options(text)
 
 
 def pending_options(rows: list[dict[str, Any]]) -> str | None:

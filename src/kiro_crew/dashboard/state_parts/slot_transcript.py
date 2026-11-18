@@ -48,6 +48,7 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (
 )
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
+from kiro_crew.option_marker_scan import option_labels
 from kiro_crew.shared_crew.attribution import with_request_author
 from kiro_crew.shared_crew.participants import note_author
 
@@ -177,14 +178,13 @@ def _strip_options(text: str) -> str:
 
 
 def _parse_options(text: str) -> list[str]:
-    """Extract pipe-separated choices from the LAST [OPTIONS: A | B | C] in text."""
+    """The choices of the LAST ``[OPTIONS:]`` marker in *text*, split as the web splits them."""
     if _OPTIONS_HEAD not in text:
         return []
     matches = list(_OPTIONS_RE.finditer(text))
     if not matches:
         return []
-    parts = [p.strip() for p in matches[-1].group("labels").split("|")]
-    return [p for p in parts if p]
+    return option_labels(matches[-1].group("labels"))
 
 
 def init_transcript_fields(self: _ChatSlot) -> None:

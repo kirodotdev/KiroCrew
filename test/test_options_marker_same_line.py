@@ -86,11 +86,29 @@ def test_a_head_closed_before_inline_prose_does_not_stay_open(raw, text):
     ("raw", "options"),
     [
         ("[OPTIONS: Alpha ] | Bravo ]]", ["Alpha ]", "Bravo ]"]),
-        ("[OPTIONS: Alpha ], Bravo ]", ["Alpha ], Bravo"]),
+        ("[OPTIONS: Alpha ], Bravo ]", ["Alpha ]", "Bravo"]),
     ],
 )
 def test_a_label_that_carries_a_closer_still_parses(raw, options):
     _assert_every_reader(raw, "", options)
+
+
+@pytest.mark.parametrize(
+    ("raw", "text", "options"),
+    [
+        ("Pick [OPTIONS: A, B]", "Pick", ["A", "B"]),
+        ("Pick [OPTIONS: Merge, Rebase, Hold]", "Pick", ["Merge", "Rebase", "Hold"]),
+        ("Pick [OPTIONS: Rebase, then merge | Hold]", "Pick", ["Rebase, then merge", "Hold"]),
+        ("Pick [OPTIONS: Rebase, then merge |]", "Pick", ["Rebase, then merge"]),
+    ],
+)
+def test_labels_split_on_pipes_when_present_else_on_commas(raw, text, options):
+    _assert_every_reader(raw, text, options)
+
+
+@pytest.mark.parametrize("last", ["[OPTIONS: ,]", "[OPTIONS: , ,]", "[OPTIONS: |]"])
+def test_siblings_stay_when_the_last_marker_offers_only_separators(last):
+    _assert_every_reader(f"[OPTIONS: A] {last}", "[OPTIONS: A]", [])
 
 
 def test_siblings_stay_when_the_last_marker_offers_nothing():
