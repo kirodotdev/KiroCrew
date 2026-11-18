@@ -471,11 +471,12 @@ class TestTurnDriverTranslation:
         assert out == text
         assert "[OPTIONS: Continue | Stop]" in out
 
-    def test_compaction_summary_body_becomes_terse_notice(self):
+    @pytest.mark.parametrize("lead", ["\u2705 ", ""], ids=["saved-glyph", "plain"])
+    def test_compaction_summary_body_becomes_terse_notice(self, lead):
         r = _RecordingRenderer()
         p = _ScriptedProvider(
             [
-                AcpEvent(kind=EVENT_TEXT_CHUNK, text="✅ Conversation comp"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=lead + "Conversation comp"),
                 AcpEvent(
                     kind=EVENT_TEXT_CHUNK,
                     text="acted: ## OBJECTIVE\ninternal operating instructions",
@@ -485,7 +486,7 @@ class TestTurnDriverTranslation:
         )
         out = _run(p, r)
         emitted = "".join(e[1] for e in r.events if e[0] == "text_chunk")
-        assert out == emitted == "✅ Context compacted."
+        assert out == emitted == "Context compacted."
         assert "OBJECTIVE" not in emitted
         assert "operating instructions" not in emitted
 

@@ -524,6 +524,9 @@ def tool_pointer_text(rows: list[dict], session_key: str) -> str:
     model's context can still be named and fetched. Returned unredacted; the caller
     redacts.
     """
+    # Function scope: this owner imports no kiro_crew module at module scope.
+    from kiro_crew.tool_row_prefix import strip_tool_row_lead
+
     # An approved call stores two rows under one id; the newest one stands for both.
     by_id: dict[str, str] = {}
     for row in rows:
@@ -533,7 +536,7 @@ def tool_pointer_text(rows: list[dict], session_key: str) -> str:
         call_id = meta.get("tool_call_id")
         if not isinstance(call_id, str) or not call_id:
             continue
-        label = str(row.get("content") or "").removeprefix("\U0001f527").strip()
+        label = strip_tool_row_lead(str(row.get("content") or "")).strip()
         label = " ".join(label.split()).replace("|", "/")[:_POINTER_TOOL_CHARS] or "tool"
         output = meta.get("output")
         size = len(output) if isinstance(output, str) else 0

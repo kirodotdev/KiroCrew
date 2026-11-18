@@ -1048,10 +1048,12 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 | Branch ready | 🌿 Branch: `name` | Shown in completion summary |
 
 The completion summary's step list and `TASK_PROGRESS.md` mark each step from one
-map, `task_reporter.TASK_STATUS_ICONS`: ✅ passed, ❌ failed, 🔄 in progress,
-🔍 reviewing, ⬜ pending, ⏭️ skipped, 🚫 cancelled. So a step a replan skipped
-shows ⏭️ in the summary, not ❌. The summary uses ❌ for a status the map does
-not have. Pinned by `test/test_taskrunner_verification.py`.
+map, `task_reporter.TASK_STATUS_ICONS`: Passed, Failed, Running, Reviewing,
+Pending, Skipped, Cancelled. So a step a replan skipped shows Skipped in the
+summary, not Failed. The summary uses Failed for a status the map does not
+have. `load_checkpoint` reads a passed line led by `Passed` or, in a file
+written before the words, by U+2705. Pinned by
+`test/test_taskrunner_verification.py`.
 
 ### Where a notification lands: the originating conversation
 

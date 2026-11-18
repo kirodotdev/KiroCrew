@@ -41,6 +41,7 @@ import type { RefusedPressAction } from './turnActions'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { continuesAuthorRun } from '../../../api/sharedCrewUi'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../../hooks/useSteerRetract'
+import { isToolCallRow } from '../../../lib/toolRowContract'
 
 /** ChatPage's tool rows derive their auto-denied state inside ToolCallLine;
  *  the registry default that reads this set is never reached here. Frozen and
@@ -553,8 +554,8 @@ export function useTranscriptRendering({
   // render and defeated memo(TurnBlock) even when the turn identity was stable
   // (see createTurnGrouper). It depends on nothing row-specific.
   const renderTurnItem = useCallback((it: TurnItem, _j: number) => {
-    // Skip hidden tool messages (✅/🚫 completions) to avoid empty py-1 wrappers
-    if (it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')) return null
+    // Skip hidden tool messages (Approved:/Refused: completions) to avoid empty py-1 wrappers
+    if (it.kind === 'single' && it.msg.role === 'tool' && !isToolCallRow(it.msg.content)) return null
     // Same for hidden invisible-only assistant rows: renderMessage draws
     // nothing for them, and the bare wrapper would still stack py-1 spacers,
     // one per quiet monitor cycle.

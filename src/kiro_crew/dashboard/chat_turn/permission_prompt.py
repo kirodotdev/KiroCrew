@@ -31,6 +31,7 @@ from kiro_crew.security.readonly_bash import (
 )
 from kiro_crew.shared_crew.decisions import open_slot_approval, settle_slot_approval
 from kiro_crew.slack.handler import resolve_linked_approval
+from kiro_crew.tool_row_prefix import tool_row
 from kiro_crew.trust_patterns import (
     approval_command,
     approval_display_command,
@@ -154,7 +155,7 @@ async def _on_permission_prompt(
             # when steering is unavailable (that leaves exactly
             # today's behaviour). slot/state withheld for the same
             # reason: each cascaded tool already appends a visible
-            # 🚫 row, and the inject card's summary line is keyed on
+            # Refused: row, and the inject card's summary line is keyed on
             # causes this one is not.
             _batch_cascade_steered = await _steer_policy_notice(
                 client,
@@ -175,7 +176,12 @@ async def _on_permission_prompt(
         await _reject_attributed(
             client, event.request_id, attribution="exempt: user-originated cascade"
         )
-        slot.append("tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event))
+        slot.append(
+            "tool",
+            tool_row("refused", f"{_title} (rejected)"),
+            "msg msg-tool",
+            meta=_tool_meta(event),
+        )
         # Mark the permission as resolved so UI shows rejection
         perm_meta: dict[str, str] = {
             "request_id": str(event.request_id),
@@ -996,7 +1002,12 @@ async def _on_permission_prompt(
                 # a call ran with a security rule stepped aside.
                 _note_override_used(slot, _override_offer)
             _approved_title = _redact_display_text(event.title)
-            slot.append("tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event))
+            slot.append(
+                "tool",
+                tool_row("approved", _approved_title),
+                "msg msg-tool",
+                meta=_tool_meta(event),
+            )
             sel().log_tool_invocation(
                 session_key=session_key,
                 agent=slot.agent or "kirocrew",
@@ -1098,11 +1109,13 @@ async def _on_permission_prompt(
             ),
         )
         if _safety_reason:
-            _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
+            _reject_label = tool_row(
+                "refused", f"{_safe_reject_title} (cancelled — {_safety_reason})"
+            )
         elif outcome == "rejected_once":
-            _reject_label = f"🚫 {_safe_reject_title} (rejected — this call only)"
+            _reject_label = tool_row("refused", f"{_safe_reject_title} (rejected — this call only)")
         else:
-            _reject_label = f"🚫 {_safe_reject_title} (rejected)"
+            _reject_label = tool_row("refused", f"{_safe_reject_title} (rejected)")
         slot.append("tool", _reject_label, "msg msg-tool")
         # NOTE: Do NOT append to _refusal_reasons here.
         # This is an interactive user denial — the user chose to reject

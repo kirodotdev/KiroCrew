@@ -294,12 +294,14 @@ _STEER_TAIL_PREFIX_RE = re.compile(_STEERING_TAIL_PREFIX_RE.pattern, re.IGNORECA
 # still knows the destination is external, so reserve the prefixes and replace
 # the internal summary with a terse user-safe status. The dashboard does not use
 # TurnDriver and retains its authoritative transcript/audit record.
+# Current writers lead with no glyph; the U+2705 forms are what saved
+# transcripts and older gateways carry, so both stay reserved.
 _COMPACTION_NOTICE_PREFIXES = (
-    "✅ Conversation compacted:",
+    "\u2705 Conversation compacted:",  # emoji-ok: old saved lead
     "Conversation compacted:",
-    "✅ Compacted:",
+    "\u2705 Compacted:",  # emoji-ok: old saved lead
 )
-_COMPACTION_NOTICE_REPLACEMENT = "✅ Context compacted."
+_COMPACTION_NOTICE_REPLACEMENT = "Context compacted."
 _COMPACTION_PROBE_MAX = max(map(len, _COMPACTION_NOTICE_PREFIXES)) + 64
 
 

@@ -157,13 +157,14 @@ function AgentBadge({ agent, index }: { agent: ChannelAgent; index: number }) {
 }
 
 /** Tool title embedded in a channel approval message by the backend
- * (`⚠️ Approval needed: **<name>**` + fenced input). Greedy up to the LAST
+ * (`Approval needed: **<name>**` + fenced input; older messages lead with a
+ * U+26A0 warning sign, which saved channels keep, so it is optional). Greedy up to the LAST
  * `**` before the input fence so a command containing `**` stays whole.
  * Empty when the message carries no name (legacy messages). The approval
  * card's TrustDropdown derives its trust_command / trust_base patterns from
  * this title, so it must be the tool's identity, never the agent role. */
 export function approvalToolTitle(content: string): string {
-  return /^⚠️ Approval needed: \*\*([\s\S]*)\*\*\n```/.exec(content)?.[1] || ''
+  return /^(?:\u26A0\uFE0F? )?Approval needed: \*\*([\s\S]*)\*\*\n```/u.exec(content)?.[1] || ''
 }
 
 /** What the approval card renders and which trust tiers it offers, from the
@@ -188,7 +189,7 @@ export function approvalCardProps(msg: Pick<ChannelMessage, 'content' | 'fromRol
     }
   }
   const title = approvalToolTitle(msg.content)
-  const toolInput = msg.content.replace(/^⚠️ Approval needed:.*\n```\n?/, '').replace(/\n?```$/, '')
+  const toolInput = msg.content.replace(/^(?:\u26A0\uFE0F? )?Approval needed:.*\n```\n?/u, '').replace(/\n?```$/, '')
   const hasCommand = title.startsWith('Running: ') && !/\[REDACTED/.test(toolInput)
   return { title: title || msg.fromRole, toolInput, hasCommand }
 }

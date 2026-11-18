@@ -28,6 +28,7 @@ import { useResolvedElsewhere } from './useResolvedElsewhere'
 import { useRaisedBy } from '../../pages/chat/shared-crew/useRaisedBy'
 import { REJECT_APPROVAL_EVENT } from '../../pages/chat/composerFocus'
 import { refusalText } from '../../utils/toolGrantRefusal'
+import { stripToolCallLead } from '../../lib/toolRowContract'
 
 /* The slot's approval chrome as state: the pending tool approval (its
    decision submit, the approval-mode discovery hint and nudge, the ghost
@@ -210,7 +211,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     // reconstruct path carries no `source`), so fall back to the `[source]`
     // prefix the card was written with rather than silently treating a
     // reloaded cron card as an ordinary in-session one.
-    || (pendingApproval?.content || '').match(/^(?:🔧\s*)?\[([a-z_]+)\]/)?.[1]
+    || stripToolCallLead(pendingApproval?.content).match(/^\[([a-z_]+)\]/)?.[1]
     || ''
   const approvalIsUnattended = UNATTENDED_APPROVAL_SOURCES.has(approvalSource)
   /** True when a standing Trust grant can actually be RECORDED for this card.
@@ -230,7 +231,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     && approvalTarget?.origin === 'native'
   const simplified = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
-  const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
+  const approvalLabelRaw = stripToolCallLead(sanitizeLlmOutput(pendingApproval?.content || ''))
 
   const approvalToolCallId = (approvalMeta?.tool_call_id as string) || null
 

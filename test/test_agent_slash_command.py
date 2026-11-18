@@ -237,7 +237,7 @@ async def test_unknown_agent_is_refused_and_changes_nothing(tmp_path, monkeypatc
     state.sessions.reset.assert_not_awaited()
     assert (slot.agent, slot.agent_kind, slot.workspace, slot.memory_store) == before
     reply = _last_assistant(slot)
-    assert reply.startswith("⚠️ Could not switch to agent `no-such-agent`:")
+    assert reply.startswith("Warning: Could not switch to agent `no-such-agent`:")
     assert "not available" in reply
 
 

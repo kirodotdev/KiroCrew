@@ -297,7 +297,7 @@ async def test_prose_content_is_unchanged_beside_meta():
     event = _perm_event(tool_input=json.dumps({"command": "ls -la"}), is_shell=True)
     await _stream_task(agent, ch, _make_client([event, _done()]), "hi")
     args, kw = next((a, k) for a, k in ch.post.call_args_list if k.get("msg_type") == "approval")
-    assert args[1] == '⚠️ Approval needed: **Running: ls -la**\n```\n{"command": "ls -la"}\n```'
+    assert args[1] == 'Approval needed: **Running: ls -la**\n```\n{"command": "ls -la"}\n```'
     assert kw["meta"]["tool_title"] == "Running: ls -la"
 
 

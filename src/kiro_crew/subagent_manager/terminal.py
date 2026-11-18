@@ -1642,7 +1642,7 @@ class TerminalCoordinator(ManagerComponent):
                 )
             failure_msg = (
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
-                f"Agent `{info.id}` ❌ {reason}\n"
+                f"Agent `{info.id}` failed: {reason}\n"
                 f"Task: {task_preview}\n"
                 f"Usage: {format_subagent_usage(info.credits, info.elapsed)}\n"
                 f"{_injection_notice_outcome(info)}{result_hint}"
