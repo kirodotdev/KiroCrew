@@ -592,6 +592,29 @@ describe('Conductor mode Crew tab', () => {
     expect(summary).toHaveTextContent(/^1 done$/)
   })
 
+  it('Milestones: dropped milestones fold into one "N dropped" row below the open ones', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'x1', title: 'Old plan A', state: 'abandoned', terminal: true }),
+      ITEM({ item_id: 'o1', title: 'Live work', alive: 'running' }),
+      ITEM({ item_id: 'x2', title: 'Old plan B', state: 'abandoned', terminal: true }),
+      ITEM({ item_id: 'r1', title: 'Failed check', state: 'rejected', terminal: true }),
+    ] })
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
+    const fold = await screen.findByTestId('conductor-mode-milestones-dropped')
+    const summary = fold.querySelector('summary') as HTMLElement
+    expect(summary).toHaveTextContent(/^2 dropped$/)
+    expect((fold as HTMLDetailsElement).open).toBe(false)
+    // Folded rows stay in the fold; the open list keeps live work and the rejected one.
+    expect(within(fold).getAllByTestId('conductor-mode-milestone').map(r => r.textContent)).toEqual([expect.stringContaining('Old plan A'), expect.stringContaining('Old plan B')])
+    const outside = screen.getAllByTestId('conductor-mode-milestone').filter(r => !fold.contains(r))
+    expect(outside.map(r => r.textContent)).toEqual([expect.stringContaining('Live work'), expect.stringContaining('Failed check')])
+    // Below the open rows, so live work stays on top.
+    expect(outside[0].compareDocumentPosition(fold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The header still counts every milestone.
+    expect(screen.getByTestId('conductor-mode-milestones')).toHaveTextContent(/0\D+4/)
+  })
+
   it('Status: a failed summary read and a failed crew read say so', async () => {
     api.crewWorkers.mockRejectedValue(new ApiError(500, 'boom', ''))
     api.sessionSummary.mockRejectedValue(new ApiError(500, 'summary down', ''))

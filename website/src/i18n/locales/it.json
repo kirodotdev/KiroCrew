@@ -11203,6 +11203,7 @@
       "conductor_mode_ms_waiting_pr": "In attesa della PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "In pausa, nessun motivo indicato",
       "conductor_mode_ms_done_fold": "{{n}} completati",
+      "conductor_mode_ms_dropped_fold": "{{n}} scartati",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "In lavorazione",
       "conductor_mode_run_waiting": "In attesa di te",

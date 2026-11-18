@@ -11427,6 +11427,7 @@
       "conductor_mode_ms_waiting_pr": "Ждёт PR #{{n}}",
       "conductor_mode_ms_waiting_no_reason": "На паузе, причина не указана",
       "conductor_mode_ms_done_fold": "Готово: {{n}}",
+      "conductor_mode_ms_dropped_fold": "Отменено: {{n}}",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "В работе",
       "conductor_mode_run_waiting": "Ждёт тебя",

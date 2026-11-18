@@ -10954,6 +10954,7 @@
       "conductor_mode_ms_waiting_pr": "PR #{{n}}-এর অপেক্ষায়",
       "conductor_mode_ms_waiting_no_reason": "থেমে আছে, কোনো কারণ বলা নেই",
       "conductor_mode_ms_done_fold": "{{n}}টি শেষ",
+      "conductor_mode_ms_dropped_fold": "{{n}}টি বাদ দেওয়া হয়েছে",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "কাজ চলছে",
       "conductor_mode_run_waiting": "তোমার অপেক্ষায়",

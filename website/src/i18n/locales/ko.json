@@ -10705,6 +10705,7 @@
       "conductor_mode_ms_waiting_pr": "PR #{{n}} 대기 중",
       "conductor_mode_ms_waiting_no_reason": "일시 중지됨, 이유 없음",
       "conductor_mode_ms_done_fold": "{{n}}개 완료",
+      "conductor_mode_ms_dropped_fold": "{{n}}개 중단됨",
       "conductor_mode_ms_pr": "· PR #{{n}}",
       "conductor_mode_run_working": "작업 중",
       "conductor_mode_run_waiting": "확인 대기",
