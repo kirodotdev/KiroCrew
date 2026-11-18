@@ -456,6 +456,13 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         if err:
             return web.json_response({"error": f"server '{name}': {err}"}, status=400)
         cleaned[name] = _clean_spec(spec)
+    # A disabled entry under one of Kiro Crew's own names would mute that
+    # server through the store, which no route may do.
+    if not enable:
+        for name in cleaned:
+            builtin = await _mcp._builtin_server_refusal(name)
+            if builtin is not None:
+                return builtin
 
     async with _get_mcp_lock():
         # A commented store is the user's valid file: refused with the same

@@ -51,9 +51,13 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.handlers.mcp_agent_sync import (
     _agent_home_not_owned,
     _agent_home_not_owned_response,
+    _builtin_apply_refusal,
+    _builtin_server_refusal,
+    _builtin_stays_on,
     _mcp_hot_reload_active,
     _sync_mcp_to_agent,
     _sync_mcp_to_agent_batch,
+    _toggle_all_skip,
 )
 from kiro_crew.dashboard.handlers.mcp_config_entries import (
     _find_server_spec_anywhere,
@@ -71,6 +75,7 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     AmbiguousServerKey,
     McpConfigHasComments,
     _config_key_for,
+    _enabled_field,
     _extra_mcp_scopes,
     _is_valid_mcp_name,
     _kirocrew_mcp_json,
@@ -149,6 +154,8 @@ from kiro_crew.user_json import (
 
 if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
+# Bound here: an owner-served name needs a TYPE_CHECKING import, which the hoist ratchet refuses.
+from kiro_crew.agent import emission_eligible_mcp_servers  # noqa: F401  # isort: skip
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
 
@@ -510,26 +517,6 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     )
 
 
-def _enabled_field(body: dict) -> tuple[bool, web.Response | None]:
-    """The ``enabled`` toggle field as a bool, or a 400 to return.
-
-    ``(value, None)`` for a real boolean, ``(True, response)`` for anything else.
-    An absent field means ``True``, the on default these routes already assumed.
-    The toggle writes the value into ``mcp.json`` as given, so a non-boolean handed
-    through raw -- the string ``"false"`` is the one that bites, since it is truthy
-    -- would turn the server ON while the route answered ok. Only a real boolean is
-    accepted, the same ``invalid_enabled`` refusal the cron, updates and webhook
-    toggle routes already make, so every toggle route answers a bad ``enabled`` the
-    same way.
-    """
-    enabled = body.get("enabled", True)
-    if not isinstance(enabled, bool):
-        return True, web.json_response(
-            {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
-        )
-    return enabled, None
-
-
 async def api_mcp_toggle(request: web.Request) -> web.Response:
     """POST /api/mcp/toggle — enable or disable an MCP server globally.
 
@@ -558,6 +545,8 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         return enabled_err
     if not name:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
+    if not enabled and (refused := await _builtin_server_refusal(name)) is not None:
+        return refused
 
     # Ownership BEFORE the first mutation: the disabled flag lands in the
     # user-level registry ahead of the rendered spec, so a refusal found at
@@ -792,6 +781,7 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     not_owned = await asyncio.to_thread(_agent_home_not_owned, "servers")
     if not_owned is not None:
         return not_owned
+    skip = await _toggle_all_skip(enabled)
 
     async with _get_mcp_lock():
         try:
@@ -808,7 +798,7 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
         servers = data.get("mcpServers", {})
         toggled: list[str] = []
         for name, spec in servers.items():
-            if not isinstance(spec, dict):
+            if not isinstance(spec, dict) or skip(name):
                 continue
             if enabled:
                 spec.pop("disabled", None)
@@ -865,6 +855,8 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
         return err
     if not name:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
+    if (refused := await _builtin_server_refusal(name)) is not None:
+        return refused
 
     # Ownership BEFORE the first mutation: this handler writes the
     # user-level registry (and, on remove, asks the companion package
@@ -1004,6 +996,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             {"error": "server name is required", "code": "name_required"}, status=400
         )
     name = name.strip()
+    if request.method == "DELETE" and (refused := await _builtin_server_refusal(name)) is not None:
+        return refused
 
     # Ownership BEFORE the first mutation: this handler writes the
     # user-level registry (and, on remove, asks the companion package
@@ -1161,6 +1155,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.config.loader import read_endorsed_config_text  # noqa: F401
     from kiro_crew.dashboard.handlers.mcp_agent_sync import (  # noqa: F401
+        _builtin_mcp_server_names,
+        _is_builtin_mcp_server,
         _mark_agent_entries_disabled,
         _shared_agent_home_declined,
         _sync_mcp_to_agent_batch_unlocked,
@@ -1337,6 +1333,8 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
             status=400,
         )
 
+    if (refused := await _builtin_apply_refusal(changes, _get_mcp_lock)) is not None:
+        return refused
     results: list[dict] = []
     corrupt = False  # a scope file broke mid-batch: stop and refuse
 
@@ -1381,7 +1379,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     # name that is the alias of several raw keys (``team/foo`` beside
     # ``other:team/foo``, none keyed ``team-foo``) has no one entry to write and
     # is refused as a request failure the table shows while keeping the pending
-    # change -- the only refusal an apply makes, taken before the companion
+    # change -- refused, like the built-in refusal above, before the companion
     # package is gone and before the first scope write. Nothing is logged as
     # applied. Presence is NOT carried forward from here: Phase 2's writers are
     # each one locked read-modify-write that decides from the read they write
@@ -1596,6 +1594,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                 # Apply MC first — flipping MC green needs the entry to exist or
                 # the disabled override removed.  Flipping MC gray writes
                 # disabled:true, preserving config for later re-enable.
+                desired_mc = desired_mc or await _builtin_stays_on(name)
                 keys = change_keys.get(name, {})
                 outcome["actions"]["kirocrew"] = await _offload_config_write(
                     _set_kirocrew_entry,

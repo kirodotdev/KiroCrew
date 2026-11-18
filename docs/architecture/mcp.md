@@ -1136,6 +1136,20 @@ scope's own entry, not from the rendered spec, which can still mount the raw key
 program under the alias until the next rebuild. It is not a leftover: from then on
 the store declares the alias too, so later switches on that row edit it.
 
+Kiro Crew's always-on servers (`kirocrew-core`, `kirocrew-cron`, `kirocrew-guide`,
+`kirocrew-mate`, `kirocrew-computer` while its gate is open, plus edition servers that are
+not `opt_in`: the set a fresh spec build emits, `emission_eligible_mcp_servers`) are never turned off or removed. An
+`opt_in` set such as `kirocrew-dashboard` or `kirocrew-secrets` is never locked, and a
+host whose server set cannot be read locks none, so every route answers as it does without
+the lock. An apply change that turns one's `kirocrew` scope off (from on) or
+uninstalls one is refused with `409` and `"code": "mcp_server_builtin"` for the
+whole batch before any write, as are `POST /api/mcp/toggle` with
+`enabled: false`, `POST /api/mcp/remove`, `DELETE /api/mcp/servers/{name}`,
+`POST /api/capability/mcp/uninstall`, a `POST /api/mcp/custom` add with
+`enable: false` and an official-registry install under one of those names.
+`POST /api/mcp/toggle-all` skips them when it disables. Turning one on, its tool
+overrides and its Globals edits are accepted.
+
 `POST /api/mcp/toggle` writes `disabled` into the Kiro global `mcp.json` for a
 server that file holds or that only another scope (an agent file, a provider
 global) holds. A server the Kiro global file does not hold but Kiro Crew's own
@@ -1152,6 +1166,8 @@ global `mcp.json` or a provider global; it is `null` when the row is enabled.
 `disabledInFile` names the file to edit when the shared flag is the Kiro-global one.
 `disabledReason` is `"invalid"` when the mute comes from a non-boolean `disabled`
 value, so the table asks for the value to be repaired rather than toggled.
+`builtin` is `true` on a row for one of Kiro Crew's own servers: the table locks
+its Kiro Crew switch on and offers no Uninstall.
 
 `GET /api/mcp` and both `/api/mcp/probe` responses also say when the default
 agent does not have a server. After each rebuild that lands the spec,
