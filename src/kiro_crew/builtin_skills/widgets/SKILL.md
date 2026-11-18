@@ -80,6 +80,10 @@ theme override cannot add more. Two common names are aliased for you:
 undefined inside the frame, so `var(--panel, #1e1e1e)` always paints its
 dark literal and is unreadable on a light theme.
 
+The frame marks the active scheme as `data-mode="light"` or `data-mode="dark"`
+on `<body>`; Tailwind `dark:` utilities read it. The body carries no class, so
+a widget's own `.light` or `.dark` rule styles only the widget's own elements.
+
 ### The theme contract
 
 These rules apply to **every artifact-bound HTML document**, not just
