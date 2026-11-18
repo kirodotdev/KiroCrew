@@ -159,9 +159,33 @@ async def test_every_save_form_writes_the_hold_and_clears_it(tmp_path: Any) -> N
     folds = codec.SaveFolds(memory_mode="persistent", created_at="2026-01-01T00:00:00")
     assert "stop_held" not in codec.encode(slot, folds=folds)
     assert codec.encode(slot, folds=folds, merge=True)["stop_held"] is False
-    slot._stop_held = True
+    _held(slot)
     assert codec.encode(slot, folds=folds)["stop_held"] is True
     assert codec.encode(slot, folds=folds, merge=True)["stop_held"] is True
+    stop_hold._drop(slot.key)  # released through another object of the key
+    assert slot._stop_held is True, "this object's mirror is stale"
+    assert "stop_held" not in codec.encode(slot, folds=folds), "the line writes the key's"
+    assert codec.encode(slot, folds=folds, merge=True)["stop_held"] is False
+
+
+async def test_an_undo_never_lets_an_earlier_hold_lapse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """r11 Opus: a line is encoded off the loop from the key's record; an undo that
+    restores an earlier press writes it back before dropping its own, so no encode
+    in between reads the key as released."""
+    slot = _held(_slot("chat-undo-1"))  # an earlier Stop
+    later = stop_hold.Pressed(next(stop_hold._presses))
+    later.hold(slot)
+    seen: list[bool] = []
+    real_drop = stop_hold._drop
+
+    def drop(key: str, press_: int = 0) -> None:
+        real_drop(key, press_)
+        seen.append(stop_hold.held_flag(slot))
+
+    monkeypatch.setattr(stop_hold, "_drop", drop)
+    with patch.object(stop_hold, "_save_soon"):
+        later.undo(None, slot)
+    assert seen == [True] and stop_hold.holds(slot)
 
 
 # ── the Stop's press (``stop_helpers.stop_channel``) ─────────────────────────
@@ -425,6 +449,7 @@ async def test_a_release_save_writes_the_live_value_whichever_lands_last(tmp_pat
     """GPT r6 "superseded write": no write carries a captured value."""
     state = _state(tmp_path)
     slot = _held(_slot("h1"))
+    state._slots[slot.key] = slot  # the live entry: only it is written
     written: list[bool] = []
 
     async def save(_state: Any, s: Any, **_kw: Any) -> bool:
@@ -1236,7 +1261,7 @@ def _scan_mints(root: Any) -> list[str]:
     bad = []
     for file in sorted(root.rglob("*.py")):
         rel = file.relative_to(root.parent).as_posix()
-        text = file.read_text()
+        text = file.read_text(encoding="utf-8")
         if "stop_hold" not in text and rel != _HOME:
             continue  # a call needs the module's name somewhere in the file
         for minter, at, chain in _mints(ast.parse(text), rel):
@@ -1271,7 +1296,7 @@ async def test_the_press_is_read_only_where_a_request_arrives() -> None:
     used = {
         (file.relative_to(root.parent).as_posix(), getattr(fn, "name", ""))
         for file in root.rglob("*.py")
-        if "stop_hold" in (text := file.read_text())
+        if "stop_hold" in (text := file.read_text(encoding="utf-8"))
         for _m, _l, chain in _mints(ast.parse(text), file.relative_to(root.parent).as_posix())
         for fn in chain
     }
@@ -1570,7 +1595,7 @@ async def test_a_stop_ends_a_running_context_add_before_its_second_rpc(
     async def kas_call(_provider: Any, verb: str, params: dict[str, Any]) -> dict[str, Any]:
         calls.append(params)
         first_sent.set()
-        await asyncio.sleep(3600)  # the engine's answer, which the Stop does not wait for
+        await asyncio.Event().wait()  # the engine's answer, which never comes: no Stop waits for it
         return {"success": True}
 
     async def provider(*_a: Any) -> Any:
@@ -1854,7 +1879,7 @@ def _hold_field_uses(root: Any) -> list[str]:
     found = []
     for file in sorted(root.rglob("*.py")):
         rel = file.relative_to(root.parent).as_posix()
-        text = file.read_text()
+        text = file.read_text(encoding="utf-8")
         if rel == "kiro_crew/slack/code_channels/stop_hold.py" or "_stop_h" not in text:
             continue
         for node in ast.walk(ast.parse(text)):

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
 import importlib
 import threading
 import types
@@ -46,6 +47,20 @@ from kiro_crew.platform_compat_native import IS_WINDOWS
 #: keeps its worker until the OS returns; this bound caps those threads and queues
 #: the rest here, apart from the pools teardown and maintenance use.
 _MAX_SPAWN_WORKERS = 8
+
+#: The spawning caller's ask (a hook a code channel's Stop may hold), set around its
+#: spawn only. Read on the loop as the build is queued and asked on the worker
+#: thread right before ``Popen``, so no queue wait falls between the ask and the
+#: child; unset, nothing is asked. It must be safe off the loop (read-only).
+spawn_admit: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
+    "spawn_admit", default=None
+)
+
+
+class SpawnNotAdmitted(Exception):
+    """A spawn's ask refused it: no child was built. Defined here, the lowest layer
+    a spawn passes through (``sandbox_rlimit`` raises it too)."""
+
 
 _pool: ThreadPoolExecutor | None = None
 _pool_lock = threading.Lock()
@@ -186,7 +201,11 @@ async def make_subprocess_transport_off_loop(
             f"build its child through {popen_global}.Popen"
         )
 
+    admit = spawn_admit.get()
+
     def build() -> Any:
+        if admit is not None and not admit():  # nothing between this ask and the child
+            raise SpawnNotAdmitted
         return popen_factory(
             args, shell=shell, stdin=stdin, stdout=stdout, stderr=stderr, bufsize=bufsize, **kwargs
         )

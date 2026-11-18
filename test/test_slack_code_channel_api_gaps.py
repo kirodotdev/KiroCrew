@@ -29,6 +29,7 @@ from kiro_crew.slack.code_channels import (
     notices,
     routing,
     status,
+    stop_hold,
     surface,
     tools,
     views,
@@ -58,6 +59,8 @@ from kiro_crew.testing.wait import default_timeout
 
 CH = "C0CODE"
 ORIGIN = "C0ORIGIN"
+#: The Stop reply's closing sentence once it held a session (``stop_hold``).
+_HELD_TAIL = "Nothing starts again until someone writes."
 SLOT = "chat-1-1"
 SESSION = "dashboard:chat-1-1"
 STRANGER = "USTRANGER"
@@ -303,6 +306,29 @@ async def test_create_pr_click_from_a_stranger_is_refused_privately(
     assert row["outcome"] == "denied" and "via=action" in row["resources"]
 
 
+async def test_a_create_pr_click_carries_the_press_its_event_arrived_after(
+    env: Any, monkeypatch: Any
+) -> None:
+    """The Stop hold (``stop_hold``): the click is a person's command, so it carries the
+    press the socket listener read on its arrival, as a typed ``/create-pr`` does: a
+    click that arrived after a Stop releases the hold, one from before it does not."""
+    from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+
+    _bind(env)
+
+    async def able(_b: Any) -> tuple[bool, str]:
+        return True, ""
+
+    monkeypatch.setattr(commands, "pr_capability", able)
+    before = stop_hold.seen()
+    slot = _ChatSlot("chat-held-1")
+    stop_hold.Pressed(next(stop_hold._presses)).hold(slot)
+    stop_hold._last = slot._stop_hold_seq
+    for n, seen in enumerate((before, stop_hold.seen())):
+        await actions.handle(env.orch, *_click(ACTION_CREATE_PR, event_id=f"Ev{n}"), stop_seen=seen)
+    assert [stop_hold.decide(slot, s) for s in env.stamps] == [stop_hold.HELD, stop_hold.RELEASE]
+
+
 async def test_stop_click_goes_through_slacks_own_stop_handler(env: Any, monkeypatch: Any) -> None:
     from kiro_crew.slack.agent_sessions import session_events
 
@@ -488,6 +514,7 @@ async def test_the_bars_stop_stops_the_channels_helper_agents_as_slacks_stop_doe
     env.orch._handler_tasks = set()
     results = []
     for press in ("bar", "slack"):
+        stop_hold._reset_for_tests()
         env.state.subagents = Subagents()
         stopped.clear()
         handled.clear()
@@ -505,9 +532,12 @@ async def test_the_bars_stop_stops_the_channels_helper_agents_as_slacks_stop_doe
             session_events.dispatch(env.orch, {"team_id": "T1"}, event)
             await asyncio.gather(*list(env.orch._handler_tasks))
         posts = [text for _channel, text, _ts in env.slack.posts]
-        results.append((list(stopped), posts, len(handled), list(env.slack.ephemerals)))
+        held = sorted(stop_hold._keys)  # the Stop hold (``stop_hold``) each press recorded
+        results.append((list(stopped), posts, len(handled), list(env.slack.ephemerals), held))
     assert results[0] == results[1]
-    assert results[0] == (["chat-h1"], ["Stopped 2: 1 helper agent and 1 sub-agent."], 1, [])
+    stopped_text = "Stopped 2: 1 helper agent and 1 sub-agent. " + _HELD_TAIL
+    assert results[0][:4] == (["chat-h1"], [stopped_text], 1, [])
+    assert "chat-h1" in results[0][4], results[0][4]
 
 
 async def test_the_bars_stop_of_only_a_sub_agent_is_not_told_nothing_is_running(
@@ -535,7 +565,7 @@ async def test_the_bars_stop_of_only_a_sub_agent_is_not_told_nothing_is_running(
     env.state.subagents = Subagents()
     env.orch.sessions = SimpleNamespace()
     assert await actions.handle(env.orch, *_click(ACTION_STOP)) == "stop:channel"
-    assert [text for _c, text, _ts in env.slack.posts] == ["Stopped 1: 1 sub-agent."]
+    assert [text for _c, text, _ts in env.slack.posts] == ["Stopped 1: 1 sub-agent. " + _HELD_TAIL]
     assert env.slack.ephemerals == []
 
 
@@ -599,7 +629,10 @@ def test_the_socket_router_hands_the_event_to_the_action_handler(monkeypatch: An
 
     source = inspect.getsource(events)
     assert "event_type == CODE_CHANNEL_ACTION_EVENT" in source
-    assert "dispatch_code_channel_action(orch, req.payload or {}, event)" in source
+    # With the press the listener read on arrival (``stop_hold``): Create PR's stamp.
+    assert "dispatch_code_channel_action(orch, req.payload or {}, event, stop_seen=_stop_seen)" in (
+        source
+    )
     assert events.CODE_CHANNEL_ACTION_EVENT == "code_channel_action"
 
 
@@ -639,6 +672,9 @@ async def test_new_comments_reach_the_session_attributed_and_framed(env: Any) ->
     assert "Reply" in text and "and keep the cron" in text
     body = _calls(env, "agents.conversations.getCanvas")[0]
     assert body == {"channel": CH, "canvas_id": "F1", "include_resolved": False}
+    # A poll's read, not a request's arrival: no person's stamp, so on a session a
+    # Stop holds the comment is queued and waits for a person (``stop_hold``).
+    assert env.stamps == [""]
 
 
 async def test_comments_are_delivered_once_even_across_a_restart(env: Any, tmp_path: Path) -> None:

@@ -22,16 +22,16 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
-def _clean(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
+def _clean(_floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
     from kiro_crew.coder import retention
 
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    monkeypatch.setattr(retention, "schedule_archived", lambda keys, notify=None: None)
+    _floor_monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr(retention, "schedule_archived", lambda keys, notify=None: None)
 
     async def keep(_keys: Any) -> None:
         return None
 
-    monkeypatch.setattr(retention, "keep_reopened", keep)
+    _floor_monkeypatch.setattr(retention, "keep_reopened", keep)
     stop_hold._keys.clear()
     stop_hold._channels.clear()
     yield
@@ -239,3 +239,106 @@ async def test_a_directly_published_held_slot_no_ask_reached_still_writes_its_ho
     folds = codec.SaveFolds(memory_mode="persistent", created_at="2026-01-01T00:00:00")
     assert codec.encode(slot, folds=folds)["stop_held"] is True
     assert codec.encode(slot, folds=folds, merge=True)["stop_held"] is True
+
+
+async def test_a_helper_released_during_the_stops_save_stays_released_after_a_restart(
+    tmp_path: Any,
+) -> None:
+    """CI GPT 6.1 on e472a38dc6: while the Stop's ``persist`` awaits one helper's save,
+    another held helper is closed, reopened under the same key and released by a
+    person's message, and that release is saved. ``persist`` must not then write the
+    retained old object (still mirroring the hold) over the release."""
+    from chat_test_helpers import drain_background_tasks
+
+    from kiro_crew.dashboard import chat_persistence
+    from kiro_crew.dashboard.chat_handlers import close_slot, resume_slot_from_history
+    from kiro_crew.dashboard.chat_persistence_parts.slot_builders import (
+        rehydrate_slot_from_history_async,
+    )
+
+    state = _make_state(tmp_path)
+    first, other = (state.get_or_create_slot(k) for k in ("chat-pa-1", "chat-pb-1"))
+    for slot in (first, other):
+        slot.messages.extend(
+            [{"role": "user", "content": "m0"}, {"role": "assistant", "content": "m1"}]
+        )
+        slot._dirty = True
+    with patch("kiro_crew.slack.code_channels.store.store") as store:
+        store.return_value.workers_of.return_value = [first.key, other.key]
+        held = stop_hold.press(state, "chat-conductor-1", None)
+    assert list(held) == [first, other]
+    key = slot_history_key(other)
+    real_save = chat_persistence.save_slot_off_loop
+
+    saved: list[tuple[Any, Any]] = []
+
+    async def save(st: Any, slot: Any, **kw: Any) -> bool:
+        saved.append((slot, kw.get("expected_slot_name")))
+        if slot is first:  # while the first helper's save awaits:
+            await close_slot(state, other, other.key)
+            await asyncio.to_thread(close_before_resume, state.conversation_log, key)
+            reopened = (await resume_slot_from_history(state, name=other.key, history_key=key)).slot
+            assert reopened is not None and reopened is not other
+            assert stop_hold.gate(state, reopened, stop_hold.stamp(stop_hold.seen(), True))
+            await drain_background_tasks(state)  # the release is saved
+        return await real_save(st, slot, **kw)
+
+    with patch.object(chat_persistence, "save_slot_off_loop", save):
+        await stop_hold.persist(state, list(held))
+    await drain_background_tasks(state)
+    assert other not in [s for s, _ in saved], "the retained old object is not written"
+    assert all(name == s.key for s, name in saved), "each save fenced to its key's object"
+    assert state.conversation_log.get_metadata(key).get("stop_held") is not True
+    # A writer with no identity fence (``routing._persist_request``, a turn-end save)
+    # saving the retained object: the line writes the key's release, not its mirror.
+    assert other._stop_held is True and await real_save(state, other, force=True)
+    assert state.conversation_log.get_metadata(key).get("stop_held") is not True
+    stop_hold._reset_for_tests()  # a restart: no record in memory
+    restarted = _make_state(tmp_path)
+    slot = await rehydrate_slot_from_history_async(restarted, other.key)
+    assert slot is not None and not stop_hold.holds(slot), "released, not held again"
+
+
+async def test_a_hold_save_of_an_object_replaced_before_its_commit_is_refused(
+    tmp_path: Any,
+) -> None:
+    """The same class at the commit: the object is replaced after ``persist`` checked it
+    and before the save commits. The locked commit refuses the old object; the object
+    published under the key writes its own hold."""
+    from kiro_crew.dashboard import chat_persistence
+
+    state = _make_state(tmp_path)
+    old = state.get_or_create_slot("chat-commit-1")
+    old.append("user", "m0")
+    _press(state, old.key)
+    replacement = type(old)(old.key)
+    real_save = chat_persistence.save_slot_off_loop
+    results: list[bool] = []
+
+    async def save(st: Any, slot: Any, **kw: Any) -> bool:
+        state._slots[old.key] = replacement  # replaced before the commit
+        results.append(await real_save(st, slot, **kw))
+        return results[-1]
+
+    with patch.object(chat_persistence, "save_slot_off_loop", save):
+        await stop_hold.persist(state, [old])
+    assert results == [False], "the locked commit refused the old object"
+
+
+async def test_a_held_object_the_stop_could_not_write_is_saved_on_its_first_ask(
+    tmp_path: Any,
+) -> None:
+    """``persist`` writes no object under construction; its mirror is already set, so
+    only the owed key makes the first ask after its publication save it."""
+    from kiro_crew.dashboard import chat_persistence
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-built-1")
+    state._slots_under_construction.add(slot.key)
+    stop_hold.Pressed(_press(state, "chat-other-1")).hold(slot)
+    with patch.object(chat_persistence, "save_slot_off_loop") as save:
+        await stop_hold.persist(state, [slot])
+    assert not save.called, "only its constructor writes it until it is published"
+    state._slots_under_construction.discard(slot.key)
+    with patch.object(stop_hold, "_save_soon") as soon:
+        assert stop_hold.holds(slot) and soon.call_args.args[1] is slot

@@ -632,9 +632,13 @@ async def create_subprocess_limited(
     profile: str = RLIMIT_PROFILE_TOOL,
     chdir_fd: int | None = None,
     windows_cleanup_owner: platform_compat._PendingWindowsTreeCleanup | None = None,
+    admit: Callable[[], bool] | None = None,
     **kwargs: Any,
 ) -> asyncio.subprocess.Process:
     """``asyncio.create_subprocess_exec`` with resource limits applied post-exec.
+
+    ``admit``, when given, is asked right before every spawn attempt, with no await
+    between it and the spawn; False raises :class:`SpawnNotAdmitted` and runs nothing.
 
     The drop-in replacement for ``create_subprocess_exec(..., preexec_fn=
     resource_limit_preexec())``. Every keyword argument is forwarded untouched
@@ -683,6 +687,12 @@ async def create_subprocess_limited(
     through a registry keyed on the live child, so the lost-cancel window that
     hook exists to close has no consumer. Add one when a caller needs it.
     """
+    from kiro_crew.platform_compat_offloop_spawn import SpawnNotAdmitted
+
+    def admitted() -> None:  # no module-level name: the sandbox facade forwards each one
+        if admit is not None and not admit():
+            raise SpawnNotAdmitted
+
     if "preexec_fn" in kwargs:
         raise TypeError(
             "create_subprocess_limited owns preexec_fn: limits are applied "
@@ -700,6 +710,7 @@ async def create_subprocess_limited(
         # No shim (Windows, a no-op profile, or a truncated install): keep
         # whatever policy the profile carries on the legacy fork path. Dropping
         # the caps silently would be worse than the fork hazard.
+        admitted()
         if platform_compat.IS_WINDOWS and windows_cleanup_owner is not None:
             return await platform_compat._create_windows_subprocess_owned(
                 windows_cleanup_owner, *argv, preexec_fn=_preexec_for_profile(profile), **kwargs
@@ -773,6 +784,7 @@ async def create_subprocess_limited(
         # NFS/autofs entry would otherwise freeze the gateway.
         resolved = await asyncio.to_thread(_resolve_spawn_target, argv, search_env, search_cwd)
     for delay in _INTERPRETER_ENOENT_DELAYS:
+        admitted()
         try:
             return await asyncio.create_subprocess_exec(
                 *prefix, resolved, *argv[1:], preexec_fn=None, **kwargs
@@ -789,6 +801,7 @@ async def create_subprocess_limited(
             await asyncio.sleep(delay)
     # Budget spent. Deliberately unguarded, exactly as in popen_limited: a
     # genuinely broken install reports the error it reports today, ~4s later.
+    admitted()
     return await asyncio.create_subprocess_exec(
         *prefix, resolved, *argv[1:], preexec_fn=None, **kwargs
     )

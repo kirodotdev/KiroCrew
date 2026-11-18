@@ -338,8 +338,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         return _end_held(turn)
     _hook_held: list[bool] = []
 
-    def _hook_admits() -> bool:
-        if stop_hold.queues(slot, turn._stop_hold_stamp):
+    def _hook_admits() -> bool:  # reads the hold only (a Windows spawn asks it off the loop)
+        if stop_hold.held_now(slot, turn._stop_hold_stamp):
             _hook_held.append(True)
         return not _hook_held
 
@@ -365,7 +365,10 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         if _sends_prompt and not _hook_held
         else []
     )
-    if _hook_held or (_sends_prompt and stop_hold.queues(slot, turn._stop_hold_stamp)):
+    # Asked on the loop on every prompt path, a held hook's too: it applies the
+    # key's mirror and its save, which the hooks' read-only ask does not.
+    held_after = _sends_prompt and stop_hold.queues(slot, turn._stop_hold_stamp)
+    if _hook_held or held_after:
         return _end_held(turn)  # held during the hooks: nothing below starts
     all_injected = spawn_injected + injected
     if all_injected:

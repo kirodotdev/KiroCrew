@@ -327,7 +327,10 @@ async def run_script_hook(
         hook_event = {"hook_event_name": firing_event, "cwd": os.getcwd()}
     stdin_data = json.dumps(hook_event).encode()
 
+    from kiro_crew.platform_compat_offloop_spawn import SpawnNotAdmitted, spawn_admit
+
     proc: Any = None
+    admit_token: Any = None
     try:
         # circular import: sandbox → registry → apps → hooks, so import at call time
         from kiro_crew.sandbox import (
@@ -359,7 +362,8 @@ async def run_script_hook(
         wrapped_argv, env, cleanup_path = await sandboxed_spawn_argv_async(
             argv, env=env, _prepare=sandboxed_spawn_argv
         )
-        if admit is not None and not admit():  # no await from here to the spawn
+
+        def held() -> ScriptHookResult:
             if cleanup_path:
                 try:
                     os.unlink(cleanup_path)
@@ -373,6 +377,13 @@ async def run_script_hook(
                 exit_code=2,
                 refused=True,
             )
+
+        # Asked here, then right before each spawn: in the limited spawn after its own
+        # awaits, and on Windows by the off-loop build on its worker thread
+        # (``spawn_admit``, set around the spawn only). A refusal anywhere is ``held()``.
+        if admit is not None and not admit():
+            return held()
+        admit_token = spawn_admit.set(admit)
         # Process-group isolation for clean tree-kill on timeout. Pass both flags
         # explicitly (NOT **dict unpack — breaks mypy's Popen overload resolution
         # on the build fleet): start_new_session=True is a no-op on Windows,
@@ -427,7 +438,10 @@ async def run_script_hook(
                 cwd=cwd,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP | no_console_window,
+                admit=admit,
             )
+        spawn_admit.reset(admit_token)  # not asked by any later spawn (a timeout's kill)
+        admit_token = None
         try:
             (
                 stdout_b,
@@ -550,6 +564,8 @@ async def run_script_hook(
             error=f"Timed out after {hook.timeout}s",
             duration_ms=elapsed,
         )
+    except SpawnNotAdmitted:  # a spawn's ask refused: no child was built
+        return held()
     except Exception as exc:
         elapsed = int((time.monotonic() - start) * 1000)
         safe_error = redact_via_context(str(exc))
@@ -564,6 +580,9 @@ async def run_script_hook(
             error=safe_error,
             duration_ms=elapsed,
         )
+    finally:
+        if admit_token is not None:
+            spawn_admit.reset(admit_token)
 
 
 class ScriptHookStore:

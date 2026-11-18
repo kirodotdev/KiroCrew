@@ -158,7 +158,15 @@ def _as_caller(user: str):
 async def test_a_chat_sse_stream_is_raw_only_for_the_owner_with_redaction_off(
     state, off, monkeypatch, user
 ):
-    async def reply(st, slot, message, *, _directive_user_origin, _directive_owner_origin=False):
+    async def reply(
+        st,
+        slot,
+        message,
+        *,
+        _directive_user_origin,
+        _directive_owner_origin=False,
+        _stop_hold_stamp="",
+    ):
         for part in _streamed(_SLICES):
             slot.append("chunk", part, "chunk")
         slot.append("assistant", _produced(_TEXT))

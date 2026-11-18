@@ -894,7 +894,7 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
     if resp.get("held"):
         from kiro_crew.slack.code_channels.stop_hold import QUEUED_TEXT
 
-        return f"\U0001f4e8 `{target}`: {QUEUED_TEXT}" + caps
+        return f"`{target}`: {QUEUED_TEXT}" + caps
     # A steer that could not be injected lands here, on the queue: say so, or
     # the caller reads "queued" as "the target was busy" and never learns its
     # steer did not cut anything.

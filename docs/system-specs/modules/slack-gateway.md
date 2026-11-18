@@ -2653,8 +2653,11 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
     and no longer under construction, whose constructor alone writes it),
     so a replaced, reopened or directly republished object is held, and a stamp read
     before a Stop is refused on any object of that key. The slot's fields are only a
-    mirror, for its line and a restart (the line writes the hold while the mirror or the
-    key's record holds it); a restore seeds a held line's key at press 0,
+    mirror, for decisions on that object and a restart; the line writes the hold while the
+    key's record holds it, never from a mirror, so a retained old object a writer saves
+    after a person released its key writes the release. The hold's own saves also write
+    only the object the registry holds for the key, checked before each save and at its
+    locked commit; a restore seeds a held line's key at press 0,
     never lowering a recorded press. A release drops the key and its channel fact, an
     undo only its own press's. Only `stop_hold` reads or writes a slot's hold fields.
   - **After a restart.** A held slot is restored held, with no press, so any

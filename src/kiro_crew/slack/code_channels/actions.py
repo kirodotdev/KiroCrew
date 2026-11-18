@@ -147,15 +147,19 @@ def _responder(channel: str, user: str) -> Callable[[str], Awaitable[None]]:
 _tasks: set[asyncio.Future[Any]] = set()
 
 
-def dispatch(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> None:
+def dispatch(
+    orch: Any, payload: dict[str, Any], event: dict[str, Any], stop_seen: int | None = None
+) -> None:
     """Handle one ``code_channel_action`` off the socket listener.
 
     The click was acknowledged to Slack already, so Slack never retries it: the
     task is registered with the gateway's handler tasks (``orch._handler_tasks``,
     as the agent-session events are), so an automatic update's restart counts it
-    and waits for it instead of losing the click.
+    and waits for it instead of losing the click. *stop_seen*: the press the
+    listener read on the event's arrival (``stop_hold.seen``), for Create PR's
+    person's stamp.
     """
-    task = asyncio.ensure_future(handle(orch, payload, event))
+    task = asyncio.ensure_future(handle(orch, payload, event, stop_seen=stop_seen))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     handler_tasks = getattr(orch, "_handler_tasks", None)
@@ -170,16 +174,20 @@ async def drain() -> None:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
 
 
-async def handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> str:
+async def handle(
+    orch: Any, payload: dict[str, Any], event: dict[str, Any], stop_seen: int | None = None
+) -> str:
     """Answer one click; returns what happened (for tests and logs). Never raises."""
     try:
-        return await _handle(orch, payload, event)
+        return await _handle(orch, payload, event, stop_seen)
     except Exception:
         logger.exception("code channel action failed")
         return "error"
 
 
-async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> str:
+async def _handle(
+    orch: Any, payload: dict[str, Any], event: dict[str, Any], stop_seen: int | None
+) -> str:
     click = parse(payload, event)
     if click.key == ACTION_STOP:
         # The same Stop as Slack's button: exactly the checks its Stop asks, none
@@ -216,6 +224,7 @@ async def _handle(orch: Any, payload: dict[str, Any], event: dict[str, Any]) -> 
             text="",
             respond=respond,
             via="action",
+            stop_seen=stop_seen,
         )
         return "create-pr"
     surface.audit(click.user, OPERATION, "denied", resources, "unknown action")

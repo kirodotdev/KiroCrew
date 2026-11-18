@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.platform_compat_offloop_spawn import SpawnNotAdmitted
 from kiro_crew.slack.code_channels import stop_hold
 
 pytestmark = pytest.mark.asyncio
@@ -76,7 +77,13 @@ async def test_the_write_gate_goes_to_both_real_providers_and_admits_a_release()
     from kiro_crew.acp.session_provider import AcpSessionProvider
 
     slot = _slot("chat-h-2")
-    assert stop_hold.write_gate(object(), slot, "") == {}, "a client without the keyword"
+
+    class Plain:
+        async def stream(self, message: str, timeout: float | None = None) -> Any:
+            yield message
+
+    assert stop_hold.write_gate(object(), slot, "") == {}, "a client without a stream"
+    assert stop_hold.write_gate(Plain(), slot, "") == {}, "a stream without the keyword"
     shared = stop_hold.write_gate(object.__new__(AcpSessionProvider), slot, "")
     shared["prompt_gate"]()  # free: nothing raised
     _press(slot)
@@ -97,11 +104,14 @@ async def test_a_turn_held_at_the_write_ends_quietly_as_stopped() -> None:
     assert record.stop_reason == "failed: channel_stopped"
 
 
+@pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
 async def test_a_hook_command_never_spawns_once_the_stop_lands(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, windows: bool
 ) -> None:
     """r9 GPT B: a hook's vetting awaits (governance, the deny list, the sandbox argv).
-    A Stop at any of them spawns no command: the ask is after the last await."""
+    A Stop at any of them spawns no command: the ask is after the last await. On either
+    platform's shell (an unwrapped Windows argv spawns through the shell, so the sandbox
+    here wraps it and every spawn reaches the patched one)."""
     from test_slack_code_channel_stop_hold import _stepped
 
     import kiro_crew.hook_event_governance as governance
@@ -116,8 +126,9 @@ async def test_a_hook_command_never_spawns_once_the_stop_lands(
         spawned.append(stopped[0])
         raise OSError("not spawned in this test")
 
+    monkeypatch.setattr(hooks.platform_compat, "IS_WINDOWS", windows)
     monkeypatch.setattr(sandbox, "create_subprocess_limited", spawn)
-    monkeypatch.setattr(sandbox, "wrap_argv", lambda argv, **k: (list(argv), None))
+    monkeypatch.setattr(sandbox, "wrap_argv", lambda argv, **k: (["sandbox", *argv], None))
     monkeypatch.setattr(sandbox, "cgroup_scope_argv", lambda argv: list(argv))
     monkeypatch.setattr("kiro_crew.hooks._script_hooks_capability_denied", lambda _sk: None)
     monkeypatch.setattr(governance, "event_refusal", lambda *_a: None)
@@ -495,3 +506,148 @@ async def test_a_stop_before_a_harness_local_command_runs_nothing(
 
     await run_turn(TurnScript(events=[], message="/context show", setup=setup))
     assert answered == [] and key and key[0] in stop_hold._keys
+
+
+def _spawns(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """Record every OS spawn ``create_subprocess_limited`` attempts, running none."""
+    import kiro_crew.sandbox_rlimit as rlimit
+    from kiro_crew.testing.ids import UNALLOCATABLE_PID
+
+    spawned: list[tuple[Any, ...]] = []
+
+    async def spawn(*argv: Any, **_kw: Any) -> Any:
+        spawned.append(argv)
+        return SimpleNamespace(pid=UNALLOCATABLE_PID, returncode=0)
+
+    monkeypatch.setattr(rlimit.asyncio, "create_subprocess_exec", spawn)
+    return spawned
+
+
+async def test_a_stop_during_the_spawns_path_lookup_spawns_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare ``argv[0]`` is looked up on PATH in a worker thread, after the hook's
+    own ask. A Stop during that lookup spawns nothing."""
+    import kiro_crew.sandbox_rlimit as rlimit
+
+    if not rlimit.spawn_shim_argv(rlimit.RLIMIT_PROFILE_TOOL):
+        pytest.skip("no spawn shim here: the PATH lookup branch is not taken")
+    spawned = _spawns(monkeypatch)
+    stopped = [False]
+
+    def resolve(*_args: Any) -> str:
+        stopped[0] = True  # the Stop lands while the lookup runs
+        return "/bin/sh"  # no host executable needed: the spawn is stubbed
+
+    monkeypatch.setattr(rlimit, "_resolve_spawn_target", resolve)
+    with pytest.raises(SpawnNotAdmitted):
+        await rlimit.create_subprocess_limited("sh", "-c", "true", admit=lambda: not stopped[0])
+    assert stopped[0] and spawned == []
+
+
+async def test_a_stop_during_the_spawns_retry_backoff_spawns_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spawn that met a briefly missing interpreter is retried after a backoff. A
+    Stop during the backoff runs no retry."""
+    import kiro_crew.sandbox_rlimit as rlimit
+
+    if not rlimit.spawn_shim_argv(rlimit.RLIMIT_PROFILE_TOOL):
+        pytest.skip("no spawn shim here: the retry loop is not taken")
+    tries: list[tuple[Any, ...]] = []
+
+    async def spawn(*argv: Any, **_kw: Any) -> Any:
+        tries.append(argv)
+        raise FileNotFoundError("interpreter briefly missing")
+
+    monkeypatch.setattr(rlimit.asyncio, "create_subprocess_exec", spawn)
+    stopped = [False]
+
+    def retry(*_a: Any) -> bool:
+        stopped[0] = True  # the Stop lands as the backoff starts
+        return True
+
+    monkeypatch.setattr(rlimit, "_retry_interpreter_enoent", retry)
+    monkeypatch.setattr(rlimit, "_INTERPRETER_ENOENT_DELAYS", (0.0, 0.0))
+    with pytest.raises(SpawnNotAdmitted):
+        await rlimit.create_subprocess_limited(
+            "/bin/sh", "-c", "true", admit=lambda: not stopped[0]
+        )
+    assert len(tries) == 1, "the first attempt only: no retry after the Stop"
+
+
+async def test_a_hook_whose_spawn_is_refused_answers_held_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """The limited spawn's refusal reaches the hook as the same refused result as its
+    own ask, and the sandbox's temporary file is removed as on that path."""
+    import kiro_crew.hook_event_governance as governance
+    import kiro_crew.sandbox as sandbox
+    from kiro_crew import hooks
+    from kiro_crew.hooks import HOOK_EVENT_USER_PROMPT_SUBMIT
+
+    leftover = tmp_path / "sandbox-profile"
+    leftover.write_text("x", encoding="utf-8")
+    stopped = [False]
+
+    async def wrapped(argv: Any, **kw: Any) -> Any:
+        return ["sandbox", *argv], kw.get("env"), str(leftover)
+
+    async def spawn(*_a: Any, admit: Any = None, **_k: Any) -> Any:
+        stopped[0] = True  # the Stop lands inside the spawn's own awaits
+        if admit is not None and not admit():
+            raise SpawnNotAdmitted
+        raise AssertionError("spawned while held")
+
+    monkeypatch.setattr(sandbox, "sandboxed_spawn_argv_async", wrapped)
+    monkeypatch.setattr(sandbox, "create_subprocess_limited", spawn)
+    monkeypatch.setattr("kiro_crew.hooks._script_hooks_capability_denied", lambda _sk: None)
+    monkeypatch.setattr(governance, "event_refusal", lambda *_a: None)
+    monkeypatch.setattr(governance, "hook_refusal", lambda *_a: None)
+    hook = hooks.ScriptHook(id="h", name="h", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command="true")
+    result = await hooks.run_script_hook(hook, "ctx", admit=lambda: not stopped[0])
+    assert result.refused and result.exit_code == 2 and "Stop" in (result.error or "")
+    assert not leftover.exists()
+
+
+async def test_a_held_spawn_without_the_shim_spawns_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-shim fallback (Windows, a no-op profile, a truncated install) asks too."""
+    import kiro_crew.sandbox_rlimit as rlimit
+
+    spawned = _spawns(monkeypatch)
+    monkeypatch.setattr(rlimit, "spawn_shim_argv", lambda _profile: [])
+    with pytest.raises(SpawnNotAdmitted):
+        await rlimit.create_subprocess_limited("/bin/sh", "-c", "true", admit=lambda: False)
+    assert spawned == []
+
+
+async def test_a_stop_during_the_last_backoff_runs_no_final_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry budget's final, unguarded attempt asks too."""
+    import kiro_crew.sandbox_rlimit as rlimit
+
+    if not rlimit.spawn_shim_argv(rlimit.RLIMIT_PROFILE_TOOL):
+        pytest.skip("no spawn shim here: the retry loop is not taken")
+    tries: list[tuple[Any, ...]] = []
+
+    async def spawn(*argv: Any, **_kw: Any) -> Any:
+        tries.append(argv)
+        raise FileNotFoundError("interpreter briefly missing")
+
+    monkeypatch.setattr(rlimit.asyncio, "create_subprocess_exec", spawn)
+    stopped = [False]
+
+    def retry(*_a: Any) -> bool:
+        stopped[0] = len(tries) == 2  # the Stop lands in the last backoff
+        return True
+
+    monkeypatch.setattr(rlimit, "_retry_interpreter_enoent", retry)
+    monkeypatch.setattr(rlimit, "_INTERPRETER_ENOENT_DELAYS", (0.0, 0.0))
+    with pytest.raises(SpawnNotAdmitted):
+        await rlimit.create_subprocess_limited(
+            "/bin/sh", "-c", "true", admit=lambda: not stopped[0]
+        )
+    assert len(tries) == 2, "both budgeted attempts, no final one"

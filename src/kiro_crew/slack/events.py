@@ -402,7 +402,7 @@ async def init_socket_mode(
 
         # ── Code channels: a context-bar action item was clicked ──
         if event_type == CODE_CHANNEL_ACTION_EVENT:
-            dispatch_code_channel_action(orch, req.payload or {}, event)
+            dispatch_code_channel_action(orch, req.payload or {}, event, stop_seen=_stop_seen)
             return
 
         # ── Messages and mentions ──

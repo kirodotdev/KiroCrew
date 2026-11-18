@@ -34,6 +34,7 @@ from kiro_crew.dashboard.slot_persistence import metadata_line, metadata_values
 from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
 from kiro_crew.dashboard.state import durable_queue_entries
 from kiro_crew.history import SLOT_OWNED_META_KEYS, transcript_stem
+from kiro_crew.slack.code_channels import stop_hold
 
 K1 = source_ref_identity_key(("github", "github.com", "o", "r", 1, "", "change", ""))
 K2 = source_ref_identity_key(("github", "github.com", "o", "r", 2, "", "change", ""))
@@ -251,6 +252,7 @@ def _populated(state, *, app: str = "app-1"):
     slot = state.get_or_create_slot("src", app=app)
     for attr, value in _POPULATED.items():
         setattr(slot, attr, copy.deepcopy(value))
+    stop_hold.restore(slot)  # held as its key's record says: what the line writes
     slot._deferred_notes = sanitize_restored_deferred_notes(copy.deepcopy(_NOTES))
     slot._queue[:] = copy.deepcopy(_QUEUE)
     return slot

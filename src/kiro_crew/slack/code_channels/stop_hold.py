@@ -28,6 +28,7 @@ is last. A release is a synchronous flip whose save is started, not awaited.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import itertools
 import logging
 import os
@@ -145,13 +146,14 @@ def _published(state: Any, slot: Any) -> bool:
 
 
 def held_flag(slot: Any) -> bool:
-    """What the slot's line writes (off the loop, atomic reads only): held while its
-    mirror or its key's record says so, so a save of an object no ask has mirrored yet
-    (a direct publication before a shutdown save) still writes the hold."""
+    """What the slot's line writes (off the loop, atomic reads only): held while its key's
+    record says so, never from the object's mirror. Every writer of the line passes here,
+    so a save of an object no ask has mirrored yet (a direct publication before a shutdown
+    save) still writes the hold, and a retained old object whose key a person released
+    through another object writes the release, fenced or not."""
     key = str(getattr(slot, "key", "") or "")
     facts = list(_channels.values())
-    mirrored = getattr(slot, "_stop_held", False) is True
-    return mirrored or bool(key) and (key in _keys or any(k == key for k, _ in facts))
+    return bool(key) and (key in _keys or any(k == key for k, _ in facts))
 
 
 def restore(slot: Any) -> None:
@@ -167,9 +169,25 @@ def fresh(slot: Any) -> None:
 
 def _admits(slot: Any, stamp_: str) -> bool:
     """A person's stamp of this boot, no older than the press *slot*'s key is held at."""
+    return _stamp_admits(stamp_, _recorded(str(getattr(slot, "key", "") or "")) or 0)
+
+
+def _stamp_admits(stamp_: str, floor: int) -> bool:
     boot, _, press_ = str(stamp_ or "").partition(":")
-    floor = _recorded(str(getattr(slot, "key", "") or "")) or 0
     return boot == BOOT and press_.isdigit() and int(press_) >= floor
+
+
+def held_now(slot: Any, stamp_: str = "") -> bool:
+    """:func:`queues`' answer with none of its writes, safe on a thread off the loop (a
+    hook's spawn worker): the key's press read once, from snapshots, then decided from
+    that one value. Writes nothing, calls no asyncio, does no I/O; the mirror and its
+    save are the next :func:`queues` on the loop's."""
+    key = str(getattr(slot, "key", "") or "")
+    record = _keys.get(key)
+    facts = [p for k, p in list(_channels.values()) if k == key]
+    if not key or (record is None and not facts):
+        return False
+    return not _stamp_admits(stamp_, max([record or 0, *facts]))
 
 
 def decide(slot: Any, stamp_: str = "") -> str:
@@ -221,17 +239,18 @@ def write_gate(client: Any, slot: Any, stamp_: str) -> dict[str, Any]:
     """``client.stream``'s ``prompt_gate`` keyword: the turn's last ask, called by the
     transport synchronously under its write lock, right before the prompt is written,
     so a Stop that landed in the transport's awaits since the dispatch gate ends the
-    turn with nothing sent. Both real providers take it; any other client is called
-    as before."""
-    from kiro_crew.acp.session_provider import AcpSessionProvider
-    from kiro_crew.providers.acp import AcpProvider
+    turn with nothing sent. Both real providers declare it; a client whose ``stream``
+    does not is called as before."""
 
     def ask() -> None:
         if queues(slot, stamp_):
             raise HeldAtWrite(getattr(slot, "key", ""))
 
-    real = type(client) in (AcpProvider, AcpSessionProvider)
-    return {"prompt_gate": ask} if real else {}
+    try:
+        takes = "prompt_gate" in inspect.signature(client.stream).parameters
+    except (AttributeError, TypeError, ValueError):  # no stream, or no signature to read
+        takes = False
+    return {"prompt_gate": ask} if takes else {}
 
 
 def drain_kwargs(slot: Any, consumed: list[Any]) -> dict[str, Any]:
@@ -301,9 +320,9 @@ class Pressed(list):  # type: ignore[type-arg]
         if slot in self and _keys.get(slot.key) == self.press:
             slot._stop_held, slot._stop_hold_seq = self.before[id(slot)]
             self.remove(slot)
-            _drop(slot.key, self.press)  # the record goes back to what it was
-            if slot._stop_held:
+            if slot._stop_held:  # restored first, so a line encoded meanwhile reads it
                 _keys[slot.key] = slot._stop_hold_seq
+            _drop(slot.key, self.press)  # the record goes back to what it was
             _save_soon(state, slot)
 
 
@@ -388,25 +407,38 @@ def inherit(state: Any, creator: Any, newborn: Any) -> None:
 
 
 async def persist(state: Any, slots: list[Any]) -> None:
-    """The Stop's own writes, awaited before its brake: each encodes the live value."""
+    """The Stop's own writes, awaited before its brake: each encodes the live value, and
+    each writes only the object the registry holds for its key, checked right before the
+    save and again at its locked commit (``expected_slot_name``). An object closed,
+    replaced or under construction meanwhile is not written: its key stays owed, and the
+    first ask on the object published under it saves it (:func:`holds`)."""
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
     from kiro_crew.dashboard.chat_utils_slots import slot_history_key
 
     for slot in list(slots):
-        if slot.key in getattr(state, "_slots_under_construction", ()):
-            _owed.add(slot.key)  # only its constructor writes it until it is published
+        if not _published(state, slot):
+            _owe(slot.key)
             continue
         try:
             if not getattr(slot, "window_pending", False) and not slot.messages:
                 # A live helper with no rows yet (its birth record only): only a forced
                 # save writes an empty window's line, pinned to the transcript read here.
-                key = slot_history_key(slot)
-                await save_slot_off_loop(state, slot, force=True, expected_history_key=key)
-                continue
-            slot._dirty = True  # the save writes a dirty slot's line, loaded window or not
-            await save_slot_off_loop(state, slot)
+                pin: dict[str, Any] = {
+                    "force": True,
+                    "expected_history_key": slot_history_key(slot),
+                }
+            else:
+                slot._dirty = True  # the save writes a dirty slot's line, loaded or not
+                pin = {}
+            await save_slot_off_loop(state, slot, expected_slot_name=slot.key, **pin)
         except Exception:
             logger.warning("code channel stop: hold of %s not saved", slot.key, exc_info=True)
+
+
+def _owe(key: str) -> None:
+    """*key*'s hold, not written here, for the first ask on its published object."""
+    if _recorded(key) is not None:
+        _owed.add(key)
 
 
 def _save_soon(state: Any, slot: Any) -> None:
