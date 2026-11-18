@@ -1254,6 +1254,38 @@ class TestSentinelPathRepair:
         finally:
             svc.stop()
 
+    @pytest.mark.asyncio
+    async def test_sentinel_check_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        """The tick's stop-sentinel stat must not block the event loop thread."""
+        home = tmp_path / "home"
+        current = home / ".kiro" / "crew"
+        (current / "workspace").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(_an, "config_dir", lambda: current)
+        self._write_store(tmp_path, str(current / "workspace" / ".stop-chat-27"))
+
+        seen_threads: list[int] = []
+        real_exists = Path.exists
+
+        def _recording_exists(self_path, *args, **kwargs):
+            if self_path.name == ".stop-chat-27":
+                seen_threads.append(threading.get_ident())
+            return real_exists(self_path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", _recording_exists)
+        svc = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: asyncio.sleep(0, True))
+        try:
+            await svc.start()
+            (current / "workspace" / ".stop-chat-27").write_text("stop", encoding="utf-8")
+            svc._boot_holds.pop("abc123", None)
+            svc._arm_timer(svc._loops["abc123"], delay=0.0)
+            await svc._timers["abc123"]
+            assert svc._loops["abc123"].stopped_reason == _an.STOP_SENTINEL_REASON
+            assert seen_threads, "the sentinel was never checked"
+            assert threading.get_ident() not in seen_threads, "sentinel stat ran on the loop thread"
+        finally:
+            svc.stop()
+
 
 class TestPersistenceIsOffLoopAndOrdered:
     """`remove()` must not fsync inline (freezing chat and heartbeats on a Pause
