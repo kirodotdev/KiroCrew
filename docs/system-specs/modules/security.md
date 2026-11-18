@@ -1389,9 +1389,8 @@ read and rewritten under that one lock; `notes` sent as `""` is cleared, while
 `password` and `text` are required, so `""` for either is refused
 (`missing_field`). That is
 what lets the edit form, which cannot show those fields, save without erasing
-them. With the `secrets_vault` feature preview off, `GET /api/secrets` answers
-as before typed items: names only (`list_names`), no `items`, nothing
-decrypted. With it on, a listing decrypts each typed item for its public fields
+them. `GET /api/secrets` answers `names`, `items` and `managed`: a listing
+decrypts each typed item for its public fields
 (`get_items_readable`); one whose own ciphertext fails to decrypt is listed
 with `corrupt: true` so it can be deleted, and the rest still list. A missing
 or unreadable key file, or a key that opens no stored entry (another
@@ -1446,13 +1445,11 @@ Security properties:
   reference, never a value or file content; every place name and key (a job
   name, a grant key, a spec's server and env key) goes through the Schedule
   board's redaction. A kind that cannot be read is listed in `incomplete`, so the
-  pane never calls an item unused on a partial scan. With the `secrets_vault`
-  preview off the route reads nothing and answers as the path did before it
-  existed (405, `Allow: DELETE`). A remote server's `headers`
+  pane never calls an item unused on a partial scan. A remote server's `headers`
   and the process environment are not scanned: the first is never resolved, and
   the second is not a reference Kiro Crew wrote.
-- **Browser sign-in reads a login inside the gateway only.** Under the
-  `secrets_vault` feature preview, a browser `credentials` quick ask may be
+- **Browser sign-in reads a login inside the gateway only.** A browser
+  `credentials` quick ask may be
   answered from a vault login (`browser_harness/vault_fill.py`; see
   [browser](browser.md), "Sign-in from the Secrets vault"). This is no read-back
   path: the owner's card receives each matching login's entry name and username,

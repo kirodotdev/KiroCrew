@@ -32,8 +32,6 @@ import { SecretsOwnerOnlyNotice, useSecretsOwnerOnly } from './secretsOwnerOnly'
 import { fmtDateTime } from '../../i18n/format'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
-import { whenPreviewFlagSaved } from '../../hooks/usePreviewFlagServerSync'
-import { PREVIEW_SECRETS_VAULT } from '../../utils/previewFlags'
 import { SECRETS_GUIDE_URL as SECRETS_SETUP_GUIDE } from '../../utils/docsLink'
 import { SECRETS_AUTHORIZE_COMMAND } from './secretsAuthorizeCommand'
 import { FieldRow, FieldRows } from '../../components/ui/field-row'
@@ -139,7 +137,7 @@ function managedCopy(kind: string): { label: string } | null {
 }
 
 /** The WakaTime sign-in tokens entry, the one `wakatime_oauth` row the vault
- *  routes refuse (main's legacy panel draws it read-only the same way). */
+ *  routes refuse, so it is drawn read-only. */
 function isWakatimeOAuthTokens(secret: ManagedSecret): boolean {
   return secret.kind === 'wakatime_oauth' && secret.name === 'WAKATIME_OAUTH_TOKENS'
 }
@@ -1020,17 +1018,10 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
   })
   const lockedNames = useMemo(() => new Set(pendingWrites), [pendingWrites])
 
-  // Its own key under ['secrets'] (every invalidation still reaches it): with the
-  // preview off the gateway lists names only, so the legacy panel's cached
-  // listing must not stand in for this one. The list is read only after the
-  // switch's write has reached the gateway: read before it, the gateway still
-  // answers names only.
+  // Its own key under ['secrets'], so every invalidation still reaches it.
   const { data, isLoading, isError, error: listError } = useQuery<SecretsListResponse>({
     queryKey: ['secrets', 'items'],
-    queryFn: async () => {
-      await whenPreviewFlagSaved(PREVIEW_SECRETS_VAULT)
-      return api.secretsList()
-    },
+    queryFn: () => api.secretsList(),
   })
   const ownerOnly = useSecretsOwnerOnly(listError)
 

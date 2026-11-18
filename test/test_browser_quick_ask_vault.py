@@ -40,11 +40,6 @@ def rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return out
 
 
-@pytest.fixture
-def preview_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(vault_fill, "enabled", lambda: True)
-
-
 async def _store(name: str, urls: list[str], username: str = USER, password: str = CANARY) -> None:
     await SecretVault(config_dir()).set_item_with_revision(
         name, "login", {"username": username, "password": password, "urls": urls}
@@ -102,8 +97,11 @@ def test_a_saved_login_is_named_after_the_host() -> None:
 
 
 @pytest.mark.asyncio
-async def test_without_the_preview_the_card_and_the_route_are_as_before() -> None:
+async def test_an_unreadable_vault_leaves_the_plain_card_and_refuses_a_pick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     await _store("GitHub", [ORIGIN])
+    monkeypatch.setattr(vault_fill, "offer", lambda _origin: None)
     page = FakePage()
     _login(page)
     hub, _rec, ask = await _asked(page, dict(CREDS))
@@ -115,7 +113,7 @@ async def test_without_the_preview_the_card_and_the_route_are_as_before() -> Non
 
 @pytest.mark.asyncio
 async def test_a_picked_login_fills_the_bound_fields_and_leaks_nowhere(
-    preview_on: None, rows: list[dict[str, Any]], caplog: pytest.LogCaptureFixture
+    rows: list[dict[str, Any]], caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
     await _store("GitHub", [f"{ORIGIN}/login"])
@@ -153,7 +151,7 @@ async def test_a_picked_login_fills_the_bound_fields_and_leaks_nowhere(
 
 
 @pytest.mark.asyncio
-async def test_two_accounts_on_one_site_carry_their_own_usernames(preview_on: None) -> None:
+async def test_two_accounts_on_one_site_carry_their_own_usernames() -> None:
     await _store("GitHub", [ORIGIN], username="alice", password="pw-alice-CANARY")
     await _store("GitHub 2", [ORIGIN], username="bob", password="pw-bob-CANARY")
     page = FakePage()
@@ -169,7 +167,7 @@ async def test_two_accounts_on_one_site_carry_their_own_usernames(preview_on: No
 
 @pytest.mark.asyncio
 async def test_matches_past_the_cap_are_counted_on_the_card(
-    preview_on: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(vault_fill, "MAX_OFFERED", 2)
     for i in range(4):
@@ -182,7 +180,7 @@ async def test_matches_past_the_cap_are_counted_on_the_card(
 
 
 @pytest.mark.asyncio
-async def test_only_an_offered_login_still_matching_now_is_filled(preview_on: None) -> None:
+async def test_only_an_offered_login_still_matching_now_is_filled() -> None:
     await _store("GitHub", [ORIGIN])
     await _store("Other", ["https://example.com"])
     page = FakePage()
@@ -199,7 +197,7 @@ async def test_only_an_offered_login_still_matching_now_is_filled(preview_on: No
 
 @pytest.mark.asyncio
 async def test_typed_values_are_saved_only_when_ticked_and_never_over_an_item(
-    preview_on: None, rows: list[dict[str, Any]]
+    rows: list[dict[str, Any]],
 ) -> None:
     await _store("github.com", ["https://example.com"], password="kept")
     page = FakePage()
@@ -227,7 +225,7 @@ async def test_typed_values_are_saved_only_when_ticked_and_never_over_an_item(
 
 @pytest.mark.asyncio
 async def test_a_save_never_takes_a_name_the_secrets_route_reserves(
-    preview_on: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from kiro_crew.dashboard.handlers import secrets as secrets_mod
 
@@ -256,9 +254,7 @@ async def test_no_free_name_writes_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_untick_saves_nothing_and_another_account_saves_beside_a_match(
-    preview_on: None,
-) -> None:
+async def test_an_untick_saves_nothing_and_another_account_saves_beside_a_match() -> None:
     page = FakePage()
     _login(page)
     _hub, _rec, ask = await _asked(page, dict(CREDS))

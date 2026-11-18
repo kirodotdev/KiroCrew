@@ -53,7 +53,6 @@ import {
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
-  PREVIEW_SECRETS_VAULT,
   PREVIEW_WORKER_GRILL,
   readPreviewFlag,
   setPreviewFlag,
@@ -388,7 +387,6 @@ describe('Settings > Developer > Feature Previews', () => {
     'Artifact Deploy': true,
     'Webhooks': true,
     'MCP sign-in by Kiro Crew': true,
-    'Secrets vault redesign': false,
     'Decisions': true,
   }
   /** The drawn rows in the table's shape: label -> carries an InfoTip. */
@@ -646,14 +644,6 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(approvals.getAttribute('aria-checked')).toBe('false')
     await act(async () => { approvals.click() })
     expect(localStorage.getItem(PREVIEW_BRIDGE_APPROVALS)).toBe('1')
-  })
-
-  it('offers the Secrets vault redesign switch, off by default', async () => {
-    renderTab()
-    const vault = screen.getByRole('switch', { name: /^secrets vault redesign$/i })
-    expect(vault.getAttribute('aria-checked')).toBe('false')
-    await act(async () => { vault.click() })
-    expect(localStorage.getItem(PREVIEW_SECRETS_VAULT)).toBe('1')
   })
 
   it('offers the worker grill switch, off by default', async () => {
