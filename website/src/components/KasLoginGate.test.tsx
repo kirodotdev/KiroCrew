@@ -661,6 +661,43 @@ describe('KasLoginGate', () => {
 
   // ---- loopback transport ---------------------------------------------------
 
+  it('a flow closed while its begin is in flight cancels the late login and opens no tab', async () => {
+    loopbackShape()
+    let answer: (value: Awaited<ReturnType<typeof api.kasLoginBeginLoopback>>) => void = () => {}
+    kasLoginBeginLoopback.mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+    const view = renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+    // The begin request is in flight; the dialog closes first.
+    await waitFor(() => expect(kasLoginBeginLoopback).toHaveBeenCalledWith('google'))
+    view.unmount()
+    await act(async () => {
+      answer({
+        login_id: 'lb-late',
+        user_code: '',
+        verification_uri_complete: 'https://app.kiro.dev/signin?state=late',
+        expires_at: '2099-01-01T00:00:00Z',
+        auth_url: 'https://app.kiro.dev/signin?state=late',
+        port: 3128,
+      })
+    })
+    await waitFor(() => expect(kasLoginCancel).toHaveBeenCalledWith('lb-late'))
+    expect(openSpy).not.toHaveBeenCalled()
+  })
+
+  it('in card chrome the code screen opens the page by one button and goes back by an icon', async () => {
+    renderWithProviders(<KasLoginEmbedded />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+    expect(screen.getByRole('link', { name: 'Open sign-in page' })).toHaveAttribute(
+      'href',
+      'https://app.kiro.dev/account/device?user_code=ABCD-EFGH',
+    )
+    expect(screen.getByTestId('kas-login-code-expiry')).toHaveTextContent('Waiting… code expires')
+    // The back control returns to the choices.
+    fireEvent.click(screen.getByRole('button', { name: 'Use a different sign-in' }))
+    expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+  })
+
   it('loopback shape: Google opens the portal tab and shows the browser-wait screen', async () => {
     loopbackShape()
     renderWithProviders(<KasLoginGate />)

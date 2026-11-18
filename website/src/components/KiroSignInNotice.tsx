@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useLocation, useNavigate } from 'react-router-dom'
-import { ArrowRight } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 
 import { api } from '../api/client'
 import { ACP_BACKEND_KAS, configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
@@ -10,18 +9,13 @@ import { useOutageFailure } from '../hooks/useOutageFailure'
 import { useAppSelector } from '../store'
 import ErrorNotice from './ErrorNotice'
 import { reportForError } from '../utils/errorReport'
-import { useGuardedLeave } from './NavigationLeaveGuard'
+import { KiroSignInDialog } from './KiroSignInDialog'
 import { Btn } from './ui'
 import { settingsPath } from './settingsPath'
-import { KIRO_ACCOUNT_SETTINGS_TAB, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { KIRO_ACCOUNT_SETTINGS_TAB } from '../pages/developer/kiroSignInLink'
 import { useKiroSignInOfferedQuery } from '../pages/developer/useKiroSignInOffered'
 import { signInLapsed } from '../pages/developer/kiroSignInState'
-
-// Same cache key the sign-in flow and card read status under
-// (KasLoginGate.QUERY_KEY): a sign-in, sign-out or switch landing there
-// re-reads this one entry, so the notice clears the moment a new sign-in lands
-// instead of waiting for its own next poll.
-const STATUS_QUERY_KEY = ['kas-login'] as const
+import { useKasLoginStatus } from '../hooks/useKasLogin'
 
 /**
  * How often the notice re-reads the stored sign-in.
@@ -95,23 +89,18 @@ const LAPSED_DETAIL = {
  * error, shown wherever the status is read. Nothing at all on a build that offers no Kiro sign-in and
  * runs nothing on KAS, with no stored sign-in, or while it works.
  *
- * The lapsed and status-failure shapes carry the "Open sign-in settings"
- * button in their footer: signing in again is the fix the user can make.
- *
- * The hand-offs: the notice holds no input, and both the agent hand-off (where
- * shown) and
- * the sign-in button ask the page's leave guard before navigating, so a draft
- * on the page below is not lost.
- *
- * The sign-in button opens the card rather than starting a sign-in: the card
- * is where the provider is chosen, and a one-click browser sign-in from a
- * banner is a misclick hazard. Dismissing hides a lapsed notice for its cause
+ * The lapsed and status-failure shapes carry a "Sign in" button in their
+ * footer: signing in again is the fix the user can make. It opens the shared
+ * sign-in dialog (`KiroSignInDialog`) in place, so nothing on the page below
+ * is left; the agent hand-off (where shown) asks the page's leave guard first.
+ * The dialog shows the provider choices, so a banner press is never a one-click
+ * browser sign-in, a misclick hazard.
+ * Dismissing hides a lapsed notice for its cause
  * until the page reloads (a different cause shows again), and a failed read
  * until a read succeeds again (not on every failed poll).
  */
 export default function KiroSignInNotice() {
-  const navigate = useNavigate()
-  const leave = useGuardedLeave()
+  const [signInOpen, setSignInOpen] = useState(false)
   const { pathname } = useLocation()
   const [dismissedCause, setDismissedCause] = useState<string | null>(null)
   // `<which read>:<its dataUpdatedAt>` when its failure was dismissed.
@@ -142,12 +131,9 @@ export default function KiroSignInNotice() {
       window.removeEventListener('mc-auth-cleared', onCleared)
     }
   }, [])
-  const statusQuery = useQuery({
-    queryKey: STATUS_QUERY_KEY,
-    queryFn: api.kasLoginStatus,
-    enabled: kas || offered,
-    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
-  })
+  // The shared sign-in entry: a sign-in, sign-out or switch landing anywhere
+  // re-reads it, so the notice clears the moment a new sign-in lands.
+  const statusQuery = useKasLoginStatus({ enabled: kas || offered, poll: KIRO_SIGN_IN_NOTICE_POLL_MS })
   // A status read that failed because the gateway was down (a restart): the
   // offline state says so, and nothing about the sign-in is known to be wrong.
   const outageFailure = useOutageFailure(
@@ -158,16 +144,15 @@ export default function KiroSignInNotice() {
 
   if (pathname === settingsPath({ tab: KIRO_ACCOUNT_SETTINGS_TAB })) return null
 
+  // Signing in again is the fix the user can make: the shared sign-in dialog,
+  // opened over the stored sign-in, the same one Settings and the chat open.
   const openSignIn = (
-    <Btn
-      primary
-      data-testid="kiro-sign-in-notice-open"
-      className="min-w-0 max-w-full text-left"
-      onClick={() => leave(() => navigate(KIRO_SIGN_IN_PATH), KIRO_SIGN_IN_PATH)}
-    >
-      <span className="min-w-0">{i18nT('components.kiroSignInNotice.open_sign_in')}</span>
-      <ArrowRight size={14} className="shrink-0" aria-hidden="true" />
-    </Btn>
+    <>
+      <Btn primary data-testid="kiro-sign-in-notice-open" onClick={() => setSignInOpen(true)}>
+        {i18nT('components.kiroSignInPrompt.sign_in')}
+      </Btn>
+      <KiroSignInDialog open={signInOpen} onOpenChange={setSignInOpen} reauth />
+    </>
   )
 
   // A config read that failed before any good one: nothing says which backend
@@ -239,8 +224,7 @@ export default function KiroSignInNotice() {
         report={reportForError(failedRead.error)}
         messagePlacement="below"
         actionPlacement="below"
-        // The way to fix it yourself: the sign-in card shows the same read
-        // with its own controls, and this notice is hidden there.
+        // The way to fix it yourself: sign in again in the shared dialog.
         footer={<div className="mt-1.5">{openSignIn}</div>}
         askAgent
         onDismiss={() => setDismissedFailure(failedRead.key)}

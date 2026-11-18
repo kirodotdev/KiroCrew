@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { api, type KasLoginStatus } from '../../api/client'
 import { KasLoginEmbedded } from '../../components/KasLoginGate'
+import { KiroSignInDialog } from '../../components/KiroSignInDialog'
+import { useKasLoginStatus } from '../../hooks/useKasLogin'
 import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
@@ -178,6 +180,52 @@ function SignedInSummary({
 }
 
 /**
+ * The card's body: a signed-in view, or one Sign in button. Signing in,
+ * switching account and signing in again all open the shared sign-in dialog
+ * (`KiroSignInDialog`), the same one the chat opens; closing it backs out. A
+ * failed status read shows the shared flow's own error and Check again.
+ */
+function SignInBody({
+  renderSignedIn,
+}: {
+  renderSignedIn: (status: KasLoginStatus, reauth: () => void) => ReactNode
+}) {
+  // This card is what keeps the shared status fresh while Settings is open.
+  const statusQuery = useKasLoginStatus({ poll: 30_000 })
+  const [dialog, setDialog] = useState<null | 'sign_in' | 'reauth'>(null)
+  const status = statusQuery.data
+  let content: ReactNode
+  if (statusQuery.isPending) {
+    content = (
+      <p className="flex items-center gap-2 text-[13px] text-muted" data-testid="kiro-sign-in-pending">
+        <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+        {i18nT('pages.developer.kiroSignInCard.checking')}
+      </p>
+    )
+  } else if (!status) {
+    content = <KasLoginEmbedded renderAuthenticated={() => null} />
+  } else if (status.authenticated) {
+    content = renderSignedIn(status, () => setDialog('reauth'))
+  } else {
+    content = (
+      <Btn type="button" primary onClick={() => setDialog('sign_in')} data-testid="kiro-sign-in-open">
+        {i18nT('components.kiroSignInPrompt.sign_in')}
+      </Btn>
+    )
+  }
+  return (
+    <>
+      {content}
+      <KiroSignInDialog
+        open={dialog !== null}
+        onOpenChange={o => { if (!o) setDialog(null) }}
+        reauth={dialog === 'reauth'}
+      />
+    </>
+  )
+}
+
+/**
  * Settings > Kiro account card for signing in to Kiro Crew's OWN Kiro identity
  * -- the one the gateway hands to agent processes (KAS relay) and to the other
  * services that run as the user's Kiro account, without depending on
@@ -244,14 +292,8 @@ export function KiroSignInCard() {
         testId="kiro-sign-in-sources-error"
       />
       <SignInStoreUnreadableErrors sources={sources} />
-      <KasLoginEmbedded
-        renderPending={() => (
-          <p className="flex items-center gap-2 text-[13px] text-muted" data-testid="kiro-sign-in-pending">
-            <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
-            {i18nT('pages.developer.kiroSignInCard.checking')}
-          </p>
-        )}
-        renderAuthenticated={(status, { reauth }) => (
+      <SignInBody
+        renderSignedIn={(status, reauth) => (
           <>
             {notice !== 'using_kiro_cli' ? (
               <KiroSignInSourcesNotice
@@ -262,17 +304,6 @@ export function KiroSignInCard() {
             ) : null}
             <SignedInSummary status={status} onReauth={reauth} onSignedOut={() => setSignedOutNote(true)} />
           </>
-        )}
-        renderReauthCancel={(cancel, busy) => (
-          <button
-            type="button"
-            onClick={cancel}
-            disabled={busy}
-            className="mt-3 cursor-pointer text-[13px] text-muted underline-offset-2 hover:text-text hover:underline focus-ring disabled:cursor-not-allowed disabled:opacity-40"
-            data-testid="kiro-sign-in-keep-current"
-          >
-            {i18nT('pages.developer.kiroSignInCard.keep_current_sign_in')}
-          </button>
         )}
       />
     </>

@@ -746,8 +746,8 @@ function copyOf({ token, args }: Shape): string {
 
 /**
  * *message* led by the route the KAS engine took, in plain words, when the row
- * names one: every KAS prompt names the real route
- * (docs/decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md).
+ * names one, where the row is shown as text. The sign-in prompts with a button
+ * name no route (the recorded decision on signed-out sign-in prompts).
  */
 function withKasRoute(args: Args, message: string): string {
   const route =
@@ -828,17 +828,6 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
     }
   }
   return 'pending'
-}
-
-/**
- * Copy for a KAS signed-out row drawn with the sign-in button under it, or null
- * for any other row. The row's own copy names the Settings path, for a surface
- * with no button; next to the button, the button is the way.
- */
-export function kasSignedOutBesideButton(m: ChatMessage): string | null {
-  const shape = shapeOf(m)
-  if (shape?.token !== 'kas_signed_out') return null
-  return withKasRoute(shape.args, i18nT('pages.chat.gatewayNotice.kas_signed_out_sign_in_below'))
 }
 
 /**

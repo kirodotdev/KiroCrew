@@ -841,6 +841,11 @@ describe('authRequiredIsNewest -- the composer keeps Resume under a sign-in erro
     }
   })
 
+  it('holds under a row that asks for kiro-cli’s own sign-in too', () => {
+    const kiroCli = msg('error', { content: 'Not signed in.', meta: { kind: 'kiro_cli_sign_in' } })
+    expect(authRequiredIsNewest([user(), kiroCli])).toBe(true)
+  })
+
   it('lets go once a later turn opens or answers, and under a newer error of another kind', () => {
     expect(authRequiredIsNewest([user(), live(), msg('user', { content: 'again' })])).toBe(false)
     expect(authRequiredIsNewest([user(), live(), msg('assistant', { content: 'ok' })])).toBe(false)
@@ -884,5 +889,28 @@ describe('a usage-limit row hands the card its chat, so the card can offer one c
       // No Resume, so the card offers no new wait (ErrorCard.limitContinue.test.tsx).
       expect(el.props.onContinue).toBeUndefined()
     }
+  })
+})
+
+describe('the kiro-cli sign-in row reads this gateway, so only its own surface draws it', () => {
+  const row = msg('error', { content: 'Not signed in.', meta: { kind: 'kiro_cli_sign_in', crew_sign_in: true } })
+
+  it('is drawn where the surface offers this gateway\u2019s sign-in', () => {
+    const own = render(row, { slot: 's1', onOpenSignIn: () => {} }, { messages: [row], index: 0 }) as ReactElement<{ kiroCliSignIn?: boolean; kiroCliCrewSignIn?: boolean }>
+    expect(own.props.kiroCliSignIn).toBe(true)
+    expect(own.props.kiroCliCrewSignIn).toBe(true)
+  })
+
+  it('keeps the row text in a crew window, which passes no sign-in', () => {
+    const peer = render(row, { slot: 's1' }, { messages: [row], index: 0 }) as ReactElement<{ kiroCliSignIn?: boolean; kiroCliCrewSignIn?: boolean }>
+    expect(peer.props.kiroCliSignIn).toBe(false)
+    expect(peer.props.kiroCliCrewSignIn).toBe(false)
+  })
+
+  it('withholds Continue in a pane that offers no sign-in, as on its own surface', () => {
+    const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+    const pane = render(row, recoverable, { messages: [row], index: 0 }) as ReactElement<{ kiroCliSignIn?: boolean; onContinue?: unknown }>
+    expect(pane.props.kiroCliSignIn).toBe(false)
+    expect(pane.props.onContinue).toBeUndefined()
   })
 })
