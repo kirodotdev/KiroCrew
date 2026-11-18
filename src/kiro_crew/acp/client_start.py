@@ -117,7 +117,8 @@ from kiro_crew.agent_sdk.backends import (
     can_restore_session,
     launch_for,
 )
-from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.config.paths import data_home, kiro_sessions_dir
+from kiro_crew.constants import KIROCREW_SPAWN_HOME_ENV, KIROCREW_SPAWN_INSTANCE_ENV
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.owner_only_files import ensure_directory
@@ -480,6 +481,14 @@ async def _spawn(self: AcpClient) -> None:
     # a recycled pid cannot false-match.
     instance = uuid.uuid4().hex[:16]
 
+    def _env_after_marker(env: dict[str, str]) -> None:
+        # The reconciler shelters an unrecorded harness only through a recorded live
+        # process carrying the same instance, and the stamp is the one link that
+        # survives a setsid detach. Without it, a harness an agent starts from its
+        # shell tool on this path is reclaimed while the session is still serving.
+        env[KIROCREW_SPAWN_INSTANCE_ENV] = instance
+        env[KIROCREW_SPAWN_HOME_ENV] = str(data_home())
+
     def _name_scope(argv: list[str]) -> tuple[list[str], str]:
         # A no-op where the wrap did not happen, as on the runtime: the unit is
         # read off the argv, so a host with no scope announces none.
@@ -498,6 +507,7 @@ async def _spawn(self: AcpClient) -> None:
             scratch_label=self._session_key or "session",
             env_before_scrub=_env_before_scrub,
             env_after_scrub=_env_after_scrub,
+            env_after_marker=_env_after_marker,
             scope_argv=_name_scope,
             agent_env=self._agent_env_snapshot,
             extra_hidden_dirs=plan.extra_hidden_dirs,
