@@ -49,18 +49,32 @@ export function useInstallDispatch(update: UpdateState | null | undefined) {
   const armed = state === 'downloaded' && update?.armed === true
   // The shell refuses a relaunch from a window it does not count as the local
   // dashboard, so ask it before offering Restart now. Asked when the update
-  // arms, the only time the action shows. An older shell without the question
+  // arms, the only time the action shows, and again whenever the window comes
+  // back into view: the shell's port-owner probe can change its answer with
+  // nothing happening to the page, and one flaky `false` must not hide the
+  // action for the rest of the session. An older shell without the question
   // keeps offering it whenever `relaunch` exists.
   const hasRelaunchCheck = typeof window !== 'undefined' && typeof window.updateAPI?.canRelaunch === 'function'
   const [relaunchAccepted, setRelaunchAccepted] = useState(false)
   useEffect(() => {
     if (!armed || !hasRelaunchCheck) return
     let live = true
-    window.updateAPI!.canRelaunch!().then(
-      ok => { if (live) setRelaunchAccepted(ok === true) },
-      () => { if (live) setRelaunchAccepted(false) },
-    )
-    return () => { live = false }
+    let latest = 0
+    const ask = () => {
+      // Only the newest answer counts, so a slow probe cannot overwrite a fresher one.
+      const asked = ++latest
+      const settle = (ok: boolean) => { if (live && asked === latest) setRelaunchAccepted(ok) }
+      window.updateAPI!.canRelaunch!().then(ok => settle(ok === true), () => settle(false))
+    }
+    const askWhenVisible = () => { if (document.visibilityState === 'visible') ask() }
+    ask()
+    window.addEventListener('focus', ask)
+    document.addEventListener('visibilitychange', askWhenVisible)
+    return () => {
+      live = false
+      window.removeEventListener('focus', ask)
+      document.removeEventListener('visibilitychange', askWhenVisible)
+    }
   }, [armed, hasRelaunchCheck])
   useEffect(() => {
     if (!installMutation.isSuccess && !installMutation.isError) return
