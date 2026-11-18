@@ -25,4 +25,3 @@
 1 src/kiro_crew/dashboard/file_index.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/server.py
-2 src/kiro_crew/voice_reply.py
