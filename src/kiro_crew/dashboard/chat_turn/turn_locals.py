@@ -157,6 +157,9 @@ class _ChatTurn:
     died_notice: "_TurnDiedNote | None"
     _deferred_options_expiry: "bool"
     _deny_override: "DenyOverrideOffer | None"
+    # The web term an organisation's ``ask`` rule names for this request, or ""
+    # (``web_ask_rule.needs_person``); set with ``_deny_override``.
+    _web_ask: "str"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"

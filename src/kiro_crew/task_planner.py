@@ -416,6 +416,32 @@ async def decompose(
                     )
                     await client.reject_tool(event.request_id)
                     continue
+                # An organisation's ``ask`` on a KAS web call (``web_ask_rule``):
+                # this phase has nobody to ask, so it is refused, never approved.
+                from kiro_crew.web_ask_rule import held_phrases
+
+                _web_held = held_phrases(event)
+                if _web_held:
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        agent=agent or "kirocrew",
+                        source="taskrunner",
+                        tool_name=event.title,
+                        tool_kind=event.tool_kind,
+                        outcome="denied",
+                        request_id=event.request_id,
+                        error="web_ask_rule",
+                        metadata={"phase": "decomposition"},
+                    )
+                    await _steer_host_deny(
+                        client,
+                        event,
+                        "; ".join(_web_held)
+                        + ", so a person must approve it, and this phase has no approver",
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                    )
+                    await client.reject_tool(event.request_id)
+                    continue
                 approval_sent = await client.approve_tool(event.request_id)
                 sel().log_tool_invocation(
                     session_key=session_key,

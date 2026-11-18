@@ -80,3 +80,40 @@ async def test_every_auto_rung_asks_for_a_held_call_and_approves_the_rest(monkey
     else:
         client.approve_tool.assert_awaited_once_with("r1")
         prompt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rung", ["hook", "spawn", "auto", "trust", "yolo"])
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+async def test_an_org_ask_on_a_kas_web_call_reaches_the_prompt_on_every_auto_rung(
+    monkeypatch, rung, edition
+):
+    """``web_ask_rule``: in LTS no auto rung answers KAS's ask on an organisation's web
+    rule; an ``oss`` build approves it on that rung as before."""
+    from kiro_crew import web_ask_rule
+
+    monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: [])
+    monkeypatch.setattr(web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts"))
+    monkeypatch.setattr(handler, "sel", MagicMock())
+    prompt = AsyncMock(return_value=False)
+    monkeypatch.setattr(handler, "_request_approval", prompt)
+    client = MagicMock()
+    client.approve_tool = AsyncMock(return_value=True)
+    client.reject_tool = AsyncMock()
+    event = LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="Fetching https://example.com",
+        request_id="r1",
+        harness_tool_id="web_fetch",
+        kas_builtin_ids=True,
+        kas_managed_ask=True,
+    )
+
+    await handler._answer_permission_request(_rung(monkeypatch, rung), client, event)
+
+    if edition == "lts":
+        client.approve_tool.assert_not_awaited()
+        prompt.assert_awaited_once()
+    else:
+        client.approve_tool.assert_awaited_once_with("r1")
+        prompt.assert_not_awaited()

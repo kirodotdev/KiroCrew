@@ -346,6 +346,12 @@ async def _on_permission_prompt(
             # The card shows the refused command itself, redacted as the
             # label is, so the person reads what an allow would run.
             perm_meta["deny_override_command"] = _safe_full
+    from kiro_crew import web_ask_rule
+
+    if getattr(turn, "_web_ask", ""):
+        # An organisation's ``ask`` on this web call: a later trust grant's sweep
+        # of pending cards does not answer it (``web_ask_rule``).
+        perm_meta[web_ask_rule.CARD_META_KEY] = "1"
     # A decline known before the row exists is born into the row. Spec:
     # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).
     if tool_approval_timeout_secs() <= 0:

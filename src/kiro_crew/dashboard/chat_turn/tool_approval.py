@@ -561,14 +561,34 @@ def _pay_permission_cut(turn: _ChatTurn) -> None:
 
 
 def _audit_card_turn_decline(
-    *, session_key: str, slot: Any, event: Any, tier: str, held: bool = False
+    *,
+    session_key: str,
+    slot: Any,
+    event: Any,
+    tier: str,
+    held: bool = False,
+    web_term: str = "",
 ) -> None:
-    """Record that an auto-approve was withheld because the turn is a Dashboard card's.
+    """Record that an auto-approve was withheld because the turn is a Dashboard card's,
+    the call is under a held Bot limit, or an organisation's ``ask`` rule names its web
+    term (*web_term*, ``web_ask_rule.needs_person``).
 
     Written only for the tiers that decide without asking anyone (the hook
     auto-approve list and session trust or YOLO), where the grant WOULD have applied.
     ``tier`` names which one. The title is redacted like every other tool row.
     """
+    if held:
+        error = (
+            "the call falls under a Bot limit that could not be applied as written, "
+            "so a person must approve it"
+        )
+        reason = "bot_limit_held"
+    elif web_term:
+        error = "the organization's policy asks before this web tool, so a person must approve it"
+        reason = "web_ask_rule"
+    else:
+        error = "the turn was started by a Dashboard card, which never inherits an auto-approval"
+        reason = "card_origin_turn"
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
@@ -577,13 +597,8 @@ def _audit_card_turn_decline(
         tool_kind=event.tool_kind,
         outcome="auto_approve_declined",
         request_id=event.request_id,
-        error=(
-            "the call falls under a Bot limit that could not be applied as written, "
-            "so a person must approve it"
-            if held
-            else "the turn was started by a Dashboard card, which never inherits an auto-approval"
-        ),
-        metadata={"reason": "bot_limit_held" if held else "card_origin_turn", "tier": tier},
+        error=error,
+        metadata={"reason": reason, "tier": tier},
     )
 
 
@@ -672,7 +687,13 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     _held = await asyncio.to_thread(
         mate_held_rules.held_for, event, session_key=session_key, agent=slot.agent or ""
     )
-    _card_turn = _card_turn or bool(_held)
+    # An LTS organisation's ``ask`` rule on the web term this KAS request is for
+    # (``web_ask_rule``): KAS asks so a person answers, so it takes the same path.
+    from kiro_crew import web_ask_rule
+
+    _web_ask = web_ask_rule.needs_person(event)
+    turn._web_ask = _web_ask
+    _card_turn = _card_turn or bool(_held) or bool(_web_ask)
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;
@@ -713,6 +734,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # needs that sentence once.
     _declined_grant_notices: dict[str, str] = {}
     turn._declined_grant_notices = _declined_grant_notices
+    if _web_ask:
+        _declined_grant_notices["web_ask_rule"] = web_ask_rule.card_notice(_web_ask)
     # Backend-subagent request whose SECURITY context is absent
     # (structured params missing, or shell with no recoverable
     # command — see AcpEvent.child_low_fidelity): every
@@ -937,6 +960,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 event=event,
                 tier="hook_auto_approve",
                 held=bool(_held),
+                web_term=_web_ask,
             )
             tool_result = ToolHookResult(action=TOOL_ALLOW)
         if tool_result.action == TOOL_AUTO_APPROVE:
@@ -1429,7 +1453,12 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         # A card turn takes neither grant. Cleared HERE, before the trust-reads and
         # trust rungs read them, so the unconditional rung below stays as it is.
         _audit_card_turn_decline(
-            session_key=session_key, slot=slot, event=event, tier="trust", held=bool(_held)
+            session_key=session_key,
+            slot=slot,
+            event=event,
+            tier="trust",
+            held=bool(_held),
+            web_term=_web_ask,
         )
         slot_trusted = False
         yolo_active = False
