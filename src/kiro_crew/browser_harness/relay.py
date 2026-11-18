@@ -620,10 +620,23 @@ async def _connect_ws(upstream_ws_url: str) -> _WsUpstream:
             autoping=False,
             heartbeat=None,
         )
-    except Exception:
+    except BaseException:
         await session.close()
         raise
     return _WsUpstream(ws, session)
+
+
+async def request_browser_close(upstream_ws_url: str) -> None:
+    """Ask the browser behind *upstream_ws_url* to close, over a connection of its own.
+
+    The relay's own link may already be closed or reserved for the daemon, so the
+    request does not borrow it. The reply is not awaited: the browser exits.
+    """
+    upstream = await _connect_ws(upstream_ws_url)
+    try:
+        await upstream.send(json.dumps({"id": 1, "method": "Browser.close"}))
+    finally:
+        await upstream.close()
 
 
 async def _close_quietly(ws: web.WebSocketResponse | aiohttp.ClientWebSocketResponse) -> None:
