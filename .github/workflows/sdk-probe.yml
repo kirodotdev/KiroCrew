@@ -1,0 +1,76 @@
+name: Feishu SDK on-demand probe (diagnostic, not for merge)
+
+on:
+  push:
+    branches: [diag/feishu-sdk-platforms]
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and unpack the signed nightly app
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          url=$(curl -fsS "https://updates.crew.kiro.dev/feed/nightly/${ARCH}/latest-mac.yml" | awk '/url: .*\.zip/{print $3; exit}')
+          echo "zip: $url"
+          curl -fsSL -o app.zip "$url"
+          mkdir app && ditto -x -k app.zip app
+          APP=$(ls -d app/*.app)
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          spctl --assess --type execute --verbose "$APP"
+          py=$(ls "$APP"/Contents/Resources/backend-dist/kirocrew-backend*/bin/python3.12 | head -1)
+          echo "PY=$py" >> "$GITHUB_ENV"
+          codesign -dv --verbose=2 "$py" 2>&1 | grep -E "flags|Authority=Developer|TeamIdentifier"
+          codesign -d --entitlements - "$py" 2>&1 | tail -20
+      - name: Remove the bundled Feishu SDK from the unpacked copy
+        run: |
+          set -euo pipefail
+          sp=$(dirname "$PY")/../lib/python3.12/site-packages
+          rm -rf "$sp"/lark_oapi* "$sp"/Crypto "$sp"/pycryptodome* "$sp"/requests_toolbelt*
+      - name: Install and import from the data home
+        run: '"$PY" -I .github/sdk-probe/probe.py "$RUNNER_TEMP/crewhome"'
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and unpack the signed nightly installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=$(curl -fsS "https://updates.crew.kiro.dev/feed/nightly/latest.yml" | awk '/url: .*\.exe/{print $3; exit}')
+          echo "installer: $url"
+          curl -fsSL -o setup.exe "$url"
+          7z x -y -osetup setup.exe > /dev/null
+          pkg=$(find setup -name 'app-64.7z' | head -1)
+          7z x -y -oapp "$pkg" > /dev/null
+          py=$(find app -path '*backend-dist*' -name python.exe | head -1)
+          echo "PY=$py" >> "$GITHUB_ENV"
+          echo "python: $py"
+          sp="$(dirname "$py")/Lib/site-packages"
+          rm -rf "$sp"/lark_oapi* "$sp"/Crypto "$sp"/pycryptodome* "$sp"/requests_toolbelt*
+      - name: Install and import from the data home
+        shell: bash
+        run: '"$PY" -I .github/sdk-probe/probe.py "$RUNNER_TEMP/crewhome"'
