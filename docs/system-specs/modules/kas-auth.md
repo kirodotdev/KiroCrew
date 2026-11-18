@@ -348,6 +348,26 @@ shutdown budget) for an in-flight renewal to finish
 (`drain_sign_in_refresher`), so a rotated refresh token is persisted rather
 than consumed at the issuer and lost to the hard exit.
 
+The callback (`acp/kas_host_auth.answer_get_access_token`) retries a renewal
+that failed on the network (an aiohttp connection error such as DNS or connect,
+or a timeout) twice, 0.5s then 1.5s later, and starts no retry 10s past the
+first try. A refused or blocked renewal is never retried. The engine caches the
+token it was served until that token's expiry and never asks again when Kiro
+refuses it, so the runtime keeps a one-way digest of the last token it served
+(never the token). When a Crew-owned start fails because the host fail-closed
+its governance read (`KasGovernanceOffError`),
+`kas_host_auth.sign_in_refused` renews that token
+(`rejected_access_token`, under the same lock, so many starts at once make one
+refresh) and the retried start draws the new one. When the vault is empty or the
+renewal is refused (or cannot be attempted, `RefreshBlocked`, for a token already
+past its margin), the start fails at once with `AcpAuthRequired` and the
+KAS signed-out message instead of the retryable governance error. A network
+failure on that renewal keeps the governance error. Governance fail-close itself
+is unchanged. Known limit: the renewed token reaches the retried start because
+each start gets its own engine process by default. Sessions that share one
+engine process (the `chat_runtime_sharing` preview, or a subagent inside its
+parent's process) keep the engine's cached token until it expires.
+
 ### Proxy
 
 Every request this module sends to the sign-in service (device authorization and
