@@ -64,8 +64,13 @@ That is what makes `kirocrew config set telemetry.enabled true` — a write from
 SEPARATE process — take effect without a gateway restart. Inside the gateway the
 wait is skipped by the config watcher: `watch_config()`, registered at gateway boot,
 subscribes `_on_config_change` to the `telemetry` section, and any `telemetry.*`
-write awaits `asyncio.to_thread(shutdown)` so the next metric rebuilds from the new
-values. A config that cannot be READ
+write detaches the live recorder (`_detach`) so the next metric rebuilds from the new
+values. The old provider's flush normally runs on a daemon thread (`provider_flush`);
+if thread startup raises `RuntimeError`, the applier awaits an `asyncio.to_thread`
+fallback, so the flush never runs on the event loop. The normal path does not wait:
+a dashboard settings write waits for the applier, and a flush
+waits on every OTLP export, which on a host with remote destinations ran past the
+watcher's 10 s applier bound and held each write for 10 to 20 s. A config that cannot be READ
 yields "no change" rather than `False`, so a transient read error never tears down a
 working recorder; the worker stamps the recheck clock either way, so an unreadable
 config cannot turn every metric call into a fresh file read.
@@ -97,8 +102,9 @@ teardown, including the one that discards a superseded build.
 
 **Which thread flushes depends on who dropped the recorder.** The consent worker
 flushes on its own thread, after releasing the lock. `shutdown()` flushes on the
-CALLER's thread, so process teardown and the config-watcher applier (which calls it
-via `asyncio.to_thread`) both observe completion — still not under the lock.
+CALLER's thread, so process teardown observes completion. The config-watcher applier
+instead detaches and starts a daemon flush, awaiting `asyncio.to_thread` only if
+that thread cannot start. Neither path flushes under the lock.
 Partially-constructed readers from a failed init are reaped off-thread the same way
 (`_reap_readers_detached`), because a reader shutdown performs a final export.
 
@@ -197,7 +203,7 @@ sets an OTLP endpoint** (or the build ships a collector of its own).
   allowed — a narrower local choice always composes. An unreadable config also
   fails closed with a 409. A successful write reaches the recorder
   through the config-watcher applier (`watch_config` -> `_on_config_change` ->
-  `asyncio.to_thread(shutdown)`), not through the route itself, so the value
+  `_detach` plus a background flush), not through the route itself, so the value
   applies on the very next metric rather than at the next recheck.
 - **Env var:** export `KIROCREW_TELEMETRY=1` (also accepts `true`/`yes`/`on`;
   `0`/`false`/`no`/`off` force-disables). The env var overrides the config flag
@@ -213,7 +219,7 @@ recheck or at their next start.
 
 **Any `telemetry.*` change rebuilds the recorder, not just `enabled`.**
 `provider.watch_config()` registers one applier on the `telemetry` section, and its
-callback calls `shutdown()` — the next `get_recorder()` then builds a fresh
+callback detaches the recorder and flushes the old provider in the background — the next `get_recorder()` then builds a fresh
 recorder from the new config. That covers the settings the 30s consent recheck
 cannot see: the export cadence and every other value `_build_recorder` reads
 once. The recheck itself compares three things against the live recorder:
