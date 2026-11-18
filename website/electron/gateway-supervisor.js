@@ -484,6 +484,7 @@ function createGatewaySupervisor({
     probeGatewayPortBinding, probeGatewayPortOwner, snapshotGatewayPortPids, unverifiedIncumbent,
     waitForIncumbentExit, respawnGateway, showLoadingThenConnect, showUnrecoverableGatewayError,
     probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness, getGatewayOwnership, setGatewayOwnership,
+    getInstallEpoch: () => installEpoch,
     setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
   });
   const {
