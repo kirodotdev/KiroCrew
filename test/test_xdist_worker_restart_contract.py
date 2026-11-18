@@ -9,8 +9,8 @@ path, where the node is left in `assigned_work` but absent from
 never completes the session at all, which once burned the full
 40-minute job cap without ever naming the test at fault.
 
-Measured on the pins this job installs (pytest 9.0.3, pytest-xdist 3.5.0,
-pytest-timeout 2.2.0) with one test forced past `--timeout`:
+Measured with pytest 9.0.3, pytest-xdist 3.5.0 and pytest-timeout 2.2.0, with
+one test forced past `--timeout`:
 
     --max-worker-restart=2   run never finishes; one attempt was still live
                              after 108 minutes, no summary, no victim named

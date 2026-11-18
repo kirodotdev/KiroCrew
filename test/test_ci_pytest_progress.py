@@ -234,7 +234,10 @@ class TestCIProgress(unittest.TestCase):
         # test_close runs test_held[1] is in, or about to enter, its queue.
         # Swapping in a queue that starts with the shutdown mark right after the
         # close leaves test_held[1] assigned but never run, whatever the
-        # controller sends later. Without it, a
+        # controller sends later. The worker's own "shutdown" command handler
+        # puts that mark, so the test names no xdist-private marker object; the
+        # worker module runs as execnet's __channelexec__, so its marker cannot
+        # be imported from xdist.remote either. Without the swap, a
         # controller that sent nothing after the close finds no assigned work
         # and raises "no active workers" instead.
         (self.root / "test_cut.py").write_text(
@@ -245,9 +248,8 @@ class TestCIProgress(unittest.TestCase):
             "                  if type(p).__name__ == 'WorkerInteractor')\n"
             "    worker.channel.gateway._channelfactory._local_close(\n"
             "        worker.channel.id, sendonly=True)\n"
-            "    held = worker._make_queue()\n"
-            "    held.put(worker.SHUTDOWN_MARK)\n"
-            "    worker.torun = held\n"
+            "    worker.torun = worker._make_queue()\n"
+            "    worker.handle_command(('shutdown', {}))\n"
             "@pytest.mark.xdist_group('cut')\n"
             "@pytest.mark.parametrize('n', range(2))\n"
             "def test_held(n): pass\n"
