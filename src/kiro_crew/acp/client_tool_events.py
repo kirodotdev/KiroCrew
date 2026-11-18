@@ -343,7 +343,7 @@ async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") ->
             tool_event.title or "unknown",
             _redacted_input,
             agent_role=self._agent or None,
-            raw_tool_params=tool_event.raw_tool_params,
+            raw_tool_params=getattr(tool_event, "raw_tool_params", None),
         )
     except Exception:
         logger.warning("ACP-layer PreToolUse hook failed", exc_info=True)

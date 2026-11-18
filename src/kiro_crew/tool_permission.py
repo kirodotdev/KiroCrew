@@ -708,7 +708,7 @@ class SpecHooks:
                 mcp_server=event.mcp_server_name,
                 harness_tool_id=event.harness_tool_id,
                 acp_session_id=sid if self._spec.hooks and isinstance(sid, str) and sid else None,
-                raw_tool_params=event.raw_tool_params,
+                raw_tool_params=getattr(event, "raw_tool_params", None),
                 **self._identity,
             )
         if reason is None:

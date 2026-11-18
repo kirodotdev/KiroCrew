@@ -146,7 +146,6 @@ from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
 )
 from kiro_crew.hook_runtime.hook_dispatch import (  # noqa: F401
     _lane_dispatch_is_permitted,
-    _redact_tool_input_values,
     _run_one_lane_hook,
     _session_lane_matcher_context,
     _status_tag_ids,

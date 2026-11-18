@@ -29,7 +29,7 @@ from dashboard_approval_helpers import (
     _set_stream,
 )
 from named_cases_helpers import named_cases
-from redaction_structured_cases import github_classic
+from redaction_structured_cases import PEM_BEGIN, PEM_BODY, github_classic
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
@@ -1114,10 +1114,11 @@ class TestHookToolInputFromRawParams:
     """A PreToolUse hook on the dashboard permission path reads ``tool_input`` built
     from the call's ``raw_tool_params``, not parsed out of the scrubbed display text.
 
-    Parsed out of the display text, the scrubber's tag for a URL inside an escaped
-    ``\\"`` consumes the backslash, the JSON does not parse, and the payload goes out
-    with no ``tool_input`` at all. The URL's 64-character query value is what flags it;
-    the hook sees the tag, never the URL (hook inputs are redacted by design).
+    The display text is not always JSON: an edit's is the approval card's diff, and
+    a command holding an unterminated private-key block has its mask run past the
+    value, over the closing quote and brace. Parsed out of that text, the payload
+    would go out with no ``tool_input`` at all. The hook still sees redacted input:
+    a secret value is masked and a URL keeps its shape.
 
     The permission arm fires the hooks at four sites -- under a context builder's
     auto-approve, under its allow verdict before the interactive card, on the card's
@@ -1125,9 +1126,10 @@ class TestHookToolInputFromRawParams:
     -- and every one is driven here (``allow_then_card`` reaches the middle two).
     """
 
-    _QUERY = "a1b2c3d4" * 8
-    _URL = "https://example.com/a?id=" + _QUERY
-    _TAG = "[REDACTED: suspicious URL to example.com]"
+    _TAG = "[REDACTED: credential]"
+    _TOKEN = "a1b2c3d4" * 4
+    _URL = "https://example.com/a?token=" + _TOKEN
+    _MASKED_URL = "https://example.com/a?token=" + _TAG
 
     def _event(self, command: str) -> LLMEvent:
         from kiro_crew.acp._dispatch_parts.surfaced_text import redact_text
@@ -1145,7 +1147,28 @@ class TestHookToolInputFromRawParams:
             shell_classified=True,
         )
 
-    async def _pre_fire_inputs(self, tmp_path, command: str, *, site: str) -> list:
+    def _edit_event(self, params: dict) -> LLMEvent:
+        """A file-edit permission request as the KAS parser builds it: the display
+        text is the diff drawn for the approval card, the params stay a dict."""
+        from kiro_crew.acp._dispatch_parts.surfaced_text import derive_edit_diff
+
+        display = derive_edit_diff(params)
+        assert display.startswith("--- "), display
+        return LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Editing file",
+            tool_kind="edit",
+            request_id="req-1",
+            tool_input=display,
+            raw_tool_params=params,
+            raw_params_trusted=True,
+            is_shell=False,
+            shell_classified=True,
+        )
+
+    async def _pre_fire_inputs(
+        self, tmp_path, command: str, *, site: str, event: LLMEvent | None = None
+    ) -> list:
         """Every ``tool_input`` the PreToolUse fires of one turn carried; the tool
         was approved."""
         if site == "auto_approve":
@@ -1167,7 +1190,7 @@ class TestHookToolInputFromRawParams:
             # continuation completes instead of asking again.
             calls["n"] += 1
             if calls["n"] == 1:
-                return _async_iter([self._event(command), _complete_event()])
+                return _async_iter([event or self._event(command), _complete_event()])
             return _async_iter([_complete_event()])
 
         client.stream = MagicMock(side_effect=_stream)
@@ -1178,7 +1201,13 @@ class TestHookToolInputFromRawParams:
                 await _answer_approval(slot, "req-1", "approved")
 
             answerer = asyncio.get_running_loop().create_task(_approve())
-        with _patch_stats():
+        # The name-grant check resolves the command's program on this host's
+        # PATH; where it refuses (e.g. Windows), a hook auto-approve falls
+        # through to a card no one answers. This test is about tool_input.
+        _no_refusal = patch.object(
+            chat_runner, "_name_grant_refusal_for", new=AsyncMock(return_value=None)
+        )
+        with _patch_stats(), _no_refusal:
             await _run_chat(state, slot, "hello")
             if slot.task:
                 await slot.task
@@ -1194,20 +1223,50 @@ class TestHookToolInputFromRawParams:
         return [c.kwargs["tool_input"] for c in pre]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("site", ["auto_approve", "allow_then_card", "trusted_slot"])
-    async def test_double_quoted_url_still_hands_the_hook_a_command(self, tmp_path, site):
-        command = f'curl -s --url "{self._URL}"'
+    # No ``auto_approve``: a hook auto-approve is declined for a command line that
+    # does not tokenize (this one quotes a newline), so that site falls through to
+    # the card, which ``allow_then_card`` drives.
+    @pytest.mark.parametrize("site", ["allow_then_card", "trusted_slot"])
+    async def test_an_unterminated_private_key_fires_the_hook_without_tool_input(
+        self, tmp_path, site
+    ):
+        command = f"printf '%s' '{PEM_BEGIN}\n{PEM_BODY}'"
         with pytest.raises(json.JSONDecodeError):
             json.loads(self._event(command).tool_input)  # the display text alone
         inputs = await self._pre_fire_inputs(tmp_path, command, site=site)
-        assert inputs == [{"command": f'curl -s --url "{self._TAG}"'}] * len(inputs)
+        assert inputs and all(got is None for got in inputs)
 
     @pytest.mark.asyncio
-    async def test_single_quoted_url_hands_the_hook_the_redacted_command(self, tmp_path):
-        command = f"curl -s --url '{self._URL}'"
+    async def test_a_url_reaches_the_hook_with_only_its_secret_value_masked(self, tmp_path):
+        command = f'curl -s --url "{self._URL}"'
         inputs = await self._pre_fire_inputs(tmp_path, command, site="auto_approve")
-        assert inputs == [{"command": f"curl -s --url '{self._TAG}'"}]
-        assert self._QUERY not in json.dumps(inputs)
+        assert inputs == [{"command": f'curl -s --url "{self._MASKED_URL}"'}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("site", ["auto_approve", "allow_then_card", "trusted_slot"])
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {
+                "command": "strReplace",
+                "path": "/work/src/app.py",
+                "oldStr": "x = 1\n",
+                "newStr": "x = 2\n",
+            },
+            {"command": "create", "path": "/work/src/new.py", "content": "print('hi')\n"},
+        ],
+        ids=["str_replace", "fs_write_create"],
+    )
+    async def test_a_file_edit_hands_the_hook_its_arguments_not_the_diff(
+        self, tmp_path, site, params
+    ):
+        """An edit's display text is the approval card's diff, which is not JSON; a
+        hook that guards writes by path must still read the call's own arguments."""
+        event = self._edit_event(params)
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(event.tool_input)  # the diff alone
+        inputs = await self._pre_fire_inputs(tmp_path, "", site=site, event=event)
+        assert inputs == [params] * len(inputs)
 
     @pytest.mark.asyncio
     async def test_the_tool_call_frames_informational_fire_carries_the_params(

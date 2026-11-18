@@ -87,51 +87,84 @@ def persisted_hook_store() -> ScriptHookStore:
     return store
 
 
-def _redact_tool_input_values(value: object) -> object:
-    """Redact every string VALUE of decoded tool params, recursing into dicts and
-    lists. Keys are the tool's own parameter names, the schema a hook reads the
-    payload by, and stay as they are."""
-    if isinstance(value, str):
-        return redact_via_context(value)
-    if isinstance(value, dict):
-        return {k: _redact_tool_input_values(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact_tool_input_values(v) for v in value]
-    return value
-
-
-def hook_tool_input(raw_params: dict | None, display_input: str | None) -> object | None:
+def hook_tool_input(raw_params: dict | None, display_input: str | None) -> dict | None:
     """The ``tool_input`` a PreToolUse hook's stdin payload carries, or ``None``.
 
-    Built from the call's STRUCTURED params (``AcpEvent.raw_tool_params``) when
-    the event carries them, with every string value redacted on its own. Hook
-    scripts see redacted input by design (the same credential and exfiltration
-    scrub every other egress gets), and redacting the values one by one keeps
-    the redaction from breaking the JSON the hook reads: run over the rendered
-    display text instead, a ``[REDACTED: …]`` tag replacing a URL inside an
-    escaped ``\\"`` consumes the backslash, the text does not parse, and the
-    payload goes out with no ``tool_input`` at all, so a fail-closed hook refuses
-    a harmless read. The raw dict is the same source the built-in tool policy
-    judges (``AcpEvent.shell_command``), read regardless of
-    ``raw_params_trusted`` as that property reads it: the flag gates durable
-    grants, not what a hook is told about the call.
+    The invariant: the hook never sees more than the approval card shows. Built from
+    the call's STRUCTURED params (``AcpEvent.raw_tool_params``) when the event
+    carries them: the params are dumped and redacted exactly as the tool-call parser
+    builds the card's input text (``json.dumps(..., indent=2)``, then the tool-row
+    scrub ``agent_sdk.tool_row_text`` over the whole text, once), in full whatever the owner's
+    redaction setting. One pass over the whole text keeps every pairing a rule
+    needs: an access-key ID beside its secret, a header name beside its token, a
+    listed credential name beside its value. The loaded credential policy's own
+    patterns (``redact_via_context``) then run over that same text; they only
+    mask more, so the hook can see less than the card, never more. When the redacted
+    text parses to an object, a last ``redact_via_context`` pass scans every string
+    value and key in its nested dicts and lists. This catches credentials inside
+    JSON file content whose quotes the dump escapes, without breaking the parsed
+    object. When the text does not parse to an object (a mask replaced a number
+    or covered JSON syntax, as an unterminated private-key block's does), the
+    result is ``None`` and the hook gets no ``tool_input``. The display text is
+    not used in its place: an edit's is the approval card's diff. The raw dict is
+    the same source the built-in tool policy judges (``AcpEvent.shell_command``),
+    read regardless of ``raw_params_trusted`` as that property reads it: the flag
+    gates durable grants, not what a hook is told about the call.
 
-    Without structured params the already-redacted *display_input* is parsed as
-    before; text that does not parse is logged, so the gap is visible in the
+    Without structured params the already-redacted *display_input* is parsed;
+    text that does not parse is logged, so the gap is visible in the
     log, and yields ``None``.
     """
     if isinstance(raw_params, dict):
-        return _redact_tool_input_values(raw_params)
+        # circular import: the agent backend imports kiro_crew.hooks at load time.
+        from kiro_crew.agent_sdk import tool_row_text
+        from kiro_crew.security.redaction_switch import always_scan
+
+        try:
+            dump = json.dumps(raw_params, indent=2)
+        except (TypeError, ValueError, RecursionError):
+            # The card renders such params as text that is not JSON either.
+            return None
+
+        # A hook is a sink no output seam lists: it reads the params redacted in
+        # full, inside the dashboard turn's chat seam with the owner's redaction off
+        # too (the Stop hook payload does the same).
+        # The card's pass first, so every pairing a rule needs is intact; then the
+        # loaded credential policy's own patterns over the same text, which only
+        # masks more.
+        with always_scan():
+            whole = redact_via_context(tool_row_text(dump))
+            try:
+                parsed = json.loads(whole)
+            except ValueError:
+                return None
+            if not isinstance(parsed, dict):
+                return None
+
+            def redact_strings(value: object) -> object:
+                if isinstance(value, str):
+                    return redact_via_context(value)
+                if isinstance(value, list):
+                    return [redact_strings(item) for item in value]
+                if isinstance(value, dict):
+                    return {
+                        redact_via_context(key): redact_strings(item) for key, item in value.items()
+                    }
+                return value
+
+            return {redact_via_context(key): redact_strings(value) for key, value in parsed.items()}
     if not display_input:
         return None
     try:
-        return json.loads(display_input)
+        parsed = json.loads(display_input)
     except (ValueError, TypeError):
         logger.warning(
             "hook tool_input is not JSON after redaction; firing hooks without it",
             exc_info=True,
         )
         return None
+    # The payload's ``tool_input`` is an object: params are a JSON object.
+    return parsed if isinstance(parsed, dict) else None
 
 
 async def fire_tool_hooks(

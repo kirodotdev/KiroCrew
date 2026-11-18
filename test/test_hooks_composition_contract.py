@@ -213,7 +213,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
     "safe_reads": ("screen_windows_linked_ancestors",),
     "script_hooks": ("_script_hook_enabled_from",),
     "tool_identity": ("ToolCall",),
-    "hook_dispatch": ("hook_tool_input", "_redact_tool_input_values"),
+    "hook_dispatch": ("hook_tool_input",),
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,

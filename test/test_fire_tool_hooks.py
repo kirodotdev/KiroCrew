@@ -10,6 +10,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import (
+    PEM_BEGIN,
+    PEM_BODY,
+    aws_key_id,
+    aws_secret,
+    github_classic,
+    secret_cases,
+)
 
 from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
@@ -25,6 +33,8 @@ from kiro_crew.hooks import (
     set_global_hook_store,
 )
 
+pytestmark = pytest.mark.xdist_group(name="fire_tool_hooks_probe")
+
 
 @pytest.fixture(autouse=True)
 def _reset_global_store():
@@ -39,7 +49,22 @@ def hook_store(tmp_path: Path) -> ScriptHookStore:
     return ScriptHookStore(tmp_path)
 
 
-def _probe_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+@pytest.fixture(scope="module")
+def probe_script(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Share the immutable hook script; each case keeps its own output and cwd."""
+    script = tmp_path_factory.mktemp("hook_probe") / "probe.py"
+    script.write_text(
+        "import os, sys\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as f:\n"
+        "    f.write(sys.stdin.read())\n"
+        "with open(sys.argv[1] + '.cwd', 'w', encoding='utf-8') as f:\n"
+        "    f.write(os.getcwd())\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def _probe_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_script: Path):
     """A real hook command that writes its stdin event and its own cwd to files.
 
     Every hook child runs in ``tmp_path``: the real spawner is wrapped to pass
@@ -59,15 +84,6 @@ def _probe_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return await real_run(*args, **kwargs)
 
     monkeypatch.setattr(hooks_mod, "run_script_hook", run_in_tmp)
-    script = tmp_path / "probe.py"
-    script.write_text(
-        "import os, sys\n"
-        "with open(sys.argv[1], 'w', encoding='utf-8') as f:\n"
-        "    f.write(sys.stdin.read())\n"
-        "with open(sys.argv[1] + '.cwd', 'w', encoding='utf-8') as f:\n"
-        "    f.write(os.getcwd())\n",
-        encoding="utf-8",
-    )
     out = tmp_path / "event.json"
 
     def read() -> dict:
@@ -75,16 +91,16 @@ def _probe_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         assert Path(child_cwd).resolve() == tmp_path.resolve()
         return json.loads(out.read_text(encoding="utf-8"))
 
-    return f'"{sys.executable}" "{script}" "{out}"', read
+    return f'"{sys.executable}" "{probe_script}" "{out}"', read
 
 
 @pytest.fixture
-def probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_script: Path):
     """A store with one real PreToolUse hook that writes its stdin event to a file.
 
     Returns ``(store, read)``: ``read()`` parses the event the hook process got.
     """
-    command, read = _probe_command(tmp_path, monkeypatch)
+    command, read = _probe_command(tmp_path, monkeypatch, probe_script)
     store = ScriptHookStore(tmp_path / "store")
     store.create({
         "name": "probe",
@@ -214,60 +230,359 @@ class TestHookToolInput:
     """``hook_tool_input`` builds the payload's ``tool_input`` from the call's
     structured params, redacting value by value.
 
-    The URL below carries a 64-character query value, which the exfiltration
-    scrubber flags; built from parts so no scrubber-shaped literal sits in the
-    source as one token.
+    Credentials come from the shared generators in ``redaction_structured_cases``,
+    so no credential-shaped literal sits in the source as one token. A URL keeps
+    its shape: only the secret value inside it is masked.
     """
 
-    _QUERY = "a1b2c3d4" * 8
-    _URL = "https://example.com/a?id=" + _QUERY
-    _TAG = "[REDACTED: suspicious URL to example.com]"
+    _TAG = "[REDACTED: credential]"
+    # The token URL parameter is a rule-table row: its value is masked, the URL kept.
+    _TOKEN = "a1b2c3d4" * 4
+    _URL = "https://example.com/a?token=" + _TOKEN
+    _MASKED_URL = "https://example.com/a?token=" + _TAG
+    # An unterminated private-key block: the rule masks to the end of the text, so
+    # in the display JSON it also swallows the closing quote and brace.
+    _UNTERMINATED_KEY = f"printf '%s' '{PEM_BEGIN}\n{PEM_BODY}'"
+    # Display text that does not parse, built directly.
+    _UNPARSEABLE = '{\n  "command": "ls'
 
-    @classmethod
-    def _display_json(cls, command: str) -> str:
+    @staticmethod
+    def _display_json(params: dict) -> str:
         """The rendered display text as the tool_call parser produces it: the
-        params dumped as JSON, then run through the scrubber."""
+        params dumped as JSON, then scrubbed as a whole."""
         from kiro_crew.acp._dispatch_parts.surfaced_text import redact_text
 
-        return redact_text(json.dumps({"command": command}, indent=2))
+        return redact_text(json.dumps(params, indent=2))
 
-    def test_the_double_quoted_url_repro_breaks_the_display_json(self):
-        """Parsed display text: a tag replacing a URL inside an escaped ``\\"`` eats the backslash."""
-        rendered = self._display_json(f'curl -s --url "{self._URL}"')
+    def test_an_unterminated_private_key_breaks_the_display_json(self):
+        """Parsed display text: the key's mask runs past the value and eats the JSON's end."""
+        rendered = self._display_json({"command": self._UNTERMINATED_KEY})
         assert self._TAG in rendered
         with pytest.raises(json.JSONDecodeError):
             json.loads(rendered)
 
-    def test_double_quoted_url_yields_a_command_with_the_url_redacted(self):
-        command = f'curl -s --url "{self._URL}"'
-        got = hook_tool_input({"command": command}, self._display_json(command))
-        assert got == {"command": f'curl -s --url "{self._TAG}"'}
-        assert self._QUERY not in json.dumps(got)
-        json.loads(json.dumps(got))  # the payload a hook reads is JSON
+    def test_an_unterminated_private_key_gives_no_tool_input(self):
+        """The key's mask eats the dump's end, as it does on the approval card, so
+        the hook gets no ``tool_input`` rather than more than the card shows."""
+        params = {"command": self._UNTERMINATED_KEY}
+        assert hook_tool_input(params, self._display_json(params)) is None
 
-    def test_single_quoted_url_yields_the_same_redacted_command(self):
-        command = f"curl -s --url '{self._URL}'"
-        got = hook_tool_input({"command": command}, self._display_json(command))
-        assert got == {"command": f"curl -s --url '{self._TAG}'"}
+    def test_a_url_keeps_its_shape_with_only_the_secret_value_masked(self):
+        params = {"command": f"curl -s --url '{self._URL}'"}
+        got = hook_tool_input(params, self._display_json(params))
+        assert got == {"command": f"curl -s --url '{self._MASKED_URL}'"}
+        assert got == json.loads(self._display_json(params))  # same as the display path
+
+    @pytest.mark.parametrize(
+        "text",
+        [case[1] for case in secret_cases()],
+        ids=[case[0] for case in secret_cases()],
+    )
+    def test_nothing_the_display_path_masks_reaches_the_hook(self, text):
+        """Every word of a rule-table case that the display path masks is masked
+        in the hook's ``command`` too, so the hook never sees more than the card."""
+        params = {"command": text}
+        got = hook_tool_input(params, None)
+        assert got is None or set(got) == {"command"}
+        sent = json.dumps(got)
+        rendered = self._display_json(params)
+        try:
+            shown = json.loads(rendered)["command"]
+        except json.JSONDecodeError:
+            shown = rendered  # an unterminated block: its mask ran to the end
+        masked = [w for w in text.split() if len(w) >= 8 and w not in shown]
+        for word in masked:
+            assert json.dumps(word)[1:-1] not in sent, word
+
+    @pytest.mark.parametrize("shape", ["list", "fields"])
+    @pytest.mark.parametrize(
+        "text",
+        [case[1] for case in secret_cases()],
+        ids=[case[0] for case in secret_cases()],
+    )
+    def test_a_case_split_across_siblings_masks_what_the_display_path_masks(self, text, shape):
+        """Each rule-table case, its words spread over sibling list elements or
+        sibling fields: every word the display path masks in that layout is masked
+        for the hook too, a pair whose halves sit in different values included."""
+        words = text.split()
+        if shape == "list":
+            params: dict = {"args": words}
+        else:
+            params = {f"f{i}": w for i, w in enumerate(words)}
+        got = hook_tool_input(params, None)
+        assert isinstance(got, dict)
+        # Read as text: an unterminated block's mask runs to the end and breaks the JSON.
+        shown = self._display_json(params)
+        sent = json.dumps(got, indent=2)
+        masked = [w for w in words if len(w) >= 8 and json.dumps(w)[1:-1] not in shown]
+        for word in masked:
+            assert json.dumps(word)[1:-1] not in sent, word
+
+    def test_an_aws_secret_in_a_sibling_list_element_is_masked(self):
+        """An unlabelled secret is masked only with its access-key ID in the same
+        scanned text; here the two sit in different elements of one list."""
+        from kiro_crew.platform.context import redact_via_context
+
+        key_id, secret = aws_key_id(), aws_secret()
+        assert redact_via_context(secret) == secret  # alone it is an opaque string
+        params = {"args": ["--key", key_id, "--secret", secret]}
+        assert secret not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        assert got == {"args": ["--key", key_id, "--secret", self._TAG]}
+        assert params["args"][3] == secret  # the caller's dict is not rewritten
+
+    def test_an_aws_secret_in_a_sibling_field_is_masked(self):
+        """The same pair in two fields whose names are not credential names."""
+        key_id, secret = aws_key_id(), aws_secret()
+        params = {"id": key_id, "region": "us-east-1", "value": secret}
+        assert secret not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        assert got == {"id": key_id, "region": "us-east-1", "value": self._TAG}
+
+    def test_a_pair_beside_an_unterminated_private_key_gives_no_tool_input(self):
+        """When a mask swallows the JSON's syntax, the hook gets no ``tool_input``,
+        so neither the pair's secret nor the key body leaks."""
+        key_id, secret = aws_key_id(), aws_secret()
+        params = {"id": key_id, "value": secret, "command": self._UNTERMINATED_KEY}
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(self._display_json(params))
+        assert hook_tool_input(params, None) is None
+
+    def test_a_number_under_a_listed_credential_name_never_reaches_the_hook(self):
+        """The credential-name row masks a number with its key, and the masked text
+        is not JSON: the hook gets no ``tool_input`` rather than the number."""
+        number = 83920174
+        params = {"env": {"DB_PASSWORD": number}}
+        assert str(number) not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        assert str(number) not in json.dumps(got)
+
+    def test_a_loaded_policys_own_pattern_is_masked_in_hook_input(self, monkeypatch):
+        """A credential format only the loaded credential policy knows is masked for
+        the hook, after the card's pass and on the same text."""
+        from kiro_crew.hooks import current_context
+
+        marker = "xq" + "-site-" + "77aa11"
+        policy = current_context().credentials
+        base = policy.redact
+        monkeypatch.setattr(
+            policy, "redact", lambda text: base(text).replace(marker, "[REDACTED: credential]")
+        )
+        params = {"command": "curl -H 'X-Site: " + marker + "' https://example.com", "n": 1}
+        assert marker in self._display_json(params)  # the card's pass alone keeps it
+        got = hook_tool_input(params, None)
+        assert got == {
+            "command": "curl -H 'X-Site: [REDACTED: credential]' https://example.com",
+            "n": 1,
+        }
+
+    def test_a_private_key_before_the_path_gives_no_tool_input(self):
+        """A file write whose text holds an unterminated private-key block ahead of
+        ``path``: the key's mask runs to the end of the dump, as on the approval
+        card, so the hook gets no ``tool_input`` and no key body."""
+        params = {
+            "command": "create",
+            "text": f"{PEM_BEGIN}\n{PEM_BODY}",
+            "path": "/work/out.txt",
+        }
+        got = hook_tool_input(params, None)
+        assert got is None
+        for line in PEM_BODY.splitlines():
+            assert line not in json.dumps(got)
+
+    def test_a_key_id_before_a_private_key_still_masks_its_paired_secret(self):
+        """A string replace whose old text holds an access-key ID and then an
+        unterminated private-key block, with the paired secret in the new text:
+        the secret never reaches the hook."""
+        key_id, secret = aws_key_id(), aws_secret()
+        params = {
+            "command": "strReplace",
+            "path": "/work/creds.txt",
+            "oldStr": f"id {key_id}\n{PEM_BEGIN}\n{PEM_BODY}",
+            "newStr": f"secret {secret}",
+        }
+        assert secret not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        sent = json.dumps(got)
+        assert secret not in sent
+        for line in PEM_BODY.splitlines():
+            assert line not in sent
+
+    def test_a_key_id_in_a_partly_masked_value_still_pairs_with_its_secret(self):
+        """A value with a masked URL token and an access-key ID: the whole-text pass
+        still sees the ID, so it masks the secret in the sibling field."""
+        key_id, secret = aws_key_id(), aws_secret()
+        params = {"id": key_id + " " + self._URL, "value": secret}
+        assert secret not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        assert isinstance(got, dict) and set(got) == {"id", "value"}
+        assert got["value"] == self._TAG
+        assert secret not in json.dumps(got)
+
+    @staticmethod
+    def _break_the_dump(monkeypatch):
+        """Make the display path's redaction of the params' dump return text that
+        is not JSON."""
+        import kiro_crew.agent_sdk as agent_sdk
+
+        real = agent_sdk.tool_row_text
+
+        def fake(text):
+            return "{ not json" if text.startswith("{\n") else real(text)
+
+        monkeypatch.setattr(agent_sdk, "tool_row_text", fake)
+
+    def test_a_dump_that_does_not_parse_gives_no_tool_input(self, monkeypatch):
+        self._break_the_dump(monkeypatch)
+        assert hook_tool_input({"command": "ls", "path": "/x"}, None) is None
+        # The display text is not read in its place.
+        display = json.dumps({"command": "ls"})
+        assert hook_tool_input({"command": "ls"}, display) is None
+
+    @pytest.mark.asyncio
+    async def test_a_dump_that_does_not_parse_fires_without_tool_input(self, probe, monkeypatch):
+        store, read = probe
+        self._break_the_dump(monkeypatch)
+        await fire_tool_hooks(
+            store,
+            "Running: execute_bash",
+            json.dumps({"command": "ls"}),
+            raw_tool_params={"command": "ls"},
+        )
+        assert "tool_input" not in read()
 
     def test_redaction_recurses_into_nested_values_and_keeps_keys(self):
+        secret = github_classic(seed=7)
         params = {
-            "headers": {"X-Note": "aws key AKIAIOSFODNN7EXAMPLE"},
+            "headers": {"X-Note": "gh key " + secret},
             "urls": [self._URL],
             "n": 3,
         }
         got = hook_tool_input(params, None)
-        assert isinstance(got, dict)
-        assert set(got) == {"headers", "urls", "n"}
-        assert got["n"] == 3
-        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(got)
-        assert "[REDACTED: credential]" in got["headers"]["X-Note"]
-        assert got["urls"] == [self._TAG]
+        assert got == {
+            "headers": {"X-Note": "gh key " + self._TAG},
+            "urls": [self._MASKED_URL],
+            "n": 3,
+        }
         assert params == {
-            "headers": {"X-Note": "aws key AKIAIOSFODNN7EXAMPLE"},
+            "headers": {"X-Note": "gh key " + secret},
             "urls": [self._URL],
             "n": 3,
         }  # the caller's dict is not rewritten
+
+    # A token the bearer pattern matches only when the header name sits beside it;
+    # built from parts so no credential-shaped literal sits in the source.
+    _BEARER_TOKEN = "ab12" + "-cd34" + ".ef56" + "_gh78"
+    _PASSWORD = "hun" + "ter" + "2abc"
+
+    def test_a_nested_authorization_bearer_header_is_redacted(self):
+        """The bearer pattern needs the ``Authorization`` key next to the value;
+        a value scanned alone would reach the hook with the raw token."""
+        params = {
+            "url": "https://example.com/x",
+            "headers": {"Authorization": "Bearer " + self._BEARER_TOKEN},
+        }
+        assert self._BEARER_TOKEN not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        assert got == {
+            "url": "https://example.com/x",
+            "headers": {"Authorization": "Bearer " + self._TAG},
+        }
+        assert params["headers"]["Authorization"] == "Bearer " + self._BEARER_TOKEN
+
+    @pytest.mark.parametrize("command,field", [("create", "content"), ("strReplace", "newStr")])
+    def test_an_authorization_header_in_json_edit_text_is_redacted(self, command, field):
+        from kiro_crew.acp._dispatch_parts.surfaced_text import derive_edit_diff, redact_text
+
+        content = json.dumps({"headers": {"Authorization": "Bearer " + self._BEARER_TOKEN}})
+        params = {"command": command, "path": "/work/mcp.json", field: content}
+        if command == "strReplace":
+            params["oldStr"] = "{}"
+        shown = redact_text(derive_edit_diff(params))
+        assert self._BEARER_TOKEN not in shown
+        assert self._TAG in shown
+        got = hook_tool_input(params, shown)
+        assert isinstance(got, dict)
+        assert got["path"] == "/work/mcp.json"
+        assert self._BEARER_TOKEN not in json.dumps(got)
+        assert params[field] == content
+
+    @pytest.mark.parametrize(
+        "text",
+        [case[1] for case in secret_cases()],
+        ids=[case[0] for case in secret_cases()],
+    )
+    def test_raw_and_json_embedded_cases_hide_every_word_the_card_masks(self, text):
+        from kiro_crew.acp._dispatch_parts.surfaced_text import derive_edit_diff, redact_text
+        from kiro_crew.agent_sdk import tool_row_text
+
+        for content in (text, json.dumps({"v": text})):
+            calls = [
+                {"command": "create", "path": "/work/input.json", "content": content},
+                {
+                    "command": "strReplace",
+                    "path": "/work/input.json",
+                    "oldStr": "{}",
+                    "newStr": content,
+                },
+                {"content": content},
+            ]
+            for params in calls:
+                shown = (
+                    redact_text(derive_edit_diff(params))
+                    if "command" in params
+                    else tool_row_text(json.dumps(params, indent=2))
+                )
+                sent = json.dumps(hook_tool_input(params, shown))
+                for word in text.split():
+                    if len(word) >= 8 and word not in shown and json.dumps(word)[1:-1] not in shown:
+                        assert word not in sent, (params, word)
+                        assert json.dumps(word)[1:-1] not in sent, (params, word)
+
+    def test_parsed_strings_and_keys_are_redacted_inside_an_off_chat_seam(self, monkeypatch):
+        from kiro_crew import redaction_seams
+
+        monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+        content = json.dumps({"Authorization": "Bearer " + self._BEARER_TOKEN})
+        params = {"items": [{content: [content, 3, False, None]}]}
+        with redaction_seams.output_seam(redaction_seams.CHAT):
+            got = hook_tool_input(params, None)
+        masked = json.dumps({"Authorization": "Bearer " + self._TAG})
+        assert got == {"items": [{masked: [masked, 3, False, None]}]}
+        assert params == {"items": [{content: [content, 3, False, None]}]}
+
+    @pytest.mark.parametrize("name", ["password", "api_key"])
+    def test_a_value_under_a_listed_credential_name_is_redacted(self, name):
+        """A credential name the rule table lists is matched with its key: the
+        value alone is an opaque string no row flags."""
+        from kiro_crew.platform.context import redact_via_context
+
+        assert redact_via_context(self._PASSWORD) == self._PASSWORD
+        params = {name: self._PASSWORD, "region": "us-east-1"}
+        assert self._PASSWORD not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        assert got == {name: self._TAG, "region": "us-east-1"}
+
+    def test_a_credential_used_as_a_key_is_redacted(self):
+        secret = github_classic(seed=11)
+        params = {secret: "x"}
+        assert secret not in self._display_json(params)
+        got = hook_tool_input(params, None)
+        assert got == {self._TAG: "x"}
+
+    def test_params_are_redacted_inside_a_chat_seam_with_redaction_off(self, monkeypatch):
+        """The dashboard turn runs inside the chat seam, where the owner's OFF stands
+        the credential pass down; a hook is no seam's audience, so it still gets masks."""
+        from kiro_crew import redaction_seams
+
+        monkeypatch.setattr(redaction_seams, "_redaction_off", True)
+        secret = github_classic(seed=13)
+        with redaction_seams.output_seam(redaction_seams.CHAT):
+            from kiro_crew.platform.context import redact_via_context
+
+            assert redact_via_context(secret) == secret  # the seam stands down here
+            got = hook_tool_input({"command": "x " + secret, "password": self._PASSWORD}, None)
+        assert got == {"command": "x " + self._TAG, "password": self._TAG}
 
     def test_structured_params_win_over_display_text(self):
         got = hook_tool_input({"command": "ls"}, json.dumps({"command": "other"}))
@@ -277,10 +592,11 @@ class TestHookToolInput:
         assert hook_tool_input(None, json.dumps({"path": "/x"})) == {"path": "/x"}
         assert hook_tool_input(None, None) is None
         assert hook_tool_input(None, "") is None
+        assert hook_tool_input(None, json.dumps(["ls"])) is None  # not an object
 
     def test_unparseable_display_text_is_logged_not_swallowed(self, caplog):
         caplog.set_level(logging.WARNING, logger="kiro_crew.hooks")
-        assert hook_tool_input(None, self._display_json(f'curl "{self._URL}"')) is None
+        assert hook_tool_input(None, self._UNPARSEABLE) is None
         logged = [
             r
             for r in caplog.records
@@ -292,26 +608,25 @@ class TestHookToolInput:
 
     @pytest.mark.asyncio
     async def test_fire_tool_hooks_hands_the_hook_the_structured_input(self, probe):
-        """The end-to-end repro on the informational fire: the hook process gets
-        ``tool_input.command`` for the double-quoted URL, with the URL redacted."""
+        """End to end on the informational fire: the hook process gets
+        ``tool_input.command`` from the params, with the secret value masked,
+        when the display text alone would carry no ``tool_input``."""
         store, read = probe
         command = f'curl -s --url "{self._URL}"'
         await fire_tool_hooks(
             store,
             "Running: execute_bash",
-            self._display_json(command),
+            self._UNPARSEABLE,
             raw_tool_params={"command": command},
         )
         event = read()
-        assert event["tool_input"] == {"command": f'curl -s --url "{self._TAG}"'}
-        assert self._QUERY not in json.dumps(event["tool_input"])
+        assert event["tool_input"] == {"command": f'curl -s --url "{self._MASKED_URL}"'}
 
     @pytest.mark.asyncio
     async def test_fire_tool_hooks_without_params_still_fires_and_logs(self, probe, caplog):
         caplog.set_level(logging.WARNING, logger="kiro_crew.hooks")
         store, read = probe
-        command = f'curl -s --url "{self._URL}"'
-        await fire_tool_hooks(store, "ReadFile", self._display_json(command))
+        await fire_tool_hooks(store, "ReadFile", self._UNPARSEABLE)
         event = read()
         assert "tool_input" not in event
         assert any("not JSON after redaction" in r.getMessage() for r in caplog.records)
@@ -326,12 +641,12 @@ class TestHookToolInput:
             [],
             None,
             "Running: execute_bash",
-            self._display_json(command),
+            self._UNPARSEABLE,
             raw_tool_params={"command": command},
         )
         assert reason is None
         event = read()
-        assert event["tool_input"] == {"command": f'curl -s --url "{self._TAG}"'}
+        assert event["tool_input"] == {"command": f'curl -s --url "{self._MASKED_URL}"'}
 
     def test_every_caller_outside_the_dashboard_turn_passes_the_params(self):
         """Each production call of the two fires outside the dashboard turn hands over
@@ -360,7 +675,10 @@ class TestHookToolInput:
                         break
                     i += 1
                 call = text[start:i]
-                assert re.search(r"raw_tool_params=\w+\.raw_tool_params", call), (rel, call)
+                assert re.search(
+                    r"raw_tool_params=(\w+\.raw_tool_params|getattr\(\w+, \"raw_tool_params\", None\))",
+                    call,
+                ), (rel, call)
 
 
 class TestScriptHookStoreFire:
@@ -519,11 +837,11 @@ class TestScriptHookStoreStopContext:
 
     @pytest.mark.asyncio
     async def test_stop_tail_matcher_is_not_truncated(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_script: Path
     ):
         # A Stop hook whose matcher targets tail content must still fire — fire()
         # matches against the full context, not the 500-char env slice.
-        command, read = _probe_command(tmp_path, monkeypatch)
+        command, read = _probe_command(tmp_path, monkeypatch, probe_script)
         store = ScriptHookStore(tmp_path / "store")
         store.create({
             "name": "options-stop-hook",

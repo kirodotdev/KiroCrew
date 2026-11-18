@@ -875,21 +875,19 @@ class TestAcpClientToolHooks:
     @pytest.mark.asyncio
     async def test_pre_fire_builds_tool_input_from_raw_params_still_redacted(self, monkeypatch):
         """A frame that carries ``raw_tool_params`` hands the hook THAT dict, redacted
-        value by value, so a command holding a flagged URL in double quotes reaches the
-        hook as ``tool_input.command`` (valid JSON, key present) with the URL replaced
-        by the tag. The control the two tests above pin is intact: no raw URL, no raw
-        credential, reaches the hook script.
+        value by value, so a command whose display text does not parse (here the
+        approval card's diff-like text) reaches the hook as ``tool_input.command``.
+        The control the two tests above pin is intact: no raw credential reaches the
+        hook script, and a URL keeps its shape with only the secret value masked.
         """
         store = self._Store()
         monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
         client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
-        url = "https://example.com/a?id=" + "a1b2c3d4" * 8
-        command = f'curl -s --url "{url}" -H "x: AKIAIOSFODNN7EXAMPLE"'
-        from kiro_crew.acp._dispatch_parts.surfaced_text import redact_text
-
-        display = redact_text(json.dumps({"command": command}, indent=2))
+        url = "https://example.com/a?token=" + "a1b2c3d4" * 4
+        command = f'curl -s --url "{url}" -H "x: {_SECRET}"'
+        display = "--- a\n+++ b\n"  # not JSON: alone it would carry no tool_input
         with pytest.raises(json.JSONDecodeError):
-            json.loads(display)  # the display text alone would carry no tool_input
+            json.loads(display)
         await client._maybe_fire_pre_tool_hooks(
             self._call_ev(tool_input=display, raw_tool_params={"command": command})
         )
@@ -897,13 +895,13 @@ class TestAcpClientToolHooks:
         pre = [c for c in store.calls if c["event"] == "PreToolUse"]
         assert len(pre) == 1
         fired_input = pre[0]["tool_input"]
-        assert isinstance(fired_input, dict) and set(fired_input) == {"command"}
-        fired_str = json.dumps(fired_input)
-        assert "a1b2c3d4" * 8 not in fired_str  # flagged URL scrubbed
-        assert "AKIAIOSFODNN7EXAMPLE" not in fired_str  # raw credential scrubbed
-        assert "[REDACTED: suspicious URL to example.com]" in fired_input["command"]
-        assert "[REDACTED: credential]" in fired_input["command"]
-        assert fired_input["command"].startswith('curl -s --url "[REDACTED:')
+        assert fired_input == {
+            "command": (
+                'curl -s --url "https://example.com/a?token=[REDACTED: credential]"'
+                ' -H "x: [REDACTED: credential]"'
+            )
+        }
+        assert _SECRET not in json.dumps(fired_input)  # raw credential scrubbed
 
     @pytest.mark.asyncio
     async def test_pre_fire_uses_unknown_tool_name_when_title_none(self, monkeypatch):

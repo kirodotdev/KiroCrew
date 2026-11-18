@@ -7369,27 +7369,44 @@ The user-facing statement and its remedies (a Hooks-page hook, or `kiro-cli upda
 so a Kiro CLI choice runs on KAS) are in
 [steering-and-hooks](../../../src/kiro_crew/docs/steering-and-hooks.md#kiro-cli-hooks-that-survive-an-update).
 
-**`tool_input` is the call's structured params, redacted value by value.** Every
-PreToolUse fire -- the dashboard permission arm (`tool_approval.py` and the card's
+**`tool_input` is the call's structured params, redacted as the approval card
+redacts them.** The invariant: a hook never sees more than the approval card shows.
+Every PreToolUse fire -- the dashboard permission arm (`tool_approval.py` and the card's
 own approve in `permission_prompt.py`), the informational tool-call fire
 (`hook_dispatch.fire_tool_hooks`, the channel turn's `messaging/tool_hooks.py` included)
 and the subagent, task-runner, channel, CLI-chat and cron gate (`hook_dispatch.permission_pre_tool_block`)
 -- builds it through
 `hook_dispatch.hook_tool_input` from the event's `raw_tool_params` dict, the same
-source the built-in tool policy judges (`AcpEvent.shell_command`), with every string
-value run through `redact_via_context` on its own and the keys left as they are. Hook
-scripts therefore see redacted input, as they always did (`test_acp_client_tool_hooks.py::
-test_pre_fire_redacts_credential_in_tool_input` pins it): a credential or a flagged URL
-in a command arrives as its `[REDACTED: …]` tag, never as the raw value. What changed
-is the shape the redaction runs on. It used to run on the rendered display JSON and the
-result was parsed back, so a tag replacing a URL inside an escaped `\"` consumed the
-backslash, the text no longer parsed, the error was swallowed and the payload went out
-with no `tool_input` key, which made a fail-closed hook refuse a harmless read
-(#32388); a value redacted on its own cannot break the JSON around it. Only an event
-with no `raw_tool_params` falls back to parsing the already-redacted display text, and
-text that does not parse is logged at warning on `kiro_crew.hooks` rather than dropped
-silently. Pinned by `TestHookToolInput` (`test_fire_tool_hooks.py`) and
-`TestHookToolInputFromRawParams` (`test_dashboard_approval.py`).
+source the built-in tool policy judges (`AcpEvent.shell_command`). The params are dumped
+and redacted exactly as the tool-call parser (`session_update_parser.py`) builds the
+card's input text: `json.dumps(..., indent=2)`, then the tool-row scrub
+(`agent_sdk.tool_row_text`, the same `redact_text` the card uses) over the whole text,
+once; params that do not serialise give no `tool_input`. One pass over the whole text keeps every pairing a rule
+needs: a header name beside its token (`"Authorization": "Bearer …"`), a listed
+credential name such as `password` or `api_key` beside its value (a number included),
+or an access-key ID beside its secret in a sibling field or list element. The loaded
+credential policy's own patterns (`redact_via_context`) then run over that same text;
+they only mask more, so the hook can see less than the card, never more. When the
+redacted text parses to an object, a last `redact_via_context` pass scans every string
+value and key in its nested dicts and lists. It catches credentials inside JSON file
+content whose quotes the dump escapes, without breaking the parsed object. The
+result is `tool_input`. When the text does not parse to an object (a
+mask replaced a number, or an unterminated private-key block's mask ran to the end of
+the text), the payload carries no `tool_input` key, and the display text is not parsed
+in its place. The caller's dict is not rewritten, and keys stay as they are unless a
+key is itself a credential. Hook scripts therefore see redacted input
+(`test_acp_client_tool_hooks.py::test_pre_fire_redacts_credential_in_tool_input` pins
+it): a credential in a command arrives as `[REDACTED: credential]`, and a URL keeps its
+shape with only the secret value inside it masked. This scrub is not one of the owner's
+redaction seams, so it runs inside `always_scan()` whatever the redaction setting says,
+and it masks every word the display path masks
+(`test_nothing_the_display_path_masks_reaches_the_hook` checks each case of
+`redaction_structured_cases.secret_cases`). An edit's display text is the approval
+card's diff, not the params, so only an event with no `raw_tool_params` falls back to
+parsing the already-redacted display text, and text that does not parse is logged at
+warning on `kiro_crew.hooks` rather than dropped silently. Pinned by
+`TestHookToolInput` (`test_fire_tool_hooks.py`) and `TestHookToolInputFromRawParams`
+(`test_dashboard_approval.py`).
 
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,

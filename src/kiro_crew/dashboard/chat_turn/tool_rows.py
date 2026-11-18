@@ -560,7 +560,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             event.title,
             event.tool_input,
             session_model=hook_session_model(client, in_prompt=True),
-            raw_tool_params=event.raw_tool_params,
+            raw_tool_params=getattr(event, "raw_tool_params", None),
         )
     # Mirror tool call to linked Slack stream. Fenced like the reply
     # legs: a tool's purpose line is the peer's steer showing through in
