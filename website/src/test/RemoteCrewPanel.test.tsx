@@ -1220,7 +1220,7 @@ describe('RemoteCrewPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
-    await screen.findByText(/kiro-cli whoami did not answer/i)
+    expect((await screen.findByText(/kiro-cli whoami did not answer/i)).closest('[role="status"]')).not.toBeNull() // amber, not red
     const launch = screen.getByRole('button', { name: /^Launch$/ })
     expect(launch).toBeDisabled()
     expect(screen.getByText(/Choose the crew's Kiro identity to launch/i)).toBeInTheDocument()

@@ -12,6 +12,7 @@ ACP layer. New parsing or identity rules for the usage reading go here.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -508,6 +509,22 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
     return (await _fetch_whoami_or_none(kiro_bin)) or {}
 
 
+def _whoami_says_signed_out(raw: str) -> bool:
+    """True when whoami's leading JSON object is ``{"account": null}``.
+
+    Only that exact shape: any other key, or an ``account`` that is not null, is
+    not a positive signed-out answer.
+    """
+    start = raw.find("{")
+    if start < 0:
+        return False
+    try:
+        data, _end = json.JSONDecoder().raw_decode(raw[start:])
+    except ValueError:
+        return False
+    return data == {"account": None}
+
+
 async def _fetch_whoami_or_none(kiro_bin: str) -> dict[str, object] | None:
     """Run ``kiro-cli whoami --format json`` and parse it, keeping failure distinct.
 
@@ -554,8 +571,15 @@ async def _fetch_whoami_or_none(kiro_bin: str) -> dict[str, object] | None:
         out_map: dict[str, object] = dict(parse_whoami_output(raw))
         if not out_map:
             # Nonzero without an identity: an expired or broken session, a CLI
-            # fault -- nothing is known. A clean exit with no identity is known.
-            return None if proc.returncode else {}
+            # fault -- nothing is known. A clean exit with no identity is known,
+            # and so is kiro-cli 3.x's signed-out answer, `{"account":null}` with
+            # exit 1: it names the absence instead of failing. Read as unknown,
+            # it put "sign-in could not be read" on the launch form of every
+            # machine whose kiro-cli is simply signed out (a KAS host whose
+            # Crew sign-in is empty, a host running another harness).
+            if proc.returncode and not _whoami_says_signed_out(raw):
+                return None
+            return {}
         # whoami's own profile ARN, printed in the trailing (non-JSON) "Profile:"
         # block. Private (leading underscore): used only to prove this identity
         # belongs to the same account the credit numbers came from, and stripped

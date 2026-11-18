@@ -1176,7 +1176,7 @@ class TestSigninRestartRoute:
 
         broken = store.get(job_id)
         assert lj.target_is_unreadable(broken)
-        assert hc._preserved_code_may_be_approved(broken) is False
+        assert hc._unsigned_crew_may_be_reprobed(broken) is False
 
         probed = []
         monkey = getattr(hc, "_probe_signin_on_box")
@@ -1610,7 +1610,7 @@ class TestSigninPromptReprobe:
         store = state.cloud_launch_store
         before = json.dumps(store.get(job.id).to_dict(), sort_keys=True)
 
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", lambda *a, **k: True)
+        monkeypatch.setattr(hc.login_mod, "signin_state", lambda *a, **k: True)
         assert hc._probe_signin_on_box(state, job) is True
 
         after = json.dumps(store.get(job.id).to_dict(), sort_keys=True)
@@ -1637,7 +1637,7 @@ class TestSigninPromptReprobe:
         )
         store.save(job)
 
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", lambda *a, **k: True)
+        monkeypatch.setattr(hc.login_mod, "signin_state", lambda *a, **k: True)
         await self._fetch(state, job.id)
 
         out = store.get(job.id)
@@ -1667,7 +1667,7 @@ class TestSigninPromptReprobe:
             store.save(moved)
             return True
 
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", _logged_in)
+        monkeypatch.setattr(hc.login_mod, "signin_state", _logged_in)
         await self._fetch(state, job.id)
 
         out = store.get(job.id)
@@ -1685,7 +1685,7 @@ class TestSigninPromptReprobe:
             probed.append((iid, target))
             return True
 
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", _logged_in)
+        monkeypatch.setattr(hc.login_mod, "signin_state", _logged_in)
         resp = await self._fetch(state, job.id)
         assert resp.status == 409
         assert _read(resp)["code"] == "signin_already_complete"
@@ -1719,7 +1719,7 @@ class TestSigninPromptReprobe:
         seen: list = []
         monkeypatch.setattr(
             hc.login_mod,
-            "is_logged_in",
+            "signin_state",
             lambda iid, profile, region, *, target=None: seen.append(target) or False,
         )
         await self._fetch(state, job.id)
@@ -1727,7 +1727,7 @@ class TestSigninPromptReprobe:
 
     async def test_a_box_that_is_still_unsigned_is_left_alone(self, tmp_path, monkeypatch):
         state, job = await self._preserved(tmp_path)
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", lambda *a, **k: False)
+        monkeypatch.setattr(hc.login_mod, "signin_state", lambda *a, **k: False)
         resp = await self._fetch(state, job.id)
         assert resp.status == 409
         assert _read(resp)["code"] == "no_signin_pending"
@@ -1745,7 +1745,7 @@ class TestSigninPromptReprobe:
         def _boom(*_a, **_k):
             raise RuntimeError("ssm unreachable")
 
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", _boom)
+        monkeypatch.setattr(hc.login_mod, "signin_state", _boom)
         resp = await self._fetch(state, job.id)
         assert resp.status == 502
         assert _read(resp) == {
@@ -1760,18 +1760,20 @@ class TestSigninPromptReprobe:
             error="could not reach the crew to check its sign-in",
         )
 
-    @pytest.mark.parametrize("raises, expected", [(True, None), (False, False)])
+    @pytest.mark.parametrize(
+        "raises, answer, expected", [(True, None, None), (False, False, False), (False, None, None)]
+    )
     async def test_the_probe_distinguishes_unknown_from_unsigned(
-        self, tmp_path, monkeypatch, raises, expected
+        self, tmp_path, monkeypatch, raises, answer, expected
     ):
         state, job = await self._preserved(tmp_path)
 
         def _logged_in(*_a, **_k):
             if raises:
                 raise RuntimeError("ssm unreachable")
-            return False
+            return answer
 
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", _logged_in)
+        monkeypatch.setattr(hc.login_mod, "signin_state", _logged_in)
         assert hc._probe_signin_on_box(state, job) is expected
 
     async def test_a_non_terminal_job_is_never_probed(self, tmp_path, monkeypatch):
@@ -1785,7 +1787,7 @@ class TestSigninPromptReprobe:
         calls: list = []
         monkeypatch.setattr(
             hc.login_mod,
-            "is_logged_in",
+            "signin_state",
             lambda *a, **k: calls.append(1) or True,
         )
         resp = await self._fetch(state, job.id)
@@ -1799,32 +1801,48 @@ class TestSigninPromptReprobe:
         job.status = lj.AWAITING_SIGNIN
         state.cloud_launch_store.save(job)
         calls: list = []
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", lambda *a, **k: calls.append(1) or True)
+        monkeypatch.setattr(hc.login_mod, "signin_state", lambda *a, **k: calls.append(1) or True)
         resp = await self._fetch(state, job.id)
         assert resp.status == 200
         assert _read(resp)["signin"]["code"] == "A"
         assert calls == []
 
-    async def test_a_job_with_no_preserved_code_is_not_probed(self, tmp_path, monkeypatch):
-        """Nothing is pending approval, so there is nothing that could have been
-        approved — probing every terminal job would be the blanket poll this
-        deliberately is not."""
+    @pytest.mark.parametrize(
+        "box, status, code, signed",
+        [
+            # Signed in later by a path the job never saw (the crew's own
+            # dashboard, a shell on it): the badge must clear.
+            (True, 409, "signin_already_complete", True),
+            # The box answered that it is not signed in: the badge is real.
+            (False, 409, "no_signin_pending", False),
+            # The box could not be asked (SSM down, a crew with no Kiro sign-in
+            # program): unknown, never "signed out".
+            (None, 502, "signin_probe_failed", False),
+        ],
+    )
+    async def test_a_job_with_no_preserved_code_is_reprobed(
+        self, tmp_path, monkeypatch, box, status, code, signed
+    ):
+        """The false "Needs sign-in": a crew whose code expired, later signed in
+        another way, stayed badged forever because only a job still holding a code
+        was ever re-probed."""
         state, job = await self._preserved(tmp_path)
         job.signin = None
         state.cloud_launch_store.save(job)
         calls: list = []
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", lambda *a, **k: calls.append(1) or True)
+        monkeypatch.setattr(hc.login_mod, "signin_state", lambda *a, **k: calls.append(1) or box)
         resp = await self._fetch(state, job.id)
-        assert resp.status == 409
-        assert _read(resp)["code"] == "no_signin_pending"
-        assert calls == []
+        assert resp.status == status
+        assert _read(resp)["code"] == code
+        assert calls == [1]
+        assert state.cloud_launch_store.get(job.id).signin_detected is signed
 
     async def test_an_already_signed_job_is_not_probed(self, tmp_path, monkeypatch):
         state, job = await self._preserved(tmp_path)
         job.signin_detected = True
         state.cloud_launch_store.save(job)
         calls: list = []
-        monkeypatch.setattr(hc.login_mod, "is_logged_in", lambda *a, **k: calls.append(1) or True)
+        monkeypatch.setattr(hc.login_mod, "signin_state", lambda *a, **k: calls.append(1) or True)
         await self._fetch(state, job.id)
         assert calls == []
 

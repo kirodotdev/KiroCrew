@@ -1047,6 +1047,13 @@ class TestHandlerBoundary:
         assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") is None
         current["proc"] = _Proc(0, b"{}")
         assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") == {}
+        # kiro-cli 3.x signed out: `{"account":null}`, exit 1. A known absence,
+        # not "could not be read" (the launch form's false red error).
+        current["proc"] = _Proc(1, b'{"account":null}\n')
+        assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") == {}
+        # Any other JSON on a nonzero exit is still unknown.
+        current["proc"] = _Proc(1, b'{"account":null,"error":"io"}')
+        assert await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli") is None
         current["proc"] = _Proc(1, IDC_WHOAMI.encode())
         got = await sessions_mod._fetch_whoami_or_none("/bin/kiro-cli")
         assert got is not None and got["account_type"] == "IamIdentityCenter"

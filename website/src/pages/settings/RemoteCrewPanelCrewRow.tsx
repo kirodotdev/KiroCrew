@@ -236,6 +236,7 @@ export function CrewRow({
   onFetchSignin,
   fetchingSignin,
   signinNotice,
+  signinCheckError = null,
 }: {
   inst: InstanceView
   cloudTag: string | null
@@ -279,6 +280,9 @@ export function CrewRow({
   onFetchSignin: (id: string) => void
   fetchingSignin: boolean
   signinNotice: SigninNotice | null
+  /** Why the gateway could not ask this crew's box whether it is signed in, or
+   *  null. Not a badge: nobody checked that its chats fail. */
+  signinCheckError?: string | null
 }) {
   const connected = inst.status.state === 'connected'
   const isCloud = cloudTag !== null
@@ -595,6 +599,9 @@ export function CrewRow({
     {/* BELOW the row header, and naming its crew. Rendered above the name it read
         as a page-level warning banner about the whole panel, and with several rows
         it attributed the sign-in to whichever crew the reader was looking at. */}
+    {signinCheckError && (
+      <ErrorNotice variant="inline" impact="minor" className="mt-2" askAgent message={signinCheckError} />
+    )}
     {awaitingSignin && signinJob && (
       <SigninPromptBlock
         job={signinJob}
