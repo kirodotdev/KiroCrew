@@ -47,6 +47,8 @@ class Tabs:
     """
 
     channel_id: str = ""
+    #: The Plan canvas tab's view id ("" while the channel has none).
+    plan: str = ""
     #: The Workers tab's view id ("" while it has none).
     workers: str = ""
     #: Whether the Code tab shows the channel's diff (so a link to it lands on something).
@@ -62,7 +64,7 @@ class Tabs:
 
     @property
     def any(self) -> bool:
-        return bool(self.channel_id) and bool(self.workers or self.code or self.prs)
+        return bool(self.channel_id) and bool(self.plan or self.workers or self.code or self.prs)
 
 
 def tab_element(channel_id: str, tab_id: str) -> dict | None:
@@ -73,10 +75,12 @@ def tab_element(channel_id: str, tab_id: str) -> dict | None:
 
 
 def tab_links(tabs: Tabs | None, *, workers: bool = True, code: bool = True) -> list[dict]:
-    """``Workers · Code`` as channel-tab elements (empty when no tab can be linked)."""
+    """``Plan · Workers · Code`` as channel-tab elements (empty when no tab can be linked)."""
     if tabs is None or not tabs.channel_id:
         return []
     links = []
+    if tabs.plan:
+        links.append(tab_element(tabs.channel_id, tabs.plan))
     if workers and tabs.workers:
         links.append(tab_element(tabs.channel_id, tabs.workers))
     if code and tabs.code:

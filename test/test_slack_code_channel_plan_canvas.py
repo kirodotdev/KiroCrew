@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 import test_slack_code_channel_api_gaps as _gaps
+from slack_code_channel_view_tabs_helpers import _NOW, _channel_elements, _link, _snapshot
 from slack_code_channels_helpers import OWNER, SELF_USER
 from test_slack_code_channel_api_gaps import (
     _FAKE_KEY,
@@ -22,7 +23,9 @@ from test_slack_code_channel_api_gaps import (
     _thread,
 )
 
-from kiro_crew.slack.code_channels import comments, tools
+from kiro_crew.slack.code_channels import comments, tabs, tools, wrapup
+from kiro_crew.slack.code_channels.board import render
+from kiro_crew.slack.code_channels.surface_store import store as surface_store
 
 pytestmark = pytest.mark.asyncio
 env = _gaps.env  # the shared Slack code-channel environment, by fixture name
@@ -198,3 +201,36 @@ async def test_the_newest_feedback_is_kept_when_a_read_is_cut(env: Any) -> None:
     assert "newest reply" in out.text and "older reply" in out.text
     assert ": c0\n" not in out.text and ": c1\n" not in out.text
     assert "2 older comments are not shown" in out.text
+
+
+def test_the_board_header_links_the_plan_tab_first() -> None:
+    plan_tabs = render.Tabs(channel_id=CH, plan="VPLAN", workers="VWORK", code=True)
+    header = render.board_blocks(_snapshot(), _link, tabs=plan_tabs, now=_NOW)[1]
+    elements = header["elements"][0]["elements"]
+    assert elements[1] == {"type": "channel", "channel_id": CH, "tab_id": "VPLAN"}
+    assert elements[3] == {"type": "channel", "channel_id": CH, "tab_id": "VWORK"}
+    assert elements[5] == {"type": "channel", "channel_id": CH, "tab_id": "code"}
+    # The plan tab alone is enough for a link; a tab id that is no Slack id never is.
+    assert _channel_elements(
+        render.board_blocks(_snapshot(), _link, tabs=render.Tabs(CH, plan="VPLAN"), now=_NOW)
+    )
+    bad = render.Tabs(channel_id=CH, plan="V|<x>")
+    assert _channel_elements(render.board_blocks(_snapshot(), _link, tabs=bad, now=_NOW)) == []
+
+
+def test_the_wrap_up_links_the_plan_tab_before_the_code_tab() -> None:
+    facts = wrapup.Facts(branch="kc/x", plan_tab="VPLAN", code_tab=True, pr_tabs=((42, "VPR42"),))
+    found = _channel_elements(wrapup.wrap_up_blocks("Done.", facts, CH))
+    assert [e["tab_id"] for e in found] == ["VPLAN", "code", "VPR42"]
+    assert _channel_elements(wrapup.wrap_up_blocks("Done.", wrapup.Facts(plan_tab="a/b"), CH)) == []
+
+
+async def test_the_recorded_plan_view_id_reaches_the_links(env: Any) -> None:
+    _bind(env)
+    assert (
+        wrapup._plan_tab(CH) == ""
+        and tabs.tabs_for(surface_store().get(CH), CH, code=False).plan == ""
+    )
+    surface_store().update(CH, plan_view_id="VPLAN")
+    assert wrapup._plan_tab(CH) == "VPLAN"
+    assert tabs.tabs_for(surface_store().get(CH), CH, code=False).plan == "VPLAN"

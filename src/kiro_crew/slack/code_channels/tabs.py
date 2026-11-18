@@ -540,6 +540,7 @@ def tabs_for(record: Any, channel: str, *, code: bool) -> Any:
     )
     return Tabs(
         channel_id=channel,
+        plan=str(getattr(record, "plan_view_id", "") or ""),
         workers=str(workers["view_id"]) if workers else "",
         code=code,
         prs=prs,

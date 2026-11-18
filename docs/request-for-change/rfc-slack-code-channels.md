@@ -565,9 +565,9 @@ crewmates' private copies.
     from this channel's recorded Workers tab, and its target is resolved by the
     gateway from an item id on this channel's board. Audited as
     `slack.code_channel.stop`.
-  * **Deep links.** The board's header links the Workers and Code tabs, each
-    board task's PR links its PR tab, and the wrap-up links the Code tab and the
-    open PR tabs. Context-bar items take only a URL, so the bar keeps GitHub
+  * **Deep links.** The board's header links the Plan, Workers and Code tabs, each
+    board task's PR links its PR tab, and the wrap-up links the Plan tab, the Code
+    tab and the open PR tabs (the Plan link amended 2026-11-18). Context-bar items take only a URL, so the bar keeps GitHub
     links.
   * **The limit.** Three tiers: (1) the Plan canvas, the Code tab and the Workers
     tab, never removed to make room; (2) the PR tabs, at most two; (3) the

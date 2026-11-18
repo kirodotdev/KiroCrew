@@ -2675,8 +2675,7 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   `sections_changed_count` of 0 makes `code_channel_publish_plan_canvas` answer
   "unchanged" (a missing count is never read as unchanged). `agent_content_hash` is
   not sent: it only lets an agent detect human edits, and the Plan tab is
-  `access_level: "comment"`, so only the agent edits the text. A plan-tab deep link
-  (`tab_id` = `plan_view_id`) belongs with the tab links of the view-tabs change.
+  `access_level: "comment"`, so only the agent edits the text.
 - **Context bar.** The workspace is the one publisher. The agent's items
   (`<config dir>/routing/slack-code-channel-surface.json`, beside the core's
   binding record inside the already-fenced `routing` directory, written before it is adopted
@@ -2773,13 +2772,14 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   runs one more refresh so the board drops the link.
 - **Tab deep links.** A `rich_text` `channel` element with `tab_id` = the `setView`
   `view_id` (the Code tab's static `code`), only ever from ids recorded as ours and
-  shaped like Slack ids. The board (plan look) gets a `Tabs: Workers · Code` line and
+  shaped like Slack ids. The board (plan look) gets a `Tabs: Plan · Workers · Code` line and
   each task's `PR #n` links its PR tab (else GitHub); a board refused with the links
-  is resent without them before the plan look is given up. The wrap-up links the Code
+  is resent without them before the plan look is given up. The wrap-up links the Plan, Code
   and PR tabs and is reposted without them if refused; a later edit of it (Archive, an
   unsaved wrap-up's retirement) while the board's scope refuses the channel drops the
   whole tab line (`wrapup._shown`). Context-bar items take only a
-  `url` (no tab id), so the bar keeps its GitHub links.
+  `url` (no tab id), so the bar keeps its GitHub links. The Plan tab's id is the
+  recorded `plan_view_id`, so a channel with no Plan tab links none.
 - **Stop from the Workers tab (`worker_stop.py`).** A `block_actions` click
   (`kc_cc_worker_stop`) passes `actions.admit` (one user, workspace, `channels`
   policy, bound channel -- the context bar's gates), then: the payload container's
