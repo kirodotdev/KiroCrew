@@ -339,6 +339,62 @@ async def test_stop_after_dispatch_aborts_the_replay_before_the_provider(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_a_user_follow_up_during_the_reset_keeps_an_owed_completion(tmp_path, monkeypatch):
+    """A sub-agent completion the model never consumed is still owed to the
+    parent. When its turn loses the session, the retry is queued as the
+    completion it is, with no lost-session record, so a message the user sends
+    while the reset is awaited cannot revoke it: the completion runs again on
+    the fresh runtime and is never settled as delivered unread."""
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+    from kiro_crew.subagent import SubagentDelivery
+
+    calls: list[str] = []
+
+    async def _stream(msg):
+        calls.append(msg)
+        if len(calls) == 1:
+            raise AcpError(_NOT_FOUND)
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="answered")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    state = _state(tmp_path, monkeypatch)
+    _wire(state, _client(_stream))
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+    completion = "[Subagent completion event] the child finished"
+    slot.note_pending_subagent_delivery(completion, [SubagentDelivery("child", 0.0, 0.0)])
+    consumed = MagicMock()
+    discarded = MagicMock()
+
+    async def _reset_while_the_user_types(*_a, **_kw):
+        # The user sends a follow-up while the lost session is being reset.
+        slot.queue_append("a follow-up the user typed")
+        return True
+
+    state.sessions.reset = AsyncMock(side_effect=_reset_while_the_user_types)
+
+    await asyncio.wait_for(
+        _run_chat(
+            state,
+            slot,
+            completion,
+            _turn_actor="subagent",
+            _on_consumed=consumed,
+            _on_discarded=discarded,
+        ),
+        timeout=30,
+    )
+    await _drain(state)
+
+    discarded.assert_not_called()
+    assert not slot.replays.armed(_SNF)
+    assert ["the child finished" in c for c in calls[:2]] == [True, True], calls
+    assert any("a follow-up the user typed" in c for c in calls[2:]), calls
+    consumed.assert_any_call(True)
+
+
+@pytest.mark.asyncio
 async def test_stop_resolved_before_the_error_never_queues_a_replay(tmp_path, monkeypatch):
     """A Stop that pressed and already snapped back to idle before the lost-session
     error reaches the handler leaves ``_stopping`` False; only the Stop counter

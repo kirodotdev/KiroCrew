@@ -139,6 +139,9 @@ class WeComDispatcher:
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
+        # Set by maybe_start_wecom after construction. Needed when a channel turn
+        # has no attached dashboard state.
+        self.subagent_manager: Any = None
         self.client: "WeComClient | None" = None
         # Set by maybe_start_wecom after construction (same construction-cycle
         # reason as ``client``); the config applier pushes reloaded
