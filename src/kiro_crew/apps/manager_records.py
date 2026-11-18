@@ -1142,7 +1142,8 @@ def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
 #: prompt does not show them, so they wait for the owner on the app's page like an
 #: update's new entries. ``bots``: the owner decides which Bots an app reaches.
 #: ``browserSites``: the pages the app's own agent drives the browser on unasked.
-_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites")
+#: ``browser``: the verbs ``ctx.browser`` and ``BrowserView`` use on its own slots' tabs.
+_OWNER_APPROVED_FAMILIES = (BOT_GRANT_FAMILY, "browserSites", "browser")
 
 
 def _consented_grant_entries(permissions: Any) -> dict[str, list[str]]:

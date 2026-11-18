@@ -9900,6 +9900,47 @@ Writers: `apps/browser_sites.py`, `apps/manifest_sections.py` (`Permissions.brow
 `browser_harness/snapshot_walker.js` (`media`), `website/src/app-sdk/browserMedia.ts`,
 `website/src/pages/AppDetailPage.tsx`.
 
+## 46. An app's grant to the browser tabs of its own chats (RFC #38322, step 1a)
+
+`permissions.browser` names what an app may do on the browser tabs of its own chat
+slots: `view` (show the live view and draw over it), `read` (read the page) and `act`
+(open pages, click and type). Unknown entries are dropped, so a malformed value grants
+less (`apps/browser_sdk.declared_verbs`). Each verb is an entry of the `browser` family
+of the app's approved-grants set, registered explicit-only in `apps/point_grants.py`, so
+a set written before this host knew the family approves none. The family is in
+`manager_records._OWNER_APPROVED_FAMILIES`: an install or a first registration approves
+no verb, and the owner approves each on the app's page through the same
+`POST /api/apps/{name}/enable` consent the other staged families use. An update that adds
+a verb holds that verb back and keeps the approved ones
+(`_approved_grants_after_manifest_change`, unchanged). The app row carries
+`browserGrant` (`approved`, `staged`, and `preview`, whether the switch is on), which the
+detail page reads for its box and its approval notice; the trust prompt and the CLI
+install summary list each declared verb and say install approves none.
+
+All of it is behind the default-off `dashboard.feature_previews.app_browser_sdk`
+("App browser access"). `browser_sdk.preview_on` reads it through
+`edition_locks.feature_previews`, so an LTS build reads it as off. `ctx.browser` is `None` unless the manifest declares the field and the preview is
+on: `context.build_app_context` keeps a `browser_sdk.BrowserSDK` on the context when
+the field is declared, and the `AppContext.browser` property reads the preview at each
+access, so turning the preview on or off needs no restart. Its `verbs()` re-reads the
+preview, whether the app is on, the live manifest and the approved set at each call, so
+a verb approved or withdrawn applies to an already built context. Turning the app off
+keeps the approved set and holds every verb back until the app is on again; the trust
+prompt says so. This step carries no
+page operation: those go through one gateway function in step 1b.
+
+Writers: `apps/browser_sdk.py`, `apps/manifest_sections.py` (`Permissions.browser`),
+`apps/point_grants.py`, `apps/manager_records.py`, `apps/manager_lookup.py`,
+`apps/context.py`, `apps/permissions.py`, `apps/official_catalog.py`,
+`config/sections_dashboard.py`, `website/src/utils/previewFlags.ts`,
+`website/src/pages/settings/FeaturePreviewsSection.tsx`,
+`website/src/components/appstore/browserVerbs.ts`,
+`website/src/components/appstore/TrustAppModal.tsx`,
+`website/src/pages/AppDetailGrantBoxes.tsx`, `website/src/pages/AppDetailPage.tsx`.
+Tests: `test/test_app_browser_sdk.py`, `website/src/test/AppDetailPageCoverage.test.tsx`,
+`website/src/test/TrustAppModalWorkerAutoApprove.test.tsx`,
+`website/src/test/previewSurfaces.test.tsx`.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

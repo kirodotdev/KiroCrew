@@ -698,6 +698,11 @@ class Permissions:
     browserSites: list[str] = field(default_factory=list)  # noqa: N815
     #: ``browserSites`` present but not a list of strings. Not serialized.
     bad_browser_sites: bool = False
+    #: The verbs (``"view"``, ``"read"``, ``"act"``) the app may use on the browser
+    #: tabs of its own slots through ``ctx.browser`` (``apps/browser_sdk.py``). Empty =
+    #: none, which is the default. Never approved by an install: the owner approves
+    #: each verb on the app's page. Behind the ``app_browser_sdk`` feature preview.
+    browser: list[str] = field(default_factory=list)
     #: Takes inbound webhook deliveries on its own routes, governed as the
     #: ``webhooks`` source named by the app's name (``webhook_sources``) and asked
     #: through ``ctx.webhook_source``. Reaches nothing new: it lets the policy
@@ -755,6 +760,8 @@ class Permissions:
             d["desktopCapabilities"] = self.desktopCapabilities
         if self.browserSites:
             d["browserSites"] = list(self.browserSites)
+        if self.browser:
+            d["browser"] = list(self.browser)
         if self.webhookSource:
             d["webhookSource"] = True
         if self.bots:
@@ -780,6 +787,8 @@ class Permissions:
         # The chat launch parser is imported here, not at the top: every MCP server
         # imports this module before it lists its tools but parses no manifest there,
         # and `test_mcp_listing_import_budget.py` caps the modules that listing loads.
+        # The browser verb reader is deferred for the same reason.
+        from kiro_crew.apps.browser_sdk import declared_verbs as browser_verbs
         from kiro_crew.apps.chat_launch import parse_chat_launch
 
         raw_sites = data.get("browserSites", [])
@@ -806,6 +815,7 @@ class Permissions:
             desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
             browserSites=list(raw_sites) if sites_ok else [],  # noqa: N815
             bad_browser_sites=not sites_ok,
+            browser=browser_verbs(data.get("browser")),
             webhookSource=data.get("webhookSource") is True,  # noqa: N815
             bots=_bot_scopes(data.get("bots")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
