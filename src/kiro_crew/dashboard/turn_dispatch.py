@@ -910,6 +910,11 @@ def spawn_guarded_turn(
             # A Task cancelled before its first loop step closes the bounded
             # wrapper but not the input coroutine stored in its arguments.
             coro.close()
+            # Nor did the turn run, so no exit of it marked the turn unstarted:
+            # mark it here, or a send queued behind this dispatch waits for a
+            # next send (an app that cancels its turns when it stops, then
+            # never sends to that slot again).
+            mark_turn_unstarted(slot)
         finish_turn_task(state, slot, t, timeout, limit_scope)
         _hand_off_if_unstarted(state, slot, t)
 
