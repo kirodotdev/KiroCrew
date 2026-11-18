@@ -250,6 +250,19 @@ def custody_on(slug: str) -> bool:
     return _held_key(slug) and enabled()
 
 
+def _registry_url_key(url: str) -> str:
+    """The form two MCP urls are compared in to tell whether they name one endpoint.
+
+    The shared fetch canonicalizer (``platform.spec_denied_gate.canonical_url``):
+    scheme and host case, a default port and a trailing host dot do not matter;
+    the path stays case-sensitive (``/mcp`` and ``/mcp/readonly`` differ). A url
+    it refuses keeps the plain string, so it matches nothing new.
+    """
+    from kiro_crew.platform.spec_denied_gate import canonical_url
+
+    return (canonical_url(url) or url).rstrip("/")
+
+
 def _is_registry_url(url: Any) -> bool:
     """Whether *url* is the MCP endpoint of a card Crew signs in to. Blocking.
 
@@ -266,10 +279,10 @@ def _is_registry_url(url: Any) -> bool:
 
     if not isinstance(url, str):
         return False
-    wanted = url.rstrip("/")
+    wanted = _registry_url_key(url)
     return any(
         p["slug"] in SUPPORTED_SLUGS
-        and str(p["mcp_url"]).rstrip("/") == wanted
+        and _registry_url_key(str(p["mcp_url"])) == wanted
         and not card_yields(p)
         for p in get_all_registry_providers()
     )
@@ -294,11 +307,13 @@ def _card_claims(name: str, entry: Any) -> bool:
     url = entry.get("url") if isinstance(entry, dict) else None
     if not _is_registry_url(url):
         return False
-    wanted = str(url).rstrip("/")
+    # Same key as _is_registry_url: a variant that check claimed must find its
+    # card here too, or all([]) below would read as every card keeping its client.
+    wanted = _registry_url_key(str(url))
     cards = [
         str(p["slug"])
         for p in get_all_registry_providers()
-        if p["slug"] in SUPPORTED_SLUGS and str(p["mcp_url"]).rstrip("/") == wanted
+        if p["slug"] in SUPPORTED_SLUGS and _registry_url_key(str(p["mcp_url"])) == wanted
     ]
     if get_provider(name) is not None or not all(keeps_user_client(s) for s in cards):
         return True

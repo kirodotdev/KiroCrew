@@ -194,9 +194,12 @@ function createIpcRegistrar({
   // sender's own `toString`, which a hostile page can make throw, and a throw
   // there skips the rejection throttle. Render by type instead: a string is
   // cut to 64 characters, a finite number prints as itself, anything else
-  // shows only its type.
+  // shows only its type. Control and line-break characters become `?` after
+  // the cut, so the value stays on one log line and within 64 characters.
   function boundedMenuArg(value) {
-    if (typeof value === "string") return value.slice(0, 64);
+    if (typeof value === "string") {
+      return value.slice(0, 64).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "?");
+    }
     if (typeof value === "number" && Number.isFinite(value)) return String(value);
     return `<${typeof value}>`;
   }
