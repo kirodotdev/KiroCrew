@@ -3043,7 +3043,10 @@ idle sweep expires it. `test_sandbox_tier_recycle.py` pins each case.
 4. Send `session/cancel` via `provider.cancel(wait_ack_timeout=budget)`:
    - `"acked"` → set `session.prev_turn_cancelled = True`, call `on_soft` callback, return `"soft"`.
    - `"no_turn"` → return `"idle"`.
-   - `"timeout"` or `"error"` → fall through to hard kill.
+   - `"timeout"` or `"error"` → fall through to hard kill. A shared-runtime turn
+     that ended on the session handle's own synthesized unacked-cancel terminal
+     (`STOP_REASON_CANCEL_UNACKED`, `cancel_went_unacked`) is a `"timeout"`, not
+     an ack: the agent never answered the cancel and may still be running it.
 5. Hard kill: `reset(key, stop_shared_children=True)` (stops the sub-agent runs that share the parent's process first) → fire-and-forget `_eager_respawn(key)` task → call `on_hard` callback → return `"hard"`.
 
 ### Session-scoped Stop record

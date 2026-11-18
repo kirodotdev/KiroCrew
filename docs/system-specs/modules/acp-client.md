@@ -5114,7 +5114,14 @@ count or the bare fact.
 - **Pre-turn stale drain.** The drain empties the session queue of frames left by
   an abandoned turn (see the cancel-unacked / stale / tool-stall / timeout paths,
   which synthesize a terminal and return while the real kiro-cli turn keeps
-  emitting). A consumer that leaves before the turn's terminal (a caller timeout, a
+  emitting). The cancel-unacked terminal also marks its turn
+  (`cancel_went_unacked`, cleared by the next turn's reset). A turn that ended on
+  it is never an ack: `AcpSessionProvider.cancel` reports it as `"timeout"`, and the
+  client-compat `AcpSessionProvider.wait_turn_done` returns
+  `STOP_REASON_CANCEL_UNACKED` (not the `end_turn` it maps the other synthesized
+  terminals to), which `AcpProvider.cancel` reads as `"timeout"`. The agent did not
+  answer the cancel, so a Stop that waited on it escalates (session.md "Stop
+  Orchestration", step 4). A consumer that leaves before the turn's terminal (a caller timeout, a
   cancelled task, or a closed stream raises `CancelledError`/`GeneratorExit` before
   any terminal is yielded) synthesizes no terminal: the handle records that prompt's
   request id (`_abandoned_prompt_id`), and the next prompt first calls
