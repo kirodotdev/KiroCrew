@@ -250,6 +250,16 @@ async def create_bound(
         )
     if status == 503 and isinstance(payload, dict) and payload.get("code") == routes.CREW_BUSY:
         raise routes.CrewBusyError(payload)
+    if (
+        status == 409
+        and isinstance(payload, dict)
+        and payload.get("code") == work_ledger.CODE_DUPLICATE_ITEM
+    ):
+        # The peer already holds a worker for this item and made nothing here;
+        # placement skips this crew on it.
+        from kiro_crew.dashboard.handlers.remote_placement import DuplicateItemError
+
+        raise DuplicateItemError()
     if not 200 <= status < 300:
         raise routes._peer_error(status, payload, "could not create the crew session")
     slot = payload.get("key") if isinstance(payload, dict) else None
