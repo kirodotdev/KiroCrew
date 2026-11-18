@@ -255,7 +255,14 @@ needs `outbound_consented`, while this one needs recording on plus
 `kiro_telemetry_notice_shown` stamp that `metrics/notice.py` writes only when a
 start with no dashboard printed the Kiro line to a terminal. `privacy_ack_version`
 alone does not count, nor does a notice of version 2 or lower, which said metrics
-stay on this machine. Whether the notice was shown is part of
+stay on this machine. Until it was shown, the theme boot payload reports the
+lower of `privacy_ack_version` and `kiro_telemetry_ack_version`
+(`_ack_version_for_the_chapter`), so the chapter that names it opens once more,
+but only while the active provider's `otlp_egress_listing` includes it
+(`kiro_export.listed`): the chapter writes the Kiro acknowledgement only from that
+listing's row, so a provider that ships other destinations would never clear the
+hold, and nothing exports there anyway. An unreadable listing reports the stored
+version. Whether the notice was shown is part of
 `_endpoints_key`, so a Keep on in a running gateway attaches the reader at the next
 consent recheck. It is not returned in an LTS build or on a CI runner; a
 non-default `KIROCREW_HOME` gets it like any other home. Because the notice names it, the enable refusals (the
