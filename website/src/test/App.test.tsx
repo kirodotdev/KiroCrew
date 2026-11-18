@@ -1173,12 +1173,13 @@ describe('App routing', () => {
     })
     // The icon-only row still names itself for assistive tech via aria-label,
     // since the visible text only mounts on hover (no permanent DOM text node).
-    expect(screen.getByLabelText('Sessions')).toBeInTheDocument()
-    // Hover the first row -> its portaled label text should mount.
-    fireEvent.mouseEnter(rows[0])
+    const sessions = screen.getByLabelText('Sessions')
+    expect(rows).toContain(sessions)
+    // Hover the Sessions row -> its portaled label text should mount.
+    fireEvent.mouseEnter(sessions)
     expect(await screen.findByText('Sessions')).toBeInTheDocument()
     // Leave -> label begins fade-out (still present until the timer).
-    fireEvent.mouseLeave(rows[0])
+    fireEvent.mouseLeave(sessions)
   })
 
   it('omits sub-agent activity from the collapsed Sessions rail item', async () => {
@@ -1307,14 +1308,16 @@ describe('App routing', () => {
       return found
     })
     // Focusable as a button.
-    expect(rows[0].getAttribute('tabindex')).toBe('0')
+    const sessions = screen.getByLabelText('Sessions')
+    expect(rows).toContain(sessions)
+    expect(sessions.getAttribute('tabindex')).toBe('0')
     // Focus -> the portaled label mounts (parity with hover).
-    fireEvent.focus(rows[0])
+    fireEvent.focus(sessions)
     expect(await screen.findByText('Sessions')).toBeInTheDocument()
     // Blur -> begins fade-out (still mounted until the unmount timer).
-    fireEvent.blur(rows[0])
+    fireEvent.blur(sessions)
     // Enter activates without throwing (navigates to the row's route).
-    fireEvent.keyDown(rows[0], { key: 'Enter' })
+    fireEvent.keyDown(sessions, { key: 'Enter' })
   })
 
   it('dismisses the collapsed overflow-toggle hover label when the toggle is pressed', async () => {

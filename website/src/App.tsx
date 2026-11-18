@@ -52,6 +52,9 @@ const SelectionActionLayer = lazy(() => import('./selectionActions/SelectionActi
 // session or the Crew page, never at startup.
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
 const SessionDashboardsPage = lazy(() => import('./pages/chat/command-center/SessionDashboardsPage'))
+// Home reads the same fleet sources All Dashboards does; it is one click from the
+// rail, so it loads on that click rather than weighing the chat bundle.
+const HomePage = lazy(() => import('./pages/home/HomePage'))
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import { ChangelogModal, UpdateErrorDialogFrame } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
@@ -337,6 +340,7 @@ const MainRoutes = memo(function MainRoutes() {
   useLanguageGeneration()
   return (
     <Routes>
+      <Route path="/home" element={<ErrorBoundary><Suspense fallback={null}><HomePage /></Suspense></ErrorBoundary>} />
       <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
       <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
       <Route path="/notifications" element={<ErrorBoundary><NotificationsPage /></ErrorBoundary>} />

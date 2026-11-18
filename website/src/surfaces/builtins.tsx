@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, Compass, Webhook, BookOpen, Library, MessageSquareText, Workflow, ScrollText, Bot, Server } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, Compass, Webhook, BookOpen, Library, MessageSquareText, Workflow, ScrollText, Bot, Server, House } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import AppIcon from '../components/AppIcon'
@@ -41,6 +41,14 @@ const selectUnacknowledgedNotificationCount = createSelector(
 )
 
 // ── Main ───────────────────────────────────────────────────────────────────
+// Home: the fleet at a glance. No badge of its own: every count it shows is
+// already a rail badge (unread, approvals, subagents in flight), and a second
+// badge for the page that sums them would double what the tab title counts.
+registerBuiltinSurface({
+  ...BUILTIN_SURFACE_NAV.home,
+  icon: <House size={16} />,
+})
+
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.chat,
   // Slot-bearing: default chat slots have surface === '' (or no mode set).

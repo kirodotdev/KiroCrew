@@ -789,6 +789,7 @@ make this tool possible:
 <a href="https://github.com/ishansmishra" title="Ishan Mishra"><img src="https://github.com/ishansmishra.png?size=64" width="64" height="64" alt="Ishan Mishra" /></a>
 <a href="https://github.com/IskanderNovena" title="Sebastiaan Brozius"><img src="https://github.com/IskanderNovena.png?size=64" width="64" height="64" alt="Sebastiaan Brozius" /></a>
 <a href="https://github.com/isotope14" title="isotope14"><img src="https://github.com/isotope14.png?size=64" width="64" height="64" alt="isotope14" /></a>
+<a href="https://github.com/ivikash" title="Vikash Agrawal"><img src="https://github.com/ivikash.png?size=64" width="64" height="64" alt="Vikash Agrawal" /></a>
 <a href="https://github.com/izikovic" title="Ivan Žiković"><img src="https://github.com/izikovic.png?size=64" width="64" height="64" alt="Ivan Žiković" /></a>
 <a href="https://github.com/j20120307" title="j20120307"><img src="https://github.com/j20120307.png?size=64" width="64" height="64" alt="j20120307" /></a>
 <a href="https://github.com/JainSid96" title="Siddhant Jain"><img src="https://github.com/JainSid96.png?size=64" width="64" height="64" alt="Siddhant Jain" /></a>

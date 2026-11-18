@@ -291,7 +291,9 @@ export function SourceBadge({ source, children, tone = 'auto', title }: { source
   return <span title={title} className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border shrink-0 ${cls}`}>{children ?? source}</span>
 }
 
-export function StatCard({ label, value, accent, colorClass, delay, onClick, active, title, className, ...rest }: { label: string; value?: string | number | null; accent?: boolean; colorClass?: string; delay?: number; onClick?: () => void; active?: boolean; title?: string } & Omit<React.ComponentPropsWithoutRef<'div'>, 'title' | 'onClick' | 'dangerouslySetInnerHTML'>) {
+/** `detail` is the line under the number: the breakdown or the next thing due,
+ *  so a glance needs no tooltip. It renders only once the value has. */
+export function StatCard({ label, value, detail, accent, colorClass, delay, onClick, active, title, className, ...rest }: { label: string; value?: string | number | null; detail?: React.ReactNode; accent?: boolean; colorClass?: string; delay?: number; onClick?: () => void; active?: boolean; title?: string } & Omit<React.ComponentPropsWithoutRef<'div'>, 'title' | 'onClick' | 'dangerouslySetInnerHTML'>) {
   const loading = value === undefined || value === null
   return (
     // role/tabIndex/onKeyDown are all applied together with onClick, so the card
@@ -319,6 +321,7 @@ export function StatCard({ label, value, accent, colorClass, delay, onClick, act
         ? <div className="skeleton h-7 w-16 mt-1.5 rounded" data-testid="stat-card-skeleton" />
         : <div className={`text-2xl font-bold mt-1.5 tracking-tight leading-none ${accent ? 'text-accent' : colorClass || ''}`} data-testid="stat-card-value">{value ?? '—'}</div>
       }
+      {!loading && detail && <div className="text-[12px] text-muted mt-1.5 truncate" data-testid="stat-card-detail">{detail}</div>}
     </div>
   )
 }

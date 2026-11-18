@@ -5,11 +5,9 @@ import { Trans } from 'react-i18next'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
-import { Uptime } from '../components/Uptime'
+import GatewayHealthLine from '../components/GatewayHealthLine'
 import { api } from '../api/client'
 import type { WakaTimeStats } from '../api/client'
-import { reportsDollars } from '../api/acpBackend'
-import type { AcpBackendConfig } from '../api/acpBackend'
 import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
@@ -20,15 +18,12 @@ import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
 import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
 import { UsageTab, WakaTimeTab } from './overview'
-import { useProvider } from '../providers'
-import { providerUsageQuery } from '../api/providerUsageQuery'
-import { failedWithNoData } from '../api/queryState'
+import { useTodayUsage } from './overview/todayUsage'
 import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber, fmtPercentFloor } from '../i18n/format'
-import { formatCost } from '../utils/formatCost'
+import { fmtDuration, fmtNumber, fmtPercentFloor } from '../i18n/format'
 
 // The record editor and recovery tools are needed only inside this drill-in.
 // Keep them out of the dashboard shell's initial bundle.
@@ -46,23 +41,6 @@ const MemoryTab = lazy(() => import('./overview/MemoryTab'))
 
 const DRILL_VIEWS = ['memory', 'usage', 'wakatime'] as const
 type DrillView = (typeof DRILL_VIEWS)[number]
-
-/** A Today-line count: `amount` is the locale's compact number, and `count`, the
- *  quantity it shows, picks the plural form that agrees with it. */
-function todayCount(n: number | undefined | null): { count: number; amount: string } {
-  return { count: compactPluralCount(n ?? 0), amount: fmtCompact(n ?? Number.NaN) }
-}
-
-/** The Today line: sessions and messages, then tokens and cost when known. */
-function todayLine(sessions: number | undefined, messages: number | undefined, tokens: number | null | undefined, cost: number | null | undefined): string {
-  const parts = [
-    i18nT('pages.overviewPage.today_sessions', todayCount(sessions)),
-    i18nT('pages.overviewPage.today_messages', todayCount(messages)),
-  ]
-  if (tokens != null) parts.push(i18nT('pages.overviewPage.today_tokens', todayCount(tokens)))
-  if (cost != null) parts.push(formatCost(cost))
-  return i18nT('pages.overviewPage.today_line', { summary: parts.join(' · ') })
-}
 
 /** Back link + drill-in content, mirroring the Channels back affordance. */
 function DrillIn({ title, onBack, children, hideTitle = false }: { title: string; onBack: () => void; children: ReactNode; hideTitle?: boolean }) {
@@ -85,24 +63,9 @@ function DrillIn({ title, onBack, children, hideTitle = false }: { title: string
 
 /** Usage summary card — shares the query cache with the Usage drill-in. */
 function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
-  const provider = useProvider()
-  const { data, isError, error } = useQuery(providerUsageQuery(provider))
-  const cfgQuery = useQuery<AcpBackendConfig>({
-    queryKey: ['kirocrewConfig'],
-    queryFn: () => api.kirocrewConfig(),
-  })
+  const { provider, usage, cfgQuery, harnessUnread, line } = useTodayUsage()
+  const { data, isError, error } = usage
   const b = data?.billing
-  const today = data?.sessions.today
-  // Today's tokens and cost, from the bucket of the gateway's own local day
-  // (the token history's totals cover 30 days, and the browser may sit in
-  // another zone), and only on a harness that bills in dollars: a credit-billed
-  // install's Today line stays sessions and messages.
-  // With no config ever read, the harness is unknown and the Today line drops
-  // its tokens and cost; the notice says so instead of leaving them silently off.
-  const harnessUnread = failedWithNoData(cfgQuery)
-  const todayTokens = reportsDollars(cfgQuery.data) && data?.localDay
-    ? data.tokenDailyHistory?.find(d => d.date === data.localDay)
-    : undefined
   return (
     <Card>
       <CardTitle>
@@ -126,14 +89,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
           {data.refreshing ? (
             <div data-testid="overview-usage-refreshing" className="skeleton h-4 rounded max-w-[320px]" />
           ) : (
-            <div className="text-[13px] text-muted">
-              {todayLine(
-                today?.sessions,
-                today?.messages,
-                todayTokens && todayTokens.input + todayTokens.output + todayTokens.cacheCreate + todayTokens.cacheRead,
-                todayTokens?.costUsd,
-              )}
-            </div>
+            <div className="text-[13px] text-muted">{line}</div>
           )}
           {b?.plan && (
             <div className="flex items-center gap-2 text-[12px] text-muted">
@@ -253,7 +209,6 @@ export const STAT_LABEL_KEY: Record<StatId, string> = {
 
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
-  const connected = useAppSelector(s => s.dashboard.connected)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   // Moves on every turn end: the Memory view re-reads its store list on it, and
   // the rest of the view when that list changed.
@@ -298,17 +253,7 @@ export default function OverviewPage() {
           apply/restart action. Restarting sessions to pick up config changes
           lives with the surfaces that edit it (Capabilities header). */}
       <div className="flex items-center gap-4 mb-5">
-        <div>
-          <div className="text-lg font-bold text-text-strong flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${connected && status ? 'bg-ok' : 'bg-warn'}`} />
-            {connected && status ? i18nT('pages.overviewPage.all_systems_running') : status ? i18nT('pages.overviewPage.reconnecting') : i18nT('pages.overviewPage.connecting')}
-          </div>
-          <div className="text-[12.5px] text-muted mt-0.5">
-            {status?.version
-              ? <Trans i18nKey="pages.overviewPage.uptime_line_version" values={{ version: status.version }} components={{ uptime: <Uptime /> }} />
-              : <Trans i18nKey="pages.overviewPage.uptime_line" components={{ uptime: <Uptime /> }} />}
-          </div>
-        </div>
+        <GatewayHealthLine />
       </div>
 
       {/* Stat tiles */}

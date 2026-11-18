@@ -78,6 +78,17 @@ The helpers every handler imports from `handlers/_shared.py` live in the `handle
 
 ---
 
+## Home
+
+The rail's first row. `/home` is one page that reads what the other pages already
+read and draws it as a glance: nothing here has a store or an endpoint of its own.
+
+| Feature | What it is | Reach it | Page | Handler | Endpoints |
+|---|---|---|---|---|---|
+| Home | Mission control for the crew. A stat strip (**Active now**: sessions, subagents and workflows mid-turn, from the command center's fleet model; **Needs you**: blocking questions and approvals, with the follow-up suggestion count on its second line; **Scheduled**: enabled jobs with the next run due and failing and paused counts; **Today**: the day's cost on a dollar-billed harness, otherwise its session count, with the full Today line), every tile with a detail line under its number; Active now, Scheduled and Today open the page they summarize, and Needs you is answered on this page. Below it, the **agent board** (left): one row per session with its subagents and workflows nested under it, each with an activity track over a 6, 12 or 24 hour window (finished turns from `GET /api/usage/turns`, the live run from `last_turn_ts`, a subagent's own clock, a yellow dot where the row asks for a decision, red where it failed), the run's age, current step or last words, and an Open session link; rows in reading order (needs you, blocked, running, waiting), sessions wholly at rest folded behind a count. **Needs you** (under the board, a grid three cards wide at desktop) mounts the All Dashboards page's own `AttentionCard`s for blockers (one row at first, each Show more adding a row), so an answer here routes exactly as it does there, and lists `[OPTIONS:]` follow-up offers as compact rows behind a fold; on the right **Tokens spent** (today's usage by model from the same report the Today tile reads: one stacked bar and a row per model, cost on a dollar-billed harness and tokens otherwise, the smallest models folded into one row). then **Upcoming** (next five jobs due, opening the job on Schedule) and **Bots** (the roster, working first, opening the Bot's thread), then the gateway health line (`GatewayHealthLine`, shared with Settings → Overview's hero). `homeModel.ts` holds the pure grouping and the attention triage, `homeTimeline.ts` the window arithmetic; `pages/overview/todayUsage.ts` is the Today line shared with Settings → Overview's Usage card | Rail → **Home** (`/home`) | `pages/home/HomePage.tsx`, `pages/home/HomeFleetList.tsx`, `pages/home/ActivityTrack.tsx`, `pages/home/useTurnHistory.ts`, `pages/home/HomeNeedsYou.tsx`, `pages/home/HomeSpend.tsx`, `pages/home/HomeBots.tsx`, `pages/home/HomeSchedule.tsx`, `pages/home/homeModel.ts`, `pages/home/homeTimeline.ts`, `pages/overview/todayUsage.ts`, `components/GatewayHealthLine.tsx`, `pages/chat/command-center/useCommandCenter.ts` (fleet scope) | existing session, question, approval, workflow, cron, member and usage handlers | `GET /api/ask-question/pending`, `GET /api/approvals`, `GET /api/workflows/runs`, `GET /api/crons`, `GET /api/members`, `GET /api/usage/turns`, `GET /api/usage/kiro` |
+
+---
+
 ## Chat and sessions
 
 The default destination. `/chat` is the rail's **Sessions** row; everything in

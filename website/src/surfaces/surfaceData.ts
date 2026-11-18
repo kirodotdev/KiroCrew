@@ -48,6 +48,12 @@ export interface SurfaceNavData {
 
 /** One built-in surface per key, keyed by `navId`. Order = rail order. */
 export const BUILTIN_SURFACE_NAV = {
+  // Home sits above Sessions: one page that answers "what is my crew doing right
+  // now and what is waiting on me" without reading the rail's badges one by one.
+  home: {
+    navId: 'home', route: '/home', label: surfaceMachineValue('Home'), labelKey: 'nav.home',
+    group: surfaceMachineValue('Main'),
+  },
   chat: {
     navId: 'chat', route: '/chat', label: surfaceMachineValue('Sessions'), labelKey: 'nav.sessions',
     group: surfaceMachineValue('Main'), slotMode: '',

@@ -579,5 +579,17 @@
   "components.promptStash.clear_others",
   "components.promptStash.clear_others_confirm",
   "components.promptStash.cleared_others",
-  "components.promptStash.discarded"
+  "components.promptStash.discarded",
+  "pages.homePage.subagents",
+  "pages.homePage.workflows",
+  "pages.homePage.fleet_resting",
+  "pages.homePage.questions_count",
+  "pages.homePage.approvals_count",
+  "pages.homePage.suggestions_count",
+  "pages.homePage.failing_count",
+  "pages.homePage.paused_count",
+  "pages.homePage.suggestion_choices",
+  "pages.homePage.show_more_blockers",
+  "pages.homePage.suggestions_fold",
+  "pages.homePage.window_hours"
 ]
