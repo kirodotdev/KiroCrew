@@ -207,6 +207,25 @@ async def test_the_mint_with_a_profile_adds_only_the_profile_arn(fake: FakeCps) 
     assert [r["body"] for r in fake.requests] == [{"endpointId": PERSONAL, "profileArn": profile}]
 
 
+async def test_the_list_with_a_profile_sends_it_on_every_page(fake: FakeCps) -> None:
+    profile = "arn:aws:codewhisperer:us-east-1:000000000000:profile/EXAMPLEPROFILE"
+    fake.answer(200, page(0))
+    fake.answer(200, page(1))
+    crews = await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN, profile_arn=profile)
+    assert [c.endpoint_id for c in crews] == [TEAM, PERSONAL]
+    assert [r["body"] for r in fake.requests] == [
+        {"profileArn": profile},
+        {"profileArn": profile, "nextToken": "page-2-opaque"},
+    ]
+
+
+async def test_the_list_with_no_profile_sends_none_on_any_page(fake: FakeCps) -> None:
+    fake.answer(200, page(0))
+    fake.answer(200, page(1))
+    await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN, profile_arn="")
+    assert [r["body"] for r in fake.requests] == [{}, {"nextToken": "page-2-opaque"}]
+
+
 async def test_the_list_body_is_unchanged_next_to_a_profile_mint(fake: FakeCps) -> None:
     fake.answer(200, page(1))
     fake.answer(200, MINT["examples"][0]["body"])

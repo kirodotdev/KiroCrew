@@ -350,6 +350,7 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
                 bearer,
                 crew_domain=crew_domain,
                 token_type=token_type,
+                profile_arn=profile_arn,
             ),
         )
     except cps.CpsRefused as exc:
@@ -479,7 +480,11 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             (
                 c
                 for c in await cps.list_crew_endpoints(
-                    url, bearer, crew_domain=crew_domain, token_type=token_type
+                    url,
+                    bearer,
+                    crew_domain=crew_domain,
+                    token_type=token_type,
+                    profile_arn=profile_arn,
                 )
                 if c.endpoint_id == endpoint_id
             ),

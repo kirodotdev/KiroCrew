@@ -59,7 +59,7 @@ def viewer(monkeypatch, tmp_path):
     async def _bearer(ref, rejected=""):
         return "bearer", "", ""
 
-    async def _list(url, bearer, *, crew_domain, token_type=""):
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         if ctl.refuse is not None:
             raise ctl.refuse
         return tuple(ctl.crews)
