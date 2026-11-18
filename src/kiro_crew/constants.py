@@ -659,7 +659,7 @@ _RAW_OPTIONS_RE_LINE = re.compile(
 
 # TRAILER (``re.DOTALL``, ``\Z`` anchor) — for the Discord/Telegram/WeCom
 # renderers, which match the marker only at the very END of the message and
-# allow it to span newlines (the body's negated class admits ``\n``). Trailing
+# admit ``\n`` in the body, though the matcher refuses labels holding a break. Trailing
 # ``\s*`` before ``\Z``. Same optional markdown-link close as LINE (same
 # ``[^\s()]`` inner class, disjoint from the trailing ``\s*``, so ReDoS-safe).
 # ``re.MULTILINE`` is there ONLY so the optional leading-wrapper group can anchor
@@ -808,6 +808,7 @@ class _MarkerMatcher:
             HEAD_CAP,
             MarkerRun,
             as_newlines,
+            crosses_line,
             head_count,
             markers_before,
             option_labels,
@@ -822,7 +823,8 @@ class _MarkerMatcher:
         else:
             candidates = self._pattern.finditer(text)
         for match in candidates:
-            if _marker_labels_have_unmatched_opener(match.group("labels")):
+            labels = match.group("labels")
+            if crosses_line(labels) or _marker_labels_have_unmatched_opener(labels):
                 continue
             before = markers_before(
                 text,
@@ -1446,6 +1448,10 @@ def _rightmost_unfinished_marker(text: str) -> int:
     diverging byte, so an adversarial buffer repeating failing sentinels
     walks linearly. Returns ``-1`` when no admissible occurrence exists.
     """
+    from kiro_crew.option_marker_scan import line_start
+
+    # An ``[OPTIONS`` tail that holds a line break can never close: labels never cross one.
+    last_line = line_start(text, len(text))
     last_close = text.rfind("]")
     cursors = []
     for sentinel, prefix_re in _MARKER_SENTINELS:
@@ -1461,7 +1467,7 @@ def _rightmost_unfinished_marker(text: str) -> int:
             # occurrence means the tail is not still-streaming -- and every
             # remaining occurrence sits further left of that closer too.
             break
-        if prefix_re.match(text, pos) is not None:
+        if (sentinel != "[OPTIONS" or pos >= last_line) and prefix_re.match(text, pos) is not None:
             return pos
         nxt = text.rfind(sentinel, 0, pos)
         if nxt != -1:

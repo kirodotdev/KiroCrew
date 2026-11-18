@@ -51,13 +51,26 @@ def test_a_marker_line_followed_by_prose_parses_on_the_line_readers(br):
         assert got == ("Then restart.", ["A", "B"]), name
 
 
-@pytest.mark.parametrize("br", BREAKS)
-def test_a_marker_whose_labels_cross_a_break_stays_text(br):
-    raw = f"[OPTIONS: A{br}B | C]"
-    for name, got in _line_readers(raw).items():
+@pytest.mark.parametrize("br", ["\n", *BREAKS])
+@pytest.mark.parametrize(
+    "raw", ["[OPTIONS: A{br}B | C]", "Done.{br}{br}[OPTIONS: Alpha |{br}Bravo]"]
+)
+def test_a_marker_whose_labels_cross_a_break_stays_text(br, raw):
+    raw = raw.format(br=br)
+    for name, got in _every_reader(raw).items():
         assert got == (raw, []), name
-    text, options = split_options_trailer("[OPTIONS: A\nB | C]")
-    assert split_options_trailer(raw) == (text, [o.replace("\n", br) for o in options])
+
+
+@pytest.mark.parametrize("br", ["\n", *BREAKS])
+def test_a_streaming_marker_that_crossed_a_break_stays_visible(br):
+    raw = f"Pick:{br}[OPTIONS: A{br}Then restart."
+    assert split_options_trailer(raw, hide_partial=True) == (raw, [])
+
+
+@pytest.mark.parametrize("br", ["\n", *BREAKS])
+def test_a_marker_tail_that_crossed_a_break_is_not_detached(br):
+    raw = f"Pick:{br}[OPTIONS: A{br}Then restart."
+    assert split_trailing_protocol_suffix(raw) == (raw, "")
 
 
 @pytest.mark.parametrize("br", BREAKS)
