@@ -1533,7 +1533,7 @@ jobs:
       # this job to the cross-surface subset on a frontend-only diff was
       # measured as a PESSIMISATION: 4 shards x ~18 min = 70 job-min for the
       # subset, against 62-67 job-min for the whole suite (runs 33412618648 vs
-      # 33406565382). `-n auto` already saturates each runner, so a smaller
+      # 33406565382). The shard's worker count already saturates each runner, so a smaller
       # file list does not shorten a shard, and the cross-surface files are not
       # the cheap ones. Running everything is both cheaper and strictly more
       # coverage, so there is nothing to select.
@@ -1574,9 +1574,36 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
+          # An explicit worker count, as in backend-test, instead of the xdist
+          # budget: that budget reserves 5 GiB a worker for a
+          # FULL-suite collection and grants a file shard only 2 of the fleet
+          # runner's 8 cores. One worker per 3 GiB after 2 GiB for the host,
+          # capped at the core count: 4 on the 15 GiB fleet runner and on a
+          # 4-core hosted runner. The step prints its peak memory after the run.
+          mem_mib=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
+          by_mem=$(( (mem_mib - 2048) / 3072 ))
+          WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$WORKERS" -ge 1 ] || WORKERS=1
+          echo "pytest workers: $WORKERS"
+          # Host memory in use (total - available), sampled every 5s; the
+          # "Report peak memory" step prints the high-water mark.
+          python -c '
+          import sys, time
+          from kiro_crew.platform_compat import host_available_mib, host_total_mib
+          peak = 0
+          while True:
+              used = host_total_mib() - host_available_mib()
+              if used > peak:
+                  peak = used
+                  with open(sys.argv[1], "w", encoding="utf-8") as handle:
+                      handle.write(str(peak))
+              time.sleep(5)
+          ' "$RUNNER_TEMP/mem-peak-mib" > /dev/null 2>&1 &
+          MEM_SAMPLER=$!
+          trap 'kill "$MEM_SAMPLER" 2>/dev/null || true' EXIT
           python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
-            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+            -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
         # Ordinary shards plus backend-test-ipv6 retain every Windows test.
         # Windows has no namespace sandbox, so `userns_available()` is False and every
@@ -1584,6 +1611,13 @@ jobs:
         # test_dogfood_learnings / test_pr_watchers stay tracked as node ids in
         # test/windows-expected-failures.txt, which is the mechanism a whole-file deselect
         # was standing in for.
+
+      - name: Report peak memory
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          total=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
+          echo "peak memory in use: $(cat "$RUNNER_TEMP/mem-peak-mib" 2>/dev/null || echo unknown) MiB of ${total} MiB"
 
       - name: Upload Windows pytest progress
         # Job timeout can skip even always() steps; periodic CI_PROGRESS lines
