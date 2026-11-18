@@ -1554,13 +1554,10 @@ def requirements_in_tree(app_root: Path, req_file: Path) -> tuple[Path, Path] | 
     """The strictly-resolved ``(app_root, requirements.txt)`` pair when *req_file*
     is one the runtime will read, else ``None``.
 
-    The provisioner's own acceptance rule for the file, spelled once: the entry
-    must strictly resolve (a dangling link is ``None``) to a regular file (a
-    directory is ``None``) inside the strictly-resolved app root (a link that
-    escapes it is ``None``), no larger than :data:`REQUIREMENTS_TXT_MAX_BYTES`
-    (an oversized file is ``None``; the provisioner's bounded read refuses it).
-    ``requirements.txt -> requirements/prod.txt`` is legitimate layout and
-    resolves.
+    The provisioner's acceptance rule for the file, spelled once in :func:`requirements_verdict`
+    with the cause of each refusal: the entry must strictly resolve to a regular file inside the
+    strictly-resolved app root, no larger than :data:`REQUIREMENTS_TXT_MAX_BYTES`. A link such as
+    ``requirements.txt -> requirements/prod.txt`` that stays inside the root resolves.
 
     Three callers, one rule. ``backend_runtime/provisioning.py``'s provisioning read and its
     activation gate use it as the fast refusal before their descriptor-pinned,
@@ -1570,20 +1567,26 @@ def requirements_in_tree(app_root: Path, req_file: Path) -> tuple[Path, Path] | 
     gate uses it to predict what those two will do, so it never waives a file the
     provisioner would refuse. ``None`` on any resolution error, so no caller catches here.
     """
+    return requirements_verdict(app_root, req_file)[0]
+
+
+def requirements_verdict(app_root: Path, req_file: Path) -> tuple[tuple[Path, Path] | None, str]:
+    """The rule itself: ``(pair, "")`` on accept, else ``(None, cause)`` naming no path."""
+    cause = "the app directory could not be resolved"
     try:
         root_resolved = app_root.resolve(strict=True)
+        cause = "it is missing, a dangling symlink or a symlink loop"
         target = req_file.resolve(strict=True)
-        if not target.is_file() or not target.is_relative_to(root_resolved):
-            return None
+        cause = "it could not be read"
+        if not target.is_file():
+            return None, "it is not a regular file"
+        if not target.is_relative_to(root_resolved):
+            return None, "it resolves outside the app directory (only in-tree links are followed)"
         if target.stat().st_size > REQUIREMENTS_TXT_MAX_BYTES:
-            return None
-    except (OSError, RuntimeError):
-        # RuntimeError: a symlink loop, which Path.resolve raises as such before
-        # Python 3.13 (ELOOP, an OSError, from then on). Either way "not a file
-        # the runtime will read", never an exception for a caller to turn into a
-        # 500.
-        return None
-    return root_resolved, target
+            return None, f"it is larger than the {REQUIREMENTS_TXT_MAX_BYTES}-byte size cap"
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop before Python 3.13
+        return None, cause
+    return (root_resolved, target), ""
 
 
 #: Cron helpers served as attributes of this module on first access, so
