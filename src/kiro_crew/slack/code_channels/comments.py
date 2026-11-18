@@ -54,6 +54,7 @@ import asyncio
 import contextvars
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -235,11 +236,19 @@ MAX_PLAN_CHARS = 60_000
 MAX_READ_COMMENTS = 100
 
 
-def plan_canvas_text(data: dict[str, Any]) -> str:
+def plan_canvas_text(
+    data: dict[str, Any],
+    *,
+    may_read: Callable[[str], bool] | None = None,
+    comments_shown: bool = True,
+) -> str:
     """A ``getCanvas`` answer as the text the agent reads back (redacted, framed as data).
 
     Everything people typed or the canvas holds passes the redaction every other
     channel text does; the frame says it is content to read, not instructions.
+    Comments follow the delivery's own rule: only those whose author *may_read*
+    accepts (None: every author) are listed, and none when *comments_shown* is
+    False (the inbound gates refuse this channel).
     """
     from kiro_crew.slack.code_channels.wrapup import _redact
 
@@ -258,10 +267,13 @@ def plan_canvas_text(data: dict[str, Any]) -> str:
     if cut:
         lines.append(f"[cut at {MAX_PLAN_CHARS} characters]")
     lines.append("--- end of plan ---")
-    comments = flatten(data)
-    if not comments:
+    comments = [c for c in flatten(data) if may_read is None or may_read(c.user)]
+    if not comments_shown:
+        lines.append("Comments are not shown: this channel's inbound policy does not admit them.")
+        comments = []
+    elif not comments:
         lines.append("No open comments.")
-    else:
+    if comments:
         shown = comments[-MAX_READ_COMMENTS:]
         lines.append(f"Open comments ({len(shown)} shown, oldest first):")
         for c in shown:
@@ -277,6 +289,24 @@ def plan_canvas_text(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def inbound_admitted(binding: Binding) -> bool:
+    """The inbound gates every Slack path applies before content from the channel is read.
+
+    The per-workspace gate, the ``channels`` ceiling and the per-channel one
+    (``allowed_channel_ids``). Not audited: the poll asks every minute, and no
+    person asked for this read.
+    """
+    if not surface.workspace_admitted(binding.team_id):
+        return False
+    from kiro_crew.messaging.identity import channel_inbound_permitted
+    from kiro_crew.slack.channel_policy import channel_refusal
+
+    return bool(
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(binding.channel_id, operation=OPERATION, audit=False)
+    )
+
+
 async def read_comments(binding: Binding, *, reason: str = "turn_end") -> int:
     """Read the plan canvas and deliver what is new; returns how many were delivered."""
     channel = binding.channel_id
@@ -286,18 +316,7 @@ async def read_comments(binding: Binding, *, reason: str = "turn_end") -> int:
     canvas_id = record.plan_canvas_id if record is not None else ""
     if not canvas_id or await surface.is_archived(binding) or surface.channel_stopped(channel):
         return 0
-    if not surface.workspace_admitted(binding.team_id):
-        return 0  # the per-workspace gate every inbound Slack path applies
-    from kiro_crew.messaging.identity import channel_inbound_permitted
-    from kiro_crew.slack.channel_policy import channel_refusal
-
-    # The pair every Slack inbound gate makes: the channels ceiling and the
-    # per-channel one (allowed_channel_ids). Not audited per read: the poll asks
-    # every minute, and no person asked for this read.
-    if not (
-        await channel_inbound_permitted("slack")
-        and not channel_refusal(channel, operation=OPERATION, audit=False)
-    ):
+    if not await inbound_admitted(binding):
         return 0
     client = surface.client()
     if client is None:

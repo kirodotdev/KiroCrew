@@ -310,11 +310,6 @@ def _api_error_text(tool: str, exc: CodeChannelApiError) -> str:
         return f"Error: the call to Slack did not complete ({exc.code}); it may have applied."
     if exc.code == "too_many_sections":
         return TOO_MANY_SECTIONS_TEXT
-    if exc.code == "canvas_not_found":
-        return (
-            "Error: Slack cannot find this channel's plan canvas; it may have been deleted "
-            "in Slack."
-        )
     if exc.code == "content_too_large":
         return f"Error: Slack refused {tool}: the content is larger than Slack accepts."
     if exc.code == "channel_off":
@@ -1007,9 +1002,31 @@ async def _read_plan_canvas(call: Call, args: dict[str, Any]) -> str:
             "code_channel_publish_plan_canvas.",
             "no_plan_canvas",
         )
-    data = await call.client.get_canvas(channel, canvas_id)
+    from kiro_crew.slack.code_channels.routing import _self_user_id
+    from kiro_crew.slack.handler import is_allowed_user
+
+    try:
+        data = await call.client.get_canvas(channel, canvas_id)
+    except CodeChannelApiError as exc:
+        if exc.code != "canvas_not_found":
+            raise
+        raise ToolRefusal(
+            "Error: Slack cannot find this channel's plan canvas; it may have been deleted "
+            "in Slack.",
+            exc.code,
+        ) from None
+    # The same inbound gates and sender rule the delivery of these comments applies:
+    # what it refuses never reaches the model through this read either.
+    me = _self_user_id()
+    shown = await comments.inbound_admitted(call.binding)
     # Up to 1 MB of markdown through every display pass: off the event loop.
-    return await asyncio.to_thread(comments.plan_canvas_text, data)
+    return await asyncio.to_thread(
+        lambda: comments.plan_canvas_text(
+            data,
+            may_read=lambda user: bool(user) and (user == me or is_allowed_user(user)),
+            comments_shown=shown,
+        )
+    )
 
 
 def _bar_items(args: dict[str, Any]) -> list[dict[str, str]]:

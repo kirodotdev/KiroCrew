@@ -2663,7 +2663,9 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   60,000 characters), the title and up to the newest 100 open comments and replies, so
   an agent that lost the plan to a restart or compaction can read it before it
   revises it. Everything passes the channel redaction and is framed as content to read,
-  not instructions. No recorded canvas answers `no_plan_canvas` without calling Slack;
+  not instructions. Comments follow delivery's own gates: only authors who may use Kiro Crew
+  (or the bot itself) are listed, and none when the workspace, `channels` or per-channel
+  inbound gate refuses the channel (`comments.inbound_admitted`, shared with the read-back). No recorded canvas answers `no_plan_canvas` without calling Slack;
   `canvas_not_found` is reported as a deleted canvas. It never marks a comment seen:
   delivery stays `comments.py`'s. `has_more_comments` / `has_more_replies` (Slack drops
   all but the newest 100 threads and 100 replies each) become a note in this read and in
