@@ -396,6 +396,17 @@ def test_seatbelt_write_seals_the_trees_whose_writes_matter() -> None:
     assert not by_path[f"{HOME}/.aws"].write_sealed
 
 
+def test_seatbelt_guards_every_ancestor_of_a_caller_mask_against_rename() -> None:
+    mask = f"{HOME}/data/store/item.bin"
+    profile = sandbox_seatbelt.render_seatbelt_profile(
+        _plan("strict", BACKEND_SEATBELT, extra_hidden_dirs=(mask,))
+    )
+    for ancestor in (f"{HOME}/data/store", f"{HOME}/data", HOME):
+        assert f'(deny file-write* (literal "{ancestor}"))' in profile
+    namespace = _plan("strict", extra_hidden_dirs=(mask,))
+    assert f"{HOME}/data/store" not in namespace.runtime_ancestor_guards
+
+
 # --------------------------------------------------------------------------- #
 # Write carve-outs.
 # --------------------------------------------------------------------------- #
