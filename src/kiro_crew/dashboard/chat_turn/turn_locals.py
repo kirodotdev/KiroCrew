@@ -309,6 +309,7 @@ class _ChatTurn:
     _turn_lands: "bool"
     _turn_model: "str"
     _turn_msg_boundary: "int"
+    _turn_native_activity: "bool"
     _turn_priority: "StartPriority"
     _turn_project: "str"
     _turn_refusal: "RefusalInfo | None"

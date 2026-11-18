@@ -526,6 +526,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # double-stream text or re-run a side-effecting tool.
     _turn_emitted = False
     turn._turn_emitted = _turn_emitted
+    # Whether this turn's own native sub-agents reported in (a roster or a child's
+    # frame). Not a turn-emit, but a child may have acted, so a stall probe of the
+    # turn continues it instead of sending the message again.
+    turn._turn_native_activity = False
     # Did this turn stream text the user has ALREADY READ, which a later tool
     # boundary then flushed out of `assistant_text`? The three tool-boundary flushes
     # (_on_text_chunk's post-tool-group text in stream_chunks, _on_tool_call in tool_rows,

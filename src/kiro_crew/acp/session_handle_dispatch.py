@@ -162,6 +162,12 @@ async def _dispatch_events(
     # to bound.
     last_own_data_ts = last_data_ts
     parked_at_own_data = parked_at_data
+    # Whether this turn has dequeued a frame attributable to this session
+    # (the test that moves last_own_data_ts; a keepalive touch is no frame).
+    # Before one, a model-wait DEAD reading is a prompt nothing has answered
+    # yet, not a finished turn whose frame was lost, so it gets the UNKNOWN
+    # window instead of the immediate probe.
+    own_frame_seen = False
     # When the tool branch last read the in-flight tool's subtree as
     # WORKING. The remote_flat narrowing measures its quiet stretch from the
     # later of this and the last own frame, so a remote call that moves bytes
@@ -645,12 +651,15 @@ async def _dispatch_events(
                     _flat_wait = evidence.startswith(
                         (EVIDENCE_ESTABLISHED_FLAT, EVIDENCE_PLATFORM_LIMITED)
                     )
-                    if verdict != VERDICT_DEAD:
+                    if verdict != VERDICT_DEAD or not own_frame_seen:
                         # UNKNOWN: probe only past the window. An established-
                         # but-flat backend connection is probably a non-streamed
                         # server-side think — probing it cancels + regenerates
                         # the think, so it gets the extended window. The hard
-                        # cap bounds any UNKNOWN deferral absolutely.
+                        # cap bounds any UNKNOWN deferral absolutely. A DEAD
+                        # reading before this turn's first own frame waits the
+                        # same window: the done-but-lost-frame wedge it stands
+                        # for needs a turn that has produced something.
                         window = wd.model_silent_probe_secs if _flat_wait else wd.stale_window_secs
                         if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
                             continue
@@ -723,6 +732,7 @@ async def _dispatch_events(
                 # (a co-tenant's), and only the runtime knows which.
                 last_own_data_ts = last_data_ts
                 parked_at_own_data = parked_at_data
+                own_frame_seen = True
                 if (
                     req_id == AGENT_STARTED_REQUEST_ID
                     # A native child's frame is its own work: its tool calls

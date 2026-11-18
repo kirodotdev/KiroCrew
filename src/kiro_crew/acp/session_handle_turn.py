@@ -505,7 +505,12 @@ async def _run_turn(
     # the terminal flag records that the engine already reported its outcome.
     self._kas_compact_turn = False
     self._compaction_terminal_seen = False
-    self._stale_eligible = False
+    # The model-wait watchdog judges a prompt from its send: no tool is in
+    # flight yet, so a prompt that never gets a frame is bounded by the
+    # stale window, not the turn ceiling. A turn the agent started arms from
+    # its first activity frame instead (``_dispatch_events``), and a native
+    # command turn not at all (bounded by ``_COMMAND_TURN_TIMEOUT_SECS``).
+    self._stale_eligible = not agent_started and not extract_command_result
     # Set when a genuine stale turn is probed via session/cancel; read by the
     # unresponsive-cancel branch to distinguish a confirmed wedge (signal
     # auto-recovery) from an ordinary unacked cancel (unblock caller).
