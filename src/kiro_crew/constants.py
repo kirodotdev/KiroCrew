@@ -804,7 +804,13 @@ class _MarkerMatcher:
         such row rule, so joining here would empty ``[OPTIONS: A] [OPTIONS:]``.
         """
         # Imported here so a server that only lists its tools never loads the walk.
-        from kiro_crew.option_marker_scan import HEAD_CAP, MarkerRun, head_count, markers_before
+        from kiro_crew.option_marker_scan import (
+            HEAD_CAP,
+            MarkerRun,
+            head_count,
+            markers_before,
+            option_labels,
+        )
 
         if head_count(text) > HEAD_CAP:
             return
@@ -824,7 +830,7 @@ class _MarkerMatcher:
             )
             if before is None:
                 continue
-            if before and match.group("labels").replace("|", "").strip():
+            if before and option_labels(match.group("labels")):
                 yield MarkerRun(before[0], match)
             else:
                 yield match

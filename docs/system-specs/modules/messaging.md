@@ -5597,6 +5597,12 @@ single parse. `render_options_as_text` returns only the body, so every
 widget-capable renderer calls `split_options_trailer` rather than carrying a copy. A parse duplicated per channel
 drifts per channel and does it silently, because each copy reads correctly alone.
 
+Every reader splits the labels with `option_marker_scan.option_labels`: on `|`
+when the label text holds one, else on `,`. That is the web parser's `optionsOf`
+rule, so `[OPTIONS: A, B]` offers two choices on every surface, and a pipe keeps
+a comma inside a label whole. Slack's `extract_options`, the dashboard's
+`_parse_options` and the same-line sibling check use the same function.
+
 `hide_partial` is the one thing the channels genuinely disagree about, so it is a
 parameter rather than a baked-in policy:
 
