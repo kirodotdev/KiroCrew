@@ -304,6 +304,10 @@ class HarnessSupervisor:
         #: a start that would launch it is refused instead of running from files the
         #: swap is about to move.
         self.replacing_chromium = False
+        #: The last start ran under ``auto`` and found the person's Chrome or Edge
+        #: not accepting debugging connections, so it used Kiro's Chromium instead.
+        #: Status reports that browser until a start finds the person's one usable.
+        self._auto_fallback = False
         self._request_ids = itertools.count(1)
         #: A helper round trip; tests shorten it.
         self.call_timeout = CALL_TIMEOUT_SECS
@@ -610,6 +614,11 @@ class HarnessSupervisor:
         self._detail = detail
 
     def _choose(self, state: install.InstallState) -> discover.BrowserChoice | None:
+        """The browser a start would use now.
+
+        Under ``auto``, after a start found the person's own browser not accepting
+        debugging connections (:meth:`_auto_falls_back`), that is Kiro's Chromium.
+        """
         try:
             cfg = self._config_reader()
         except Exception:  # noqa: BLE001 - a config read failure means defaults
@@ -623,6 +632,15 @@ class HarnessSupervisor:
         except Exception:  # noqa: BLE001 - a probe failure is "unknown", not a crash
             logger.debug("browser discovery failed", exc_info=True)
             return None
+        if (
+            self._auto_fallback
+            and choice.kind != "kiro_chromium"
+            and discover.configured_choice(cfg) == discover.CHOICE_AUTO
+        ):
+            # discover only picks the person's browser on a host with a display.
+            choice = discover.BrowserChoice(
+                "kiro_chromium", state.chromium.executable, False, self.profile_dir
+            )
         # The headless shell has no window: a windowed pin on a display host still
         # runs headless, and status, the live card and the startup warm must say so.
         if (
@@ -648,7 +666,17 @@ class HarnessSupervisor:
         except BrowserUnavailable as exc:
             self._set(ERROR, str(exc))
             raise
+        # The person's own browser is checked again at every start, so turning its
+        # remote debugging on takes effect at the next one.
+        self._auto_fallback = False
         choice = await asyncio.to_thread(self._choose, state)
+        if (
+            choice is not None
+            and choice.kind != "kiro_chromium"
+            and await self._auto_falls_back(choice)
+        ):
+            self._auto_fallback = True
+            choice = await asyncio.to_thread(self._choose, state)
         if choice is None:
             self._set(ERROR, "could not pick a browser")
             raise BrowserUnavailable(self._detail)
@@ -867,6 +895,27 @@ class HarnessSupervisor:
         if self._connection == CONNECTED:
             self._set(DISCONNECTED, "the browser closed the connection")
 
+    async def _auto_falls_back(self, choice: discover.BrowserChoice) -> bool:
+        """Under ``auto``: whether the person's browser *choice* cannot take a connection.
+
+        "Automatic" promises Chrome, then Edge, then Kiro's Chromium. A Chrome whose
+        remote debugging is off (no live ``DevToolsActivePort``) can never connect,
+        so the start moves on to Kiro's Chromium instead of failing. A hand pick of
+        Chrome keeps failing with the reason: the person chose that browser.
+        """
+        try:
+            cfg = await asyncio.to_thread(self._config_reader)
+        except Exception:  # noqa: BLE001 - a config read failure means defaults
+            cfg = {}
+        if discover.configured_choice(cfg) != discover.CHOICE_AUTO:
+            return False
+        if choice.user_data_dir is not None and await _devtools_ws_url(choice.user_data_dir):
+            return False
+        logger.info(
+            "browser: %s is not accepting debugging connections; using Kiro's Chromium", choice.kind
+        )
+        return True
+
     async def _user_browser_ws_url(self, choice: discover.BrowserChoice) -> str:
         profile = choice.user_data_dir
         name = "Chrome" if choice.kind == "user_chrome" else "Edge"
@@ -888,6 +937,12 @@ class HarnessSupervisor:
         """Start Kiro's Chromium; return it and the relay's upstream (pipe, or a URL on Windows)."""
         exe = state.chromium.executable
         if exe is None:
+            if self._auto_fallback:
+                raise BrowserUnavailable(
+                    "your browser is not accepting debugging connections, so Kiro switched "
+                    "to its own Chromium, which is not downloaded yet: click Install in "
+                    "Settings > Browser"
+                )
             raise BrowserUnavailable("Kiro's Chromium is not downloaded: install it in Settings")
         profile = self.profile_dir
         await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
