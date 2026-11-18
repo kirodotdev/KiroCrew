@@ -108,8 +108,9 @@ retired crews, and its reply names the old worker's `previous_branch` when that
 worker reported one. Seed the new worker to start from that branch, if any, and
 push a NEW one. An explicit `crew=` create may still name a retired crew and
 returns no branch. The retired session can only be closed. Once its crew is
-back, a pull tries once to close it; if that fails, `session_close(crew=)` it
-in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
+back, a pull closes it, and retries a failed close later; the row's
+`close_pending` counts the ones still open. To close one now,
+`session_close(crew=)` it in an owner turn. An item keeps at most 8 retired sessions not yet closed; a
 retire past that is refused `retired_history_full` and the binding stays.
 
 **A stuck or wrong crew.** When a crew worker reports `blocked` on a login, or

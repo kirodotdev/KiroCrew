@@ -1017,22 +1017,39 @@ async def retire_by_conductor(
     return resp
 
 
-#: ``(crew, slot)`` retired slots this process already tried to close. One try
-#: each, never a retry loop: a close that fails leaves the entry ``retired``
-#: (fenced, close-only), and the owner's ``session_close(crew=)`` still closes it.
-_CLOSE_TRIED: set[tuple[str, str]] = set()
+#: Seconds a failed close waits before the next sweep or read tries it again,
+#: doubled after each failure up to :data:`CLOSE_RETRY_MAX_SECS`.
+CLOSE_RETRY_SECS = 60.0
+
+#: The longest wait between two tries of one close.
+CLOSE_RETRY_MAX_SECS = 3600.0
+
+#: ``(crew, slot)`` -> ``(failures, not_before)`` for each retired slot this
+#: process has tried to close and not yet closed. ``not_before`` is on
+#: :data:`_monotonic`'s clock, and ``inf`` while a try is in flight. A close that
+#: fails leaves the entry ``retired`` (fenced, close-only) and is tried again by
+#: the first sweep or read past ``not_before``; there is no timer of its own.
+#: shortcut: in memory only, so a hub restart tries every slot at once; persist
+#: the backoff if restarts ever come faster than the wait.
+_CLOSE_RETRY: dict[tuple[str, str], tuple[int, float]] = {}
 
 #: The close tasks in flight, held so none is collected before it ends.
 _CLOSE_TASKS: set["asyncio.Task[None]"] = set()
 
 
+def _close_due(key: tuple[str, str]) -> bool:
+    """Whether *key* is neither in flight nor inside its backoff window."""
+    tried = _CLOSE_RETRY.get(key)
+    return tried is None or _monotonic() >= tried[1]
+
+
 def _schedule_closes(
     state: "DashboardState", board: str, items: list[work_ledger.WorkItem]
 ) -> None:
-    """Start one close per retired slot whose crew reads connected now. Never raises.
+    """Start one close per due retired slot whose crew reads connected now. Never raises.
 
     Each close runs as its own task, so a slow crew never delays this read or
-    holds back another close.
+    holds back another close. A crew that is not connected costs no try.
     """
     mgr = getattr(state, "instances_manager", None)
     if mgr is None:
@@ -1041,11 +1058,12 @@ def _schedule_closes(
         for entry in item.retired_bindings:
             if entry["state"] != "retired":
                 continue
-            crew, slot = entry["worker_instance_id"], entry["worker_session_key"]
-            if (crew, slot) in _CLOSE_TRIED or _crew_state(mgr, crew) != "connected":
+            key = (entry["worker_instance_id"], entry["worker_session_key"])
+            if not _close_due(key) or _crew_state(mgr, key[0]) != "connected":
                 continue
-            _CLOSE_TRIED.add((crew, slot))
-            task = asyncio.ensure_future(_close_retired_slot(state, mgr, board, crew, slot))
+            failures = _CLOSE_RETRY.get(key, (0, 0.0))[0]
+            _CLOSE_RETRY[key] = (failures, float("inf"))
+            task = asyncio.ensure_future(_close_retired_slot(state, mgr, board, *key))
             _CLOSE_TASKS.add(task)
             task.add_done_callback(_CLOSE_TASKS.discard)
 
@@ -1053,24 +1071,40 @@ def _schedule_closes(
 async def _close_retired_slot(
     state: "DashboardState", mgr: Any, board: str, crew: str, slot: str
 ) -> None:
-    """Close one retired peer slot, then mark its entry ``destroyed``. Never raises.
+    """End one retired peer slot's Trust, close it, then mark it ``destroyed``. Never raises.
 
-    A 2xx, or a 404 saying the slot is gone, counts as closed. Anything else (a
-    timeout, a refusal, a version skew) leaves the entry ``retired``: fail closed.
+    The ``trust: false`` PATCH goes first and is best effort, so a worker whose
+    DELETE then fails holds no grant while it waits for the retry. A 2xx, or a
+    404 saying the slot is gone, counts as closed. Anything else (a timeout, a
+    refusal, a version skew, a ``destroy`` that did not record) leaves the entry
+    ``retired`` (fail closed) and backs the next try off.
     """
     routes = _routes()
-
-    async def _delete() -> tuple[int, Any]:
-        await routes.check_version(mgr, crew)
-        return await routes.peer_call(mgr, crew, "DELETE", f"api/chat/slots/{quote(slot, safe='')}")
-
+    key = (crew, slot)
+    closed = False
     try:
-        status, payload = await asyncio.wait_for(_delete(), PULL_TIMEOUT_SECS)
-    except Exception:  # noqa: BLE001 - one failed close stays fenced, nothing more
-        logger.info("retired slot %s on %s not closed", slot, crew, exc_info=True)
-        return
-    if 200 <= status < 300 or slot_gone(status, payload):
-        await mark_destroyed(state, board, crew, slot)
+        try:
+            await asyncio.wait_for(routes.check_version(mgr, crew), PULL_TIMEOUT_SECS)
+            try:
+                await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), PULL_TIMEOUT_SECS)
+            except Exception:  # noqa: BLE001 - the DELETE below still ends the grant
+                logger.info("retired slot %s on %s kept its trust", slot, crew, exc_info=True)
+            status, payload = await asyncio.wait_for(
+                routes.peer_call(mgr, crew, "DELETE", f"api/chat/slots/{quote(slot, safe='')}"),
+                PULL_TIMEOUT_SECS,
+            )
+        except Exception:  # noqa: BLE001 - a failed close stays fenced and backs off
+            logger.info("retired slot %s on %s not closed", slot, crew, exc_info=True)
+            return
+        if 200 <= status < 300 or slot_gone(status, payload):
+            closed = await mark_destroyed(state, board, crew, slot)
+    finally:
+        if closed:
+            _CLOSE_RETRY.pop(key, None)
+        else:
+            failures = _CLOSE_RETRY.get(key, (0, 0.0))[0] + 1
+            delay = min(CLOSE_RETRY_SECS * 2 ** min(failures - 1, 16), CLOSE_RETRY_MAX_SECS)
+            _CLOSE_RETRY[key] = (failures, _monotonic() + delay)
 
 
 def slot_gone(status: int, payload: Any) -> bool:
@@ -1255,7 +1289,7 @@ REMOTE_ROW_FIELDS: tuple[str, ...] = (
 
 
 #: The fields a row adds for an item that holds retired bindings (wave 8).
-RETIRED_ROW_FIELDS: tuple[str, ...] = ("redispatch_due", "retired_crews")
+RETIRED_ROW_FIELDS: tuple[str, ...] = ("redispatch_due", "retired_crews", "close_pending")
 
 
 def remote_row_fields(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
@@ -1263,13 +1297,15 @@ def remote_row_fields(board: str, item: work_ledger.WorkItem) -> dict[str, Any]:
 
     An item that holds retired bindings adds ``redispatch_due`` (open and unbound:
     the conductor places it again with ``session_create(work_item=)``, which skips
-    ``retired_crews``) whether or not it is bound again.
+    ``retired_crews``) whether or not it is bound again, and ``close_pending``, the
+    retired peer slots not yet closed.
     """
     retired: dict[str, Any] = {}
     if item.retired_bindings:
         retired = {
             "redispatch_due": not item.is_terminal and not item.worker_session_key,
             "retired_crews": sorted(retired_crews(item)),
+            "close_pending": sum(b["state"] == "retired" for b in item.retired_bindings),
         }
     if not item.worker_instance_id:
         return retired
