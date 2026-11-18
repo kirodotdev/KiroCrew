@@ -1052,8 +1052,10 @@ class TestAgentSpecRepairIsAPostNotAGet:
         )
         service._has_probed = True
 
-        async def _no_probe(*, force: bool = False) -> PrerequisiteStatus:
-            del force
+        async def _no_probe(
+            *, force: bool = False, skip_whoami_on_claude: bool = False
+        ) -> PrerequisiteStatus:
+            del force, skip_whoami_on_claude
             return service._status
 
         service._probe = _no_probe  # type: ignore[method-assign]

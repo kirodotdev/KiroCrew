@@ -80,3 +80,58 @@ async def test_kas_backend_probe_still_runs_whoami(
 
     assert status["authenticated"] is True
     assert calls[:2] == [["--version"], ["whoami"]]
+
+
+@pytest.mark.asyncio
+async def test_claude_default_still_probes_whoami_for_a_kiro_routed_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # regenerate / edit-resend / rewind on a Kiro CLI session ask verified_ready;
+    # the default backend being claude must not turn that into a signed-out 503.
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
+
+    assert await service.verified_ready(max_age_secs=3600.0) is True
+
+    assert ["whoami"] in calls
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_status_probe_is_not_reused_as_a_kiro_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
+    await service.snapshot(force=True)
+    assert ["whoami"] not in calls
+
+    # The status probe just ran, well inside max_age_secs, yet it skipped whoami.
+    assert await service.verified_ready(max_age_secs=3600.0) is True
+
+    assert ["whoami"] in calls
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_sign_in_check_runs_whoami_on_a_claude_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
+    await service.snapshot(force=True)
+
+    await service.signed_out_confirmed()
+
+    assert ["whoami"] in calls
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_sign_in_check_does_not_make_a_skipped_probe_reusable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, calls = _service(tmp_path, monkeypatch, ACP_BACKEND_CLAUDE)
+    await service.snapshot(force=True)
+    await service.signed_out_confirmed()
+    whoami_runs = calls.count(["whoami"])
+
+    # The latch still holds the skipped probe's ready=False; the check above must
+    # not have made it look like a real verdict.
+    assert await service.verified_ready(max_age_secs=3600.0) is True
+
+    assert calls.count(["whoami"]) == whoami_runs + 1
