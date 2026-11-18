@@ -530,6 +530,8 @@ from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _FAILURE_REMINDER_SECS,
     _NO_RESPONSE,
     _SUCCESS_REMINDER_SECS,
+    _UNAPPROVED_TITLE_CHARS,
+    _UNAPPROVED_TITLES_KEPT,
     _VOLATILE_RE,
     _annotate_partial_block,
     _dedup_text,
