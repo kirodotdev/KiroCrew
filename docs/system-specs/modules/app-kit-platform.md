@@ -8154,8 +8154,8 @@ which tells that chat once when the Bot has app tools turned on. This
 narrows `docs/decisions/2026-11-02-a-crewmates-worker-carries-its-template-policy.md`
 ("the conductor takes nothing from the file") and
 `docs/decisions/2026-11-04-conductors-stay-simple-and-new-abilities-go-to-workers.md`
-("a mate's conductor mounts only Crew's own MCP servers") for this one case, and needs
-a superseding decision entry that names both.
+("a mate's conductor mounts only Crew's own MCP servers") for this one case, as
+`docs/decisions/2026-11-23-bot-chats-may-mount-owner-approved-app-servers.md` records.
 
 The app's requests still pass the path gate, so it also declares `/api/members` in
 `permissions.api`. The token allowlist, CORS and frame-ancestors are unchanged.

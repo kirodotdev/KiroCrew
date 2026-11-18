@@ -226,7 +226,11 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "destroy": ("function", True, "958babeb61c8", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
     "detach_queue": ("function", False, "197b82a5019f", "claims"),
-    "discard_conversation": ("function", True, "69405409fda2", "teardown"),
+    "discard_conversation": ("function", True, "882e8ae87fe9", "teardown"),
+    # Added confirm_teardown (bool) and unconfirmed_handle_out (list | None):
+    # confirm_teardown=True makes shared-KAS close failures visible to callers
+    # (trust-revocation path), unconfirmed_handle_out receives the runtime handle
+    # for a later retry.
     "drain_active_turns": ("function", True, "5944c6af44b2", "teardown"),
     "drain_all_providers": ("function", True, "612085521485", "teardown"),
     "drain_warm_pool": ("function", True, "f5423acdeebc", "runtimes"),

@@ -36,7 +36,7 @@ _CONFIG_TIMEOUT_SECS = 30
 class AppGatewayError(RuntimeError):
     """A running gateway refused or could not complete an app lifecycle request."""
 
-    def __init__(self, message: str, *, code: str = "") -> None:
+    def __init__(self, message: str, *, code: str = "", bots: tuple[str, ...] = ()) -> None:
         # This exception is rendered by cli_commands_app on ONE prefixed line, so the
         # terminal boundary is here even when the message came from an HTTP error
         # or response payload, and a line break in it must not start a new line.
@@ -44,6 +44,8 @@ class AppGatewayError(RuntimeError):
         # The gateway's machine-readable ``code`` when it sent one, so the CLI can
         # act on a refusal (``session_approval_consent_required``) without parsing prose.
         self.code = code
+        # The Bots a ``bot_chat_stop_incomplete`` answer names as still running.
+        self.bots = bots
         # The serving gateway's own version when the client read it (install and
         # update only), so the CLI can say which gateway refused; "" when unknown.
         self.gateway_version = ""
@@ -74,7 +76,11 @@ def _gateway_error(exc: urllib.error.HTTPError) -> AppGatewayError:
         body = json.loads(exc.read())
         if isinstance(body, dict) and isinstance(body.get("error"), str):
             code = body.get("code")
-            return AppGatewayError(body["error"], code=code if isinstance(code, str) else "")
+            return AppGatewayError(
+                body["error"],
+                code=code if isinstance(code, str) else "",
+                bots=stop_failed_bots(body),
+            )
     except Exception:
         # An unreadable or non-JSON body falls back to the status line below.
         pass
@@ -412,8 +418,37 @@ def _send_request(
     return result, etag
 
 
-def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
-    """Render a live app lifecycle response through one terminal sanitizer."""
+def stop_failed_bots(body: object) -> tuple[str, ...]:
+    """The Bots a lifecycle answer names as still running the app's tools: the 200's
+    ``bot_chat_stop_failed`` or a ``bot_chat_stop_incomplete`` 409's (or its ``bots``)."""
+    if not isinstance(body, dict):
+        return ()
+    raw = body.get("bot_chat_stop_failed")
+    if not isinstance(raw, list) and body.get("code") == "bot_chat_stop_incomplete":
+        raw = body.get("bots")
+    return tuple(s for s in raw if isinstance(s, str)) if isinstance(raw, list) else ()
+
+
+def bot_chat_stop_lines(action: str, app_name: str, bots: tuple[str, ...]) -> list[str]:
+    """The lines that say which Bot chats still hold *app_name*'s tools and how to
+    stop them: the same command again, or a gateway restart."""
+    if not bots:
+        return []
+    app = safe_terminal_line(app_name)
+    names = safe_terminal_line(", ".join(bots))
+    done = {"uninstall": "uninstalled", "disable": "disabled"}.get(action, f"{action}d")
+    return [
+        f"⚠  {app} is {done}, but these Bot chats still have its tools: {names}.",
+        f"   Remove them: kirocrew app {safe_terminal_line(action)} {app}",
+        "   Or restart Kiro Crew: kirocrew restart. The chat history is kept.",
+    ]
+
+
+def print_result(action: str, app_name: str, result: dict[str, object]) -> bool:
+    """Render a live app lifecycle response through one terminal sanitizer.
+
+    False when the action landed but a Bot chat running the app's tools could not
+    be stopped (``bot_chat_stop_failed``): the caller exits non-zero."""
     message = result.get("message")
     rendered_message = (
         message
@@ -440,6 +475,11 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
                 if isinstance(error, str):
                     print(f"⚠️  {safe_terminal_line(error)}", file=sys.stderr)
 
+    stop_lines = bot_chat_stop_lines(action, app_name, stop_failed_bots(result))
+    for line in stop_lines:
+        print(line, file=sys.stderr)
+    complete = not stop_lines
+
     if action == "install":
         # What the gateway registered. An install whose record is disabled
         # registers nothing, so these lines print only for an enabled record.
@@ -459,12 +499,12 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
             print("   This app asks for session approval, so it stays off until enabled.")
         # An install records the app as not enabled, wherever it ran.
         print(f"\n   Run: kirocrew app enable {safe_terminal_line(app_name)}")
-        return
+        return complete
 
     # An update re-registers the new manifest's resources the way an enable does,
     # so it reports the same counts; only an enable answers with a backend block.
     if action not in ("enable", "update"):
-        return
+        return complete
 
     if isinstance(registration, dict):
         agents = registration.get("agents")
@@ -477,3 +517,4 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
     if isinstance(backend, dict) and isinstance(backend.get("port"), int):
         status = "healthy" if backend.get("healthy") else "starting"
         print(f"   Backend: port {backend['port']} ({status})")
+    return complete

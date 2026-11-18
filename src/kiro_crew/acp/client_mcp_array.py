@@ -59,7 +59,6 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
-    ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
@@ -503,9 +502,10 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
 def _record_bot_chat_mounts(client: AcpClient, servers: list[dict[str, Any]]) -> None:
     """Settle a Bot chat's app-server record from the array this session is handed
     (``bot_chat_app_tools.record_mounted``), after every withholding above."""
-    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+    from kiro_crew.bot_chat_app_tools import carries_app_tools
 
-    if client._agent != MATE_CONDUCTOR_AGENT or not client._session_key:
+    key = client._session_key or ""
+    if not carries_app_tools(client._agent, key, client._acp_backend):
         return
     from kiro_crew.bot_chat_app_tools import (
         check_and_filter_projection,
@@ -521,11 +521,9 @@ def _record_bot_chat_mounts(client: AcpClient, servers: list[dict[str, Any]]) ->
     # For codex: pass codex_name as name_transform so the sidecar lookup can match
     # whitespace-folded aliases to the original form stored by conductor_session_spec.
     name_xform = codex_name if client._acp_backend == ACP_BACKEND_CODEX else None
-    servers_dict = check_and_filter_projection(
-        client._session_key, servers_dict, name_transform=name_xform
-    )
+    servers_dict = check_and_filter_projection(key, servers_dict, name_transform=name_xform)
     servers[:] = list(servers_dict.values())
-    voided_apps = record_mounted(client._session_key, mounted_names(servers_dict), spelled)
+    voided_apps = record_mounted(key, mounted_names(servers_dict), spelled)
     if voided_apps:
         servers_dict = {
             a: e
@@ -643,6 +641,7 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         self._member_stub_allowlist = _GRANTS_NOTHING if held_to_spec else None
     try:
         from kiro_crew.acp.session_mcp import session_mcp_projection
+        from kiro_crew.bot_chat_app_tools import carries_app_tools
         from kiro_crew.mate_spec_policy import applies_spec_policy
 
         projection = session_mcp_projection(
@@ -652,7 +651,9 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             session_key=self._session_key or "",
             worker_tool_limits_honoured=self.backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
             spec_policy_honoured=applies_spec_policy(self.backend),
-            bot_app_tools_carried=self.backend in ACP_BACKENDS_MATE_WORKER_KIT,
+            bot_app_tools_carried=carries_app_tools(
+                self._agent, self._session_key or "", self.backend
+            ),
         )
     except Exception:
         if worker:

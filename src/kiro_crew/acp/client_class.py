@@ -435,6 +435,13 @@ class AcpClient:
         # descendant's exit. A work-directory reclaim reads this fail-closed
         # verdict after shutdown.
         self._process_tree_confirmed_dead = False
+        # True from this client's first spawn on (``client_start``): a client that
+        # never launched a process has nothing a close could leave running.
+        self._spawned = False
+        # The PIDs the last reset could not show gone (``client_lifecycle._reset_state``).
+        self._unreaped_pids: tuple[int, ...] = ()
+        # The Windows tree cleanup a reset left pending, retired once drained.
+        self._windows_cleanup_receipt: object | None = None
         self._start_time: str | None = None  # start identity for PID-recycle detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's

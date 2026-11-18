@@ -598,5 +598,11 @@
   "pages.chatSidebar.show_linked_items",
   "pages.chatSidebar.show_linked_items_failed",
   "components.queueStack.discard_all_title",
-  "components.queueStack.discard_all_failed"
+  "components.queueStack.discard_all_failed",
+  "pages.appsPage.bot_chat_stop_incomplete_revoked",
+  "pages.appsPage.uninstall_bot_chat_stop_failed",
+  "pages.appsPage.disable_bot_chat_stop_failed",
+  "pages.appsPage.bot_chat_stop_retry",
+  "pages.appsPage.bot_chat_stop_retry_all",
+  "pages.appsPage.blanket_bot_chat_stop_failed"
 ]

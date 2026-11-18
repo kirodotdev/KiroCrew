@@ -102,11 +102,11 @@ def crewmate_worker_deny_rules(
     """
     from kiro_crew.acp import session_mcp
     from kiro_crew.agent_sdk.backends import (
-        ACP_BACKENDS_MATE_WORKER_KIT,
         ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
         ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
         ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     )
+    from kiro_crew.bot_chat_app_tools import carries_app_tools
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 
     # A Bot's own chat too: its spec is the shared conductor plus the app servers
@@ -121,7 +121,7 @@ def crewmate_worker_deny_rules(
         worker_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
         worker_mcp_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
         worker_native_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
-        bot_app_tools_carried=backend in ACP_BACKENDS_MATE_WORKER_KIT,
+        bot_app_tools_carried=carries_app_tools(agent, session_key, backend),
     )
     return worker_deny_rules(projection.disabled_tools, projection.agent_spec)
 

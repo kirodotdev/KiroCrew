@@ -190,6 +190,13 @@ def _apply_through_gateway(
     except app_lifecycle_client.AppGatewayError as exc:
         if action == "enable" and exc.code == _SESSION_APPROVAL_CONSENT_REQUIRED:
             _refuse_session_approval_from_cli(subject)
+        if exc.code == "bot_chat_stop_incomplete":
+            # The action landed (or the app was already gone); only the Bot chats
+            # running its tools did not stop. Say which, and how to stop them.
+            lines = app_lifecycle_client.bot_chat_stop_lines(action, subject, exc.bots)
+            for line in lines or [f"⚠  {str(exc).rstrip('.')}."]:
+                print(line, file=sys.stderr)
+            sys.exit(1)
         # A refusal that already ends its sentence would otherwise print "..".
         print(f"❌ gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
         for line in app_lifecycle_client.gateway_version_lines(exc.gateway_version, refused=True):
@@ -199,7 +206,8 @@ def _apply_through_gateway(
         return False
     name = result.get("name")
     app_name = name if action == "install" and isinstance(name, str) and name else subject
-    app_lifecycle_client.print_result(action, app_name, result)
+    if not app_lifecycle_client.print_result(action, app_name, result):
+        sys.exit(1)  # landed, but a Bot chat still runs the app's tools
     return True
 
 

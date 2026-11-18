@@ -62,6 +62,7 @@ from kiro_crew.acp.session_handle import (
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
+from kiro_crew.acp.session_handle_runtime_contract import host_refused
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -73,6 +74,12 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.bot_chat_ending_fence import (
+    abandoned_start,
+    capture_start_snapshot,
+    current_start_key,
+    runtime_session_start,
+)
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import kas_offered, unavailable_mode_explanation
 from kiro_crew.mcp_gateway.session_servers import attach_stub_start_priority
@@ -134,49 +141,66 @@ _ABANDONED_NEW_CLOSES: set[asyncio.Task[Any]] = set()
 async def _kept_to_its_end(
     runtime: AcpRuntime, request: Awaitable[dict[str, Any]], harness_state: Any
 ) -> dict[str, Any]:
-    """Await *request*, a ``session/new``; on a per-session host, keep it to its end.
+    """Await *request*, a ``session/new``; for a Bot chat's start or on a per-session
+    host, keep it to its end.
 
     A start cancelled while the adapter works on it would otherwise leave a session
     resident with no owner on a process other chats keep alive: the request is
     shielded, and the session it answers with is closed once it arrives
-    (``terminate_session``), unless one of that id is registered by then. A timeout
-    the caller is still there for keeps the late-start collector's handling; one
-    raised after the caller left is closed as above when its late answer lands.
+    (``terminate_session``), unless one of that id is registered by then. A Bot
+    chat's start stays held, and that session on the chat's record, until the
+    close is confirmed (``abandoned_start``). A timeout the caller is still there
+    for keeps the late-start collector's handling; one raised after the caller
+    left is closed as above when its late answer lands.
     """
-    if harness_state is None:
+    if harness_state is None and not current_start_key():
         return await request
     pending = asyncio.ensure_future(request)
     try:
         return await asyncio.shield(pending)
     except asyncio.CancelledError:
-        pending.add_done_callback(lambda done: _close_abandoned_new(runtime, done))
+        finish = abandoned_start(runtime, f"new:{id(pending)}")
+        pending.add_done_callback(lambda done: _close_abandoned_new(runtime, done, finish))
         raise
 
 
-def _close_abandoned_new(runtime: AcpRuntime, request: asyncio.Future[Any]) -> None:
+def _close_abandoned_new(
+    runtime: AcpRuntime, request: asyncio.Future[Any], finish: Callable[..., None] = lambda *_: None
+) -> None:
     """Close the session an abandoned ``session/new`` created, once it answered.
 
     A request that timed out after its caller left hands its late answer on
     (``adopted_future``, as ``_send_and_await`` builds it for the start collector):
-    that answer is closed the same way when it lands.
+    that answer is closed the same way when it lands. *finish* settles the chat's
+    start by this request's own outcome (``abandoned_start``): a refusal the host
+    answered left no session; no answer, or a close not confirmed, stays kept.
     """
     if request.cancelled():
+        finish()
         return
     error = request.exception()
     if error is not None:
         adopted = getattr(error, "adopted_future", None)
         if isinstance(adopted, asyncio.Future):
-            adopted.add_done_callback(lambda done: _close_abandoned_new(runtime, done))
+            adopted.add_done_callback(lambda done: _close_abandoned_new(runtime, done, finish))
+        else:
+            finish("", host_refused(error))  # only the host's own refusal created nothing
         return
     answer = request.result()
     session_id = str(answer.get("sessionId") or "") if isinstance(answer, dict) else ""
-    if not session_id or session_id in runtime._session_queues:
+    if not session_id:
+        finish("", True)
+        return
+    if session_id in runtime._session_queues:
+        finish()  # an id someone holds now: no close of it here, so it stays kept
         return
     task = asyncio.ensure_future(runtime.terminate_session(session_id))
     _ABANDONED_NEW_CLOSES.add(task)
     task.add_done_callback(_ABANDONED_NEW_CLOSES.discard)
+    task.add_done_callback(lambda _t: finish(session_id))
 
 
+@runtime_session_start
 async def create_session(
     self: AcpRuntime,
     cwd: str | Path | None = None,
@@ -626,6 +650,8 @@ async def create_session(
     # cost, not the runtime's, and the adaptive controller reads these
     # samples for its ``start_latency`` / ``timeouts`` signals.
     start_t0 = time.monotonic()
+    # This start's own app snapshot, before anything of it can outlive the call.
+    capture_start_snapshot(session_key)
     # Wall time the request went out, for the session-open mount check.
     request_sent_at = time.time()
     try:
@@ -986,6 +1012,7 @@ def _collect_late_start(
 
         collector.adopt(_adopt)
     self._start_collectors[int(req_id)] = collector
+    collector.session_key = current_start_key()  # a Bot chat's start, else ""
     logger.warning(
         "acp_startup_stage stage=session_new outcome=collecting req_id=%d "
         "collect_budget_s=%g priority=%s gate_active=%d gate_queued=%d %s",

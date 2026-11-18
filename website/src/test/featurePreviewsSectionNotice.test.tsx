@@ -61,6 +61,11 @@ describe('Feature previews section, refused toggles', () => {
     [/chat on a crew/i, 'Chat on a crew'],
     [/folder conductor/i, 'Folder conductor'],
     [/session environments/i, 'Session Environments'],
+    [/app tools in bot chats/i, 'App tools in bot chats'],
+    [/^explore/i, 'Explore'],
+    [/visual refresh/i, 'Visual refresh'],
+    [/phone widgets/i, 'Phone widgets'],
+    [/quick worker check/i, 'Quick worker check before a hard choice'],
   ])('names the %s switch when the owner-only write is refused', async (name, label) => {
     vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))
     renderSection()
@@ -95,5 +100,17 @@ describe('Feature previews section, ingress links', () => {
     renderSection()
     await act(async () => { screen.getByRole('button', { name: link }).click() })
     expect(screen.getByTestId('where').textContent).toBe(path)
+  })
+})
+
+describe('Feature previews section, App tools in bot chats', () => {
+  it('says each call follows the bot\'s own approval setting, never that the bot always asks', async () => {
+    // At a Trust posture a call runs without a prompt, so "the bot still asks"
+    // would be a false safety claim on the switch that turns this on.
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ dashboard: { feature_previews: {} } } as never)
+    renderSection()
+    const card = (await screen.findByText('App tools in bot chats')).closest('div')?.parentElement?.textContent ?? ''
+    expect(card).toMatch(/Each call follows the bot's own approval setting\./)
+    expect(card).not.toMatch(/asks before/i)
   })
 })

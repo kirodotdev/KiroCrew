@@ -177,6 +177,46 @@ def test_a_reload_deferred_to_the_turn_end_keeps_the_notice_it_was_asked_with(re
     assert notices == ["app tools"]
 
 
+def test_the_follow_up_runs_once_and_only_after_the_deferred_reload(reloads):
+    """Run the follow-up on BUSY, or drop it from what the turn end retries, and
+    the count below is wrong: the Bot is told before, or never."""
+    told: list[str] = []
+    state = _state("w1")
+    slot = state._slots["w1"]
+    provider = state.sessions.providers["dashboard_w1"]
+    provider.busy = True
+    outcome = asyncio.run(
+        reload_mod.reload_if_idle(state, slot, notice="n", on_reloaded=lambda: told.append("n"))
+    )
+    assert outcome == reload_mod.BUSY and told == []
+
+    async def turn_ends_then_settles():
+        reload_mod.note_turn_end(state, slot)
+        await asyncio.sleep(0)
+        provider.busy = False
+        await asyncio.gather(*list(state._crewmate_reload_tasks))
+
+    asyncio.run(turn_ends_then_settles())
+    assert reloads == [("w1", slot)] and told == ["n"]
+    asyncio.run(turn_ends_then_settles())
+    assert told == ["n"]
+
+
+def test_a_refused_reload_runs_no_follow_up(reloads, monkeypatch):
+    from kiro_crew.dashboard import chat_handlers
+
+    async def refused(*_a, **_kw):
+        return web.json_response({"code": "nope"}, status=500)
+
+    monkeypatch.setattr(chat_handlers, "reload_slot_session", refused)
+    told: list[str] = []
+    state = _state("w1")
+    outcome = asyncio.run(
+        reload_mod.reload_if_idle(state, state._slots["w1"], on_reloaded=lambda: told.append("x"))
+    )
+    assert outcome == reload_mod.GONE and told == []
+
+
 def test_the_capabilities_route_schedules_the_reload(monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
 

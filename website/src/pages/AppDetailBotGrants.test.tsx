@@ -69,7 +69,7 @@ describe('AppDetailBotGrants', () => {
     setPreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS, false)
     const { unmount } = render(wrap(<AppDetailBotGrants appName="notes" declared={['read', 'tools']} />))
     const note = await screen.findByTestId('bots-scope-tools-preview-off')
-    expect(note).toHaveTextContent('Off until you turn on App tools in bot chats in Feature previews.')
+    expect(note).toHaveTextContent("Off until you turn on App tools in bot chats.")
     expect(screen.getByRole('link', { name: 'App tools in bot chats' })).toHaveAttribute('href', '/settings/developer/feature-previews')
     unmount()
     setPreviewFlag(PREVIEW_BOT_CHAT_APP_TOOLS, true)

@@ -538,15 +538,32 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     info = await asyncio.to_thread(get_app, name)
     if not info:
+        # No installed record, but a Bot chat may still run the app's tools: stop
+        # those from the Bot tracking tables before answering.
+        from kiro_crew.bot_chat_ending_fence import stop_tracked_bot_chats
+
+        failed = await stop_tracked_bot_chats(request.app.get("state"), name)
+        if failed:
+            return web.json_response(
+                {
+                    "error": f"app {name!r} is not installed, but its Bot chats could not be stopped",
+                    "code": "bot_chat_stop_incomplete",
+                    "bot_chat_stop_failed": failed,
+                    "retryable": True,
+                },
+                status=409,
+            )
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
     warnings: list[str] = []
-    from kiro_crew import bot_chat_app_tools
+    _disable_bot_stop_failures: list[str] = []
+    from kiro_crew.bot_chat_app_tools import app_stop_fence
 
     # Per-app lifecycle lock: disable stops the backend and deregisters
     # resources — must not interleave with a concurrent install/update/
-    # uninstall/enable of the same app.
-    async with app_lifecycle_lock(name):
+    # uninstall/enable of the same app. The stop fence spans the teardown and
+    # the disabled-state write, so no Bot chat mounts the app in between.
+    async with app_lifecycle_lock(name), app_stop_fence(name):
         startup_refusal = await _refuse_while_startup_hook_runs(name, action="disable")
         if startup_refusal is not None:
             return startup_refusal
@@ -564,13 +581,21 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # resources through the ONE shared teardown that revoking an app's
         # third-party execution grant also calls — see apps/teardown.py. Keeping a
         # second copy here is how the revoke path came to miss steps.
-        teardown = await teardown_app_runtime(name, info)
+        teardown = await teardown_app_runtime(name, info, state=request.app.get("state"))
         # This handler's documented contract is that disable proceeds even when a
         # step fails, so both lists become user-visible warnings rather than an
         # abort. (Trust revocation treats `failures` as fatal instead — it must not
         # claim an app was stopped when its crons may still fire.)
         for note in (*teardown.warnings, *teardown.failures):
             warnings.append(_redact_warning(note))
+        # Bot-chat stop failures go in their own key, which the Apps page shows
+        # as the stop-failed notice with the Bots' names and a retry, the same
+        # notice uninstall and trust revoke get; they are not repeated as raw
+        # warnings, which would name the Bots by slug.
+        _disable_bot_stop_failures = teardown.bot_stop_failures
+        if teardown.bot_stop_errored and not _disable_bot_stop_failures:
+            # stop_app_bot_chat_servers raised: which Bot chats still run is unknown.
+            _disable_bot_stop_failures = ["unknown"]
 
         result = await asyncio.to_thread(disable_app, name)
         if not result.ok:
@@ -650,6 +675,8 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         resp = result.to_dict()
         if warnings:
             resp["warnings"] = warnings
+        if _disable_bot_stop_failures:
+            resp["bot_chat_stop_failed"] = _disable_bot_stop_failures
         # Under the lock, so an enable that waits on it announces after this, never
         # before: a late "off" would otherwise overwrite that "on" in every tab.
         await _end_turned_off_app_views(request, name)
@@ -665,20 +692,9 @@ async def handle_disable_app(request: web.Request) -> web.Response:
             await _reach_sessions(request)
         except Exception:  # noqa: BLE001 - the disable has committed
             logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
-    # Disable: immediately stop Bot chats running this app's servers (the app must not
-    # keep executing mid-turn after disable).  Rule D: propagate Bot-stop failures so
-    # callers know cleanup was incomplete.
-    # Bump generation before stopping so in-flight projections are fenced.
-    bot_chat_app_tools.revoke_app_generation(name)
-    _stopped, _failed = await bot_chat_app_tools.stop_app_bot_chat_servers(
-        request.app.get("state"), name
-    )
-    if _failed:
-        logger.warning("disable of %r: could not stop Bot chats for slugs %s", name, _failed)
-        resp.setdefault("warnings", []).append(
-            f"some bot chats running this app could not be stopped: {', '.join(_failed)}"
-        )
-    await bot_chat_app_tools.after_app_change(request.app.get("state"))
+    # Bot chat stop and after_app_change are handled inside teardown_app_runtime
+    # (called with state= above) so session_consent.py and other non-handler paths
+    # are covered too.  No separate calls here.
     return web.json_response(resp)
 
 
