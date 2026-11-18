@@ -222,14 +222,21 @@ def test_a_landed_turns_release_keeps_what_its_landing_kept_open(ending: str, ke
     turn.needs_session_reset = ending == "session reset"
     turn.needs_conversation_discard = False
     _keep_background_open(turn, STOP_REASON_END_TURN)
-    _native_subagent_close_all(state, slot, tracker)
+    _native_subagent_close_all(state, slot, tracker, card_output_len={}, streams={})
     assert not tracker["w1"]["done"]
     # The idle reader reads the run's end between the landing and the release.
     assert cards.finish(harness._raw_sdk.tasks["t1"].workflow, END_COMPLETED)
     if ending == "cancelled after":
         turn._stop_reason = STOP_REASON_CANCELLED
     _keep_background_open_at_release(turn)
-    _native_subagent_close_all(state, slot, tracker, error=NATIVE_SUBAGENT_INTERRUPTED_ERROR)
+    _native_subagent_close_all(
+        state,
+        slot,
+        tracker,
+        error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+        card_output_len={},
+        streams={},
+    )
     assert tracker["w1"]["done"] is not kept
     if not kept:
         assert tracker["w1"]["error"] == NATIVE_SUBAGENT_INTERRUPTED_ERROR

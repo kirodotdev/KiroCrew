@@ -262,6 +262,7 @@ _SLOT_SCOPED_EVENTS = frozenset({
     # ``test_fire_event_names_are_classified`` reads the
     # emitter's own literals instead. Each payload carries id + slot.
     "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
+    "subagent_tool_result", "subagent_thinking",
     "subagent_snapshot", "subagent_status", "subagent_queued",
     "subagent_stalled", "subagent_retrying", "subagent_recovering",
     "subagent_waiting", "subagent_resumed",
@@ -274,6 +275,7 @@ _SLOT_SCOPED_EVENTS = frozenset({
 
 _SUBAGENT_EVENTS = frozenset({
     "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
+    "subagent_tool_result", "subagent_thinking",
     "subagent_snapshot", "subagent_status", "subagent_queued",
     "subagent_stalled", "subagent_retrying", "subagent_recovering",
     "subagent_waiting", "subagent_resumed",
