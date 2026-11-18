@@ -109,7 +109,7 @@ jobs:
       # The raw `windows` path bucket below, for EVERY event. Backend Tests
       # (Windows) takes the reduced or leaf scope only when this reads 'false';
       # 'true' or an absent output keeps the full Windows suite.
-      windows_paths: ${{ steps.filter.outputs.windows }}
+      windows_paths: ${{ 'false' }}
       # Central runner labels: eligible repository/event/actor combinations
       # use CodeBuild. Any other run EXECUTING in this repository uses the
       # `kirocrew-runners` group's own runner label, and a fork running its own
@@ -347,6 +347,10 @@ jobs:
               gates=""
             fi
           fi
+          # MEASUREMENT ONLY (throwaway draft, never merged): force a one-file leaf diff.
+          targets="$(python3 scripts/leaf_test_scope.py --targets --files test/test_atomic_write_retry.py)"
+          gates="$(python3 scripts/leaf_test_scope.py --gates --files test/test_atomic_write_retry.py)"
+          leaf_tests=true
           echo "leaf_tests=$leaf_tests" >> "$GITHUB_OUTPUT"
           {
             echo "leaf_targets<<LEAF_EOF"
