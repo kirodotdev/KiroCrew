@@ -141,6 +141,86 @@ def test_a_connected_crew_lists_its_headroom_rosters_and_reservations():
         assert leak not in text
 
 
+def _tagged_headroom(**over: Any) -> dict[str, Any]:
+    room = {
+        "mem_free_gb": 12.5,
+        "posture": "ample",
+        "tags": ["gpu", "GPU!", "/home/secret", 7, "gpu"],
+        "logins": {
+            "gh": "valid",
+            "glab": "expired",
+            "az": "tok_abc123",  # not a state word: dropped
+            "host.example": "valid",  # not a known tool: dropped
+        },
+    }
+    room.update(over)
+    return room
+
+
+def test_tags_and_logins_reach_the_row_and_the_tool_when_asked():
+    crews = Crews()
+    crews.add("a", headroom=_tagged_headroom())
+    rows, _ = asyncio.run(crew_list.list_crews(_state(crews), logins=True))
+    row = rows[0]
+    assert crews.params == [{"logins": "1"}]
+    assert row["tags"] == ["gpu"]  # the unsafe tags are dropped
+    assert row["logins"] == {"gh": "valid", "glab": "expired"}
+    text = json.dumps(row)
+    for leak in ("tok_abc123", "host.example", "/home/secret", "GPU!"):
+        assert leak not in text
+    client = _Client({"crews": [row]})
+    out = mcp_crew_list.run_crew_list({"logins": True}, _ctx(client))
+    assert client.calls == [f"{mcp_crew_list.ROUTE}?logins=1"]
+    assert "  tags: gpu" in out and "  logins: gh valid, glab expired" in out
+
+
+def test_a_plain_list_shows_tags_and_never_asks_for_logins():
+    crews = Crews()
+    crews.add("a", headroom=_tagged_headroom())
+    row = _list(crews)["a"]
+    assert crews.params == [{"logins": "0"}]
+    assert row["tags"] == ["gpu"] and row["logins"] is None
+    client = _Client({"crews": [row]})
+    out = mcp_crew_list.run_crew_list({}, _ctx(client))
+    assert client.calls == [mcp_crew_list.ROUTE]
+    assert "  tags: gpu" in out and "logins:" not in out
+
+
+def test_a_peer_without_logins_marks_them_unread():
+    crews = Crews()
+    crews.add("a", headroom={"mem_free_gb": 1.0})
+    rows, _ = asyncio.run(crew_list.list_crews(_state(crews), logins=True))
+    assert rows[0]["logins"] is None and rows[0]["unavailable"] == ["logins"]
+    assert rows[0]["tags"] == []
+
+
+def test_a_long_tag_list_stops_at_the_cap(monkeypatch):
+    from kiro_crew import work_vocab
+
+    seen = []
+    real = work_vocab.DISPATCH_TAG_RE
+
+    class _Counting:
+        def fullmatch(self, tag):
+            seen.append(tag)
+            return real.fullmatch(tag)
+
+    monkeypatch.setattr(work_vocab, "DISPATCH_TAG_RE", _Counting())
+    tags = [f"tag{i:06d}" for i in range(65_536)]
+    assert crew_list._tags({"tags": tags}) == tags[: work_vocab.MAX_DISPATCH_TAGS]
+    assert len(seen) == work_vocab.MAX_DISPATCH_TAGS  # the tail is never scanned
+
+
+def test_the_route_asks_for_logins_only_on_logins_1(_route_on):
+    crews = Crews()
+    crews.add("a", headroom=_tagged_headroom())
+    request = _route_request(crews)
+    request.query = {"logins": "1"}
+    body = json.loads(asyncio.run(crew_list.api_session_control_crews(request)).body)
+    assert crews.params == [{"logins": "1"}]
+    assert body["crews"][0]["logins"] == {"gh": "valid", "glab": "expired"}
+
+
 def test_a_disconnected_crew_is_listed_but_never_probed():
     crews = Crews()
     crews.add("b", state="disconnected")
