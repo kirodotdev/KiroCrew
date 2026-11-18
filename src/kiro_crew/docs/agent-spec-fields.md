@@ -282,6 +282,13 @@ that triggered the rewrite is refused too. On any backend, a session whose check
 cancelled or whose reset failed or timed out is refused and reset on its next turn. A
 missing file is not created.
 
+On KAS, Crew sends `kirocrew-lite` itself, so a `kirocrew-lite.json` whose only change is
+an injection a filter registered by the edition removes exactly
+(`kiro_crew.agent_spec_injections`, the seam the knowledge worker uses) is left alone: KAS
+is sent the template, both checks judge that template, and session broker stubs it does
+not mount are withdrawn. Any other change is still refused. kiro-cli loads the file on
+disk, so there the injection is refused as before.
+
 1. Delivered ONLY when Crew governs the session's permission surface
    (`_permission_surface_governed` in `acp/client_class.py`): Crew authored
    `<work_dir>/.claude/settings.local.json`, validated that file's current bytes
