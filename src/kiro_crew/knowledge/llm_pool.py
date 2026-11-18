@@ -218,6 +218,60 @@ class KnowledgeHarnessUnavailable(RuntimeError):
         )
 
 
+class KnowledgeKiroCliSignedOut(KnowledgeHarnessUnavailable):
+    """The pool's Kiro CLI worker cannot start or answer because Kiro CLI is signed out.
+
+    The pool runs on Kiro CLI whenever the chosen agent cannot run it (KAS among
+    them), so a gateway signed in only to KAS reaches a signed-out Kiro CLI here.
+    Every chunk then failed on its own, each one spawning Kiro CLI twice, so a
+    long document outlived its caller's timeout and a short one was stored with
+    no extraction. A subclass of the harness refusal so it takes the same path:
+    the batch stops, the ingest job ends ``failed`` with this text and nothing is
+    stored. An agent document is ingested in full when it is added again after
+    sign-in; a watched-folder file reads ``failed`` with this text until Retry.
+    """
+
+    code = "knowledge_kiro_cli_signed_out"
+
+    def __init__(self) -> None:
+        from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
+        from kiro_crew.kiro_cli_bundle import spawn_login_command
+
+        # Skip the parent's LTS text: this is not a build refusal.
+        RuntimeError.__init__(
+            self,
+            "Knowledge Library extraction needs Kiro CLI signed in for now; it "
+            "cannot run on Kiro Agent yet. Kiro CLI is not signed in here, so nothing "
+            f"was added. Run `{spawn_login_command()}` in a terminal on the gateway "
+            "host, then add the document again (a watched-folder file: press Retry "
+            "on the Knowledge page). Documents already in the library stay "
+            # Last, so a store that keeps 500 characters (a folder row's error)
+            # loses only this hint, never the command or the Retry step.
+            f"searchable. {HOST_TERMINAL_NOTE}",
+        )
+
+
+async def _kiro_cli_signed_out(exc: BaseException) -> bool:
+    """Whether a Kiro CLI worker failed because Kiro CLI is signed out.
+
+    kiro-cli's own words in the error are enough: the ACP layer's auth-failure
+    check, which also knows an expired or invalid token. Otherwise ask the gateway's
+    ``whoami`` check, which answers True only on an explicit "not logged in"
+    and False outside the gateway, so an unrelated failure keeps its old path.
+    """
+    # The SDK's delegation, not kiro_crew.acp: the agent-sdk-boundary gate
+    # refuses a new ACP import edge here.
+    from kiro_crew.agent_sdk.drivers.acp import is_auth_failure_output
+    from kiro_crew.kiro_prerequisite import kiro_signed_out_confirmed
+
+    if any(cls.__name__ == "AcpAuthRequired" for cls in type(exc).__mro__):
+        return True
+    if is_auth_failure_output(str(exc)):
+        return True
+
+    return await kiro_signed_out_confirmed()
+
+
 class LLMPoolClosed(RuntimeError):
     """A send on a shut-down pool, or one its shutdown cut short.
 
@@ -866,7 +920,12 @@ class AcpWorker(Worker):
             authored_before_spawn = await asyncio.to_thread(
                 client.authored_spec_declares_zero_tools
             )
-        await client.ensure_ready()
+        try:
+            await client.ensure_ready()
+        except Exception as exc:
+            if acp_backend == ACP_BACKEND_KIRO and await _kiro_cli_signed_out(exc):
+                raise KnowledgeKiroCliSignedOut() from exc
+            raise
         return client, authored_before_spawn
 
     async def _apply_effort(self) -> None:
@@ -956,11 +1015,23 @@ class AcpWorker(Worker):
         assert self._client is not None
         try:
             return await self._client.send_message(prompt, timeout=timeout)
-        except Exception:
+        except Exception as exc:
             # A timed-out turn is still running in the child, so a reused client
             # answers "Prompt already in progress". Prompts are self-contained,
             # so drop the client on any failure and let acquire respawn it.
+            backend = getattr(self._client, "backend", None)
             await self.shutdown()
+            # A signed-out bundled kiro-cli-chat opens sessions and then fails
+            # every prompt as a connection error, so the start above cannot see
+            # it. Ask only for that error, as the chat path does. Twin check:
+            # AcpSessionProvider._connection_failure_is_signed_out in
+            # acp/session_provider.py; keep the two in step.
+            if (
+                backend == ACP_BACKEND_KIRO
+                and getattr(exc, "connection_failure", None) is True
+                and await _kiro_cli_signed_out(exc)
+            ):
+                raise KnowledgeKiroCliSignedOut() from exc
             raise
 
     async def shutdown(self) -> None:
