@@ -56,6 +56,7 @@ def register_chat_parser(sub: _Commands, _jail_opts: argparse.ArgumentParser) ->
 Examples:
   kirocrew chat                      # Interactive mode
   kirocrew chat -m 'check my CRs'    # Single message
+  git diff | kirocrew chat -m -      # Single message read from stdin
   kirocrew chat --model claude-opus  # Use specific model
 
 Tool permission prompt (same keys as kiro-cli chat):
@@ -66,7 +67,14 @@ Tool permission prompt (same keys as kiro-cli chat):
         formatter_class=_fmt,
         parents=[_jail_opts],
     )
-    chat_parser.add_argument("-m", "--message", help="Single message (non-interactive)")
+    chat_parser.add_argument(
+        "-m",
+        "--message",
+        help=(
+            "Single message (non-interactive); '-' reads it from a piped stdin, up to 1 MiB "
+            "(not with --headless, which takes --message-file)"
+        ),
+    )
     chat_parser.add_argument(
         "--model", help="Model to use (default: from config; `kirocrew models` lists the names)"
     )

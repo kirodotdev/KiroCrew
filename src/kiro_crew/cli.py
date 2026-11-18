@@ -864,7 +864,12 @@ def main() -> None:
         if stray:
             print(f"Error: {stray} needs --headless", file=sys.stderr)
             sys.exit(_headless_usage)
-        _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
+        try:
+            message = resolve_chat_message(args.message)
+        except StdinMessageError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        _run_chat(message, args.model, agent=getattr(args, "agent", None))
     elif args.command == "gateway":
         # The gateway's status lines are plain print() calls. Off a terminal
         # (systemd journal, launchd file, the Desktop supervisor's log fd, a
@@ -1256,6 +1261,7 @@ def main() -> None:
 from kiro_crew import cli_parser_admin, cli_parser_agent, cli_parser_gateway  # noqa: E402
 from kiro_crew.cli_bench import bench_cmd, register_bench_parser  # noqa: E402
 from kiro_crew.cli_chat import _run_chat  # noqa: E402
+from kiro_crew.cli_chat_stdin import StdinMessageError, resolve_chat_message  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402, F401
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
 from kiro_crew.cli_config import _config_cmd  # noqa: E402
