@@ -311,6 +311,7 @@ from kiro_crew import (
     sandbox,
     shutdown_event,
     update_next_start,
+    vector_memory_member,
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
@@ -836,6 +837,7 @@ def _reset_home_bound_globals() -> None:
     credential_masks.clear_cache()
     manager_records._recorded_names_cache.clear()
     execution.invalidate_shipped_builtin_apps()
+    vector_memory_member._IDENTITY_CACHE.clear()
     # Under the refresh lock, so a refresh still publishing finishes first and
     # cannot write the old home's sets back after this clears them.
     with hidden_sessions._refresh_lock:
