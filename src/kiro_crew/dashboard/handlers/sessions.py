@@ -733,6 +733,13 @@ def _vault_owns_usage_sync() -> bool:
         return False
 
 
+def _workload_sign_in() -> bool:
+    """Whether the Crew signs in as its workload; an unreadable context hides, never shows."""
+    from kiro_crew import workload_identity
+
+    return workload_identity.seam_enabled(fallback=True)
+
+
 async def _vault_owns_usage() -> bool:
     """:func:`_vault_owns_usage_sync` off the event loop."""
     return await asyncio.to_thread(_vault_owns_usage_sync)
@@ -837,6 +844,11 @@ async def _refresh_from_vault() -> None:
     so it describes the credential the fingerprints bracket. The enterprise
     profile name rides in from the usage API as it does for the kiro-cli path.
     """
+    if _workload_sign_in():
+        # Inference runs on the workload identity, so no vault account's credits
+        # describe it: report unavailable, never read a leftover vault entry.
+        _publish_usage({"available": False})
+        return
     # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
@@ -1023,6 +1035,8 @@ async def fetch_local_identity() -> dict[str, object] | None:
       identity; ``None`` when whoami could not answer -- the identity is
       unknown, and a caller must not present the default as if it had been read.
     """
+    if _workload_sign_in():  # no personal account describes the workload: unknown
+        return None
     if await _vault_owns_usage():
         return await vault_identity()
     kiro_bin = await _resolve_kiro_bin_for_spawn()

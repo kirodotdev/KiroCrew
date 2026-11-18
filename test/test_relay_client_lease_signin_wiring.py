@@ -232,6 +232,31 @@ async def test_a_seam_reporting_no_workload_identity_keeps_the_sign_in_default(
     RelaySettings.from_config(_cfg("", "")).validate()
 
 
+async def test_the_workload_switch_refuses_an_empty_credential_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The switch composes the SPIFFE identity into the seam, so an empty credential is
+    # not taken as the owner's sign-in: the Crew must name workload-identity:jwt-svid.
+    from kiro_crew.platform.context import reset_context
+
+    monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+    reset_context()
+    with pytest.raises(RelaySettingsError, match="tunnel.relay_lease_credential is not set"):
+        RelaySettings.from_config(_cfg("", "")).validate()
+
+
+@pytest.mark.parametrize("url", ["https://lease.example.com", ""])
+async def test_the_workload_reference_passes_on_a_workload_identity_host(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    # The seam refuses only the empty default; a named workload reference still passes.
+    seam = SimpleNamespace(agent_identity=SimpleNamespace(enabled=lambda: True))
+    _pin_seam(monkeypatch, lambda: seam)
+    settings = RelaySettings.from_config(_cfg(url, "workload-identity:jwt-svid"))
+    assert not settings.uses_sign_in
+    settings.validate()
+
+
 async def test_an_empty_credential_leases_from_the_built_in_url_on_the_sign_in(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

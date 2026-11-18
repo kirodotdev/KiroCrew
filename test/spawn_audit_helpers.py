@@ -1450,5 +1450,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Fixed argv + trusted-directory binary + read-only output ⇒ benign, not
         # routed.
         "voice_reply.py::list_system_voices",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving ``current_svid`` from the lease
+        # client's worker thread, which has no event loop. No child process is
+        # created: the call is one gRPC request over the Workload API's Unix socket,
+        # named by the deployment's environment, never by an agent.
+        "workload_identity.py::current_svid_blocking",
     }
 )

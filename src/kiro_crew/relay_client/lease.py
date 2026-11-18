@@ -22,7 +22,11 @@ service, or gets an answer it cannot use, is retried on the reconnect steps with
 full jitter (section 11.2). A refusal is read from its error type (``__type``)
 and ``reason``: an access refusal is tried again after 15 minutes; an unknown
 Crew, or a request the service calls invalid, stops the source until Remote
-Control restarts, once a stored endpoint has been dropped and tried without. An
+Control restarts, once a stored endpoint has been dropped and tried without. On
+the workload identity (``workload-identity:jwt-svid``) both an access refusal and
+an invalid request wait instead, on steps that double from a minute to 15 minutes
+and start again after a good answer, because a stage that does not admit
+JWT-SVIDs on host operations yet refuses one either way. An
 invalid refusal of a call that left out the ``leaseVersion`` is first retried
 with the last one the service returned, which is kept across restarts. A
 credential that cannot be read is read again on the reconnect steps, and only a
@@ -148,6 +152,14 @@ SECRET_URI_PREFIX = "secret://"
 #: The ``tunnel.relay_lease_credential`` value that leases with the Crew's own Kiro
 #: sign-in (a personal Crew) instead of a file or a stored secret.
 SIGN_IN_CREDENTIAL = "kiro-sign-in"
+#: The reference that names the Crew's workload identity (a JWT-SVID fetched from
+#: the SPIFFE Workload API for each call) rather than a stored credential. Kept
+#: equal to ``kiro_crew.workload_identity.LEASE_CREDENTIAL_REF``.
+WORKLOAD_IDENTITY_REF = "workload-identity:jwt-svid"
+#: The waits between refusals of the workload identity (access refused, or a
+#: request called invalid): doubling from a minute to the 15-minute ceiling, each
+#: drawn at random up to its step and never under ``RENEW_MIN_SECONDS``.
+WORKLOAD_REFUSAL_STEPS_SECONDS = (60.0, 120.0, 240.0, 480.0, RETRY_AFTER_MAX_SECONDS)
 
 #: Error types the service refuses this Crew with, and why. An access refusal
 #: waits ``RETRY_AFTER_MAX_SECONDS``; the others stop until Remote Control restarts.
@@ -235,6 +247,8 @@ def credential_reference_problem(ref: str) -> Optional[str]:
     """
     if not ref:
         return "tunnel.relay_lease_credential is not set"
+    if ref == WORKLOAD_IDENTITY_REF:
+        return None
     if ref.startswith(SECRET_URI_PREFIX):
         name = ref[len(SECRET_URI_PREFIX) :]
         if not name or name != name.strip():
@@ -243,7 +257,8 @@ def credential_reference_problem(ref: str) -> Optional[str]:
     if os.path.isabs(os.path.expanduser(ref)):
         return None
     return (
-        "tunnel.relay_lease_credential must be secret://NAME or the absolute path of a "
+        "tunnel.relay_lease_credential must be secret://NAME, "
+        f"{WORKLOAD_IDENTITY_REF}, or the absolute path of a "
         "file holding the credential, never the credential itself"
     )
 
@@ -266,6 +281,8 @@ def read_lease_credential(ref: str, *, home: Optional[Path] = None) -> str:
     problem = credential_reference_problem(ref)
     if problem is not None:
         raise LeaseCredentialReferenceError(problem)
+    if ref == WORKLOAD_IDENTITY_REF:
+        return _read_workload_identity()
     if ref.startswith(SECRET_URI_PREFIX):
         from kiro_crew.secrets import SecretVault
 
@@ -296,6 +313,18 @@ def read_lease_credential(ref: str, *, home: Optional[Path] = None) -> str:
     if not value or not all(33 <= ord(ch) < 127 for ch in value):
         raise LeaseCredentialError("the credential must be one line of printable ASCII")
     return value
+
+
+def _read_workload_identity() -> str:
+    """The Crew's JWT-SVID (:mod:`kiro_crew.workload_identity`), as the lease credential."""
+    from kiro_crew import workload_identity
+
+    try:
+        return workload_identity.read_lease_credential()
+    except workload_identity.WorkloadIdentityConfigError as exc:
+        raise LeaseCredentialReferenceError(str(exc)) from None
+    except workload_identity.WorkloadIdentityUnavailable as exc:
+        raise LeaseCredentialError(f"the workload identity gave no JWT-SVID: {exc}") from None
 
 
 def _decode_credential_file(raw: bytes) -> str:
@@ -657,6 +686,9 @@ class LeaseHostTokenSource:
         self._sleep = sleep
         self._monotonic = monotonic
         self._backoff = Backoff(rng=self._rng)
+        # Its own steps and count, so connection failures and refusals of the
+        # workload identity never advance each other.
+        self._refusal_backoff = Backoff(WORKLOAD_REFUSAL_STEPS_SECONDS, rng=self._rng)
         self._lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._session: Optional[aiohttp.ClientSession] = None
@@ -741,6 +773,7 @@ class LeaseHostTokenSource:
         self._held_until = self._next_at = self._hold_until = 0.0
         self._hold_reason = self._stopped = ""
         self._backoff.reset()
+        self._refusal_backoff.reset()
         # Last, so a stop cancelled during the release has already forgotten the
         # lease, and its session still closes.
         try:
@@ -883,6 +916,10 @@ class LeaseHostTokenSource:
             why = _ACCESS_DENIED_REASONS.get(
                 (reason or "").replace("_", "").lower(), _ACCESS_DENIED_DEFAULT
             )
+            if self._credential_ref == WORKLOAD_IDENTITY_REF:
+                self._refuse_workload(
+                    arrived, f"the lease service refused this Crew ({named}): {why}"
+                )
             self._hold(
                 arrived + RETRY_AFTER_MAX_SECONDS,
                 f"the lease service refused this Crew ({named}): {why}",
@@ -929,6 +966,13 @@ class LeaseHostTokenSource:
                     host_token_requested, endpoint_retry=False, sign_in_retry=sign_in_retry
                 )
                 return
+            if self._credential_ref == WORKLOAD_IDENTITY_REF:
+                # A stage that does not admit JWT-SVIDs on host operations yet reads
+                # one as a person's sign-in and refuses it as invalid. That changes
+                # with no change on this machine, so it waits like an access refusal.
+                self._refuse_workload(
+                    arrived, f"the lease service refused the workload identity's renewal ({named})"
+                )
             self._stop(f"the lease service refused the renewal ({named}): {_VALIDATION_WHY}")
         if kind == _IDENTITY_IN_USE:
             wait = takeover_wait(
@@ -1092,6 +1136,7 @@ class LeaseHostTokenSource:
         self._hold_until = 0.0
         self._hold_reason = ""
         self._backoff.reset()
+        self._refusal_backoff.reset()
         self._endpoint_id = answer.endpoint_id
         self._lease_version = answer.lease_version
         self._next_at = arrived + answer.renew_in
@@ -1137,6 +1182,13 @@ class LeaseHostTokenSource:
         delay = self._backoff.next_delay()
         self._hold(self._monotonic() + delay, problem)
         logger.warning("lease renewal failed (%s); next try in %.1fs", problem, delay)
+        raise _Later(problem)
+
+    def _refuse_workload(self, arrived: float, problem: str) -> NoReturn:
+        """Hold the next try of a refused workload identity on its capped steps."""
+        delay = max(self._refusal_backoff.next_delay(), RENEW_MIN_SECONDS)
+        self._hold(arrived + delay, problem)
+        logger.warning("%s; trying again in %.0fs", problem, delay)
         raise _Later(problem)
 
     def _stop(self, reason: str) -> NoReturn:

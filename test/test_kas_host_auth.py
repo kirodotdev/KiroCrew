@@ -27,6 +27,9 @@ from kiro_crew.auth.bridge import (
     vault_identity_fingerprint,
 )
 from kiro_crew.auth.store import KasToken, TokenStore, TokenStoreError
+from kiro_crew.platform.context import reset_context
+from kiro_crew.platform.defaults import DefaultAgentIdentityProvider
+from kiro_crew.workload_identity import SpiffeAgentIdentityProvider
 
 
 def _token(identity: str = "social", *, expires_in: int = 3600, **overrides) -> KasToken:
@@ -209,6 +212,24 @@ class TestVaultFingerprint:
         store.delete("social")
         assert vault_identity_fingerprint() == ""
 
+    def test_a_leftover_entry_labels_no_catalog_under_the_workload_switch(
+        self, data_home, monkeypatch
+    ):
+        from kiro_crew.agent_sdk import kas_model_catalog
+
+        # Off first, whatever the host sets: the first half asserts the vault's catalog identity.
+        monkeypatch.delenv("KIROCREW_WORKLOAD_IDENTITY", raising=False)
+        TokenStore(data_home).save(_token())
+        fingerprint = vault_identity_fingerprint()
+        assert kas_model_catalog.vault_identity() == fingerprint != ""
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+        reset_context()  # the switch is read when the context is composed
+        # No catalog is recorded or served under the leftover account; the vault's own
+        # fingerprint (identity-change detection) is unchanged.
+        assert kas_model_catalog.vault_identity() == ""
+        assert kas_model_catalog.recorded_catalog_snapshot("") is None
+        assert vault_identity_fingerprint() == fingerprint
+
     def test_unreadable_vault_is_absent(self, data_home):
         TokenStore(data_home).save(_token())
         with patch("kiro_crew.auth.store.TokenStore.resolve", side_effect=RuntimeError("boom")):
@@ -295,3 +316,142 @@ class TestCallbackAnswer:
         assert str(excinfo.value) == "refresh failed"
         assert "rt-value" not in caplog.text
         assert "Exploding" in caplog.text
+
+
+class _ForcedSeam(SpiffeAgentIdentityProvider):
+    """The SPIFFE provider with ``enabled()`` fixed, whatever the switch says."""
+
+    def __init__(self, on: bool) -> None:
+        self._on = on
+
+    def enabled(self) -> bool:
+        return self._on
+
+
+class _EditionSeam(DefaultAgentIdentityProvider):
+    """An edition's own agent-identity provider: enabled, but not the SPIFFE one."""
+
+    def enabled(self) -> bool:
+        return True
+
+
+async def _the_five_sites_say(data_home, monkeypatch) -> dict:
+    """What each of the five workload sites decides, read through their own code."""
+    from unittest.mock import AsyncMock
+
+    from kiro_crew import workload_identity
+    from kiro_crew.acp import kas_host_auth
+    from kiro_crew.agent_sdk import kas_model_catalog
+    from kiro_crew.dashboard import kiro_readiness
+    from kiro_crew.dashboard.handlers import sessions
+
+    TokenStore(data_home).save(_token())  # a vault entry, so "off" has an answer
+    answer = AsyncMock(return_value={"accessToken": "workload"})
+    monkeypatch.setattr(kas_host_auth, "_answer_from_workload_identity", answer)
+    try:
+        callback = await kas_host_auth.answer_get_access_token()
+    except HostAuthCallbackError:
+        callback = None
+    ready_answer = AsyncMock(return_value={})
+    monkeypatch.setattr(workload_identity, "kas_access_token_answer", ready_answer)
+    monkeypatch.setattr(
+        workload_identity.WorkloadIdentitySettings,
+        "from_env",
+        classmethod(lambda cls, env=None: object()),
+    )
+    monkeypatch.setattr(kiro_readiness, "_kas_bundle_turn_sync", lambda *_a: True)
+    await kiro_readiness.kas_crew_signin_ready(None)
+    return {
+        "kas_host_auth": answer.await_count == 1 and callback == {"accessToken": "workload"},
+        "bridge": _bridge_says_crew_owned(monkeypatch),
+        "kas_model_catalog": kas_model_catalog.vault_identity() == "",
+        "sessions": sessions._workload_sign_in(),
+        "kiro_readiness": ready_answer.await_count == 1,
+    }
+
+
+def _bridge_says_crew_owned(monkeypatch) -> bool:
+    # The shared resolver is made to pick kiro-cli, so only the seam can answer True.
+    from types import SimpleNamespace
+
+    from kiro_crew import lts_sign_in
+
+    monkeypatch.setattr(lts_sign_in, "select", lambda **_k: SimpleNamespace(source=None))
+    return vault_holds_identity() is True
+
+
+def _install_seam(on: bool) -> None:
+    _install_provider(_ForcedSeam(on))
+
+
+def _install_provider(provider) -> None:
+    import dataclasses
+
+    from kiro_crew.config import KiroCrewConfig
+    from kiro_crew.platform.bootstrap import build_default_context
+    from kiro_crew.platform.context import set_context
+
+    base = build_default_context(KiroCrewConfig())
+    set_context(dataclasses.replace(base, agent_identity=provider))
+
+
+@pytest.mark.asyncio
+async def test_a_seam_reporting_no_workload_identity_turns_every_site_off(data_home, monkeypatch):
+    # The switch is set, but the composed seam says disabled: the seam decides.
+    monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+    _install_seam(False)
+    said = await _the_five_sites_say(data_home, monkeypatch)
+    assert said == dict.fromkeys(said, False), said
+
+
+@pytest.mark.asyncio
+async def test_a_seam_reporting_a_workload_identity_turns_every_site_on(data_home, monkeypatch):
+    # The switch is unset, but the composed seam is the SPIFFE provider: the seam decides.
+    monkeypatch.delenv("KIROCREW_WORKLOAD_IDENTITY", raising=False)
+    _install_provider(SpiffeAgentIdentityProvider())
+    said = await _the_five_sites_say(data_home, monkeypatch)
+    assert said == dict.fromkeys(said, True), said
+
+
+@pytest.mark.asyncio
+async def test_an_edition_enabled_identity_leaves_every_site_on_the_vault(data_home, monkeypatch):
+    # A companion edition's own enabled provider, switch unset: no SPIFFE reroute.
+    # bridge False here means kiro-cli keeps its own sign-in, as today.
+    monkeypatch.delenv("KIROCREW_WORKLOAD_IDENTITY", raising=False)
+    _install_provider(_EditionSeam())
+    said = await _the_five_sites_say(data_home, monkeypatch)
+    assert said == dict.fromkeys(said, False), said
+    assert (await answer_get_access_token())["accessToken"] == "at-value"
+
+
+@pytest.mark.parametrize("value", [None, "", "  \t", "spiffe"])
+def test_the_import_guard_agrees_with_the_switch_rule(monkeypatch, value):
+    # The bootstrap's import guard must never disagree with workload_identity.enabled().
+    from kiro_crew import workload_identity
+    from kiro_crew.platform.bootstrap import _public_agent_identity_provider
+
+    if value is None:
+        monkeypatch.delenv("KIROCREW_WORKLOAD_IDENTITY", raising=False)
+    else:
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", value)
+    composed = _public_agent_identity_provider()
+    spiffe = isinstance(composed, workload_identity.SpiffeAgentIdentityProvider)
+    assert spiffe is workload_identity.enabled(), value
+
+
+def test_the_switch_composes_the_spiffe_provider_and_its_absence_the_default(monkeypatch):
+    from kiro_crew import workload_identity
+    from kiro_crew.platform.bootstrap import (
+        _WORKLOAD_IDENTITY_SWITCH,
+        _public_agent_identity_provider,
+    )
+    from kiro_crew.platform.defaults import DefaultAgentIdentityProvider
+
+    assert _WORKLOAD_IDENTITY_SWITCH == workload_identity.ENV_MODE
+    monkeypatch.delenv("KIROCREW_WORKLOAD_IDENTITY", raising=False)
+    assert isinstance(_public_agent_identity_provider(), DefaultAgentIdentityProvider)
+    monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+    provider = _public_agent_identity_provider()
+    assert isinstance(provider, workload_identity.SpiffeAgentIdentityProvider)
+    assert provider.enabled() is True
+    assert provider.gateway_mcp_spec() is None and provider.status() == {}

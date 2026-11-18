@@ -418,6 +418,36 @@ class TestKiroPrerequisiteWorkflowProbe:
         assert status["ready"] is False
         assert status["repair_required"] is False
 
+    @pytest.mark.asyncio
+    async def test_the_workload_identity_switch_never_signs_kiro_cli_in(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The switch serves only KAS's sign-in callback. kiro-cli's own readiness stays
+        # whoami's verdict, so a destructive rerun on a kiro-cli harness is still refused.
+        executable = tmp_path / "toolbox" / "bin" / "kiro-cli"
+        _make_executable(executable)
+        runtime = _FakeRuntime(executable)
+        runtime.installed = True
+        runtime.authenticated = False
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={
+                "HOME": str(tmp_path),
+                "PATH": str(executable.parent),
+                "KIROCREW_WORKLOAD_IDENTITY": "spiffe",
+            },
+            home=tmp_path,
+            process_runner=runtime.run,
+            audit_writer=_no_audit,
+        )
+
+        status = await service.snapshot(force=True)
+        assert status["installed"] is True
+        assert status["authenticated"] is False
+        assert status["ready"] is False
+
     def test_acp_snapshot_accepts_runnable_cli_without_provenance(
         self,
         tmp_path: Path,

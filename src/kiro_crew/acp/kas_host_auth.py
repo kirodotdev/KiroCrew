@@ -64,6 +64,12 @@ async def answer_get_access_token() -> dict:
     when no credential is stored or the refresh fails, so the runtime can return
     the same string to the engine as a JSON-RPC error.
     """
+    from kiro_crew import workload_identity
+
+    # An unreadable context answers from the vault, as on any host: never a
+    # workload sign-in by accident.
+    if workload_identity.seam_enabled(fallback=False):
+        return await _answer_from_workload_identity()
     # Deferred: see the module docstring (boot-path and cryptography gates).
     from kiro_crew.auth.bridge import default_token_store, handle_get_access_token
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
@@ -88,3 +94,20 @@ async def answer_get_access_token() -> dict:
         # refresh endpoint; expose only its type, and only in the local log.
         logger.warning("KAS auth callback: refresh failed (%s)", type(exc).__name__)
         raise HostAuthCallbackError("refresh failed") from exc
+
+
+async def _answer_from_workload_identity() -> dict:
+    """The callback answer from the Crew's JWT-SVID (:mod:`kiro_crew.workload_identity`)."""
+    from kiro_crew import workload_identity
+
+    try:
+        settings = workload_identity.WorkloadIdentitySettings.from_env()
+    except workload_identity.WorkloadIdentityConfigError as exc:
+        logger.warning("KAS auth callback: workload identity misconfigured: %s", exc)
+        raise HostAuthCallbackError("workload identity misconfigured") from exc
+    if settings is None:  # enabled() and from_env() read the same variable
+        raise HostAuthCallbackError("workload identity misconfigured")
+    try:
+        return await workload_identity.kas_access_token_answer(settings)
+    except workload_identity.WorkloadIdentityUnavailable as exc:
+        raise HostAuthCallbackError("workload identity unavailable") from exc

@@ -33,6 +33,7 @@ from kiro_crew.dashboard import chat_regenerate, chat_rewind, kiro_readiness, op
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.workload_identity import WorkloadIdentityUnavailable
 
 _LOAD = "kiro_crew.config.loader.KiroCrewConfig.load"
 _ROUTE = "kiro_crew.agent_sdk.kas_bundle.kas_bundle_route"
@@ -40,6 +41,8 @@ _INSTALLED = "kiro_crew.agent_sdk.kas_bundle.installed_bundle"
 _KAS_ROUTE = "kiro_crew.agent_sdk.kas_bundle.kas_route"
 _PROVIDER = "kiro_crew.auth.provider.KasAuthProvider"
 _STORE = "kiro_crew.auth.bridge.default_token_store"
+_ANSWER = "kiro_crew.workload_identity.kas_access_token_answer"
+_WI_SETTINGS = "kiro_crew.workload_identity.WorkloadIdentitySettings.from_env"
 _RESOLVE_TARGET = "kiro_crew.acp.client._resolve_kiro_bin_for_spawn"
 _PIN = "kiro_crew.crewmate_harness.crewmate_backend_pin"
 _MEMBER_KEY = "dashboard:member-ann"
@@ -315,6 +318,28 @@ class TestCrewSigninReady:
             assert await kiro_readiness.kas_crew_signin_ready(None) is False
         current.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("bundle", "answer", "ready"),
+        [(True, None, True), (True, "x", False), (False, None, False)],
+    )
+    async def test_a_workload_identity_serves_only_a_turn_on_the_bundle(
+        self, monkeypatch, bundle, answer, ready
+    ):
+        # Workload sign-in is judged here, never by kiro-cli's own readiness probe.
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+        reply = AsyncMock(side_effect=WorkloadIdentityUnavailable(answer) if answer else None)
+        current = AsyncMock(return_value=object())
+        with (
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=bundle),
+            patch(_WI_SETTINGS, return_value=object()),
+            patch(_ANSWER, reply),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            assert await kiro_readiness.kas_crew_signin_ready(None) is ready
+        assert reply.await_count == (1 if bundle else 0)
+        current.assert_not_called()
+
 
 def _live_sessions(acp_backend: str, *, engine_bundle: bool) -> SimpleNamespace:
     runtime = SimpleNamespace(acp_backend=acp_backend, _kas_engine_bundle=engine_bundle)
@@ -545,6 +570,26 @@ class TestGate:
             resp = await kiro_readiness.reject_if_kiro_unverified(_request(_signed_out_service()))
         assert resp is not None and resp.status == 503
         ready.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_workload_switch_never_passes_an_edit_resend_on_signed_out_kiro_cli(
+        self, monkeypatch
+    ):
+        # Edit-resend cuts history before its turn: off the bundle, kiro-cli decides.
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+        reply = AsyncMock(return_value={})
+        with (
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=False),
+            patch(_ANSWER, reply),
+        ):
+            resp = await kiro_readiness.reject_if_kiro_unverified(
+                _request(_signed_out_service()),
+                harness_turn=True,
+                session_key=_MEMBER_KEY,
+                turn_reuses_session=False,
+            )
+        assert resp is not None and resp.status == 503
+        reply.assert_not_called()
 
 
 _SENTINEL_STATUS = 418

@@ -84,6 +84,7 @@ def shadowed_path(monkeypatch, tmp_path):
     # real one back so this is a genuine lookup over the fake host.
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", _REAL_RESOLVE)
     monkeypatch.setattr(kiro_cli, "_MACOS_SYSTEM_DIRS", ())
+    monkeypatch.setattr(kiro_cli, "_LINUX_SYSTEM_DIRS", ())
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
     # The desktop app exports its bundled kiro-cli directory to every child,
@@ -142,6 +143,60 @@ class TestKnownDirsAreFenceable:
         assert self._USER_APP in dirs
         for fixed in self._FIXED:
             assert fixed not in dirs, fixed
+
+    def test_the_linux_system_locations_are_searched_after_the_accounts_own(self) -> None:
+        """A container image or a package puts kiro-cli in /usr/local/bin or /usr/bin,
+        which a pin that drops PATH must still find, after the account's own dirs."""
+        assert kiro_cli._LINUX_SYSTEM_DIRS == ("/usr/local/bin", "/usr/bin")
+        dirs = kiro_cli.known_kiro_cli_dirs(
+            "linux", self._ACCOUNT_ROOT, {}, include_inherited_path=False
+        )
+        local_bin = str(self._ACCOUNT_ROOT / ".local" / "bin")
+        assert dirs.index(local_bin) < dirs.index("/usr/local/bin") < dirs.index("/usr/bin")
+        darwin = self._darwin_dirs()
+        assert "/usr/bin" not in darwin
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="a chmod +x shim is a POSIX shape")
+    def test_a_kiro_cli_in_a_linux_system_dir_is_pinned(self, monkeypatch, tmp_path) -> None:
+        system = tmp_path / "usr-local-bin"
+        binary = _plant_shim(system)
+        monkeypatch.setattr(kiro_cli, "_LINUX_SYSTEM_DIRS", (str(system),))
+        found = kiro_cli.find_kiro_cli_candidates(
+            "linux", tmp_path / "acct", {}, include_inherited_path=False
+        )
+        assert found == [str(binary)]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the Linux system dirs")
+def test_a_linux_system_kiro_cli_below_the_floor_omits_the_auth_flag(monkeypatch, tmp_path):
+    """A kiro-cli older than the ``--auth-method client`` floor, installed in a
+    Linux system dir, is pinned and read as its own version, so the KAS spawn
+    leaves the flag out instead of passing it on an unknown version."""
+    from kiro_crew.kiro_prerequisite_process import ProcessResult
+
+    system = tmp_path / "usr-local-bin"
+    binary = _plant_shim(system)
+    home = tmp_path / "acct"
+    home.mkdir()
+    monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", _REAL_RESOLVE)
+    monkeypatch.setattr(kiro_cli, "_LINUX_SYSTEM_DIRS", (str(system),))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
+    monkeypatch.delenv(kiro_cli.BUNDLED_KIRO_DIR_ENV, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(kiro_cli, "_version_cache", {})
+    probed: list[str] = []
+
+    def _probe(path, args, _timeout):
+        probed.append(path)
+        return ProcessResult(ok=True, output="kiro-cli 2.27.1\n", returncode=0)
+
+    monkeypatch.setattr(kiro_cli, "_sandboxed_probe", _probe)
+    assert kiro_cli.pin_kiro_cli()[0] == str(binary)
+    version = kiro_cli.installed_kiro_cli_version()
+    assert version == (2, 27, 1)
+    assert probed == [str(binary)]
+    assert not kiro_cli.kas_auth_client_flag_supported(version)
 
 
 posix_only = pytest.mark.skipif(

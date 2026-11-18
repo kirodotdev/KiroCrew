@@ -1219,9 +1219,11 @@ class TunnelConfig:
             "Relay Lease Credential",
             "Where the Crew reads its credential for the lease service: secret://NAME "
             "for a secret stored under Settings > Secrets, the absolute path of a file "
-            "holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity "
-            "Center or your organization's identity provider), refreshed automatically. "
-            "Empty (the default) uses that sign-in too, on a personal Crew: one with no "
+            "holding it, kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity "
+            "Center or your organization's identity provider), refreshed automatically, or "
+            "workload-identity:jwt-svid for the Crew's workload identity "
+            "(KIROCREW_WORKLOAD_IDENTITY). "
+            "Empty (the default) uses the Kiro sign-in too, on a personal Crew: one with no "
             "Relay Lease Token Type, on a host with no agent workload identity. "
             "A team Crew must name its crew API key here. "
             "Never the credential itself; it is read for each call and never logged.",

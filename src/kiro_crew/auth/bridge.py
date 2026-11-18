@@ -72,6 +72,15 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     would repeat on every tick; the verdict is the same either way.
     """
     log = logger.warning if warn else logger.debug
+    from kiro_crew import workload_identity
+
+    # An unreadable context leaves the decision to the shared resolver below.
+    if workload_identity.seam_enabled(fallback=False):
+        # The deployment names the Crew's workload identity as its sign-in
+        # (KIROCREW_WORKLOAD_IDENTITY), so the spawn is Crew-owned whatever the
+        # vault holds. A misconfigured identity fails the first token callback,
+        # never a silent switch to kiro-cli's account.
+        return True
     # The shared sign-in resolver decides, under the oss policy: a vault entry is the
     # sign-in, lapsed or not, and kiro-cli's only when the vault holds none. The two
     # are never mixed: a lapsed or unreadable vault keeps the spawn Crew-owned, where

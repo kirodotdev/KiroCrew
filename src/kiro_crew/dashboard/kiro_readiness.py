@@ -325,6 +325,23 @@ async def kas_crew_signin_ready(
         _kas_bundle_turn_sync, session_key, config
     ):
         return False
+    from kiro_crew import workload_identity
+
+    # An unreadable context is judged by the vault below, as on any host.
+    if workload_identity.seam_enabled(fallback=False):
+        # The engine's callback answers from the Crew's JWT-SVID, so ask for the same
+        # answer: a misconfigured switch or an agent with no SVID is not ready.
+        try:
+            settings = workload_identity.WorkloadIdentitySettings.from_env()
+            if settings is None:
+                return False
+            await workload_identity.kas_access_token_answer(settings)
+        except Exception as exc:  # noqa: BLE001 - an unusable workload identity is not ready
+            logger.debug(
+                "Kiro readiness: workload identity cannot serve the turn (%s)", type(exc).__name__
+            )
+            return False
+        return True
     try:
         # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must
         # not load on the handlers' import path (see kiro_crew.acp.kas_host_auth).

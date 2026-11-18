@@ -158,8 +158,15 @@ def vault_identity() -> str:
     """
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
     # load on the session drivers' import path (see kiro_crew.acp.kas_host_auth).
+    from kiro_crew import workload_identity
     from kiro_crew.auth.bridge import vault_identity_fingerprint
 
+    # An unreadable context shows no catalog (the picker offers ``auto``), never a
+    # leftover account's; this only hides a list, it signs nothing in.
+    if workload_identity.seam_enabled(fallback=True):
+        # The workload identity is the sign-in: a leftover vault entry's catalog
+        # never labels it, so nothing is recorded or served (the picker stays auto).
+        return ""
     return vault_identity_fingerprint()
 
 

@@ -62,7 +62,7 @@ omit the policy.
 | `governance` | **concrete carrier** | `load_security_policy()` result or `None` | bundled Level-1 ceiling |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
 | `identity` | adapter | `DefaultIdentityProvider` (`sso_status.py` stub; `whoami`/`issuer` **RESERVED**) | enterprise SSO / directory |
-| `agent_identity` | adapter | `DefaultAgentIdentityProvider` (disabled: `enabled() -> False`; no workload, no Gateway spec, no tokens). Distinct from operator-SSO `identity`. `IdentityProvider.whoami` / `issuer` stay RESERVED and are not consumed to satisfy this seam. The public edition composes only the Default. | edition workload identity + token vending |
+| `agent_identity` | adapter | `DefaultAgentIdentityProvider` (disabled: `enabled() -> False`; no workload, no Gateway spec, no tokens). Distinct from operator-SSO `identity`. `IdentityProvider.whoami` / `issuer` stay RESERVED and are not consumed to satisfy this seam. The public edition composes the Default, or `SpiffeAgentIdentityProvider` (`workload_identity.py`, a SPIFFE JWT-SVID) when `KIROCREW_WORKLOAD_IDENTITY` is set; the workload sign-in sites switch on only for that provider (`workload_identity.seam_enabled`). | edition workload identity + token vending |
 | `embeddings` | adapter | **RESERVED** — `DefaultEmbeddingSource`; the public runtime is the bundled in-process llama-cpp model, so no method is consumed (swap via `embeddings.register_embedding_backend`) | — (slot inert) |
 | `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
@@ -1127,7 +1127,12 @@ Wired sites:
   seam reports no workload identity (`provider.py::RelaySettings.validate`), a
   personal Crew leases with the Crew's
   own Kiro sign-in (`relay_client/lease_signin.py::read_lease_sign_in`), refreshed
-  as needed, and sends that sign-in's `profileArn`. Each call's `connectedCount` is `RelayClient.connected_people()`:
+  as needed, and sends that sign-in's `profileArn`. With `workload-identity:jwt-svid`,
+  a Crew leases with its own JWT-SVID from `kiro_crew/workload_identity.py` (leave
+  `tunnel.relay_lease_token_type` empty, so no `TokenType` goes) and sends no
+  `profileArn`. After an access refusal or an invalid-request refusal it waits a
+  random time between 5 seconds and a step that doubles from 1 to 15 minutes,
+  instead of the fixed wait or the stop. Each call's `connectedCount` is `RelayClient.connected_people()`:
   the distinct relayed callers with a WebSocket open on a serving connection, so
   one person on two tabs counts once. It is display-only, so a count that cannot
   be read is sent as 0 and never fails the renewal. When the relay stops, it

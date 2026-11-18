@@ -843,7 +843,9 @@ class TestAgentIdentitySeam:
         ctx = build_default_context(KiroCrewConfig())
         assert hasattr(ctx, "agent_identity")
 
-    def test_default_agent_identity_is_disabled(self) -> None:
+    def test_default_agent_identity_is_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The workload switch composes a different provider; the default is without it.
+        monkeypatch.delenv("KIROCREW_WORKLOAD_IDENTITY", raising=False)
         ctx = build_default_context(KiroCrewConfig())
         adapter = ctx.agent_identity
         assert adapter.enabled() is False

@@ -13,6 +13,7 @@ the default context under the enterprise profile (see
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Sequence, cast
@@ -75,7 +76,11 @@ from kiro_crew.platform.security_authority import PolicyAuthority, assert_securi
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.platform.interfaces import TelemetryProvider, TunnelProvider
+    from kiro_crew.platform.interfaces import (
+        AgentIdentityProvider,
+        TelemetryProvider,
+        TunnelProvider,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +99,10 @@ _BOOTED = False
 # ``register_acp_backends`` twice.  Re-entrant because ``bootstrap_context`` and
 # the lazy default both ultimately set the same global context.
 _BOOT_LOCK = threading.RLock()
+
+#: The workload-identity switch, read here without importing its module. Kept equal to
+#: ``kiro_crew.workload_identity.ENV_MODE``.
+_WORKLOAD_IDENTITY_SWITCH = "KIROCREW_WORKLOAD_IDENTITY"
 
 
 def boot_platform(cfg: "KiroCrewConfig") -> PlatformContext:
@@ -303,6 +312,26 @@ def _public_tunnel_provider(cfg: "KiroCrewConfig") -> "TunnelProvider":
     return provider
 
 
+def _public_agent_identity_provider() -> "AgentIdentityProvider":
+    """The agent-identity slot's provider in the public composition.
+
+    The disabled :class:`DefaultAgentIdentityProvider`, unless the deployment sets
+    ``KIROCREW_WORKLOAD_IDENTITY``: then the Crew's SPIFFE workload identity. A
+    companion composes its own context and its own provider, so it never reaches
+    this choice.
+    """
+    # This check only defers the import, so a host without the switch keeps the SPIFFE
+    # client off every process's import path (the MCP listing budget). It uses the same
+    # expression as workload_identity.enabled(), which stays the one decider below.
+    if not (os.environ.get(_WORKLOAD_IDENTITY_SWITCH) or "").strip():
+        return DefaultAgentIdentityProvider()
+    from kiro_crew import workload_identity
+
+    if not workload_identity.enabled():
+        return DefaultAgentIdentityProvider()
+    return workload_identity.SpiffeAgentIdentityProvider()
+
+
 def build_default_context(
     cfg: "KiroCrewConfig", *, profile: str = PROFILE_STANDALONE
 ) -> PlatformContext:
@@ -333,7 +362,7 @@ def build_default_context(
         security=PolicyAuthority(),  # _NullOverlay → baseline only
         slack_gate=DefaultSlackEnterpriseGate(),
         identity=DefaultIdentityProvider(),
-        agent_identity=DefaultAgentIdentityProvider(),
+        agent_identity=_public_agent_identity_provider(),
         embeddings=DefaultEmbeddingSource(),
         mcp_tooling=DefaultMcpToolingProvider(),
         agent_catalog=DefaultAgentCatalogProvider(),

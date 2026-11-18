@@ -1110,6 +1110,14 @@ _MACOS_SYSTEM_DIRS: tuple[str, ...] = (
     "/opt/homebrew/bin",
     "/usr/local/bin",
 )
+#: Linux's system install directories, searched after the account's own, the way
+#: ``_MACOS_SYSTEM_DIRS`` is on macOS: a container image or a distribution
+#: package puts kiro-cli here, and without them a pin that drops ``PATH`` finds no
+#: binary and its version reads as unknown. Both are root-owned on a standard
+#: host. A test fences them by emptying this tuple, as with the macOS one.
+#: POSIX-only on purpose: these are Linux paths, read only when ``platform_name``
+#: starts with ``linux`` (``known_kiro_cli_dirs``), so Windows never sees them.
+_LINUX_SYSTEM_DIRS: tuple[str, ...] = ("/usr/local/bin", "/usr/bin")
 
 
 def known_kiro_cli_dirs(
@@ -1164,6 +1172,8 @@ def known_kiro_cli_dirs(
         fixed = list(_MACOS_SYSTEM_DIRS)
         user_app = str(home / "Applications" / "Kiro CLI.app" / "Contents" / "MacOS")
         dirs.extend(fixed[:1] + [user_app] + fixed[1:])
+    elif platform_name.startswith("linux"):
+        dirs.extend(_LINUX_SYSTEM_DIRS)
     if include_inherited_path and platform_name == "win32":
         dirs.extend(part for part in environ.get("PATH", "").split(";") if part)
         # A GUI-launched Windows gateway can retain an old PATH after a user

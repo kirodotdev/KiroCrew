@@ -148,6 +148,36 @@ every engine-facing read: `getAccessToken`, `getProfileArn` and
 sign-in, so a Builder ID sign-in made before the change works without signing in
 again. Every other identity sends the ARN its sign-in stored.
 
+### Workload identity in place of a sign-in
+
+A Crew deployed where an attesting agent publishes the SPIFFE Workload API (an
+EKS pod with workload identity) can use its own identity instead of a person's
+sign-in. `KIROCREW_WORKLOAD_IDENTITY=spiffe` turns it on; the other settings
+(audience, profile ARN, optional expected SPIFFE ID and socket override) are
+environment variables documented in
+`kiro_crew/workload_identity.py`, because the pod spec owns them. The switch only
+composes `SpiffeAgentIdentityProvider` into the platform context's `agent_identity`
+slot (`platform/bootstrap.py::_public_agent_identity_provider`); every site below reads
+`workload_identity.seam_enabled`, which is true only when that slot holds the SPIFFE
+provider and it reports `enabled()`. A companion edition supplies its own slot, and its
+own enabled provider leaves vault and kiro-cli sign-in as they are. While it is on:
+
+- `auth/bridge.vault_holds_identity` answers `True`, so every KAS spawn is
+  Crew-owned whatever the vault holds, and a misconfiguration fails the first
+  callback instead of falling back to kiro-cli's account.
+- `answer_get_access_token` answers from a JWT-SVID fetched for the configured
+  audience over the Workload API socket (`kiro_crew/spiffe_workload_api.py`, one
+  gRPC `FetchJWTSVID` call over `h2`), with `profileArn` set and `provider`
+  `Enterprise`. It sends no `authMethod`: `external_idp` would add a `TokenType`
+  header, and the Kiro bearer check recognizes an SVID only without one. The SVID
+  is cached until less than half its lifetime, or 5 minutes, is left.
+- Failures reach the engine as `workload identity misconfigured` or `workload
+  identity unavailable`; the local log names the cause, never the token.
+- A destructive rerun whose turn runs on the KAS engine bundle is judged by
+  `dashboard/kiro_readiness.py::kas_crew_signin_ready`, which asks this same
+  answer. kiro-cli's own readiness stays its `whoami`, so the switch never lets a
+  rerun on a signed-out kiro-cli harness cut history.
+
 ## Login flows (four identities × two transports)
 
 The wire contract below is reverse-engineered from kiro-cli source

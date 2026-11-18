@@ -99,7 +99,36 @@ async def _run(patches, *, vault_owned=True):
     return resolve
 
 
+@pytest.mark.asyncio
+async def test_identity_discovery_never_inherits_a_leftover_vault_under_the_workload_switch(
+    monkeypatch,
+):
+    # KAS owns the credential and a leftover IdC entry would answer, but the Crew signs
+    # in as its workload: discovery is unknown and never reads the personal vault.
+    monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+    owns = AsyncMock(return_value=True)
+    leftover = AsyncMock(return_value={"account_type": "IdC", "start_url": "https://x.test"})
+    with (
+        patch.object(sessions_mod, "_vault_owns_usage", owns),
+        patch.object(sessions_mod, "vault_identity", leftover),
+    ):
+        assert await sessions_mod.fetch_local_identity() is None
+    leftover.assert_not_called()
+
+
 class TestRefreshFromVault:
+    @pytest.mark.asyncio
+    async def test_a_leftover_vault_never_shows_its_credits_under_the_workload_switch(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("KIROCREW_WORKLOAD_IDENTITY", "spiffe")
+        patches = _vault()
+        await _run(patches)
+        assert sessions_mod._usage_cache == {"available": False}
+        assert sessions_mod._usage_cache_vault_fp == ""
+        patches[2].new.assert_not_called()  # KasAuthProvider: the vault is never read
+        patches[3].new.assert_not_called()  # the usage API is never called
+
     @pytest.mark.asyncio
     async def test_publishes_reading_without_kiro_cli(self):
         resolve = await _run(_vault())
