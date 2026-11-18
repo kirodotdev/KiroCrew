@@ -492,6 +492,7 @@ def _update(force: bool = False) -> None:
     def _report_up_to_date(ahead: int) -> None:
         suffix = f" ({ahead} local commit(s) ahead of origin/{branch})" if ahead else ""
         print(f"\n✅ Already up to date!{suffix}")
+        _report_pending_restart()
 
     verdict, ahead, behind = _divergence_verdict()
     if verdict == "unreadable":
@@ -751,6 +752,35 @@ def _update(force: bool = False) -> None:
     print("    kirocrew restart")
 
 
+def _report_pending_restart() -> None:
+    """After an "already up to date" verdict, say when the running gateway is older.
+
+    An update can be on disk without being served: the managed venv prepares the
+    new tree on a gateway start and the NEXT start applies it, and an in-place
+    upgrade leaves the gateway serving what it imported at boot. The verdict above
+    compares the package the next start runs, so on its own it reads as "nothing
+    to do" while the dashboard still shows the old version. This names that
+    version and the restart that applies it. No gateway, a gateway that does not
+    report its version, or one already on the next start's version prints nothing.
+    """
+    # In-function: the doctor family and live_target bind at call time (facade rule).
+    from kiro_crew.dashboard.handlers.updates import _is_newer
+    from kiro_crew.doctor_checks.services import _running_gateway_version
+    from kiro_crew.service import live_target
+
+    try:
+        port = resolve_client_port(None)
+    except (OSError, ValueError):
+        return
+    running = _running_gateway_version(port)
+    on_disk = live_target.selected_version()[0]
+    if running is None or on_disk is None or _is_newer(on_disk, running) is not True:
+        return
+    print(f"  ℹ️  The running gateway is still on {running}; {on_disk} is installed.")
+    print("  Restart the gateway to use it:")
+    print("    kirocrew restart")
+
+
 def _revalidate_gateway_update_check() -> None:
     """Best-effort: tell the running gateway to re-check for updates now.
 
@@ -950,6 +980,7 @@ def _update_wheel(layout) -> None:
         print("  ⚠️  Could not compare versions — updating anyway to be safe")
     elif not newer:
         print("\n✅ Already on the latest version!")
+        _report_pending_restart()
         return
 
     # The managed-venv shape takes the shadow path: the new version is built
