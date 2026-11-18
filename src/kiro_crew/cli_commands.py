@@ -999,6 +999,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _app_already_gone,
         _app_declares_backend,
         _apply_through_gateway,
+        _audit_file_only_toggle,
         _cleanup_app_crons_from_scheduler,
         _deregister_or_report,
         _handle_app,
