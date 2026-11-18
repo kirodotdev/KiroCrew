@@ -112,7 +112,6 @@ from kiro_crew.pod import log_mark
 from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
 from kiro_crew.sandbox import apply_windows_resource_ceiling
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Task Scheduler folder every pod task lives in. One folder per pod plane, so a
 # hermetic test plane (KIROCREW_POD_UNIT_PREFIX) cannot collide with a
@@ -451,12 +450,14 @@ def render_task_script(cfg: PodConfig, name: str) -> str:
 
 
 def _script_encoding() -> str:
-    """The codec ``cmd.exe`` reads a batch file with.
+    """The codec ``cmd.exe`` reads a batch file with, and ``schtasks.exe`` writes with.
 
     ``cmd.exe`` decodes a ``.cmd`` in the console's OEM code page (``chcp``),
     never UTF-8, so the wrapper is written in that code page: Python's ``oem``
-    codec is exactly that page on Windows. Elsewhere (the render tests run on
-    Linux) there is no OEM page and UTF-8 stands in.
+    codec is exactly that page on Windows. ``schtasks.exe`` writes its messages
+    to a redirected pipe in the same page, so :func:`_schtasks_raw` reads them
+    with it. Elsewhere (the render tests run on Linux) there is no OEM page and
+    UTF-8 stands in.
     """
     return "oem" if IS_WINDOWS else "utf-8"
 
@@ -533,13 +534,19 @@ def render_task_xml(script: Path) -> str:
 
 # Talking to schtasks
 def _schtasks_raw(exe: str, *args: str) -> subprocess.CompletedProcess:
-    """Run *exe* with *args*, no gate — used by the gate's own probe."""
-    return subprocess.run(
+    """Run *exe* with *args*, no gate — used by the gate's own probe.
+
+    Output is decoded in the OEM code page, not UTF-8: a localized refusal
+    would otherwise reach the operator as U+FFFD.
+    """
+    return subprocess.run(  # subprocess-encoding: locale
         [exe, *args],
         capture_output=True,
         timeout=30,
         check=False,
-        **UTF8_TEXT,
+        text=True,
+        encoding=_script_encoding(),
+        errors="replace",
     )
 
 
