@@ -2690,9 +2690,13 @@ it spawns `KIROCREW_GATEWAY_ORIGIN` and `KIROCREW_PROXY_SECRET`, which is the
 app's secret (kept in `member-records/app-secrets/<name>`, masked in every sandbox,
 never in the app's folder; `token_auth.read_app_secret`); `POST /api/apps/<name>/token` with that value as
 `X-App-Secret` returns the same app-scoped token the page uses (only while the
-owner-enable marker the gateway sealed is present, see dashboard-token-auth), and
-`/api/ws`
-with it is the same scoped stream. `kirocrew_client.KiroCrewClient(app_name=...)`
+owner-enable marker the gateway sealed is present, see dashboard-token-auth), as
+`{token, expires_in}`. `expires_in` is the seconds the token is accepted as a
+`?token=` query parameter (its `exp`, the link window), the shorter of its two
+windows; as the session cookie it lasts until `session_exp`. A caller that
+renews by `expires_in` never presents an expired token, and one that ignores it
+re-exchanges after the 401 or 403. `/api/ws`
+with that token is the same scoped stream. `kirocrew_client.KiroCrewClient(app_name=...)`
 does the exchange (`authenticate()`) and `create_ws()` opens that socket. There is no
 second delivery channel, and an origin the gateway could not prove is omitted, so
 such a backend has none. A backend that runs in the gateway process (`backend.hooks`

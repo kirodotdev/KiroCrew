@@ -1864,7 +1864,10 @@ choose the gateway's next image. Instead:
   a `GatewayPointerBroker` (`pointer_broker.py`) as `live`'s pointer provider: it
   exchanges the app secret at `POST /api/apps/dev-fleet/token` and reads
   `GET /api/apps/dev-fleet/live-target` (30 s display cache; `fresh=1` for the
-  removal guards). The broker aims at `KIROCREW_GATEWAY_ORIGIN`, which
+  removal guards). It sends the token as `?token=` and exchanges again 30 s before
+  the exchange's `expires_in` runs out, so a read never presents an expired token;
+  a 401 or 403 still re-exchanges once, which covers a gateway that sends no
+  `expires_in` or restarted with a new signing key. The broker aims at `KIROCREW_GATEWAY_ORIGIN`, which
   `apps/backend.py` builds for every backend at spawn from the gateway's own
   `KIROCREW_BOUND_PORT` — the port is exported the moment it is reserved
   (`dashboard.server._reserve_dashboard_port`, before any backend spawns;

@@ -212,7 +212,11 @@ the same as one that does not exist.
 
 Example, from a backend the gateway spawned (see
 [Backend Environment Variables](#backend-environment-variables)): trade the app secret
-for an app token, then call the routes with it as the gateway's session cookie. Hooks that
+for an app token, then call the routes with it as the gateway's session cookie. The exchange
+answers `{"token": ..., "expires_in": ...}`: `expires_in` is the seconds the token is
+accepted as a `?token=` query parameter, the shorter of its two windows (as the session
+cookie it lasts an hour). A long-running backend exchanges again before `expires_in` runs
+out, or after a 401 or 403. Hooks that
 run in the gateway process have no secret: they get the same app token from
 [`ctx.app_token()`](#app-token-ctxapp_token).
 
