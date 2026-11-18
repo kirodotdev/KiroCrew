@@ -1034,6 +1034,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_update_not_found,
         _format_schedule,
         _ownerless_hint,
+        _running_since,
     )
     from kiro_crew.cli_commands_eval import (  # noqa: F401
         _EVAL_RUN_ONLY,
