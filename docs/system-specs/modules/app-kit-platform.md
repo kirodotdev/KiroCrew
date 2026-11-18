@@ -9004,7 +9004,23 @@ spelling's parents unguarded, so the backend can create, rotate and remove the f
 keeps its credential in. The namespace plan pins the same parents (`parent_pins`), each one
 the agent could rename: a namespace mask is a mount, which moves with a renamed parent inside
 that spawn, but on disk the leaf then sits at a name no mask covers, so the next spawn would
-read it there. No seal or keystone disposition reads a declaration, the
+read it there. One of those pins moves to the end of the stages: the folder of each app
+that declares a mask, `apps/<app>`, is taken out of `parent_pins` and bound over itself
+after every mask (`mask_parent_pins`, `pin_mask_parents`, the last mask stage), so the set
+of pinned folders is unchanged. An update replaces that folder from the gateway's
+namespace and renames `data/` into the new one, and a mount stays on the mount it was
+placed through: a mask or a `data/` pin placed through a pin of the old folder would be
+left with the retired folder, and a running session would read the restored credential
+plain. With the app folder unpinned while the rest are placed, they sit on the mount the
+rename keeps, and the app folder's recursive pin adds one copy of them. Each pin is
+matched to an app folder by the folder it resolves to, so a linked data-home spelling, or
+one reached by walking a seal through its link, moves too, while a link entry, pinned as
+itself, stays with the pins placed first; one spelling per folder is bound, none above
+another, so the mount count does not compound. The limit, stated:
+the replacement `apps/<app>` is created after the spawn, so a session already running can
+rename it until its next spawn; closing that needs a layout change, not another pin.
+`test_seal_parent_pin_real_sandbox.py` checks the refusals and the mask across that move
+in a real namespace. No seal or keystone disposition reads a declaration, the
 tool gate reads it only as more refusals (below), and the one carve-out that does (the
 app's own backend, below) never lifts a core leaf, so a manifest can only add masks. A built-in's declared
 leaf on the tool-gate floor is HIDDEN in the spawn plan, so
