@@ -164,6 +164,24 @@ export function pluginRefusalCopy(p: CloudPreflight): PluginRefusalCopy | null {
   return refusalCopy(pluginRefusalOf(p))
 }
 
+/** A shell line that runs `sudo` as a command, not merely names it. */
+const RUNS_SUDO = /(^|[\s;&|(])sudo\s/
+
+/** The plugin row's next step for a plugin that is simply not installed, or
+ *  null when it is installed or refused (refusals have pluginRefusalCopy). Says
+ *  that a sudo install needs admin rights and what to ask an administrator for,
+ *  before the reader runs the command; with no command for this platform it
+ *  points at AWS's install page instead. A command without sudo (Homebrew)
+ *  needs no warning, so it gets none. */
+export function pluginMissingSteps(p: CloudPreflight): PluginRefusalCopy['steps'] | null {
+  if (p.session_manager_plugin || p.session_manager_plugin_refused_path) return null
+  const link = { href: SESSION_MANAGER_PLUGIN_INSTALL_URL, label: i18nT('pages.settings.remoteCrewPanel.plugin_install_page') }
+  const command = p.session_manager_plugin_command || ''
+  if (!command) return { text: i18nT('pages.settings.remoteCrewPanel.plugin_missing_no_command'), link }
+  if (RUNS_SUDO.test(command)) return { text: i18nT('pages.settings.remoteCrewPanel.plugin_missing_needs_admin'), link }
+  return null
+}
+
 /** The credentials row's wording when the gateway found an `aws` CLI and refused
  *  it, or null when credentials resolved or no CLI was refused. Reporting that as
  *  the CLI's "not found" error would send the reader to reinstall the same file. */

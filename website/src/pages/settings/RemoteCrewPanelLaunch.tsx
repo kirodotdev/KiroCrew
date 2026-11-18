@@ -530,6 +530,21 @@ export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; on
   )
 }
 
+/** A prerequisite row's next step: plain text, then an optional external link. */
+function RowSteps({ steps }: { steps?: { text: string; link?: { href: string; label: string } } }) {
+  if (!steps) return null
+  return (
+    <>
+      <p className="mt-1.5 text-[12px] text-text">{steps.text}</p>
+      {steps.link ? (
+        <a className="mt-1 w-fit flex items-center gap-1 text-[12px] text-accent font-medium hover:underline" href={steps.link.href} target="_blank" rel="noreferrer">
+          {steps.link.label} <ExternalLink size={12} aria-hidden="true" />
+        </a>
+      ) : null}
+    </>
+  )
+}
+
 /** One AWS prerequisite row (ok / failed) with optional command + actions.
  *  Every row gates Launch, so a failed one is drawn as an error, not a warning. */
 export function PrereqRow({
@@ -612,18 +627,14 @@ export function PrereqRow({
             ) : (
               <ErrorNotice variant="inline" showIcon={false} messageClassName="whitespace-pre-wrap" message={failure} report={failureReport} askAgent />
             )}
-            {steps ? (
-              <>
-                <p className="mt-1.5 text-[12px] text-text">{steps.text}</p>
-                {steps.link ? (
-                  <a className="mt-1 w-fit flex items-center gap-1 text-[12px] text-accent font-medium hover:underline" href={steps.link.href} target="_blank" rel="noreferrer">
-                    {steps.link.label} <ExternalLink size={12} aria-hidden="true" />
-                  </a>
-                ) : null}
-              </>
-            ) : null}
+            <RowSteps steps={steps} />
           </div>
-        ) : detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
+        ) : (
+          <>
+            {detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
+            <RowSteps steps={steps} />
+          </>
+        )}
         {command ? (
           <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
             {command}
