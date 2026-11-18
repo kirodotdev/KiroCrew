@@ -197,15 +197,17 @@ class TestDoctorSection:
         printed: list[str] = []
         others = [r for r in rows if r.channel_type != "slack"]
         if not any(r.enabled for r in others):
-            printed.append("  status:      ⏭  none enabled (optional)")
+            printed.append("  status:      Skipped: none enabled (optional)")
         for row in others:
             if not row.enabled:
                 continue
             if row.ready:
-                printed.append(f"  {row.channel_type + ':':12} ✅ enabled, credentials present")
+                printed.append(
+                    f"  {row.channel_type + ':':12} OK:      enabled, credentials present"
+                )
             else:
                 printed.append(
-                    f"  {row.channel_type + ':':12} ❌ enabled but missing "
+                    f"  {row.channel_type + ':':12} Error:   enabled but missing "
                     f"{', '.join(row.missing_credentials)}"
                 )
         assert any(expect in line for line in printed), printed

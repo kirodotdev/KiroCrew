@@ -496,19 +496,19 @@ def doctor_dead_paths(issues: list[str], *, agents_dir: Path | None = None) -> N
     try:
         report = check_dead_paths(agents_dir=agents_dir)
     except Exception as exc:  # noqa: BLE001 — doctor must survive a broken walk
-        print(f"  paths:       ⚠️  could not check ({exc})")
+        print(f"  paths:       Warning: could not check ({exc})")
         return
 
     if not report.results:
-        print("  paths:       ⏹ no agent specs found")
+        print("  paths:       Note:    no agent specs found")
         return
 
     for result in report.managed_dead:
         spec = _sanitize_for_terminal(result.spec)
         if result.repaired:
-            print(f"  {spec}: ✅ dead paths repaired from the current install")
+            print(f"  {spec}: OK:      dead paths repaired from the current install")
         else:
-            print(f"  {spec}: ❌ managed spec has dead paths the rebuild did not clear")
+            print(f"  {spec}: Error:   managed spec has dead paths the rebuild did not clear")
             for dp in result.dead:
                 loc = f"{dp.server}.{dp.where}" if dp.server else dp.where
                 print(f"      {_sanitize_for_terminal(loc)}: {_sanitize_for_terminal(dp.path)}")
@@ -518,7 +518,7 @@ def doctor_dead_paths(issues: list[str], *, agents_dir: Path | None = None) -> N
 
     for result in report.foreign_dead:
         spec = _sanitize_for_terminal(result.spec)
-        print(f"  {spec}: ⚠️  foreign spec has dead paths (not repaired — not ours)")
+        print(f"  {spec}: Warning: foreign spec has dead paths (not repaired — not ours)")
         for dp in result.dead:
             loc = f"{dp.server}.{dp.where}" if dp.server else dp.where
             print(f"      {_sanitize_for_terminal(loc)}: {_sanitize_for_terminal(dp.path)}")
@@ -529,9 +529,9 @@ def doctor_dead_paths(issues: list[str], *, agents_dir: Path | None = None) -> N
         if result.managed and result.dead:
             continue
         print(
-            f"  {_sanitize_for_terminal(result.spec)}: ⚠️  {_sanitize_for_terminal(result.unreadable or '')}"
+            f"  {_sanitize_for_terminal(result.spec)}: Warning: {_sanitize_for_terminal(result.unreadable or '')}"
         )
         issues.append(f"unreadable agent spec: {_sanitize_for_terminal(result.spec)}")
 
     if not report.has_findings and not report.managed_dead:
-        print("  paths:       ✅ all agent spec paths resolve")
+        print("  paths:       OK:      all agent spec paths resolve")

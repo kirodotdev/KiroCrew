@@ -60,7 +60,7 @@ def test_an_authored_agents_unresolved_ref_is_named(capsys) -> None:
     out = capsys.readouterr().out
     rows = [line for line in out.splitlines() if "mcp tool refs:" in line]
     assert rows == [
-        "  mcp tool refs: ⚠ agent 'reprobot' on kiro: Kiro Crew's projection delivers "
+        "  mcp tool refs: Warning: agent 'reprobot' on kiro: Kiro Crew's projection delivers "
         "none of '@kc-repro-absent'"
     ]
     flat = " ".join(out.split())
@@ -124,11 +124,11 @@ def test_a_server_the_global_settings_file_defines_counts_on_kiro_cli(capsys) ->
 
     rows = [line for line in capsys.readouterr().out.splitlines() if "mcp tool refs:" in line]
     assert rows == [
-        "  mcp tool refs: ⚠ agent 'opts-out' on kiro: Kiro Crew's projection delivers "
+        "  mcp tool refs: Warning: agent 'opts-out' on kiro: Kiro Crew's projection delivers "
         "none of '@github'",
-        "  mcp tool refs: ⚠ agent 'opts-out-by-alias' on kiro: Kiro Crew's projection "
+        "  mcp tool refs: Warning: agent 'opts-out-by-alias' on kiro: Kiro Crew's projection "
         "delivers none of '@github'",
-        "  mcp tool refs: ⚠ agent 'relies-on-global' on kiro: Kiro Crew's projection "
+        "  mcp tool refs: Warning: agent 'relies-on-global' on kiro: Kiro Crew's projection "
         "delivers none of '@github'",
     ]
 
@@ -160,7 +160,7 @@ def test_a_disabled_global_server_does_not_serve_a_ref(capsys) -> None:
 
     rows = [line for line in capsys.readouterr().out.splitlines() if "mcp tool refs:" in line]
     assert rows == [
-        "  mcp tool refs: ⚠ agent 'uses-muted' on kiro: Kiro Crew's projection delivers "
+        "  mcp tool refs: Warning: agent 'uses-muted' on kiro: Kiro Crew's projection delivers "
         "none of '@foo'"
     ]
 
@@ -212,7 +212,10 @@ def test_the_check_is_bounded_and_says_what_it_skipped(monkeypatch, capsys) -> N
     monkeypatch.setattr(mcp, "_AUTHORED_AGENT_REF_CHECK_CAP", 2)
     mcp._doctor_authored_agent_mcp_refs(_cfg())
     assert asked == ["alpha", "beta"]
-    assert capsys.readouterr().out == "  mcp tool refs: ⏹ 1 more authored agent(s) not checked\n"
+    assert (
+        capsys.readouterr().out
+        == "  mcp tool refs: Note:    1 more authored agent(s) not checked\n"
+    )
 
 
 def test_a_ref_carrying_terminal_controls_is_rendered_inert(capsys) -> None:
@@ -368,7 +371,7 @@ def test_the_doctor_row_names_the_default_servers_a_projection_off_spawn_lacks(
 
     rows = [line for line in capsys.readouterr().out.splitlines() if "mcp tool refs:" in line]
     assert rows == [
-        "  mcp tool refs: ⚠ agent 'reprobot' on kiro: Kiro Crew's projection delivers "
+        "  mcp tool refs: Warning: agent 'reprobot' on kiro: Kiro Crew's projection delivers "
         "none of '@kc-repro-absent', '@kirocrew-core', '@kirocrew-cron'"
     ]
 

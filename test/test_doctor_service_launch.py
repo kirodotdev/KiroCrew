@@ -69,7 +69,7 @@ def test_a_service_running_the_wheel_install_is_ok(tmp_path, monkeypatch, host, 
     install._doctor_service_launch()
 
     out = capsys.readouterr().out
-    assert f"service runs: ✅ {host['wheel'].resolve()}" in out
+    assert f"service runs: OK:      {host['wheel'].resolve()}" in out
     assert _WARN not in out
 
 
@@ -123,7 +123,7 @@ def test_a_checkout_on_a_host_without_the_wheel_install_is_ok(tmp_path, monkeypa
     install._doctor_service_launch()
 
     out = capsys.readouterr().out
-    assert f"service runs: ✅ {clone_bin.resolve()} (source checkout)" in out
+    assert f"service runs: OK:      {clone_bin.resolve()} (source checkout)" in out
     assert _WARN not in out
 
 
@@ -222,7 +222,7 @@ def test_launchd_names_its_program_directly(tmp_path, monkeypatch, host, capsys)
 
     install._doctor_service_launch()
 
-    assert f"service runs: ✅ {host['wheel'].resolve()}" in capsys.readouterr().out
+    assert f"service runs: OK:      {host['wheel'].resolve()}" in capsys.readouterr().out
 
 
 def test_an_unreadable_plist_is_reported_unreadable(tmp_path, monkeypatch, host, capsys):

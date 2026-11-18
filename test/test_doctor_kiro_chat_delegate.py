@@ -69,7 +69,7 @@ def test_healthy_delegate_passes(install: Path, capsys: pytest.CaptureFixture[st
     _script(_local_bin() / "kiro-cli-chat", "echo 'kiro-cli-chat 2.33.0'")
     out, issues = _run(str(install / "kiro-cli"), capsys)
     assert issues == []
-    assert "✅ kiro-cli-chat 2.33.0" in out
+    assert "OK:      kiro-cli-chat 2.33.0" in out
     assert "broken" not in out
 
 
@@ -80,7 +80,7 @@ def test_dangling_delegate_link_reports_the_reinstall_remedy(
     removed = install.parent / "toolbox" / "2.31.1" / "kiro-cli-chat"
     os.symlink(removed, Path(os.environ["HOME"]) / ".local" / "bin" / "kiro-cli-chat")
     out, issues = _run(str(install / "kiro-cli"), capsys)
-    assert "❌ Kiro CLI is broken" in out
+    assert "Error:   Kiro CLI is broken" in out
     assert services.CHAT_DELEGATE_BROKEN_FIX in out
     assert len(issues) == 1 and "reinstall Kiro CLI" in issues[0]
 
@@ -99,7 +99,7 @@ def test_dangling_link_is_not_skipped_for_a_healthy_copy_on_path(
     _script(on_path / "kiro-cli-chat", "echo ok")
     monkeypatch.setenv("PATH", str(on_path))
     out, issues = _run(str(install / "kiro-cli"), capsys)
-    assert "❌ Kiro CLI is broken" in out
+    assert "Error:   Kiro CLI is broken" in out
     assert issues
 
 
@@ -131,7 +131,7 @@ def test_a_sibling_the_launcher_never_reads_does_not_mask_a_dangling_link(
     _script(install / "kiro-cli-chat", "echo ok")
     os.symlink(tmp_path / "gone", _local_bin() / "kiro-cli-chat")
     out, issues = _run(str(install / "kiro-cli"), capsys)
-    assert "❌ Kiro CLI is broken" in out
+    assert "Error:   Kiro CLI is broken" in out
     assert issues
 
 
@@ -150,7 +150,7 @@ def test_standalone_kiro_cli_without_a_chat_binary_passes(
     _script(install / "kiro-cli", "echo 'kiro-cli 3.0.0'")
     out, issues = _run(str(install / "kiro-cli"), capsys)
     assert issues == []
-    assert "✅ kiro-cli 3.0.0" in out
+    assert "OK:      kiro-cli 3.0.0" in out
     assert "broken" not in out
 
 
@@ -162,7 +162,7 @@ def test_standalone_kiro_cli_ignores_a_leftover_dangling_chat_link(
     os.symlink(tmp_path / "gone", _local_bin() / "kiro-cli-chat")
     out, issues = _run(str(install / "kiro-cli"), capsys)
     assert issues == []
-    assert "✅ kiro-cli 3.0.0" in out
+    assert "OK:      kiro-cli 3.0.0" in out
     assert "broken" not in out
 
 
@@ -171,7 +171,7 @@ def test_kiro_cli_that_cannot_report_a_version_is_still_broken(
 ) -> None:
     _script(install / "kiro-cli", "echo 'error: failed to start' >&2; exit 1")
     out, issues = _run(str(install / "kiro-cli"), capsys)
-    assert "❌ Kiro CLI is broken" in out
+    assert "Error:   Kiro CLI is broken" in out
     assert services.CHAT_DELEGATE_BROKEN_FIX in out
     assert len(issues) == 1
 
@@ -188,7 +188,7 @@ def test_delegate_found_on_path(
     monkeypatch.setenv("PATH", str(on_path))
     out, issues = _run(str(install / "kiro-cli"), capsys)
     assert issues == []
-    assert "✅" in out
+    assert "OK:" in out
 
 
 def test_delegate_found_on_the_session_search_path(
@@ -200,7 +200,7 @@ def test_delegate_found_on_the_session_search_path(
     _script(tmp_path / "augmented" / "kiro-cli-chat", "echo 'kiro-cli-chat 2.33.0'")
     out, issues = _run(str(install / "kiro-cli"), capsys)
     assert issues == []
-    assert "✅ kiro-cli-chat 2.33.0" in out
+    assert "OK:      kiro-cli-chat 2.33.0" in out
 
 
 def test_bundled_chat_entry_is_probed_as_itself(
@@ -209,7 +209,7 @@ def test_bundled_chat_entry_is_probed_as_itself(
     chat = _script(tmp_path / "kiro-cli-chat", "echo 'kiro-cli-chat 2.33.0'")
     out, issues = _run(str(chat), capsys)
     assert issues == []
-    assert "✅ kiro-cli-chat 2.33.0" in out
+    assert "OK:      kiro-cli-chat 2.33.0" in out
 
 
 @pytest.mark.parametrize("kiro", [None, "", "/opt/wrappers/my-kiro"])
@@ -228,7 +228,7 @@ def test_unused_backend_reports_a_broken_delegate_without_failing_doctor(
     # install left on disk is worth a line but not a red doctor.
     os.symlink(tmp_path / "gone", _local_bin() / "kiro-cli-chat")
     out, issues = _run(str(install / "kiro-cli"), capsys, required=False)
-    assert "⚠️  Kiro CLI is broken" in out
+    assert "Warning: Kiro CLI is broken" in out
     assert "not used by the selected backend" in out
     assert services.CHAT_DELEGATE_BROKEN_FIX in out
     assert issues == []
@@ -246,7 +246,7 @@ def test_macos_app_launcher_is_probed_through_its_own_sibling(
     monkeypatch.setattr(services.sys, "platform", "darwin")
     out, issues = _run(str(macos / "kiro-cli"), capsys)
     assert issues == []
-    assert "✅ kiro-cli-chat 2.33.0" in out
+    assert "OK:      kiro-cli-chat 2.33.0" in out
 
 
 def test_vault_signed_relay_with_a_working_sibling_is_not_fatal(
@@ -262,7 +262,7 @@ def test_vault_signed_relay_with_a_working_sibling_is_not_fatal(
     )
     out = capsys.readouterr().out
     assert issues == []
-    assert "⚠️  Kiro CLI is broken" in out
+    assert "Warning: Kiro CLI is broken" in out
     assert f"launch {sibling}, which works" in out
     assert services.CHAT_DELEGATE_BROKEN_FIX in out
 
@@ -277,7 +277,7 @@ def test_vault_signed_relay_with_a_broken_sibling_stays_fatal(
         str(install / "kiro-cli"), issues, required=True, relay_entry=str(sibling)
     )
     out = capsys.readouterr().out
-    assert "❌ Kiro CLI is broken" in out
+    assert "Error:   Kiro CLI is broken" in out
     assert len(issues) == 1
 
 
@@ -293,9 +293,9 @@ def test_healthy_delegate_does_not_hide_a_broken_relay_entry(
         str(install / "kiro-cli"), issues, required=True, relay_entry=str(sibling)
     )
     out = capsys.readouterr().out
-    assert "❌ Kiro CLI is broken" in out
+    assert "Error:   Kiro CLI is broken" in out
     assert f"{sibling} --version exited 3" in out
-    assert "✅" not in out
+    assert "OK:" not in out
     assert len(issues) == 1
 
 
@@ -320,7 +320,7 @@ def test_mixed_kiro_and_relay_selection_needs_both_binaries(
         kiro_role=True,
     )
     out = capsys.readouterr().out
-    assert "❌ Kiro CLI is broken" in out
+    assert "Error:   Kiro CLI is broken" in out
     assert len(issues) == 1
 
 
@@ -339,7 +339,7 @@ def test_mixed_selection_passes_when_both_binaries_launch(
     )
     out = capsys.readouterr().out
     assert issues == []
-    assert "✅ kiro-cli-chat 2.33.0" in out
+    assert "OK:      kiro-cli-chat 2.33.0" in out
 
 
 def _vault(monkeypatch: pytest.MonkeyPatch, holds: bool) -> None:
@@ -412,7 +412,7 @@ def test_path_only_standalone_kiro_cli_on_a_cold_cache_passes(
     """No ``kiro-cli-chat`` anywhere: a fresh doctor must not call a 3.x install broken."""
     out, issues = _run(str(path_only_3x), capsys)
     assert issues == []
-    assert "✅ kiro-cli 3.0.0" in out
+    assert "OK:      kiro-cli 3.0.0" in out
     assert "broken" not in out
 
 

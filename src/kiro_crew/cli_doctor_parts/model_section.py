@@ -65,7 +65,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     try:
         effective = resolve_effective_model(cfg)
     except Exception as exc:  # noqa: BLE001 -- diagnostics must not crash the report
-        print(f"  effective:   ⚠️  could not resolve ({exc})")
+        print(f"  effective:   Warning: could not resolve ({exc})")
         issues.append("effective model unresolvable")
         return
 
@@ -129,14 +129,14 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     if not default_is_text:
         bound = str(raw_default)
     if not default_is_text or not is_registered_agent_name(bound):
-        print(f"  bound agent: ⚠️  {render._safe_display(bound)} is not a valid agent name")
+        print(f"  bound agent: Warning: {render._safe_display(bound)} is not a valid agent name")
         issues.append("configured kiro_agent is not a valid agent name")
         bound = "kirocrew"
 
     default_spec = agents_dir / AGENT_FILENAME
     default_model, default_readable = _spec_model(default_spec)
     if not default_readable:
-        print(f"  user spec:   ⚠️  unreadable ({default_spec})")
+        print(f"  user spec:   Warning: unreadable ({default_spec})")
         issues.append("agent spec unreadable")
 
     bound_model = ""
@@ -216,7 +216,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         # simply gone still resolves by name, and every agent-less session --
         # a plain chat, a cron, a channel message, a subagent -- inherits it.
         print(
-            f"  bound spec:  ⚠️  no spec for {render._safe_display(bound)} under {render._safe_display(str(agents_dir))}"
+            f"  bound spec:  Warning: no spec for {render._safe_display(bound)} under {render._safe_display(str(agents_dir))}"
         )
         print("               Every new session that picks no Bot -- plain chats, crons,")
         print(
@@ -227,7 +227,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         issues.append("default custom agent has no installed spec")
     elif bound_spec_ambiguous:
         print(
-            f"  bound spec:  ⚠  two specs under {render._safe_display(str(agents_dir))} declare {render._safe_display(bound)}"
+            f"  bound spec:  Warning: two specs under {render._safe_display(str(agents_dir))} declare {render._safe_display(bound)}"
         )
         print(
             "               Sessions still start, but the model tier above cannot tell which file"
@@ -239,7 +239,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     shadowed = shadowed_markdown_specs(agents_dir)
     if shadowed:
         print(
-            f"  shadowed:    ⚠  {len(shadowed)} markdown agent file(s) ignored beside a .json twin:"
+            f"  shadowed:    Warning: {len(shadowed)} markdown agent file(s) ignored beside a .json twin:"
         )
         for hidden_md in shadowed:
             print(
@@ -255,12 +255,12 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
             # a value this section declined to attribute. Say that, rather than
             # accusing the tier list of being stale.
             print(
-                "  ⚠️  the resolver read a spec this report refused to follow, so the "
+                "  Warning: the resolver read a spec this report refused to follow, so the "
                 "deciding tier above is not attributed"
             )
         else:
             print(
-                f"  ⚠️  this report says {decided_value!r} but the resolver returned "
+                f"  Warning: this report says {decided_value!r} but the resolver returned "
                 f"{effective!r} — the precedence shown here is out of date"
             )
             issues.append("doctor model precedence disagrees with the resolver")
@@ -312,7 +312,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
                 shown = "(unreadable)"
             else:
                 shown = "(no model)"
-            print(f"  project spec: ⚠️  {render._safe_display(str(proj_spec))} -> {shown}")
+            print(f"  project spec: Warning: {render._safe_display(str(proj_spec))} -> {shown}")
             print("                kiro-cli loads this one first; not read above")
             issues.append("project-local agent spec shadows the user-level one")
 
@@ -327,7 +327,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
             "" if pinned_agent == "kirocrew" else f" --agent {render._safe_display(pinned_agent)}"
         )
         global_shown = render._safe_display(cfg.agent.model) if cfg.agent.model else "unset"
-        print(f"  ⚠️  the spec pin decides because the global is {global_shown}")
+        print(f"  Warning: the spec pin decides because the global is {global_shown}")
         print(f"      Fix: kirocrew agent reset-model{flag}   (clears the pin, tracks the default)")
 
 
@@ -431,6 +431,6 @@ def _format_model_pin_problem(name: str, pin: str, correction: str) -> tuple[str
     than a property of how far ``doctor()`` happens to get.
     """
     return (
-        f"  model pin:   ❌ {name!r}: {pin!r} is not a model kiro-cli serves",
+        f"  model pin:   Error:   {name!r}: {pin!r} is not a model kiro-cli serves",
         f"                  the registry maps that spelling to {correction!r}",
     )

@@ -756,7 +756,7 @@ class TestDoctorShowsTheDaemonRevision:
         issues: list[str] = []
         cli_doctor._doctor_mcp_gateway_daemon(issues)
         out = capsys.readouterr().out
-        assert "✅" in out and "same code" in out and "owner pid 4242 alive" in out
+        assert "OK:" in out and "same code" in out and "owner pid 4242 alive" in out
         assert issues == []
 
     def test_different_code_is_an_issue_with_the_fix_named(
@@ -768,7 +768,7 @@ class TestDoctorShowsTheDaemonRevision:
         issues: list[str] = []
         cli_doctor._doctor_mcp_gateway_daemon(issues)
         out = capsys.readouterr().out
-        assert "❌" in out and "old-checkout" in out and "GONE" in out
+        assert "Error:" in out and "old-checkout" in out and "GONE" in out
         assert "kirocrew restart" in out
         assert issues == ["MCP gateway daemon runs a different code revision than this install"]
 
@@ -799,7 +799,7 @@ class TestDoctorShowsTheDaemonRevision:
         out = capsys.readouterr().out
         assert "another install" in out and theirs in out and mine in out
         assert "gateway (pid 4242)" in out, "a stale owner must be nameable to stop"
-        assert "❌" not in out and "kirocrew restart" not in out
+        assert "Error:" not in out and "kirocrew restart" not in out
         assert issues == []
 
     @pytest.mark.parametrize("owner_pid", [0, 4242], ids=["no-owner", "owner-gone"])

@@ -94,9 +94,9 @@ class TestDoctorAgentAuth:
         """With no kiro-cli there is nothing to ask, so the kiro row says so without a
         warning or a sign-in remedy: the kiro-cli row above already reports the install."""
         out, _probes = self._run(monkeypatch, capsys, [""], signed_in=None, kiro_cli=None)
-        assert "kiro auth:   ⏭  kiro-cli's own sign-in; kiro-cli not installed" in out
+        assert "kiro auth:   Skipped: kiro-cli's own sign-in; kiro-cli not installed" in out
         assert "could not check" not in out
-        assert "⚠" not in out
+        assert "Warning:" not in out
         assert "kiro-cli login" not in out
 
     def test_a_vault_owned_kas_row_names_the_vault(self, monkeypatch, capsys) -> None:
@@ -114,10 +114,10 @@ class TestDoctorAgentAuth:
             vault_detail=detail,
         )
         assert probes == 1
-        assert "✅ Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert "OK:      Kiro Crew vault (signed in through Kiro Crew)" in out
         assert detail in out
         # The kiro row is untouched: it still reports the host store's own state.
-        assert "✅ kiro-cli's own sign-in" in out
+        assert "OK:      kiro-cli's own sign-in" in out
 
     def test_a_vault_owned_row_alone_consumes_no_kiro_cli_probe(self, monkeypatch, capsys) -> None:
         """The vault verdict is the row's whole answer, so with no other host-store
@@ -127,8 +127,8 @@ class TestDoctorAgentAuth:
         the row's "could not check" marker, never a green asserted from silence."""
         out, probes = self._run(monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=True)
         assert probes == 0
-        assert "⚠️  Kiro Crew vault (signed in through Kiro Crew)" in out
-        assert "✅ Kiro Crew vault" not in out
+        assert "Warning: Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert "OK:      Kiro Crew vault" not in out
         # The guard on the secondary line is load-bearing: nothing probed
         # kiro-cli's store here, so nothing may be asserted about it.
         assert "also present" not in out
@@ -136,7 +136,7 @@ class TestDoctorAgentAuth:
     def test_a_rejected_refresh_vault_owner_is_not_a_green_row(self, monkeypatch, capsys) -> None:
         """The vault still OWNS the spawn when the issuer has rejected its refresh
         token (``is_usable`` cannot know that without a network call), but the
-        glyph column is what an operator scans -- a ✅ above a detail line whose
+        glyph column is what an operator scans -- a OK: above a detail line whose
         verdict says the sign-in is expired would bury the remedy. Ownership
         keeps the vault text; health downgrades the glyph."""
         detail = (
@@ -153,8 +153,8 @@ class TestDoctorAgentAuth:
             vault_detail=detail,
         )
         assert probes == 0
-        assert "⚠️  Kiro Crew vault (signed in through Kiro Crew)" in out
-        assert "✅ Kiro Crew vault" not in out
+        assert "Warning: Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert "OK:      Kiro Crew vault" not in out
         # Wrapped, not reworded: the remedy reaches the row.
         for word in detail.split():
             assert word in out, word
@@ -181,7 +181,7 @@ class TestDoctorAgentAuth:
         the runtime's fallback owner, probed once."""
         out, probes = self._run(monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=False)
         assert probes == 1
-        assert "✅ kiro-cli's own sign-in" in out
+        assert "OK:      kiro-cli's own sign-in" in out
         assert "Kiro Crew vault" not in out
 
     def test_a_stored_but_unusable_vault_identity_is_still_reported(
@@ -204,7 +204,7 @@ class TestDoctorAgentAuth:
             vault_detail=detail,
         )
         assert probes == 1
-        assert "✅ kiro-cli's own sign-in" in out
+        assert "OK:      kiro-cli's own sign-in" in out
         # Wrapped, not reworded: every word of the detail reaches the row.
         for word in detail.split():
             assert word in out, word
@@ -218,7 +218,7 @@ class TestDoctorAgentAuth:
             monkeypatch, capsys, ["kas"], signed_in=True, vault_import_fails=True
         )
         assert probes == 1
-        assert "✅ kiro-cli's own sign-in" in out
+        assert "OK:      kiro-cli's own sign-in" in out
         assert "Kiro Crew vault" not in out
 
 
@@ -274,7 +274,7 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ❌" in out
+        assert "bundle:      Error:" in out
         assert "glibc (2.26)" in out
         assert "first chat" not in out
         assert "kirocrew kas install" not in out
@@ -298,7 +298,7 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ❌" in out
+        assert "bundle:      Error:" in out
         assert "architecture (riscv64)" in out
         assert "first chat" not in out
         assert "kirocrew kas install" not in out
@@ -315,7 +315,7 @@ class TestDoctorKasBundle:
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         assert "route:       bundle" in out
-        assert "bundle:      ⚠  not installed yet" in out
+        assert "bundle:      Warning: not installed yet" in out
         assert "downloads it at the first chat" in out
         assert "kirocrew kas install" in out
         assert issues == ["agent.kas_bundle is on but no KAS engine bundle is installed"]
@@ -333,7 +333,8 @@ class TestDoctorKasBundle:
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         assert (
-            "auto-approve: ⚠  spec `permissions` block withheld: no engine bundle installed" in out
+            "auto-approve: Warning: spec `permissions` block withheld: no engine bundle installed"
+            in out
         )
         assert "kiro-cli" not in out
         assert len(issues) == 1
@@ -360,7 +361,7 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ⚠  " in out
+        assert "bundle:      Warning: " in out
         assert "downloads it at the first chat" in out
         assert issues == []
 
@@ -409,7 +410,9 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ⚠  KAS 0.66.33 installed, but this release needs KAS 0.66.40" in out
+        assert (
+            "bundle:      Warning: KAS 0.66.33 installed, but this release needs KAS 0.66.40" in out
+        )
         assert "downloads it at the first chat" in out
         assert "not installed yet under" not in out
         assert "kirocrew kas install" in out
@@ -428,7 +431,7 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ❌ KAS 0.66.40 is on disk but incomplete" in out
+        assert "bundle:      Error:   KAS 0.66.40 is on disk but incomplete" in out
         assert "kirocrew kas install --force" in out
         assert "but this release needs" not in out
         assert "downloads it at the first chat" not in out
@@ -445,7 +448,7 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ❌ cannot read" in out
+        assert "bundle:      Error:   cannot read" in out
         assert "Permission denied" in out
         assert len(issues) == 1
         assert issues[0].startswith("the KAS engine directory cannot be read")
@@ -470,7 +473,7 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "bundle:      ✅ KAS 0.66.33, Node 22.23.3" in out
+        assert "bundle:      OK:      KAS 0.66.33, Node 22.23.3" in out
         argv = " ".join(kas_bundle.bundle_spawn_argv(installed))
         assert argv in out
         assert "auth owner:  Kiro Crew vault" in out
@@ -496,7 +499,7 @@ class TestDoctorKasBundle:
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         assert (
-            "auto-approve: ✅ spec `permissions` block written"
+            "auto-approve: OK:      spec `permissions` block written"
             f" (the bundled engine KAS {kas_bundle.KAS_PIN_VERSION} reads it)"
         ) in out
         # The vault remedy names kiro-cli only to say the route never runs it.
@@ -514,7 +517,10 @@ class TestDoctorKasBundle:
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         floor = ".".join(str(p) for p in kas_bundle.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION)
-        assert f"auto-approve: ❌ withheld: the bundled engine KAS 0.66.32 is below {floor}" in out
+        assert (
+            f"auto-approve: Error:   withheld: the bundled engine KAS 0.66.32 is below {floor}"
+            in out
+        )
         assert kas_bundle.KAS_VERSION_OVERRIDE_ENV in out
         assert issues == ["the bundled KAS engine is too old to carry the KAS `permissions` block"]
 
@@ -534,7 +540,7 @@ class TestDoctorKasBundle:
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         shown = "unknown" if cli_version is None else "2.10.0"
-        assert f"auto-approve: ❌ withheld: kiro-cli ({shown}) is installed" in out
+        assert f"auto-approve: Error:   withheld: kiro-cli ({shown}) is installed" in out
         assert "block written" not in out
         assert issues == ["kiro-cli is installed but cannot carry the KAS `permissions` block"]
 
@@ -577,7 +583,9 @@ class TestDoctorKasBundle:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert f"pin:         ✅ KAS {kas_bundle.KAS_PIN_VERSION} is this release's pin" in out
+        assert (
+            f"pin:         OK:      KAS {kas_bundle.KAS_PIN_VERSION} is this release's pin" in out
+        )
         assert str(installed.root / kas_bundle.KAS_BUNDLE_INSTALL_RECORD_NAME) in out
         assert f"engine:      {installed.acp_server}" in out
         assert f"node:        {installed.node_bin}" in out
@@ -623,7 +631,7 @@ class TestDoctorKasBundle:
         cli_doctor._doctor_kas([])
         out = capsys.readouterr().out
         assert "crew vault:  builder-id -> usable" in out
-        assert "crew vault:  ✅ signed in through Kiro Crew" in out
+        assert "crew vault:  OK:      signed in through Kiro Crew" in out
         assert "not signed in" not in out
 
     def test_a_rejected_refresh_vault_is_not_a_green_row(self, monkeypatch, capsys, tmp_path):
@@ -637,7 +645,7 @@ class TestDoctorKasBundle:
         monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: detail)
         cli_doctor._doctor_kas([])
         out = capsys.readouterr().out
-        assert "✅ signed in through Kiro Crew" not in out
+        assert "OK:      signed in through Kiro Crew" not in out
         assert "may not be usable" in out
         assert f"crew vault:  {detail}" in out
         assert kas_bundle.KAS_BUNDLE_SIGN_IN_REMEDY in out
@@ -688,7 +696,7 @@ class TestDoctorAgentAuthOnTheBundleRoute:
     def test_a_signed_in_vault_mentions_no_second_store(self, monkeypatch, capsys):
         detail = "social/Google, expires in 42m, refresh token present -> usable"
         out = self._run(monkeypatch, capsys, vault_holds=True, detail=detail)
-        assert "✅ Kiro Crew vault (signed in through Kiro Crew)" in out
+        assert "OK:      Kiro Crew vault (signed in through Kiro Crew)" in out
         assert detail in out
         assert "also present" not in out
 
@@ -814,9 +822,9 @@ class TestDoctorKas:
         assert "auth owner:  kiro-cli credential store" in out
         # The token line agrees with its own auth owner line: cli-owned spawn,
         # cli-named token source.
-        assert "token:       ➖ kiro-cli's own sign-in (see the sign-in rows above)" in out
+        assert "token:       Note:    kiro-cli's own sign-in (see the sign-in rows above)" in out
         assert "crew vault:" not in out
-        assert "✅ v3 supported" in out
+        assert "OK:      v3 supported" in out
         assert issues == []
 
     def test_vault_import_failure_falls_back_to_cli_auth(self, monkeypatch, capsys) -> None:
@@ -836,7 +844,7 @@ class TestDoctorKas:
         out = capsys.readouterr().out
         assert "auth owner:  kiro-cli credential store" in out
         assert "crew vault:" not in out
-        assert "token:       ➖ kiro-cli's own sign-in" in out
+        assert "token:       Note:    kiro-cli's own sign-in" in out
         assert issues == []
 
     @pytest.mark.parametrize(
@@ -877,7 +885,9 @@ class TestDoctorKas:
         # The token line agrees with its own auth owner line: vault-owned spawn,
         # vault-named token source -- naming kiro-cli's store here would
         # contradict the owner line two rows up.
-        assert "token:       ➖ Kiro Crew vault sign-in (see the auth owner line above)" in out
+        assert (
+            "token:       Note:    Kiro Crew vault sign-in (see the auth owner line above)" in out
+        )
         assert "kiro-cli's own sign-in" not in out
         # An unknown version also withholds the spec permissions block, which
         # the doctor reports as its own issue; nothing else is raised.
@@ -944,8 +954,8 @@ class TestDoctorKas:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "✅ v3 supported" not in out
-        assert f"engine:      ❌ {KAS_ENGINE_REFUSED_REASON}" in out
+        assert "OK:      v3 supported" not in out
+        assert f"engine:      Error:   {KAS_ENGINE_REFUSED_REASON}" in out
         assert "switch agent.acp_backend to kiro" in out
         assert issues == [f"kiro-cli cannot serve the KAS engine: {KAS_ENGINE_REFUSED_REASON}"]
         # The start ran on the binary the help row read, never another one.
@@ -961,7 +971,7 @@ class TestDoctorKas:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "engine:      ❌ a stubbed gap" in out
+        assert "engine:      Error:   a stubbed gap" in out
         assert any("a stubbed gap" in i for i in issues)
 
     def test_unreadable_help_is_reported_unknown_not_failed(self, monkeypatch, capsys) -> None:
@@ -1077,14 +1087,14 @@ class TestTheKasBlockReportsAWithheldPermissionsField:
 
     def test_an_accepting_cli_reports_the_block_as_written(self, monkeypatch, capsys) -> None:
         out, issues = self._run(monkeypatch, capsys, cli_doctor.SPEC_PERMISSIONS_MIN_VERSION)
-        assert "auto-approve: ✅" in out
+        assert "auto-approve: OK:" in out
         assert issues == []
 
     def test_a_refusing_cli_names_the_version_and_the_floor(self, monkeypatch, capsys) -> None:
         """Both numbers, because the fix is "update past this floor"."""
         floor = cli_doctor.SPEC_PERMISSIONS_MIN_VERSION
         out, issues = self._run(monkeypatch, capsys, (floor[0], floor[1] - 1, 0))
-        assert "auto-approve: ❌" in out
+        assert "auto-approve: Error:" in out
         assert f"{floor[0]}.{floor[1] - 1}.0" in out
         assert ".".join(str(part) for part in floor) in out
         assert "kiro-cli is too old to carry the KAS `permissions` block" in issues
@@ -1095,7 +1105,7 @@ class TestTheKasBlockReportsAWithheldPermissionsField:
         """Unknown is not "too old": the writer withholds a NEW block but keeps one
         already on disk, and the remedy is a probeable binary, not an update."""
         out, issues = self._run(monkeypatch, capsys, None)
-        assert "auto-approve: ⚠️" in out
+        assert "auto-approve: Warning:" in out
         assert "version unknown" in out
         assert cli_doctor.PATH_ONLY_INSTALL_NOTE in out
         assert "already on disk is kept" in out
@@ -1114,7 +1124,7 @@ class TestTheKasBlockReportsAWithheldPermissionsField:
             monkeypatch, capsys, (floor[0], floor[1] - 1, 0), help_probe_fails=True
         )
         assert "engine support unknown" in out
-        assert "auto-approve: ❌" in out
+        assert "auto-approve: Error:" in out
         assert issues == ["kiro-cli is too old to carry the KAS `permissions` block"]
 
     def test_the_row_is_silent_when_kas_is_not_the_backend(self, monkeypatch, capsys) -> None:
@@ -1166,12 +1176,12 @@ class TestTheKasBlockReportsToolVocabularyDrift:
         from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
 
         out, _ = self._run(monkeypatch, capsys, KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[0])
-        assert "tool names:  ✅" in out
+        assert "tool names:  OK:" in out
 
     def test_every_verified_release_is_quiet_not_a_drift_warning(self, monkeypatch, capsys) -> None:
         """The pin is a LIST, not one exact release: a routine kiro-cli release the
         tables were re-measured on (2.24.1 here, the release the write-plane path
-        shapes were measured on) is ✅, so the row does not cry drift on every
+        shapes were measured on) is OK:, so the row does not cry drift on every
         release until someone notices and erode the one guard on fail-permissive
         drift."""
         from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
@@ -1179,19 +1189,19 @@ class TestTheKasBlockReportsToolVocabularyDrift:
         assert len(KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI) >= 2
         for verified in KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI:
             out, issues = self._run(monkeypatch, capsys, verified)
-            assert "tool names:  ✅" in out, verified
-            assert "⚠️" not in out.split("tool names:")[1].splitlines()[0]
+            assert "tool names:  OK:" in out, verified
+            assert "Warning:" not in out.split("tool names:")[1].splitlines()[0]
             assert ".".join(str(p) for p in verified) in out
 
     def test_an_older_engine_is_unverified_not_compatible(self, monkeypatch, capsys) -> None:
         """The tables were read from ONE release; an older KAS may lack an id or
-        spell it differently, so ``<=`` marking it ✅ attested what nothing measured."""
+        spell it differently, so ``<=`` marking it OK: attested what nothing measured."""
         from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
 
         major, minor, patch = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[0]
         out, issues = self._run(monkeypatch, capsys, (major, minor - 1, patch))
-        assert "tool names:  ⚠️" in out
-        assert "tool names:  ✅" not in out
+        assert "tool names:  Warning:" in out
+        assert "tool names:  OK:" not in out
         assert "older than" in out
         assert f"{major}.{minor - 1}.{patch}" in out
         assert not any("tool" in i and "vocabul" in i for i in issues)
@@ -1200,14 +1210,14 @@ class TestTheKasBlockReportsToolVocabularyDrift:
         self, monkeypatch, capsys
     ) -> None:
         """A current kiro-cli newer than the last measurement is the normal case,
-        so the row is ➖ in plain words and names no source-tree fixture."""
+        so the row is Note: in plain words and names no source-tree fixture."""
         from kiro_crew.platform.tool_names import KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
 
         major, minor, patch = KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI[-1]
         for version in ((major, minor + 1, patch), (major + 1, 3, 0)):
             out, issues = self._run(monkeypatch, capsys, version)
-            assert "tool names:  ➖" in out
-            assert "⚠️" not in out.split("tool names:")[1].splitlines()[0]
+            assert "tool names:  Note:" in out
+            assert "Warning:" not in out.split("tool names:")[1].splitlines()[0]
             assert ".".join(str(p) for p in version) in out
             assert f"{major}.{minor}.{patch}" in out
             assert "Nothing to do" in out
@@ -1225,13 +1235,13 @@ class TestTheKasBlockReportsToolVocabularyDrift:
         between = (oldest[0], oldest[1], oldest[2] + 7)
         assert oldest < between < newest and between not in KAS_TOOL_IDS_VERIFIED_ON_KIRO_CLI
         out, issues = self._run(monkeypatch, capsys, between)
-        assert "tool names:  ➖" in out
+        assert "tool names:  Note:" in out
         assert "test/fixtures" not in out
         assert not any("tool" in i and "vocabul" in i for i in issues)
 
     def test_an_unknown_version_is_its_own_row(self, monkeypatch, capsys) -> None:
         out, _ = self._run(monkeypatch, capsys, None)
-        assert "tool names:  ➖" in out
+        assert "tool names:  Note:" in out
         assert "installed version unknown" in out
 
 
@@ -1286,7 +1296,7 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
             (
                 (True, None),
                 True,
-                "engine:      ✅ v3 supported; your Kiro CLI selection runs on KAS",
+                "engine:      OK:      v3 supported; your Kiro CLI selection runs on KAS",
             ),
             (
                 (True, None),
@@ -1322,7 +1332,7 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         monkeypatch.setattr(cli_doctor, "_kas_relay_help", lambda binary: self._V3_HELP)
         cli_doctor._doctor_kas([])
         out = capsys.readouterr().out
-        assert "engine:      ✅ v3 supported\n" in out
+        assert "engine:      OK:      v3 supported\n" in out
         assert "Kiro CLI selection" not in out
 
     def test_a_kiro_cli_pick_on_a_refusing_kiro_cli_names_the_refusal(self, monkeypatch, capsys):
@@ -1344,7 +1354,7 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
         assert (
-            f"engine:      ❌ {KAS_ENGINE_REFUSED_REASON}; your Kiro CLI selection stays on"
+            f"engine:      Error:   {KAS_ENGINE_REFUSED_REASON}; your Kiro CLI selection stays on"
             " kiro-cli's v2 engine"
         ) in out
         assert "switch agent.acp_backend to kiro" not in out

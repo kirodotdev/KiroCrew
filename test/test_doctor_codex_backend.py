@@ -88,7 +88,7 @@ def _report(
 def test_a_selected_codex_missing_its_adapter_is_an_issue(monkeypatch, capsys):
     """A selected role spawns codex-acp, so its absence fails every session."""
     out, issues = _report(monkeypatch, capsys, None, required=True)
-    assert "codex-acp:   ❌ codex-acp not found (a selected backend runs it)" in out
+    assert "codex-acp:   Error:   codex-acp not found (a selected backend runs it)" in out
     assert drivers_acp.codex_adapter_install_command() in out
     assert issues == ["codex-acp: codex-acp not found"]
 
@@ -96,7 +96,7 @@ def test_a_selected_codex_missing_its_adapter_is_an_issue(monkeypatch, capsys):
 def test_an_unselected_codex_missing_its_adapter_is_a_row_and_no_issue(monkeypatch, capsys):
     """Unselected, Codex is optional: the row still names the absence and the fix."""
     out, issues = _report(monkeypatch, capsys, None, required=False)
-    assert "codex-acp:   ⏭  codex-acp not found (optional agent backend)" in out
+    assert "codex-acp:   Skipped: codex-acp not found (optional agent backend)" in out
     assert drivers_acp.codex_adapter_install_command() in out
     assert issues == []
 
@@ -104,8 +104,8 @@ def test_an_unselected_codex_missing_its_adapter_is_a_row_and_no_issue(monkeypat
 def test_the_row_names_the_installed_version(tmp_path, monkeypatch, capsys):
     entry = _install(tmp_path, _manifest(CODEX_ACP_TESTED_VERSION))
     out, issues = _report(monkeypatch, capsys, entry, required=True)
-    assert f"codex-acp:   ✅ {entry} {CODEX_ACP_TESTED_VERSION} (Codex installed)" in out
-    assert "⚠️" not in out
+    assert f"codex-acp:   OK:      {entry} {CODEX_ACP_TESTED_VERSION} (Codex installed)" in out
+    assert "Warning:" not in out
     assert issues == []
 
 
@@ -118,8 +118,8 @@ def test_a_version_outside_the_tested_major_warns_and_is_no_issue(
     out, issues = _report(monkeypatch, capsys, entry, required=True)
     notice = untested_version_issue(ACP_BACKEND_CODEX, version)
     assert notice
-    assert f"codex-acp:   ✅ {entry} {version} (Codex installed)" in out
-    assert f"⚠️  {notice}" in out
+    assert f"codex-acp:   OK:      {entry} {version} (Codex installed)" in out
+    assert f"Warning: {notice}" in out
     assert issues == []
 
 
@@ -139,9 +139,9 @@ def test_an_unreadable_manifest_shows_no_version_and_is_no_issue(
     """An unread version is no evidence of an untested one."""
     entry = _install(tmp_path, manifest)
     out, issues = _report(monkeypatch, capsys, entry, required=True)
-    assert f"codex-acp:   ✅ {entry} (Codex installed)" in out
+    assert f"codex-acp:   OK:      {entry} (Codex installed)" in out
     assert "1.11.0" not in out
-    assert "⚠️" not in out
+    assert "Warning:" not in out
     assert issues == []
 
 
@@ -180,7 +180,7 @@ def test_the_row_names_the_adapter_the_spawn_resolves_not_the_copy_on_path(
     """
     entry = _install(tmp_path, _manifest(CODEX_ACP_TESTED_VERSION))
     out, _issues = _report(monkeypatch, capsys, entry, required=False)
-    assert f"codex-acp:   ✅ {entry} {CODEX_ACP_TESTED_VERSION} (Codex installed)" in out
+    assert f"codex-acp:   OK:      {entry} {CODEX_ACP_TESTED_VERSION} (Codex installed)" in out
     assert _ON_PATH not in out
 
 
@@ -197,7 +197,7 @@ def test_a_selected_codex_that_cannot_be_checked_is_no_issue(monkeypatch, capsys
     issues: list[str] = []
     doctor_agents._doctor_codex_backend(issues, required=True)
     out = capsys.readouterr().out
-    assert "codex-acp:   ⚠️  could not check" in out
+    assert "codex-acp:   Warning: could not check" in out
     assert "not found" not in out
     assert issues == []
 

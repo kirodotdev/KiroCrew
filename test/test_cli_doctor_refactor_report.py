@@ -385,30 +385,30 @@ def host(tmp_path, monkeypatch) -> _Host:
 
 
 _READY = """\
-Kiro Crew Doctor 👻
+Kiro Crew Doctor
 
 Platform
-  edition:     ✅ standalone
-  jail:        ⏭  no jail backend (public build)
+  edition:     OK:      standalone
+  jail:        Skipped: no jail backend (public build)
 Dependencies
-  kiro-cli:    ✅ /opt/kiro/bin/kiro-cli
+  kiro-cli:    OK:      /opt/kiro/bin/kiro-cli
   <<_doctor_headless_auth>>
   <<_doctor_claude_backend>>
   <<_doctor_codex_backend>>
   <<_doctor_agent_auth>>
-  git:         ✅ /usr/bin/git
-  node:        ✅ /usr/bin/node (v22.3.0)
+  git:         OK:      /usr/bin/git
+  node:        OK:      /usr/bin/node (v22.3.0)
 
 Project
-  source dir:  ✅ <TMP>/checkout (Kiro Crew source checkout)
-  git repo:    ✅
+  source dir:  OK:      <TMP>/checkout (Kiro Crew source checkout)
+  git repo:    OK:
 
 Agent
-  config:      ✅ <TMP>/agents/kirocrew.json
-  model pins:  ✅ no unusable spellings in agent specs
+  config:      OK:      <TMP>/agents/kirocrew.json
+  model pins:  OK:      no unusable spellings in agent specs
 
 Configuration
-  config dir:  ✅ <TMP>/datahome
+  config dir:  OK:      <TMP>/datahome
   provider:    acp
   model:       auto
   approval:    reads
@@ -460,47 +460,47 @@ MCP Tools
   <<_doctor_mcp_governance>>
 
 Runtime
-  python:      ✅ <PYTHON> (<PYVER>)
-  kiro_crew:   ✅ 9.9.9
-  deps:        ✅ websockets, slack_sdk, aiohttp available
+  python:      OK:      <PYTHON> (<PYVER>)
+  kiro_crew:   OK:      9.9.9
+  deps:        OK:      websockets, slack_sdk, aiohttp available
   <<_doctor_import_path>>
-  sqlite fts5: ✅ available
-  tz data:     ✅ current (IANA tzdb 2026b or later)
+  sqlite fts5: OK:      available
+  tz data:     OK:      current (IANA tzdb 2026b or later)
                Sample check on America/Vancouver, not your configured zone.
 
 Vector Memory (in-process embeddings)
-  runtime:     ✅ vendored llama-cpp-python importable
-  faiss:       ⏹ not installed (optional) — episodic recall uses the stdlib fallback; installing faiss-cpu accelerates it
+  runtime:     OK:      vendored llama-cpp-python importable
+  faiss:       Note:    not installed (optional) — episodic recall uses the stdlib fallback; installing faiss-cpu accelerates it
                Install: PIP faiss-cpu
-  model:       ✅ <TMP>/model.gguf
-  embeddings:  ✅ always-on
+  model:       OK:      <TMP>/model.gguf
+  embeddings:  OK:      always-on
 
 Speech-to-Text
-  status:      ⏹ disabled (enable from dashboard → Settings → Voice → Speech-to-Text)
-  ffmpeg:      ✅ available
+  status:      Note:    disabled (enable from dashboard → Settings → Voice → Speech-to-Text)
+  ffmpeg:      OK:      available
 
 Slack Integration
-  status:      ⏭  not configured (optional)
+  status:      Skipped: not configured (optional)
   setup:       run 'kirocrew setup --slack', or connect any channel
                (Slack, Discord, Telegram, …) from the dashboard
   <<_doctor_discord>>
   <<_doctor_whatsapp>>
 
 Other Channels
-  status:      ⏭  none enabled (optional)
+  status:      Skipped: none enabled (optional)
   setup:       connect one from the dashboard's Settings > Messaging Channels
 
 Loop-stall Crash Dumps
-  dumps:       ✅ no crash dumps found (healthy)
+  dumps:       OK:      no crash dumps found (healthy)
   dump dir:    <TMP>/dumps
   <<_doctor_session_tree_checkpoint>>
 
 Connectivity
-  kiro-cli:    ✅ kiro-cli 1.2.3
+  kiro-cli:    OK:      kiro-cli 1.2.3
   <<_doctor_kiro_chat_delegate>>
-  gateway:     ⏹  not running
+  gateway:     Note:    not running
 
-✅ Kiro Crew is ready!
+Kiro Crew is ready!
 """
 
 
@@ -586,8 +586,8 @@ def test_a_kiro_cli_no_selected_route_runs_is_a_warning_row_and_doctor_passes(
 
     out, code = _run_with_launch_failure(host, capsys, failure)
 
-    row = f"  kiro-cli:    ⚠  {reason} (optional backend)\n"
-    assert out == _READY.replace("  kiro-cli:    ✅ kiro-cli 1.2.3\n", row)
+    row = f"  kiro-cli:    Warning: {reason} (optional backend)\n"
+    assert out == _READY.replace("  kiro-cli:    OK:      kiro-cli 1.2.3\n", row)
     assert code is None
 
 
@@ -614,8 +614,8 @@ def test_a_kiro_cli_a_selected_route_runs_is_an_issue_and_doctor_still_summarize
 
     out, code = _run_with_launch_failure(host, capsys, failure)
 
-    assert f"  kiro-cli:    ❌ {reason} (a selected backend runs it)\n" in out
-    assert out.endswith(f"❌ Fix these issues: kiro-cli {reason}\n")
+    assert f"  kiro-cli:    Error:   {reason} (a selected backend runs it)\n" in out
+    assert out.endswith(f"Fix these issues: kiro-cli {reason}\n")
     assert code == 1
 
 
@@ -631,7 +631,7 @@ def test_relay_kas_through_a_vault_named_sibling_keeps_the_launcher_optional(
 
     out, code = _run_with_launch_failure(host, capsys, failure)
 
-    assert f"  kiro-cli:    ⚠  {reason} (optional backend)\n" in out
+    assert f"  kiro-cli:    Warning: {reason} (optional backend)\n" in out
     assert code is None
 
 
@@ -658,11 +658,11 @@ def test_a_missing_kiro_cli_is_an_issue_only_when_a_selected_kiro_cli_role_runs_
     out, code = host.run(capsys)
 
     if fatal:
-        assert "  kiro-cli:    ❌ not found (a selected backend runs it)\n" in out
-        assert out.endswith("❌ Fix these issues: kiro-cli not found\n")
+        assert "  kiro-cli:    Error:   not found (a selected backend runs it)\n" in out
+        assert out.endswith("Fix these issues: kiro-cli not found\n")
         assert code == 1
     else:
-        assert "  kiro-cli:    ⏭  not found (the default agent backend)\n" in out
+        assert "  kiro-cli:    Skipped: not found (the default agent backend)\n" in out
         assert code is None
 
 
@@ -681,38 +681,38 @@ def test_a_start_up_record_of_an_inherited_lib_path_leaves_the_report_unchanged(
 
 
 _BROKEN = """\
-Kiro Crew Doctor 👻
+Kiro Crew Doctor
 
 Platform
-  edition:     ❌ composition failed: companion missing
+  edition:     Error:   composition failed: companion missing
 Dependencies
-  kiro-cli:    ⏭  not found (the default agent backend)
+  kiro-cli:    Skipped: not found (the default agent backend)
                Install kiro-cli per its docs, then: kiro-cli login
   <<_doctor_claude_backend>>
   <<_doctor_codex_backend>>
   <<_doctor_agent_auth>>
-  git:         ❌ not found (needed for kirocrew update)
-  node:        ❌ v18.19.0 < v20.0.0
+  git:         Error:   not found (needed for kirocrew update)
+  node:        Error:   v18.19.0 < v20.0.0
                Fix: Node.js v18.19.0 is too old: Kiro Crew needs v20.0.0 or newer. Update Node.js: install 24 LTS from https://nodejs.org, or run `nvm install 24` / `mise use -g node@24`.
 
 Project
-  source dir:  ❌ stale — points to deleted <TMP>/gone
+  source dir:  Error:   stale — points to deleted <TMP>/gone
                Fix: rm <TMP>/datahome/project_dir
 
 Agent
-  config:      ❌ not found (run kirocrew setup)
-  model pin:   ❌ 'kirocrew': 'claude-4' is not a model kiro-cli serves
+  config:      Error:   not found (run kirocrew setup)
+  model pin:   Error:   'kirocrew': 'claude-4' is not a model kiro-cli serves
                   the registry maps that spelling to 'claude-sonnet-4'
 
 Configuration
-  config dir:  ✅ <TMP>/datahome
+  config dir:  OK:      <TMP>/datahome
   provider:    acp
   model:       auto
   approval:    reads
   dashboard:   http://0.0.0.0:9999
   bind:        0.0.0.0 (all interfaces)
-  auth:        ✅ token auth required (via !dashboard)
-  auth:        ⚠️  Slack not configured — token generation unavailable
+  auth:        OK:      token auth required (via !dashboard)
+  auth:        Warning: Slack not configured — token generation unavailable
   <<_doctor_effective_model>>
   <<_doctor_member_dispatchability>>
   <<_doctor_member_memory_bindings>>
@@ -756,13 +756,13 @@ Configuration
 MCP Tools
 
 Runtime
-  python:      ✅ <TMP>/pkg/.venv/bin/python3 (Python 3.12.1)
-  kiro_crew:   ✅ 9.9.9
-  deps:        ❌ missing modules (websockets/slack_sdk/aiohttp)
+  python:      OK:      <TMP>/pkg/.venv/bin/python3 (Python 3.12.1)
+  kiro_crew:   OK:      9.9.9
+  deps:        Error:   missing modules (websockets/slack_sdk/aiohttp)
   <<_doctor_import_path>>
-  sqlite fts5: ❌ missing (memory/knowledge search will fail)
+  sqlite fts5: Error:   missing (memory/knowledge search will fail)
                Or use a Python whose SQLite was built with FTS5.
-  tz data:     ⚠️  out of date (older than IANA tzdb 2026b)
+  tz data:     Warning: out of date (older than IANA tzdb 2026b)
                It still moves America/Vancouver back to UTC-8 on
                2026-11-01, so a job in that zone runs an hour late.
                Fix: update the operating system's timezone data
@@ -770,35 +770,35 @@ Runtime
   <<_doctor_source_checkout>>
 
 Vector Memory (in-process embeddings)
-  runtime:     ❌ vendored runtime failed to load
+  runtime:     Error:   vendored runtime failed to load
                Missing native libs for linux-x86_64: libllama.so, libggml.so
                This install's vendored llama.cpp is incomplete (packaging
                defect, not an unsupported platform) — reinstall Kiro Crew
                from a current release to restore vector memory.
-  faiss:       ⏹ not installed (optional) — episodic recall uses the stdlib fallback; installing faiss-cpu accelerates it
-  model:       ❌ custom model unusable — not a GGUF file
-  embeddings:  ✅ always-on
+  faiss:       Note:    not installed (optional) — episodic recall uses the stdlib fallback; installing faiss-cpu accelerates it
+  model:       Error:   custom model unusable — not a GGUF file
+  embeddings:  OK:      always-on
 
 Speech-to-Text
-  provider:    ✅ local
-  engine:      ⚠️  install the voice extra
-  model:       ⏹ base.en not downloaded yet (148 MB, fetched on first use)
-  ffmpeg:      ⚠️  not found
+  provider:    OK:      local
+  engine:      Warning: install the voice extra
+  model:       Note:    base.en not downloaded yet (148 MB, fetched on first use)
+  ffmpeg:      Warning: not found
                Fix: download the audio decoder from the dashboard (Settings → Voice → Speech-to-Text), or install ffmpeg into /usr/local/bin
 
 Slack Integration
-  status:      ⏭  not configured (optional)
+  status:      Skipped: not configured (optional)
   setup:       run 'kirocrew setup --slack', or connect any channel
                (Slack, Discord, Telegram, …) from the dashboard
   <<_doctor_discord>>
   <<_doctor_whatsapp>>
 
 Other Channels
-  telegram:    ❌ enabled but missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids
+  telegram:    Error:   enabled but missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids
                The channel will not start. Set it in Settings > Messaging Channels, or in ~/.kiro/crew/.env
 
 Loop-stall Crash Dumps
-  last dump:   ⚠️  crash-1.dump (fired 2026-11-07T18:28:28Z, 2.0h ago)
+  last dump:   Warning: crash-1.dump (fired 2026-11-07T18:28:28Z, 2.0h ago)
   MainThread stuck at:
     File "loop.py", 1
   attribution:
@@ -809,18 +809,18 @@ Loop-stall Crash Dumps
   <<_doctor_session_tree_checkpoint>>
 
 Connectivity
-  kiro-cli:    ⏭  skipped (not installed)
+  kiro-cli:    Skipped: not installed
   <<_doctor_kiro_chat_delegate>>
-  gateway:     ✅ running (token auth enabled)
-  running:     ⚠️  8.8.8, on disk 9.9.9 (restart needed)
+  gateway:     OK:      running (token auth enabled)
+  running:     Warning: 8.8.8, on disk 9.9.9 (restart needed)
                Fix: `kirocrew restart` (the gateway still runs the old code)
 
-  💡 Remote access: Run on your LOCAL machine:
+  Remote access: Run on your LOCAL machine:
      ssh -NL 9999:localhost:9999 devbox
      Then run: kirocrew token
-  auth check:  ❌ external access allowed without token!
+  auth check:  Error:   external access allowed without token!
 
-❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), gateway restart needed (running version differs from on-disk), dashboard auth: no token required on external interface
+Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), gateway restart needed (running version differs from on-disk), dashboard auth: no token required on external interface
 """
 
 
@@ -921,9 +921,11 @@ def test_a_fresh_wheel_install_without_git_or_agent_spec_passes(host, capsys) ->
 
     out, code = host.run(capsys)
 
-    assert "  git:         ⏭  not found (not needed: this install updates without git)\n" in out
-    assert "  config:      ⏭  not created yet (kirocrew gateway creates it on start)\n" in out
-    assert "❌" not in out
+    assert (
+        "  git:         Skipped: not found (not needed: this install updates without git)\n" in out
+    )
+    assert "  config:      Skipped: not created yet (kirocrew gateway creates it on start)\n" in out
+    assert "Error:" not in out
     assert code is None
 
 
@@ -935,16 +937,16 @@ def test_a_missing_agent_spec_stays_red_when_the_lock_probe_cannot_answer(host, 
 
     out, code = host.run(capsys)
 
-    assert "  config:      ❌ not found (run kirocrew setup)\n" in out
+    assert "  config:      Error:   not found (run kirocrew setup)\n" in out
     assert "agent config" in out.splitlines()[-1]
     assert code == 1
 
 
 _SLACK = """\
 Slack Integration
-  tokens:      ✅ configured
-  owner:       ✅ U123
-  workspace:   ❌ not in configured workspace allowlist
+  tokens:      OK:      configured
+  owner:       OK:      U123
+  workspace:   Error:   not in configured workspace allowlist
                The gateway will refuse to connect.
   <<_doctor_discord>>
 """
@@ -966,15 +968,15 @@ def test_slack_and_cloud_transcription_rows(host, capsys) -> None:
     assert _SLACK in out
     assert (
         "Speech-to-Text\n"
-        "  provider:    ✅ transcribe\n"
-        "  ffmpeg:      ✅ available\n"
-        "  transcribe:  ⏹ optional cloud STT not installed\n"
+        "  provider:    OK:      transcribe\n"
+        "  ffmpeg:      OK:      available\n"
+        "  transcribe:  Note:    optional cloud STT not installed\n"
         "               Install: PIP-EXTRA voice-aws\n"
-        "  boto3:       ⏹ optional AWS SDK not installed\n"
+        "  boto3:       Note:    optional AWS SDK not installed\n"
         "               Install: PIP-EXTRA voice-aws\n"
         "\n"
     ) in out
-    assert out.endswith("❌ Fix these issues: slack workspace: not in allowlist\n")
+    assert out.endswith("Fix these issues: slack workspace: not in allowlist\n")
     assert code == 1
     args, _ = host.called("_doctor_discord")
     assert args[1] == host.creds
@@ -1086,11 +1088,11 @@ def test_channel_sections_learn_whether_the_credentials_were_readable(
 
 
 _BUNDLE = """\
-Kiro Crew Doctor 👻
+Kiro Crew Doctor
 
 Collecting diagnostics bundle (secrets are redacted)...
 
-  ✅ bundle: <TMP>/diag.zip
+  OK:      bundle: <TMP>/diag.zip
      2 file(s) · 3 secret(s) redacted
      skipped (not found): gateway.log
 
@@ -1133,7 +1135,7 @@ def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
 
     out, code = host.run(capsys, bundle=True)
 
-    assert "  ✅ bundle: <TMP>/diag.zip\n" in out
+    assert "  OK:      bundle: <TMP>/diag.zip\n" in out
     assert out.endswith("\n  Issue link skipped: the platform companion does not compose.\n")
     assert "Open a GitHub issue" not in out
     assert "github.com" not in out
@@ -1150,7 +1152,7 @@ def test_bundle_mode_exits_one_when_the_bundle_cannot_be_written(host, capsys, m
     out, code = host.run(capsys, bundle=True)
 
     assert out.endswith(
-        "  ❌ could not write the diagnostics bundle: disk full\n"
+        "  Error:   could not write the diagnostics bundle: disk full\n"
         "     Check that ~/.kiro/crew is writable and has free space.\n"
     )
     assert code == 1
@@ -1174,7 +1176,7 @@ def test_bundle_route_without_node_on_path_reads_the_bundles_node(
     out, code = host.run(capsys)
 
     assert (
-        "  node:        ⏭  not on PATH; not needed "
+        "  node:        Skipped: not on PATH; not needed "
         "(KAS runs its engine bundle's own Node 22.23.3)\n"
     ) in out
     assert "Fix: install Node.js" not in out
@@ -1204,9 +1206,9 @@ def test_bundle_route_judges_an_old_node_by_every_selected_role(
 
     listed = out.rsplit("Fix these issues:", 1)[1].split("\n", 1)[0] if code else ""
     if fails:
-        assert "  node:        ❌ v18.19.0 < " in out
+        assert "  node:        Error:   v18.19.0 < " in out
         assert "node" in [item.strip() for item in listed.split(",")]
     else:
-        assert "  node:        ⚠  v18.19.0 on PATH < " in out
+        assert "  node:        Warning: v18.19.0 on PATH < " in out
         assert "engine bundle's own Node 22.23.3" in out
         assert "node" not in [item.strip() for item in listed.split(",")]

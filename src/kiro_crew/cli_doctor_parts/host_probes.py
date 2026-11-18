@@ -396,7 +396,7 @@ def _report_node(
     bundle, whose engine runs the Node the bundle ships. Then a missing ``node`` on
     PATH is not a gap and the install advice is not printed. A Node that IS on PATH
     is still judged against the floor, because other tools run on it, but one below
-    the floor is a ``⚠`` there and not an issue: no selected role runs it.
+    the floor is a ``Warning:`` there and not an issue: no selected role runs it.
     """
     node = shutil.which("node")
     if node:
@@ -414,14 +414,14 @@ def _report_node(
             )
             version = parse_node_version(node_ver_result.stdout)
             if version is None:
-                print(f"  node:        ✅ {node}")
+                print(f"  node:        OK:      {node}")
             elif node_version_meets_floor(version, MIN_NODE_VERSION):
-                print(f"  node:        ✅ {node} (v{format_node_version(version)})")
+                print(f"  node:        OK:      {node} (v{format_node_version(version)})")
             elif bundle_route:
                 own = f"Node {bundle_node_version}" if bundle_node_version else "Node"
                 floor = format_node_version(MIN_NODE_VERSION)
                 print(
-                    f"  node:        ⚠  v{format_node_version(version)} on PATH < v{floor}; "
+                    f"  node:        Warning: v{format_node_version(version)} on PATH < v{floor}; "
                     f"KAS runs its engine bundle's own {own}"
                 )
                 print(
@@ -430,19 +430,21 @@ def _report_node(
                 )
             else:
                 print(
-                    f"  node:        ❌ v{format_node_version(version)} < "
+                    f"  node:        Error:   v{format_node_version(version)} < "
                     f"v{format_node_version(MIN_NODE_VERSION)}"
                 )
                 print(f"               Fix: {node_too_old_message(version, MIN_NODE_VERSION)}")
                 issues.append("node")
         except Exception:
-            print(f"  node:        ✅ {node}")
+            print(f"  node:        OK:      {node}")
     elif bundle_route:
         own = f"Node {bundle_node_version}" if bundle_node_version else "Node"
-        print(f"  node:        ⏭  not on PATH; not needed (KAS runs its engine bundle's own {own})")
+        print(
+            f"  node:        Skipped: not on PATH; not needed (KAS runs its engine bundle's own {own})"
+        )
     else:
         floor = format_node_version(MIN_NODE_VERSION)
-        print(f"  node:        ⚠️  not found (Kiro Crew needs Node v{floor}+)")
+        print(f"  node:        Warning: not found (Kiro Crew needs Node v{floor}+)")
         print(
             f"               Fix: install Node.js >= v{floor} (24 LTS recommended) from https://nodejs.org"
         )

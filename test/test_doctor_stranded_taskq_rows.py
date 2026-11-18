@@ -126,7 +126,7 @@ def test_doctor_names_a_stranded_row_and_leaves_the_store_untouched(
     cli_doctor._doctor_task_store(issues)
     out = capsys.readouterr().out
 
-    assert "stranded rows: ⚠️  1 task row(s) not terminal, with no lease" in out
+    assert "stranded rows: Warning: 1 task row(s) not terminal, with no lease" in out
     assert "sa-stuck-1 (retry_wait, session dashboard:chat-7, overdue 6.0h)" in out
     assert "sa-waiting" not in out
     assert "409 slot_subagents_running" in out
@@ -202,7 +202,7 @@ def test_a_refused_stranded_read_is_reported_unread_and_the_counts_still_print(
     out = capsys.readouterr().out
 
     assert "pending=1" in out
-    assert "stranded rows: ⚠️  not checked (database is locked)" in out
+    assert "stranded rows: Warning: not checked (database is locked)" in out
     assert issues == []
 
 
@@ -224,7 +224,7 @@ def test_with_no_gateway_running_the_rows_are_advisory_and_no_issue(
     cli_doctor._doctor_task_store(issues)
     out = capsys.readouterr().out
 
-    assert "stranded rows: ℹ️  1 task row(s) not terminal" in out
+    assert "stranded rows: Note:    1 task row(s) not terminal" in out
     assert "sa-stuck-1 (retry_wait" in out
     assert "No gateway is running, so these may only be waiting for it" in out
     assert "409 slot_subagents_running" not in out
@@ -241,7 +241,7 @@ def test_an_indeterminate_gateway_probe_keeps_the_warning(
     cli_doctor._doctor_task_store(issues)
     out = capsys.readouterr().out
 
-    assert "stranded rows: ⚠️  1 task row(s) not terminal" in out
+    assert "stranded rows: Warning: 1 task row(s) not terminal" in out
     assert "409 slot_subagents_running" in out
     assert len(issues) == 1
 
@@ -260,5 +260,5 @@ def test_a_failed_gateway_probe_keeps_the_warning(
     cli_doctor._doctor_task_store(issues)
     out = capsys.readouterr().out
 
-    assert "stranded rows: ⚠️  1 task row(s) not terminal" in out
+    assert "stranded rows: Warning: 1 task row(s) not terminal" in out
     assert len(issues) == 1
