@@ -30,6 +30,7 @@ import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
+import { useComposerSettings } from './chat-input/composerSettings'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
@@ -219,8 +220,8 @@ function ChatInput({
   contextUsedTokens,
   contextWindowTokens,
   derivePctFromUsed,
-  showContextPct,
-  showContextTokens,
+  showContextPct: showContextPctProp,
+  showContextTokens: showContextTokensProp,
   isRunning = false,
   projectTurnKey,
   projectLocked = false,
@@ -280,7 +281,7 @@ function ChatInput({
   followUpError,
   pasteBlocks: pasteBlocksProp = [],
   onPasteBlocksChange: onPasteBlocksChangeProp,
-  showFullPastes = false,
+  showFullPastes: showFullPastesProp,
   lexicalComposer: lexicalComposerProp = false,
   knowledgeChip,
   autoFocusKey,
@@ -408,6 +409,10 @@ function ChatInput({
   // would otherwise send on plain Enter for a user who chose Ctrl/Cmd+Enter.
   const storedSendMode = useComposerSendMode()
   const sendOnEnter = sendOnEnterProp ?? storedSendMode
+  // And for Show Pasted Text in Full and the context readout.
+  const { showFullPastes, showContextPct, showContextTokens } = useComposerSettings({
+    showFullPastes: showFullPastesProp, showContextPct: showContextPctProp, showContextTokens: showContextTokensProp,
+  })
 
   // Stop button: killing-state escape hatch (re-enable after 15s)
   const { escaped: killingEscaped } = useStopEscapeHatch(stopState)

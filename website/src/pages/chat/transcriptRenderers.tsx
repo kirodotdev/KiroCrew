@@ -225,6 +225,10 @@ export interface TranscriptRendererOptions {
    *  their action rows without hover (the Sessions chat's `revealActions`).
    *  Read only with `crewmate`. */
   revealActions?: boolean
+  /** Settings -> Chat -> Copy on Select and Link Previews for the replies this
+   *  host draws, as the Sessions chat hands its own. Absent: both off. */
+  copyOnSelect?: boolean
+  linkPreviews?: boolean
 }
 
 /** True when the error row at `index` is the seeded feature-request turn's own
@@ -780,6 +784,8 @@ export function createTranscriptRenderers(
               redactionSlot: o.revealSlot,
               onSpeak: o.onSpeak,
               revealActions: o.revealActions,
+              copyOnSelect: o.copyOnSelect,
+              linkPreviews: o.linkPreviews,
             })
             if (bubble === null) return null
             return ctx.row(
@@ -951,7 +957,7 @@ export function createTranscriptRenderers(
           id: 'assistant',
           roles: ['assistant', 'streaming'],
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
-            const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: o.revealSlot, messageTs: m.ts })
+            const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: o.revealSlot, messageTs: m.ts, copyOnSelect: o.copyOnSelect, linkPreviews: o.linkPreviews })
             return bubble === null ? null : ctx.wrapper(bubble)
           },
         } satisfies MessageRenderer]
