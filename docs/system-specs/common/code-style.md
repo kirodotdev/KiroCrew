@@ -409,6 +409,7 @@ byte-order mark to the first field.
 
 Icons are `lucide-react` components with `className="lucide-inline"`. Never an
 emoji in the UI, never a hand-rolled SVG.
+Where emoji may stay outside the web UI: [the 2026-11-18 emoji decision](../../decisions/2026-11-18-emoji-are-replaced-only-in-the-web-ui.md).
 
 Never hardcode a user-facing English string, and never format a date, number or
 sort order without naming a locale. Both are CI-gated; see
