@@ -19997,6 +19997,8 @@
         "full_titles_on_scroll_description": "Pendant le défilement de la liste des sessions, les titres coupés par la barre latérale s'affichent en entier",
         "session_title_lines": "Lignes de titre sur les cartes de session",
         "session_title_lines_desc": "Nombre de lignes qu'un titre de session peut occuper avant d'être coupé",
+        "session_card_agent_name": "Afficher le nom de l'agent sur les cartes de session",
+        "session_card_agent_name_desc": "Désactive pour retirer la ligne du nom de l'agent ; l'heure remonte à côté du titre",
         "session_preview_lines": "Lignes d'aperçu sur les cartes de session",
         "session_preview_lines_desc": "Nombre de lignes que l'aperçu du dernier message peut occuper avant d'être coupé",
         "content_width": "Largeur du contenu",

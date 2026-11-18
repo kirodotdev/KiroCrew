@@ -19997,6 +19997,8 @@
         "full_titles_on_scroll_description": "Mentre scorri l'elenco delle sessioni, i titoli troncati dalla barra laterale vengono mostrati per intero",
         "session_title_lines": "Righe del titolo nelle schede sessione",
         "session_title_lines_desc": "Quante righe può occupare il titolo di una sessione prima di essere troncato",
+        "session_card_agent_name": "Mostra il nome dell'agente nelle schede sessione",
+        "session_card_agent_name_desc": "Disattiva per rimuovere la riga con il nome dell'agente; l'ora sale accanto al titolo",
         "session_preview_lines": "Righe di anteprima nelle schede sessione",
         "session_preview_lines_desc": "Quante righe può occupare l'anteprima dell'ultimo messaggio prima di essere troncata",
         "content_width": "Larghezza del contenuto",

@@ -19997,6 +19997,8 @@
         "full_titles_on_scroll_description": "Al desplazar la lista de sesiones, los títulos que recorta la barra lateral se muestran completos",
         "session_title_lines": "Líneas de título en las tarjetas de sesión",
         "session_title_lines_desc": "Cuántas líneas puede ocupar el título de una sesión antes de recortarse",
+        "session_card_agent_name": "Mostrar el nombre del agente en las tarjetas de sesión",
+        "session_card_agent_name_desc": "Desactívalo para quitar la fila del nombre del agente; la hora sube junto al título",
         "session_preview_lines": "Líneas de vista previa en las tarjetas de sesión",
         "session_preview_lines_desc": "Cuántas líneas puede ocupar la vista previa del último mensaje antes de recortarse",
         "content_width": "Ancho del contenido",

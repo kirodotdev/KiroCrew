@@ -18955,6 +18955,8 @@
         "full_titles_on_scroll_description": "セッションリストをスクロールしている間、サイドバーで切れたタイトルを全文表示します",
         "session_title_lines": "セッションカードのタイトル行数",
         "session_title_lines_desc": "セッションタイトルが切り詰められるまでに使える行数",
+        "session_card_agent_name": "セッションカードにエージェント名を表示",
+        "session_card_agent_name_desc": "オフにするとエージェント名の行がなくなり、時刻がタイトルの横に移ります",
         "session_preview_lines": "セッションカードのプレビュー行数",
         "session_preview_lines_desc": "最新メッセージのプレビューが切り詰められるまでに使える行数",
         "content_width": "コンテンツ幅",
