@@ -3102,6 +3102,17 @@ answers `404` — indistinguishable from "not built yet". The directory link
 works because the route resolves the ui root *through* the link before
 validating files against it.
 
+On Windows, make the link a **directory junction** instead: from `cmd`, keep
+the installed `ui\` as a backup
+(`ren "%USERPROFILE%\.kiro\crew\apps\<name>\ui" ui.bak`), run
+`mklink /J "%USERPROFILE%\.kiro\crew\apps\<name>\ui" "<source>\ui"`, then re-run
+`kirocrew app dev <name> --confirm-out-of-install-root` so the dev grant binds
+to the link target. A junction needs no privilege; a directory symlink there needs Developer Mode or
+an elevated shell (Windows PowerShell 5.1's `New-Item -ItemType SymbolicLink`
+needs elevation even with Developer Mode on). The junction target must be a
+local absolute path. The UI route and the dev watcher follow a junction the
+same way they follow a symlink.
+
 **Contract surface:**
 
 - **`installed.json` field — `dev: bool`** (default `false`): persisted per-app
