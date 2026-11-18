@@ -1215,6 +1215,22 @@ async def run(self: GatewayOrchestrator) -> None:
         self._background_tasks.add(_owner_task)
         _owner_task.add_done_callback(self._background_tasks.discard)
 
+        # A config file that does not parse is run on defaults: say so in the
+        # terminal and the bell, naming the file, the line and the fix. Imported
+        # here like the warnings above: this module's functions run on the
+        # gateway's globals, so a module-level import here would not reach them.
+        from kiro_crew.notifications import config_syntax_note
+
+        async def _report_config_syntax_errors() -> None:
+            try:
+                await config_syntax_note.publish(self.dashboard_state)
+            except Exception:  # a report must never break boot
+                logger.warning("config syntax report failed", exc_info=True)
+
+        _syntax_task = asyncio.create_task(_report_config_syntax_errors())
+        self._background_tasks.add(_syntax_task)
+        _syntax_task.add_done_callback(self._background_tasks.discard)
+
     # Disable and mark pending any app whose sessionApproval grant was never
     # consented to. Past KIROCREW_READY (no-new-work-on-gateway-boot-path):
     # the grant is refused on read already, so readiness need not wait.

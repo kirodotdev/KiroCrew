@@ -389,6 +389,7 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.loader_document",
         "kiro_crew.config.loader_locations",
         "kiro_crew.config.loader_snapshots",
+        "kiro_crew.config.loosening_provenance",
         "kiro_crew.config.migration",
         "kiro_crew.config.paths",
         "kiro_crew.config.superseded_defaults",
