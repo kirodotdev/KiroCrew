@@ -474,6 +474,10 @@ Rules:
   `aria-current="true"`.
 - Do not use a raw `<button>`. Use `Btn` / `SendBtn` / `IconButton` (which carry
   the styling), or `Clickable` for a div-based control.
+- A sideways scroller around a table whose cells hold nothing focusable becomes a
+  named Tab stop (`tabIndex={0}`, `role="region"`, an `aria-label`) while it hides
+  columns, as `MarkdownTable.tsx` does. One whose rows hold a control gets none,
+  since focus on the control already scrolls it.
 
 Tooling: `eslint-plugin-jsx-a11y` reports violations at lint time, and
 `@axe-core/react` scans the live DOM in dev mode (findings land in the browser
