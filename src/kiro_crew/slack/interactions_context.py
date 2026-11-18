@@ -5,7 +5,7 @@ the acknowledge buttons and the tracked-channel scope probe.
 through the facade, so every owner module that reads it holds the same object.
 ``VIEW_REGISTRY`` maps a modal's ``callback_id`` to its submission handler
 (``register_view_handler``). ``ack_button`` replaces an ack or approve button's message
-with '✅ Acknowledged', for the cron and subagent acknowledge buttons here and the Stop
+with 'Acknowledged', for the cron and subagent acknowledge buttons here and the Stop
 confirmation. ``_probe_tracked_channel_scope`` fires the deferred history-readability
 probe for newly tracked channels. This is the lowest layer: the other owners import from
 it, and it imports none of them.
@@ -77,12 +77,12 @@ def register_view_handler(callback_id: str, handler: ViewHandler) -> None:  # ty
 
 
 # ---------------------------------------------------------------------------
-# Shared helper — replace a button message with "✅ Acknowledged"
+# Shared helper — replace a button message with "Acknowledged"
 # ---------------------------------------------------------------------------
 
 
 async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
-    """Replace an ack/approve button message with '✅ Acknowledged'.
+    """Replace an ack/approve button message with 'Acknowledged'.
 
     Tries ``response_url`` first (instant, no API call), then falls
     back to ``chat.update``.
@@ -99,7 +99,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
             b = {**b, "text": {**b["text"], "text": b["text"]["text"][:2990]}}
         acked_blocks.append(b)
     acked_blocks.append(
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": "✅ Acknowledged"}]}
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": "Acknowledged"}]}
     )
 
     updated = False
@@ -111,7 +111,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
                     proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": True,
-                        "text": "✅ Acknowledged",
+                        "text": "Acknowledged",
                         "blocks": acked_blocks,
                     },
                 )
@@ -122,7 +122,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
     if not updated and _orch and _orch.slack and channel and msg_ts:
         try:
             await _orch.slack.update_message(
-                channel, msg_ts, text="✅ Acknowledged", blocks=acked_blocks
+                channel, msg_ts, text="Acknowledged", blocks=acked_blocks
             )
         except Exception:
             logger.debug("chat.update fallback failed", exc_info=True)

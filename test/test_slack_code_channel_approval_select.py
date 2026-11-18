@@ -446,7 +446,7 @@ def test_the_kickoff_says_when_yolo_is_on(monkeypatch: Any) -> None:
     assert approval_picker.YOLO_ON_NOTE in str(blocks)
     # It leads with the effect, says how far it reaches and what turns it off.
     assert approval_picker.YOLO_ON_NOTE.startswith(
-        "⚡ An override is on: every tool runs without asking"
+        "An override is on: every tool runs without asking"
     )
     assert "every session" in approval_picker.YOLO_ON_NOTE
     # The name is never the explanation: each "YOLO" sits after what it does.

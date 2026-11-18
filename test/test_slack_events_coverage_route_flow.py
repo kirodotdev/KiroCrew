@@ -73,7 +73,7 @@ class TestRouteMessageStopCommand:
         with patch("kiro_crew.slack.events.is_allowed_user", side_effect=[True, False]):
             with patch("kiro_crew.slack.events.is_owner", return_value=False):
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
-        orch.slack.post_message.assert_awaited_with("D1", "⛔ Not authorized.", "100.0")
+        orch.slack.post_message.assert_awaited_with("D1", "Blocked: Not authorized.", "100.0")
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "unauthorized sender"
         assert _audit_rows(_real_sel, "slack.stop_command") == [
             ("U_OWNER", "denied", "unauthorized sender")
@@ -109,8 +109,8 @@ class TestRouteMessageStopCommand:
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         posted = [c[0][1] for c in orch.slack.post_message.await_args_list]
-        assert "⏹ Execution stopped." in posted
-        assert "⛔ Execution stopped — session reset." in posted
+        assert "Execution stopped." in posted
+        assert "Execution stopped — session reset." in posted
         assert active.cancelled()
         assert _mock_sel.log_tool_invocation.call_args.kwargs["outcome"] == "soft"
 
@@ -132,13 +132,13 @@ class TestRouteMessageStopCommand:
 
         async def _fake_restart(o, caller, args, respond):
             captured.append(caller)
-            await respond("♻️ Restarting gateway…")
+            await respond("Restarting gateway…")
 
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events._handle_restart", new=_fake_restart):
                 await ev._route_message(orch, _event(text="!restart"), ev.SeenCache())
         assert captured == ["U_OWNER"]
-        orch.slack.post_message.assert_awaited_with("D1", "♻️ Restarting gateway…", "100.0")
+        orch.slack.post_message.assert_awaited_with("D1", "Restarting gateway…", "100.0")
 
 
 class TestRouteMessageQueueing:

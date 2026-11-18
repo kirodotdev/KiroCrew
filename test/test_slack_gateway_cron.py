@@ -563,7 +563,7 @@ class TestInitCron:
     async def test_cron_name_is_redacted_before_delivery(self):
         """A cron NAME is LLM-authored text on its way to Slack.
 
-        The ``⏰ *Cron: …*`` header is already mrkdwn and skips the render pipeline and
+        The ``*Cron: …*`` header is already mrkdwn and skips the render pipeline and
         its redaction, and an agent names the cron via ``cron_add``.
         """
         secret = _TOKEN

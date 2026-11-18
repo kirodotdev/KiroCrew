@@ -263,7 +263,6 @@ async def _alert_cron_failure(
         label = redact(job.name)
         label, _ = redact_exfiltration_urls(label)
         label, _ = redact_credentials(label)
-        mark = "⛔" if denied else "❌"
         headline = "Blocked by policy" if denied else "Run failed"
         if exit_code is not None and not denied:
             # Said once, here, so the fenced body is only what the command wrote.
@@ -287,7 +286,7 @@ async def _alert_cron_failure(
                     self.dashboard_state.notify(
                         "cron",
                         f"Cron: {label} (failure {streak} of {limit})",
-                        f"{mark} {headline} (alert held until failure {limit}):\n{text}",
+                        f"{headline} (alert held until failure {limit}):\n{text}",
                         meta={"job_id": job.id, "failure_hash": fh},
                     )
             except Exception:
@@ -310,8 +309,8 @@ async def _alert_cron_failure(
                 if self.dashboard_state:
                     self.dashboard_state.notify(
                         "cron",
-                        f"🔇 Cron: {label} (repeat)",
-                        f"{mark} Still failing (suppressed — same reason):\n{text}",
+                        f"Cron: {label} (repeat)",
+                        f"Still failing (suppressed — same reason):\n{text}",
                         meta={"job_id": job.id, "failure_hash": fh},
                     )
             except Exception:
@@ -325,7 +324,7 @@ async def _alert_cron_failure(
                 self.dashboard_state.notify(
                     "cron",
                     f"Cron: {label}",
-                    f"{mark} {headline}:\n{text}",
+                    f"{headline}:\n{text}",
                     meta={"job_id": job.id, "failure_hash": fh},
                 )
         except Exception:
@@ -341,16 +340,13 @@ async def _alert_cron_failure(
         # scrubbed above, and the transport leg redacts again at egress.
         safe_label = self._slack_safe_fenced(label)
         safe_text = self._slack_safe_fenced(text)
-        msg = (
-            f"⏰ *Cron: {safe_label}* {mark} "
-            f"_{headline} on {escape_mrkdwn(host)}_\n```{safe_text}```"
-        )
+        msg = f"*Cron: {safe_label}* " f"_{headline} on {escape_mrkdwn(host)}_\n```{safe_text}```"
         msg, _ = redact_exfiltration_urls(msg)
         msg, _ = redact_credentials(msg)
         # Plain twin for a non-Slack transport: mrkdwn is not another
         # channel's dialect, so a shared string would show `&lt;` and
         # stray backticks there.
-        plain = f"⏰ Cron: {label} {mark} {headline} on {host}\n{text}"
+        plain = f"Cron: {label} — {headline} on {host}\n{text}"
         # Silent jobs returned above, so this leg is never suppressed here.
         channel_delivered, slack_delivered, slack_failed = await self._deliver_failure_alert(
             job,
@@ -413,7 +409,7 @@ async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detai
         try:
             if self.dashboard_state:
                 self.dashboard_state.notify(
-                    "cron", f"Cron: {label}", f"⏹ {text}", meta={"job_id": job.id}
+                    "cron", f"Cron: {label}", f"Stopped: {text}", meta={"job_id": job.id}
                 )
                 # notify() installs the append's future before it returns.
                 persisted = self.dashboard_state.last_notification_persist
@@ -423,12 +419,12 @@ async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detai
             logger.debug("Dashboard notify failed in cron interrupted-run path", exc_info=True)
         host = socket.gethostname().split(".")[0]
         msg = (
-            f"⏰ *Cron: {self._slack_safe_fenced(label)}* ⏹ "
+            f"*Cron: {self._slack_safe_fenced(label)}* "
             f"_Interrupted on {escape_mrkdwn(host)}_\n{escape_mrkdwn(text)}"
         )
         msg, _ = redact_exfiltration_urls(msg)
         msg, _ = redact_credentials(msg)
-        plain = f"⏰ Cron: {label} ⏹ Interrupted on {host}\n{text}"
+        plain = f"Cron: {label} — Interrupted on {host}\n{text}"
         await self._deliver_failure_alert(job, mrkdwn=msg, plain=plain, actor_key=f"cron:{job.id}")
     except Exception:
         logger.warning("Cron '%s': interrupted-run notice failed", job.name, exc_info=True)
@@ -518,7 +514,7 @@ async def _cron_single_failure(
                 self.dashboard_state.notify(
                     "cron",
                     title,
-                    f"❌ Job failed (alert held until failure {limit}):\n{exc_detail}",
+                    f"Error: Job failed (alert held until failure {limit}):\n{exc_detail}",
                     meta={"job_id": job.id, "failure_hash": fh},
                 )
         except Exception:
@@ -550,13 +546,13 @@ async def _cron_single_failure(
         # exception if notification itself fails.
         try:
             if self.dashboard_state and not job.silent:
-                title = f"🔇 Cron: {job.name} (dup failure #{job.consecutive_failures})"
+                title = f"Cron: {job.name} (dup failure #{job.consecutive_failures})"
                 title, _ = redact_exfiltration_urls(title)
                 title, _ = redact_credentials(title)
                 self.dashboard_state.notify(
                     "cron",
                     title,
-                    f"❌ Job failed (suppressed — same error):\n{exc_detail}",
+                    f"Error: Job failed (suppressed — same error):\n{exc_detail}",
                     meta={"job_id": job.id, "failure_hash": fh},
                 )
         except Exception:
@@ -591,14 +587,14 @@ async def _cron_single_failure(
             self.dashboard_state.notify(
                 "cron",
                 alert_title,
-                f"❌ Job failed:\n{exc_detail}",
+                f"Error: Job failed:\n{exc_detail}",
                 meta={"job_id": job.id, "failure_hash": fh},
             )
     except Exception:
         logger.debug("Dashboard notify failed in cron failure alert path", exc_info=True)
     # Include the machine hostname so multi-gateway setups (e.g. a
     # laptop + a cloud desktop both running Kiro Crew) can tell which
-    # machine's session failed. This is framework-level: the ❌ DM
+    # machine's session failed. This is framework-level: the failure DM
     # can fire before any prompt logic runs (e.g. a session-startup
     # credential failure), so the machine name must come from here,
     # not from inside the cron prompt.
@@ -615,13 +611,13 @@ async def _cron_single_failure(
     safe_reason = self._slack_safe_fenced(exc_detail)
     if is_dup:
         fail_msg = (
-            f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
+            f"*Cron: {safe_name}* _Job still failing on {escape_mrkdwn(host)}"
             f" ({streak} consecutive failures)"
             f" — check logs._\n```{safe_reason}```"
         )
     else:
         fail_msg = (
-            f"⏰ *Cron: {safe_name}* ❌ "
+            f"*Cron: {safe_name}* "
             f"_Job failed on {escape_mrkdwn(host)} — check logs._\n"
             f"```{safe_reason}```"
         )
@@ -638,13 +634,13 @@ async def _cron_single_failure(
     # composes its own channel string too.
     if is_dup:
         channel_fail_msg = (
-            f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
+            f"Cron: {job.name} — Job still failing on {host}"
             f" ({streak} consecutive failures)"
             f" — check logs.\n{exc_detail}"
         )
     else:
         channel_fail_msg = (
-            f"⏰ Cron: {job.name} ❌ Job failed on {host} — check logs.\n" f"{exc_detail}"
+            f"Cron: {job.name} — Job failed on {host} — check logs.\n" f"{exc_detail}"
         )
     channel_fail_msg, _ = redact_exfiltration_urls(channel_fail_msg)
     channel_fail_msg, _ = redact_credentials(channel_fail_msg)

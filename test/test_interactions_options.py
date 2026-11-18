@@ -188,9 +188,9 @@ async def _submit_several(orch: MagicMock, choices: list[str], picked: list[int]
 
 
 def _answered(blocks: list[dict], *chosen: str) -> bool:
-    """Whether the context line reads "✅ <@U1> chose <chosen> · <time>"."""
+    """Whether the context line reads "<@U1> chose <chosen> · <time>"."""
     names = ", ".join(f"*{c}*" for c in chosen)
-    return _summary(blocks).startswith(f"✅ <@U1> chose {names} · <!date^")
+    return _summary(blocks).startswith(f"<@U1> chose {names} · <!date^")
 
 
 def _summary(blocks: list[dict]) -> str:

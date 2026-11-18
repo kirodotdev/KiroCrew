@@ -97,7 +97,7 @@ _tasks: set[asyncio.Future[Any]] = set()
 _seen: Any = None
 
 NOT_A_CODE_CHANNEL_TEXT = "That command works only in a Kiro Crew code channel."
-NOT_AUTHORIZED_TEXT = "⛔ You are not authorized to use this command here."
+NOT_AUTHORIZED_TEXT = "Blocked: You are not authorized to use this command here."
 ARCHIVED_TEXT = "This channel is archived."
 NO_PR_TEXT = {
     "not_a_repo": "This session's project is not a git repository, so there is no branch to open a pull request from.",

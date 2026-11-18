@@ -184,7 +184,7 @@ def _fact_lines(facts: Facts) -> list[str]:
     if facts.changes:
         lines.append(f"Changed since the branch was cut: {facts.changes}")
     if facts.uncommitted:
-        lines.append("⚠️ The worktree has uncommitted changes. Archiving keeps them on disk.")
+        lines.append("Warning: The worktree has uncommitted changes. Archiving keeps them on disk.")
     if facts.workers:
         lines.append("*Helper agents*\n" + _bounded_lines(facts.workers, _MAX_WORKER_CHARS))
     return lines
@@ -624,7 +624,7 @@ async def on_turn_end(binding: Binding, event: Any) -> None:
 
 ALREADY_ARCHIVED_TEXT = "This channel is already archived."
 STALE_TEXT = "That wrap-up is out of date. Run `/wrap-up` for a fresh one."
-NOT_ALLOWED_TEXT = "⛔ You can't archive this channel."
+NOT_ALLOWED_TEXT = "Blocked: You can't archive this channel."
 ARCHIVE_FAILED_TEXT = "I couldn't archive this channel ({code}). Try again in a moment."
 
 

@@ -119,16 +119,16 @@ async def prompt_allowlist(
 
     if already:
         text = f"<@{user_id}> is currently on the allowlist.\nKeep or remove?"
-        approve_label = "✅ Keep"
-        deny_label = "🚫 Remove"
+        approve_label = "Keep"
+        deny_label = "Remove"
     elif channel_id:
-        text = f"👋 <@{user_id}> just joined <#{channel_id}>.\nAdd to allowlist?"
-        approve_label = "✅ Allow"
-        deny_label = "🚫 Deny"
+        text = f"<@{user_id}> just joined <#{channel_id}>.\nAdd to allowlist?"
+        approve_label = "Allow"
+        deny_label = "Deny"
     else:
-        text = f"👋 <@{user_id}> — allowlist requested.\nAdd to allowlist?"
-        approve_label = "✅ Allow"
-        deny_label = "🚫 Deny"
+        text = f"<@{user_id}> — allowlist requested.\nAdd to allowlist?"
+        approve_label = "Allow"
+        deny_label = "Deny"
 
     await _send_prompt(
         slack,
@@ -166,13 +166,13 @@ async def prompt_track_channel(
     )
 
     if already:
-        text = f"📡 <#{channel_id}> is currently tracked.\nKeep tracking or remove?"
-        approve_label = "✅ Keep"
-        deny_label = "🚫 Remove"
+        text = f"<#{channel_id}> is currently tracked.\nKeep tracking or remove?"
+        approve_label = "Keep"
+        deny_label = "Remove"
     else:
-        text = f"📡 Track <#{channel_id}> for new member allowlist prompts?"
-        approve_label = "✅ Track"
-        deny_label = "🚫 Ignore"
+        text = f"Track <#{channel_id}> for new member allowlist prompts?"
+        approve_label = "Track"
+        deny_label = "Ignore"
 
     await _send_prompt(
         slack,
@@ -302,7 +302,7 @@ async def send_dashboard_link(
     proxy_line = ""
     proxy = devspaces_proxy_url(port)
     if proxy:
-        proxy_line = f"\n🔗 <{proxy}/?token={token}|Open via DevSpaces Proxy>"
+        proxy_line = f"\n<{proxy}/?token={token}|Open via DevSpaces Proxy>"
 
     # ``generate_token`` clamps the link-click ``exp`` to the session TTL, so a
     # sub-window session gets a link that dies with it. Report the clamped value,
@@ -319,7 +319,7 @@ async def send_dashboard_link(
     # incomplete. ``user@host`` is ordinary ssh syntax and needs no escaping, which
     # keeps the string safe by construction rather than by remembering to escape it.
     notice_line = (
-        "\n🔒 This instance runs with --no-tunnel, so the link only opens on the "
+        "\nThis instance runs with --no-tunnel, so the link only opens on the "
         f"host. From elsewhere: `ssh -L {port}:127.0.0.1:{port} user@host`"
         if no_tunnel_notice
         else ""
@@ -328,8 +328,8 @@ async def send_dashboard_link(
         dm = await slack.open_dm(user_id)
         await slack.post_message(
             dm,
-            f"🔗 <{url}|Open Dashboard>{proxy_line}\n"
-            f"⏱ Click within {link_mins}m · session lasts {session_mins}m"
+            f"<{url}|Open Dashboard>{proxy_line}\n"
+            f"Click within {link_mins}m · session lasts {session_mins}m"
             f"{notice_line}",
         )
         sel().log_api_access(

@@ -503,12 +503,12 @@ async def _deliver_script_result(
                     # Nothing in the full queue could give way, or the session
                     # closed meanwhile: the result goes out as a notification,
                     # as it does when the session is gone.
-                    self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
+                    self.dashboard_state.notify("cron", f"{label}", message, meta=note_meta)
             else:
-                self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
+                self.dashboard_state.notify("cron", f"{label}", message, meta=note_meta)
         elif message and not job.silent and self.dashboard_state:
             label = redact(job.name)
-            self.dashboard_state.notify("cron", f"⚡ {label}", message, meta=note_meta)
+            self.dashboard_state.notify("cron", f"{label}", message, meta=note_meta)
         delivered = True
     except Exception as notify_exc:
         logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)

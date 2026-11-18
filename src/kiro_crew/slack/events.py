@@ -1032,7 +1032,7 @@ async def _route_message(
                 await orch.slack.post_ephemeral(
                     channel,
                     sender_id,
-                    "⛔ You are not authorized to use this bot. "
+                    "Blocked: You are not authorized to use this bot. "
                     "Ask the owner to add you to the allowlist.",
                 )
             except Exception:
@@ -1185,7 +1185,9 @@ async def _route_message(
                 error="unauthorized sender",
             )
             if orch.slack:
-                await orch.slack.post_message(channel, "⛔ Not authorized.", thread_ts or msg_ts)
+                await orch.slack.post_message(
+                    channel, "Blocked: Not authorized.", thread_ts or msg_ts
+                )
             return
         if not orch.sessions:
             sel().log_tool_invocation(
@@ -1340,13 +1342,13 @@ async def _route_message(
                     async def _on_soft() -> None:
                         if orch.slack:
                             await orch.slack.post_message(
-                                channel, "⏹ Execution stopped.", stop_post_ts
+                                channel, "Execution stopped.", stop_post_ts
                             )
 
                     async def _on_hard() -> None:
                         if orch.slack:
                             await orch.slack.post_message(
-                                channel, "⛔ Execution stopped — session reset.", stop_post_ts
+                                channel, "Execution stopped — session reset.", stop_post_ts
                             )
 
                     # ``force`` only when set: the default call shape is what every
@@ -1707,7 +1709,7 @@ async def _route_message(
                 # is captured at startup and would make toggle saves inert
                 # until restart).
                 reactions_enabled=KiroCrewConfig.load().slack.reactions_enabled,
-                # Respect slack.show_thinking (surface reasoning as a 💭 reply).
+                # Respect slack.show_thinking (surface reasoning as a Thinking reply).
                 show_thinking=KiroCrewConfig.load().slack.show_thinking,
                 # History consolidation + display-name context, same as native
                 # handle_message (parity: don't drop these on the transport path).

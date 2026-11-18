@@ -32,13 +32,13 @@ def _msg_elements(messages: list[dict]) -> list[dict]:
     items: list[dict] = []
     for msg in messages[-_MAX_MESSAGES:]:
         role = msg.get("role", "user")
-        emoji = "robot_face" if role == "assistant" else "bust_in_silhouette"
+        speaker = "Agent:" if role == "assistant" else "You:"
         text = redact_and_truncate(msg.get("content") or "", max_chars=_MAX_MSG_CHARS)
         items.append(
             {
                 "type": "rich_text_section",
                 "elements": [
-                    {"type": "emoji", "name": emoji},
+                    {"type": "text", "text": speaker, "style": {"bold": True}},
                     {"type": "text", "text": f" {text}"},
                 ],
             }
@@ -56,22 +56,22 @@ def session_task_card(
 ) -> list[dict]:
     """Task card block + resume button for a session."""
     if status == "active":
-        emoji, card_status = "🟢", "in_progress"
+        state, card_status = " (active)", "in_progress"
     elif status == "paused":
-        emoji, card_status = "⏸️", "complete"
+        state, card_status = " (paused)", "complete"
     elif status == "ended":
-        # Only reachable when a caller asked for dismissed rows, so the glyph
+        # Only reachable when a caller asked for dismissed rows, so the word
         # has to separate "you ended this one" from a merely idle row —
         # otherwise the opt-in shows the two as the same thing.
-        emoji, card_status = "🛑", "complete"
+        state, card_status = " (ended)", "complete"
     else:
-        emoji, card_status = "⚫", "complete"
+        state, card_status = " (idle)", "complete"
 
     items = _msg_elements(messages)
     card: dict = {
         "type": "task_card",
         "task_id": f"session_{idx}",
-        "title": f"{emoji} {title} — {agent or 'kirocrew'} agent",
+        "title": f"{title} — {agent or 'kirocrew'} agent{state}",
         "status": card_status,
     }
     if items:
@@ -92,13 +92,13 @@ def session_task_card(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "▶️ Resume"},
+                    "text": {"type": "plain_text", "text": "Resume"},
                     "action_id": f"mc_session_resume_{key}",
                     "value": json.dumps({"key": key, "title": title}),
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "⏹️ End"},
+                    "text": {"type": "plain_text", "text": "End"},
                     "action_id": f"mc_session_end_{key}",
                     "value": key,
                     "style": "danger",
@@ -125,8 +125,8 @@ def dashboard_link_block(url: str, link_mins: int, session_mins: int) -> list[di
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"🔗 <{url}|*Open Dashboard*>\n"
-                    f"⏱ Click within {link_mins}m · session lasts {session_mins}m"
+                    f"<{url}|*Open Dashboard*>\n"
+                    f"Click within {link_mins}m · session lasts {session_mins}m"
                 ),
             },
         },
@@ -140,7 +140,7 @@ def deprecation_warning_block(old_cmd: str, new_cmd: str) -> dict:
         "elements": [
             {
                 "type": "mrkdwn",
-                "text": f"⚠️ `{old_cmd}` is deprecated. Use `{new_cmd}` instead.",
+                "text": f"Warning: `{old_cmd}` is deprecated. Use `{new_cmd}` instead.",
             }
         ],
     }
@@ -318,7 +318,7 @@ def allowlist_list_block(user_ids: list[str]) -> list[dict]:
                 "text": {"type": "mrkdwn", "text": f"<@{uid}>"},
                 "accessory": {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "🚫 Remove"},
+                    "text": {"type": "plain_text", "text": "Remove"},
                     "action_id": f"mc_allowlist_remove_{uid}",
                     "value": uid,
                     "style": "danger",
@@ -345,7 +345,7 @@ def channel_list_block(channel_ids: list[str]) -> list[dict]:
                 "text": {"type": "mrkdwn", "text": f"<#{cid}>"},
                 "accessory": {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "🚫 Remove"},
+                    "text": {"type": "plain_text", "text": "Remove"},
                     "action_id": f"mc_channel_remove_{cid}",
                     "value": cid,
                     "style": "danger",
@@ -360,11 +360,11 @@ def channel_list_block(channel_ids: list[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 _ACTIVATION_OPTIONS = [
-    ("always", "⚡ always", "Respond to every message"),
-    ("mention", "🔔 mention", "Only when @mentioned"),
-    ("observe", "👀 observe", "Record all, respond when @mentioned"),
-    ("review", "📋 review", "Draft for approval before posting"),
-    ("off", "🔇 off", "Ignore completely"),
+    ("always", "always", "Respond to every message"),
+    ("mention", "mention", "Only when @mentioned"),
+    ("observe", "observe", "Record all, respond when @mentioned"),
+    ("review", "review", "Draft for approval before posting"),
+    ("off", "off", "Ignore completely"),
 ]
 
 
@@ -400,7 +400,7 @@ def channels_modal(
                     "accessory": {
                         "type": "button",
                         "action_id": f"mc_ch_remove_{cid}",
-                        "text": {"type": "plain_text", "text": "✕ Remove"},
+                        "text": {"type": "plain_text", "text": "Remove"},
                         "style": "danger",
                         "value": cid,
                         "confirm": {
@@ -432,7 +432,7 @@ def channels_modal(
             ]
             if agents:
                 agent_opts = [
-                    {"text": {"type": "plain_text", "text": "🤖 default"}, "value": "__default__"},
+                    {"text": {"type": "plain_text", "text": "default"}, "value": "__default__"},
                 ] + [{"text": {"type": "plain_text", "text": n[:75]}, "value": n} for n in agents]
                 agent_initial = next(
                     (o for o in agent_opts if o["value"] == (cur_agent or "__default__")),
@@ -464,7 +464,7 @@ def channels_modal(
                 {
                     "type": "conversations_select",
                     "action_id": "mc_ch_add",
-                    "placeholder": {"type": "plain_text", "text": "➕ Add a channel…"},
+                    "placeholder": {"type": "plain_text", "text": "Add a channel…"},
                     "filter": {
                         "include": ["public", "private"],
                         "exclude_bot_users": True,
@@ -512,7 +512,7 @@ def build_stopping_blocks(session_key: str) -> list[dict]:
             body=(
                 Section(
                     text=Text(
-                        ("⏹  **Stopping…**\nCooperative cancel in progress.",),
+                        ("**Stopping…**\nCooperative cancel in progress.",),
                         fit=Fit.REFUSE,
                     )
                 ),
@@ -536,13 +536,13 @@ def build_stopping_blocks(session_key: str) -> list[dict]:
 
 def build_stopped_blocks() -> list[dict]:
     """Resolved ephemeral: cooperative cancel succeeded."""
-    return _slack_blocks(Card(body=(Section(text=Text(("⏹  **[Stopped]**",), fit=Fit.REFUSE)),)))
+    return _slack_blocks(Card(body=(Section(text=Text(("**[Stopped]**",), fit=Fit.REFUSE)),)))
 
 
 def build_stop_failed_blocks() -> list[dict]:
     """Resolved ephemeral: cooperative cancel failed, session was hard-killed."""
     return _slack_blocks(
-        Card(body=(Section(text=Text(("⛔  **[Stop Failed, Session Reset]**",), fit=Fit.REFUSE)),))
+        Card(body=(Section(text=Text(("**[Stop Failed, Session Reset]**",), fit=Fit.REFUSE)),))
     )
 
 
@@ -558,7 +558,7 @@ def build_working_blocks(session_key: str, *, include_dashboard_link: bool = Fal
     """
     buttons = [
         Button(
-            label="⏹ Stop",
+            label="Stop",
             action_id=f"mc_inline_stop_{session_key}",
             value=session_key,
             style="danger",
@@ -572,7 +572,7 @@ def build_working_blocks(session_key: str, *, include_dashboard_link: bool = Fal
     return _slack_blocks(
         Card(
             body=(
-                Context(items=(Text(("⏳ _Working…_",), fit=Fit.REFUSE),)),
+                Context(items=(Text(("_Working…_",), fit=Fit.REFUSE),)),
                 Actions(buttons=tuple(buttons)),
             )
         )
@@ -590,7 +590,7 @@ def review_draft_blocks(draft_text: str, draft_key: str) -> list[dict]:
     return [
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "📝 *Draft response:*"},
+            "text": {"type": "mrkdwn", "text": "*Draft response:*"},
         },
         {"type": "divider"},
         {
@@ -605,26 +605,26 @@ def review_draft_blocks(draft_text: str, draft_key: str) -> list[dict]:
                 {
                     "type": "button",
                     "action_id": REVIEW_ACTION_APPROVE,
-                    "text": {"type": "plain_text", "text": "✅ Approve"},
+                    "text": {"type": "plain_text", "text": "Approve"},
                     "style": "primary",
                     "value": draft_key,
                 },
                 {
                     "type": "button",
                     "action_id": REVIEW_ACTION_EDIT,
-                    "text": {"type": "plain_text", "text": "✏️ Manual Override"},
+                    "text": {"type": "plain_text", "text": "Manual Override"},
                     "value": draft_key,
                 },
                 {
                     "type": "button",
                     "action_id": REVIEW_ACTION_REVISE,
-                    "text": {"type": "plain_text", "text": "🤖 Refine with AI"},
+                    "text": {"type": "plain_text", "text": "Refine with AI"},
                     "value": draft_key,
                 },
                 {
                     "type": "button",
                     "action_id": REVIEW_ACTION_CANCEL,
-                    "text": {"type": "plain_text", "text": "❌ Cancel"},
+                    "text": {"type": "plain_text", "text": "Cancel"},
                     "style": "danger",
                     "value": draft_key,
                 },

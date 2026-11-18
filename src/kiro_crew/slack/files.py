@@ -222,9 +222,9 @@ def rejection_notes(rejections: Sequence[Rejection]) -> str:
     """
     for rejection in rejections:
         logger.info("slack: local image not uploaded (%s)", rejection.reason)
-    lines = [f"⚠️ _{rejection}_" for rejection in rejections[:_MAX_REJECTION_LINES]]
+    lines = [f"Warning: _{rejection}_" for rejection in rejections[:_MAX_REJECTION_LINES]]
     if len(rejections) > _MAX_REJECTION_LINES:
-        lines.append(f"⚠️ _…and {len(rejections) - _MAX_REJECTION_LINES} more_")
+        lines.append(f"Warning: _…and {len(rejections) - _MAX_REJECTION_LINES} more_")
     return _display_safe("\n".join(lines))
 
 

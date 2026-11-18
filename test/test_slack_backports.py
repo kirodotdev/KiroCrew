@@ -574,8 +574,8 @@ class TestFenceSafeSplitting:
 
         posts = [kw["text"] for m, kw in slack.calls if m == "post_message"]
         thinking = [t for t in posts if "reasoning step." in t]
-        assert len(thinking) > 1, "an over-limit 💭 reply is rejected whole by Slack"
-        assert thinking[0].startswith("💭")
+        assert len(thinking) > 1, "an over-limit Thinking reply is rejected whole by Slack"
+        assert thinking[0].startswith("*Thinking*")
         for text in thinking:
             assert len(text) <= SLACK_MSG_LIMIT, len(text)
 

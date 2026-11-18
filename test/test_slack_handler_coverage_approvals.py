@@ -410,7 +410,7 @@ class TestRequestApproval:
         provider.supports_refusal_steer = False
         provider.reject_tool = AsyncMock()
         await h._request_approval(slack_client, provider, "C1", "t1", _perm_event())
-        assert "🚫 Rejected" in _texts(slack_client)
+        assert "Rejected" in _texts(slack_client)
 
 
 class _SteerRecordingProvider:

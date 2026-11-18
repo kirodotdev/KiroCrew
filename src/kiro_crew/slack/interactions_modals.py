@@ -295,7 +295,7 @@ async def _handle_message_shortcut(payload: dict) -> None:
             escape_mrkdwn(f["name"] or f["filetype"] or "file")[:120] for f in fitted_files
         ]
         total_files = len(fitted_files) + omitted_files
-        file_line = f"\n📎 {total_files} file(s): {', '.join(display_names)}"
+        file_line = f"\n{total_files} file(s): {', '.join(display_names)}"
         if omitted_files:
             file_line += f" (+{omitted_files} more)"
     preview_text = fitted["text"]

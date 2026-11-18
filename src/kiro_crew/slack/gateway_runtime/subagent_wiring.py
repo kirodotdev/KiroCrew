@@ -204,7 +204,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                 "agents": agents,
             }
             logger.info(
-                "📡 subagent_status WS: event=%s slot=%s running=%d agents=%d",
+                "subagent_status WS: event=%s slot=%s running=%d agents=%d",
                 event,
                 slot,
                 running,
