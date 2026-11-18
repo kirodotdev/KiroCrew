@@ -234,3 +234,21 @@ async def test_the_recorded_plan_view_id_reaches_the_links(env: Any) -> None:
     surface_store().update(CH, plan_view_id="VPLAN")
     assert wrapup._plan_tab(CH) == "VPLAN"
     assert tabs.tabs_for(surface_store().get(CH), CH, code=False).plan == "VPLAN"
+
+
+async def test_a_full_plan_and_full_comments_stay_under_the_response_cap(env: Any) -> None:
+    from kiro_crew.validation_parts.input_bounds import MAX_RESPONSE_LEN
+
+    _bind(env)
+    _plan(env)
+    threads = [_thread(f"A{n}", OWNER, "y" * 5000) for n in range(100)]
+    for n, thread in enumerate(threads):
+        thread["ts"] = f"1000.{n + 1:06d}"
+    answer = _answer(*threads, has_more_comments=True)
+    answer["content"] = "x" * 200_000
+    env.api.responses[GET] = answer
+    out = await _read(env)
+    assert out.ok and len(out.text) < MAX_RESPONSE_LEN
+    # The newest comments are the ones kept, and the omission is stated exactly.
+    assert "older comments are not shown" in out.text and "[cut at" in out.text
+    assert "older open comment threads" in out.text

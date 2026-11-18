@@ -2662,7 +2662,7 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
 - **Plan canvas read-back (`code_channel_read_plan_canvas`).** Takes no argument (a
   channel or canvas id is refused like any other). It reads the channel's OWN recorded
   `plan_canvas_id` with `getCanvas` (open threads only) and returns the markdown (cut at
-  60,000 characters), the title and up to the newest 100 open comments and replies, so
+  50,000 characters), the title and the newest open comments and replies that fit 35,000 characters (at most 100), so the whole answer stays under the 100,000-character tool response cap,
   an agent that lost the plan to a restart or compaction can read it before it
   revises it. Everything passes the channel redaction and is framed as content to read,
   not instructions. Comments follow delivery's own gates: only authors who may use Kiro Crew

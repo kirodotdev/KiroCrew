@@ -231,7 +231,10 @@ def feedback_text(user: str, comments: list[Comment], note: str = "") -> str:
 
 
 #: The plan markdown a read hands back, in characters; the rest is cut with a note.
-MAX_PLAN_CHARS = 60_000
+MAX_PLAN_CHARS = 50_000
+#: The comment lines a plan read lists, in characters, so the whole answer (plan,
+#: comments, notes) stays under the MCP response cap (100,000).
+MAX_COMMENT_BUDGET = 35_000
 #: Comments and replies a plan read lists (the newest; Slack's own cap is 100 threads).
 MAX_READ_COMMENTS = 100
 
@@ -277,15 +280,22 @@ def plan_canvas_text(
         # By Slack ts, so the newest are kept (a thread's replies sit after its own
         # comment in the listing, whatever their age).
         comments.sort(key=lambda c: _ts_key(c.ts))
-        shown = comments[-MAX_READ_COMMENTS:]
-        lines.append(f"Open comments ({len(shown)} shown, oldest first):")
-        for c in shown:
+        rendered: list[str] = []
+        used = 0
+        for c in reversed(comments[-MAX_READ_COMMENTS:]):
             where = f' on "{_redact(_cut(c.quoted, MAX_QUOTE_CHARS))}"' if c.quoted else ""
             kind = "  Reply" if c.reply_to else "Comment"
             who = f"<@{c.user}>" if c.user else "someone"
-            lines.append(f"• {kind} by {who}{where}: {_redact(_cut(c.text, MAX_COMMENT_CHARS))}")
-        if len(shown) < len(comments):
-            lines.append(f"Note: {len(comments) - len(shown)} older comments are not shown.")
+            line = f"• {kind} by {who}{where}: {_redact(_cut(c.text, MAX_COMMENT_CHARS))}"
+            if used + len(line) > MAX_COMMENT_BUDGET:
+                break
+            rendered.append(line)
+            used += len(line) + 1
+        rendered.reverse()
+        lines.append(f"Open comments ({len(rendered)} shown, oldest first):")
+        lines.extend(rendered)
+        if len(rendered) < len(comments):
+            lines.append(f"Note: {len(comments) - len(rendered)} older comments are not shown.")
     note = dropped_note(data)
     if note:
         lines.append(note)
