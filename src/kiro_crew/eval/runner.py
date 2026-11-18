@@ -722,6 +722,25 @@ class EvalRunner:
                     await provider.reject_tool(event.request_id)
                     continue
 
+                # An organisation's ``ask`` on a KAS web call (``web_ask_rule``): an
+                # eval run has nobody to ask, so it is refused.
+                from kiro_crew.web_ask_rule import unattended_refusal
+
+                _web_refusal = unattended_refusal(event)
+                if _web_refusal:
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        tool_name=event.title,
+                        outcome="denied",
+                        source="eval_runner",
+                        error="web_ask_rule",
+                    )
+                    await _steer_host_deny(
+                        provider, event, _web_refusal, cause=DENY_CAUSE_SURFACE_POLICY
+                    )
+                    await provider.reject_tool(event.request_id)
+                    continue
+
                 safety = self._classify_safe_tool(event)
                 if safety in ("exact", "prefix_api"):
                     # Known read-only API — approve without path check.

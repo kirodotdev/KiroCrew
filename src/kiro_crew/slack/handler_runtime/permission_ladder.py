@@ -188,13 +188,16 @@ async def _answer_permission_request(
     _agent = turn._agent
     answer = turn.answer
     task = turn.task
-    from kiro_crew import mate_held_rules
+    from kiro_crew import mate_held_rules, web_ask_rule
 
-    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``):
-    # no rung below approves a call it covers on its own; it reaches the prompt.
-    _held = await asyncio.to_thread(
-        mate_held_rules.held_for, event, session_key=session_key, agent=_agent or ""
-    )
+    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``),
+    # or an organisation's ``ask`` on a KAS web call (``web_ask_rule``): no rung
+    # below approves a call it covers on its own; it reaches the prompt.
+    _held = list(
+        await asyncio.to_thread(
+            mate_held_rules.held_for, event, session_key=session_key, agent=_agent or ""
+        )
+    ) + web_ask_rule.held_phrases(event)
     # Check tool hooks for auto-approve
     if context_builder:
         tool_result = await run_in_tool_gate_pool(

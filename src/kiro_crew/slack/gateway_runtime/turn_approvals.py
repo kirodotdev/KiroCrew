@@ -13,7 +13,7 @@ see :mod:`kiro_crew.slack.gateway_runtime`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import asyncio
@@ -185,6 +185,14 @@ def _interactive_approval(
         _held_call = mate_held_rules.call_is_held() or bool(
             await asyncio.to_thread(mate_held_rules.held_for, event, session_key=parent_session_key)
         )
+        # An LTS organisation's ``ask`` on a KAS web call (``web_ask_rule``): only
+        # the person's prompt may answer it, as for a held Bot limit.
+        from kiro_crew import web_ask_rule
+
+        _web_ask = web_ask_rule.needs_person(event)
+        # Passed only when set, so every other request is made exactly as before.
+        _person_only: dict[str, Any] = {"person_only": True} if _web_ask else {}
+        _held_call = _held_call or bool(_web_ask)
         if _held_call:
             _child_grant_eligible = False
         # A tool request's id is the backend's JSON-RPC id, counted per connection,
@@ -366,7 +374,7 @@ def _interactive_approval(
                     # is what blocks the auto-approve, so the audit names it.
                     _sel_log(
                         caller=f"slot:{_parent_slot_key}",
-                        operation=f"{source}.bot_limit_held",
+                        operation=f"{source}.{'web_ask_rule' if _web_ask else 'bot_limit_held'}",
                         outcome="not_auto_approved",
                         resources=_safe_title,
                     )
@@ -537,6 +545,7 @@ def _interactive_approval(
                             tool_purpose=event.tool_purpose,
                             slot=approval_slot,
                             is_background=is_background,
+                            **_person_only,
                         )
                     )
 
@@ -630,6 +639,7 @@ def _interactive_approval(
                 tool_purpose=event.tool_purpose,
                 slot=approval_slot,
                 is_background=is_background,
+                **_person_only,
                 on_host_decision=(
                     None
                     if on_host_decision is None
@@ -710,6 +720,20 @@ async def _heartbeat_approval(
             metadata=metadata or None,
             critical=critical,
         )
+
+    from kiro_crew import web_ask_rule
+
+    if web_ask_rule.needs_person(event):
+        # An organisation's ``ask`` on a KAS web call (``web_ask_rule``): the
+        # heartbeat has nobody to ask, so it refuses the call, never approves it.
+        try:
+            _audit("denied", reason="web_ask_rule")
+        except Exception:
+            logger.warning(
+                "SEL audit failed on heartbeat web-ask deny path — tool was still rejected",
+                exc_info=True,
+            )
+        return False
 
     if _is_heartbeat_safe_tool(event):
         # A shell command passed on its text; the program names in it still

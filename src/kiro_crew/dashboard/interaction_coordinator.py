@@ -145,12 +145,14 @@ class ApprovalCoordinator:
         run_task_id: str = "",
         task_index: int | None = None,
         on_host_decision: Callable[[str], object] | None = None,
+        person_only: bool = False,
     ) -> bool:
         """Wait for a person's answer; an expired or cancelled wait answers ``False``.
 
         A caller that records who decided passes *on_host_decision*: it is told
         ``DENY_CAUSE_APPROVAL_TIMEOUT`` before an expiry's ``False``, and a
-        cancellation is raised to it, because nobody refused.
+        cancellation is raised to it, because nobody refused. *person_only* marks
+        a request a trust grant's sweep must leave open (``web_ask_rule``).
         """
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
@@ -170,6 +172,8 @@ class ApprovalCoordinator:
             "slot": slot,
             "ts": time.time(),
         }
+        if person_only:
+            record["person_only"] = True
         if run_task_id and isinstance(task_index, int) and not isinstance(task_index, bool):
             # A task gate names its run and task as fields, so a project page
             # finds its own run's gate in the global listing without reading

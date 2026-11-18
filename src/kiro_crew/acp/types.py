@@ -1297,6 +1297,11 @@ class AcpEvent:
     #: on a permission event, and only from that engine-written field, never from
     #: the title or the model's arguments. Empty when the frame carries none.
     harness_tool_id: str = ""
+    #: KAS said this request is an organisation's ``ask``: its ``_meta.kiro.consent``
+    #: names a ``matchedRule`` of effect ``ask`` under scope ``organization`` or
+    #: ``administration`` (``permission_requests.kas_managed_ask``). Engine-written,
+    #: like ``harness_tool_id``; False on every other harness.
+    kas_managed_ask: bool = False
     #: The kiro-cli read built-in (``fs_read``, ``web_fetch``, ...) a claude
     #: permission request is for, mapped from the ``_meta.claudeCode.toolName``
     #: claude-agent-acp stamped on the preceding ``tool_call`` frame. Set only on

@@ -748,6 +748,10 @@ async def apply_approval_mode(
         if not scoped:
             for aid in list(state._approval_futures):
                 fut = state._approval_futures[aid]
+                if (state._pending_approvals.get(aid) or {}).get("person_only"):
+                    # An organisation's ``ask`` on a web call (``web_ask_rule``):
+                    # a trust grant is not a person's answer to it.
+                    continue
                 if not fut.done():
                     state.resolve_approval(aid, True)
                     try:
@@ -765,6 +769,10 @@ async def apply_approval_mode(
                 for ch in mgr._channels.values():
                     for agent in ch.members.values():
                         fut = agent._approval_future
+                        if getattr(agent, "_pending_approval_person_only", False):
+                            # An organisation's ``ask`` on a web call
+                            # (``web_ask_rule``): not a trust grant's to answer.
+                            continue
                         if fut and not fut.done():
                             fut.set_result("approved")
                             try:
@@ -831,12 +839,19 @@ def _sweep_pending_approvals(
         # row's window on the event loop (``load_window_off_loop`` is what a
         # reader awaits first), once per such slot on every all-slots grant.
         return
+    from kiro_crew import web_ask_rule
+
     _elicitations = _pending_elicitation_ids(slot)
     for aid, fut in list(slot._approval_futures.items()):
-        if aid in _elicitations or _is_deny_override_card(slot, aid):
-            # A server's own question to the person, or a security-rule
-            # override: a trust tier is not an answer to either, and the card
-            # stays open.
+        if (
+            aid in _elicitations
+            or _is_deny_override_card(slot, aid)
+            or _get_pattern_from_pending(slot, aid, web_ask_rule.CARD_META_KEY)
+        ):
+            # A server's own question to the person, a security-rule override,
+            # or a web call the organisation asks a person about
+            # (``web_ask_rule``): a trust tier is not an answer to any of them,
+            # and the card stays open.
             continue
         if not fut.done():
             # Read while still pending: names the row the frame settles.

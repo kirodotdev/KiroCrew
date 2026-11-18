@@ -384,6 +384,8 @@ class _Site:
 _PLANNER_SITES = (
     _Site('error="hook_deny"', "host"),
     _Site('error="no_hook_store"', "host"),
+    # An organisation's web ``ask`` (``web_ask_rule``): decomposition has nobody to ask.
+    _Site('error="web_ask_rule"', "host"),
 )
 
 _REJECT = re.compile(r"^\s*await \w+\.reject_tool\(")

@@ -672,6 +672,59 @@ class TestApprovalLadder:
         else:
             assert asked == [] and p.approved == ["rq1"]
 
+    @pytest.mark.parametrize(
+        "rung",
+        [
+            {"approval_mode": APPROVAL_AUTO},
+            {"approval_mode": APPROVAL_INTERACTIVE, "auto_approve_tool": lambda ev: True},
+            {"approval_mode": APPROVAL_INTERACTIVE, "auto_approve_session": lambda: True},
+        ],
+        ids=["auto", "auto-approve-tool", "session-trust"],
+    )
+    @pytest.mark.parametrize("decided", [True, False], ids=["decider", "no-decider"])
+    @pytest.mark.parametrize("edition", ["lts", "oss"])
+    def test_an_org_ask_on_a_kas_web_call_is_never_auto_approved(
+        self, monkeypatch, rung, decided, edition
+    ):
+        """``web_ask_rule``: in LTS no auto rung answers KAS's ask on an organisation's
+        web rule. A decider is asked as a person's; with none the call is refused. An
+        ``oss`` build approves it on that rung as before."""
+        from types import SimpleNamespace
+
+        from kiro_crew import mate_held_rules, web_ask_rule
+
+        monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: [])
+        monkeypatch.setattr(
+            web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts")
+        )
+        asked: list = []
+        seen: list = []
+
+        async def decider(event):
+            asked.append(event.request_id)
+            seen.append(mate_held_rules.call_is_held())
+            return False
+
+        script = [
+            AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="rq1",
+                options=[{"id": "approve"}],
+                harness_tool_id="web_fetch",
+                kas_builtin_ids=True,
+                kas_managed_ask=True,
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        p = _ScriptedProvider(script)
+        _run(p, _RecordingRenderer(), decider=decider if decided else None, **rung)
+        if edition == "oss":
+            assert asked == [] and p.approved == ["rq1"]
+        elif decided:
+            assert asked == ["rq1"] and seen == [True] and p.approved == []
+        else:
+            assert p.approved == [] and p.rejected == ["rq1"]
+
 
 class _SteerRecordingProvider(_ScriptedProvider):
     """A provider that can be steered; records every wire call in order."""

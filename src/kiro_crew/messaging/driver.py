@@ -1229,11 +1229,16 @@ class TurnDriver:
                     await self.provider.reject_tool(event.request_id)
                     continue
                 from kiro_crew.mate_held_rules import held_for
+                from kiro_crew.web_ask_rule import held_phrases
 
-                # A held Bot limit (``mate_held_rules``): only a person approves it.
-                _held = await asyncio.to_thread(
-                    held_for, event, session_key=self.audit_session_key, agent=self.audit_agent
-                )
+                # A held Bot limit (``mate_held_rules``), or an organisation's
+                # ``ask`` on a KAS web call (``web_ask_rule``): only a person
+                # approves it; with no decider ``_approve`` refuses it.
+                _held = list(
+                    await asyncio.to_thread(
+                        held_for, event, session_key=self.audit_session_key, agent=self.audit_agent
+                    )
+                ) + held_phrases(event)
                 if _gate == "auto_approve" and not _held:
                     # The gate's hook granted this by NAME (the
                     # `auto_approve_tools` globs, or the read-only

@@ -603,7 +603,16 @@ in an oss build). One fetch is the Kiro control plane's
   `skill` inside an allowed glob (no one-mode form), or any named deny on `subagent`
   (an agent install id is a package), turns that kind's install off; plugin sync stays off. A row may
   land in more than one key (`Managed.also`). Not read yet: `embedding_model_use`
-  (D13). A rule on a meta-capability
+  (D13). `web_fetch` and `web_search` are KAS's to enforce; only an `ask` on either,
+  named directly or through `all` / `builtin`, is read, into the open ruleset
+  `unattended_web_tools` as a deny of that term (`web_ask_ruleset`). `kiro_crew.web_ask_rule`
+  reads it, with KAS's own consent block on the request (`matchedRule.effect: ask`,
+  scope `organization` / `administration`), so a KAS `web_fetch` or `remote_web_search`
+  request either source asks about reaches the approval card: no session trust, YOLO,
+  scoped grant, trust sweep or `tool_permission` grant answers it, on the dashboard,
+  Slack, messaging, channel, headless, cron and task-decomposition paths alike; a
+  surface with nobody to ask refuses it. A KAS request with no tool id under such a
+  policy is treated the same way. A rule on a meta-capability
   (`all`, `builtin`, `filesystem`) reaches the managed capabilities beneath it in
   `acp/kas_permissions.py` `META_CAPABILITY_EXPANSION`; a deny on `all` reaches
   every managed capability, the stricter reading. An

@@ -895,3 +895,69 @@ def test_the_kiro_cli_helper_check_reads_disk_off_the_event_loop(monkeypatch):
     asyncio.run(KiroHarness().session_extras("helper", work_dir=None, session_key="subagent:a"))
 
     assert seen == [False]
+
+
+def _web_event() -> LLMEvent:
+    return LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="Fetching https://example.com",
+        request_id="r1",
+        tool_kind="fetch",
+        harness_tool_id="web_fetch",
+        kas_builtin_ids=True,
+        kas_managed_ask=True,
+    )
+
+
+async def _resolve_web(approver=None) -> list[str]:
+    provider = _Provider()
+    with patch("kiro_crew.permission_floor.refusal_for", return_value=None):
+        await _resolve_permission(
+            provider,
+            _web_event(),
+            ToolApprovalPolicy.AUTO_APPROVE,
+            None,
+            on_tool_approval=approver,
+            agent="zxc",
+        )
+    return provider.calls
+
+
+@pytest.fixture
+def web_ask_edition(monkeypatch):
+    """Set which edition ``web_ask_rule`` reads; the rest of the turn stays ``oss``."""
+    from types import SimpleNamespace
+
+    from kiro_crew import web_ask_rule
+
+    def set_edition(edition: str) -> None:
+        monkeypatch.setattr(
+            web_ask_rule, "edition", SimpleNamespace(is_lts=lambda: edition == "lts")
+        )
+
+    return set_edition
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+async def test_a_surface_with_no_approver_refuses_an_org_web_ask(ledger, web_ask_edition, edition):
+    """``web_ask_rule``: an ``AUTO_APPROVE`` turn with nobody to ask refuses KAS's ask
+    on an organisation's web rule in LTS, and approves it in ``oss`` as before."""
+    web_ask_edition(edition)
+    assert await _resolve_web() == (["reject"] if edition == "lts" else ["approve"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["lts", "oss"])
+async def test_an_auto_cron_asks_a_person_for_an_org_web_ask(ledger, web_ask_edition, edition):
+    """``web_ask_rule``: an ``auto`` cron job's approver does not answer KAS's ask on an
+    organisation's web rule in LTS; its interactive fallback is asked instead."""
+    web_ask_edition(edition)
+    card = AsyncMock(return_value=False)
+    calls = await _resolve_web(auto_job_approver(card))
+    if edition == "lts":
+        assert calls == ["reject"]
+        card.assert_awaited_once()
+    else:
+        assert calls == ["approve"]
+        card.assert_not_awaited()

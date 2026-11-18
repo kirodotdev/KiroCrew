@@ -13,7 +13,8 @@ The ladder, in order:
 
 1. each floor may refuse;
 2. the gate may refuse; otherwise its auto-approve becomes a :class:`Hit`;
-3. the grants are walked in order, the gate's hit standing at
+3. the grants are walked in order (none for a call only a person may approve:
+   a held Bot limit, or an organisation's ``ask`` on a web call, ``web_ask_rule``), the gate's hit standing at
    :data:`GATE_GRANT`'s position. A low-fidelity child request under an enforced
    :class:`ChildRule` walks the rule's own grants instead and admits a hit only on
    evidence that reads no agent-authored event data. Otherwise the gate's
@@ -446,11 +447,16 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
     held: Hit | None = None
     # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``):
     # no grant answers a call it covers; only a person can.
-    from kiro_crew import mate_held_rules
+    # An LTS organisation's ``ask`` on a KAS web call (``web_ask_rule``) is held the
+    # same way: KAS asks so a person answers.
+    from kiro_crew import mate_held_rules, web_ask_rule
 
-    bot_held = mate_held_rules.current_held() or await asyncio.to_thread(
-        mate_held_rules.held_for, ask.event, session_key=ask.session_key, agent=ask.agent
-    )
+    bot_held = (
+        mate_held_rules.current_held()
+        or await asyncio.to_thread(
+            mate_held_rules.held_for, ask.event, session_key=ask.session_key, agent=ask.agent
+        )
+    ) + web_ask_rule.held_phrases(ask.event)
     for grant in () if bot_held else (policy.child.grants if low else policy.grants):
         hit = verdict if grant is GATE_GRANT else await grant.offer(ask)
         if hit is not None and await _admitted(ask, policy, hit, low):
