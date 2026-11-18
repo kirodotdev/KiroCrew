@@ -807,11 +807,14 @@ class _MarkerMatcher:
         from kiro_crew.option_marker_scan import (
             HEAD_CAP,
             MarkerRun,
+            as_newlines,
             head_count,
             markers_before,
             option_labels,
         )
 
+        source = text
+        text = as_newlines(source)
         if head_count(text) > HEAD_CAP:
             return
         if self._pattern is _RAW_OPTIONS_RE_LINE:
@@ -831,7 +834,9 @@ class _MarkerMatcher:
             if before is None:
                 continue
             if before and option_labels(match.group("labels")):
-                yield MarkerRun(before[0], match)
+                yield MarkerRun(before[0], match, source)
+            elif text is not source:
+                yield MarkerRun(match, match, source)
             else:
                 yield match
 
@@ -924,6 +929,9 @@ def _glued_marker_candidates(text: str) -> Iterator[tuple[re.Match[str], str]]:
     The candidate rules shared by the dashboard reflow and the channel relocation;
     see :func:`reflow_and_label_glued_option_marker` for why each rule exists.
     """
+    from kiro_crew.option_marker_scan import as_newlines
+
+    text = as_newlines(text)
     # One fence walker for the whole text, advanced to each candidate in turn.
     # Every candidate starts at a line start (``^`` under MULTILINE), so the slice
     # fed between two candidates always ends on a line boundary and the walker's
@@ -1043,6 +1051,8 @@ def relocate_glued_tail_marker(text: str) -> str:
     """
     if "[OPTIONS:" not in text:
         return text
+    from kiro_crew.option_marker_scan import as_newlines
+
     last = None
     for last in _glued_marker_candidates(text):
         pass
@@ -1054,7 +1064,7 @@ def relocate_glued_tail_marker(text: str) -> str:
         return text
     moved = text[: m.start()] + remainder + "\n" + m.group(0) + rest
     # Moved prose that opens a fence (``~~~py``) would swallow the marker.
-    if _in_open_fence(moved, m.start() + len(remainder) + 1):
+    if _in_open_fence(as_newlines(moved), m.start() + len(remainder) + 1):
         return text
     return moved if OPTIONS_RE_TRAILER.search(moved) else text
 
@@ -1475,8 +1485,10 @@ def _leading_wrapper_start(text: str, idx: int) -> int:
         run -= 1
     if run == idx:
         return idx
-    line_start = text.rfind("\n", 0, run) + 1
-    if text[line_start:run].strip(" \t") == "":
+    from kiro_crew.option_marker_scan import line_start
+
+    start = line_start(text, run)
+    if text[start:run].strip(" \t") == "":
         return run
     return idx
 

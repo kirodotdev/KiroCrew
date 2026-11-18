@@ -4,8 +4,9 @@ The line pattern in :mod:`kiro_crew.constants` needs the line end, so it finds
 only a line's LAST marker. This walk decides the rest of that line without a
 regex: a marker inside a head that never closed is refused, and the sibling
 markers running up to the last one are read with it as one run. The web
-dashboard's parser walks a line the same way. Lines end at ``\\n`` only, as the
-line pattern's do.
+dashboard's parser walks a line the same way. A line ends at any of
+:data:`LINE_BREAKS`, the web parser's set; the matcher hands this walk and the
+line pattern text with each of them written as ``\\n`` (:func:`as_newlines`).
 
 The bracket tables and the sibling check are passed in, so this module imports
 nothing from the grammar it serves.
@@ -24,6 +25,21 @@ _HEAD_FRAME = -1
 #: Heads one message may carry before EVERY marker in it is refused, which
 #: bounds the per-message work. The same cap as the web parser's.
 HEAD_CAP = 256
+#: The characters that end a line: the web parser's ``isLineBreak`` set.
+LINE_BREAKS = "\n\r\u2028\u2029"
+_AS_NEWLINE = str.maketrans(dict.fromkeys(LINE_BREAKS[1:], "\n"))
+
+
+def as_newlines(text: str) -> str:
+    """*text* with every line break written as ``\\n``, so no offset moves."""
+    if any(br in text for br in LINE_BREAKS[1:]):
+        return text.translate(_AS_NEWLINE)
+    return text
+
+
+def line_start(text: str, end: int) -> int:
+    """Where the line holding *end* starts: just past the last break before it."""
+    return max(text.rfind(br, 0, end) for br in LINE_BREAKS) + 1
 
 
 def head_at(text: str, i: int) -> int:
@@ -214,17 +230,22 @@ class MarkerRun:
 
     It spans the first sibling to the last marker, and its groups are the last
     marker's, because the last marker is the one whose options a turn offers.
+    The matches may come from :func:`as_newlines`' copy; *string* is the text
+    the groups are read from, so a label keeps its own line breaks.
     """
 
-    __slots__ = ("_first", "_last")
+    __slots__ = ("_first", "_last", "_string")
 
-    def __init__(self, first: re.Match[str], last: re.Match[str]) -> None:
+    def __init__(
+        self, first: re.Match[str], last: re.Match[str], string: str | None = None
+    ) -> None:
         self._first = first
         self._last = last
+        self._string = last.string if string is None else string
 
     @property
     def string(self) -> str:
-        return self._last.string
+        return self._string
 
     def start(self) -> int:
         return self._first.start()
@@ -238,7 +259,8 @@ class MarkerRun:
     def group(self, name: str | int = 0) -> str | Any:
         if name == 0:
             return self.string[self.start() : self.end()]
-        return self._last.group(name)
+        start, end = self._last.span(name)
+        return None if start < 0 else self.string[start:end]
 
     def groupdict(self) -> dict[str, str | Any]:
-        return self._last.groupdict()
+        return {name: self.group(name) for name in self._last.groupdict()}
