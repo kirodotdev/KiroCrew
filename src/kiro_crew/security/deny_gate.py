@@ -992,6 +992,10 @@ def is_denied(
             # bytes, so drop to the whole-command span.
             if span is not None and len(lower) != len(tool_name):
                 span = None
+        elif predicate is _argv._reaches_self_over_ssh:
+            # Also the command as submitted: a wrapper's option words keep their
+            # case there (``sudo -H`` is not ``sudo -h``).
+            hit = _argv._reaches_self_over_ssh(lower, raw_text=tool_name)
         else:
             hit = predicate(lower)
         if hit:  # never waived: a self-guard rule (``_DenyWaiver``)
