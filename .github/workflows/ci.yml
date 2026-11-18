@@ -1584,6 +1584,7 @@ jobs:
           by_mem=$(( (mem_mib - 2048) / 3072 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
+          WORKERS=6
           echo "pytest workers: $WORKERS"
           # Host memory in use (total - available), sampled every 5s; the
           # "Report peak memory" step prints the high-water mark.
