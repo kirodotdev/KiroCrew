@@ -226,3 +226,11 @@ def test_windows_lookup_applies_pathext_itself(refs, home, monkeypatch, tmp_path
     _place(on_path, "ffprobe")
     local.unlink()
     assert refs.deps.which_any("ffprobe", refs.deps._ffmpeg_dirs()) is None
+
+
+def test_run_survives_probe_output_that_is_not_utf8(refs):
+    """The doctor's ``run`` promises never to raise, whatever a probe prints."""
+    child = "import sys; sys.stdout.buffer.write(b'\\xff ok')"
+    proc = refs.deps.run([sys.executable, "-c", child])
+    assert proc.returncode == 0
+    assert "ok" in proc.stdout

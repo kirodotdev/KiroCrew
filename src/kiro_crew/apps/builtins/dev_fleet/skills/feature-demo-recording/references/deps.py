@@ -119,7 +119,9 @@ def run(cmd, **kw):
     the caller's returncode/stdout contract so no probe needs to special-case it.
     """
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+        return subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw
+        )
     except subprocess.TimeoutExpired as exc:
         return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {exc.timeout}s")
     except OSError as exc:
