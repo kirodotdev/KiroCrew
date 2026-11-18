@@ -705,7 +705,10 @@ that DECODED and then failed to parse, and bytes that are not UTF-8 never reache
 parser. Overwriting them would replace every account's toggles, retention count and run
 history -- including the `upload_versions` records the ownership test reads -- on the
 strength of a document nobody read. The abandoning error stays an `OSError` subclass, so
-`set_nightly`'s existing handler needs no change. Neither reader catches the wider
+`set_nightly`'s existing handler needs no change. A leading UTF-8 byte-order mark (a
+Windows "UTF-8 with BOM" save) is not content, so both readers parse past it
+(`user_json.loads_user_json`): such a file is read whole, the mutation carries every
+account forward, and the sweep applies its configured keep count. Neither reader catches the wider
 `ValueError`,
 so a surprising one stays loud. Neither is ever derived from `nightly` in either
 direction: authorizing unattended uploads is not authorizing permanent deletes, and
