@@ -1422,19 +1422,6 @@ def _red_green(path: Path, check: Any, old: str | None, new: str) -> None:
     check()
 
 
-def test_every_owner_coroutine_file_is_checked_for_config_dir() -> None:
-    import test_no_config_dir_in_async as guard
-
-    with_async = {
-        f"dashboard/file_api/{path.name}"
-        for path in _OWNER_DIR.glob("[!_]*.py")
-        if "async def " in path.read_text(encoding="utf-8")
-    }
-    assert len(with_async) >= 11
-    assert with_async <= set(guard._ASYNC_CHECKED_FILES)
-    assert "dashboard/handlers/files.py" in guard._ASYNC_CHECKED_FILES
-
-
 def test_the_config_dir_ratchet_reads_the_owners(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

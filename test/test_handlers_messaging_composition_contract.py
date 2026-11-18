@@ -1439,18 +1439,6 @@ def test_the_census_sites_stay_in_their_census_homes() -> None:
     assert {path: _BASELINE_LOG_SITE_CENSUS.get(path) for path in _CENSUS_HOMES} == _CENSUS_HOMES
 
 
-def test_every_owner_coroutine_file_is_checked_for_config_dir() -> None:
-    import test_no_config_dir_in_async as guard
-
-    with_async = {
-        f"dashboard/messaging_api/{path.name}"
-        for path in _OWNER_DIR.glob("[!_]*.py")
-        if "async def " in path.read_text(encoding="utf-8")
-    }
-    assert len(with_async) == len(_OWNER_MODULES)
-    assert with_async <= set(guard._ASYNC_CHECKED_FILES)
-
-
 def _mirror(tmp_path: Path) -> Path:
     """A checkout-shaped copy of every file the widened guards read."""
     root = tmp_path / "checkout"

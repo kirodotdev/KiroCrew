@@ -1210,26 +1210,6 @@ def test_an_owner_imports_the_facade_and_its_siblings_only_for_type_checking() -
     assert offenders == []
 
 
-def test_every_owner_with_a_coroutine_is_in_the_config_dir_guard() -> None:
-    """``test_no_config_dir_in_async`` scans the files it lists, so an owner that
-    gains an ``async def`` must be listed there, or its coroutines escape the guard."""
-    guard = _SRC.parent / "test" / "test_no_config_dir_in_async.py"
-    listed: set[str] = set()
-    for node in ast.parse(guard.read_text(encoding="utf-8")).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_ASYNC_CHECKED_FILES" for t in node.targets
-        ):
-            listed = {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)}
-    assert listed, "_ASYNC_CHECKED_FILES not found; this check went stale"
-    with_coroutines = {
-        f"slack/gateway_runtime/{name}"
-        for name, tree in _owner_trees()
-        if any(isinstance(n, ast.AsyncFunctionDef) for n in ast.walk(tree))
-    }
-    assert with_coroutines, "no owner defines a coroutine; this check went stale"
-    assert sorted(with_coroutines - listed) == []
-
-
 def test_a_second_facade_import_recomposes_the_owners_onto_it(tmp_path: Path) -> None:
     """A test that purges the facade and imports it again gets owners that run on
     the NEW namespace, and the orchestrator's qualnames are not prefixed twice."""

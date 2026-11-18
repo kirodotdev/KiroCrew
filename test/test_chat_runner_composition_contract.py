@@ -818,27 +818,6 @@ def test_an_owner_imports_the_runner_and_its_siblings_only_for_type_checking() -
     assert offenders == []
 
 
-def test_every_owner_with_a_coroutine_is_in_the_config_dir_guard() -> None:
-    """``test_no_config_dir_in_async`` scans the files it lists, so an owner that
-    gains an ``async def`` must be listed there, or its coroutines escape the guard."""
-    guard = repo_root() / "test" / "test_no_config_dir_in_async.py"
-    listed: set[str] = set()
-    for node in ast.parse(guard.read_text(encoding="utf-8")).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_ASYNC_CHECKED_FILES" for t in node.targets
-        ):
-            listed = {elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)}
-    assert listed, "_ASYNC_CHECKED_FILES not found; this check went stale"
-    assert "dashboard/chat_runner.py" in listed
-    with_coroutines = {
-        f"dashboard/chat_turn/{stem}.py"
-        for stem, source in _owner_sources().items()
-        if any(isinstance(n, ast.AsyncFunctionDef) for n in ast.walk(ast.parse(source)))
-    }
-    assert with_coroutines, "no owner defines a coroutine; this check went stale"
-    assert sorted(with_coroutines - listed) == []
-
-
 def _run_child(tmp_path: Path, script: str, *args: str) -> None:
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script), *args],

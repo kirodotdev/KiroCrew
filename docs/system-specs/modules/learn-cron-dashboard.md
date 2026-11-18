@@ -3008,9 +3008,10 @@ own imports, or by an owner, through `compose`. A new owner module is a file in
 `chat_turn/` and a row in the contract test's `_OWNER_MODULES`; `compose` finds it and
 binds its names. A name a new owner defines needs a by-name import in `chat_runner.py`
 only when a production module imports it from the runner or the runner's own code
-reads it, because mypy does not see what `compose` binds. An owner with a coroutine,
-or with a function that takes the turn first, also joins
-`test_no_config_dir_in_async._ASYNC_CHECKED_FILES`. `stall_attribution` reads an
+reads it, because mypy does not see what `compose` binds. An owner's coroutines,
+and its functions that take the turn first, are read by
+`test_no_config_dir_in_async.py` without registration: it scans the whole package.
+`stall_attribution` reads an
 owner frame as the dashboard chat surface, as it reads the runner's. A phase cut
 from a block that never awaited stays await-free, so a queue drain's or consume
 gate's check-then-mutate still runs without a suspension point; the contract test

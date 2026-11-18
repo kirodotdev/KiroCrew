@@ -531,7 +531,6 @@ test/test_model_registry_parity.py
 test/test_module_loader.py
 test/test_native_subagent_spawn.py
 test/test_no_blocking_call_on_loop.py
-test/test_no_config_dir_in_async.py
 test/test_node_toolchain_resolution.py
 test/test_node_version_pins.py
 test/test_notification_bus.py
