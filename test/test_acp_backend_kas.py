@@ -110,6 +110,7 @@ class TestBackendPredicates:
             provider.is_deepseek_backend,
             provider.is_copilot_backend,
             provider.is_strands_backend,
+            provider.is_mistral_vibe_backend,
         ]
         # Antigravity has no predicate: nothing reads one, so it holds none.
         assert sum(held) == (0 if backend == ACP_BACKEND_ANTIGRAVITY else 1)

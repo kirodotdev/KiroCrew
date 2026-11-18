@@ -27,6 +27,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
@@ -245,6 +246,7 @@ class TestTheEffortControlIsReachableOnThisHarness:
                 ACP_BACKEND_GOOSE,
                 ACP_BACKEND_OPENCODE,
                 ACP_BACKEND_PI,
+                ACP_BACKEND_MISTRAL_VIBE,
             }
         )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION

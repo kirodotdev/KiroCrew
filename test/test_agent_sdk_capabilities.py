@@ -349,7 +349,7 @@ def test_known_membership_is_exactly_the_declared_backend_ids() -> None:
     declared = {
         value
         for name, value in vars(sdk_backends).items()
-        if re.fullmatch(r"ACP_BACKEND_[A-Z0-9]+", name) and isinstance(value, str)
+        if re.fullmatch(r"ACP_BACKEND_[A-Z0-9]+(?:_[A-Z0-9]+)*", name) and isinstance(value, str)
     }
     assert declared, "no ACP_BACKEND_<NAME> constant was found"
     assert sdk_backends.ACP_BACKENDS_KNOWN == declared
@@ -697,7 +697,13 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
     # total ban cannot be honoured there even though the three facts hold.
     # Antigravity ACP 1.4.4 ran every file read of a signed-in turn without asking
     # (``acp_frames/antigravity/turn-live-tools.jsonl``).
-    reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT, sdk_backends.ACP_BACKEND_ANTIGRAVITY}
+    # mistral-vibe has no zero-tools capture for the harness (same ground as
+    # Copilot): a total ban cannot be proven honoured, so it stays out of the set.
+    reads_unasked = {
+        sdk_backends.ACP_BACKEND_COPILOT,
+        sdk_backends.ACP_BACKEND_ANTIGRAVITY,
+        sdk_backends.ACP_BACKEND_MISTRAL_VIBE,
+    }
     # A second ground, beside the refusal: a zero-tool session that MOUNTS NO TOOL,
     # so no call exists for a pre-approval to run. claude's session options carry an
     # empty ``tools`` with ``strictMcpConfig`` and an empty wire array, measured on
@@ -764,6 +770,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_KIRO,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_MISTRAL_VIBE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
@@ -822,6 +829,9 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     # ``model`` select, not as an effort option, so the pool applies no effort there.
     assert capabilities_for(ACP_BACKEND_MIMOCODE).effort_via_config_option is False
     assert capabilities_for(ACP_BACKEND_MIMOCODE).effort_via_slash_command is False
+    # vibe carries effort as its ``thinking`` config option.
+    assert capabilities_for(ACP_BACKEND_MISTRAL_VIBE).effort_via_config_option is True
+    assert capabilities_for(ACP_BACKEND_MISTRAL_VIBE).effort_via_slash_command is False
 
 
 def test_effort_via_slash_command_membership_is_the_command_verb_set() -> None:

@@ -60,6 +60,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -194,6 +195,7 @@ class TestMembership:
                 ACP_BACKEND_PI,
                 ACP_BACKEND_COPILOT,
                 ACP_BACKEND_MIMOCODE,
+                ACP_BACKEND_MISTRAL_VIBE,
             }
         )
         assert ACP_BACKENDS_INLINE_COMPACTION == frozenset(
@@ -205,6 +207,7 @@ class TestMembership:
                 ACP_BACKEND_PI,
                 ACP_BACKEND_COPILOT,
                 ACP_BACKEND_MIMOCODE,
+                ACP_BACKEND_MISTRAL_VIBE,
             }
         )
 

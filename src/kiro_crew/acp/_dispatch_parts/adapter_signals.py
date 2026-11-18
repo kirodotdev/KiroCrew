@@ -495,7 +495,7 @@ def parse_native_compaction_update(
 def parse_codex_compaction_update(
     update: dict[str, Any], pending: object = None, *, allow_unmarked: bool = False
 ) -> str | None:
-    """Classify a codex-acp context-compaction frame, or ``None``.
+    """Classify a context-compaction frame (codex-acp or vibe-acp), or ``None``.
 
     Returns ``started`` or ``completed``, the vocabulary kiro-cli, KAS and claude
     already use for ``EVENT_COMPACTION_STATUS``, so consumers need no change.
@@ -537,6 +537,12 @@ def parse_codex_compaction_update(
         if kind == UPDATE_TOOL_CALL:
             unmarked = (
                 update.get("kind") == "think" and update.get("title") == CODEX_COMPACTION_TITLE
+            ) or (
+                # vibe-acp's own compaction start (mistral-vibe 3.1.0, captured in
+                # test/fixtures/acp_frames/mistral-vibe/compact-live.jsonl): display
+                # text matched exactly, beside the pending-id pairing, never alone.
+                update.get("kind") == "other"
+                and update.get("title") == "Compacting conversation history..."
             )
         else:
             call_id = update.get("toolCallId")

@@ -29,6 +29,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -64,6 +65,8 @@ logger = logging.getLogger("kiro_crew.agent_sdk.backends")
 # the value is passed through exactly as advertised rather than parsed. That is what
 # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` membership is for.
 #
+# ``ACP_BACKEND_MISTRAL_VIBE``: ``model`` select advertised on session/new, accepted via set_config_option (captured).
+#
 # ``ACP_BACKEND_COPILOT`` is a member on the Copilot CLI 1.0.107 capture
 # (``test/fixtures/acp_frames/copilot/model-effort.jsonl``), taken on an
 # account whose plan offers model choice: ``session/new`` advertises a ``model``
@@ -82,6 +85,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_MISTRAL_VIBE,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_ANTIGRAVITY,
     }
@@ -220,6 +224,8 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_ANTIGRAVITY,
+        # vibe: ``thinking`` select on session/new, Crew levels spelled identically (captured on 3.0.3).
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -273,6 +279,7 @@ EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
     ACP_BACKEND_ANTIGRAVITY: "thinking_level",
+    ACP_BACKEND_MISTRAL_VIBE: "thinking",
 }
 
 #: The spelling used by every backend without a row in
@@ -339,6 +346,7 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 #
 # mimocode is NOT a member: membership presumes the effort channel above, which it is
 # outside. Its levels are model ids, so no advertised effort option exists to read.
+# vibe: foreign catalog ids + own ``thinking`` select, as deepseek/goose (captured).
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
     {
         ACP_BACKEND_ANTIGRAVITY,
@@ -346,6 +354,7 @@ ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -553,6 +562,8 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_ANTIGRAVITY,
+        # vibe: model ids come from the advertised ``configOptions`` select, not from the registry.
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -731,6 +742,7 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
     ACP_BACKEND_STRANDS: "strands",
     ACP_BACKEND_ANTIGRAVITY: "antigravity",
+    ACP_BACKEND_MISTRAL_VIBE: "mistral-vibe",
 }
 
 

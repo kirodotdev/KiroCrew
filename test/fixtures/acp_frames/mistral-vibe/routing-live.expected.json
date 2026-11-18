@@ -1,0 +1,212 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {}
+      }
+    },
+    "agent_version": "3.0.3",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "ask",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Requires approval for tool executions",
+            "name": "Ask",
+            "value": "ask"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "stub",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "stub",
+            "name": "stub",
+            "value": "stub"
+          },
+          {
+            "description": "mistral-vibe-cli-latest",
+            "name": "Mistral Medium 3.5",
+            "value": "mistral-medium-3.5"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thinking",
+        "currentValue": "off",
+        "id": "thinking",
+        "name": "Thinking",
+        "options": [
+          {
+            "name": "Off",
+            "value": "off"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "ask",
+      "ids": [
+        "ask"
+      ]
+    },
+    "session_id": "vibe-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "diff_path": "@@WORK@@/probe-written.txt",
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "content": "probe-written\n",
+          "filePath": "@@WORK@@/probe-written.txt"
+        },
+        "title": "Writing @@WORK@@/probe-written.txt",
+        "tool_call_id": "tool-call-1",
+        "tool_input": "--- @@WORK@@/probe-written.txt\n+++ @@WORK@@/probe-written.txt\n@@ -0,0 +1 @@\n+probe-written",
+        "tool_kind": "edit",
+        "wire_title": "Writing @@WORK@@/probe-written.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Allow once"
+          },
+          {
+            "id": "allow_always",
+            "label": "Allow for remainder of this session"
+          },
+          {
+            "id": "allow_always_permanent",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject_once",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "content": "probe-written\n",
+          "filePath": "@@WORK@@/probe-written.txt"
+        },
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "tool-call-1",
+        "tool_input": "--- @@WORK@@/probe-written.txt\n+++ @@WORK@@/probe-written.txt\n@@ -0,0 +1 @@\n+probe-written"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tool-call-1",
+        "tool_output": "Tool execution denied by approval callback",
+        "tool_output_bytes": 42,
+        "tool_output_digest": "215aa9c5ce2294ecec64806159839653b1a41802a4bb25ad93f1b41c1413a4f2",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "tool_call_id": "tool-call-1",
+        "tool_kind": "edit"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "assistant-msg-1",
+        "text": "done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "done",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      20,
+      10,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

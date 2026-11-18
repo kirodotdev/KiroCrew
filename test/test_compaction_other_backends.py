@@ -274,6 +274,11 @@ class TestEveryKnownBackendIsClassified:
     #:
     #: ``antigravity``: Antigravity 1.4.4 has no verified manual-compaction command
     #: or status frame; declining is safer than claiming Crew can compact it.
+    #:
+    #: ``mistral-vibe`` left this list on its own driven capture: its ``/compact``
+    #: turn is claimed in ``ACP_BACKENDS_COMPACT`` and read in
+    #: ``ACP_BACKENDS_INLINE_COMPACTION``
+    #: (``test/fixtures/acp_frames/mistral-vibe/compact-live.jsonl``).
     UNCLASSIFIED: frozenset = frozenset({"strands", ACP_BACKEND_ANTIGRAVITY})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
