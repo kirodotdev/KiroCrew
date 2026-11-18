@@ -229,6 +229,23 @@ def test_the_windows_child_exits_with_the_servers_status(monkeypatch, rc, code):
     assert started == [["/bin/server-bin", "--flag"]]
 
 
+def test_the_windows_child_that_cannot_start_ends_with_the_one_line(monkeypatch, capsys):
+    def _popen(*_a, **_k):
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(kas_env_shim.os, "name", "nt")
+    monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: None)
+    monkeypatch.setattr(kas_env_shim.subprocess, "Popen", _popen)
+    with pytest.raises(SystemExit) as exc:
+        kas_env_shim._spawn_child(["server-bin", "--flag"], {"TOKEN_FOR_TEST": "value"})
+    assert exc.value.code == 127
+    err = capsys.readouterr().err
+    assert err == (
+        "kirocrew: MCP server command 'server-bin' could not be started: "
+        "The system cannot find the file specified\n"
+    )
+
+
 def test_the_windows_child_is_stopped_when_the_launcher_is_interrupted(monkeypatch):
     proc = _Proc(error=KeyboardInterrupt())
     monkeypatch.setattr(kas_env_shim.shutil, "which", lambda name, path=None: None)
