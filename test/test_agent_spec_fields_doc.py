@@ -427,3 +427,37 @@ def test_prompt_section_states_the_v3_absolute_rule_crew_keeps_looser(doc_text, 
     assert "`apps/bridges_agents.py`" in flat
     assert "as on kiro-cli;" not in flat and "as kiro-cli does;" not in flat
     assert f"`--agent-engine {KIRO_ACP_ENGINE}`" in flat
+
+
+@pytest.mark.parametrize(
+    ("entry", "windows_reading", "doc_sample"),
+    [
+        (r"C:\work\**", "c:/work/**", r"(`C:\work\**`) covers what it names"),
+        (r"%USERPROFILE%\notes\**", None, r"an entry holding `%` (`%USERPROFILE%\...`)"),
+        (r"\\server\share\notes\**", None, r"a UNC or network-share entry (`\\server\share\...`)"),
+        (
+            r"$env:USERPROFILE\notes\**",
+            None,
+            "an entry with `[`, `{`, `$` or a `~user` covers nothing",
+        ),
+    ],
+)
+def test_allowed_paths_clause_agrees_with_the_windows_reader(
+    doc_text: str, entry: str, windows_reading: str | None, doc_sample: str
+) -> None:
+    """The ``toolsSettings`` row's ``allowedPaths`` clause says what ``parse`` does on Windows.
+
+    ``to_glob_path`` turns ``\\`` into ``/`` before the unread-character check, so a
+    backslashed drive-letter entry is read; ``%`` and a UNC share are refused first.
+    Each entry's reading is executed and paired with the sentence stating it.
+    """
+    from kiro_crew.platform import allowed_paths
+
+    assert allowed_paths.parse(entry, windows=True) == windows_reading
+    row = next(line for line in doc_text.splitlines() if line.startswith("| `toolsSettings` |"))
+    assert "`\\`, `$` or a `~user` covers nothing" not in row
+    assert "as does one with `\\` off Windows" in row
+    assert "on Windows `\\` is read as a path separator" in row
+    assert doc_sample in row
+    # Off Windows the backslash is still unread, as the row's scoping says.
+    assert allowed_paths.parse(entry, windows=False) is None
