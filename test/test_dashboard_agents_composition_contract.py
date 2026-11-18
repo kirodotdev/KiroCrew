@@ -40,7 +40,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
-from source_corpus import repo_files_named, repo_root
+from source_corpus import repo_files_named, repo_root, untraced
 
 import kiro_crew.dashboard.handlers as handlers_pkg
 import kiro_crew.dashboard.handlers.agents as agents
@@ -1148,18 +1148,22 @@ def _facade_patched_names() -> set[str]:
     here = Path(__file__).resolve()
     found: set[str] = set()
     unresolved = []
-    for path in repo_files_named(".py"):
-        parts = path.relative_to(root).parts
-        in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
-        if in_tests and path.resolve() != here:
-            names, dynamic = _patched_names_in(path.read_text(encoding="utf-8", errors="replace"))
-            found |= names
-            for label in dynamic:
-                key = (path.name, label)
-                if key in _RESOLVED_DYNAMIC_PATCHES:
-                    found |= _RESOLVED_DYNAMIC_PATCHES[key]
-                else:
-                    unresolved.append(key)
+    # The scan only parses test source, so it runs with the coverage tracer paused.
+    with untraced():
+        for path in repo_files_named(".py"):
+            parts = path.relative_to(root).parts
+            in_tests = parts[0] == "test" or (parts[0] == "src" and "tests" in parts)
+            if in_tests and path.resolve() != here:
+                names, dynamic = _patched_names_in(
+                    path.read_text(encoding="utf-8", errors="replace")
+                )
+                found |= names
+                for label in dynamic:
+                    key = (path.name, label)
+                    if key in _RESOLVED_DYNAMIC_PATCHES:
+                        found |= _RESOLVED_DYNAMIC_PATCHES[key]
+                    else:
+                        unresolved.append(key)
     assert unresolved == [], "a test patches a facade name the scan cannot resolve"
     return found
 

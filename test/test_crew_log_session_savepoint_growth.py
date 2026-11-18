@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 import pytest
+import source_corpus
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -59,7 +60,13 @@ def _entries(first: int, count: int) -> "list[dict[str, Any]]":
 
 def _unit(unit: str, count: int) -> None:
     _held[unit] = CrewLog.create(lg.KIND_SESSION, unit, owner="owner", agent="lead")
-    _append(unit, count)
+    # The bulk fill is setup, not the property. The first batch stays traced so the
+    # create and append paths are still covered; the rest goes in with the coverage
+    # tracer paused. The folds the tests count, and every append during one, stay traced.
+    first = min(500, count)
+    _append(unit, first)
+    with source_corpus.untraced():
+        _append(unit, count - first, first=first)
 
 
 def _append(unit: str, count: int, first: int = 0) -> None:
