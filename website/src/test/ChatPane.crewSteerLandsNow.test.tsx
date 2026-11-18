@@ -14,7 +14,7 @@ import notificationsReducer from '../store/notificationsSlice'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import type { ChatMessage } from '../types'
 import * as transport from '../chat-core/transport/sendTurn'
-import { BROWSER_HANDBACK_CHAT_EVENT } from '../api/client/browserLive'
+import { browserLiveStore } from '../hooks/useBrowserLive'
 
 // The real pane/composer/serializer/reducers; only network and unrelated rich
 // content are mocked. A deferred receipt lets each test observe the send itself.
@@ -641,13 +641,21 @@ describe('the composer while a send waits for the turn that answers it', () => {
 })
 
 describe('a browser hand-back note no agent op took', () => {
-  it('is sent as the person\'s next message to this crewmate, and only for its own slot', async () => {
+  it('is sent once, by the live-view store, while this crewmate pane is open; the pane sends nothing itself', async () => {
     renderCrewmate({ running: false })
     await ready()
-    act(() => { window.dispatchEvent(new CustomEvent(BROWSER_HANDBACK_CHAT_EVENT, { detail: { slotKey: 'other-slot', text: 'not mine' } })) })
-    expect(api.sendChat).not.toHaveBeenCalled()
-    act(() => { window.dispatchEvent(new CustomEvent(BROWSER_HANDBACK_CHAT_EVENT, { detail: { slotKey: SLOT, text: 'Signed in, carry on' } })) })
-    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(api.sendChat).mock.calls[0][0]).toContain('Signed in, carry on')
+    const chat = vi.fn(async () => ({ status: 'dispatched' }))
+    const release = vi.fn(async () => ({ ok: true, delivered: 'chat' }))
+    const restore = browserLiveStore.__setWritesForTests({ chat, release })
+    try {
+      act(() => { browserLiveStore.applyEvent({ session_key: SLOT, turn_id: 't-hb', state: 'in_control', turn_over: true }) })
+      await act(async () => { await browserLiveStore.release(SLOT, { note: 'Signed in, carry on' }) })
+      expect(chat).toHaveBeenCalledTimes(1)
+      expect(chat).toHaveBeenCalledWith(SLOT, 'Signed in, carry on')
+      expect(api.sendChat).not.toHaveBeenCalled()
+    } finally {
+      browserLiveStore.__setWritesForTests(restore)
+      browserLiveStore.__resetForTests()
+    }
   })
 })

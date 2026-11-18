@@ -449,6 +449,23 @@
       "new_messages_one": "{{count}} nouveau message",
       "new_messages_other": "{{count}} nouveaux messages",
       "new_messages_many": "{{count}} nouveaux messages"
+    },
+    "browserView": {
+      "not_enabled": "Cette vue du navigateur est désactivée. Active Accès des apps au navigateur dans Paramètres > Développeur > Aperçus de fonctionnalités.",
+      "denied": "Cette app ne peut pas afficher ce navigateur : la discussion ne lui appartient pas.",
+      "no_page": "Aucune page n'est encore ouverte dans cette discussion.",
+      "waiting_for_frame": "En attente de la première image de la page...",
+      "take_over": "Prendre la main",
+      "hand_back": "Rendre la main",
+      "show_live": "Afficher la page en direct",
+      "browser_error": "Le navigateur n'a pas pu démarrer ou s'est arrêté sur une erreur.",
+      "turn_over": "Le Bot a terminé. Son onglet est toujours ouvert.",
+      "note_not_sent": "Votre note n'a pas été envoyée au Bot. Elle est gardée dans la zone de message de cette discussion.",
+      "note_unconfirmed": "Votre note n'est peut-être pas arrivée au Bot. Elle est gardée dans la zone de message de cette discussion : vérifiez la discussion avant de la renvoyer.",
+      "note_not_saved": "Votre note n'est peut-être pas arrivée au Bot, et ce navigateur n'a pas pu en garder une copie. Copiez-la maintenant : {{note}}",
+      "not_granted": "Cette app ne peut pas encore afficher le navigateur. Approuve son accès au navigateur sur la page de l'app dans Apps.",
+      "note_not_sent_not_saved": "Votre note n'a pas été envoyée au Bot, et ce navigateur n'a pas pu en garder une copie. Copiez-la maintenant : {{note}}",
+      "tab_gone": "L'onglet du Bot est fermé, il n'y a donc aucune page en direct à afficher."
     }
   },
   "apps": {

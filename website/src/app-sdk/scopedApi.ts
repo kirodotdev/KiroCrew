@@ -61,6 +61,9 @@ class ScopedApiError extends ApiError implements AppApiError {
 export interface AppPermissions {
   api: string[]
   events: string[]
+  /** The `permissions.browser` verbs the owner approved (`view`, `read`, `act`);
+   *  absent on a host that predates it or for an app that declares none. */
+  browser?: string[]
 }
 
 /**
@@ -394,6 +397,7 @@ export function AppScopedApiProvider({
   notifyFn = hostNotify,
   sessionKey,
   slotPush,
+  approvedBrowserVerbs,
   children,
 }: {
   allowedApiPaths: string[]
@@ -425,6 +429,8 @@ export function AppScopedApiProvider({
   sessionKey?: string
   /** The host's per-slot change signal (slotPush.ts). Omitted, embeds poll. */
   slotPush?: SlotPush
+  /** Published as `info.permissions.browser`: the owner-approved browser verbs. */
+  approvedBrowserVerbs?: string[]
   children: ReactNode
 }) {
   const identity = useAppIdentity()
@@ -443,12 +449,13 @@ export function AppScopedApiProvider({
   // this object from a fetch, so a fresh identity every render would rebuild
   // the context — and with it the scoped API client — on every render.
   const updateKey = JSON.stringify(appUpdate ?? null)
+  const browserKey = JSON.stringify(approvedBrowserVerbs ?? null)
   const value = React.useMemo<AppSdkContextValue>(() => ({
     api: createScopedApi(allowedApiPaths, resolvedName, sessionKey, appDisplayName || resolvedName),
     info: {
       name: resolvedName,
       version: appVersion,
-      permissions: { api: allowedApiPaths, events: allowedEvents },
+      permissions: { api: allowedApiPaths, events: allowedEvents, ...(approvedBrowserVerbs ? { browser: approvedBrowserVerbs } : {}) },
       active,
       // Spread, so the key is ABSENT rather than explicitly undefined when the
       // host has no answer: `'update' in info` then separates "not consulted"
@@ -467,7 +474,7 @@ export function AppScopedApiProvider({
     slotPush,
     launchChat: createChatLauncher(resolvedName, sessionKey),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
+  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, browserKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

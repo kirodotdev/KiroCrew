@@ -413,6 +413,23 @@
     },
     "newMessagesDivider": {
       "new_messages_other": "{{count}} 条新消息"
+    },
+    "browserView": {
+      "not_enabled": "此浏览器视图已关闭。请在 设置 > 开发者 > 功能预览 中打开“应用浏览器访问”。",
+      "denied": "此应用无法显示该浏览器：这个对话不属于它。",
+      "no_page": "这个对话里还没有打开任何页面。",
+      "waiting_for_frame": "正在等待页面的第一张画面...",
+      "take_over": "接管",
+      "hand_back": "交还",
+      "show_live": "显示实时页面",
+      "browser_error": "浏览器无法启动，或因出错而停止。",
+      "turn_over": "Bot 已完成，它的标签页仍然打开着。",
+      "note_not_sent": "你的留言没有发给 Bot，已保留在这个对话的输入框里。",
+      "note_unconfirmed": "你的留言可能没有送到 Bot。它保留在这个对话的输入框里，重新发送前请先看一下对话。",
+      "note_not_saved": "你的留言可能没有送到 Bot，而且这个浏览器没能保存副本。请现在复制：{{note}}",
+      "not_granted": "这个应用还不能显示浏览器。请在“应用”里打开它的页面，批准它的浏览器访问。",
+      "note_not_sent_not_saved": "你的留言没有发给 Bot，而且这个浏览器没能保存副本。请现在复制：{{note}}",
+      "tab_gone": "Bot 的标签页已关闭，没有可显示的实时页面。"
     }
   },
   "apps": {

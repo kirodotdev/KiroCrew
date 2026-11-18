@@ -549,6 +549,7 @@ export function AppApiProvider({
   sessionKey,
   slotPush,
   origin = 'external',
+  approvedBrowserVerbs,
   children,
 }: {
   appName: string
@@ -586,6 +587,9 @@ export function AppApiProvider({
   /** The host's per-slot change signal; forwarded to the scoped layer. */
   slotPush?: SlotPush
   origin?: AppOrigin
+  /** The `permissions.browser` verbs the owner approved; forwarded to the scoped
+   *  layer, which publishes them as `info.permissions.browser`. */
+  approvedBrowserVerbs?: string[]
   children: ReactNode
 }) {
   const existing = useAppIdentity()
@@ -602,6 +606,7 @@ export function AppApiProvider({
     notifyFn,
     sessionKey,
     slotPush,
+    approvedBrowserVerbs,
     children,
   })
   if (existing) return scoped
@@ -652,6 +657,12 @@ export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecisio
 // app's declared `/api/browser/media` (level 10, see ./browserMedia).
 export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
 export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+// The live view of an app's own slot, with take over and hand back, behind the
+// `app_browser_sdk` preview (RFC app-sdk-browser, section 5).
+export { default as BrowserView } from './BrowserView'
+export type { BrowserViewProps, BrowserViewMark } from './BrowserView'
+export { useBrowserView, useBrowserCoords } from './browserView'
+export type { BrowserViewAccess, BrowserViewState, BrowserViewInfo, BrowserCoords } from './browserView'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {

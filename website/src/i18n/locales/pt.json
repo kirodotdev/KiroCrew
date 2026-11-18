@@ -449,6 +449,23 @@
       "new_messages_one": "{{count}} mensagem nova",
       "new_messages_other": "{{count}} mensagens novas",
       "new_messages_many": "{{count}} mensagens novas"
+    },
+    "browserView": {
+      "not_enabled": "Esta visualização do navegador está desligada. Ligue Acesso de apps ao navegador em Configurações > Desenvolvedor > Prévias de recursos.",
+      "denied": "Este app não pode mostrar esse navegador: o chat não é dele.",
+      "no_page": "Nenhuma página está aberta neste chat ainda.",
+      "waiting_for_frame": "Aguardando a primeira imagem da página...",
+      "take_over": "Assumir o controle",
+      "hand_back": "Devolver",
+      "show_live": "Mostrar a página ao vivo",
+      "browser_error": "O navegador não pôde iniciar ou parou com um erro.",
+      "turn_over": "O Bot terminou. A aba dele continua aberta.",
+      "note_not_sent": "Sua nota não foi enviada ao Bot. Ela fica na caixa de mensagem deste chat.",
+      "note_unconfirmed": "Sua nota pode não ter chegado ao Bot. Ela fica na caixa de mensagem deste chat: confira o chat antes de enviá-la de novo.",
+      "note_not_saved": "Sua nota pode não ter chegado ao Bot, e este navegador não conseguiu guardar uma cópia. Copie-a agora: {{note}}",
+      "not_granted": "Este app ainda não pode mostrar o navegador. Aprove o acesso dele ao navegador na página do app em Apps.",
+      "note_not_sent_not_saved": "Sua nota não foi enviada ao Bot, e este navegador não conseguiu guardar uma cópia. Copie-a agora: {{note}}",
+      "tab_gone": "A aba do Bot está fechada, então não há página ao vivo para mostrar."
     }
   },
   "apps": {

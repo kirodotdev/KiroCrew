@@ -128,6 +128,23 @@
     "newMessagesDivider": {
       "new_messages_one": "{{count}} new message",
       "new_messages_other": "{{count}} new messages"
+    },
+    "browserView": {
+      "not_enabled": "This browser view is off. Turn on App browser access in Settings > Developer > Feature previews.",
+      "denied": "This app can't show that browser: the chat isn't one of its own.",
+      "no_page": "No page is open in this chat yet.",
+      "waiting_for_frame": "Waiting for the first picture of the page...",
+      "take_over": "Take over",
+      "hand_back": "Hand back",
+      "show_live": "Show the live page",
+      "browser_error": "The browser could not start or stopped with an error.",
+      "turn_over": "The Bot finished. Its tab is still open.",
+      "note_not_sent": "Your note was not sent to the Bot. It is kept in this chat's message box.",
+      "note_unconfirmed": "Your note may not have reached the Bot. It is kept in this chat's message box: check the chat before you send it again.",
+      "note_not_saved": "Your note may not have reached the Bot, and this browser could not keep a copy. Copy it now: {{note}}",
+      "not_granted": "This app may not show the browser yet. Approve its browser access on the app's page in Apps.",
+      "note_not_sent_not_saved": "Your note was not sent to the Bot, and this browser could not keep a copy. Copy it now: {{note}}",
+      "tab_gone": "The Bot's tab is closed, so there is no live page to show."
     }
   },
   "apps": {

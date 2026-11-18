@@ -449,6 +449,23 @@
       "new_messages_one": "{{count}} nuovo messaggio",
       "new_messages_other": "{{count}} nuovi messaggi",
       "new_messages_many": "{{count}} nuovi messaggi"
+    },
+    "browserView": {
+      "not_enabled": "Questa vista del browser è disattivata. Attiva Accesso delle app al browser in Impostazioni > Sviluppatore > Anteprime funzionalità.",
+      "denied": "Questa app non può mostrare quel browser: la chat non è sua.",
+      "no_page": "In questa chat non è ancora aperta nessuna pagina.",
+      "waiting_for_frame": "In attesa della prima immagine della pagina...",
+      "take_over": "Prendi il controllo",
+      "hand_back": "Restituisci",
+      "show_live": "Mostra la pagina dal vivo",
+      "browser_error": "Il browser non è riuscito ad avviarsi o si è fermato con un errore.",
+      "turn_over": "Il Bot ha finito. La sua scheda è ancora aperta.",
+      "note_not_sent": "La tua nota non è stata inviata al Bot. Resta nella casella dei messaggi di questa chat.",
+      "note_unconfirmed": "La tua nota potrebbe non essere arrivata al Bot. Resta nella casella dei messaggi di questa chat: controlla la chat prima di inviarla di nuovo.",
+      "note_not_saved": "La tua nota potrebbe non essere arrivata al Bot e questo browser non è riuscito a conservarne una copia. Copiala ora: {{note}}",
+      "not_granted": "Questa app non può ancora mostrare il browser. Approva il suo accesso al browser nella pagina dell'app in App.",
+      "note_not_sent_not_saved": "La tua nota non è stata inviata al Bot e questo browser non è riuscito a conservarne una copia. Copiala ora: {{note}}",
+      "tab_gone": "La scheda del Bot è chiusa, quindi non c'è una pagina dal vivo da mostrare."
     }
   },
   "apps": {

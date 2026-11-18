@@ -21,7 +21,6 @@ import { busySteerFlag } from './chat-input/busySend'
 import { stagedProjectTurnKey } from './chat-input/stagedProject'
 import { withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { filterCrewmateChatWithBrowser } from './chat/crewmateBrowserLive'
-import { BROWSER_HANDBACK_CHAT_EVENT } from '../api/client/browserLive'
 import { crewmateFollowUps } from './chat/crewmateChips'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import { preparingCaption as preparingCaptionFor } from './chat/preparingCaption'
@@ -684,19 +683,6 @@ export default function ChatPane({
     slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent,
   })
   const { recoverInto: recoverQuoteInto } = messageQuote
-  // A browser hand-back note no agent op was waiting for is the person's next
-  // message to this crewmate. The chat page sends it for its own chats; a
-  // crewmate's pane is on the Members page, where that listener is not mounted.
-  useEffect(() => {
-    if (!crewmate) return
-    const handler = (e: Event) => {
-      const d = (e as CustomEvent<{ slotKey?: unknown; text?: unknown }>).detail
-      if (d?.slotKey !== slotKey || typeof d.text !== 'string' || !d.text.trim() || paneCrewRootClosed) return
-      doSend(d.text)
-    }
-    window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
-    return () => window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, handler)
-  }, [crewmate, slotKey, doSend, paneCrewRootClosed])
 
 
   const { stopError, stopErrorDetail, dismissStopError, paneStopState, onStop } = useChatPaneStop({ slotKey, busy: composerBusy, paneSlot, dispatch })

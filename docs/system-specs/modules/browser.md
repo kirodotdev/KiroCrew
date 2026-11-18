@@ -715,10 +715,11 @@ are dropped. The answer's `delivered` says where it went:
   it, the turn's next op answer carries it.
 * `chat`: no op is parked -- the turn is between ops (it may end without
   another), a view was reopened after its turn, or the turn ended under the
-  takeover. The card fires `mc:browser-handback-chat`
-  (`BROWSER_HANDBACK_CHAT_EVENT`), and the chat page sends `choice: note` as the
-  person's next message to that slot, as if typed in the composer (queued
-  behind a running turn). So a note is never held for an op that may not come.
+  takeover. The live-view store (`browserLiveStore.release`) sends `choice: note`
+  as the person's next message to that slot, text alone, on every surface that
+  shows the view (the chat card, a crewmate pane, an app's `BrowserView`), so it
+  goes out once (queued behind a running turn). Unless the gateway confirms the
+  send, the note is kept in the slot's composer draft and the view says so. So a note is never held for an op that may not come.
 
 The note never carries page content, is never logged on the input path, and is
 recorded on the turn replay as the person's event (`actor: user`, label
