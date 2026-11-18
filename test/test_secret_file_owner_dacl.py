@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -23,8 +24,29 @@ _SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 @pytest.fixture
 def seen(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Paths this test's own thread handed to ``restrict_to_owner``.
+
+    Scoped to the fixture's thread rather than recording every call, because
+    the spy replaces a process-global symbol: the SEL audit log's writer is a
+    daemon thread (``sel-writer``) that re-locks its file on every append, so a
+    flush it starts while this fixture is installed would land in ``calls``
+    and break an exact-list assertion on a change that has nothing to do with
+    it (#37631; the same exposure as #33379).
+
+    Every writer these tests drive -- ``write_queue_atomic``,
+    ``_get_telemetry_salt``, ``open_log_for_append_owner_only`` and the two
+    store savers -- runs on the calling thread, so a lockdown made anywhere
+    else is not one of theirs. A writer that moves to a worker thread fails
+    here loudly (the Windows test sees no call) instead of being counted.
+    """
     calls: list[str] = []
-    monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: calls.append(str(p)))
+    owner = threading.get_ident()
+
+    def _record(path: object) -> None:
+        if threading.get_ident() == owner:
+            calls.append(str(path))
+
+    monkeypatch.setattr(platform_compat, "restrict_to_owner", _record)
     return calls
 
 
