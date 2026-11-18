@@ -25,6 +25,7 @@ from voice_reply_helpers import (
     _prepared,
 )
 
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 from kiro_crew.voice_reply import (
     SYSTEM_ENGINE_ESPEAK,
     SYSTEM_ENGINE_SAPI,
@@ -494,6 +495,68 @@ class TestSystemSubprocessOwnership:
         proc.kill.assert_called_once()
         assert proc.communicate.await_count >= 2
         proc.wait.assert_not_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_repeat_cancel_during_reap_still_waits_for_the_child(self, monkeypatch) -> None:
+        # A second cancel landing on the post-kill reap must not abandon it, or
+        # the owned temp is removed while the child still holds it open, which
+        # Windows refuses.
+        allocated = _capture_mkstemp(monkeypatch)
+        held: set[str] = set()
+        real_unlink = os.unlink
+
+        def unlink(path, *args, **kwargs):
+            if os.fspath(path) in held:
+                raise PermissionError(32, "The process cannot access the file", path)
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", unlink)
+        running, reaping, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        proc = _mock_subprocess(returncode=0)
+        calls = 0
+
+        async def communicate(*_args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                running.set()
+                await asyncio.Event().wait()  # the engine still synthesizing
+            reaping.set()
+            await released.wait()
+            held.clear()  # the killed child has exited and closed the file
+            return b"", b""
+
+        proc.communicate = communicate
+
+        async def fake_exec(*cmd, **kwargs):
+            held.update(allocated)
+            return proc
+
+        with (
+            patch(
+                "kiro_crew.voice_reply.resolve_system_tts",
+                return_value=(SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
+            ),
+            patch(
+                "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+                side_effect=_prepared(),
+            ),
+            patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+        ):
+            task = asyncio.ensure_future(_synthesize_system("hello"))
+            await await_until(running, timeout=FALLBACK_TIMEOUT_SECS, what="the engine starting")
+            task.cancel()
+            await await_until(reaping, timeout=FALLBACK_TIMEOUT_SECS, what="the reap starting")
+            task.cancel()  # queued before the task runs again
+            released.set()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(
+                    task, timeout=FALLBACK_TIMEOUT_SECS, what="the cancelled synthesis"
+                )
+
+        proc.kill.assert_called_once()
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
 
