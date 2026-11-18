@@ -80,6 +80,43 @@ def after_link_close(text: str, j: int) -> int:
     return k + 1 if k < len(text) and text[k] == ")" else j
 
 
+def code_spans(text: str, start: int, end: int) -> dict[int, tuple[int, int]]:
+    """Each backtick run in ``text[start:end]``, by start: its length and its span's end.
+
+    A run of N backticks opens an inline code span that closes at the next run of
+    exactly N, as Markdown reads it. The span's end is the index past that closing
+    run, or -1 when no such run follows before *end*, so the run is plain text. A
+    backslash escapes only a run's first backtick: that backtick is plain text and
+    the N-1 after it may open a span. The whole run still closes one, because a
+    backslash inside code is literal.
+    """
+    runs: list[tuple[int, int, bool]] = []
+    slashes = 0
+    i = start
+    while i < end:
+        if text[i] != "`":
+            slashes = slashes + 1 if text[i] == "\\" else 0
+            i += 1
+            continue
+        j = i + 1
+        while j < end and text[j] == "`":
+            j += 1
+        runs.append((i, j - i, slashes % 2 == 1))
+        slashes = 0
+        i = j
+    spans: dict[int, tuple[int, int]] = {}
+    next_close: dict[int, int] = {}
+    for pos, width, escaped in reversed(runs):
+        if escaped:
+            spans[pos] = (1, -1)
+            if width > 1:
+                spans[pos + 1] = (width - 1, next_close.get(width - 1, -1))
+        else:
+            spans[pos] = (width, next_close.get(width, -1))
+        next_close[width] = pos + width
+    return spans
+
+
 def markers_before(
     text: str,
     end: int,
@@ -94,6 +131,9 @@ def markers_before(
     once, left to right, with a stack of brackets typed by *openers* and
     *closers* (index-aligned pairs):
 
+    * outside every head, an inline code span is skipped whole, so the head in
+      ``The `[OPTIONS:` line goes last. [OPTIONS: A | B]`` is code, not a head;
+      inside a head, backticks are label text, as the label grammar reads them;
     * a head opens a head frame; an opener opens its own frame;
     * a closer pops an opener frame only of its own type;
     * a closer pops a head frame unless the list goes on after it.
@@ -109,8 +149,13 @@ def markers_before(
     run: list[re.Match[str]] = []
     run_end = -1
     i = text.rfind("\n", 0, end) + 1
+    spans = code_spans(text, i, end)
     while i < end:
         ch = text[i]
+        if ch == "`" and depth == 0 and i in spans:
+            width, span_end = spans[i]
+            i = span_end if span_end >= 0 else i + width
+            continue
         width = head_at(text, i) if ch == "[" else 0
         if width:
             if depth > 0 or i != run_end:
