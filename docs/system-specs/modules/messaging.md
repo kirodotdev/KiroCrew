@@ -1233,8 +1233,6 @@ not watched.
 
 **The exceptions**, and they are the whole list:
 
-- **`slack.command`** — the slash command is registered with Slack's app
-  manifest, so changing it here cannot re-register it. Marked `restart=True`.
 - **`whatsapp.db_path`** — the linked-device session store is opened once by the
   `neonize` client. Marked `restart=True`.
 - **Credentials in `config_dir/.env`** — bot tokens, app passwords and secrets
@@ -3952,10 +3950,12 @@ dashboard token auth.
 - `GET /api/slack/manifest` — public manifest template rendered with
   `?alias=` (default `kirocrew`, never `$USER`) plus Slack's one-click
   create deep link and `command`, the slash command that manifest registers
-  (`slack_manifest.slash_command(alias)`). It writes no config, so a caller
-  that passes `?alias=` learns the `slack.command` value the gateway needs.
-  Settings → Messaging Channels → Slack passes no alias, so its one-click app registers
-  `/kirocrew`, which the default `slack.command` answers.
+  (`slack_manifest.slash_command(alias)`). It writes no config: the gateway
+  answers `/kirocrew` and every `/kirocrew-<alias>` as they are, and a caller
+  that passes `?alias=` saves the returned name as `slack.command` (live, no
+  restart) so a later no-alias render keeps it. Settings →
+  Messaging Channels → Slack passes no alias, so its one-click app registers
+  `/kirocrew`.
 
 `allowed_users` / `open_channels` are intentionally not exposed while the
 runtime enforces owner-only access.

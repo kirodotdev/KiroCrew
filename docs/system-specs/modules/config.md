@@ -3203,7 +3203,7 @@ no tenant is set; leaving it out of both would leave a tenant-only edit undetect
 and the client stuck on the wrong tenant. Slack is the one exception to the
 restart: its socket client is host-managed (`_connect_slack`) with no in-process
 restart path, so a Slack token changed in `.env` logs a restart-needed notice to
-the operator (the same honest fallback as `slack.command`) rather than being
+the operator (the honest fallback) rather than being
 silently ignored.
 
 `changed_credential_keys` matches by the canonical environment-entry name, the
@@ -3521,7 +3521,7 @@ flip could resume a stale session persisted under the other namespace),
 `mcp.extra_path_dirs`, `mcp.honour_auto_approve`, `hooks.confirm_tools` (the gate
 follows it live, but the static grants it withholds are written when the agent
 spec is rebuilt), `instances.enabled`,
-`instances.tunnel_base_port`, `slack.command`, `whatsapp.db_path`, `dashboard.url`,
+`instances.tunnel_base_port`, `whatsapp.db_path`, `dashboard.url`,
 `dashboard.tailscale.*` except `keep_awake`, `dashboard.restore_sessions`,
 `dashboard.restore_window_minutes`, `dashboard.idle_slot_sweep_days`,
 `dashboard.surface_channel_sessions`,

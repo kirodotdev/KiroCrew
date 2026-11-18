@@ -113,7 +113,8 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
     command = slack_manifest.slash_command(alias)
     switches = ", ".join(f"slack.{f}" for f in slack_manifest.FEATURES if f in features)
     hint = (
-        f"   Slash command: /{command} — the gateway answers it once slack.command matches:\n"
+        f"   Slash command: /{command} — the gateway answers it as soon as the app is installed.\n"
+        f"   Save the name so help text and manifest updates keep it (applies live, no restart):\n"
         f"   kirocrew config set slack.command {command}\n"
         f"   Slack Code switches rendered: {switches or 'none'}\n"
     )

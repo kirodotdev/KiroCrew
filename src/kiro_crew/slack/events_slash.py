@@ -727,16 +727,6 @@ def _safe_log(text: str) -> str:
     return text
 
 
-#: A command name the bundled manifest can register: ``/kirocrew`` or
-#: ``/kirocrew-<alias>`` (``slack_manifest.slash_command``). Only these get the
-#: mismatch reply. The alias class is what ``slash_command`` emits, which also
-#: keeps the name safe to echo into the shell line the owner is asked to run.
-_MANIFEST_COMMAND_RE = re.compile(
-    rf"/(?:{re.escape(slack_manifest.DEFAULT_ALIAS)}"
-    rf"|{re.escape(slack_manifest.SLASH_COMMAND_PREFIX)}[a-z0-9_-]+)"
-)
-
-
 async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     """Route ``/kirocrew <sub-command>`` via :data:`SLASH_REGISTRY`.
 
@@ -763,34 +753,17 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         except Exception:
             logger.debug("slash response_url failed", exc_info=True)
 
-    slash_command = f"/{orch.slack_command}"
     # Slack Code channel commands (/summarize, /wrap-up, /create-pr, and
     # `/kirocrew agent` and `/kirocrew approval` typed in a code channel): answered there while
     # slack.code_channels is on and the install can run it; a pass-through
     # (False) otherwise, so the rest of this function is unchanged.
     if await code_channel_slash(orch, payload, _respond):
         return
-    if cmd != slash_command:
-        if _MANIFEST_COMMAND_RE.fullmatch(cmd):
-            # Slack delivers only commands this app registered, so the app was
-            # created or re-imported from a manifest that names the command
-            # differently from slack.command: re-importing the bundled manifest
-            # into an older install turns /kirocrew into /kirocrew-<alias>.
-            fix = f"kirocrew config set slack.command {cmd[1:]}"
-            logger.warning(
-                "Slash command %s is not the configured %s; run `%s` and restart the gateway",
-                cmd,
-                slash_command,
-                fix,
-            )
-            # Only the owner can make the fix, so only the owner is told.
-            if is_allowed_user(caller_id):
-                _spawn(
-                    _respond(
-                        f"Warning: Kiro Crew is set up for `{slash_command}`, so `{cmd}` did "
-                        f"nothing. To use `{cmd}`, run `{fix}` and restart the gateway."
-                    )
-                )
+    # Slack delivers only commands this app registered, so a /kirocrew or
+    # /kirocrew-<alias> that arrives is this app's own, whichever manifest
+    # created it; slack.command adds a custom name. Anything else is dropped.
+    configured = getattr(getattr(slack_cfg(orch), "slack", None), "command", "")
+    if not slack_manifest.is_app_command(cmd, orch.slack_command, configured):
         return
 
     # Deny-by-default — only allowed users can invoke slash commands
@@ -817,6 +790,10 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     if not (orch.slack and orch._owner_id):
         _spawn(_respond("Warning: Owner not configured."))
         return
+    # The owner typed a name this app registered: adopt it, so usage replies,
+    # the Home tab and the code-channel pickers name a command that exists even
+    # while slack.command is still the default. A slack.command change sets it.
+    orch.slack_command = cmd[1:]
 
     parts = cmd_text.split(maxsplit=1)
     sub_cmd = parts[0].lower() if parts else ""

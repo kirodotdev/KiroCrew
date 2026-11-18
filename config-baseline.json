@@ -7732,11 +7732,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Command",
-      "help": "Slack slash command trigger word.",
+      "help": "Slash command name shown in Slack help. The gateway also answers /kirocrew and any /kirocrew-<alias> the app registers.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kirocrew",
-      "requiresRestart": true
+      "defaultValue": "kirocrew"
     },
     {
       "path": "slack.forward_to_agent_callback",

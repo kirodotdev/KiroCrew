@@ -582,7 +582,7 @@ separately configured Slack MCP/search integration's `xoxp-...` token. The
 gateway constructs every Slack client with `SLACK_BOT_TOKEN`; it does not read
 or store the user token.
 
-The manifest's one slash command is `/{{COMMAND}}`, rendered by `slack_manifest.slash_command(alias)` as `kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), because Slack resolves command names across a whole Enterprise Grid org and two installs registering the same `/kirocrew` collide. The dashboard's default alias `kirocrew` keeps `/kirocrew`. The gateway answers only `/{slack.command}`, so `kirocrew manifest` prints the matching `kirocrew config set slack.command kirocrew-<alias>` line, and `GET /api/slack/manifest` returns it as `command` to a caller that passes `?alias=` (Settings → Messaging Channels → Slack passes none, so its one-click app keeps `/kirocrew`); the setup wizard's default stays `kirocrew` (or the configured command), because it cannot know which alias the app was created with. Another `/kirocrew…` name means the app was created or re-imported from a manifest that names the command differently, as when an older install re-imports this manifest and its `/kirocrew` becomes `/kirocrew-<alias>`. `_handle_slash` still runs nothing for it: it logs a WARNING with the matching `kirocrew config set slack.command` line and posts that line to the owner as an ephemeral reply. Any other name is dropped.
+The manifest's one slash command is `/{{COMMAND}}`, rendered by `slack_manifest.slash_command(alias)` as `kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), because Slack resolves command names across a whole Enterprise Grid org and two installs registering the same `/kirocrew` collide. The dashboard's default alias `kirocrew` keeps `/kirocrew`. Slack delivers only commands the app registered, so `_handle_slash` and the code-channel router (both through `slack_manifest.is_app_command`) answer the live `/{slack.command}`, the shown `/{orch.slack_command}`, and every name `slack_manifest.MANIFEST_COMMAND_RE` matches (`/kirocrew` and `/kirocrew-<alias>`), whichever manifest created the app; no restart is needed. `kirocrew manifest` still prints the `kirocrew config set slack.command kirocrew-<alias>` line (applied live): `GET /api/slack/manifest` with no alias renders from the saved `slack.command`, so saving it is what keeps a later manifest update on the alias name. Once the owner gate passes, the typed name becomes `orch.slack_command`, so usage replies, the fallback help, the Home tab and the code-channel pickers name a command this app registered even while `slack.command` is the default; a `slack.command` change sets it again. Owner gating and the deny audit are the same for every answered name. Any other name is dropped.
 
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False, no_tunnel=False, no_open=False, port_override=None, json_ready=False, approval_mode=None, test_mode=False) -> None`
 
@@ -1785,10 +1785,11 @@ applier logs a value. A change to `slack.trusted_bot_ids`, `open_channels` or
 may drive a turn; the per-message admission decision is still audited where it is
 made.
 
-`slack.command` is the one Slack field marked `restart=True` in
-`config/sections_slack.py`: the slash command is registered with Slack's app manifest, so
-no in-process apply can change it. No channel CONNECTION field is marked, because
-`restart_channel` applies those without a process restart.
+No Slack field is marked `restart=True` in `config/sections_slack.py`.
+`slack.command` is live: the applier sets `orch.slack_command` (also set from the owner's typed command), which the Home tab,
+usage strings and code-channel pickers read; Slack's routing is the manifest's and the
+router already answers every manifest-shaped name. No channel CONNECTION field is
+marked, because `restart_channel` applies those without a process restart.
 
 ### The default-agent applier
 
