@@ -32,7 +32,6 @@ from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
-    _quoted_assignment_scripts,
     _self_token_frames,
     _static_substitution_output,
 )
@@ -132,6 +131,59 @@ _HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
 # statically.  Both spellings are matched; group 1 xor group 2 carries the
 # body.
 _FLAT_SUBSTITUTION_RE = re.compile(r"\$\(([^()`$]*)\)|`([^`()$]*)`")
+
+
+def _may_name_ssh_verb(text: str) -> bool:
+    """The floor's verb gate: False only when *text* cannot name an ssh-family program.
+
+    Quote and backslash splices (``ss""h``, ``s\\sh``) and ANSI-C quoting are undone
+    first, and ``${VAR:-word}`` defaults are substituted, the way bash builds the word
+    before exec. The operand walk's tokenizer resolves the same spellings, so a gate
+    on the raw text would let a verb past that the walk would deny. A bare ``$VAR``
+    known only at run time stays the documented fail-open residual.
+    """
+    probe = _decode_shell_quoted_literals(text)
+    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
+    probe = _resolve_param_defaults(probe)
+    return any(verb in probe for verb in _SSH_FAMILY_VERBS) or _glob_can_name_ssh_verb(probe)
+
+
+def _escaped(text: str, at: int) -> bool:
+    """True when the character at *at* follows an odd run of backslashes."""
+    slashes = at
+    while slashes > 0 and text[slashes - 1] == "\\":
+        slashes -= 1
+    return (at - slashes) % 2 == 1
+
+
+# Set while the floor reads a line as main did: no body span copied in one step and
+# no quote rewriting in a splice. Recursion inherits it, so that reading stays whole.
+_MAIN_READING = contextvars.ContextVar("ssh_floor_main_reading", default=False)
+
+
+def _splice_static_substitutions(text: str, *, escaped_too: bool = False) -> str:
+    """*text* with each flat ``echo``/``printf`` substitution replaced by its static output.
+
+    A backtick span whose opening backtick is escaped is data on this line, so it
+    stays as written unless *escaped_too* or *_MAIN_READING*: one level down (an
+    ``eval`` or ``sh -c`` payload, an outer double quote) bash runs it.
+    An output's quotes and trailing backslash are written as ``_`` (bash reads none of
+    them; ``"$(echo 'a"b')" ; ssh``), except in heredoc text and *_MAIN_READING*.
+    """
+    docs = [] if _MAIN_READING.get() else heredoc_text_spans(text)
+
+    def _splice(match: "re.Match[str]") -> str:
+        body = match.group(1) if match.group(1) is not None else match.group(2)
+        out = _static_substitution_output(body)
+        escaped = match.group(2) is not None and _escaped(text, match.start())
+        if out == "\x00" or (escaped and not escaped_too and not _MAIN_READING.get()):
+            return match.group(0)
+        if _MAIN_READING.get() or any(a <= match.start() < e for a, e in docs):
+            return out
+        out = out.replace('"', "_").replace("'", "_")
+        return out[:-1] + "_" if out.endswith("\\") else out
+
+    return _FLAT_SUBSTITUTION_RE.sub(_splice, text)
 
 
 # ``${VAR:-word}`` / ``${VAR:=word}`` / ``${VAR:+word}`` — bash substitutes the
@@ -935,30 +987,6 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
-# Set while the floor reads a line as main did: no body span copied in one step and
-# no quote rewriting in a splice. Recursion inherits it, so that reading stays whole.
-_MAIN_READING = contextvars.ContextVar("ssh_floor_main_reading", default=False)
-
-
-def _reaches_self_over_ssh(text_lower: str, raw_text: "str | None" = None) -> bool:
-    """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
-    read whole: the separator mask would turn a script's own separators into data. Either
-    the quote-aware reading or main's unchanged one (*_MAIN_READING*) refusing refuses.
-    *raw_text* is the command as submitted, for the wrapper option words."""
-    scripts = _quoted_assignment_scripts(text_lower)
-    if _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
-        map(_is_ssh_to_self, scripts)
-    ):
-        return True
-    token = _MAIN_READING.set(True)
-    try:
-        return _is_ssh_to_self(text_lower, own_line=True, raw_text=raw_text) or any(
-            map(_is_ssh_to_self, scripts)
-        )
-    finally:
-        _MAIN_READING.reset(token)
-
-
 # How many :func:`_is_ssh_to_self` readings may be open at once. Each nested
 # double-quoted ``$( )``, bound function body or carried value opens one more, so
 # a crafted command could otherwise nest past Python's recursion limit.
@@ -995,14 +1023,8 @@ def _is_ssh_to_self(
     from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
 
     memo = _CALL_VIEWS.get()
-    key = (
-        "ssh_to_self",
-        text_lower,
-        own_line,
-        raw_text,
-        _MAIN_READING.get(),
-        _ssh_reading_depth.get(),
-    )
+    reading = (_MAIN_READING.get(), _ssh_reading_depth.get())
+    key = ("ssh_to_self", text_lower, own_line, raw_text, *reading)
     if memo is None:
         return _judge_ssh_to_self(text_lower, own_line, raw_text)
     if key not in memo:
@@ -1075,21 +1097,10 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # literals; every other body keeps its original text (the ``$(hostname``
     # hints below read it) and stays the documented run-time residual.  A
     # single-quoted spelling resolves too -- an over-approximation toward
-    # deny, accepted for a deny floor.
-    docs = [] if _MAIN_READING.get() else heredoc_text_spans(text_lower)
-
-    def _splice_static_substitution(match: "re.Match[str]") -> str:
-        body = match.group(1) if match.group(1) is not None else match.group(2)
-        out = _static_substitution_output(body)
-        # Spliced quotes would open or close one (``"$(echo 'a"b')" ; ssh``) and a
-        # trailing backslash would escape the next character; bash reads neither. Heredoc
-        # text keeps its old reading, as the mask leaves it.
-        if out == "\x00" or _MAIN_READING.get() or any(a <= match.start() < e for a, e in docs):
-            return match.group(0) if out == "\x00" else out
-        out = out.replace('"', "_").replace("'", "_")
-        return out[:-1] + "_" if out.endswith("\\") else out
-
-    text_lower = _FLAT_SUBSTITUTION_RE.sub(_splice_static_substitution, text_lower)
+    # deny, accepted for a deny floor.  An escaped backtick span stays unspliced
+    # here; one quoting level down (``eval "ssh \`printf localhost\`"``) the
+    # ``_MAIN_READING`` pass of ``_reaches_self_over_ssh`` splices it, as main did.
+    text_lower = _splice_static_substitutions(text_lower)
     # Substitute ``$a``/``${a}`` from literal same-line assignments
     # (``a=s; ${a}sh localhost`` -> ``ssh localhost``) so neither the verb nor
     # the operand can be spliced from statically-known text.  Values are
@@ -1108,20 +1119,8 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # text unchanged (the mask is idempotent -- their quotes are already gone).
     kept = _mask_quoted_separators(text_lower)
     text_lower = _mask_quoted_separators(text_lower, blank_bodies=True)
-    # Quote/backslash splices survive into the tokens (shlex rejoins them) but
-    # defeat this raw-substring gate, so probe a copy with them stripped out.
-    # Bash decodes ANSI-C quoting ($'\x73\x73\x68' -> ssh)
-    # before exec, and the operand walk's tokenizer resolves it too -- so the
-    # gate guarding that walk probes the DECODED text, or a verb spelling the
-    # walk would deny slips past the gate the walk never gets to correct.
-    probe = _decode_shell_quoted_literals(kept)
-    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
-    # bash substitutes ``${VAR:-word}`` defaults before exec, so the verb can
-    # be spliced from statically-known text (``s${U:-s}h`` -> ``ssh``).
-    # Resolve the same forms the operand walk resolves; a bare ``$VAR`` whose
-    # value exists only at run time stays the documented fail-open residual.
-    probe = _resolve_param_defaults(probe)
-    if not any(verb in probe for verb in _SSH_FAMILY_VERBS) and not _glob_can_name_ssh_verb(probe):
+    # The verb gate probes *kept*, the copy whose body quotes stay as written.
+    if not _may_name_ssh_verb(kept):
         return False
     # Bind one level of function-call arguments (``f(){ ssh "$1"
     # id; }; f localhost``) and recurse on the bound body -- the literal call
@@ -1160,7 +1159,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     cased_frames: "list[list[str] | None]" = [tokens if same_case else None for tokens in frames]
     if cased_text is not None:
         cased_text = _EMPTY_EXPANSION_RE.sub("", cased_text)
-        cased_text = _FLAT_SUBSTITUTION_RE.sub(_splice_static_substitution, cased_text)
+        cased_text = _splice_static_substitutions(cased_text)
         cased_text = _mask_quoted_separators(
             _resolve_line_assignments(cased_text), blank_bodies=True
         )
