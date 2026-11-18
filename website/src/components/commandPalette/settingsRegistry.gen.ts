@@ -3404,7 +3404,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "privacy.send-anonymous-usage-heartbeat",
     "label": "Send anonymous usage heartbeat",
     "labelKey": "privacyDisclosure.toggleLabel",
-    "description": "Saved for future launches.",
+    "description": "One anonymous ping a day, plus a receipt when you install an official app. Off stops both.",
     "tab": "privacy",
     "type": "toggle",
     "occurrence": 1,

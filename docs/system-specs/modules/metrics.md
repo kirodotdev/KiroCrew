@@ -6,11 +6,13 @@ Local-first metrics telemetry built on the OpenTelemetry SDK (Apache-2.0 / CNCF)
 The trunk is designed so future work is purely adding instrument calls at call
 sites, never changing this plumbing. **Local recording is on by default**
 (`telemetry.enabled: true`), bounded on disk by `retention_days` (default 30)
-and `max_total_mb` (default 100). Every user is told: the dashboard's first-run
-Privacy chapter (see "In-product privacy disclosure" below), or on a CLI or headless start
-the one-line stderr notice from `metrics/notice.py`, printed once per install
-(stamp file `usage_notice_shown` under the data home) while no notice version is
-acknowledged and recording is on. Export never follows from the default: it
+and `max_total_mb` (default 100). Nothing waits for an acknowledgement: Settings >
+Privacy shows what is on (see "In-product privacy disclosure" below), and a start
+(gateway, `kirocrew run`, `kirocrew chat`) prints the one-line stderr notice from
+`metrics/notice.py` once per notice version while recording is on (stamp file
+`usage_notice_shown` under the data home; a stored `dashboard.privacy_ack_version`
+at the current version also counts as told). Export to an operator's own
+destination never follows from the default: it
 needs recording turned on explicitly (see "Export needs an explicit opt-in"
 below). A value written in either config file wins over the default; the
 heartbeat-off load rule keeps an install that turned the heartbeat off without
@@ -254,36 +256,19 @@ install id, pid, `os.type` or `host.*`), delta temporality, no process-wide OTel
 and a session that adds only `x-kiro-machineid` (a hash of the install id). It is
 the one destination that exports under the recording default
 (`kiro_export.exported`, applied in `_build_recorder`): an operator entry still
-needs `outbound_consented`, while this one needs recording on plus
-`kiro_export.notice_shown` -- `dashboard.kiro_telemetry_ack_version` at least
-`kiro_export.NOTICE_VERSION` (3), written only when the chapter's or
-`kirocrew telemetry enable`'s text named this destination, or the separate
-`kiro_telemetry_notice_shown` stamp that `metrics/notice.py` writes only when a
-start with no dashboard printed the Kiro line to a terminal. `privacy_ack_version`
-alone does not count, nor does a notice of version 2 or lower, which said metrics
-stay on this machine. Until it was shown, the theme boot payload reports the
-lower of `privacy_ack_version` and `kiro_telemetry_ack_version`
-(`_ack_version_for_the_chapter`), so the chapter that names it opens once more,
-but only while the active provider's `otlp_egress_listing` includes it
-(`kiro_export.listed`): the chapter writes the Kiro acknowledgement only from that
-listing's row, so a provider that ships other destinations would never clear the
-hold, and nothing exports there anyway. An unreadable listing reports the stored
-version. Whether the notice was shown is part of
-`_endpoints_key`, so a Keep on in a running gateway attaches the reader at the next
-consent recheck. It is not returned in an LTS build or on a CI runner; a
-non-default `KIROCREW_HOME` gets it like any other home. Because the notice names it, the enable refusals (the
+needs `outbound_consented`, while this one needs only recording on. No
+acknowledgement gates it: its points carry `ClientType`, the build version and a
+hash of the install id, nothing that names a person (no user id, email or
+account), and every off switch that stops recording stops it. The stored
+`dashboard.privacy_ack_version` and `dashboard.kiro_telemetry_ack_version`, which
+earlier builds wrote, still load but decide nothing here, and `_endpoints_key`
+does not read them. It is not returned in an LTS build or on a CI runner; a
+non-default `KIROCREW_HOME` gets it like any other home. The enable refusals (the
 dashboard's `telemetry.enabled` PATCH and `kirocrew telemetry enable`) ask
 `kiro_export.egress_needs_written_opt_in`, which ignores it, and the collection
-status reports that as `enable_refused`. `kiro_export.off_offer_due` names the
-one off case that is asked again: a written `telemetry.enabled: false` (what
-builds before the recording default wrote into every new config), the heartbeat
-on, no env pin, no policy, no `config.local.json` entry, no collector of the
-user's own, and notice version 3 not yet acknowledged. The theme boot payload then
-reports the stored notice version, the collection status reports `off_offer`, and
-the chapter's off form offers Turn on performance metrics (writes `telemetry.enabled: true` and the
-Kiro acknowledgement) or Keep off (writes `telemetry.enabled: false`, already the
-stored value, then `privacy_ack_version`). A start with
-no dashboard prints `notice.OFFER_TEXT` once on a terminal. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
+status reports that as `enable_refused`. A written `telemetry.enabled: false`,
+including the one builds before the recording default wrote into every new
+config, stays off and is not asked about again. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
 the local JSONL sink, so an edition can add destinations but can never remove or
 replace the sink the dashboard reads, and it supplies no cadence — the export
 interval stays `telemetry.export_interval_seconds`. Nor does it supply a
@@ -2642,15 +2627,16 @@ The one thing deliberately *not* swallowed is a stamp-write failure's
 consequence: `_mark_sent()` runs only after a delivered request, so a failed send
 retries later rather than silently losing the day.
 
-### Default-ON with seven suppressions
+### Default-ON with six suppressions
 
 `telemetry.beacon_enabled` defaults **true** and gates the repo's only default-on
 egress family: the heartbeat and official-app install receipts.
 `telemetry_permitted()` suppresses both when `DO_NOT_TRACK` (reason code
 `do_not_track`) or `KIROCREW_TELEMETRY_DISABLED` is truthy, an enterprise **governance ceiling** pins `capabilities.telemetry` off,
 the config toggle is false, the process looks like **CI**, `KIROCREW_HOME` is
-**non-default** (dev home / pod / worktree preview), or this install has never sent
-and `dashboard.privacy_acked` is still false (the first-egress gate below).
+**non-default** (dev home / pod / worktree preview). Nothing waits for an
+acknowledgement: the first heartbeat goes at the first boot that passes these, and
+`dashboard.privacy_acked`, which earlier builds wrote, is no longer read.
 `beacon.should_send()` adds the heartbeat-only daily throttle; receipts are
 event-based and do not use it.
 
@@ -2792,11 +2778,19 @@ cannot disagree and the choice survives restarts and upgrades.
 The dashboard discloses the default-on beacon without turning disclosure into a
 consent flow:
 
-- The **first-run Privacy chapter** is the disclosure surface. There is no
-  passive banner above the routed content: a dismissible strip competed with the
-  chapter that already discloses the same thing, and its "Privacy details" link
-  was the only thing it added.
-- **Settings → Privacy** is the durable surface. It explains the
+- **No first-run screen.** First run is two chapters, Import setup then
+  Customize (`shell/boot/firstRun.tsx`), with no Privacy chapter and no
+  once-more showing of a changed notice for existing users. The theme boot
+  payload carries no privacy fields, and nothing in the dashboard writes
+  `dashboard.privacy_acked`, `dashboard.privacy_ack_version` or
+  `dashboard.kiro_telemetry_ack_version`. The theme PUT route still accepts and
+  stores them, so an older dashboard tab cannot fail, and the loader still reads
+  them, so an older config loads; nothing decides anything from them except the
+  start-up line in `metrics/notice.py`, which treats a stored version at the
+  current `beacon.PRIVACY_NOTICE_VERSION` as already told. A written
+  `telemetry.enabled: false` (an older build's default included) stays off and is
+  not offered back.
+- **Settings → Privacy** is the disclosure surface. It explains the
   default-on, at-most-daily beacon and its exact five fields: random
   installation id, app version, Python minor version, installation channel, and
   first-run flag. `PrivacyPanel.test.tsx` asserts both that all five are named and
@@ -2806,91 +2800,37 @@ consent flow:
   keeps the status/disable commands beneath it — the CLI remains documented
   because it is the only way to override a `config.local.json` overlay and the
   only control on a headless host.
-- The **mandatory first-run Privacy chapter** (`components/PrivacyChapter.tsx`,
-  chapter 2 of 3) says what is on, lists what is and is never collected and where
-  it goes, then offers **Keep on** and **Turn off**, in the
-  `OnboardingChapterShell` layout, so a new user sees what is recorded and sent
-  and can turn it off before reaching the product. Every path out of chapter 1
-  routes through it, including "Skip all", and it offers no skip, and no Escape
-  until a save has failed (below).
-  The text follows the effective state read from `GET /api/telemetry/beacon` and
-  `GET /api/telemetry/collection`: with local recording on, "Performance metrics
-  are on" and the recording list; with only the heartbeat on, "A daily heartbeat
-  is on" and no recording list; when off (an env var, `DO_NOT_TRACK`, a
-  governance pin, or a written `false`), "Performance metrics and the heartbeat
-  are off on this machine" with the reason and one Continue. In first run, off
-  by a written `false` (`offReason` `config`, no `config.local.json` entry)
-  does not show that form: there is nothing to ask, so the chapter records the
-  ack Continue would (`passWhenOff`) without rendering, and a failed write shows
-  the off form with its error. Off by a pin (an env var, `DO_NOT_TRACK`, a
-  governance pin) or a `config.local.json` entry still shows the off form and
-  its Continue, since the heartbeat's first send waits on an ack given on a
-  screen. The chapter calls
-  local recording "performance metrics" and the beacon "the heartbeat", the same
-  two names the Settings > Privacy switches use. An unreadable status gives the
-  neutral form above, with an `ErrorNotice`. Both buttons wait until the status read has answered.
-- **What the buttons write.** Both write `dashboard.privacy_acked`, plus
-  `dashboard.privacy_ack_version` only when the text shown said recording is on.
-  Turn off first writes `telemetry.enabled = false` and
-  `telemetry.beacon_enabled = false` through the config PATCH route (whose
-  config-watcher applier drops the recorder at once, off the event loop), then
-  re-reads both effective states; only when both are off does it write the ack
-  fields. An env var or a `config.local.json` entry that keeps either on leaves
-  the chapter open, naming that setting. A failed write keeps the chapter open
-  with an `ErrorNotice` and marks nothing as seen. From then on the chapter
-  offers Close in its eyebrow row, and Escape does the same: both hide it
-  without recording a choice, as the Ask the agent hand-off does, so it opens
-  again at the next load (`onClose`). A Turn off held by a pin offers no Close,
-  since Keep on still saves.
-- **The notice is versioned.** `dashboard.privacy_ack_version` (int, default 0,
-  never seeded from `privacy_acked`, `onboarded` or localStorage) means "told that
-  local recording is on", and both writers apply that one rule: the chapter writes
-  it on Keep on or Turn off only when the text shown said recording is on, and
-  `kirocrew telemetry enable` writes it only when the command really turns
-  recording on (not on `disable`, and not when it leaves recording off because an
-  export destination is configured); the dashboard's
-  `PRIVACY_NOTICE_VERSION` (`components/privacyNotice.ts`) and
-  `beacon.PRIVACY_NOTICE_VERSION` are both 4 and a backend test pins them
-  together. An existing user whose stored version is lower sees the chapter once
-  at the next dashboard load, decided once per page load, and only while local
-  recording is on; a heartbeat-only or already-off user does not see it. A user
-  who opted out (heartbeat off with `telemetry.enabled` unset, a written `false`,
-  or `DO_NOT_TRACK`) is never re-asked: `_theme_payload` reports the version as
-  current while `_consent_enabled` is false. Only a
-  status read that answered opens the chapter for an existing user. A read that
-  failed opens nothing and stores nothing, so the next dashboard load decides
-  again: a failed read says nothing about what is on, and the first load after
-  the dashboard sign-in runs out fails this way, so opening the chapter on it
-  would put the chapter on screen once a day. `useUsageDataState` reads a
-  status route once more when the gateway refused it for that reason (403 with
-  `X-Auth-Required`), after the sign-in renewal that the refusal started has
-  answered; a renewal that failed, a second refusal, or any other failure
-  leaves the read failed. On a first run, where the chapter is mandatory, a
-  failed read still opens it in its neutral form ("What can be collected", no
-  on/off claim, the read error on screen, "Continue without changes" instead
-  of Keep on), and that button records no version.
-- **The first heartbeat is withheld until that chapter is acknowledged.** The
-  gateway starts the beacon thread at boot, before the dashboard has rendered, so
-  an ungated fresh install would ping before the user could decline: an opt-out
-  offered only after the fact. Keep on / Turn off persist `dashboard.privacy_acked`
-  (and `kirocrew telemetry enable|disable` sets it too, for headless hosts), which
-  `beacon.telemetry_permitted` reads. The gate is **first-egress only**
-  (`beacon.is_first_send()`): an install that has already sent is past the
-  disclosure, and keying every heartbeat on the flag would silence it permanently
-  rather than once. `dashboard.privacy_acked` falls back to `dashboard.onboarded`,
-  so a user who finished first run before the chapter existed is never re-gated.
-  It gates the install receipt too, via the shared consent ladder.
+- **Layout.** `website/src/pages/settings/PrivacyPanel.tsx` follows the
+  Settings > Browser layout: the switches first, each with one line saying what
+  it does, then one collapsed **Details** section (unmounted while closed).
+  **Send anonymous usage heartbeat** (`telemetry.beacon_enabled`) covers the
+  daily ping and the official-app install receipts; **Record metrics**
+  (`telemetry.enabled`) records on this machine and, on a host with a metrics
+  destination, names every collector it also sends to. A pinned switch (policy,
+  env var, `config.local.json`) is disabled with one reason note; an operator
+  destination refuses only the enable direction (409). Details holds the
+  heartbeat and receipt fields, a Kiro telemetry row shown only when the build
+  lists that destination (metrics tagged with a one-way hash of the
+  installation ID, no account, email or user ID), what is never sent, what stays
+  on the device, and the command line. The page gates nothing.
+- **The start-up line.** `metrics/notice.py` prints one stderr line (and logs it
+  at INFO) on a gateway, `kirocrew run` or `kirocrew chat` start while recording
+  is on, once per notice version: it names Kiro telemetry where the build ships
+  that destination and says how to turn usage data off. It is a disclosure, not a
+  gate: nothing waits for it, and a failed print or stamp write changes nothing
+  but whether it prints again.
+- **`kirocrew telemetry enable|disable`** write `telemetry.enabled` and
+  `telemetry.beacon_enabled` only; they record no acknowledgement.
 - The detail sections are single-sourced in `components/PrivacyDisclosure.tsx`
-  (`PrivacyDisclosureSections`, `PrivacyCommandList`) and consumed by both
-  surfaces, so the first-run explanation and the durable panel cannot drift. The
-  heartbeat switch (`TelemetryToggle`) lives in Settings > Privacy; the chapter's
-  two buttons replace it there.
+  (`PrivacyDisclosureSections`, `PrivacyCommandList`) and consumed by Settings >
+  Privacy.
 - **Export needs an explicit opt-in.** `_build_recorder` attaches an OTLP reader
   only when `provider.outbound_consented(cfg)` holds: recording was turned on
   explicitly (`KIROCREW_TELEMETRY` truthy, or `telemetry.enabled: true` written in
   a config file, read through `config.loader._stored_agent_value` with
-  `section="telemetry"`). A recording default alone never permits export, and neither does the Privacy chapter's
-  acknowledgement, whose text says recorded data stays on this machine. The check
+  `section="telemetry"`). A recording default alone never permits export, and neither
+  does a stored notice acknowledgement. The built-in `kiro-telemetry` destination
+  is the one exception (see "External OTLP egress" above). The check
   runs only when a destination exists, so a local-only host reads nothing extra.
 - **`DO_NOT_TRACK`.** A truthy value (`1`, `true`, `yes`, `on`) acts like
   `KIROCREW_TELEMETRY=0` plus `KIROCREW_TELEMETRY_DISABLED=1`: `env_pin()`
@@ -2914,9 +2854,8 @@ consent flow:
   (`already sent today (2026-08-04)`) kept for logs and bug reports; interpolating
   it put a developer diagnostic on screen in all 10 languages. An unrecognized
   code falls back to a generic translated note rather than rendering a raw key.
-- These surfaces add no tracking. They delay exactly one thing, the first
-  heartbeat, until the disclosure has been shown, and otherwise only explain
-  behavior and controls that already exist.
+- These surfaces add no tracking and delay nothing. They only explain behavior
+  and controls that already exist.
 
 ### Official-app install receipt (`apps/install_receipt.py`)
 

@@ -16,6 +16,7 @@ import os
 import secrets
 import stat as _stat
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -875,9 +876,54 @@ def _config_write_lock(p: Path, *, wait: bool = True) -> Iterator[None]:
     fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait):
-            yield
+            held = _held_lock_paths()
+            key = str(lock_path)
+            held[key] = held.get(key, 0) + 1
+            try:
+                yield
+            finally:
+                held[key] -= 1
+                if not held[key]:
+                    del held[key]
     finally:
         os.close(fd)
+
+
+#: Per sidecar lock path, how many :func:`_config_write_lock` holds this thread is
+#: inside, so code that runs both inside a locked write of THAT file and outside one
+#: can tell which it is in.
+_write_lock_held = threading.local()
+
+
+def _held_lock_paths() -> dict[str, int]:
+    held: dict[str, int] | None = getattr(_write_lock_held, "paths", None)
+    if held is None:
+        held = _write_lock_held.paths = {}
+    return held
+
+
+@contextlib.contextmanager
+def try_config_write_lock(p: Path) -> Iterator[bool]:
+    """Yield whether this thread may write *p*'s config now, never waiting.
+
+    ``True`` inside a :func:`_config_write_lock` this thread already holds, or
+    when the sidecar lock is free and taken for the block; ``False`` when another
+    writer holds it (or it cannot be taken), and the caller skips its write.
+    """
+    target = _lock_target(p)
+    if str(target.parent / (target.name + ".lock")) in _held_lock_paths():
+        yield True
+        return
+    try:
+        held = _config_write_lock(target, wait=False)
+        held.__enter__()
+    except Exception:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        held.__exit__(None, None, None)
 
 
 def update_config_locked(

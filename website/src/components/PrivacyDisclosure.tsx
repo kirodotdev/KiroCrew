@@ -1,7 +1,6 @@
-import { EyeOff, HardDrive, PackageCheck, Radio } from 'lucide-react'
+import { Activity, EyeOff, HardDrive, PackageCheck, Radio, Terminal } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { Toggle } from './ui'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { SettingRef } from './settingRef/SettingRef'
@@ -47,7 +46,6 @@ export const SHELL_COMMANDS = (Object.keys(SHELL_LABEL_KEY) as Array<keyof typeo
  */
 const NOT_SENDING_KEY = {
   already_sent_today: 'privacyDisclosure.notSendingAlreadySentToday',
-  awaiting_privacy_ack: 'privacyDisclosure.notSendingAwaitingAck',
   ci: 'privacyDisclosure.notSendingCi',
   non_default_home: 'privacyDisclosure.notSendingNonDefaultHome',
   no_endpoint: 'privacyDisclosure.notSendingNoEndpoint',
@@ -85,16 +83,17 @@ export interface BeaconStatus {
  * offering a write that cannot take effect.
  */
 interface TelemetryToggleProps {
-  /** Settings supplies its registry-aware row; onboarding keeps the standalone
-   * control below. Both presentations share this component's state and notes. */
-  renderControl?: (props: {
+  /** The caller draws the row: the Settings panel passes its registry-aware
+   * `SettingsToggle`, so the settings extractor finds the control in a
+   * `pages/settings/*` file. This component owns the state and the notes. */
+  renderControl: (props: {
     checked: boolean
     onChange: (value: boolean) => void
     disabled: boolean
   }) => React.ReactNode
 }
 
-export function TelemetryToggle({ renderControl }: TelemetryToggleProps = {}) {
+export function TelemetryToggle({ renderControl }: TelemetryToggleProps) {
   const qc = useQueryClient()
   const statusQ = useQuery<BeaconStatus>({
     queryKey: ['beaconStatus'],
@@ -141,30 +140,11 @@ export function TelemetryToggle({ renderControl }: TelemetryToggleProps = {}) {
 
   return (
     <div>
-      {renderControl ? (
-        renderControl({
-          checked: enabled,
-          onChange: value => toggleMut.mutate(value),
-          disabled: statusQ.isLoading || toggleMut.isPending || pinned,
-        })
-      ) : (
-        <div className="flex items-center justify-between gap-4 py-1.5">
-          <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-semibold text-text">
-              {i18nT('privacyDisclosure.toggleLabel')}
-            </div>
-            <div className="text-[12px] text-muted mt-0.5">
-              {i18nT('privacyDisclosure.toggleDescription')}
-            </div>
-          </div>
-          <Toggle
-            checked={enabled}
-            onChange={value => toggleMut.mutate(value)}
-            disabled={statusQ.isLoading || toggleMut.isPending || pinned}
-            label={i18nT('privacyDisclosure.toggleLabel')}
-          />
-        </div>
-      )}
+      {renderControl({
+        checked: enabled,
+        onChange: value => toggleMut.mutate(value),
+        disabled: statusQ.isLoading || toggleMut.isPending || pinned,
+      })}
       {toggleMut.isError && (
         <p role="alert" className="text-[12px] text-danger mt-1">
           {i18nT('privacyDisclosure.toggleSaveFailed')}
@@ -205,123 +185,111 @@ export function TelemetryToggle({ renderControl }: TelemetryToggleProps = {}) {
   )
 }
 
-/** One disclosure section: icon + heading + body. */
-function DisclosureSection({
+/** One Details row: icon + heading, a body line, and an optional field list. */
+function DisclosureRow({
   icon,
   title,
   body,
+  fields,
 }: {
   icon: React.ReactNode
   title: string
   body: string
+  fields?: string
 }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold tracking-tight text-text-strong mb-1.5 flex items-center gap-2">
+      <h3 className="text-[13px] font-semibold text-text-strong mb-1 flex items-center gap-2">
         {icon}
         {title}
       </h3>
-      <p className="text-sm text-muted leading-relaxed">{body}</p>
+      <p className="text-[13px] text-muted leading-relaxed">{body}</p>
+      {fields && <p className="text-[12px] text-muted leading-relaxed mt-1">{fields}</p>}
     </div>
   )
 }
 
 /**
- * The disclosure copy itself — the heartbeat payload, official-app receipt, the
- * never-sent list, and the local-data boundary. Shared verbatim by Settings →
- * Privacy and the onboarding privacy step so the two can never drift; only the
- * surrounding chrome differs.
+ * The Details rows of Settings > Privacy: what each switch sends, what is never
+ * sent, and what stays local. Each row is a direct child of the caller's
+ * `SettingsCard`, so the card draws the hairlines between them.
  *
  * `payloadFields` must stay an exhaustive list of what `beacon.payload()`
  * actually sends. It is the transparency commitment, so a field added to the
- * wire without a line here would make this text a false statement — the
+ * wire without a line here would make this text a false statement; the
  * `PrivacyPanel.test.tsx` field-count assertion is what keeps them in step.
+ *
+ * `shared`: the reader is a teammate on someone else's Crew, so the records stay
+ * on the Crew's computer, not on their device. `kiroTelemetry`: this build lists
+ * the Kiro telemetry destination, so its row is shown; a build without it (an
+ * LTS build, a CI host) shows no row for a destination it does not have.
  */
-/**
- * The shared disclosure sections. ``recordingOn`` is the effective local
- * recording state when the caller has read it; left undefined (still loading,
- * or the read failed) the local-data line states the default instead.
- */
-/** `shared`: the reader is a teammate on someone else's Crew, so the records stay
- *  on the Crew's computer, not on their device. */
-export function PrivacyDisclosureSections({ recordingOn, shared = false }: { recordingOn?: boolean; shared?: boolean } = {}) {
+export function PrivacyDisclosureSections({ shared = false, kiroTelemetry = false }: { shared?: boolean; kiroTelemetry?: boolean } = {}) {
   return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h3 className="text-sm font-semibold tracking-tight text-text-strong mb-1.5 flex items-center gap-2">
-          <Radio className="lucide-inline" aria-hidden="true" />
-          {i18nT('privacyDisclosure.anonymousHeartbeatTitle')}
-        </h3>
-        <p className="text-sm text-muted leading-relaxed">
-          {i18nT('privacyDisclosure.anonymousHeartbeatBody')}
-        </p>
-        {/* The complete payload, kept verbatim as the transparency commitment
-            but rendered as one scannable line instead of a paragraph a normal
-            user will skip. */}
-        <p className="text-[12px] text-muted leading-relaxed mt-1.5">
-          {i18nT('privacyDisclosure.payloadFields')}
-        </p>
-      </div>
-      <div>
-        <h3 className="text-sm font-semibold tracking-tight text-text-strong mb-1.5 flex items-center gap-2">
-          <PackageCheck className="lucide-inline" aria-hidden="true" />
-          {i18nT('privacyDisclosure.installReceiptTitle')}
-        </h3>
-        <p className="text-sm text-muted leading-relaxed">
-          {i18nT('privacyDisclosure.installReceiptBody')}
-        </p>
-        <p className="text-[12px] text-muted leading-relaxed mt-1.5">
-          {i18nT('privacyDisclosure.installReceiptFields')}
-        </p>
-      </div>
-      <DisclosureSection
+    <>
+      <DisclosureRow
+        icon={<Radio className="lucide-inline" aria-hidden="true" />}
+        title={i18nT('privacyDisclosure.anonymousHeartbeatTitle')}
+        body={i18nT('privacyDisclosure.anonymousHeartbeatBody')}
+        fields={i18nT('privacyDisclosure.payloadFields')}
+      />
+      <DisclosureRow
+        icon={<PackageCheck className="lucide-inline" aria-hidden="true" />}
+        title={i18nT('privacyDisclosure.installReceiptTitle')}
+        body={i18nT('privacyDisclosure.installReceiptBody')}
+        fields={i18nT('privacyDisclosure.installReceiptFields')}
+      />
+      {kiroTelemetry && (
+        <DisclosureRow
+          icon={<Activity className="lucide-inline" aria-hidden="true" />}
+          title={i18nT('privacyDisclosure.kiroTelemetryTitle')}
+          body={i18nT('privacyDisclosure.kiroTelemetryBody')}
+        />
+      )}
+      <DisclosureRow
         icon={<EyeOff className="lucide-inline" aria-hidden="true" />}
         title={i18nT('privacyDisclosure.dataNeverSentTitle')}
         body={i18nT('privacyDisclosure.dataNeverSentBody')}
       />
-      <DisclosureSection
+      <DisclosureRow
         icon={<HardDrive className="lucide-inline" aria-hidden="true" />}
         title={shared ? i18nT('privacyDisclosure.localDataTitleShared') : i18nT('privacyDisclosure.localDataTitle')}
-        body={
-          shared
-            ? recordingOn === true
-              ? i18nT('privacyDisclosure.localDataBodyOnShared')
-              : recordingOn === false
-                ? i18nT('privacyDisclosure.localDataBodyOffShared')
-                : i18nT('privacyDisclosure.localDataBodyShared')
-            : recordingOn === true
-              ? i18nT('privacyDisclosure.localDataBodyOn')
-              : recordingOn === false
-                ? i18nT('privacyDisclosure.localDataBodyOff')
-                : i18nT('privacyDisclosure.localDataBody')
-        }
+        body={shared ? i18nT('privacyDisclosure.localDataBodyShared') : i18nT('privacyDisclosure.localDataBody')}
       />
-    </div>
+    </>
   )
 }
 
-/** The CLI/env-var equivalents, demoted beneath the toggle. */
+/** The command-line and env-var equivalents of the switches, as one Details row. */
 export function PrivacyCommandList() {
   return (
-    <div className="flex flex-col items-start gap-2" aria-label={i18nT('privacyDisclosure.controlsTitle')}>
-      {COMMANDS.map(command => (
-        <code key={command} className="text-[13px] text-text bg-bg border border-border rounded-md px-2.5 py-1.5 select-all">
-          {command}
-        </code>
-      ))}
-      {/* Say what the env var stops: the status and disable commands above it
-          are self-describing, this line is not. */}
-      <span className="mt-1 text-[12px] text-muted">{i18nT('privacyDisclosure.doNotTrackCaption')}</span>
-      {SHELL_COMMANDS.map(({ shell, command }) => (
-        <div key={command} className="flex max-w-full flex-col items-start gap-1">
-          <span className="text-[12px] font-medium text-muted">
-            {i18nT(SHELL_LABEL_KEY[shell])}
-          </span>
-          <code className="max-w-full overflow-x-auto text-[13px] text-text bg-bg border border-border rounded-md px-2.5 py-1.5 select-all">
+    <div>
+      <h3 className="text-[13px] font-semibold text-text-strong mb-2 flex items-center gap-2">
+        <Terminal className="lucide-inline" aria-hidden="true" />
+        {i18nT('privacyDisclosure.controlsTitle')}
+      </h3>
+      <div className="flex flex-wrap gap-2">
+        {COMMANDS.map(command => (
+          <code key={command} className="text-[12px] text-text bg-bg border border-border rounded-md px-2 py-1 select-all">
             {command}
           </code>
-        </div>
-      ))}
+        ))}
+      </div>
+      {/* Say what the env var stops: the status and disable commands above it
+          are self-describing, this line is not. */}
+      <p className="mt-3 mb-1.5 text-[12px] text-muted">{i18nT('privacyDisclosure.doNotTrackCaption')}</p>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5">
+        {SHELL_COMMANDS.map(({ shell, command }) => (
+          <div key={command} className="contents">
+            <span className="text-[12px] font-medium text-muted">
+              {i18nT(SHELL_LABEL_KEY[shell])}
+            </span>
+            <code className="justify-self-start max-w-full overflow-x-auto text-[12px] text-text bg-bg border border-border rounded-md px-2 py-1 select-all">
+              {command}
+            </code>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

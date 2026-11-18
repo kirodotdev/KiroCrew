@@ -95,9 +95,7 @@ class TestInstallId:
         assert beacon.install_id(create=False) == ""
         assert not (_isolated_home / beacon.INSTALL_ID_FILE).exists()
 
-    def test_create_false_never_returns_process_local_fallback(
-        self, _isolated_home, monkeypatch
-    ):
+    def test_create_false_never_returns_process_local_fallback(self, _isolated_home, monkeypatch):
         def denied():
             raise PermissionError(13, "Permission denied")
 
@@ -171,7 +169,7 @@ class TestInstallId:
         # send path: must regenerate a valid id
         fresh = beacon.install_id()
         assert len(fresh) == 32
-        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         assert beacon.DISABLE_ENV in beacon.format_status(info)
 
     def test_id_is_not_derived_from_identity(self, _isolated_home, monkeypatch):
@@ -253,7 +251,7 @@ class TestPayloadAllowlist:
     def test_first_seen_flips_after_a_send(self, _isolated_home, monkeypatch):
         assert beacon.payload("1.2.3")["first_seen"] == "1"
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen())
-        beacon.send("https://example.invalid", "1.2.3", enabled=True, acked=True)
+        beacon.send("https://example.invalid", "1.2.3", enabled=True)
         assert beacon.payload("1.2.3")["first_seen"] == "0"
 
 
@@ -377,9 +375,7 @@ class TestDesktopStampPerOS:
             text,
         )
         assert block, "no KC_DISTRIBUTION case found in packaging/build-desktop.sh"
-        found = dict(
-            re.findall(r'(\S+)\)\s*KC_DISTRIBUTION="([^"]+)"', block.group(1))
-        )
+        found = dict(re.findall(r'(\S+)\)\s*KC_DISTRIBUTION="([^"]+)"', block.group(1)))
         assert found, "KC_DISTRIBUTION case matched no branches"
         return found
 
@@ -400,9 +396,9 @@ class TestDesktopStampPerOS:
         from kiro_crew.platform.update_capability import EXTERNALLY_MANAGED_STAMPS
 
         for branch, dist in self._os_stamps().items():
-            assert dist in EXTERNALLY_MANAGED_STAMPS, (
-                f"{branch}) stamps {dist!r}, which is not externally managed"
-            )
+            assert (
+                dist in EXTERNALLY_MANAGED_STAMPS
+            ), f"{branch}) stamps {dist!r}, which is not externally managed"
 
     def test_the_windows_branch_stamps_nsis(self):
         assert self._os_stamps().get("windows") == "nsis"
@@ -480,7 +476,6 @@ class TestVersionClamp:
             "https://e.invalid",
             enabled=True,
             app_version="0.1.2-nightly.20260731t065756",
-            acked=True,
         )
         preview = info["payload_preview"]
         sent = beacon.payload("0.1.2-nightly.20260731t065756")
@@ -493,82 +488,52 @@ class TestVersionClamp:
 class TestSuppression:
     def test_env_opt_out_wins_over_enabled(self, _isolated_home, monkeypatch):
         monkeypatch.setenv(beacon.DISABLE_ENV, "1")
-        ok, reason, _code = beacon.should_send(enabled=True, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=True)
         assert not ok and beacon.DISABLE_ENV in reason
 
     def test_config_toggle_off(self, _isolated_home):
-        ok, reason, _code = beacon.should_send(enabled=False, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=False)
         assert not ok and "disabled" in reason
 
     def test_ci_suppressed(self, _isolated_home, monkeypatch):
         monkeypatch.setattr(beacon, "is_ci", lambda: True)
-        ok, reason, _code = beacon.should_send(enabled=True, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=True)
         assert not ok and "CI" in reason
 
     def test_non_default_home_suppressed(self, _isolated_home, monkeypatch):
         monkeypatch.setattr(beacon, "is_default_home", lambda: False)
-        ok, reason, _code = beacon.should_send(enabled=True, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=True)
         assert not ok and "KIROCREW_HOME" in reason
 
 
-class TestFirstEgressPrivacyGate:
-    """The first heartbeat waits until the opt-out has actually been offered.
+class TestNoAcknowledgementGate:
+    """The heartbeat is on by default: nothing waits for a dashboard screen.
 
-    The gateway starts the beacon thread at boot, long before the dashboard has
-    rendered anything, so without this gate a fresh install pings before the user
-    could possibly decline: an opt-out offered only after the fact.
+    The gateway starts the beacon thread at boot. A fresh install with every
+    switch at its default sends its first heartbeat then; the off switches are
+    what stop it.
     """
 
-    def test_unacked_first_send_is_withheld(self, _isolated_home):
-        ok, _reason, code = beacon.should_send(enabled=True, acked=False)
-        assert not ok and code == "awaiting_privacy_ack"
+    def test_first_send_is_permitted_on_a_fresh_install(self, _isolated_home):
+        assert beacon.is_first_send() is True
+        assert beacon.should_send(enabled=True).ok is True
 
-    def test_acked_first_send_is_permitted(self, _isolated_home):
-        assert beacon.should_send(enabled=True, acked=True).ok is True
-
-    def test_no_http_request_is_made_while_unacked(self, _isolated_home, monkeypatch):
+    def test_first_heartbeat_makes_its_request(self, _isolated_home, monkeypatch):
         """Asserted at the ``send`` boundary: the verdict is what gates egress."""
-        calls: list[str] = []
-        monkeypatch.setattr(
-            beacon.urllib.request,
-            "urlopen",
-            lambda req, **_kw: calls.append(req.full_url),
-        )
-        assert (
-            beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=False) is False
-        )
-        assert calls == []
+        calls: list = []
+        monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is True
+        assert len(calls) == 1
 
-    def test_established_install_still_sends_when_unacked(
-        self, _isolated_home, monkeypatch
-    ):
-        """The gate is FIRST-egress only.
+    def test_reasons_lists_no_acknowledgement_code(self):
+        assert "awaiting_privacy_ack" not in beacon.REASONS
 
-        An install that has sent before has already been past the disclosure (or
-        predates the field entirely), so keying the daily heartbeat on the flag
-        would silence it permanently rather than once.
-        """
-        (_isolated_home / beacon.STAMP_FILE).write_text("2020-01-01")
-        assert beacon.is_first_send() is False
-        assert beacon.should_send(enabled=True, acked=False).ok is True
-
-    def test_unacked_verdict_does_not_mask_a_more_actionable_reason(
-        self, _isolated_home, monkeypatch
-    ):
-        """A pod/CI host reports THAT, not the ack; the remedy differs."""
+    def test_install_receipts_share_the_ladder(self, _isolated_home, monkeypatch):
+        """A second egress route answers the same verdict as the heartbeat."""
+        assert install_receipt.should_send(enabled=True, official=True).ok is True
+        assert install_receipt.should_send(enabled=False, official=True).code == "disabled"
         monkeypatch.setattr(beacon, "is_ci", lambda: True)
-        assert beacon.should_send(enabled=True, acked=False).code == "ci"
-
-    def test_install_receipts_share_the_gate(self, _isolated_home):
-        """A second egress route must not bypass the first-egress consent gate."""
-        assert (
-            install_receipt.should_send(enabled=True, official=True, acked=False).ok
-            is False
-        )
-        assert (
-            install_receipt.should_send(enabled=True, official=True, acked=True).ok
-            is True
-        )
+        assert install_receipt.should_send(enabled=True, official=True).code == "ci"
 
 
 class TestReasonCodes:
@@ -579,17 +544,14 @@ class TestReasonCodes:
     """
 
     def test_status_reports_a_known_code(self, _isolated_home):
-        info = beacon.status(
-            "https://e.invalid", enabled=True, app_version="1.2.3", acked=True
-        )
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         assert info["reason_code"] in beacon.REASONS
 
     @pytest.mark.parametrize(
         ("kwargs", "expected"),
         [
-            ({"enabled": False, "acked": True}, "disabled"),
-            ({"enabled": True, "acked": False}, "awaiting_privacy_ack"),
-            ({"enabled": True, "acked": True}, "ready"),
+            ({"enabled": False}, "disabled"),
+            ({"enabled": True}, "ready"),
         ],
     )
     def test_each_suppression_has_its_own_code(self, _isolated_home, kwargs, expected):
@@ -597,10 +559,10 @@ class TestReasonCodes:
 
     def test_already_sent_today_has_a_code(self, _isolated_home):
         (_isolated_home / beacon.STAMP_FILE).write_text(beacon._today())
-        assert beacon.should_send(enabled=True, acked=True).code == "already_sent_today"
+        assert beacon.should_send(enabled=True).code == "already_sent_today"
 
     def test_no_endpoint_has_a_code(self, _isolated_home):
-        info = beacon.status("", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("", enabled=True, app_version="1.2.3")
         assert info["reason_code"] == "no_endpoint"
 
     def test_lts_build_never_sends_the_heartbeat(self, _isolated_home, monkeypatch):
@@ -611,28 +573,27 @@ class TestReasonCodes:
         monkeypatch.setattr(sel_mod, "sel", lambda: fake_sel)
         calls: list = []
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
-        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         assert (info["would_send"], info["reason_code"]) == (False, "governance")
         # A diagnostic read is not audited; the enforced send is, once.
         assert fake_sel.log_governance_decision.call_count == 0
-        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is False
         assert calls == []
         rows = [c[1] for c in fake_sel.log_governance_decision.call_args_list]
         assert [(r["tool_name"], r["scope"], r["outcome"]) for r in rows] == [
             ("beacon_send", "capabilities.telemetry", "denied")
         ]
         assert "LTS edition" in rows[0]["reason"]
-        # The other routes on the same ladder: no Privacy chapter records an ack
-        # there, so each says why it is refused rather than "awaiting the chapter".
-        # The admin's policy turned telemetry on, so no policy pin refuses it.
+        # The other routes on the same ladder say why they are refused. The
+        # admin's policy turned telemetry on, so no policy pin refuses it.
         monkeypatch.setattr(beacon, "is_governance_pinned_off", lambda **_k: False)
-        receipt = install_receipt.should_send(enabled=True, official=True, acked=False)
+        receipt = install_receipt.should_send(enabled=True, official=True)
         assert receipt.code == "governance"
 
     def test_oss_build_still_sends_the_heartbeat(self, _isolated_home, monkeypatch):
         calls: list = []
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
-        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is True
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is True
         assert len(calls) == 1
 
 
@@ -660,7 +621,7 @@ class TestEnvOptOutProbe:
     def test_agrees_with_should_send(self, _isolated_home, monkeypatch):
         """The probe and the real suppression rule must never disagree."""
         monkeypatch.setenv(beacon.DISABLE_ENV, "1")
-        ok, _reason, _code = beacon.should_send(enabled=True, acked=True)
+        ok, _reason, _code = beacon.should_send(enabled=True)
         assert beacon.is_env_opted_out() is True and not ok
 
 
@@ -699,8 +660,8 @@ class TestThrottle:
     def test_second_send_same_day_suppressed(self, _isolated_home, monkeypatch):
         calls = []
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
-        assert beacon.send("https://example.invalid", "1.2.3", enabled=True, acked=True) is True
-        assert beacon.send("https://example.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("https://example.invalid", "1.2.3", enabled=True) is True
+        assert beacon.send("https://example.invalid", "1.2.3", enabled=True) is False
         assert len(calls) == 1, "at most one request per day"
 
     @requires_symlinks
@@ -717,7 +678,7 @@ class TestThrottle:
         (_isolated_home / beacon.STAMP_FILE).symlink_to("important.txt")
 
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen())
-        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is True
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is True
 
         assert victim.read_text() == "USER DATA", "symlink target was clobbered"
         assert not (_isolated_home / beacon.STAMP_FILE).is_symlink()
@@ -728,7 +689,7 @@ class TestThrottle:
             raise urllib.error.URLError("offline")
 
         monkeypatch.setattr(beacon.urllib.request, "urlopen", boom)
-        assert beacon.send("https://example.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("https://example.invalid", "1.2.3", enabled=True) is False
         assert not beacon.already_sent_today(), "a failure must retry later"
 
 
@@ -752,7 +713,7 @@ class TestUrlAndTransport:
     def test_empty_endpoint_never_sends(self, _isolated_home, monkeypatch):
         calls = []
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _fake_urlopen(calls))
-        assert beacon.send("", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("", "1.2.3", enabled=True) is False
         assert calls == []
 
     def test_send_never_raises_on_any_error(self, _isolated_home, monkeypatch):
@@ -769,7 +730,7 @@ class TestUrlAndTransport:
                 raise _e
 
             monkeypatch.setattr(beacon.urllib.request, "urlopen", boom)
-            assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is False
+            assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is False
 
     def test_unwritable_data_home_is_silent(self, _isolated_home, monkeypatch):
         """An unwritable data home must not propagate out of send()/status().
@@ -789,8 +750,8 @@ class TestUrlAndTransport:
         # that does NOT: the stamp/id lookups reached via payload() + status().
         monkeypatch.setattr(beacon, "already_sent_today", denied)
 
-        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is False
-        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is False
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         assert info["would_send"] is False
         assert "could not read the data home" in str(info["reason"])
         # Still renderable — a diagnostic must work when things are broken.
@@ -807,7 +768,7 @@ class TestUrlAndTransport:
 
         monkeypatch.setattr(beacon.Path, "home", staticmethod(no_home))
         monkeypatch.setattr(beacon, "config_dir", no_home)
-        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is False
         assert beacon.is_first_send() is True  # unreadable state → treat as first
 
     def test_malformed_https_endpoint_is_silent(self, _isolated_home):
@@ -819,7 +780,7 @@ class TestUrlAndTransport:
         every boot — violating this function's silent-on-failure contract. Drives the REAL
         urlopen (no stub), because the bug was in the except tuple itself.
         """
-        assert beacon.send("https://exa mple.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("https://exa mple.invalid", "1.2.3", enabled=True) is False
 
 
 class TestFailOpen:
@@ -862,7 +823,7 @@ class TestFailOpen:
             raise exc
 
         monkeypatch.setattr(beacon.urllib.request, "urlopen", boom)
-        assert beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("https://e.invalid", "1.2.3", enabled=True) is False
 
     def test_a_hanging_beacon_does_not_delay_the_caller(self, _isolated_home, monkeypatch):
         """The gateway starts the beacon on a thread and never joins it.
@@ -891,7 +852,7 @@ class TestFailOpen:
         thread = threading.Thread(
             target=beacon.send,
             args=("https://e.invalid", "1.2.3"),
-            kwargs={"enabled": True, "acked": True},
+            kwargs={"enabled": True},
             daemon=True,
         )
         thread.start()
@@ -920,7 +881,7 @@ class TestFailOpen:
 
 class TestStatusOutput:
     def test_status_does_not_create_id(self, _isolated_home):
-        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         assert info["install_id"] == "(not yet generated)"
         assert not (_isolated_home / beacon.INSTALL_ID_FILE).exists()
 
@@ -930,13 +891,13 @@ class TestStatusOutput:
         Reachable whenever __post_init__ clears a non-https endpoint — precisely
         when an operator runs `telemetry status` to find out why nothing is sent.
         """
-        info = beacon.status("", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("", enabled=True, app_version="1.2.3")
         assert info["would_send"] is False
         assert "endpoint" in str(info["reason"])
 
     def test_formatted_status_discloses_optout_and_exclusions(self, _isolated_home):
         text = beacon.format_status(
-            beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+            beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         )
         expected_optout = f"""  To opt out, choose one:
 
@@ -1116,16 +1077,15 @@ class TestTelemetryCliWrite:
         assert calls[0].get("fsync") is True, "write must be durable"
         assert json.loads(cfg.read_text())["telemetry"]["beacon_enabled"] is False
 
-    @pytest.mark.parametrize("section", ["telemetry", "dashboard"])
     @pytest.mark.parametrize("value", [[], "on", 3, True])
     def test_refuses_rather_than_replacing_a_non_object_section(
-        self, _isolated_home, monkeypatch, section, value
+        self, _isolated_home, monkeypatch, value
     ):
         """A present-but-wrong-type section is a refusal, never a silent replace.
 
         Coercing it to ``{}`` would discard whatever the user had under that key
-        and then print success. The toggle writes BOTH sections, so each needs the
-        same guard the whole-file check already applies.
+        and then print success, so the section the toggle writes gets the same
+        guard the whole-file check already applies.
 
         ``KiroCrewConfig.load`` is stubbed out because it runs FIRST in
         ``_telemetry`` and its own migration write-back already replaces a
@@ -1137,10 +1097,12 @@ class TestTelemetryCliWrite:
         from kiro_crew import cli_commands
 
         cfg = _isolated_home / "config.json"
-        original = json.dumps({"timezone": "UTC", section: value})
+        original = json.dumps({"timezone": "UTC", "telemetry": value})
         cfg.write_text(original)
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg)
-        monkeypatch.setattr(cli_commands.KiroCrewConfig, "load", classmethod(lambda cls: MagicMock()))
+        monkeypatch.setattr(
+            cli_commands.KiroCrewConfig, "load", classmethod(lambda cls: MagicMock())
+        )
 
         with pytest.raises(SystemExit) as excinfo:
             cli_commands._telemetry(self._args("disable"))
@@ -1149,7 +1111,7 @@ class TestTelemetryCliWrite:
         assert cfg.read_text() == original, "the user's file must be untouched"
 
     def test_absent_sections_are_created(self, _isolated_home, monkeypatch):
-        """Absent is not malformed: create both sections and record the choice."""
+        """Absent is not malformed: create the section and record the choice."""
         from kiro_crew.cli_commands import _telemetry
 
         cfg = _isolated_home / "config.json"
@@ -1160,9 +1122,8 @@ class TestTelemetryCliWrite:
 
         written = json.loads(cfg.read_text())
         assert written["telemetry"]["beacon_enabled"] is False
-        # An explicit CLI choice IS the informed decision, so it releases the
-        # first-egress gate even though no dashboard screen was ever shown.
-        assert written["dashboard"]["privacy_acked"] is True
+        # No acknowledgement is recorded: nothing waits for one.
+        assert "dashboard" not in written
         assert written["timezone"] == "UTC", "unrelated keys must survive"
 
 
@@ -1244,7 +1205,7 @@ class TestConfigDefaults:
         from kiro_crew.config.loader import TelemetryConfig
 
         cfg = TelemetryConfig()
-        ok, reason, _code = beacon.should_send(enabled=cfg.beacon_enabled, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=cfg.beacon_enabled)
         assert ok is True, f"a default install must send, got: {reason}"
         assert reason == "ready"
 
@@ -1334,7 +1295,7 @@ class TestGovernancePin:
     def test_ungoverned_host_is_not_pinned(self, _isolated_home, monkeypatch):
         self._install_policy(monkeypatch, None)
         assert beacon.is_governance_pinned_off() is False
-        assert beacon.should_send(enabled=True, acked=True)[0] is True
+        assert beacon.should_send(enabled=True)[0] is True
 
     def test_policy_silent_about_telemetry_still_permits(self, _isolated_home, monkeypatch):
         """capability_default=True — a ceiling that governs other scopes must not
@@ -1344,7 +1305,7 @@ class TestGovernancePin:
             {"version": 1, "boot": {"fail_closed": True}, "apps": {"mode": "deny", "deny": ["x"]}},
         )
         assert beacon.is_governance_pinned_off() is False
-        assert beacon.should_send(enabled=True, acked=True)[0] is True
+        assert beacon.should_send(enabled=True)[0] is True
 
     def test_policy_pin_blocks_the_send(self, _isolated_home, monkeypatch):
         self._install_policy(
@@ -1356,7 +1317,7 @@ class TestGovernancePin:
             },
         )
         assert beacon.is_governance_pinned_off() is True
-        ok, reason, _code = beacon.should_send(enabled=True, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=True)
         assert ok is False
         assert "governance" in reason and "capabilities.telemetry" in reason
 
@@ -1381,7 +1342,7 @@ class TestGovernancePin:
             raise AssertionError("a pinned host must not open a connection")
 
         monkeypatch.setattr(beacon.urllib.request, "urlopen", _explode)
-        assert beacon.send("https://example.invalid", "1.2.3", enabled=True, acked=True) is False
+        assert beacon.send("https://example.invalid", "1.2.3", enabled=True) is False
         assert calls == []
 
     def test_pin_is_ranked_above_the_config_flag(self, _isolated_home, monkeypatch):
@@ -1398,7 +1359,7 @@ class TestGovernancePin:
                 "capabilities": {"telemetry": {"enabled": False}},
             },
         )
-        _ok, reason, _code = beacon.should_send(enabled=False, acked=True)
+        _ok, reason, _code = beacon.should_send(enabled=False)
         assert "governance" in reason
         assert "beacon_enabled" not in reason
 
@@ -1413,7 +1374,7 @@ class TestGovernancePin:
             "is_governance_pinned_off",
             lambda: (_ for _ in ()).throw(AssertionError("must not be consulted")),
         )
-        ok, reason, _code = beacon.should_send(enabled=True, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=True)
         assert ok is False
         assert beacon.DISABLE_ENV in reason
 
@@ -1443,7 +1404,7 @@ class TestGovernancePin:
         monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
         assert beacon.is_governance_pinned_off() is False
         # ...and the beacon still sends, since nothing legitimately suppresses it.
-        assert beacon.should_send(enabled=True, acked=True)[0] is True
+        assert beacon.should_send(enabled=True)[0] is True
 
     def test_a_real_policy_pin_is_still_detected(self, _isolated_home, monkeypatch):
         """The layer check must not weaken the control it guards.
@@ -1510,7 +1471,7 @@ class TestGovernancePin:
         monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
         monkeypatch.setattr(beacon, "already_sent_today", lambda: False)
         assert beacon.is_governance_pinned_off() is True
-        ok, reason, _code = beacon.should_send(enabled=True, acked=True)
+        ok, reason, _code = beacon.should_send(enabled=True)
         assert ok is False
         assert "governance" in reason
 
@@ -1557,7 +1518,7 @@ class TestGovernancePin:
 
         monkeypatch.setattr(sel_mod, "sel", lambda: fake)
 
-        beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True)
+        beacon.send("https://e.invalid", "1.2.3", enabled=True)
 
         calls = fake.log_governance_decision.call_args_list
         assert len(calls) == 1, "the enforcement decision must be audited exactly once"
@@ -1602,7 +1563,7 @@ class TestGovernancePin:
         from kiro_crew.cli_config import _config_cmd
         from kiro_crew.dashboard.handlers.core import _beacon_governance_pinned_off
 
-        assert _tools_for(lambda: beacon.send("https://e.invalid", "1.2.3", enabled=True, acked=True)) == [
+        assert _tools_for(lambda: beacon.send("https://e.invalid", "1.2.3", enabled=True)) == [
             "beacon_send"
         ]
         assert _tools_for(lambda: _telemetry(argparse.Namespace(telemetry_action="enable"))) == [
@@ -1644,7 +1605,7 @@ class TestGovernancePin:
 
         monkeypatch.setattr(sel_mod, "sel", lambda: fake)
 
-        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
 
         assert info["governance_pinned_off"] is True, "still reports the pin"
         assert fake.log_governance_decision.call_args_list == []
@@ -1658,7 +1619,7 @@ class TestGovernancePin:
                 "capabilities": {"telemetry": {"enabled": False}},
             },
         )
-        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         assert info["governance_pinned_off"] is True
         rendered = beacon.format_status(info)
         assert "administrator" in rendered
@@ -1666,7 +1627,7 @@ class TestGovernancePin:
 
     def test_status_omits_the_pin_notice_when_ungoverned(self, _isolated_home, monkeypatch):
         self._install_policy(monkeypatch, None)
-        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3", acked=True)
+        info = beacon.status("https://e.invalid", enabled=True, app_version="1.2.3")
         assert info["governance_pinned_off"] is False
         assert "administrator" not in beacon.format_status(info)
 

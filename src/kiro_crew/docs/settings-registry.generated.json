@@ -1999,7 +1999,7 @@
       "label": "Send anonymous usage heartbeat",
       "tab": "privacy",
       "route": "/settings/privacy?highlight=key%3Atelemetry.beacon_enabled",
-      "description": "Saved for future launches.",
+      "description": "One anonymous ping a day, plus a receipt when you install an official app. Off stops both.",
       "configKey": "telemetry.beacon_enabled"
     },
     {
