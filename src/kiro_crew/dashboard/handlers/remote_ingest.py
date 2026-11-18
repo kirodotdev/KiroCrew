@@ -43,6 +43,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror, platform_compat, work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.dashboard.handlers import remote_batch_pull
 from kiro_crew.dashboard.handlers import remote_ingest_peer as peer_ingest
 from kiro_crew.dashboard.handlers.remote_ingest_report import (
     _ingest_report_locked,
@@ -534,7 +535,9 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
     """Pull every open remote item on *board* and file what is new. Never raises.
 
     Called by ``work_ledger_read`` with the switch on, before the read takes its
-    board lock. Each crew's slot list is read once; each item's peer copy once.
+    board lock. Each crew is read once, in one batch call (``remote_batch_pull``);
+    a crew without that route has its slot list read once and each item's peer
+    copy once.
     """
     # The roster is read SETTLED, as every value that drives a peer call is: a
     # bind still being recorded must not start a pull.
@@ -580,20 +583,31 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
 
 
 async def _pull_all(
-    state: "DashboardState", board: str, remote: list[work_ledger.WorkItem]
+    state: "DashboardState",
+    board: str,
+    remote: list[work_ledger.WorkItem],
 ) -> None:
     mgr = getattr(state, "instances_manager", None)
     slot_lists: dict[str, dict[str, dict[str, bool]] | None] = {}
     loop = asyncio.get_running_loop()
     deadline = loop.time() + READ_DEADLINE_SECS
-    for item in remote:
+    rows = await remote_batch_pull.pull_batches(state, mgr, board, remote, deadline)
+    # Rows a crew already answered need no peer call: filed first, so a stalled
+    # crew's per-item fallback never spends the deadline they were fetched within.
+    for item in sorted(remote, key=lambda i: i.item_id not in rows):
         left = deadline - loop.time()
         if left <= 0:
             # Out of time for this read: these items keep their last state.
             break
+        row = rows.get(item.item_id)
         try:
             await asyncio.wait_for(
-                _ingest_item(state, mgr, board, item, slot_lists), min(PULL_TIMEOUT_SECS, left)
+                (
+                    _ingest_item(state, mgr, board, item, slot_lists)
+                    if row is None
+                    else remote_batch_pull.ingest_batched(state, mgr, board, item, row)
+                ),
+                min(PULL_TIMEOUT_SECS, left),
             )
         except asyncio.TimeoutError:
             # Slow, not shown down: the crew's state stays what it was.
@@ -691,6 +705,40 @@ async def _ingest_item(
         else:
             await _mark_error(board, item.item_id, exc.code)
         return
+    await _apply_pull(
+        state,
+        mgr,
+        board,
+        item,
+        unit,
+        status=status,
+        payload=payload,
+        limit=limit,
+        listed=listed,
+        trust_active=payload.get("trust_active") if isinstance(payload, dict) else None,
+    )
+
+
+async def _apply_pull(
+    state: "DashboardState",
+    mgr: Any,
+    board: str,
+    item: work_ledger.WorkItem,
+    unit: str,
+    *,
+    status: int,
+    payload: Any,
+    limit: int,
+    listed: dict[str, dict[str, bool]] | None,
+    trust_active: Any,
+) -> None:
+    """Store what one read of *item*'s peer copy said and file its news.
+
+    *payload* ``remote_batch_pull.UNCHANGED`` is a batch row with no news: the answers are
+    stored fresh and nothing is filed.
+    """
+    crew = str(item.worker_instance_id)
+    slot = str(item.worker_session_key)
     observed: dict[str, bool] = {}
     if listed is not None:
         row = listed.get(slot)
@@ -724,6 +772,8 @@ async def _ingest_item(
             record.error = "crew_work_item_not_found"
         elif not 200 <= status < 300 or not isinstance(payload, dict):
             record.error = "crew_peer_refused"
+        elif payload is remote_batch_pull.UNCHANGED:
+            record.error = None
         elif _unrecorded_hold(record, payload):
             # This snapshot's filing failed to reach the crew log moments ago: keep the
             # error and wait out the window rather than audit the same failure again.
@@ -753,12 +803,7 @@ async def _ingest_item(
         await asyncio.to_thread(_store, board, item.item_id, record)
     # A conductor that left Trust ends the grant its worker still holds (RFC §4).
     # Asked only when the peer says it holds one, so an older peer gets no new field.
-    if (
-        status == 200
-        and isinstance(payload, dict)
-        and payload.get("trust_active") is True
-        and not conductor_trusts(state, board)
-    ):
+    if status == 200 and trust_active is True and not conductor_trusts(state, board):
         await revoke_peer_trust(mgr, crew, slot)
 
 
