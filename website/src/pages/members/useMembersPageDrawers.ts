@@ -506,14 +506,14 @@ interface MembersPageTrackpadSwipeOptions {
  * right edge (`deskSlide`); once it settles, its state is published the way the
  * header toggle does it, and the placement takes it back.
  *
- * The gesture commits a change only after the page's guard allows it: an
- * opening swipe while a Profile schedule draft is at stake does not drag, and
- * goes to `togglePanel`, which asks first. A leftward run opens a hidden panel.
- * Over an open panel, the run is left to the browser and the panel keeps its
- * tab. A run that starts on the Profile card, docked or floating, is left to the
- * browser too: the card is not part of the panel, and opening the panel would
- * fold a docked card. The Dashboard frame relays its wheels (`relayWheel`). A
- * relayed run may only start the close, and needs the Dashboard tab on screen.
+ * Nothing is committed before the page's guard has had its say: an opening
+ * swipe while a Profile schedule draft is at stake does not drag at all, and
+ * goes to `togglePanel`, which asks first. A leftward run over a panel showing
+ * another tab only brings Dashboard forward. A run that starts on the Profile
+ * card, docked or floating, is left to the browser: the card is not part of the
+ * panel, and opening the panel would fold a docked card. The Dashboard frame relays its
+ * wheels (`relayWheel`); a relayed run may only start the close, and only while
+ * the Dashboard tab is on screen.
  *
  * Under reduced motion there is no live drag; a clear swipe switches the panel
  * once, when the run ends.
@@ -523,15 +523,16 @@ export function useMembersPageTrackpadSwipe({
 }: MembersPageTrackpadSwipeOptions) {
   const { isMobile, beside, panelVisible } = layout
   const { togglePanel, closeDocked, schedAtStakeRef, revealPanelThen } = profileCard
-  const { focusPanelTab, closeOverlay } = sidePanel
+  const { activeTabId, focusPanelTab, closeOverlay } = sidePanel
   const {
     sidePanelX, sidePanelPhaseRef, setSidePanelPhase, setDeskSlide, deskSlideRef, sidePanelTravel, deskTravelRef,
     syncDeskSpacer,
   } = drawers
+  const onDashboard = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
   const enabled = !isMobile && !!active && !createOpen
   /** Everything the gesture's callbacks read, current at call time. */
-  const now = useRef({ panelVisible, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab })
-  now.current = { panelVisible, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab }
+  const now = useRef({ panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab })
+  now.current = { panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab }
   /** The drag in progress: where it started, its travel, and the fingers'
    *  (offset, time) samples for the release speed. */
   const drag = useRef<TrackpadPanelDrag>(idleTrackpadDrag())
@@ -592,9 +593,10 @@ export function useMembersPageTrackpadSwipe({
       if (target?.closest('[data-crew-profile-card]')) return false
       // Mid-settle, either way grabs the panel where it is.
       if (settleTo.current !== null) return true
-      return dir === 'left' ? !n.panelVisible : n.panelVisible
+      return dir === 'left' ? !n.onDashboard : n.panelVisible
     },
-    // A reveal from rest waits for a real swipe; a grab mid-settle never does.
+    // A reveal or a Dashboard jump from rest waits for a real swipe; a grab
+    // mid-settle never does.
     reveals: (dir) => dir === 'left' && settleTo.current === null,
     onDragStart: (dir, lead) => {
       const n = now.current
@@ -609,6 +611,8 @@ export function useMembersPageTrackpadSwipe({
       }
       // A drag still owns the panel; this run does nothing.
       if (deskSlideRef.current) return
+      // A panel already showing another tab: Dashboard comes forward, no slide.
+      if (dir === 'left' && n.panelVisible) { n.focusPanelTab(CREW_DASHBOARD_TAB_ID); return }
       // Revealing with a schedule draft at stake: the guard asks first, and a
       // refusal leaves nothing behind. No drag, so no state to undo.
       // Discard reveals on Dashboard, as a drag would.
@@ -658,7 +662,12 @@ export function useMembersPageTrackpadSwipe({
       const { open, velocity } = releaseTrackpadDrag(drag.current, sidePanelX.get(), how, at)
       settleDrag(open, velocity)
     },
-    onSwipe: (dir) => land(dir === 'left'),
+    onSwipe: (dir) => {
+      // Reduced motion, a leftward swipe over a panel on another tab: Dashboard
+      // comes forward, as the live path's drag start does.
+      if (dir === 'left' && now.current.panelVisible) { now.current.focusPanelTab(CREW_DASHBOARD_TAB_ID); return }
+      land(dir === 'left')
+    },
     // Only a frame in the panel, in the tab on screen (a Dashboard kept
     // mounted behind another tab is hidden, so it cannot drive the panel).
     acceptFrame: (frame) => {

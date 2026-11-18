@@ -568,15 +568,14 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
       expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('0')
     })
 
-    it('a leftward run over an open panel leaves the tab on screen alone', async () => {
+    it('a leftward run brings the Dashboard forward when another tab is showing', async () => {
       const chat = await openOncall()
       await screen.findByTestId('side-panel-leading-tabs', undefined, PANE_READY)
       fireEvent.click(screen.getByRole('tab', { name: 'Workspace' }))
       await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'false'))
-      expect(swipe(chat, 15)).toBe(0)
+      swipe(chat, 15)
+      await waitFor(() => expect(dashTab()).toHaveAttribute('aria-selected', 'true'))
       expect(sliding()).toBe(false)
-      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
-      expect(dashTab()).toHaveAttribute('aria-selected', 'false')
     })
 
     it('a leftward run over a floating Profile card on Goals leaves the card and the panel tab alone', async () => {

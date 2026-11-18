@@ -528,7 +528,7 @@ export interface TrackpadSwipeOptions {
    *  the browser. */
   wants: (dir: TrackpadSwipeDir, fromFrame: boolean, target: Element | null) => boolean
   /** Whether a run this way, which `wants` just accepted, would bring a closed
-   *  panel out: its drag then starts only
+   *  panel out (or another of its tabs forward): its drag then starts only
    *  once it has travelled SWIPE_THRESHOLD_PX. Not asked under reduced motion.
    *  Unset: never. */
   reveals?: (dir: TrackpadSwipeDir) => boolean
