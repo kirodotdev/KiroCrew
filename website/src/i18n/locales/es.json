@@ -20566,6 +20566,8 @@
         "remote_editor_host_save_error": "No se pudo guardar el host SSH.",
         "show_topbar_search": "Mostrar la búsqueda en la barra superior",
         "show_topbar_search_desc": "Muestra el cuadro de búsqueda en el centro de la barra superior. Desactivado, su espacio pasa a los controles de cada lado, así que las lecturas de CPU, MEM y DSK siguen visibles en ventanas más estrechas. El atajo de búsqueda sigue abriendo la búsqueda. Mientras los atajos estén desactivados, el cuadro sigue visible.",
+        "reopen_last_page": "Volver a donde lo dejé",
+        "reopen_last_page_desc": "Al abrir la app instalada desde su icono, vuelve a la última página que tenías abierta en este dispositivo, como el chat de un compañero, en lugar de Sessions. Un enlace o una notificación que indique una página sigue abriendo esa página.",
         "command_bar": "Usar la Command Bar",
         "command_bar_desc": "Cmd+K o Ctrl+K abre la Command Bar: escribe un comando para ir a una aplicación, un ajuste o una sesión. Desactivada, el atajo abre la paleta de búsqueda, que también busca en conocimiento, habilidades y prompts.",
         "command_bar_save_failed": "No se pudo guardar el ajuste de la Command Bar.",

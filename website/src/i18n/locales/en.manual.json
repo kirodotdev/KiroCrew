@@ -9699,6 +9699,8 @@
         "translucent_panels_desc": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them. Off, they are solid cards.",
         "show_topbar_search": "Show search in the top bar",
         "show_topbar_search_desc": "Show the search box in the middle of the top bar. Off, the controls on either side get its space, so the CPU, MEM and DSK readings stay visible in narrower windows. The search shortcut still opens search. While keyboard shortcuts are off, the box stays shown.",
+        "reopen_last_page": "Reopen where I left off",
+        "reopen_last_page_desc": "Opening the installed app from its icon returns to the last page you had open on this device, such as one crewmate's chat, instead of Sessions. A link or notification that names a page still opens that page.",
         "command_bar": "Use Command Bar",
         "command_bar_desc": "Cmd+K or Ctrl+K opens the Command Bar: type a command to jump to an app, a setting or a session. Off, the shortcut opens the search palette, which also searches knowledge, skills and prompts.",
         "command_bar_save_failed": "Could not save the Command Bar setting.",
