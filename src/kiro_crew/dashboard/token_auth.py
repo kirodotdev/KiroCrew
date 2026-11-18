@@ -621,7 +621,9 @@ def token_auth_middleware(
                         resources=path,
                         error="agent socket capability" if _ipc_granted else "",
                     )
-                    _log_auth(request, "internal", "granted", "")
+                    # This ``internal_auth`` row is the grant's only audit row: a
+                    # ``_log_auth`` row here would repeat it with the bare caller
+                    # ``"internal"`` and no credential (#39024).
                     # Mark the grant so handlers can distinguish "the internal
                     # loopback caller (kiro-cli / MCP) authenticated" from "no
                     # auth ran at all".

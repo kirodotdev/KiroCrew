@@ -1335,6 +1335,54 @@ async def test_mixed_internal_app_token_keeps_layer_row(monkeypatch, remote):
     assert layer_rows[0]["resources"] == "/api/workflows/runs"
 
 
+@pytest.mark.asyncio
+async def test_internal_secret_grant_emits_one_api_access_row(monkeypatch):
+    """A loopback internal-secret grant writes only its ``internal_auth`` row.
+
+    The bare ``dashboard.token_auth`` row (caller ``"internal"``, empty error)
+    carried nothing the ``internal_auth`` row lacks, so it is not written.
+    """
+    calls = _capture_sel(monkeypatch)
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/api/session-keepalive"}),
+        internal_secret="s",
+    )
+    req = _make_request(
+        "/api/session-keepalive", headers={"X-Internal-Secret": "s"}, method="POST"
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+
+    rows = [c for c in calls if c.get("resources") == "/api/session-keepalive"]
+    assert len(rows) == 1, f"one grant must write one api_access row; got {rows}"
+    assert rows[0]["operation"] == "internal_auth"
+    assert rows[0]["outcome"] == "granted"
+    assert rows[0]["source"] == "token_auth"
+    assert rows[0]["caller"] == "127.0.0.1"
+
+
+@pytest.mark.asyncio
+async def test_internal_secret_denial_keeps_both_rows(monkeypatch):
+    """A wrong internal secret still writes its ``internal_auth`` and ``dashboard.token_auth`` denials."""
+    calls = _capture_sel(monkeypatch)
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/api/session-keepalive"}),
+        internal_secret="s",
+    )
+    req = _make_request(
+        "/api/session-keepalive", headers={"X-Internal-Secret": "wrong"}, method="POST"
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+
+    denials = sorted(
+        c["operation"]
+        for c in calls
+        if c.get("resources") == "/api/session-keepalive" and c.get("outcome") == "denied"
+    )
+    assert denials == ["dashboard.token_auth", "internal_auth"], calls
+
+
 # -- Property 10: Nonce-based token invalidation --
 
 
