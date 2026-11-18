@@ -1367,6 +1367,59 @@ class TestHeldRunEndsThePreCallText:
         assert joined == "I looked around that time.\n\nNo logs."
 
 
+_PLACEHOLDER = (
+    "(No assistant response was recorded for the preceding turn. This "
+    "placeholder was inserted automatically to preserve message "
+    "alternation \u2014 it is not a reply the assistant produced.)"
+)
+
+
+def _placeholder_turn(events: list[AcpEvent]) -> tuple[str, list[tuple], TurnDriver]:
+    r = _RecordingRenderer()
+    d = TurnDriver(
+        _ScriptedProvider([*events, AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")]), r
+    )
+    out = asyncio.run(d.run("hello"))
+    assert "".join(e[1] for e in r.events if e[0] == "text_chunk") == out
+    return out, r.events, d
+
+
+class TestAlternationPlaceholderAtTurnStart:
+    """The backend's alternation placeholder a turn opens with is never posted.
+
+    A turn that ended on a tool result leaves the backend's history with no
+    assistant message after it, and the backend fills the gap with a placeholder
+    the model then repeats as the first text of a later turn. A channel posted
+    it as the reply; the dashboard runner already held and dropped it.
+    """
+
+    def test_the_placeholder_split_across_chunks_is_dropped_and_the_reply_kept(self):
+        out, _, _ = _placeholder_turn(
+            [_text(_PLACEHOLDER[:20]), _text(_PLACEHOLDER[20:]), _text("\n\nDone.")]
+        )
+        assert out == "Done."
+
+    def test_a_turn_that_is_only_the_placeholder_takes_the_empty_reply_notice(self):
+        out, events, d = _placeholder_turn([_text(_PLACEHOLDER[:50]), _text(_PLACEHOLDER[50:])])
+        assert out == ""
+        assert [e for e in events if e[0] == "text_chunk"] == []
+        assert d.empty_turn_notice == driver.EMPTY_TURN_NOTICE
+
+    def test_a_tool_call_ends_the_placeholder_segment(self):
+        out, events, _ = _placeholder_turn([_text(_PLACEHOLDER), _tool("a"), _text("Found it.")])
+        assert out == "Found it."
+        assert [e[0] for e in events][:2] == ["tool_call", "text_chunk"]
+
+    @pytest.mark.parametrize(
+        "chunks",
+        [["(No assistant", " here, but the build passed."], ["(No assistant"]],
+        ids=["diverges", "turn-ends-on-a-prefix"],
+    )
+    def test_text_that_only_opens_like_the_placeholder_is_delivered_whole(self, chunks):
+        out, _, _ = _placeholder_turn([_text(c) for c in chunks])
+        assert out == "".join(chunks)
+
+
 class TestToolGateEnforcement:
     """The PreToolUse security gate (sensitive-path keystone + governance
     ceiling + deny-list) must hard-DENY BEFORE the auto/trust/YOLO ladder, so a
