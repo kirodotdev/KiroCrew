@@ -22,6 +22,7 @@ from acp_runtime_helpers import (
     _stop_reader,
 )
 
+from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -34,6 +35,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
 )
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.metrics.events import DROPPED_FRAMES
 from kiro_crew.testing.wait import await_until
 
 
@@ -549,6 +551,45 @@ class TestAcpRuntimeLoadSession:
         terminate.assert_not_awaited()
         assert "sid-r" not in rt._session_queues
         assert rt._load_replay_frames == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "require_replay",
+        [
+            pytest.param(True, id="kas_resume"),
+            # A load that does not ask keeps no replay count, so the reader cannot
+            # tell its replay from a lost update.
+            pytest.param(False, id="load_without_replay_check"),
+        ],
+    )
+    async def test_a_load_counts_its_replay_apart_only_when_it_asked(
+        self, monkeypatch, require_replay
+    ):
+        """The replay the load asked for is dropped by design, so it is counted
+        ``method_class=replay``, apart from the ``update`` hang signature, and is
+        no frame lost on its way to a session (``unrouted_child_frames``). A live
+        frame, or another session's replay, is still a lost update. A load without
+        ``require_replay`` keeps no replay count, so its replay is one too."""
+        recorded: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            runtime_mod,
+            "emit_counter",
+            lambda name, attrs: recorded.append((name, dict(attrs))),
+        )
+        frames = [
+            _kas_turn_frame("sid-r", replay=True),
+            _kas_turn_frame("sid-r", replay=True),
+            _kas_turn_frame("sid-r", replay=False),
+            _kas_turn_frame("sid-other", replay=True),
+        ]
+        rt, _, _, outcome = await self._load_with_frames(
+            monkeypatch, frames, require_replay=require_replay
+        )
+        assert isinstance(outcome, AcpSessionHandle)
+        replayed = "replay" if require_replay else "update"
+        classes = [attrs["method_class"] for name, attrs in recorded if name == DROPPED_FRAMES]
+        assert classes == [replayed, replayed, "update", "update"]
+        assert rt.unrouted_child_frames() == (2 if require_replay else 4)
 
     @pytest.mark.asyncio
     async def test_a_load_that_does_not_require_replay_is_unchanged(self, monkeypatch):

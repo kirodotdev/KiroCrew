@@ -5732,7 +5732,12 @@ while zero sessions are registered (sentinel `_DROP_NO_SESSION`) — through
 `_note_dropped_frame()`, which also emits the `kirocrew.acp.dropped_frames`
 counter (`method_class` label), which tallies `(sessionId, method)` and emits
 one `DEBUG` summary carrying the accumulated count at most every
-`_DROP_SUMMARY_INTERVAL_SECS` (60s). The key stays **per session** deliberately:
+`_DROP_SUMMARY_INTERVAL_SECS` (60s). A turn the engine replays for a
+`session/load` that asked for its replay (`require_replay`, the KAS resume) and is
+still in flight (`_load_replay_frames`) is counted `method_class=replay` and leaves
+`unrouted_child_frames` alone: the load drops its own replay by design, so a KAS
+resume never reads as a lost update. A load that does not ask (kiro-cli, the KAS MCP
+re-injection load) keeps no such count, so its replay is still counted `update`. The key stays **per session** deliberately:
 the decisive signal in the incident was that two *different* session UUIDs were
 flooding at once, which a single global tally would hide. The level stays `DEBUG`
 — the goal is far fewer lines, not louder ones. The roster-truncation warning above
