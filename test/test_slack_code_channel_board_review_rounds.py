@@ -33,6 +33,7 @@ _pinned_identity = suite._pinned_identity
 publisher_clock = suite.publisher_clock
 slack = suite.slack
 repo = suite.repo
+_repo_template = suite._repo_template
 StepClock = suite.StepClock
 _Harness = suite._Harness
 _Item = suite._Item
