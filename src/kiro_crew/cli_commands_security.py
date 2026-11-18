@@ -140,7 +140,7 @@ def _security(args: argparse.Namespace) -> None:
         turned_off = [
             p for p in BUILTIN_DENY_PATTERNS if p not in enforced and p not in profile_only
         ]
-        print("🔒 Built-in deny patterns (enforced):")
+        print("Built-in deny patterns (enforced):")
         for p in enforced:
             # A lock note says why a rule the operator turned off is still on, so
             # only a rule they turned off gets one.
@@ -150,16 +150,16 @@ def _security(args: argparse.Namespace) -> None:
                 if state["disable_all"] or row.get("id") in opted_out
                 else ""
             )
-            print(f"  ✗ {p}{note}")
+            print(f"  x {p}{note}")
         if profile_only:
             print(
-                "\n🔐 Built-in deny patterns turned off but kept on only for sessions "
+                "\nBuilt-in deny patterns turned off but kept on only for sessions "
                 "bound to a governance profile that pins them:"
             )
             for p in profile_only:
                 print(f"  ~ {p}")
         if turned_off:
-            print("\n🔓 Built-in deny patterns turned off in denied_commands.json (not enforced):")
+            print("\nBuilt-in deny patterns turned off in denied_commands.json (not enforced):")
             for p in turned_off:
                 print(f"  - {p}")
         cfg_path = config_dir() / "config.json"
@@ -172,7 +172,7 @@ def _security(args: argparse.Namespace) -> None:
                     # The built-in list above is already printed; say plainly that the
                     # user-configured half could not be read instead of a traceback.
                     print(
-                        f"\n⚠️  Could not read user-configured deny patterns from {cfg_path}: {exc}"
+                        f"\nWarning: Could not read user-configured deny patterns from {cfg_path}: {exc}"
                     )
             # The gateway reads ``hooks`` from config.json with config.local.json
             # merged over it, so the list shown here comes from the same merge.
@@ -187,29 +187,29 @@ def _security(args: argparse.Namespace) -> None:
             # text entries of a list and reads anything else as no patterns.
             if not isinstance(raw, list):
                 print(
-                    "\n⚠  hooks.auto_deny_tools is not a list, so no user-configured "
+                    "\nWarning: hooks.auto_deny_tools is not a list, so no user-configured "
                     "deny pattern is enforced. Make it a list of patterns."
                 )
                 raw = []
             extra = [p for p in raw if isinstance(p, str)]
             skipped = len(raw) - len(extra)
             if extra:
-                print("\n🔧 User-configured deny patterns:")
+                print("\nUser-configured deny patterns:")
                 for p in extra:
-                    print(f"  ✗ {p}")
+                    print(f"  x {p}")
             if skipped:
                 print(
-                    f"\n⚠  {skipped} entries in hooks.auto_deny_tools are not text and "
+                    f"\nWarning: {skipped} entries in hooks.auto_deny_tools are not text and "
                     "are not enforced."
                 )
     elif action == "audit":
         sessions_dir = config_dir() / "sessions"
         findings, rows_scanned = scan_history(sessions_dir)
         if findings:
-            print(f"⚠️  {len(findings)} suspicious entries found:\n")
+            print(f"Warning: {len(findings)} suspicious entries found:\n")
             for f in findings:
                 # A transcript row is agent-written text: one line, no live controls.
-                print(f"  📄 {safe_terminal_line(f['file'])}")
+                print(f"  {safe_terminal_line(f['file'])}")
                 print(f"     {safe_terminal_line(f['warning'])}")
                 if f["snippet"]:
                     print(f"     {safe_terminal_line(f['snippet'][:120])}…")
@@ -218,24 +218,24 @@ def _security(args: argparse.Namespace) -> None:
             # Nothing was read, so there is no result to call clean.
             if sessions_dir.is_dir() and any(sessions_dir.glob("*.jsonl")):
                 print(
-                    f"ℹ️  No session transcripts scanned: the transcripts in {sessions_dir} "
+                    f"Note: No session transcripts scanned: the transcripts in {sessions_dir} "
                     "held no rows to audit."
                 )
             else:
-                print(f"ℹ️  No session transcripts scanned: none found in {sessions_dir}.")
+                print(f"Note: No session transcripts scanned: none found in {sessions_dir}.")
         else:
-            print("✅ No suspicious tool usage found in recent history.")
+            print("No suspicious tool usage found in recent history.")
 
         mem_findings = scan_memory()
         if mem_findings:
-            print(f"\n⚠️  {len(mem_findings)} suspicious memory entries:\n")
+            print(f"\nWarning: {len(mem_findings)} suspicious memory entries:\n")
             for f in mem_findings:
                 print(f"  [{f['type']}] {f['key']}{_finding_store_suffix(f)}: {f['warning']}")
                 print(f"    {f['value'][:120]}\n")
         elif not findings:
             pass
         else:
-            print("✅ No suspicious content in vector memory.")
+            print("No suspicious content in vector memory.")
         if findings or mem_findings:
             # Exit non-zero so a script can gate on the scan, like `policy validate`.
             raise SystemExit(1)
@@ -246,10 +246,10 @@ def _security(args: argparse.Namespace) -> None:
             since = parse_time_selector(getattr(args, "since", "") or "")
             until = parse_time_selector(getattr(args, "until", "") or "")
         except ValueError as exc:
-            print(f"❌ {exc}")
+            print(f"Error: {exc}")
             sys.exit(2)
         if since and until and since >= until:
-            print("❌ --since must be earlier than --until")
+            print("Error: --since must be earlier than --until")
             sys.exit(2)
         events = sel().recent(limit=limit, since=since, until=until)
         window = ""
@@ -261,7 +261,7 @@ def _security(args: argparse.Namespace) -> None:
         if not events:
             print(f"No security events recorded{window}.")
             return
-        print(f"📋 Last {len(events)} security event(s){window}:\n")
+        print(f"Last {len(events)} security event(s){window}:\n")
 
         def _safe(key: str, default: str = "") -> str:
             """One row field, coerced to text and stripped of live controls.
@@ -320,17 +320,17 @@ def _security(args: argparse.Namespace) -> None:
             else:
                 live = "no events to verify"
             print(
-                f"⚠️  Audit history UNVERIFIABLE: {result.reason}. "
+                f"Warning: Audit history UNVERIFIABLE: {result.reason}. "
                 f"Rotated segments were not checked — {live}."
             )
             raise SystemExit(1)
         elif result.total == 0:
             print("No security events to verify.")
         elif result.total == result.valid:
-            print(f"✅ HMAC chain intact: {result.total} entries verified.")
+            print(f"Done: HMAC chain intact: {result.total} entries verified.")
         else:
             print(
-                f"⚠️  HMAC chain COMPROMISED: {result.valid}/{result.total} entries "
+                f"Warning: HMAC chain COMPROMISED: {result.valid}/{result.total} entries "
                 f"valid, {result.total - result.valid} tampered."
             )
             raise SystemExit(1)
@@ -395,7 +395,7 @@ def _policy(args: argparse.Namespace) -> None:
         # issuer implied a trust decision nothing had made.  signature_summary()
         # distinguishes verified / signed-but-unverified / unsigned so an operator
         # can tell an established issuer from a decorative one.
-        print(f"🛡️  Security policy v{ceiling.version}")
+        print(f"Security policy v{ceiling.version}")
         print(f"   provenance: {ceiling.signature_summary()}")
         print(
             f"   boot: require_sandbox={ceiling.boot.require_sandbox} "
@@ -429,7 +429,7 @@ def _policy(args: argparse.Namespace) -> None:
                 1 for spec in SCOPE_CATALOG.values() if spec.kind == CAPABILITY
             ):
                 print(
-                    f"   ⚠️  governs capabilities but leaves {len(unnamed)} "
+                    f"   Warning: governs capabilities but leaves {len(unnamed)} "
                     "row(s) UNGOVERNED (therefore permitted):"
                 )
                 for scope in unnamed:
@@ -460,7 +460,7 @@ def _policy(args: argparse.Namespace) -> None:
                 ok = False
             else:
                 print(
-                    f"   ⚠  profiles directory {pdir} cannot be listed; no profile "
+                    f"   Warning: profiles directory {pdir} cannot be listed; no profile "
                     "applies (a host under a policy ceiling would refuse to boot)"
                 )
         elif pdir.is_dir():
@@ -481,9 +481,11 @@ def _policy(args: argparse.Namespace) -> None:
             print("   (no profiles directory)")
         if not ok:
             # Exit non-zero so a config-management run can gate on it, like `policy fetch`.
-            print("⚠️  some profiles failed validation (fell back to deny-all)", file=sys.stderr)
+            print(
+                "Warning: some profiles failed validation (fell back to deny-all)", file=sys.stderr
+            )
             raise SystemExit(1)
-        print("✅ valid")
+        print("valid")
 
     elif action == "explain":
         batch = getattr(args, "batch", None)
@@ -530,14 +532,14 @@ def _policy(args: argparse.Namespace) -> None:
 
         if args.name in fallback_profile_names():
             print(
-                f"⚠️  profile {args.name!r} failed to load (unreadable, invalid, or a "
+                f"Warning: profile {args.name!r} failed to load (unreadable, invalid, or a "
                 "missing, chained or broken 'extends' parent) and is running as the "
                 "fallback profile shown below. Fix the file, or the parent it extends, "
                 "in ~/.kiro/crew/profiles/.",
                 file=sys.stderr,
             )
         bind = f"{prof.bind.type}:{prof.bind.id}" if prof.bind else "(unbound)"
-        print(f"📄 Profile {prof.name!r}  bind={bind}  extends={prof.extends or '—'}")
+        print(f"Profile {prof.name!r}  bind={bind}  extends={prof.extends or '—'}")
         if not prof.controls:
             print("   (no governed scopes — inherits policy ceiling unchanged)")
         for scope in sorted(prof.controls):
@@ -675,7 +677,7 @@ def _print_policy_source() -> None:
     posture = distribution_posture()
     if posture.get("error_code"):
         print(
-            "⚠️  Central policy distribution is misconfigured; see the gateway log "
+            "Warning: Central policy distribution is misconfigured; see the gateway log "
             "for the reason and check the 'distribution' block in your policy.",
             file=sys.stderr,
         )
@@ -696,7 +698,7 @@ def _print_policy_source() -> None:
         return
 
     interval = posture.get("refresh_interval_seconds") or 0
-    print("🌐 Central policy distribution: ACTIVE")
+    print("Central policy distribution: ACTIVE")
     print(f"   transport        : {posture.get('source_scheme') or '—'}")
     print(f"   refresh          : {f'every {interval}s' if interval else 'at boot only'}")
     print(f"   polling now      : {'yes' if posture.get('refresher_running') else 'no'}")
@@ -744,12 +746,12 @@ def _policy_fetch(*, force: bool) -> None:
         print("Central policy distribution is not configured; nothing to fetch.")
         return
     if outcome.status == REFRESH_UNCHANGED:
-        print("✅ The central policy is unchanged; this host is current.")
+        print("The central policy is unchanged; this host is current.")
         if outcome.detail:
             print(f"   {outcome.detail}")
         return
     if outcome.status == REFRESH_APPLIED:
-        print("✅ Fetched a valid governance ceiling and cached it as this host's own.")
+        print("Done: Fetched a valid governance ceiling and cached it as this host's own.")
         if outcome.signature_state:
             print(f"   provenance: {outcome.signature_state}")
         interval = effective_refresh_interval()
@@ -773,6 +775,6 @@ def _policy_fetch(*, force: bool) -> None:
     label = "was refused" if outcome.status == REFRESH_REJECTED else "could not be reached"
     # On stderr, as `policy source` and `policy validate` report their failures, so a
     # config-management run that surfaces only stderr sees why the command exited 1.
-    print(f"❌ The central policy {label}: {outcome.detail}", file=sys.stderr)
+    print(f"Error: The central policy {label}: {outcome.detail}", file=sys.stderr)
     print("   The ceiling already in effect is unchanged.", file=sys.stderr)
     raise SystemExit(1)

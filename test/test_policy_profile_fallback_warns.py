@@ -37,7 +37,7 @@ def test_a_broken_profile_warns_and_still_prints_the_profile(monkeypatch, capsys
     assert "deny-all" not in out.err
     assert "failed to load" in out.err
     # The profile itself is still printed to stdout (fallback behavior kept).
-    assert "📄 Profile" in out.out
+    assert "Profile '" in out.out
 
 
 def test_a_healthy_profile_prints_no_fallback_warning(monkeypatch, capsys):
@@ -46,4 +46,4 @@ def test_a_healthy_profile_prints_no_fallback_warning(monkeypatch, capsys):
     out = capsys.readouterr()
     assert "fallback profile" not in out.err
     assert "failed to load" not in out.err
-    assert "📄 Profile" in out.out
+    assert "Profile '" in out.out

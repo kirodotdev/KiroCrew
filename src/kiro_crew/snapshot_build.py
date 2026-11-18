@@ -375,7 +375,7 @@ def _build_snapshot(
             skipped_out.extend(skipped)
         if staging_mode == "unpinned":
             print(
-                "⚠️  Staged by path name (--allow-unpinned-staging): this platform "
+                "Warning: Staged by path name (--allow-unpinned-staging): this platform "
                 "cannot pin a directory by descriptor, so an ancestor swapped during "
                 "staging could have redirected a copy. Recorded in MANIFEST.json."
             )

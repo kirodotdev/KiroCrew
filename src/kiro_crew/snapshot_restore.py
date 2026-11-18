@@ -346,7 +346,7 @@ def _backup_and_copy(
             # Moving a symlink moves the link, never its target.
             if not (snap / f).is_file() or pinned_fs.is_reparse_point(snap / f):
                 if (snap / f).exists():
-                    print(f"⚠️  Skipping symlinked file from snapshot: {snap / f}")
+                    print(f"Warning: Skipping symlinked file from snapshot: {snap / f}")
                 continue
             # Past the skip, so this file WILL be mutated. Recorded now, before the move
             # below, so a crash mid-write still leaves the name known to have been reached
@@ -355,7 +355,7 @@ def _backup_and_copy(
                 installed.add(f)
             live = mc / f
             if live.is_symlink() or pinned_fs.is_reparse_point(live):
-                print(f"⚠️  Moving symlinked core file aside during backup: {live}")
+                print(f"Warning: Moving symlinked core file aside during backup: {live}")
                 shutil.move(str(live), str(backup / f))
             elif live.is_file():
                 shutil.move(str(live), str(backup / f))
@@ -408,7 +408,7 @@ def _backup_and_copy(
                     # descriptors cannot be redirected by a swapped ancestor, and is atomic.
                     live_st = pinned_fs.stat_at(dst_fd, f)
                     if live_st is not None and _stat.S_ISLNK(live_st.st_mode):
-                        print(f"⚠️  Moving symlinked core file aside during backup: {live}")
+                        print(f"Warning: Moving symlinked core file aside during backup: {live}")
                         os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
                     elif live_st is not None and _stat.S_ISREG(live_st.st_mode):
                         os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
@@ -847,7 +847,7 @@ def _discard_partial_rollback(*dirs: Path | None) -> None:
             pass
         except OSError:
             print(
-                f"  ⚠️  Partial rollback copy left at: {d}/ (nothing was changed; "
+                f"  Warning: Partial rollback copy left at: {d}/ (nothing was changed; "
                 "it is safe to delete)"
             )
 
@@ -867,7 +867,7 @@ def _do_replace(
     # inside the data home would have the restore write outside it.
     facade._refuse_unsafe_destination_roots(mc, components)
     backup = facade._allocate_rollback_dir(mc)
-    print("🔄 Replace mode — backing up current state...")
+    print("Replace mode — backing up current state...")
 
     # `memory` names two subtrees of workspace/ plus memory_stores/. When `workspace` is
     # also selected its own pass covers the two subtrees, and doing both would save the
@@ -893,7 +893,7 @@ def _do_replace(
                 # crew's private memory. Said out loud, because a replace that leaves one
                 # tree at the newer generation is a mixed result the operator should see.
                 print(
-                    f"  ↩️  {tree}/ is not carried by this archive (written before named "
+                    f"  Note: {tree}/ is not carried by this archive (written before named "
                     "memory stores were backed up) — the live named stores are left as "
                     "they are"
                 )
@@ -1062,7 +1062,7 @@ def _do_replace(
         backup.rmdir()
     except OSError:
         print(f"  Previous state saved to: {backup}/")
-    print("✅ Replace complete.")
+    print("Done: Replace complete.")
 
 
 def _component_payload_absent(snap: Path, component: str) -> bool:
@@ -1122,7 +1122,7 @@ def _drop_derived_indexes_absent_from_bundle(
             platform_compat.unlink_link_or_junction(live)
         else:
             shutil.move(str(live), str(backup / rel))
-        print(f"  ↩️  {rel} is not in the archive — moved aside so it can be rebuilt")
+        print(f"  Note: {rel} is not in the archive — moved aside so it can be rebuilt")
 
 
 def _rmtree_or_raise(path: Path) -> None:
@@ -1187,7 +1187,7 @@ def _do_replace_mutations(
             facade._backup_and_copy(
                 mc, backup, snap, comp, allow_unpinned=allow_unpinned, installed=installed
             )
-            print(f"  ✅ {comp}")
+            print(f"  Done: {comp}")
 
     if _want(components, "memory"):
         # After the copy, not before: the loop above is what installs the index when the
@@ -1215,7 +1215,7 @@ def _do_replace_mutations(
                     # document (a sandboxed run, an unreadable tree): its absence then says
                     # nothing about the live document, and removing that would lose it.
                     print(
-                        f"  ↩️  {dirname}: kept the live "
+                        f"  Note: {dirname}: kept the live "
                         f"{_safe_name(PurePosixPath(rel).name)}; this bundle did not carry it "
                         "(MANIFEST.json lists it as skipped)."
                     )
@@ -1246,7 +1246,7 @@ def _do_replace_mutations(
                     on_skip=pinned_fs.fatal_skip_reporter(f"restore of {dirname!r}"),
                 )
         if not kept_live:
-            print(f"  ✅ {comp}")
+            print(f"  Done: {comp}")
 
     # Scoped to memory's own trees as `_do_replace` selected them: the two workspace/
     # subtrees only when `workspace` is not also selected (that pass has already replaced
@@ -1285,7 +1285,7 @@ def _do_replace_mutations(
                 on_skip=pinned_fs.fatal_skip_reporter(f"restore of {tree!r}"),
             )
     if mem_roots:
-        print("  ✅ memory trees")
+        print("  Done: memory trees")
 
 
 def _restore_everything_from_rollback(
@@ -1334,11 +1334,11 @@ def _restore_everything_from_rollback(
     """
     facade = _facade()
     if not backup.is_dir():
-        print(f"⚠️  No rollback directory at {backup}; nothing to put back.")
+        print(f"Warning: No rollback directory at {backup}; nothing to put back.")
         # Reported as a failed revert, not as success with a warning: the caller's summary
         # line is what the operator acts on, and "put back" would be false here.
         return list(sorted(set(targets)))
-    print(f"↩️  Restoring the previous state from {backup} ...")
+    print(f"Restoring the previous state from {backup} ...")
     failed: list[str] = []
     locked_documents = {rel: tree for tree, rel in _LOCKED_DOCUMENT_TREES.items()}
     for rel in sorted(set(targets)):
@@ -1460,12 +1460,12 @@ def _restore_everything_from_rollback(
         except (OSError, pinned_fs.PinnedPathRefusal) as e:
             failed.append(f"{rel} ({e})")
     if failed:
-        print("⚠️  Could not undo these: " + ", ".join(failed))
+        print("Warning: Could not undo these: " + ", ".join(failed))
         locations = ", ".join(str(p) for p in (backup, store_backup) if p is not None)
         print(
             f"   The saved copies are still in {locations} — recover them by hand before "
             "re-running."
         )
     else:
-        print("↩️  Previous state restored.")
+        print("Previous state restored.")
     return failed

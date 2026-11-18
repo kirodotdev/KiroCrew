@@ -1219,8 +1219,8 @@ class TestSpawnCliAuth:
                 ]
             },
         )
-        assert "✅" not in out
-        assert "❌" in out
+        assert not out.startswith("  done")
+        assert out.startswith("  failed  a1")
         assert "failed" in out
         assert "not signed in" in out
 
@@ -1242,23 +1242,22 @@ class TestSpawnCliAuth:
                 ]
             },
         )
-        assert "✅" not in out
-        assert "⏹" in out
-        assert "stopped" in out
+        assert not out.startswith("  done")
+        assert out.startswith("  stopped a1")
 
     def test_spawn_list_unknown_outcome_is_not_shown_as_success(self, monkeypatch, capsys):
-        """An outcome this client does not know never falls back to the success icon."""
+        """An outcome this client does not know never falls back to the success word."""
         out = self._list_rows(
             monkeypatch,
             capsys,
             {"agents": [{"id": "a1", "task": "t", "done": True, "outcome": "timed_out"}]},
         )
-        assert "✅" not in out
-        assert "❌" in out
+        assert not out.startswith("  done")
+        assert out.startswith("  failed  a1")
         assert "timed_out" in out
 
     def test_spawn_list_completed_run_is_shown_as_success(self, monkeypatch, capsys):
-        """A completed run keeps the success icon and no note."""
+        """A completed run keeps the success word and no note."""
         out = self._list_rows(
             monkeypatch,
             capsys,
@@ -1274,7 +1273,7 @@ class TestSpawnCliAuth:
                 ]
             },
         )
-        assert out == "  ✅ a1  Reply PONG\n"
+        assert out == "  done    a1  Reply PONG\n"
 
     def test_spawn_list_failed_error_prints_no_terminal_controls(self, monkeypatch, capsys):
         """A failed run's error is agent-influenced: no live escape, no forged row."""

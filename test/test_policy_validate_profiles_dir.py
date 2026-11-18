@@ -68,7 +68,7 @@ def test_a_file_at_the_profiles_path_fails_validation_under_a_ceiling(
 
     code, out = _validate(capsys)
     assert code == 1, out
-    assert "INVALID" in out and "✅ valid" not in out
+    assert "INVALID" in out and "valid" not in out.splitlines()
 
 
 def test_a_file_at_the_profiles_path_only_warns_on_a_standalone_host(monkeypatch, tmp_path, capsys):
@@ -76,7 +76,7 @@ def test_a_file_at_the_profiles_path_only_warns_on_a_standalone_host(monkeypatch
 
     code, out = _validate(capsys)
     assert code == 0, out
-    assert "cannot be listed" in out and "✅ valid" in out
+    assert "cannot be listed" in out and "valid" in out.splitlines()
     assert "(no profiles directory)" not in out
 
 
@@ -95,7 +95,7 @@ def test_an_unlistable_profiles_directory_fails_validation_under_a_ceiling(
     finally:
         unlistable.chmod(0o700)
     assert code == 1, out
-    assert "INVALID" in out and "✅ valid" not in out
+    assert "INVALID" in out and "valid" not in out.splitlines()
 
 
 def test_a_missing_profiles_directory_is_still_valid(monkeypatch, tmp_path, capsys):
@@ -104,4 +104,4 @@ def test_a_missing_profiles_directory_is_still_valid(monkeypatch, tmp_path, caps
 
     code, out = _validate(capsys)
     assert code == 0, out
-    assert "(no profiles directory)" in out and "✅ valid" in out
+    assert "(no profiles directory)" in out and "valid" in out.splitlines()

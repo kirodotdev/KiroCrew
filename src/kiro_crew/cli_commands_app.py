@@ -106,7 +106,7 @@ def _resolve_install_source(args: argparse.Namespace) -> tuple[str, FetchedApp |
     if not is_git_install_source(source):
         if ref is not None or subdirectory is not None:
             print(
-                "❌ --ref and --subdirectory apply only when the source is a git URL",
+                "Error: --ref and --subdirectory apply only when the source is a git URL",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -118,7 +118,7 @@ def _resolve_install_source(args: argparse.Namespace) -> tuple[str, FetchedApp |
     except GitInstallError as exc:
         # The reason can quote the repository's own folder names, so it is printed
         # with no live terminal controls.
-        print(f"❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
+        print(f"Error: {safe_terminal_line(str(exc))}", file=sys.stderr)
         sys.exit(1)
     at_commit = f" at {fetched.commit[:12]}" if fetched.commit else ""
     print(f"   Fetched {fetched.name}{at_commit} into {fetched.checkout}")
@@ -184,13 +184,13 @@ def _apply_through_gateway(
     except app_lifecycle_client.AppGatewayTimeout as exc:
         # The outcome is unknown, not negative: the gateway may still be applying
         # the action, so this is neither a refusal nor an invitation to retry.
-        print(f"⏳ {exc}", file=sys.stderr)
+        print(f"Note: {exc}", file=sys.stderr)
         sys.exit(1)
     except app_lifecycle_client.AppGatewayError as exc:
         if action == "enable" and exc.code == _SESSION_APPROVAL_CONSENT_REQUIRED:
             _refuse_session_approval_from_cli(subject)
         # A refusal that already ends its sentence would otherwise print "..".
-        print(f"❌ gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
+        print(f"Error: gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
         for line in app_lifecycle_client.gateway_version_lines(exc.gateway_version, refused=True):
             print(line, file=sys.stderr)
         sys.exit(1)
@@ -207,7 +207,7 @@ def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
     state = "enabled" if enabled else "disabled"
     crons, backend = ("picks up", "start") if enabled else ("drops", "stop")
     message = (
-        f"✅ Recorded {app_name} as {state}. No running gateway was reached, so this "
+        f"Done: Recorded {app_name} as {state}. No running gateway was reached, so this "
         "takes effect at the next gateway start, except that a gateway already running "
         "(on Windows and in sandboxed shells the CLI always uses this path) "
         f"{crons} the app's crons and hooks within a minute."
@@ -289,12 +289,12 @@ def _set_folded_app_switch(app_name: str, *, on: bool) -> bool:
     try:
         path = set_folded_switch(app_name, on)
     except Exception as exc:  # noqa: BLE001 - reported, never a traceback
-        print(f"❌ Could not save the setting that replaced {app_name}: {exc}", file=sys.stderr)
+        print(f"Error: Could not save the setting that replaced {app_name}: {exc}", file=sys.stderr)
         sys.exit(1)
     if path is None:
         return False
     print(
-        f"✅ {app_name} is part of Kiro Crew now, switched by the {path} setting; "
+        f"Done: {app_name} is part of Kiro Crew now, switched by the {path} setting; "
         f"turned it {'on' if on else 'off'}."
     )
     return True
@@ -319,7 +319,7 @@ def _refuse_unsafe_app_name(app_name: str) -> None:
         flavour(app_name).name == app_name for flavour in (PurePosixPath, PureWindowsPath)
     )
     if app_name in ("", ".") or not one_component or not _check_path_safety(app_name):
-        print(f"❌ unsafe app name: {app_name!r}", file=sys.stderr)
+        print(f"Error: unsafe app name: {app_name!r}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -327,7 +327,7 @@ def _deregister_or_report(app_name: str) -> bool:
     """Deregister *app_name*'s resources; print each failure and return False on any."""
     reg = deregister_app(app_name)
     for err in reg.errors:
-        print(f"❌ {app_name}: {err}", file=sys.stderr)
+        print(f"Error: {app_name}: {err}", file=sys.stderr)
     return not reg.errors
 
 
@@ -360,7 +360,7 @@ def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
     from kiro_crew.port_resolution import resolve_client_port
 
     shown = safe_terminal_line(app_name)
-    print(f"❌ {shown} asks to control your chats. Nothing was enabled.", file=sys.stderr)
+    print(f"Error: {shown} asks to control your chats. Nothing was enabled.", file=sys.stderr)
     print(f"   Chats:     {_SESSION_APPROVAL_DESC}", file=sys.stderr)
     try:
         manifest = get_app_manifest(app_name)
@@ -408,7 +408,7 @@ def _app_declares_backend(app_name: str) -> bool:
 def _warn_backend_not_stopped(app_name: str) -> None:
     """Report that a file-only uninstall could not stop the app's backend."""
     print(
-        f"⚠️  No running gateway was reached, so {app_name}'s backend was not "
+        f"Warning: No running gateway was reached, so {app_name}'s backend was not "
         "stopped: signalling a process another gateway started is not something "
         "the CLI can do from out here (on Windows and in sandboxed shells the CLI "
         "always uses this path, so a gateway may well be running). If one is still "
@@ -599,12 +599,12 @@ def _handle_app_import(args: argparse.Namespace) -> None:
         # repaint the screen, or a newline that opens an unprefixed line reading as
         # this tool's own output. ``exc.code`` is an internal literal, so only the
         # message needs the repo's shared one-line sanitizer.
-        print(f"❌ {exc.code}: {safe_terminal_line(exc.message)}", file=sys.stderr)
+        print(f"Error: {exc.code}: {safe_terminal_line(exc.message)}", file=sys.stderr)
         sys.exit(1)
     except (OSError, json.JSONDecodeError) as exc:
         # str() of either carries the offending filename, which is package-supplied.
         print(
-            f"❌ cannot read the plugin manifest: {safe_terminal_line(str(exc))}",
+            f"Error: cannot read the plugin manifest: {safe_terminal_line(str(exc))}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -613,7 +613,7 @@ def _handle_app_import(args: argparse.Namespace) -> None:
     try:
         report = convert_plugin_package(source, out_dir, name_override=derived)
     except PluginImportError as exc:
-        print(f"❌ {exc.code}: {safe_terminal_line(exc.message)}", file=sys.stderr)
+        print(f"Error: {exc.code}: {safe_terminal_line(exc.message)}", file=sys.stderr)
         sys.exit(1)
 
     print(report.render_text())
@@ -621,7 +621,7 @@ def _handle_app_import(args: argparse.Namespace) -> None:
     # from normalize_app_name, which folds every non-alphanumeric character to a
     # hyphen and then requires a full kebab-case match, so no control character
     # survives it; when it is given it was typed by the operator reading this line.
-    print(f"\n✅ wrote {out_dir / 'app.json'}")
+    print(f"\nDone: wrote {out_dir / 'app.json'}")
 
     if not getattr(args, "install", False):
         print(f"\n   Run: kirocrew app install {out_dir}")
@@ -629,9 +629,9 @@ def _handle_app_import(args: argparse.Namespace) -> None:
 
     result = install_app(str(out_dir))
     if not result.ok:
-        print(f"❌ {safe_terminal_line(result.error)}", file=sys.stderr)
+        print(f"Error: {safe_terminal_line(result.error)}", file=sys.stderr)
         sys.exit(1)
-    print(f"✅ {safe_terminal_line(result.message)}")
+    print(f"Done: {safe_terminal_line(result.message)}")
     # NOT registered here. Installing writes the app's files; it does not turn the
     # app on, and this path leaves it disabled -- the line below is what tells the
     # operator so. Registering at this point activates the app's executable
@@ -667,7 +667,7 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
         print(f"   dropped {cleanup.dropped} conversation pointer(s) — a reinstall starts fresh")
     elif cleanup.declined:
         print(
-            f"   ⚠️  left {name}'s conversation pointers in place: a running gateway owns "
+            f"   Warning: left {name}'s conversation pointers in place: a running gateway owns "
             f"session_map.json, and a second writer would drop rows it has not flushed. "
             f"Reinstalling under this name may resume the removed app's transcript. "
             f"Stop the gateway and run `kirocrew app uninstall {name}` again to clear them.",
@@ -675,7 +675,7 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
         )
     elif cleanup.failed:
         print(
-            f"   ⚠️  could not clear {name}'s conversation pointers: the session map "
+            f"   Warning: could not clear {name}'s conversation pointers: the session map "
             f"or its lock file could not be used (see the log for the error). Reinstalling "
             f"under this name may resume the removed app's transcript. Fix the cause "
             f"and run `kirocrew app uninstall {name}` again to clear them.",
@@ -709,7 +709,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             return
         result = install_app(install_source)
         if result.ok:
-            print(f"✅ {safe_terminal_line(result.message)}")
+            print(f"Done: {safe_terminal_line(result.message)}")
             # NOT registered here, the gateway install route's rule
             # (``apps.routes_lifecycle._app_may_run_after_install``): the record is
             # written disabled, and registering a disabled app publishes its
@@ -727,7 +727,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         else:
             # Manifest validation quotes the app's own fields, which for a git URL
             # install come from a remote repository.
-            print(f"❌ {safe_terminal_line(str(result.error))}", file=sys.stderr)
+            print(f"Error: {safe_terminal_line(str(result.error))}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "list":
@@ -773,7 +773,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             if getattr(result, "error_code", "") == _SESSION_APPROVAL_CONSENT_REQUIRED:
                 _refuse_session_approval_from_cli(args.name)
             else:
-                print(f"❌ {result.error}", file=sys.stderr)
+                print(f"Error: {result.error}", file=sys.stderr)
                 sys.exit(1)
 
     elif action == "update":
@@ -782,7 +782,9 @@ def _handle_app(args: argparse.Namespace) -> None:
             # `--source "$DIR"` with the variable unset. Resolving "" would read
             # the current directory, so it is refused rather than read as either
             # a directory or "use the recorded source".
-            print("❌ --source is empty; pass the app directory or omit the flag", file=sys.stderr)
+            print(
+                "Error: --source is empty; pass the app directory or omit the flag", file=sys.stderr
+            )
             sys.exit(1)
         import socket
 
@@ -790,7 +792,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             # The request travels only over the dashboard's Unix socket, the test
             # `unix_socket_urlopen` fails on, so no running gateway can take it here.
             print(
-                "❌ `kirocrew app update` is not available on native Windows (it needs "
+                "Error: `kirocrew app update` is not available on native Windows (it needs "
                 "the dashboard's Unix socket); nothing was updated. Press Update (or "
                 "Sync) on the app's page in the dashboard.",
                 file=sys.stderr,
@@ -811,7 +813,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         if _run_app_action_through_gateway("update", args.name, payload=payload):
             return
         print(
-            "❌ No running gateway answered, so nothing was updated. Start it "
+            "Error: No running gateway answered, so nothing was updated. Start it "
             "(kirocrew gateway) and run this again, or press Update on the app's page.",
             file=sys.stderr,
         )
@@ -850,11 +852,11 @@ def _handle_app(args: argparse.Namespace) -> None:
             audit_error = None
         _audit_file_only_toggle("app_disable", args.name, host_exec="revoked", error=audit_error)
         if not result.ok:
-            print(f"❌ {result.error}", file=sys.stderr)
+            print(f"Error: {result.error}", file=sys.stderr)
             sys.exit(1)
         if not deregistered:
             print(
-                f"❌ {args.name} is marked disabled, but some of its resources could "
+                f"Error: {args.name} is marked disabled, but some of its resources could "
                 f"not be removed (see above). Clear the cause and run "
                 f"`kirocrew app disable {args.name}` again.",
                 file=sys.stderr,
@@ -889,7 +891,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         blocked = trust_grant_removal_blocked(args.name)
         if blocked:
             print(
-                f"❌ not uninstalling {args.name!r}: its third-party execution "
+                f"Error: not uninstalling {args.name!r}: its third-party execution "
                 f"grant could not be removed ({blocked}). The grant is keyed on "
                 f"the name, so removing the app while it stands would let any "
                 f"future app installed under this name run code without asking. "
@@ -921,13 +923,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             # failed uninstall leaves nothing changed, so a still-installed app
             # keeps the pointers its slots are still entitled to resume.
             cleanup = discard_app_session_pointers(args.name)
-            print(f"✅ {result.message}")
+            print(f"Done: {result.message}")
             _print_pointer_cleanup(args.name, cleanup)
             if declares_backend or recorded_port is not None:
                 _warn_backend_not_stopped(args.name)
             if not deregistered:
                 print(
-                    f"❌ {args.name} was uninstalled, but some of its resources could "
+                    f"Error: {args.name} was uninstalled, but some of its resources could "
                     f"not be removed (see above).",
                     file=sys.stderr,
                 )
@@ -943,7 +945,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             # it runs here rather than only on the success path.
             if _app_already_gone(result):
                 _print_pointer_cleanup(args.name, discard_app_session_pointers(args.name))
-            print(f"❌ {result.error}", file=sys.stderr)
+            print(f"Error: {result.error}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "dev":
@@ -957,7 +959,7 @@ def _handle_app(args: argparse.Namespace) -> None:
             # operator who reaches for it on the wrong invocation would
             # otherwise read the exit-0 as "confirmed".
             print(
-                "⚠️  --confirm-out-of-install-root has no effect with --off "
+                "Warning: --confirm-out-of-install-root has no effect with --off "
                 "(disabling grants nothing)",
                 file=sys.stderr,
             )
@@ -967,16 +969,16 @@ def _handle_app(args: argparse.Namespace) -> None:
             confirm_out_of_install_root=confirm_root,
         )
         if "error" in dev_result:
-            print(f"❌ {dev_result['error']}", file=sys.stderr)
+            print(f"Error: {dev_result['error']}", file=sys.stderr)
             sys.exit(1)
         if enabled:
-            print(f"✅ {args.name} is now in dev mode")
+            print(f"Done: {args.name} is now in dev mode")
             print("   UI files served with no-store; edits under ui/ trigger a live reload")
             print("   in the dashboard within ~1s (picked up by the gateway watcher).")
             print("   Tip: symlink the installed ui/ to your source tree for zero-copy edits.")
             print(f"   Turn off with: kirocrew app dev {args.name} --off")
         else:
-            print(f"✅ {args.name} dev mode off (normal caching restored)")
+            print(f"Done: {args.name} dev mode off (normal caching restored)")
 
     elif action == "info":
         info = get_app(args.name)
@@ -1003,16 +1005,16 @@ def _handle_app(args: argparse.Namespace) -> None:
             # scaffold_app raises when a write path escapes the app directory
             # (traversal in the name, a symlink in the tree). Match the clean
             # error contract of the sibling app actions, not a raw traceback.
-            print(f"❌ {exc}", file=sys.stderr)
+            print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
         except OSError as exc:
             # A --dir that is a file, or one this user cannot write to.
             print(
-                f"❌ cannot write {exc.filename or output / args.name}: {exc.strerror or exc}",
+                f"Error: cannot write {exc.filename or output / args.name}: {exc.strerror or exc}",
                 file=sys.stderr,
             )
             sys.exit(1)
-        print(f"✅ Scaffolded app: {app_dir}")
+        print(f"Done: Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
         if include_ui:
             # One command per line: Windows PowerShell 5.1 rejects `&&`.

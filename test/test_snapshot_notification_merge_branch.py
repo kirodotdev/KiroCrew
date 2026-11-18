@@ -467,7 +467,7 @@ class TestNotificationMergeWriteSideContract:
 
 
 class TestARefusedCronMergeIsVisibleInTheRestoreStatus:
-    """`_do_merge` prints "✅ crons" only when `_merge_crons` merged.
+    """`_do_merge` prints "Done: crons" only when `_merge_crons` merged.
 
     The status line is the summary an operator scans, so a checkmark over a
     refusal is a false success even with the merger's warning right above.
@@ -493,7 +493,7 @@ class TestARefusedCronMergeIsVisibleInTheRestoreStatus:
         snapshot_mod._do_merge(snap, home, ["crons"], allow_unpinned=bool(unpinnable_argv()))
 
         out = capsys.readouterr().out
-        assert "✅ crons" not in out, out
+        assert "Done: crons" not in out, out
         assert "crons: merge skipped" in out, out
         # The refusal wrote nothing.
         assert (home / "crons.json").read_text() == "{not json"
@@ -509,7 +509,7 @@ class TestARefusedCronMergeIsVisibleInTheRestoreStatus:
         snapshot_mod._do_merge(snap, home, ["crons"], allow_unpinned=bool(unpinnable_argv()))
 
         out = capsys.readouterr().out
-        assert "✅ crons" in out, out
+        assert "Done: crons" in out, out
         assert "crons: merge skipped" not in out, out
 
 

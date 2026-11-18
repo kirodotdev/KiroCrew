@@ -17,8 +17,8 @@ from cli_commands_coverage_helpers import _ns
 from kiro_crew import cli_commands as cc
 from kiro_crew.security import BUILTIN_DENIED_RULES, floor_enforced_builtin_command_ids
 
-_ENFORCED = "🔒 Built-in deny patterns (enforced):"
-_OFF = "🔓 Built-in deny patterns turned off in denied_commands.json (not enforced):"
+_ENFORCED = "Built-in deny patterns (enforced):"
+_OFF = "Built-in deny patterns turned off in denied_commands.json (not enforced):"
 
 
 def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: dict | None) -> None:
@@ -35,7 +35,7 @@ def _sections(out: str) -> tuple[list[str], list[str]]:
     enforced = [
         line[4:].split("  (", 1)[0]
         for line in enforced_half.splitlines()
-        if line.startswith("  ✗ ")
+        if line.startswith("  x ")
     ]
     off_half = off_half.split("\n\n", 1)[0]
     off = [line[4:] for line in off_half.splitlines() if line.startswith("  - ")]
@@ -91,7 +91,7 @@ def test_disable_all_keeps_only_floor_rules_enforced_with_the_reason(
     assert set(enforced) == floor
     assert set(off) == {r.pattern for r in BUILTIN_DENIED_RULES} - floor
     for pattern in floor:
-        assert f"  ✗ {pattern}  (always on: floor rule)" in out
+        assert f"  x {pattern}  (always on: floor rule)" in out
 
 
 @pytest.mark.parametrize(
@@ -118,7 +118,7 @@ def test_enforced_regex_rules_match_the_gate(
 
 
 _PROFILE_ONLY = (
-    "🔐 Built-in deny patterns turned off but kept on only for sessions "
+    "Built-in deny patterns turned off but kept on only for sessions "
     "bound to a governance profile that pins them:"
 )
 
@@ -155,7 +155,7 @@ def test_ceiling_pin_stays_enforced_with_the_reason(
     enforced, off = _sections(out)
     pattern = _rule(rid)
     assert pattern in enforced and pattern not in off
-    assert f"  ✗ {pattern}  (kept on: governance pin)" in out
+    assert f"  x {pattern}  (kept on: governance pin)" in out
     assert _PROFILE_ONLY not in out
     assert pattern in _gate_builtin_set()
 
@@ -178,4 +178,4 @@ def test_lock_note_only_on_a_rule_the_operator_turned_off(
     enforced, _ = _sections(out)
     pattern = _rule(pinned_id)
     assert pattern in enforced
-    assert f"  ✗ {pattern}\n" in out
+    assert f"  x {pattern}\n" in out

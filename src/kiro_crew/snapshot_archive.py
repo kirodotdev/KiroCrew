@@ -133,17 +133,17 @@ def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | No
             or bool(PureWindowsPath(name).drive)
         )
     if traversal:
-        print(f"⚠️  Rejecting path traversal entry: {_safe_name(info.name)}")
+        print(f"Warning: Rejecting path traversal entry: {_safe_name(info.name)}")
         return None
     # Reject symlinks and hardlinks
     if info.issym() or info.islnk():
-        print(f"⚠️  Rejecting symlink/hardlink entry: {_safe_name(info.name)}")
+        print(f"Warning: Rejecting symlink/hardlink entry: {_safe_name(info.name)}")
         return None
     # Reject special files (FIFO, character/block device), as the "data" filter does. A
     # staged FIFO blocks any later pass that opens it for reading, and bundle content is
     # only ever regular files and directories.
     if not (info.isreg() or info.isdir()):
-        print(f"⚠️  Rejecting special file entry: {_safe_name(info.name)}")
+        print(f"Warning: Rejecting special file entry: {_safe_name(info.name)}")
         return None
     # Never ship these — each must be regenerated on the restoring host, or is that
     # host's own runtime state (the host-local half of ``memory_stores/``).
@@ -691,7 +691,7 @@ def _restage_databases(
                 on_skip(SKIP_DB_UNPINNED_SOURCE, str(src))
         elif outcome == DB_NOT_A_DATABASE:
             print(
-                f"⚠️  {_safe_name(src.name)} is not a readable SQLite database "
+                f"Warning: {_safe_name(src.name)} is not a readable SQLite database "
                 "— copied as a plain file"
             )
 
@@ -725,18 +725,18 @@ def _report_skip(reason: str, path: str) -> None:
     """
     safe = _terminal_safe(path)
     if reason == pinned_fs.SKIP_SYMLINK:
-        print(f"⚠️  Skipping symlink in source tree: {safe}")
+        print(f"Warning: Skipping symlink in source tree: {safe}")
     elif reason == pinned_fs.SKIP_VANISHED:
-        print(f"⚠️  Skipping vanished entry during snapshot copy: {safe}")
+        print(f"Warning: Skipping vanished entry during snapshot copy: {safe}")
     elif reason == pinned_fs.SKIP_UNREADABLE_ENTRY:
-        print(f"⚠️  Skipping entry this process may not read: {safe}")
+        print(f"Warning: Skipping entry this process may not read: {safe}")
     elif reason == pinned_fs.SKIP_MASKED_BY_SANDBOX:
         print(
-            f"⚠️  Not carrying {safe}: this run is inside Kiro Crew's sandbox, which hides "
+            f"Warning: Not carrying {safe}: this run is inside Kiro Crew's sandbox, which hides "
             "it. A `kirocrew snapshot` run from your own terminal carries it."
         )
     else:
-        print(f"⚠️  Skipping hardlinked or non-regular file during snapshot copy: {safe}")
+        print(f"Warning: Skipping hardlinked or non-regular file during snapshot copy: {safe}")
 
 
 def _staging_is_pinned(*, allow_unpinned: bool, what: str) -> bool:
@@ -1101,7 +1101,7 @@ def _manifest_components(snap: Path) -> list[str] | None:
     dropped = sorted(set(comps) - set(known))
     if dropped:
         print(
-            "⚠️  Manifest names unknown component(s), ignoring: "
+            "Warning: Manifest names unknown component(s), ignoring: "
             + ", ".join(_safe_name(d) for d in dropped)
         )
     return known
@@ -1228,7 +1228,7 @@ def _print_manifest(snap: Path) -> None:
         return
     try:
         m = json.loads(mf.read_text(encoding="utf-8"))
-        print("📋 Snapshot info:")
+        print("Snapshot info:")
         # Every string below comes out of an archive the caller supplied, so all of them
         # go through _terminal_safe: a function that sanitizes two of five
         # attacker-controlled fields would be worse than either extreme.
@@ -1260,10 +1260,10 @@ def _print_manifest(snap: Path) -> None:
         # the archive by hand, which is not a reader -- so they are shown here, where
         # anyone inspecting a snapshot before restoring it already looks.
         if m.get("staging") == "unpinned":
-            print("  ⚠️  Staged by path name (unpinned): see --allow-unpinned-staging")
+            print("  Warning: Staged by path name (unpinned): see --allow-unpinned-staging")
         for entry in m.get("skipped") or ():
             reason = _terminal_safe(entry.get("reason", "?"))
             omitted = _terminal_safe(entry.get("path", "?"))
-            print(f"  ⚠️  Omitted ({reason}): {omitted}")
+            print(f"  Warning: Omitted ({reason}): {omitted}")
     except Exception as e:
         print(f"  (Could not read manifest: {e})")

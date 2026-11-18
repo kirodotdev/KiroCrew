@@ -298,7 +298,7 @@ def _warn_if_transcripts_left_behind(mc: Path, components: list[str] | None) -> 
     if not _want(components, "config"):
         return
     print(
-        "⚠️  WARNING: chat history is not included in this restore. No component carries "
+        "WARNING: chat history is not included in this restore. No component carries "
         f"sessions/ (the dashboard's chats), so {mc / 'sessions'} is left as it is and chats "
         "from the source machine will not appear."
     )
@@ -307,7 +307,7 @@ def _warn_if_transcripts_left_behind(mc: Path, components: list[str] | None) -> 
 def _report_unredacted_upload() -> None:
     """Say plainly what an operator gets by turning redaction off."""
     print(
-        "⚠️  Redaction is DISABLED by the switch in your backup directory, so this upload "
+        "Warning: Redaction is DISABLED by the switch in your backup directory, so this upload "
         "carries credential material in plaintext."
     )
     print(
@@ -336,7 +336,7 @@ def _report_unresolved_payload(selected: list[str], *, uploading: bool = True) -
     riding = [name for name in selected if COMPONENTS[name].policy is SecretPolicy.UNRESOLVED]
     if not riding:
         return
-    print(f"ℹ️  Riding this bundle, uncertified for sharing: {', '.join(sorted(riding))}.")
+    print(f"Note: Riding this bundle, uncertified for sharing: {', '.join(sorted(riding))}.")
     if not uploading:
         # A local bundle: no off-host copy follows, so there is no "below" to point to.
         print(
@@ -466,7 +466,7 @@ def _report_redaction(report: "snapshot_redact.RedactionReport") -> None:
     repaint the very report the operator is reading to decide whether to trust the upload,
     so each goes through `_safe_name` at this single point rather than at each `print`.
     """
-    print(f"🛡️  Redacted the outbound copy ({report.total} replacement(s)).")
+    print(f"Redacted the outbound copy ({report.total} replacement(s)).")
     for rel, n in sorted(report.replacements.items()):
         print(f"     {_safe_name(rel)}: {n}")
     if report.dropped:
@@ -534,7 +534,7 @@ def _report_redacted_bundle(snap: Path) -> None:
     if not isinstance(info, dict) or not info.get("redacted"):
         return
 
-    print("🛡️  This bundle was REDACTED before it left its host.")
+    print("This bundle was REDACTED before it left its host.")
     reps = info.get("replacements")
     if isinstance(reps, dict) and reps:
         total = sum(v for v in reps.values() if isinstance(v, int))
@@ -583,7 +583,9 @@ def _archive_bound_from_args(args: argparse.Namespace) -> int | None:
     """
     gib = getattr(args, "max_archive_gib", None)
     if gib is not None and not 1 <= gib <= MAX_ARCHIVE_GIB_CEILING:
-        print(f"❌ --max-archive-gib must be between 1 and {MAX_ARCHIVE_GIB_CEILING}, got: {gib}")
+        print(
+            f"Error: --max-archive-gib must be between 1 and {MAX_ARCHIVE_GIB_CEILING}, got: {gib}"
+        )
         return None
     return archive_byte_bound(gib)
 
@@ -633,7 +635,7 @@ def snapshot_main(
     allow_unpinned = bool(getattr(args, "allow_unpinned", False))
 
     if args.keep <= 0:
-        print(f"❌ --keep value must be a positive integer, got: {args.keep}")
+        print(f"Error: --keep value must be a positive integer, got: {args.keep}")
         return 1
     archive_bound = _archive_bound_from_args(args)
     if archive_bound is None:
@@ -644,7 +646,7 @@ def snapshot_main(
     # silently accepting it would write the bundle into a local directory named `s3:`.
     if getattr(args, "to", None):
         print(
-            f"❌ --to is no longer accepted (you passed {args.to!r}).\n"
+            f"Error: --to is no longer accepted (you passed {args.to!r}).\n"
             f"   This command writes a local bundle. To keep a copy off-host, open the\n"
             f"   AWS Control app's Backup section, which owns the bucket and the push."
         )
@@ -657,7 +659,7 @@ def snapshot_main(
     output_dir = getattr(args, "output_dir", None)
     if output_dir in ("list", "ls") and not Path(output_dir).is_dir():
         print(
-            f"❌ {output_dir!r} is not a snapshot directory, and no snapshot was taken.\n"
+            f"Error: {output_dir!r} is not a snapshot directory, and no snapshot was taken.\n"
             f"   Did you mean `kirocrew snapshot --list`? To write into a directory\n"
             f"   named {output_dir!r}, create it first or pass ./{output_dir}/."
         )
@@ -685,7 +687,7 @@ def snapshot_main(
         purpose = Purpose(getattr(args, "purpose", None) or Purpose.BACKUP.value)
     except ValueError:
         print(
-            f"❌ Unknown --purpose: {args.purpose} "
+            f"Error: Unknown --purpose: {args.purpose} "
             f"(known: {', '.join(p.value for p in Purpose)})"
         )
         return 1
@@ -698,7 +700,7 @@ def snapshot_main(
         # backup and prune a real one. An explicit flag that names nothing is a mistake
         # in the invocation, so it fails before anything is written.
         print(
-            f"❌ --components was given as {supplied!r}, which names no components.\n"
+            f"Error: --components was given as {supplied!r}, which names no components.\n"
             "   Refusing rather than writing an empty bundle that retention would "
             "count as a backup.\n"
         )
@@ -707,7 +709,7 @@ def snapshot_main(
     try:
         selected = resolve_components(requested, purpose)
     except ComponentRefused as e:
-        print(f"❌ {e}")
+        print(f"Error: {e}")
         return 1
 
     # A SELECTIVE bundle gets a root directory name that released restores refuse. They
@@ -726,12 +728,12 @@ def snapshot_main(
         total_bytes, unreadable = _estimate_selected_bytes(mc, selected)
         total_mb = total_bytes / (1024 * 1024)
         if total_mb > 500:
-            print(f"⚠️  {mc} is {total_mb:.0f} MB — snapshot may be large and slow")
+            print(f"Warning: {mc} is {total_mb:.0f} MB — snapshot may be large and slow")
         if unreadable:
             # stderr, and a count: stdout carries the bundle path, and the staging pass
             # names each entry in MANIFEST.json.
             print(
-                f"⚠️  skipped {unreadable} unreadable entr"
+                f"Warning: skipped {unreadable} unreadable entr"
                 f"{'y' if unreadable == 1 else 'ies'} while estimating the size",
                 file=sys.stderr,
             )
@@ -756,7 +758,7 @@ def snapshot_main(
         # Refused while staging, before any tarball existed: nothing is published under
         # the name retention and restore look for, and nothing is pruned.
         _audit("snapshot_rejected", f"reason=archive_too_large detail={e}")
-        print(f"❌ {e}.")
+        print(f"Error: {e}.")
         if e.kind == "entries":
             # The entry-count bound is fixed, so the override would refuse the same way.
             print(
@@ -779,20 +781,20 @@ def snapshot_main(
         # most want a record of -- staging declined on an unsupported platform -- would
         # leave no trace.
         _audit("snapshot_rejected", f"reason=unpinnable_staging detail={exc}")
-        print(f"❌ {exc}")
+        print(f"Error: {exc}")
         return 1
     except UnsafeComponentRoot as e:
         # Raised before the archive was published, so this is a clean refusal rather than
         # a crash. Reported as one, for the same reason as the refusal above.
         _audit("snapshot_rejected", f"reason=unsafe_component_root detail={e}")
-        print(f"❌ {e}")
+        print(f"Error: {e}")
         return 1
     except DatabaseCopyFailed as e:
         # A database that could not be copied consistently means the bundle would restore
         # incomplete memory. Refusing is the only honest answer: a bundle reported as
         # created is a bundle the operator will rely on.
         _audit("snapshot_rejected", f"reason=database_copy_failed detail={e}")
-        print(f"❌ {e}")
+        print(f"Error: {e}")
         print("   No bundle was written. Stop the gateway and re-run.")
         return 1
     except UnknownMemoryStore as e:
@@ -801,7 +803,7 @@ def snapshot_main(
         # the namespace lock. The detail names the cause. Raised before the archive was
         # published, so it is a refusal and reads as one.
         _audit("snapshot_rejected", f"reason=memory_store_refused detail={e}")
-        print(f"❌ {e}")
+        print(f"Error: {e}")
         print("   No bundle was written.")
         return 1
     except PermissionError as e:
@@ -811,7 +813,9 @@ def snapshot_main(
         # its audit entry, never as a traceback. Tolerated entries inside a tree never
         # reach here; staging records those in MANIFEST.json instead.
         _audit("snapshot_rejected", f"reason=permission_denied detail={e}")
-        print(f"❌ No snapshot was written: permission denied on {_safe_name(e.filename, str(e))}.")
+        print(
+            f"Error: No snapshot was written: permission denied on {_safe_name(e.filename, str(e))}."
+        )
         print(
             f"   This user must be able to open every directory on the way to the data "
             f"home ({_safe_name(mc)}) and to write to {_safe_name(out)}. Nothing was pruned."
@@ -831,7 +835,7 @@ def snapshot_main(
         with tarfile.open(outfile) as probe:
             _refuse_oversized_archive(probe, max_bytes=archive_bound)
     except _ArchiveTooLarge as e:
-        print(f"❌ {e}.")
+        print(f"Error: {e}.")
         print(
             f"   The archive is written at {outfile}, and nothing was pruned -- but this "
             "tool cannot restore it. Narrow it with --components, then delete this one."
@@ -839,12 +843,12 @@ def snapshot_main(
         _audit("snapshot_rejected", f"{outfile} ({human}): {e}")
         return 1
     except (tarfile.TarError, OSError, EOFError) as e:
-        print(f"❌ The archive just written could not be read back ({e}).")
+        print(f"Error: The archive just written could not be read back ({e}).")
         print(f"   Left in place at {outfile}; nothing was pruned.")
         _audit("snapshot_rejected", f"{outfile} ({human}): unreadable: {e}")
         return 1
 
-    print(f"✅ Snapshot created: {outfile} ({human})")
+    print(f"Done: Snapshot created: {outfile} ({human})")
     # The bundle on local disk is not redacted either, so it gets the same notice as
     # the copy that leaves the host: which components carry credential material.
     _report_unresolved_payload(selected, uploading=False)
@@ -878,11 +882,11 @@ def snapshot_main(
             held.append(old)
             continue
         old.unlink()
-        print(f"🗑  Pruned: {_safe_name(old.name)}")
+        print(f"Pruned: {_safe_name(old.name)}")
     if held:
         reasons = ", ".join(sorted({str(s["reason"]) for s in omitted}))
         print(
-            f"⚠️  Not pruning {len(held)} older bundle{'' if len(held) == 1 else 's'}: this "
+            f"Warning: Not pruning {len(held)} older bundle{'' if len(held) == 1 else 's'}: this "
             f"bundle omits {len(omitted)} entr{'y' if len(omitted) == 1 else 'ies'} it was "
             f"asked to carry ({reasons}; see MANIFEST.json), which "
             f"{'that one' if len(held) == 1 else 'those'} may still hold, so a complete "
@@ -891,11 +895,11 @@ def snapshot_main(
         )
 
     remaining = len(list(out.glob("kirocrew-snapshot-*.tar.gz")))
-    print(f"📦 Snapshots in {out}: {remaining} (keep={args.keep})")
+    print(f"Snapshots in {out}: {remaining} (keep={args.keep})")
     # Opt-in only. The same predicate that held the prune decides the exit, so a caller
     # never has to re-classify `skipped` reasons itself.
     if omitted and getattr(args, "strict", False):
-        print(f"⚠️  --strict: exiting {EXIT_INCOMPLETE} because this bundle is incomplete.")
+        print(f"Warning: --strict: exiting {EXIT_INCOMPLETE} because this bundle is incomplete.")
         return EXIT_INCOMPLETE
     return 0
 
@@ -986,18 +990,18 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
         held["paused"] = [name for name in held["paused"] if name in installed]
     if held["dropped"]:
         print(
-            "⚠️  Not restored: these cron jobs have a command that fails the check "
+            "Warning: Not restored: these cron jobs have a command that fails the check "
             "`cron_add` applies:"
         )
         for name in held["dropped"]:
             print(f"     {_safe_name(_terminal_safe(name))}")
     if held["paused"]:
-        print("⏸  Restored PAUSED: these cron jobs run a command or script:")
+        print("Restored PAUSED: these cron jobs run a command or script:")
         for name in held["paused"]:
             print(f"     {_safe_name(_terminal_safe(name))}")
         print("   Check each one, then resume it on the dashboard's Schedules page.")
     if held["hooks"]:
-        print("⏸  Restored DISABLED: these hooks run a shell command:")
+        print("Restored DISABLED: these hooks run a shell command:")
         for name in held["hooks"]:
             print(f"     {_safe_name(_terminal_safe(name))}")
         print("   Check each one, then enable it on the dashboard's Hooks page.")
@@ -1023,7 +1027,7 @@ def _resolve_mode(explicit: str | None) -> str | None:
     if not _is_interactive():
         _audit("state_restore_rejected", "reason=mode_not_chosen")
         print(
-            "❌ No restore mode was chosen and no terminal is available to ask. "
+            "Error: No restore mode was chosen and no terminal is available to ask. "
             "Run again with --mode merge or --mode replace."
         )
         return None
@@ -1040,7 +1044,7 @@ def _resolve_mode(explicit: str | None) -> str | None:
         answer = ""
     if answer not in ("merge", "replace"):
         _audit("state_restore_rejected", "reason=mode_not_chosen")
-        print("\n❌ No restore mode was chosen. Nothing was changed.")
+        print("\nError: No restore mode was chosen. Nothing was changed.")
         return None
     return answer
 
@@ -1091,7 +1095,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         return 0
 
     if not args.snapshot:
-        print("❌ snapshot file is required (unless --list-components is given)")
+        print("Error: snapshot file is required (unless --list-components is given)")
         return 1
 
     archive_bound = _archive_bound_from_args(args)
@@ -1102,7 +1106,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     force = getattr(args, "force", False)
     if not force and _is_gateway_running():
         _audit("state_restore_rejected", "reason=gateway_running")
-        print("❌ Gateway is running. Stop it first (kirocrew stop) or use --force.")
+        print("Error: Gateway is running. Stop it first (kirocrew stop) or use --force.")
         return 1
 
     # An s3:// argument is refused, not fetched: the drive bucket, the consent grant and
@@ -1123,7 +1127,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         #
         # Escaped before printing: this is caller-supplied text on its way to a terminal.
         print(
-            f"❌ Cannot fetch {_safe_name(str(args.snapshot))} directly.\n"
+            f"Error: Cannot fetch {_safe_name(str(args.snapshot))} directly.\n"
             "   Download it from the AWS Control app's Backup section first, then pass\n"
             "   the local path to this command."
         )
@@ -1131,7 +1135,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
 
     snap_path = Path(args.snapshot)
     if not snap_path.is_file():
-        print(f"❌ File not found: {snap_path}")
+        print(f"Error: File not found: {snap_path}")
         return 1
 
     components: list[str] | None = None
@@ -1142,7 +1146,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             # is an invocation mistake. Reading it as "restore no components" would
             # print success while touching nothing, which is worse than refusing.
             print(
-                f"❌ --components was given as {args.components!r}, which names no "
+                f"Error: --components was given as {args.components!r}, which names no "
                 "components. Refusing rather than reporting a restore that did "
                 "nothing.\n"
             )
@@ -1153,7 +1157,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         try:
             components = resolve_components(requested, Purpose.BACKUP)
         except ComponentRefused as e:
-            print(f"❌ {e}\n")
+            print(f"Error: {e}\n")
             _list_components()
             return 1
 
@@ -1190,9 +1194,9 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         reason = "archive_too_large" if too_large else "extraction_failed"
         _audit("state_restore_rejected", f"reason={reason} from={snap_path.name}")
         if too_large:
-            print(f"❌ {e}.\n   Nothing was restored.")
+            print(f"Error: {e}.\n   Nothing was restored.")
         else:
-            print(f"❌ This snapshot could not be extracted ({e}).\n   Nothing was restored.")
+            print(f"Error: This snapshot could not be extracted ({e}).\n   Nothing was restored.")
         return 1
 
     with closing(tar), tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
@@ -1222,7 +1226,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                     # replace clears a component's live state before checking the archive.
                     # Only this layer can tell a rejected entry from one never carried.
                     print(
-                        "❌ This archive contains "
+                        "Error: This archive contains "
                         f"{len(rejected_entries)} entr{'ies' if len(rejected_entries) > 1 else 'y'} "
                         "that cannot be extracted safely "
                         f"({', '.join(sorted(rejected_entries)[:3])}"
@@ -1240,7 +1244,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 "state_restore_rejected",
                 f"reason=extraction_failed from={snap_path.name}",
             )
-            print(f"❌ This snapshot could not be extracted ({e}).\n   Nothing was restored.")
+            print(f"Error: This snapshot could not be extracted ({e}).\n   Nothing was restored.")
             return 1
 
         # Both roots: `kirocrew-snapshot-` (complete) and `kirocrew-partial-` (selective,
@@ -1252,13 +1256,13 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             and (d.name.startswith("kirocrew-snapshot-") or d.name.startswith("kirocrew-partial-"))
         ]
         if not snap_dirs:
-            print("❌ Invalid snapshot format")
+            print("Error: Invalid snapshot format")
             return 1
         if len(snap_dirs) > 1:
             # Two roots make the selection that drives `replace` a coin toss, and
             # replace deletes.
             print(
-                "❌ This archive contains more than one snapshot root "
+                "Error: This archive contains more than one snapshot root "
                 f"({', '.join(sorted(_safe_name(d.name) for d in snap_dirs))}). Refusing rather "
                 "than guessing which one to restore."
             )
@@ -1272,7 +1276,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         try:
             declared = _manifest_components(snap)
         except ManifestUnreadable as e:
-            print(f"❌ {e}")
+            print(f"Error: {e}")
             print(
                 "   Refusing to guess what this bundle contains. A manifest this "
                 "version cannot parse may mean a corrupt archive, so an explicit "
@@ -1286,7 +1290,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             # (pre-v3) bundle may omit the map. An explicit selection is checked against
             # the bundle's actual contents below, not trusted.
             print(
-                "❌ This archive is marked partial but carries no component map, so "
+                "Error: This archive is marked partial but carries no component map, so "
                 "there is no way to tell what it holds.\n"
                 "   Refusing: restoring it as if it were complete would move live "
                 "components it never contained.\n"
@@ -1317,7 +1321,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 ]
                 if hollow:
                     print(
-                        "❌ This bundle declares "
+                        "Error: This bundle declares "
                         f"{', '.join(sorted(hollow))} but carries no data for "
                         f"{'them' if len(hollow) > 1 else 'it'}. Restoring would clear the "
                         "live state for those components with nothing to put back. Refusing "
@@ -1330,7 +1334,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                     return 1
                 components = declared
                 print(
-                    "🔧 Components (from bundle manifest): "
+                    "Components (from bundle manifest): "
                     f"{','.join(components) if components else '(none)'}"
                 )
         elif declared is not None:
@@ -1343,7 +1347,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             ]
             if absent:
                 print(
-                    f"❌ This bundle does not contain: {', '.join(sorted(absent))}\n"
+                    f"Error: This bundle does not contain: {', '.join(sorted(absent))}\n"
                     f"   It carries: {', '.join(declared) if declared else '(nothing)'}"
                 )
                 return 1
@@ -1356,7 +1360,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             absent = _components_absent_from_bundle(snap, components)
             if absent:
                 print(
-                    f"❌ This bundle does not contain: {', '.join(sorted(absent))}\n"
+                    f"Error: This bundle does not contain: {', '.join(sorted(absent))}\n"
                     "   Its manifest carries no component map, so this is read from "
                     "the archive's contents.\n"
                     "   Refusing: replace mode would move that component's live files "
@@ -1374,7 +1378,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 absent_trees = _trees_absent_from_bundle(snap, components, mc)
                 if absent_trees:
                     print(
-                        "❌ This bundle carries no component map and is missing "
+                        "Error: This bundle carries no component map and is missing "
                         f"{', '.join(absent_trees)}, which live state HAS.\n"
                         "   Refusing: --mode replace clears a component's directories "
                         "before copying, so this would delete live state the archive "
@@ -1389,11 +1393,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                     )
                     return 1
         if components:
-            print(f"🔧 Components: {','.join(components)}")
+            print(f"Components: {','.join(components)}")
         _warn_if_transcripts_left_behind(mc, components)
 
         if args.dry_run:
-            print(f"\n🔍 Dry run — would restore to {mc} in {mode} mode")
+            print(f"\nDry run — would restore to {mc} in {mode} mode")
             print("Files in snapshot:")
             for f in sorted(snap.rglob("*")):
                 if f.is_file():
@@ -1417,7 +1421,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 "state_restore_rejected",
                 f"reason=source_integrity_check_failed from={snap_path.name}",
             )
-            print(f"❌ {e}")
+            print(f"Error: {e}")
             return 1
         # A bundle may come from someone else, so anything in it that runs a shell
         # command on its own is installed switched off -- the same rule the dashboard
@@ -1428,7 +1432,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         except OSError as exc:
             # Only the staged copy was touched: live state is as it was.
             _audit("state_restore_rejected", f"reason=staging_rewrite_failed detail={exc}")
-            print(f"❌ Could not prepare the bundle's crons and hooks: {exc}")
+            print(f"Error: Could not prepare the bundle's crons and hooks: {exc}")
             print("   Nothing was restored; your current state is unchanged.")
             return 1
         # Contained here rather than allowed to propagate: a refusal is a decision
@@ -1443,27 +1447,27 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             # Same reasoning as the snapshot handler, and this one reuses the event name
             # already established for a declined restore rather than inventing a second.
             _audit("state_restore_rejected", f"reason=unpinnable_staging detail={exc}")
-            print(f"❌ {exc}")
+            print(f"Error: {exc}")
             return 1
         except UnsafeComponentRoot as e:
             # Raised before anything was written, so this is a clean refusal. Report it
             # as one rather than letting a traceback out -- the same contract every other
             # refusal on this path already follows.
-            print(f"❌ {e}")
+            print(f"Error: {e}")
             return 1
         except ComponentRefused as e:
             # A mode that cannot restore what was asked for, raised at the top of the merge
             # before any mutation. Same clean-refusal contract as the branch above; the
             # message names the mode that can.
             _audit("state_restore_rejected", f"reason=mode_unsupported detail={e}")
-            print(f"❌ {e}")
+            print(f"Error: {e}")
             return 1
         except NamedStoresInUse as e:
             # Also before any mutation: a store open elsewhere would keep writing into an
             # unlinked database after the replace. The gateway check at the top catches the
             # ordinary case; this is the one `--force` and a second process can reach.
             _audit("state_restore_rejected", f"reason=named_store_in_use from={snap_path.name}")
-            print(f"❌ {e}")
+            print(f"Error: {e}")
             return 1
         except UnreadableRecord as exc:
             # The notification merge aborts on a record it cannot deliver intact, so
@@ -1476,7 +1480,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             # any copy in the restore, and labelling one of those a refused notification
             # record would be a wrong message rather than a missing one.
             _audit("state_restore_rejected", f"reason=unreadable_notification_record detail={exc}")
-            print(f"❌ {exc}")
+            print(f"Error: {exc}")
             return 1
         except SourceComponentUnsound as e:
             # `_allocate_rollback_dir` raises this when every candidate name for the current
@@ -1489,11 +1493,11 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 "state_restore_rejected",
                 f"reason=rollback_dir_unavailable from={snap_path.name}",
             )
-            print(f"❌ {e}")
+            print(f"Error: {e}")
             return 1
         except RollbackIncomplete as e:
             # Said first and said plainly: the operator's next action depends on it.
-            print(f"❌ The restore failed partway through: {e.cause}")
+            print(f"Error: The restore failed partway through: {e.cause}")
             locations = ", ".join(
                 _safe_name(str(p)) for p in (e.backup, e.store_backup) if p is not None
             )
@@ -1521,7 +1525,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             # home is on its pre-restore generation and the operator needs to be told that
             # much -- a traceback says a restore blew up without saying what state they are
             # now in, which is the one thing they need to know before retrying.
-            print(f"❌ The restore failed partway through: {e}")
+            print(f"Error: The restore failed partway through: {e}")
             print("   Your previous state was put back; nothing from the bundle remains.")
             _audit(
                 "state_restore_rejected",
@@ -1542,14 +1546,14 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         except Exception as e:
             result = str(e)
         if result == "ok":
-            print("🔍 memory.db integrity: OK")
+            print("memory.db integrity: OK")
         else:
-            print(f"⚠️  memory.db integrity check failed: {result}")
+            print(f"Warning: memory.db integrity check failed: {result}")
             _audit("state_restore_rejected", f"reason=integrity_check_failed from={snap_path.name}")
             return 1
         if not (mc / "memory_index.db").is_file():
             print(
-                "⚠️  memory_index.db is missing — full-text search may not "
+                "Warning: memory_index.db is missing — full-text search may not "
                 "work until the FTS index is rebuilt."
             )
 
@@ -1557,5 +1561,5 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     _audit("state_restored", f"mode={mode} components={comp_str} from={snap_path.name}")
 
     _report_held_back(held_back, mc)
-    print("\n⚠️  Restart kirocrew gateway to pick up changes: kirocrew restart")
+    print("\nWarning: Restart kirocrew gateway to pick up changes: kirocrew restart")
     return 0

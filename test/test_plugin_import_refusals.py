@@ -788,7 +788,7 @@ class TestTheReportCannotForgeTerminalOutput:
 
 class TestTheImportCommandCannotBeMadeToWriteLiveTerminalControls:
     """Every refusal this command prints carries text taken from the package under
-    conversion, after a ``❌`` prefix on the operator's terminal.
+    conversion, after an ``Error:`` prefix on the operator's terminal.
 
     The pin is at the PRINT SITE rather than on one upstream message, because which
     refusal happens to embed a package-supplied path changes as the converter grows,
