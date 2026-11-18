@@ -494,6 +494,9 @@ class DashboardState:
         # /api/slack/reconnect). Set by the gateway that owns the Slack socket;
         # None on a server with no socket owner.
         self.slack_reconnect: Callable[[], Awaitable[dict[str, Any]]] | None = None
+        # The Slack owner-claim window (``kiro_crew.slack.owner_claim.OwnerClaim``,
+        # /api/slack/owner-claim). Set beside ``slack_reconnect``; None otherwise.
+        self.slack_owner_claim: Any = None
         # True once the Discord channel's Gateway WebSocket transport started
         # this session (set by maybe_start_discord). Read by the Discord
         # settings status badge.

@@ -103,6 +103,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',
   'SlackManifestUpdate.tsx': "the Slack Code section's update-your-Slack-app panel (install status, copy manifest, App Manifest link, Check again); it reports and acts on the installed app and holds no setting",
+  'SlackOwnerClaim.tsx': "the Slack Identity & access card's Claim in Slack block (open window, candidates, This is me, Clear owner); it acts on the owner the Owner Slack member ID setting beside it already indexes, and holds no setting of its own",
   'SttRetentionNote.tsx': "read-only \"Is my audio kept?\" line under SttSettings' provider picker; an info tip and a docs link, zero controls",
   'ThemeDroppedRulesNotice.tsx': 'informational notice, zero controls',
   'TranslucentPanelsPreview.tsx': 'aria-hidden illustration under the Translucent panels switch (registry id display.translucent-panels, on DisplayPanel); it holds no control of its own',

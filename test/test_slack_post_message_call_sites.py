@@ -152,6 +152,7 @@ BASELINE: dict[str, tuple[int, str]] = {
         "stop and reset notices, resume label, new-session greeting",
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
+    "slack/owner_claim.py": (1, "fixed welcome DM to a newly confirmed owner"),
     "slack/renderer.py": (
         5,
         "the channel renderer: placeholders, answer parts, fallback and notices",

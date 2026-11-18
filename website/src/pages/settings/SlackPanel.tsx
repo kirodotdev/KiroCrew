@@ -19,6 +19,19 @@ import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeD
 import { SLACK_CODE_SWITCHES } from './slackCodeSwitches'
 import { forgetSlackInstallReading } from './SlackManifestUpdate'
 import { lazyRetry } from '../../components/lazyRetry'
+import type { SlackOwnerClaimProps } from './SlackOwnerClaim'
+// Its own chunk, for the same budget reason as SlackSharedAccess below. A failed
+// load shows an inline notice with Try again; the manual member-ID field beside
+// it still works. No hand-off: this form holds unsaved fields.
+const SlackOwnerClaim = lazyRetry<SlackOwnerClaimProps>(
+  () => import('./SlackOwnerClaim').then(m => ({ default: m.SlackOwnerClaim })),
+  {
+    layout: 'inline',
+    title: () => i18nT('pages.settings.slackOwnerClaim.load_failed'),
+    scope: 'slack-owner-claim',
+    askAgent: false,
+  },
+)
 // Its own chunk: only the Slack panel draws this section, and inside the Settings
 // page chunk it put that chunk over its size budget. A failed load shows a notice
 // with Try again in its place and leaves the rest of the form mounted. `inline`:
@@ -312,11 +325,16 @@ export function SlackPanel() {
   // refetch that picks up a CLI edit leaves the draft as it was, so comparing
   // against the refreshed data would send the stale draft value and undo it.
   const codeBaseline = useRef<SlackCodeDraft | null>(null)
+  // The owner ID the draft was seeded from, for the same reason: the save
+  // sends the owner only when the field was edited, so a save that lands
+  // while "Claim in Slack" confirms cannot write the old value back.
+  const ownerBaseline = useRef('')
   useEffect(() => {
     if (data && syncArmed.current) {
       syncArmed.current = false
       const seeded = draftFrom(data)
       codeBaseline.current = seeded.code
+      ownerBaseline.current = seeded.owner_id.trim()
       setDraft(seeded)
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
@@ -403,8 +421,9 @@ export function SlackPanel() {
   const handleSave = useCallback(() => {
     if (!draft) return
     setError('')
+    const owner = draft.owner_id.trim()
     const payload: Partial<SlackConfigSave> = {
-      owner_id: draft.owner_id.trim(),
+      ...(owner !== ownerBaseline.current ? { owner_id: owner } : {}),
       command: draft.command.trim(),
       allowed_enterprise_ids: draft.allowed_enterprise_ids,
       reactions_enabled: draft.reactions_enabled,
@@ -590,6 +609,7 @@ export function SlackPanel() {
       {/* ── Identity & access ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.identity_access')}>
         <SettingsCard index={3}>
+          <SlackOwnerClaim config={data} onOwnerChange={id => { ownerBaseline.current = id; upd({ owner_id: id }) }} />
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.owner_slack_member_id')}
             description={i18nT('pages.settings.slackPanel.the_one_member_who_can_always_interact_with_the')}
