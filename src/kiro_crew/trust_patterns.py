@@ -144,18 +144,6 @@ def path_trust_key(tool_name: str, path: str) -> str:
     return f"path-trust:v1:{tool}:{target}"
 
 
-def _chain_has_link(path: str) -> bool:
-    """Whether *path* or any ancestor is a symlink or a Windows junction."""
-    from kiro_crew import platform_compat
-
-    while not platform_compat.is_link_or_junction(path):
-        parent = os.path.dirname(path)
-        if parent == path:
-            return False
-        path = parent
-    return True
-
-
 def path_trust_unresolved(path: str) -> bool:
     """Whether *path* names a link, or sits under one, on this host.
 
@@ -171,10 +159,15 @@ def path_trust_unresolved(path: str) -> bool:
         # realpath answers the case stored on disk, so a different spelling of
         # a regular file is not a link. Case folding alone would also pass a
         # link to a sibling whose name differs only in case (a case-sensitive
-        # NTFS directory), so the chain is walked for a link.
+        # NTFS directory), so the path and its ancestors are checked for a link.
         if os.path.normcase(real) != os.path.normcase(path):
             return True
-        return _chain_has_link(path)
+        from kiro_crew import platform_compat
+
+        return (
+            platform_compat.is_link_or_junction(path)
+            or platform_compat.first_linked_ancestor(path) is not None
+        )
     except (OSError, ValueError):
         return True
 

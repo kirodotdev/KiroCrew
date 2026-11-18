@@ -291,9 +291,17 @@ def _windows_fs(monkeypatch, symlink=""):
             return junction_target + path[len(junction) :]
         return on_disk if folded == ntpath.normcase(on_disk) else path
 
-    fake_path = SimpleNamespace(realpath=realpath, normcase=ntpath.normcase, dirname=ntpath.dirname)
+    def first_linked_ancestor(path: str) -> str | None:
+        parents = []
+        while ntpath.dirname(path) != path:
+            path = ntpath.dirname(path)
+            parents.append(path)
+        return next((p for p in reversed(parents) if p == symlink), None)
+
+    fake_path = SimpleNamespace(realpath=realpath, normcase=ntpath.normcase)
     monkeypatch.setattr(trust_patterns, "os", SimpleNamespace(path=fake_path))
     monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda path: path == symlink)
+    monkeypatch.setattr(platform_compat, "first_linked_ancestor", first_linked_ancestor)
 
 
 @pytest.mark.parametrize(
@@ -322,6 +330,13 @@ def test_a_symlink_to_a_case_variant_sibling_withholds_the_grant_on_windows(monk
     assert path_trust_unresolved("C:\\w\\Proj\\allow.txt")
     assert not path_trust_unresolved("C:\\w\\Proj\\Allow.txt")
     assert not path_trust_unresolved("c:\\w\\Proj\\Allow.txt")
+
+
+def test_a_folder_link_to_a_case_variant_sibling_withholds_the_grant_on_windows(monkeypatch):
+    """``proj`` can be a link to ``Proj``; a file under it must still withhold the grant."""
+    _windows_fs(monkeypatch, symlink="C:\\w\\proj")
+    assert path_trust_unresolved("C:\\w\\proj\\Allow.txt")
+    assert not path_trust_unresolved("C:\\w\\Proj\\Allow.txt")
 
 
 def test_path_scope_trust_needs_harness_provenance():
