@@ -201,6 +201,46 @@ describe('chat sidebar: pause and resume status filters', () => {
     expect(await utils.findByTestId('filter-pause-all')).toHaveTextContent('Resume all filters')
   })
 
+  it('only the paused Pinned chip explains that pinned sessions now follow the other status chips', async () => {
+    localStorage.setItem(RUNNING_KEY, '1')
+    localStorage.setItem(UNREAD_KEY, '2')
+    localStorage.setItem(PINNED_KEY, '2')
+    const utils = renderSidebar()
+    await utils.findByTestId('filter-chip-pinned')
+    expect(chipToggle(utils, 'pinned')).toHaveAttribute('title', 'Pinned sessions follow the other status chips. Click to resume.')
+    expect(chipToggle(utils, 'unread')).toHaveAttribute('title', 'Resume Unread filter')
+    fireEvent.click(chipToggle(utils, 'pinned'))
+    await waitFor(() => expect(chipToggle(utils, 'pinned')).toHaveAttribute('title', 'Pause Pinned filter'))
+  })
+
+  it('a paused Pinned chip and menu row read "paused, filtered too", while a paused Unread chip still reads "paused"', async () => {
+    localStorage.setItem(RUNNING_KEY, '1')
+    localStorage.setItem(UNREAD_KEY, '2')
+    localStorage.setItem(PINNED_KEY, '2')
+    const utils = renderSidebar()
+    await utils.findByTestId('filter-chip-pinned')
+    expect(chipToggle(utils, 'pinned').querySelector('[data-chip-state]')).toHaveTextContent(/^· paused, filtered too$/)
+    expect(chipToggle(utils, 'unread').querySelector('[data-chip-state]')).toHaveTextContent(/^· paused$/)
+    openFilterMenu(utils)
+    await utils.findByTestId('filter-pause-all')
+    const menuRow = (label: string) => utils.getAllByRole('menuitem').find(el => el.textContent?.startsWith(label))!
+    expect(menuRow('Pinned')).toHaveTextContent(/· paused, filtered too$/)
+    expect(menuRow('Unread')).toHaveTextContent(/· paused$/)
+  })
+
+  it('a paused Pinned chip with no other status chip narrowing reads plain "paused", since pins still pass', async () => {
+    localStorage.setItem(UNREAD_KEY, '2')
+    localStorage.setItem(PINNED_KEY, '2')
+    const utils = renderSidebar()
+    await utils.findByText('plain session')
+    expect(chipToggle(utils, 'pinned').querySelector('[data-chip-state]')).toHaveTextContent(/^· paused$/)
+    expect(chipToggle(utils, 'pinned')).toHaveAttribute('title', 'Resume Pinned filter')
+    openFilterMenu(utils)
+    await utils.findByTestId('filter-pause-all')
+    const menuRow = (label: string) => utils.getAllByRole('menuitem').find(el => el.textContent?.startsWith(label))!
+    expect(menuRow('Pinned')).toHaveTextContent(/· paused$/)
+  })
+
   it('a MIXED "1" / "2" load keeps each filter as stored: the paused one lifted, the other narrowing', async () => {
     localStorage.setItem(UNREAD_KEY, '2')
     localStorage.setItem(PINNED_KEY, '1')
