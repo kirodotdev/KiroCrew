@@ -66,7 +66,8 @@ jobs:
           7z x -y -osetup setup.exe > /dev/null
           pkg=$(find setup -name 'app-64.7z' | head -1)
           7z x -y -oapp "$pkg" > /dev/null
-          py=$(find app -path '*backend-dist*' -name python.exe | head -1)
+          py=$(find app -path '*backend-dist/kirocrew-backend/python.exe' | head -1)
+          [ -n "$py" ] || { echo 'backend python.exe not found'; exit 1; }
           echo "PY=$py" >> "$GITHUB_ENV"
           echo "python: $py"
           sp="$(dirname "$py")/Lib/site-packages"
