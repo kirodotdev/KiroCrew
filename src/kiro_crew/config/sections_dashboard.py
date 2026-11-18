@@ -269,6 +269,15 @@ class DashboardConfig:
             "30 seconds in the MCP gateway process).",
         ),
     )
+    turn_cache_estimate: bool = field(
+        default=False,
+        metadata=_meta(
+            "Estimate cache rebuilds",
+            'Mark a reply in its footer as "Cache likely rebuilt" when the backend reports '
+            "no cache counts and the turn started after a pause longer than the model keeps "
+            "the conversation cached. Backends that report cache counts are unaffected.",
+        ),
+    )
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(

@@ -13196,6 +13196,8 @@
         "copy_failed": "Échec de la copie",
         "quote_message": "Citer le message",
         "turn_credits": "{{credits}} crédits",
+        "turn_cache_likely": "Cache probablement reconstruit",
+        "turn_cache_likely_hint": "Cette réponse est arrivée après une pause plus longue que la durée pendant laquelle le modèle garde la conversation en cache, donc toute la conversation a probablement été enregistrée à nouveau et a coûté plus que d’habitude. C’est une estimation.",
         "turn_cache_rewritten": "Cache reconstruit",
         "turn_cache_rewritten_hint": "Cette réponse a dû enregistrer à nouveau toute la conversation, elle a donc coûté plus que d’habitude."
       },

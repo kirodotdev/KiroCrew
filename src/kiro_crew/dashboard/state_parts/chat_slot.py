@@ -276,6 +276,7 @@ class _ChatSlot:
         "_carried_ttft_clock",
         "_prev_turn_ctx_used",
         "_prev_turn_ctx_session",
+        "_prev_turn_ended_at",
         "_promise_only_retries",
         "_compaction_continue_retries",
         "_batch_rejected",
@@ -717,6 +718,7 @@ class _ChatSlot:
     _carried_ttft_clock: Any
     _prev_turn_ctx_used: int
     _prev_turn_ctx_session: str
+    _prev_turn_ended_at: float
     _promise_only_retries: int
     _compaction_continue_retries: int
     _batch_rejected: bool

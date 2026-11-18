@@ -12620,6 +12620,8 @@
         "copy_failed": "コピーに失敗しました",
         "quote_message": "メッセージを引用",
         "turn_credits": "{{credits}} クレジット",
+        "turn_cache_likely": "キャッシュを再構築した可能性が高い",
+        "turn_cache_likely_hint": "この返信は、モデルが会話をキャッシュに保持する時間より長い間隔の後に届いたため、会話全体がもう一度保存され、いつもより費用がかかった可能性が高いです。これは推定です。",
         "turn_cache_rewritten": "キャッシュを再構築",
         "turn_cache_rewritten_hint": "この返信では会話全体をもう一度保存する必要があったため、いつもより費用がかかりました。"
       },
