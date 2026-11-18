@@ -202,6 +202,18 @@ def _world(tmp: Path) -> tuple[_Origin, list[dict]]:
     cases.append(
         {"name": "stale-base-sha", "base_tip": fork_point, "parent": moved, "head": behind}
     )
+    # #39016: the branch was rebased onto the moved main, but the event still
+    # carries the old base.sha, so base.sha..head spans every main commit since.
+    o.branch("rebased", moved)
+    rebased = o.commit({"src/rebased.py": "r = 1\n"})
+    cases.append(
+        {
+            "name": "rebased-past-stale-base",
+            "base_tip": fork_point,
+            "parent": moved,
+            "head": rebased,
+        }
+    )
 
     # A fork head is reachable only through refs/pull/<n>/head.
     o.git("checkout", "-q", "--detach", moved)
@@ -212,7 +224,7 @@ def _world(tmp: Path) -> tuple[_Origin, list[dict]]:
         case["pr"] = pr
         case["merge"] = o.pull(pr, case["parent"], case["head"])
     o.git("checkout", "-q", "main")
-    for name in ("normal", "multi", "behind"):
+    for name in ("normal", "multi", "behind", "rebased"):
         o.git("branch", "-q", "-D", name)
     return o, cases
 
@@ -309,7 +321,14 @@ def test_the_commit_range_and_the_rule_greps_run_on_the_fetched_history(world) -
     o, cases, _ = world
     by_name = {c["name"]: c for c in cases}
     steps = {s.get("name"): s for s in _steps("pr-hygiene") + _steps("autosde-rules")}
-    for name, count in (("normal", 1), ("three-commits", 3), ("base-moved", 1), ("fork", 1)):
+    for name, count in (
+        ("normal", 1),
+        ("three-commits", 3),
+        ("base-moved", 1),
+        ("fork", 1),
+        # The step is handed the event's stale base.sha, and must still count one.
+        ("rebased-past-stale-base", 1),
+    ):
         work, res, _ = _diff_base(o, by_name[name], "pr-hygiene")
         assert res.returncode == 0, res.stderr
         env = {

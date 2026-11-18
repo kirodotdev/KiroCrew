@@ -89,6 +89,8 @@ jobs:
           # base.sha (not the merge-base): rev-list is a commit-range query, so
           # a non-ancestor base still yields only the PR's own commits — see the
           # merge-base fix (#4968), which deliberately left this site alone.
+          # It is only the fallback, though: the run below measures from the
+          # merge commit's first parent when it has one (#39016).
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           # The branch NAME, for the remedy text. Spelling `origin/main` literally
@@ -98,6 +100,22 @@ jobs:
           MAX_COMMITS: "2"
         run: |
           err() { printf '::%s::%s\n' error "$*"; }
+          # base.sha can be older than the branch: a re-run replays the original
+          # event, and a new push has been seen carrying a base from hours
+          # before. Once the branch is rebased past it, BASE..HEAD counts every
+          # main commit in between (#39016: one commit read as 62). The checkout
+          # is GitHub's merge commit, whose first parent IS the base tip it was
+          # built on, and the diff-base step has fetched its history, so count
+          # from there, as the diff-scoped gates do (#38678). Only when the
+          # second parent is this PR's head: anything else keeps base.sha.
+          # `cat-file` reads the commit object, so it sees both parents even
+          # where the shallow checkout grafted them away.
+          PARENTS=($(git cat-file -p HEAD | sed -n 's/^parent //p'))
+          if [ "${#PARENTS[@]}" -eq 2 ] && [ "${PARENTS[1]}" = "$HEAD" ] \
+            && [ "${PARENTS[0]}" != "$BASE" ]; then
+            printf '::%s::%s\n' notice "counting commits from the merge commit's first parent ${PARENTS[0]}, not base.sha $BASE"
+            BASE="${PARENTS[0]}"
+          fi
           COMMIT_COUNT=$(git rev-list --count "$BASE".."$HEAD")
           if [ "$COMMIT_COUNT" -lt 1 ] || [ "$COMMIT_COUNT" -gt "$MAX_COMMITS" ]; then
             err "PR must contain 1 or $MAX_COMMITS commits (has $COMMIT_COUNT). Rebase, do not merge:"
