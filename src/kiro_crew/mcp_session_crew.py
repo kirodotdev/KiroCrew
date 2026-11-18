@@ -132,6 +132,19 @@ def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
             f" The hub picked this crew by headroom; pass crew=`{resp.get('crew')}` "
             "(its id) on every follow-up call."
         )
+    skipped = resp.get("skipped")
+    names = [
+        str(s.get("crew_name") or s.get("crew"))
+        for s in (skipped if isinstance(skipped, list) else [])
+        if isinstance(s, dict) and (s.get("crew_name") or s.get("crew"))
+    ]
+    if names:
+        # A crew skipped because it already holds a worker for this item, left
+        # running there (a create whose reply was lost).
+        note += (
+            f" Skipped {', '.join(f'`{n}`' for n in names)}: it already holds a "
+            "worker for this item, left running there."
+        )
     if "previous_branch" in resp:
         # Wave 8: a redispatch of a retired item. Two workers never share a branch.
         last = resp.get("previous_branch")
