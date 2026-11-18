@@ -1,3 +1,4 @@
+import { APP_STATE_EVENT } from '../app-sdk/appState'
 import { isRelayCrewWindow } from '../utils/offlineReason'
 import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
@@ -766,6 +767,18 @@ export function useWebSocket() {
           case 'app_reload':
             emitAppReload(data as { app: string })
             break
+          case 'app_state': {
+            // An app was turned on or off (this tab, another tab, the gateway): the
+            // shell re-reads the app list (mc:apps-changed), and a mounted BrowserView
+            // of that app follows the frame itself (mc:app-state), because an app
+            // page reads its app once and does not re-read that list.
+            const d = data as { app?: unknown; enabled?: unknown; seq?: unknown; boot?: unknown }
+            if (typeof d?.app === 'string' && typeof d.enabled === 'boolean') {
+              window.dispatchEvent(new CustomEvent(APP_STATE_EVENT, { detail: { app: d.app, enabled: d.enabled, seq: d.seq, boot: d.boot } }))
+            }
+            window.dispatchEvent(new Event('mc:apps-changed'))
+            break
+          }
           case 'subagent_snapshot': {
             // Clear any buffered chunks for this agent — the snapshot's streaming
             // field is authoritative and already includes any in-flight text.

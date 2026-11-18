@@ -449,6 +449,24 @@
       "new_messages_one": "{{count}} mensaje nuevo",
       "new_messages_other": "{{count}} mensajes nuevos",
       "new_messages_many": "{{count}} mensajes nuevos"
+    },
+    "browserView": {
+      "not_enabled": "Esta vista del navegador está desactivada. Activa Acceso de apps al navegador en Ajustes > Desarrollador > Vistas previas de funciones.",
+      "denied": "Esta app no puede mostrar ese navegador: el chat no es suyo.",
+      "no_page": "Todavía no hay ninguna página abierta en este chat.",
+      "waiting_for_frame": "Esperando la primera imagen de la página...",
+      "take_over": "Tomar el control",
+      "hand_back": "Devolver",
+      "show_live": "Mostrar la página en vivo",
+      "browser_error": "El navegador no pudo iniciarse o se detuvo con un error.",
+      "turn_over": "El Bot terminó. Su pestaña sigue abierta.",
+      "note_not_sent": "Tu nota no se envió al Bot. Se guarda en el cuadro de mensaje de este chat.",
+      "note_unconfirmed": "Puede que tu nota no haya llegado al Bot. Se guarda en el cuadro de mensaje de este chat: revisa el chat antes de enviarla otra vez.",
+      "note_not_saved": "Puede que tu nota no haya llegado al Bot, y este navegador no pudo guardar una copia. Cópiala ahora: {{note}}",
+      "not_granted": "Esta app aún no puede mostrar el navegador. Aprueba su acceso al navegador en la página de la app en Apps.",
+      "note_not_sent_not_saved": "Tu nota no se envió al Bot, y este navegador no pudo guardar una copia. Cópiala ahora: {{note}}",
+      "tab_gone": "La pestaña del Bot está cerrada, así que no hay una página en vivo que mostrar.",
+      "app_off": "Esta app está desactivada, así que no puede mostrar el navegador. Actívala en Apps para volver a ver la página."
     }
   },
   "apps": {

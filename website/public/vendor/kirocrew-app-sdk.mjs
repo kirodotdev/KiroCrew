@@ -25,6 +25,8 @@ export const {
   useHostSessions,
   // Media buttons on the tab the app's own agent browses (level 10).
   useBrowserMedia, BROWSER_MEDIA_PATH,
+  // The live view of the app's own slot, take over and hand back, coordinates (level 11).
+  BrowserView, useBrowserView, useBrowserCoords,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.

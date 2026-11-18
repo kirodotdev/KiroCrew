@@ -7523,7 +7523,8 @@ transport), `ctx.chat_slots` (§41), the SDK's project picker (§18i) and `ctx.w
 (§35); level 9 adds `permissions.bots` (§32c); level 10 adds the agent tool gate's fence
 on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useChatLauncher().createChat` (§44), `permissions.browserSites` and the SDK's
-`useBrowserMedia` (§45). Several seams share level 7, three share level 8,
+`useBrowserMedia` (§45); level 11 adds the SDK's `BrowserView`, `useBrowserView` and
+`useBrowserCoords` (RFC app-sdk-browser, step 1c). Several seams share level 7, three share level 8,
 and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.

@@ -755,7 +755,23 @@ manager's autofill popup, a file picker), and still works from the finished
 card: the tab outlives the screencast. The eight routes refuse the
 internal secret (403 `internal_secret_required`), require the dashboard owner
 (403 `owner_only`) and accept only a `session_key` naming a slot this dashboard
-owns (404 `unknown_session`).
+owns (404 `unknown_session`). For a slot an app owns while that app is turned off,
+every route that starts or keeps a view (visibility, ack, take over, input, reopen,
+open in browser) answers 403 `app_disabled` and first ends what still runs: the
+takeover is handed back and the stream is told no one watches. Hand back and close
+always work, and a person's own chat has no app. Turning an app off from the
+gateway ends its slots' views at once and broadcasts `app_state`
+(`{"app", "enabled": false, "seq", "boot"}`; turning it on sends `true`), both while
+it still holds the app's lifecycle lock, so one app's frames go out in the order the
+changes committed and an enable from another tab cannot be overtaken by a late "off".
+`seq` grows strictly within one process (the monotonic clock, bumped by one when two
+frames read the same tick) and `boot` a random id drawn once per gateway
+process (a pid can repeat after a restart, and the clock can restart lower): a tab
+keeps the newest frame per app, drops an older `seq` from the same `boot`, and takes
+any `seq` from a new `boot`. Every dashboard re-reads
+the app list on it, and `useWebSocket` relays it as `mc:app-state`, which a mounted
+`BrowserView` follows directly (`app-sdk/appState.ts`), because an app page reads its
+app once.
 
 **The hand-back note.** While the person holds the browser, the card, the side
 panel's big view and the phone sheet show a hand-back bar
@@ -793,10 +809,11 @@ are dropped. The answer's `delivered` says where it went:
   it, the turn's next op answer carries it.
 * `chat`: no op is parked -- the turn is between ops (it may end without
   another), a view was reopened after its turn, or the turn ended under the
-  takeover. The card fires `mc:browser-handback-chat`
-  (`BROWSER_HANDBACK_CHAT_EVENT`), and the chat page sends `choice: note` as the
-  person's next message to that slot, as if typed in the composer (queued
-  behind a running turn). So a note is never held for an op that may not come.
+  takeover. The live-view store (`browserLiveStore.release`) sends `choice: note`
+  as the person's next message to that slot, text alone, on every surface that
+  shows the view (the chat card, a crewmate pane, an app's `BrowserView`), so it
+  goes out once (queued behind a running turn). Unless the gateway confirms the
+  send, the note is kept in the slot's composer draft and the view says so. So a note is never held for an op that may not come.
 
 The note never carries page content, is never logged on the input path, and is
 recorded on the turn replay as the person's event (`actor: user`, label

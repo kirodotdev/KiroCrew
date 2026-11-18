@@ -431,6 +431,24 @@
     "newMessagesDivider": {
       "new_messages_one": "{{count}} neue Nachricht",
       "new_messages_other": "{{count}} neue Nachrichten"
+    },
+    "browserView": {
+      "not_enabled": "Diese Browseransicht ist aus. Schalte App-Browserzugriff unter Einstellungen > Entwickler > Funktionsvorschauen ein.",
+      "denied": "Diese App kann diesen Browser nicht zeigen: Der Chat gehört nicht zu ihr.",
+      "no_page": "In diesem Chat ist noch keine Seite geöffnet.",
+      "waiting_for_frame": "Warte auf das erste Bild der Seite...",
+      "take_over": "Übernehmen",
+      "hand_back": "Zurückgeben",
+      "show_live": "Live-Seite anzeigen",
+      "browser_error": "Der Browser konnte nicht starten oder wurde mit einem Fehler beendet.",
+      "turn_over": "Der Bot ist fertig. Sein Tab ist noch offen.",
+      "note_not_sent": "Deine Notiz wurde nicht an den Bot gesendet. Sie bleibt im Nachrichtenfeld dieses Chats.",
+      "note_unconfirmed": "Deine Notiz hat den Bot vielleicht nicht erreicht. Sie bleibt im Nachrichtenfeld dieses Chats: Sieh im Chat nach, bevor du sie erneut sendest.",
+      "note_not_saved": "Deine Notiz hat den Bot vielleicht nicht erreicht, und dieser Browser konnte keine Kopie speichern. Kopiere sie jetzt: {{note}}",
+      "not_granted": "Diese App darf den Browser noch nicht zeigen. Genehmige ihren Browserzugriff auf der Seite der App unter Apps.",
+      "note_not_sent_not_saved": "Deine Notiz wurde nicht an den Bot gesendet, und dieser Browser konnte keine Kopie speichern. Kopiere sie jetzt: {{note}}",
+      "tab_gone": "Der Tab vom Bot ist geschlossen, daher gibt es keine Live-Seite zum Anzeigen.",
+      "app_off": "Diese App ist ausgeschaltet und kann den Browser nicht zeigen. Schalte sie unter Apps ein, um die Seite wieder zu sehen."
     }
   },
   "apps": {
