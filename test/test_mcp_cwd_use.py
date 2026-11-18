@@ -305,3 +305,128 @@ async def test_a_bad_overlay_answer_hides_the_base_answer(tmp_path, toggle_home,
     status, body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
 
     assert (status, body["code"]) == (409, "cwd_unconfirmed")
+
+
+@pytest.fixture
+def rows_home(toggle_home, monkeypatch):
+    """The server list's own scan reads the same agents dir the rewrite does."""
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "kiro_agents_dir_path", lambda: toggle_home)
+    return toggle_home
+
+
+async def _listed_answer(name: str = "srv"):
+    from handlers_mcp_coverage_helpers import _payload, _request
+
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    response = await mcp_mod.api_mcp_gateway_servers(_request(method="GET"))
+    rows = {r["name"]: r for r in _payload(response)["servers"]}
+    return rows[name]["cwd_use"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "bound", "current", "expected"),
+    [
+        ("not_used", "h1", "h1", "not_used"),
+        ("not_used", "h1", "h2", None),
+        # Recorded before bindings existed: kept, so nobody is asked again.
+        ("not_used", None, "h2", "not_used"),
+        # The launch cannot be read now: today's result.
+        ("not_used", "h1", None, "not_used"),
+        # Only a not_used answer is bound; uses_cwd only ever blocks routing.
+        ("uses_cwd", "h1", "h2", "uses_cwd"),
+        (None, "h1", "h2", None),
+    ],
+)
+def test_a_not_used_answer_holds_only_for_its_launch(answer, bound, current, expected):
+    from kiro_crew.config.integration_sections import effective_cwd_answer
+
+    assert effective_cwd_answer(answer, bound, current) == expected
+
+
+def test_the_launch_binding_is_a_modelled_config_field(tmp_path, toggle_home):
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"mcp_gateway": {"cwd_use_launch": {"srv": "h1", "bad": 3}}})
+    )
+    cfg = KiroCrewConfig.load()
+    assert cfg.mcp_gateway.cwd_use_launch == {"srv": "h1"}
+
+    cfg.save()
+    assert _config(tmp_path)["mcp_gateway"]["cwd_use_launch"] == {"srv": "h1"}
+
+
+@pytest.mark.asyncio
+async def test_the_answer_is_bound_and_a_changed_launch_asks_again(tmp_path, rows_home):
+    toggle_home = rows_home
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
+    expected = await _expected_launch()
+    await _post({"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"})
+    assert set(_config(tmp_path)["mcp_gateway"]["cwd_use_launch"]) == {"srv"}
+    await _post({"name": "srv", "stub": False})
+
+    assert await _listed_answer() == "not_used"
+
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, ["-m", "srv_in_this_folder"])
+    # The page reads the answer as unanswered, so it asks before routing.
+    assert await _listed_answer() is None
+    changed = await _expected_launch()
+    status, body = await _post({"name": "srv", "stub": True, "expected_launch": changed})
+    assert (status, body["code"]) == (409, "cwd_unconfirmed")
+
+    status, _body = await _post(
+        {"name": "srv", "stub": True, "expected_launch": changed, "cwd_use": "not_used"}
+    )
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_an_answer_from_before_bindings_routes_and_is_bound(tmp_path, rows_home):
+    toggle_home = rows_home
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
+    expected = await _expected_launch()
+    (tmp_path / "config.json").write_text(
+        json.dumps({"mcp_gateway": {"cwd_use": {"srv": "not_used"}}})
+    )
+
+    status, _body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
+
+    assert status == 200
+    assert set(_config(tmp_path)["mcp_gateway"]["cwd_use_launch"]) == {"srv"}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_scan_keeps_an_unbound_answer_working(tmp_path, rows_home, monkeypatch):
+    toggle_home = rows_home
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    _declare(toggle_home, "agent spec", _APPROVED_CMD, [])
+    expected = await _expected_launch()
+
+    def _boom():
+        raise OSError("scan failed")
+
+    monkeypatch.setattr(mcp_mod, "_collect_server_rows", _boom)
+    status, _body = await _post(
+        {"name": "srv", "stub": True, "expected_launch": expected, "cwd_use": "not_used"}
+    )
+
+    assert status == 200
+    assert "cwd_use_launch" not in _config(tmp_path)["mcp_gateway"]
+
+
+@pytest.mark.asyncio
+async def test_an_overlay_answer_is_bound_when_routed(tmp_path, rows_home, monkeypatch):
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    _declare(rows_home, "agent spec", _APPROVED_CMD, [])
+    expected = await _expected_launch()
+    monkeypatch.setattr(mcp_mod, "_local_overlay_section", lambda: {"cwd_use": {"srv": "not_used"}})
+
+    status, _body = await _post({"name": "srv", "stub": True, "expected_launch": expected})
+
+    assert status == 200
+    assert set(_config(tmp_path)["mcp_gateway"]["cwd_use_launch"]) == {"srv"}

@@ -223,6 +223,36 @@ def _resolve_cwd_use(mcp_gateway_data: dict) -> dict[str, str]:
     }
 
 
+def _resolve_cwd_use_launch(mcp_gateway_data: dict) -> dict[str, str]:
+    """The launch each ``not_used`` answer was given for, non-string entries dropped.
+
+    Value: the sorted, comma-joined command+args hashes of every definition under
+    that name when the operator answered (``launch_approval.serialize_identities``).
+    """
+    raw = _safe_dict(mcp_gateway_data.get("cwd_use_launch", {}))
+    return {
+        name: value
+        for name, value in raw.items()
+        if isinstance(name, str) and name and isinstance(value, str) and value
+    }
+
+
+def effective_cwd_answer(
+    answer: str | None, bound_launch: str | None, current_launch: str | None
+) -> str | None:
+    """The answer that holds for the launch a name declares now.
+
+    A ``not_used`` answer belongs to the launch it was given for: when the name
+    now declares a different launch, the answer reads as unanswered so the
+    operator is asked again. An answer recorded before bindings existed
+    (*bound_launch* ``None``), or a launch that cannot be read now
+    (*current_launch* ``None``), keeps the answer as it is today.
+    """
+    if answer != _CWD_NOT_USED or bound_launch is None or current_launch is None:
+        return answer
+    return answer if bound_launch == current_launch else None
+
+
 @dataclass
 class PublishConfig:
     """Operator-facing controls for artifact publishing.
@@ -722,6 +752,18 @@ class McpGatewayConfig:
             "answered not_used, and a server answered uses_cwd is never routed. "
             "Kiro Crew's own servers are not asked: they never read the folder. "
             "A server missing here is unanswered. Written by MCP Management.",
+            restart=True,
+        ),
+    )
+    cwd_use_launch: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Working Folder Answer Launches",
+            "Per server, the launch (command and arguments, hashed) a not_used "
+            "answer in cwd_use was given for. When the server is later declared "
+            "with a different command or arguments, MCP Management asks the "
+            "working-folder question again before routing it. An answer with no "
+            "entry here keeps working as given. Written by MCP Management.",
             restart=True,
         ),
     )
