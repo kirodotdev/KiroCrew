@@ -13,7 +13,7 @@ import { api } from '../../../api/client'
 import { resolveAskAfterSend } from '../../../lib/resolveAskAfterSend'
 import { isSystemNoticeRow } from '../CompactionCard'
 import { injectOpensTurn } from '../RecoveryCard'
-import { mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
+import { markDraftApplied, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { revealComposer } from '../composerFocus'
 import type { ChatMessage } from '../../../types'
 import type { ErrorReport } from '../../../utils/errorReport'
@@ -84,6 +84,8 @@ export interface SteerVars {
   typedText?: string
   /** The composer provenance the steer took; a hand-back puts it back. */
   dictated?: boolean
+  /** Recovered sends the steered draft held; a hand-back marks them on the draft again. */
+  recovered?: readonly string[]
 }
 
 interface SteerDeliveryOptions {
@@ -149,7 +151,7 @@ export function useSteerDelivery({
         ...(sendId ? { meta: { sendId, ...(files?.length ? { files } : {}), ...(quote ? { quote } : {}) } } : {}),
         race: { baseRevision: await baseRevisionForPress(slot, baseAtPress), ...(sendId ? { idempotencyKey: sendIdempotencyKey(sendId) } : {}) },
       }),
-    onSuccess: (receipt, { text, sendId, slot, quote, askId, typedText, dictated }) => {
+    onSuccess: (receipt, { text, sendId, slot, quote, askId, typedText, dictated, recovered }) => {
       // Receipt policy for a steer, owned once in chat-core (issue #9457):
       // applySteerReceipt decides WHICH ruling applies; the adapter below is
       // ChatPage's HOW. The composer was cleared at submit and the optimistic
@@ -184,6 +186,7 @@ export function useSteerDelivery({
         const typed = onScreenNow && quote ? messageQuote.recoverInto(stripQuoteBlock(bare, quote), quote, composerMountedRef.current) : bare
         const back = mergeRecoveredDraft(kept, typed)
         setDraft(drafts.current, slot, back)
+        markDraftApplied(slot, recovered ?? [], back)
         saveDrafts()
         if (onScreenNow) setInput(back)
       }

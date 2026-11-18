@@ -57,6 +57,8 @@ export interface PaneDraft {
   files: string[]
   /** Blocks behind the `[ Paste #N · M lines ]` tokens in `text`. */
   pastes: PasteBlock[]
+  /** Recovered sends already in `text`, stored in the same entry so they cannot part from it. */
+  applied?: string[]
 }
 
 /** Corruption guard, emptiness predicate and defensive copier for one parked
@@ -71,7 +73,8 @@ function sanitizeDraft(v: unknown): PaneDraft | null {
   const files = Array.isArray(d.files) ? d.files.filter((x): x is string => typeof x === 'string') : []
   const pastes = sanitizePasteBlocks(d.pastes) ?? []
   if (!d.text && !files.length && !pastes.length) return null
-  return { text: d.text, files, pastes }
+  const applied = d.text && Array.isArray(d.applied) ? d.applied.filter((x): x is string => typeof x === 'string' && !!x) : []
+  return { text: d.text, files, pastes, ...(applied.length ? { applied } : {}) }
 }
 
 const store = createSlotDraftStore<PaneDraft>({
@@ -175,7 +178,7 @@ function carryTabState(drafts: Record<string, PaneDraft>): void {
 }
 
 function copy(d: PaneDraft): PaneDraft {
-  return { text: d.text, files: d.files.slice(), pastes: d.pastes.slice() }
+  return { text: d.text, files: d.files.slice(), pastes: d.pastes.slice(), ...(d.text && d.applied?.length ? { applied: d.applied.slice() } : {}) }
 }
 
 /** The parked composer for `slot`, or empty. The mirror first — it is
@@ -198,8 +201,8 @@ export function takePaneDraft(slot: string): PaneDraft {
 }
 
 /** Park `slot`'s composer verbatim, as one unit. An empty draft deletes the
- *  entry. */
-export function writePaneDraft(slot: string, draft: PaneDraft): void {
+ *  entry. True when storage took the write, not only the in-memory mirror. */
+export function writePaneDraft(slot: string, draft: PaneDraft): boolean {
   // Fold FIRST: the fold may put a legacy copy of this very slot into the
   // mirror, and this write — a park or a take's clear — must be the last word.
   foldLegacyDrafts()
@@ -213,7 +216,7 @@ export function writePaneDraft(slot: string, draft: PaneDraft): void {
   const drafts = store.load()
   carryTabState(drafts)
   store.set(drafts, slot, draft)
-  store.save(drafts)
+  return store.save(drafts)
 }
 
 /** Panes currently SHOWING a slot, so a late arrival for that slot can be
@@ -243,17 +246,20 @@ export function hasPaneListener(slot: string): boolean {
  *  text appends under the shared recovery rule, paths union, paste blocks
  *  carry over with their tokens re-numbered past the parked ones
  *  (`carryPastes`). Any pane showing the slot is notified so it can take the
- *  merge into its live composer. */
-export function mergePaneDraft(slot: string, text: string, files: string[], pastes: PasteBlock[] = []): void {
+ *  merge into its live composer. True when storage took the write. */
+export function mergePaneDraft(slot: string, text: string, files: string[], pastes: PasteBlock[] = [], recoveredIds: readonly string[] = []): boolean {
   const cur = readPaneDraft(slot)
   const carried = carryPastes(text, pastes, cur.pastes)
-  writePaneDraft(slot, {
+  const applied = [...new Set([...(cur.applied ?? []), ...(text ? recoveredIds : [])])]
+  const stored = writePaneDraft(slot, {
     text: text ? mergeCarriedDraft(cur.text, carried) : cur.text,
     files: [...cur.files, ...files.filter((f) => !cur.files.includes(f))],
     pastes: carried.pastes,
+    applied,
   })
   const subs = listeners.get(slot)
   if (subs) for (const fn of Array.from(subs)) fn()
+  return stored
 }
 
 /** Text a live composer should SWAP OUT for the next arrival on its slot,

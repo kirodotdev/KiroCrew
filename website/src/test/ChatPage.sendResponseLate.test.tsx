@@ -29,6 +29,9 @@ import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { i18nT } from '../i18n/t'
 import { addStashEntry, loadPromptStash, makeStashEntry, withPromptStashLock } from '../utils/promptStash'
+import { DRAFTS_KEY, __resetForTests as resetChatDrafts } from '../utils/chatDrafts'
+import { __resetDeliveryWarningsForTests } from '../utils/deliveryWarning'
+import { SEND_RECOVERY_KEY, loadSendRecoveries, parkSendRecovery } from '../utils/sendRecoveryStore'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -51,6 +54,7 @@ vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockImplementation(() => Promise.resolve([slotRow()])),
     chatSlotDetail: vi.fn().mockImplementation(() => Promise.resolve({ messages: [{ role: 'assistant', content: 'hi', cls: '' }], running: fixtureRunning, has_more: false, total: 1 })),
+    chatSlotPage: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 }),
     sendChat: (...a: unknown[]) => sendChat(...a),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
     models: vi.fn().mockResolvedValue([]),
@@ -447,5 +451,54 @@ describe('a restored stash draft sent from the main chat', { timeout: 20_000 }, 
     view.unmount()
     await flushStash()
     expect(loadPromptStash('slot-a').map(e => e.text)).toEqual([STASHED])
+  })
+})
+
+describe('a send an earlier page load warned about, handed back while the drafts store refused it, then sent again', { timeout: 20_000 }, () => {
+  const resendRecovered = async (sendId: string, { confirmed, steer }: { confirmed: boolean | 'unparsed'; steer: boolean }) => {
+    __resetDeliveryWarningsForTests(); resetChatDrafts()
+    fixtureRunning = steer
+    let refused = DRAFTS_KEY
+    const write = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) { if (key === refused) throw new DOMException('quota', 'QuotaExceededError'); write.call(this, key, value) })
+    parkSendRecovery('slot-a', { sendId, surface: 'page', sent: { inlined: SENT_TEXT, pastes: [], sessionRefs: [], quote: null } })
+    const store = makeStore({ running: steer })
+    sendChat.mockImplementation(async () => { if (confirmed === 'unparsed') return { ok: true, status: 200, json: () => Promise.reject(new SyntaxError('unparsed')) }; if (confirmed) return { ok: true, json: () => Promise.resolve({ ok: true, mid: 'm-ok', ...(steer ? { steered: true } : {}) }) }; refused = SEND_RECOVERY_KEY; throw new DOMException('aborted', 'AbortError') })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => { render(<QueryClientProvider client={qc}><Provider store={store}><ThemeProvider><MemoryRouter><ChatPage /></MemoryRouter></ThemeProvider></Provider></QueryClientProvider>) })
+    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    await waitFor(() => expect(input.value).toBe(SENT_TEXT))
+    expect(loadSendRecoveries('slot-a').map(r => r.sendId)).toEqual([sendId])
+    refused = ''
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }); await Promise.resolve() })
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    expect(!!sendChat.mock.calls[0][5]).toBe(steer)
+    return { store, input, refuse: (key: string) => { refused = key } }
+  }
+  const rows = (store: { getState: () => RootState }) => store.getState().chat.messages as ChatMessage[]
+
+  it.each([[false, ['r-twin']], [true, []]] as const)('keeps its record unless the resend is delivered (delivered: %s)', async (confirmed, left) => {
+    const { store, refuse } = await resendRecovered('r-twin', { confirmed, steer: false })
+    await waitFor(() => expect(rows(store).some(m => confirmed ? m.role === 'user' && m.content === SENT_TEXT && !m.meta?.optimistic : m.role === 'notice' && !!m.meta?.deliveryNoticeFor)).toBe(true))
+    refuse('')
+    expect(loadSendRecoveries('slot-a').map(r => r.sendId)).toEqual(left)
+  })
+
+  it('retires its record when a steer of it lands', async () => {
+    await resendRecovered('r-steer', { confirmed: true, steer: true })
+    await waitFor(() => expect(loadSendRecoveries('slot-a')).toEqual([]))
+  })
+
+  it('retires its record when a steer of it gets an answer that does not parse', async () => {
+    await resendRecovered('r-steer-unknown', { confirmed: 'unparsed', steer: true })
+    await waitFor(() => expect(loadSendRecoveries('slot-a')).toEqual([]))
+  })
+
+  it('keeps its record, with its id back on the stored draft, when a steer of it is handed back', async () => {
+    const { store, input } = await resendRecovered('r-steer-late', { confirmed: false, steer: true })
+    await waitFor(() => expect(rows(store).some(m => m.role === 'notice' && m.content === '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'))).toBe(true))
+    expect(input.value).toBe(SENT_TEXT)
+    expect(loadSendRecoveries('slot-a').map(r => r.sendId)).toEqual(['r-steer-late'])
+    expect(JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? '{}')['slot-a']).toEqual({ text: SENT_TEXT, applied: ['r-steer-late'] })
   })
 })

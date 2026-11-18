@@ -4,11 +4,13 @@ import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { store, type AppDispatch, type RootState } from '../store'
 import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, recordSendAttempt, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, selectSlotRunEpoch, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
 import { warnDeliveryUnconfirmed } from '../utils/deliveryWarning'
-import { announceIfRemovedSendDelivered } from './useDeliveryWarningStrip'
+import { forgetSendRecovery } from '../utils/sendRecoveryStore'
+import { announceIfRemovedSendDelivered, type RecoveredSends } from './useDeliveryWarningStrip'
 import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
 import { expandAll as expandPasteTokens, carryPastes, type PasteBlock } from '../utils/pasteTokens'
-import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { prependQuote, readMessageQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
+import { sanitizePasteBlocks } from '../utils/chatPasteDrafts'
 import { holdForStop, sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
@@ -88,6 +90,18 @@ export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore)
   }
 }
 
+/** A persisted pane payload, or `null` when `isEmptyTurn` would refuse it. The quote comes back
+ *  inside the text, because the stage is not parked with the pane's draft. */
+export function parsePaneSent(v: unknown): PaneSentRestore | null {
+  if (!v || typeof v !== 'object') return null
+  const r = v as Record<string, unknown>
+  if (typeof r.text !== 'string') return null
+  const files = Array.isArray(r.files) ? r.files.filter((f): f is string => typeof f === 'string') : []
+  const quote = readMessageQuote({ quote: r.quote })
+  if (!r.text.trim() && !files.length && !quote) return null
+  return { text: quote ? prependQuote(r.text, quote) : r.text, files, pastes: sanitizePasteBlocks(r.pastes) ?? [], quote: null, ...(r.dictated === true ? { dictated: true } : {}) }
+}
+
 export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent, announceSent }: {
   slotKey: string
   crewmate?: CrewmateIdentity
@@ -106,7 +120,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   /** Speaks the sent message through the transcript's live region (`useTranscriptAnnouncement`). */
   announceSent?: (markdown: string) => void
 }) {
-  const { input, setInput, pendingFiles, setPendingFiles, pasteBlocks, setPasteBlocks, readPastes, slotKeyRef, inputRef, mountedRef, restoreIntoComposer } = draft
+  const { input, setInput, pendingFiles, setPendingFiles, pasteBlocks, setPasteBlocks, readPastes, slotKeyRef, inputRef, mountedRef, restoreIntoComposer, takeRecovered } = draft
   const project = paneSlot?.project
   // In-pane report of a client-only slash command that did not run, keyed by
   // the slot it was typed in so a rebind does not carry it to another thread.
@@ -286,6 +300,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // never sent and attach files to a message they never composed.
     const files = optionText ? [...ownFiles] : pendingFiles
     const blocks = optionText ? [] : pasteBlocks
+    let recovered = optionText ? undefined : takeRecovered(), replaced = false
     if (!optionText) {
       setInput('')
       setPendingFiles([])
@@ -402,7 +417,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
           if (wasDictated) markDictated(slotKey, PANE_DICTATION_SCOPE)
           // The quote: back on the stage when this pane is still live and the
           // stage is free, else in the restored text (a rebound pane parks it).
-          restoreIntoComposer(recoverQuoteInto(text, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, bubblePastes, slotKey)
+          restoreIntoComposer(recoverQuoteInto(text, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, bubblePastes, slotKey, recovered); recovered = undefined
         },
         // Report ONLY -- the error row. The restore is `restore`'s job above;
         // handing the payload back here too would restore a `refused` twice.
@@ -415,7 +430,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         warnUnconfirmed: () => {
           if (bubbleMinted) {
             dispatch(markSendUnconfirmed({ slot: slotKey, sendId }))
-            if (!crewmate) warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote, ...(wasDictated ? { dictated: true } : {}) } })
+            if (!crewmate) replaced = warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote, ...(wasDictated ? { dictated: true } : {}) } })
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT(crewmate ? 'pages.chatPage.delivery_unconfirmed_resend_manually' : 'pages.chatPage.delivery_unconfirmed_pending'), cls: '', meta: { deliveryNoticeFor: sendId } } }))
           } else if (!optionText) {
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
@@ -459,6 +474,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // the pasted text itself is the lossless form of what the user put in.
         stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}), ...(wasDictated ? { dictated: true } : {}) }) },
       })
+      // The records this send carried away retire once the server is proved to hold the text, a replacement record is durably stored in their place, or an `unknown` answer accepted it with no restore and no new record (the page send retires there too): a refused write leaves them the only copy.
+      if (delivered || replaced || receipt.status === 'unknown') for (const id of recovered?.ids ?? []) forgetSendRecovery(slotKey, id)
       // -- doSend's send-machinery tail (not steer-receipt policy) --
       // Blocking ask resolution, owned by doSend and run on every accepted
       // receipt. Guarded independently of the rulings above so a `steered` or
@@ -467,7 +484,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
       return delivered
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, running, paneSlot?.running, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, announceSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, running, paneSlot?.running, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, announceSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles, takeRecovered])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the
@@ -542,6 +559,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     announceSent?.(txt)
     // Cleared HERE (not in ChatInput) so text, attachments and paste blocks
     // clear atomically.
+    let recovered: RecoveredSends | undefined = takeRecovered()
     setInput('')
     setPendingFiles([])
     setPasteBlocks([])
@@ -564,7 +582,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // composer (raw text + files), addressed to the slot it was typed into.
         restore: () => {
           if (wasDictated) markDictated(slotKey, PANE_DICTATION_SCOPE)
-          restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey)
+          restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey, recovered); recovered = undefined
         },
         reportFailure: (reason, status) => reportSendFailure(reason, status),
         // \u26A0 is NoticeCard's warn-tone selector (parseNotice).
@@ -582,14 +600,14 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // with the card, so the token alone would restore as a dead chip.
         stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}), ...(wasDictated ? { dictated: true } : {}) }),
       })
+      const landed = receipt.status === 'dispatched' || receipt.status === 'queued' || selectSendConfirmed(store.getState(), slotKey, sendId)
+      // A steer parks no replacement record, so the records it carried away retire on proof the server holds the text, or on an `unknown` answer, which accepted it and restores nothing.
+      if (landed || receipt.status === 'unknown') for (const id of recovered?.ids ?? []) forgetSendRecovery(slotKey, id)
       // Release a blocking card only once the gateway accepted the steer, so the agent is told to read a message that arrived.
-      if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) {
-        void resolveAskAfterSend(receipt.body, askAtSteer, dispatch, slotKey)
-      }
-      return receipt.status === 'dispatched' || receipt.status === 'queued'
-        || selectSendConfirmed(store.getState(), slotKey, sendId)
+      if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) void resolveAskAfterSend(receipt.body, askAtSteer, dispatch, slotKey)
+      return landed
     })
-  }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash, crewmate, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles, announceSent])
+  }, [running, paneSlot?.running, doSend, input, pendingFiles, pasteBlocks, setPasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto, interceptPaneSlash, crewmate, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles, announceSent, takeRecovered])
 
   // The pending-question card's one-click answer (`PendingQuestionCard.onDirectSend`).
     /* No-ask_id card: the card IS the interaction, answered in one click.

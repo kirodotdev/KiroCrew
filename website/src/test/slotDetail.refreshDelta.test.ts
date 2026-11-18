@@ -11,6 +11,7 @@ import { configureStore } from '@reduxjs/toolkit'
 
 import { api } from '../api/client'
 import chatReducer, { SLOT_DETAIL_MAX_LIMIT, refreshSlot, warmSlotCache } from '../store/chatSlice'
+import { acceptedInHistory } from '../utils/recoveredSendHistory'
 
 type Row = { role: string; content: string; ts: string; meta: { mid: string } }
 const row = (n: number, content = `row ${n}`): Row => ({
@@ -140,6 +141,16 @@ describe('slot refresh sends the cursor', () => {
     const before = wire.rowsSent
     await api.chatSlotDetail(slot, 100)
     expect(wire.requests[2]).toContain('digest=')
+    expect(wire.rowsSent - before).toBe(1)
+  })
+
+  it('a recovered-send history check leaves the held page alone', async () => {
+    const { wire } = fakeGateway(rows(0, 300))
+    await api.chatSlotDetail(slot, 100)
+    await acceptedInHistory(slot, ['not-here'])
+    const before = wire.rowsSent
+    await api.chatSlotDetail(slot, 100)
+    expect(wire.requests.at(-1)).toContain('digest=')
     expect(wire.rowsSent - before).toBe(1)
   })
 

@@ -11,10 +11,11 @@
  *
  *  A record holds the payload its raising surface's own send-failure restore takes, and only that
  *  surface offers the exit: the two surfaces stage different context, so one cannot hand back what
- *  the other consumed.
+ *  the other consumed. Each record is mirrored into `sendRecoveryStore` for the next page load.
  */
 
 import { useSyncExternalStore } from 'react'
+import { forgetSendRecovery, loadSendRecoveries, parkSendRecovery, type LoadedSendRecovery } from './sendRecoveryStore'
 
 export type DeliveryWarningSurface = 'page' | 'pane'
 
@@ -30,6 +31,8 @@ const warnings = new Map<string, DeliveryWarningRecord[]>()
 /** Sends the user removed. A receipt that still arrives for one means the composer holds a copy of
  *  a delivered message, which the user must be told before the next Enter sends it twice. */
 const removed = new Map<string, Set<string>>()
+/** The removed sends whose text an earlier page load's record handed back, not a Remove click. */
+const recovered = new Set<string>()
 const listeners = new Set<() => void>()
 let version = 0
 const NONE: readonly DeliveryWarningRecord[] = []
@@ -39,11 +42,14 @@ function announce(): void {
   for (const fn of listeners) fn()
 }
 
-export function warnDeliveryUnconfirmed<P>(slot: string, record: DeliveryWarningRecord<P>): void {
-  if (!slot || !record.sendId) return
+/** Raise the warning and mirror it for the next page load; whether that mirror landed, since a caller retiring the records this one replaces would otherwise orphan their text on a refused write. */
+export function warnDeliveryUnconfirmed<P>(slot: string, record: DeliveryWarningRecord<P>): boolean {
+  if (!slot || !record.sendId) return false
   const held = warnings.get(slot) ?? []
   warnings.set(slot, [...held.filter(r => r.sendId !== record.sendId), record])
+  const parked = parkSendRecovery(slot, { sendId: record.sendId, surface: record.surface, sent: record.sent })
   announce()
+  return parked
 }
 
 export function deliveryWarningsFor(slot: string | null | undefined): readonly DeliveryWarningRecord[] {
@@ -57,17 +63,55 @@ export function pruneDeliveryWarnings(slot: string, stillPending: (sendId: strin
   if (!held) return
   const kept = held.filter(r => stillPending(r.sendId))
   if (kept.length === held.length) return
+  for (const r of held) if (!kept.includes(r)) forgetSendRecovery(slot, r.sendId)
   if (kept.length) warnings.set(slot, kept)
   else warnings.delete(slot)
   announce()
 }
 
-/** True once, for a removed send whose acceptance has now been observed. */
-export function takeRemovedSend(slot: string, sendId: string): boolean {
+/** Records this page load is checking or handed back, so a second mount cannot hand one back twice. */
+const claimed = new Set<string>()
+const claimKey = (slot: string, sendId: string): string => `${slot}|${sendId}`
+
+/** `surface`'s persisted warnings for `slot` from an earlier page load, claimed for one check. Nothing
+ *  retires here: the record stays the only copy until the handed-back text is durable. */
+export function claimRecoveredSends(slot: string, surface: DeliveryWarningSurface): LoadedSendRecovery[] {
+  const live = new Set(deliveryWarningsFor(slot).map(r => r.sendId))
+  const gone = removed.get(slot)
+  const out: LoadedSendRecovery[] = []
+  for (const rec of loadSendRecoveries(slot)) {
+    if (rec.surface !== surface || live.has(rec.sendId) || gone?.has(rec.sendId)) continue
+    const key = claimKey(slot, rec.sendId)
+    if (claimed.has(key)) continue
+    claimed.add(key)
+    out.push(rec)
+  }
+  return out
+}
+
+export function releaseRecoveredSends(slot: string, sendIds: readonly string[]): void {
+  for (const id of sendIds) claimed.delete(claimKey(slot, id))
+}
+
+/** Count handed-back sends as removed, so a receipt that still lands says so as after Remove. */
+export function adoptRecoveredSends(slot: string, sendIds: readonly string[]): void {
+  if (!sendIds.length) return
+  const gone = removed.get(slot) ?? new Set<string>()
+  for (const id of sendIds) { gone.add(id); recovered.add(id) }
+  removed.set(slot, gone)
+  announce()
+}
+
+/** Once, for a removed send whose acceptance has now been observed: how its text came back. */
+export function takeRemovedSend(slot: string, sendId: string): 'removed' | 'recovered' | null {
   const ids = removed.get(slot)
-  if (!ids?.delete(sendId)) return false
+  if (!ids?.delete(sendId)) return null
   if (!ids.size) removed.delete(slot)
-  return true
+  return recovered.delete(sendId) ? 'recovered' : 'removed'
+}
+
+export function __resetDeliveryWarningsForTests(): void {
+  warnings.clear(); removed.clear(); recovered.clear(); claimed.clear()
 }
 
 export function removedSendsFor(slot: string | null | undefined): readonly string[] {
@@ -94,8 +138,8 @@ export interface DismissDeliveryWarningDeps<P> {
   /** Is this send's row still pending in the transcript, re-read at click time. */
   stillPending: (sendId: string) => boolean
   dropRow: (sendId: string, epoch: number) => void
-  /** The surface's own send-failure restore. */
-  restore: (sent: P) => void
+  /** The surface's own send-failure restore; `true` once the restored draft holds the sends `ids` in storage. */
+  restore: (sent: P, ids: readonly string[]) => boolean | void
   /** Folds a later payload into an earlier one. */
   merge: (earlier: P, later: P) => P
 }
@@ -116,8 +160,10 @@ export function dismissDeliveryWarnings<P>(
   if (others.length) warnings.set(slot, others)
   else warnings.delete(slot)
   const live = mine.filter(r => deps.stillPending(r.sendId))
+  for (const r of mine) if (!live.includes(r)) forgetSendRecovery(slot, r.sendId)
   if (live.length) {
-    deps.restore(live.map(r => r.sent as P).reduce(deps.merge))
+    const liveIds = live.map(r => r.sendId)
+    if (deps.restore(live.map(r => r.sent as P).reduce(deps.merge), liveIds) === true) for (const id of liveIds) forgetSendRecovery(slot, id)
     const ids = removed.get(slot) ?? new Set<string>()
     for (const warned of live) {
       deps.dropRow(warned.sendId, warned.epoch)
