@@ -238,7 +238,7 @@ def _marker_port() -> int | None:
         return owned[0]
     if len(owned) > 1:
         print(
-            f"⚠️  Multiple gateways are running (ports {', '.join(str(p) for p in owned)}); "
+            f"Warning: Multiple gateways are running (ports {', '.join(str(p) for p in owned)}); "
             f"not guessing which one you meant — using {_DEFAULT_PORT}. "
             "Pass --port or set KIROCREW_PORT to target a specific gateway.",
             file=sys.stderr,

@@ -1569,7 +1569,7 @@ class TestRunCommandSandboxed:
 
         assert result == {
             "status": "error",
-            "output": "❌ Command timed out after 3s",
+            "output": "Error: Command timed out after 3s",
             "exit_code": -1,
         }
         assert killed == [command_run.proc]

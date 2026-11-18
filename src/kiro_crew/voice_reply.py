@@ -1362,7 +1362,7 @@ async def upload_voice_to_slack(
             thread_ts=thread_ts,
             file=audio_path,
             filename=f"voice-reply.{ext}",
-            title="\U0001f50a Voice Reply",
+            title="Voice Reply",
         )
         return True
     except Exception:

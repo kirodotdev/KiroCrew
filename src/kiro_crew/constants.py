@@ -1854,7 +1854,7 @@ BANNER = r"""
   | ' <| | '_/ _ \ | (__| '_/ -_) V  V /
   |_|\_\_|_| \___/  \___|_| \___|\_/\_/
 
-  👻 Your personal AI agent
+  Your personal AI agent
 """
 
 # Max length of an auto-nudge loop's ``banner`` -- the SHORT transcript row shown

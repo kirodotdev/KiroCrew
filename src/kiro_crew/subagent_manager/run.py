@@ -109,7 +109,7 @@ def _unverified_title(title: str) -> str:
     approval is an informed judgment rather than a title-only rubber stamp.
     """
     return (
-        "⚠️ UNVERIFIED child request (security context "
+        "Warning: UNVERIFIED child request (security context "
         f"missing — title is agent-authored): {title or '<unknown tool>'}"
     )
 

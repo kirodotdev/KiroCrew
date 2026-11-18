@@ -72,16 +72,16 @@ def run(args: argparse.Namespace) -> None:
     if action == "off":
         setting.turn_off()
         _audit("allowed", "enabled=false")
-        print("✅ Remote Control is off. It stays off until you turn it back on.")
+        print("Remote Control is off. It stays off until you turn it back on.")
         print("   A running gateway stops the relay within a few seconds.")
         return
     if setting.locked():
         # As the config PATCH's 409 locked_by_policy: saving it would do nothing.
         _audit("denied", "enabled=true reason=locked_by_policy")
-        print(f"❌ {LOCKED_NOTICE}", file=sys.stderr)
+        print(f"Error: {LOCKED_NOTICE}", file=sys.stderr)
         print("   Nothing was changed.", file=sys.stderr)
         sys.exit(1)
     setting.turn_on()
     _audit("allowed", "enabled=true")
-    print("✅ Remote Control is on.")
+    print("Remote Control is on.")
     print("   It connects after Kiro Crew restarts.")

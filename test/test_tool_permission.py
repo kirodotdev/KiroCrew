@@ -1618,7 +1618,7 @@ async def test_the_subagent_ladder_asks_for_a_low_fidelity_child_under_an_unveri
     event = _low_fidelity_event(identity_verified=False)
     settled = await settle(Ask(event, RecordingWire(log), "subagent:a1"), policy)
     assert asked == [
-        "⚠️ UNVERIFIED child request (security context missing — title is "
+        "Warning: UNVERIFIED child request (security context missing — title is "
         "agent-authored): Run: ls -la"
     ]
     assert settled == Settled("rejected", "child", "person")

@@ -561,7 +561,7 @@ def rail_parts(
             if _rline:
                 parts.append(_rline + "\n\n")
                 logger.info(
-                    "🔍 Injected resource pressure line (posture=%s, avail=%.1fGB)",
+                    "Injected resource pressure line (posture=%s, avail=%.1fGB)",
                     _rstatus.posture,
                     _rstatus.available_gb,
                 )

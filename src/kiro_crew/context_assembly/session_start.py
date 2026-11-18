@@ -462,7 +462,7 @@ def build_session_context(
                 compressed_history, _ = ctx.redact_credentials(compressed_history)
             compressed_history = ctx._MODE_IDENTITY_RE.sub("", compressed_history)
             logger.info(
-                "🔍 build_session_context: session_key=%s LLM-compressed " "history (%d chars)",
+                "build_session_context: session_key=%s LLM-compressed " "history (%d chars)",
                 session_key,
                 len(compressed_history),
             )
@@ -475,7 +475,7 @@ def build_session_context(
                 exclude_last_n=exclude_last_n,
             )
             logger.info(
-                "🔍 build_session_context: session_key=%s resumed=%s "
+                "build_session_context: session_key=%s resumed=%s "
                 "conv_log_entries=%d (fallback truncation)",
                 session_key,
                 resumed,
@@ -489,7 +489,7 @@ def build_session_context(
                     parts.append(_history_header + history_block + "\n[End of thread history]\n\n")
     elif session_key and resumed:
         logger.info(
-            "🔍 build_session_context: session_key=%s RESUMED — "
+            "build_session_context: session_key=%s RESUMED — "
             "skipping thread history (kiro-cli has native history)",
             session_key,
         )

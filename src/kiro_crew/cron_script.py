@@ -170,7 +170,7 @@ def run_script_sandboxed(
             delivery=delivery,
         )
         if secret_err:
-            failure: dict[str, Any] = {"status": "error", "error": f"❌ {secret_err}"}
+            failure: dict[str, Any] = {"status": "error", "error": f"Error: {secret_err}"}
             if secret_err in GRANT_REAPPROVAL_ERRORS:
                 # Healed only by re-approving the grant over the current code;
                 # the scheduler resurfaces a pending request for exactly that.
@@ -439,7 +439,7 @@ def run_script_sandboxed(
             # what the operator approved, so refuse rather than degrade.
             return {
                 "status": "error",
-                "error": "❌ secret-bearing cron runs require an OS sandbox "
+                "error": "Error: secret-bearing cron runs require an OS sandbox "
                 "backend; this host runs scripts unsandboxed "
                 "(sandbox_allow_unsandboxed_exec), where a grant's isolation "
                 "cannot be enforced. Revoke the grant to run this script "
@@ -659,7 +659,7 @@ _MAX_COMMAND_OUTPUT = 65536  # 64KB cap
 # itself. The distinction matters to the reader: the job is fine, the host cannot
 # isolate it, and the remedy is a config opt-in — which the wrapped message
 # carries verbatim.
-_SANDBOX_UNAVAILABLE_PREFIX = "❌ Cron could not run in an OS sandbox: "
+_SANDBOX_UNAVAILABLE_PREFIX = "Error: Cron could not run in an OS sandbox: "
 
 
 def _resolve_command_shell() -> str | None:
@@ -847,6 +847,19 @@ def _trim_blank_edges(text: str) -> str:
     return "\n".join(lines)
 
 
+# A one-line failure reason leads with "Error: ". A result an older build
+# stored leads with "❌ " instead, so a reader strips either.
+_ERROR_LEADS = ("Error: ", "❌ ")  # emoji-ok: matches stored older results
+
+
+def _strip_error_lead(text: str) -> str:
+    """``text`` without its leading failure marker, in either form."""
+    for lead in _ERROR_LEADS:
+        if text.startswith(lead):
+            return text[len(lead) :]
+    return text
+
+
 def _no_command_shell_message() -> str:
     """The refusal a command cron gets when ``_resolve_command_shell`` finds nothing.
 
@@ -859,7 +872,7 @@ def _no_command_shell_message() -> str:
 
     if platform_compat.IS_WINDOWS:
         return (
-            "❌ No POSIX shell available to run this command cron. Command "
+            "Error: No POSIX shell available to run this command cron. Command "
             "crons execute with `sh -c` under POSIX-sh semantics (what the "
             "storage-time vet gate assumes); Windows ships no such shell "
             "(Git for Windows's sh.exe is bash and would widen the language "
@@ -867,7 +880,7 @@ def _no_command_shell_message() -> str:
             "this platform, or run the gateway under POSIX."
         )
     return (
-        "❌ No usable POSIX shell to run this command cron. Command crons run "
+        "Error: No usable POSIX shell to run this command cron. Command crons run "
         "only under /bin/sh or /usr/bin/sh (never $PATH), and the one used must "
         "pass a sandboxed probe proving it leaves `echo x.{a,a}` unexpanded when "
         "invoked as `sh -c` or `sh +B -c` (brace expansion would widen the "
@@ -901,7 +914,7 @@ def run_command_sandboxed(
     if secret_env:
         return {
             "status": "error",
-            "output": "❌ secret grants apply only to script jobs; this "
+            "output": "Error: secret grants apply only to script jobs; this "
             "command job carries a grant the product could not have written — "
             "remove it from the cron store.",
             "exit_code": -1,
@@ -921,7 +934,7 @@ def run_command_sandboxed(
     if not _begin_spawn(job_id):
         return {
             "status": "skipped",
-            "output": "⏭️ Another run of this job is already starting or running",
+            "output": "Another run of this job is already starting or running",
             "exit_code": -1,
         }
     # True while the claim is still ours to release. _finish_spawn and
@@ -1036,7 +1049,7 @@ def run_command_sandboxed(
                 _drain_after_kill(proc, job_id)
                 return {
                     "status": "error",
-                    "output": f"❌ Command timed out after {timeout}s",
+                    "output": f"Error: Command timed out after {timeout}s",
                     "exit_code": -1,
                 }
         finally:
@@ -1063,7 +1076,7 @@ def run_command_sandboxed(
             )
             # An empty stream is left out, so a stderr-only failure does not
             # read as a run of empty lines.
-            sections = [f"⚠️ Exit code {proc.returncode}", stdout_text]
+            sections = [f"Warning: Exit code {proc.returncode}", stdout_text]
             if stderr_text:
                 sections.append(f"stderr:\n{stderr_text}")
             # The streams also travel apart, for the failure alert's layout.
@@ -1082,7 +1095,7 @@ def run_command_sandboxed(
             "exit_code": -1,
         }
     except Exception as exc:
-        return {"status": "error", "output": f"❌ Command failed: {exc}", "exit_code": -1}
+        return {"status": "error", "output": f"Error: Command failed: {exc}", "exit_code": -1}
     finally:
         if spawn_claimed:
             # Left this function without ever reaching _finish_spawn or
