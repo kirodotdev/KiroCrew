@@ -108,8 +108,10 @@ def _empty_cron_status() -> JsonRpcMessage:
     )
 
 
-def _handle() -> AcpSessionHandle:
+def _handle(runtime: AcpRuntime) -> AcpSessionHandle:
     handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle._runtime = runtime
+    handle.kas_bundle_engine_version = ""
     handle._session_id = _SID
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])
@@ -134,7 +136,7 @@ def runtime(tmp_path, monkeypatch):
 async def test_a_server_the_policy_empties_does_not_hold_the_start(runtime, agents_dir):
     _write_spec(agents_dir, {"exclude": _cron_tools()})
     await finished(
-        runtime._wait_managed_mcp(_handle(), _PARAMS, _AGENT, FALLBACK_TIMEOUT_SECS, 0),
+        runtime._wait_managed_mcp(_handle(runtime), _PARAMS, _AGENT, FALLBACK_TIMEOUT_SECS, 0),
         "start barrier",
     )
 
@@ -143,7 +145,7 @@ async def test_a_server_the_policy_empties_does_not_hold_the_start(runtime, agen
 async def test_a_server_with_a_tool_left_still_has_to_show_it(runtime, agents_dir):
     _write_spec(agents_dir, {"exclude": _cron_tools()[1:]})
     with pytest.raises(AcpRuntimeError, match="kirocrew-cron: tools not advertised"):
-        await runtime._wait_managed_mcp(_handle(), _PARAMS, _AGENT, 0.2, 0)
+        await runtime._wait_managed_mcp(_handle(runtime), _PARAMS, _AGENT, 0.2, 0)
 
 
 # The PPTX Maker app's Spec agent, as Crew registers and launches it on KAS: its
@@ -191,7 +193,7 @@ async def _launched_params() -> dict:
     }
 
 
-def _app_handle() -> AcpSessionHandle:
+def _app_handle(runtime: AcpRuntime) -> AcpSessionHandle:
     """Core lists `skill_search`; cron lists nothing, as the policy makes it."""
     core = {"name": _CORE, "status": "connected", "_meta": _CLIENT}
     core["tools"] = [{"name": "skill_search", "description": "probe", "disabled": False}]
@@ -199,7 +201,7 @@ def _app_handle() -> AcpSessionHandle:
     frame = JsonRpcMessage(
         method=METHOD_KAS_MCP_STATUS, params={"sessionId": _SID, "servers": [core, cron]}
     )
-    handle = _handle()
+    handle = _handle(runtime)
     handle._queue = asyncio.Queue()
     handle._mcp_report.fold_frame(frame)
     handle._queue.put_nowait(frame)
@@ -229,6 +231,8 @@ class TestTheLaunchedAppSpec:
         assert f"@{_CRON}" in tools and f"@{_CORE}" in tools
         assert mcp_start_wait.policy_hidden_servers(_APP_AGENT, (_CORE, _CRON)) == {_CRON}
         await finished(
-            runtime._wait_managed_mcp(_app_handle(), params, _APP_AGENT, FALLBACK_TIMEOUT_SECS, 0),
+            runtime._wait_managed_mcp(
+                _app_handle(runtime), params, _APP_AGENT, FALLBACK_TIMEOUT_SECS, 0
+            ),
             "start barrier",
         )
