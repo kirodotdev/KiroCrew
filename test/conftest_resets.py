@@ -766,6 +766,31 @@ def _history_cleanup_throttle_closed(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_context_store_caches(_floor_monkeypatch):
+    """Keep the ``kiro_crew.context`` memory and lesson stores a test caches inside it.
+
+    ``ContextBuilder.__init__`` registers its own ``MemoryStore`` as the
+    process-wide default, and ``get_memory_for`` / ``get_lessons_for`` cache a
+    store per target. A test that builds a ``ContextBuilder`` (the eval runner
+    does, over a ``TemporaryDirectory`` it then deletes) therefore points every
+    later test's default-store writes at its own workspace: on a Windows shard a
+    change-card write re-created the deleted ``kirocrew_eval_*`` directory and
+    the temp-residue floor failed the run. Only a module already imported can
+    hold a cached store, so a run that never imports ``kiro_crew.context`` pays
+    nothing and is not made to import it.
+
+    Each test gets a COPY, so an entry a module- or class-scoped fixture made
+    before it is still there, and the undo puts the original back, dropping
+    whatever the test added.
+    """
+    context = sys.modules.get("kiro_crew.context")
+    if context is None:
+        return
+    _floor_monkeypatch.setattr(context, "_memory_stores", dict(context._memory_stores))
+    _floor_monkeypatch.setattr(context, "_lesson_stores", dict(context._lesson_stores))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_advertised_model_cache(_floor_monkeypatch):
     """Keep one session's advertised model spellings and labels inside its own test."""
     from kiro_crew import model_registry

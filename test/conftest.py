@@ -303,6 +303,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
     _isolate_advertised_model_cache,
+    _isolate_context_store_caches,
     _isolate_display_verdicts,
     _isolate_kiro_window_cache,
     _ledger_create_ignores_live_memory,

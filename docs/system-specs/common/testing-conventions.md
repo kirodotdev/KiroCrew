@@ -869,7 +869,13 @@ Rules that decide whether one is worth having:
   its write order proves nothing about ranking.
 - **Mark the module `xdist_group`** when the subsystem holds module globals
   (`context._memory_stores` / `_lesson_stores` behind `_stores_lock`), and reset those
-  globals through `monkeypatch`, never raw assignment.
+  globals through `monkeypatch`, never raw assignment. The floor
+  (`conftest_resets._isolate_context_store_caches`) hands every test its own copy of
+  both caches and puts the original back after it, because `ContextBuilder.__init__`
+  makes its `MemoryStore` the process default: without it, a test that builds one (the
+  eval runner, over a temporary directory it deletes) aims every later test's
+  default-store writes at its workspace, and on Windows a change-card history write
+  re-created the deleted `kirocrew_eval_*` directory and failed the temp-residue floor.
 
 ### Refusal tests: assert the refusal, name the rule only at its own bound
 
