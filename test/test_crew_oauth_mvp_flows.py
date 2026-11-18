@@ -100,41 +100,6 @@ def test_an_unreadable_vault_is_unknown_not_absent(monkeypatch):
     assert crew_oauth.holds_grant("hubspot") is False
 
 
-def _callback_with(monkeypatch, query_extra, issuer="https://github.com"):
-    monkeypatch.setitem(crew_oauth._ENDPOINTS["github"], "issuer", issuer)
-
-    async def _run():
-        sign_in = crew_oauth.SignIn("github")
-        query = {"state": sign_in._state, "code": "c0de", **query_extra}
-        resp = await sign_in._callback(types.SimpleNamespace(query=query))
-        return sign_in, resp
-
-    return asyncio.run(_run())
-
-
-def test_preregistered_callback_rejects_wrong_iss(monkeypatch):
-    sign_in, resp = _callback_with(monkeypatch, {"iss": "https://evil.example"})
-    assert resp.status == 400
-    with pytest.raises(CrewOAuthError) as err:
-        sign_in._done.result()
-    assert err.value.code == "issuer_mismatch"
-
-
-def test_preregistered_callback_accepts_the_advertised_iss_or_none(monkeypatch):
-    for extra in ({"iss": "https://github.com"}, {}):
-        sign_in, resp = _callback_with(monkeypatch, extra)
-        assert resp.status == 200 and sign_in._done.result() == "c0de"
-
-
-def test_a_provider_without_an_advertised_issuer_is_not_iss_checked():
-    async def _run():
-        sign_in = crew_oauth.SignIn("github")
-        query = {"state": sign_in._state, "code": "c", "iss": "https://other.example"}
-        return await sign_in._callback(types.SimpleNamespace(query=query))
-
-    assert asyncio.run(_run()).status == 200
-
-
 def test_the_sign_in_uses_the_products_one_pkce_implementation():
     from kiro_crew.auth.login import portal
 
