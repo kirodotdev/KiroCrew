@@ -18,6 +18,7 @@ from kiro_crew.testing.wait import await_until
 
 _ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEFGHIJKL"
 _EMAIL = "person@example.com"
+_TEAMMATE = "teammate"
 
 
 class _FakeState:
@@ -25,11 +26,11 @@ class _FakeState:
 
 
 class _FakeRequest:
-    def __init__(self, *, owner: bool = True, app: dict | None = None):
+    def __init__(self, *, user: str = "local-app", app_id: str = "", app: dict | None = None):
         self.app = app if app is not None else {}
         self.app.setdefault("state", _FakeState())
         self.path = "/api/kas-login/sources"
-        self._items = {"app": "", "user": "local-app" if owner else "someone-else"}
+        self._items = {"app": app_id, "user": user}
 
     def __getitem__(self, key):
         return self._items[key]
@@ -77,6 +78,14 @@ def world_fixture(monkeypatch: pytest.MonkeyPatch):
         lambda: ("fingerprint", state["crew_fields"]),
     )
     monkeypatch.setattr(sources, "_whoami", whoami)
+    from kiro_crew.shared_crew import teammate_access
+
+    # A Shared Crew teammate with owner rights is the caller named "teammate".
+    monkeypatch.setattr(
+        teammate_access,
+        "teammate_passes_owner_gate",
+        lambda request: request.get("app") == "" and request.get("user") == _TEAMMATE,
+    )
     from kiro_crew.platform import enterprise_policy_fetch as epf
 
     # The account lock pins nothing unless a test sets "pin"; never the real stores.
@@ -214,10 +223,11 @@ async def test_two_different_accounts_offer_the_kiro_cli_one(world) -> None:
 @pytest.mark.asyncio
 async def test_only_the_owner_is_offered_the_kiro_cli_account(world) -> None:
     # The switch runs the card's sign-out, which answers anyone else with 403.
+    # A teammate passes the route gate but is not the machine owner.
     world["stored"] = sign_in.StoredSignIns(
         _stored("builder_id"), True, _stored("aws", arn=_ARN), True
     )
-    body = await _get_named(_FakeRequest(owner=False))
+    body = await _get_named(_FakeRequest(user=_TEAMMATE))
     assert body["active"] == "kiro_crew"
     assert body["can_use_kiro_cli"] is False
 
@@ -498,7 +508,7 @@ async def test_the_email_goes_to_the_owner_only_and_into_no_log(world, caplog) -
     app: dict = {}
     with caplog.at_level("DEBUG"):
         owner = await _get_named(_FakeRequest(app=app))
-        other = await _get(_FakeRequest(owner=False, app=app))
+        other = await _get(_FakeRequest(user=_TEAMMATE, app=app))
     assert owner["kiro_cli"]["email"] == _EMAIL
     assert other["kiro_cli"] == {"stored": True, "usable": True, "account_type": "BuilderId"}
     assert _EMAIL not in caplog.text
@@ -597,3 +607,36 @@ def test_the_store_read_asks_only_what_the_stores_call_for(
     assert found is stored
     assert (asked == ["relay"], relay) == (relay_asked, relay_asked)
     assert crew_fields == ({"account_type": "BuilderId"} if named else {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user", "app_id"),
+    [
+        ("someone-else", ""),  # an authenticated subject that is not a teammate
+        ("local-app", "some-app"),  # an app iframe or internal caller
+        (_TEAMMATE, "some-app"),
+    ],
+)
+async def test_a_caller_without_owner_rights_is_refused_before_any_read(
+    world, monkeypatch, user: str, app_id: str
+) -> None:
+    from kiro_crew.dashboard.handlers import kas_login
+
+    audited: list[tuple[str, str]] = []
+
+    async def audit(_request, operation, outcome, error=""):
+        audited.append((operation, outcome))
+
+    monkeypatch.setattr(kas_login, "_audit", audit)
+    world["stored"] = sign_in.StoredSignIns(
+        _stored("builder_id"), True, _stored("aws", arn=_ARN), True
+    )
+    world["whoami"] = {"account_type": "BuilderId", "email": _EMAIL}
+    app: dict = {}
+    response = await sources.api_kas_login_sources(_FakeRequest(user=user, app_id=app_id, app=app))
+    assert response.status == 403
+    assert json.loads(response.text)["code"] == "owner_only"
+    assert sources._NAME_CACHE_KEY not in app
+    assert world["whoami_calls"] == 0
+    assert audited == [("kas_login_sources", "denied")]
