@@ -247,6 +247,19 @@
         "route": "/crew-companion",
         "icon": "Ghost"
       }
+    },
+    {
+      "name": "mochi",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-mochi",
+      "commit": "5db17b967894c411621ea6dcfba294da262d4173",
+      "version": "0.1.1",
+      "treeSha256": "86986e6822b953c9fa77b0427f4e899b536233863d935474fcf2aff3881af76f",
+      "archiveSha256": "4e1fd8798ca469d02f698ecedf79c56d5352a4a2b96d95686e0847d5efa99b63",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/mochi",
+        "icon": "Cat"
+      }
     }
   ]
 }
