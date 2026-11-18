@@ -668,11 +668,12 @@ def run_one(
         if arm.needs_gateway:
             _copy_transcript(ran.stdout, dirs)
         verdict, why = score(outcome, check, ran.wall_s, caps, audit_run(dirs, suite_dir))
-        first_pass = (
-            ran.first_pass_s
-            if ran.first_pass_s is not None
-            else (ran.wall_s if check["pass"] else None)
-        )
+        if ran.first_pass_s is not None:
+            first_pass = ran.first_pass_s
+        elif check["pass"]:
+            first_pass = ran.wall_s
+        else:
+            first_pass = None
         record.update(
             verdict=verdict,
             reason=why,
