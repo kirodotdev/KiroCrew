@@ -1068,6 +1068,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
 )
 from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
     _EVENT_ID_SHAPE,
+    CLOSE_RETIRE_REASONS,
     CODE_RETIRED_HISTORY_FULL,
     CREW_STATES,
     MAX_INSTANCE_ID_CHARS,

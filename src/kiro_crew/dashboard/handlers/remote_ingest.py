@@ -196,6 +196,68 @@ async def revoke_if_closed(state: "DashboardState", board: str, item_id: str) ->
         logger.warning("remote trust revoke failed for %s", item_id, exc_info=True)
 
 
+#: The close reason for a close in a turn the owner sent, and for any other turn.
+CLOSE_BY_OWNER = "owner_closed"
+CLOSE_BY_WAKE = "item_closed"
+
+
+async def close_remote_item(
+    state: "DashboardState", board: str, item_id: str, *, owner_turn: bool
+) -> None:
+    """After a write closed a remote item: end its grant and leave its slot to close. Never raises.
+
+    1. Record a ``retire`` with a close reason (local writes only): the binding moves into
+       ``retired_bindings`` as ``retired``. That entry is the durable pending
+       close: it survives a hub restart, the close sweep finds it
+       (``boards_with_pending_close``), the owner's ``session_close(crew=)`` may
+       still name the slot (``holds_retired_slot``), and the row counts it in
+       ``close_pending``.
+    2. ``PATCH trust: false`` at once, to the pair the item held, whether or not
+       the retire landed.
+    3. Start its close now (:func:`_schedule_closes`). A close in a turn the owner
+       sent (*owner_turn*, :data:`CLOSE_BY_OWNER`) DELETEs the slot once its crew
+       reads connected. Any other turn (:data:`CLOSE_BY_WAKE`) never DELETEs a live
+       worker: the slot is closed only when the crew lists it not running and its
+       copy of the item last reported ``done``; until then each sweep past the
+       backoff looks again.
+    """
+    item = await settled_item(board, item_id)
+    if (
+        item is None
+        or not item.is_terminal
+        or not item.worker_instance_id
+        or not item.worker_session_key
+    ):
+        return
+    crew, slot = item.worker_instance_id, item.worker_session_key
+    retired: work_ledger.WorkItem | None = None
+    try:
+        # Recorded before the PATCH, so a stalled or cancelled PATCH never leaves
+        # the close without its pending entry. Local writes only.
+        reason = CLOSE_BY_OWNER if owner_turn else CLOSE_BY_WAKE
+        resp = await _record_retire(state, board, item, reason)
+        if _landed(resp):
+            retired = await settled_item(board, item_id)
+        else:
+            logger.warning(
+                "closed remote item %s kept its binding (%s)",
+                item_id,
+                _response_code(resp) if resp is not None else "not_recorded",
+            )
+    except Exception:  # noqa: BLE001 - the recorded close already stands
+        logger.warning("pending close not recorded for %s", item_id, exc_info=True)
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is not None:
+        try:
+            # Bounded like a decide forward, so a stalled peer cannot outlast the
+            # caller's request and turn a committed close into a reported failure.
+            await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), DECIDE_DEADLINE_SECS)
+        except Exception:  # noqa: BLE001 - the sweep's close sends it again
+            logger.warning("remote trust revoke failed for %s", item_id, exc_info=True)
+    if retired is not None:
+        _schedule_closes(state, board, [retired])
+
+
 # ── the bound create ──────────────────────────────────────────────────────
 
 
@@ -544,9 +606,9 @@ async def _pull_all(
 async def _slot_list(
     state: "DashboardState", instance_id: str
 ) -> dict[str, dict[str, bool]] | None:
-    """``{slot key: {running, pending_approval}}`` for a crew, or ``None`` when unread.
+    """``{slot key: {running, pending_approval, idle}}`` for a crew, or ``None`` when unread.
 
-    Only keys and two booleans are taken from the rows, so no peer text reaches
+    Only keys and three booleans are taken from the rows, so no peer text reaches
     the conductor from this read. A truncated list cannot prove a slot gone, so it
     answers ``None`` for the close question as an unreadable one does.
     """
@@ -565,6 +627,9 @@ async def _slot_list(
             out[key] = {
                 "running": row.get("running") is True,
                 "pending_approval": row.get("pending_approval") is True,
+                # The close gate's own answer: idle only when the crew SAYS the slot
+                # is not running, so a row missing the field is not idle.
+                "idle": row.get("running") is False and row.get("pending_approval") is not True,
             }
     return out
 
@@ -943,7 +1008,11 @@ async def _commit_retire(
                 operation=(
                     "work_ledger_read.retire"
                     if reason == RETIRE_CREW_UNREACHABLE
-                    else "work_ledger_record.retire"
+                    else (
+                        "work_ledger_record.close"
+                        if reason in work_ledger.CLOSE_RETIRE_REASONS
+                        else "work_ledger_record.retire"
+                    )
                 ),
                 code_channel=code_channel,
                 caller_sk=caller_sk,
@@ -1033,6 +1102,14 @@ CLOSE_RETRY_MAX_SECS = 3600.0
 #: the backoff if restarts ever come faster than the wait.
 _CLOSE_RETRY: dict[tuple[str, str], tuple[int, float]] = {}
 
+#: Retire reasons whose slot is closed as soon as its crew reads connected: the
+#: hub's own timeout, the conductor's owner-turn retire and an owner-turn close.
+#: Any other reason, an unknown or missing one included, closes only an idle slot
+#: whose worker reported ``done`` (fail closed).
+_CLOSE_AT_ONCE_REASONS: frozenset[str] = frozenset(
+    {RETIRE_CREW_UNREACHABLE, CLOSE_BY_OWNER, *work_ledger.WORK_CONDUCTOR_RETIRE_REASONS}
+)
+
 #: The close tasks in flight, held so none is collected before it ends.
 _CLOSE_TASKS: set["asyncio.Task[None]"] = set()
 
@@ -1063,13 +1140,27 @@ def _schedule_closes(
                 continue
             failures = _CLOSE_RETRY.get(key, (0, 0.0))[0]
             _CLOSE_RETRY[key] = (failures, float("inf"))
-            task = asyncio.ensure_future(_close_retired_slot(state, mgr, board, *key))
+            task = asyncio.ensure_future(
+                _close_retired_slot(
+                    state,
+                    mgr,
+                    board,
+                    *key,
+                    only_if_done=entry.get("reason") not in _CLOSE_AT_ONCE_REASONS,
+                )
+            )
             _CLOSE_TASKS.add(task)
             task.add_done_callback(_CLOSE_TASKS.discard)
 
 
 async def _close_retired_slot(
-    state: "DashboardState", mgr: Any, board: str, crew: str, slot: str
+    state: "DashboardState",
+    mgr: Any,
+    board: str,
+    crew: str,
+    slot: str,
+    *,
+    only_if_done: bool = False,
 ) -> None:
     """End one retired peer slot's Trust, close it, then mark it ``destroyed``. Never raises.
 
@@ -1078,6 +1169,11 @@ async def _close_retired_slot(
     404 saying the slot is gone, counts as closed. Anything else (a timeout, a
     refusal, a version skew, a ``destroy`` that did not record) leaves the entry
     ``retired`` (fail closed) and backs the next try off.
+
+    *only_if_done* (an item closed outside an owner turn, :data:`CLOSE_BY_WAKE`, or
+    any reason not in :data:`_CLOSE_AT_ONCE_REASONS`):
+    the DELETE is sent only when :func:`_slot_idle_and_done` says so; otherwise
+    the entry stays ``retired`` and backs off like a failed close.
     """
     routes = _routes()
     key = (crew, slot)
@@ -1089,6 +1185,11 @@ async def _close_retired_slot(
                 await asyncio.wait_for(revoke_peer_trust(mgr, crew, slot), PULL_TIMEOUT_SECS)
             except Exception:  # noqa: BLE001 - the DELETE below still ends the grant
                 logger.info("retired slot %s on %s kept its trust", slot, crew, exc_info=True)
+            if only_if_done and not await asyncio.wait_for(
+                _slot_idle_and_done(state, mgr, crew, slot), PULL_TIMEOUT_SECS
+            ):
+                logger.info("closed item's slot %s on %s is not idle and done yet", slot, crew)
+                return
             status, payload = await asyncio.wait_for(
                 routes.peer_call(mgr, crew, "DELETE", f"api/chat/slots/{quote(slot, safe='')}"),
                 PULL_TIMEOUT_SECS,
@@ -1105,6 +1206,30 @@ async def _close_retired_slot(
             failures = _CLOSE_RETRY.get(key, (0, 0.0))[0] + 1
             delay = min(CLOSE_RETRY_SECS * 2 ** min(failures - 1, 16), CLOSE_RETRY_MAX_SECS)
             _CLOSE_RETRY[key] = (failures, _monotonic() + delay)
+
+
+async def _slot_idle_and_done(state: "DashboardState", mgr: Any, crew: str, slot: str) -> bool:
+    """Whether a closed item's peer slot may be closed outside an owner turn. Fail closed.
+
+    True when a full read of the crew's slot list shows *slot* neither running nor
+    waiting on an approval and the peer's copy of the item last reported ``done``,
+    or when that full read does not list the slot (gone: the DELETE only
+    confirms it). Any unread or partial answer is ``False``.
+    """
+    listed = await _slot_list(state, crew)
+    if listed is None:
+        return False
+    row = listed.get(slot)
+    if row is None:
+        return True
+    if not row["idle"]:
+        return False
+    try:
+        status, payload = await _read_peer_item(_routes(), mgr, crew, slot, 1)
+    except _routes().CrewCallError:
+        return False
+    peer = payload.get("work_item") if 200 <= status < 300 and isinstance(payload, dict) else None
+    return isinstance(peer, dict) and peer.get("status") == "done"
 
 
 def slot_gone(status: int, payload: Any) -> bool:
@@ -1350,7 +1475,10 @@ __all__ = [
     "CODE_PEER_LACKS_WORK_ITEMS",
     "CODE_RETIRE_PENDING",
     "CODE_TARGET_RETIRED",
+    "CLOSE_BY_OWNER",
+    "CLOSE_BY_WAKE",
     "REMOTE_ROW_FIELDS",
+    "close_remote_item",
     "RETIRED_ROW_FIELDS",
     "create_bound",
     "forward_decide",
