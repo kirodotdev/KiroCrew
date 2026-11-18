@@ -18,9 +18,6 @@ vi.mock('../../hooks/useContainerWidth', () => ({
   useContainerWidth: () => [{ current: null }, 1200],
 }))
 vi.mock('../../hooks/useIsMobile', () => ({ useIsMobile: () => false, useIsNarrowViewport: () => false }))
-// The switch's gateway write the list waits for: settled unless a case holds it.
-let previewSaved: Promise<void> = Promise.resolve()
-vi.mock('../../hooks/usePreviewFlagServerSync', () => ({ whenPreviewFlagSaved: () => previewSaved }))
 
 /**
  * The panel talks to `/api/secrets` through the shared `api` client, which issues
@@ -200,7 +197,6 @@ async function openAdd(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   ownerOk = undefined
-  previewSaved = Promise.resolve()
   calls = []
   listNames = []
   listManaged = []
@@ -228,22 +224,6 @@ describe('SecretsPanel rail', () => {
   it('opens on the Add pane when the vault is empty', async () => {
     mount()
     expect(await screen.findByLabelText('Secret name')).toBeInTheDocument()
-  })
-
-  it('reads the list only after the preview switch has reached the gateway', async () => {
-    // Read before the write lands, the gateway still lists names only, which
-    // would show every login as a plain secret.
-    let release: () => void = () => {}
-    previewSaved = new Promise<void>(resolve => { release = resolve })
-    listNames = ['GITHUB']
-    listItems = [{ name: 'GITHUB', type: 'login', revision: 'r1', fields: { username: 'octo', urls: [] } }]
-    mount()
-    await act(async () => {})
-    expect(calls.some(c => c.method === 'GET' && c.url === '/api/secrets')).toBe(false)
-    expect(screen.getByText(S.loading)).toBeInTheDocument()
-    await act(async () => release())
-    expect(await screen.findByRole('option', { name: /GITHUB/ })).toHaveTextContent('octo')
-    expect(calls.some(c => c.method === 'GET' && c.url === '/api/secrets')).toBe(true)
   })
 
   it('groups managed credentials apart from custom items and shows a status per row', async () => {

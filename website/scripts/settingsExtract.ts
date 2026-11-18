@@ -155,8 +155,6 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelConfigPending.tsx': 'security',
   'OAuthAppPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
-  // Draws the tab while the Secrets vault redesign preview is off.
-  'SecretsPanelLegacy.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
@@ -276,10 +274,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // The built-in KAS engine card, which FeaturePreviewsSection mounts from
   // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
   'KasBundleCard.tsx': DEVELOPER_PREVIEWS,
-  // The Kiro sign-in card, which AgentBackendTab mounts from pages/developer.
+  // The Kiro sign-in card, which the Kiro account tab mounts from pages/developer.
   // It has no extractable primitive; mapped so its hand-written search entry
-  // (`agent.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
-  'KiroSignInCard.tsx': 'agent',
+  // (`kiro-account.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
+  'KiroSignInCard.tsx': 'kiro-account',
   'OrchestratorMemoryToggle.tsx': 'agent',
   // The conductor remote-dispatch card FeaturePreviewsSection mounts: its
   // `work_ledger.remote_dispatch` switch is a Developer-tab row.

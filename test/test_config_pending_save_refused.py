@@ -263,7 +263,7 @@ def test_a_cli_command_that_saves_a_pending_config_json_prints_one_line(
 
     assert exc.value.code == 1
     err = capsys.readouterr().err
-    assert f"❌ {lp.PENDING_SAVE_REFUSED}" in err
+    assert f"Error: {lp.PENDING_SAVE_REFUSED}" in err
     assert "Traceback" not in err
     assert path.read_bytes() == HAND_EDIT
 

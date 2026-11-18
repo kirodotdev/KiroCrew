@@ -779,14 +779,15 @@ def _defined_by(name: str, url: str) -> bool:
     Read from the URL alone, because nothing was fetched: ``Chart`` for ``.../chart.js@4``,
     ``d3`` for ``.../d3/7.8.5/d3.min.js``, ``ReactDOM`` for ``.../react-dom``. A name the
     URL does not suggest is the page's own, so a typo on a page that loads a library is
-    still reported.
+    still reported. ``js`` is filler on its own but joins a neighbouring library word, so
+    ``jsyaml`` for ``.../js-yaml`` and ``videojs`` for ``.../video.js@8``.
     """
-    words = [
-        word
-        for word in re.sub(r"[^a-z0-9]+", " ", urlsplit(url).path.lower()).split()
-        if word not in _URL_FILLER
-    ]
+    every = re.sub(r"[^a-z0-9]+", " ", urlsplit(url).path.lower()).split()
+    words = [word for word in every if word not in _URL_FILLER]
     words += [a + b for a, b in zip(words, words[1:])]
+    words += [
+        a + b for a, b in zip(every, every[1:]) if "js" in (a, b) and not {a, b} <= _URL_FILLER
+    ]
     return any(
         word == wanted or (len(wanted) >= 4 and word.startswith(wanted))
         for wanted in _LIBRARY_ALIASES.get(name) or (name.lower(),)

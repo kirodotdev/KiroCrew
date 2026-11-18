@@ -280,7 +280,7 @@ class TestMidTurnMessage:
         await d.handle_message(_inbound("also check the logs"))
 
         assert provider.steered == ["also check the logs"]
-        assert client.sent == [("CONV", "🫡 Folded into the reply in progress.", _SVC)]
+        assert client.sent == [("CONV", "Folded into the reply in progress.", _SVC)]
         assert sessions.successes == []
 
     @pytest.mark.asyncio
@@ -395,7 +395,7 @@ class TestCompactCommand:
 
         await d.handle_message(_inbound("/compact"))
 
-        assert client.sent[0][1] == f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}"
+        assert client.sent[0][1] == f"Note: {COMPACT_ACCOUNT_CHANGED_TEXT}"
         assert sessions.released == []
 
     @pytest.mark.asyncio

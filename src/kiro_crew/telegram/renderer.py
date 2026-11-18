@@ -10,7 +10,7 @@ the base :class:`Renderer`'s ``dispatch``) onto Telegram's Bot API:
   from the visible stream.
 * ``on_thinking`` -- accumulated and posted once as an expandable blockquote,
   only when ``telegram.show_thinking`` is on.
-* ``on_tool_call`` -- a transient ``🔧 {tool}…`` footer.
+* ``on_tool_call`` -- a transient ``Running {tool}…`` footer.
 * ``on_prompt_choice`` -- inline Approve/Deny buttons as a SEPARATE message
   (so streaming edits don't clobber them); byte-safe ``callback_data``.
 * ``on_compaction`` -- a lightweight "compacting…" note.
@@ -149,7 +149,7 @@ _UPLOAD_HOLD_LIMIT_FACTOR = 4
 # (e.g. the account lacks the selected model) passes its own bounded reason via
 # ``close(failure_reason=...)`` so the user is never told to retry an error
 # that says retrying will not help.
-_GENERIC_ERROR_TEXT = "⚠️ Error — please try again"
+_GENERIC_ERROR_TEXT = "Error: please try again"
 #: Sent in place of a part of a reply whose every send failed, so the later parts
 #: do not read as the whole reply.
 _LOST_PART_NOTICE = "Part of this reply may not have been delivered."
@@ -646,7 +646,7 @@ class TelegramRenderer(Renderer):
         await self._seal_current(keyboard=keyboard)
         clean_summary = _neutralize_md(summary)
         if clean_summary:
-            chip: str | None = f"> ↪️ {clean_summary}"
+            chip: str | None = f"> ↪ {clean_summary}"
         else:
             chip = self._chip_for_seal(self._seal_count)
         self._seal_count += 1
@@ -1191,7 +1191,7 @@ class TelegramRenderer(Renderer):
         """Post the accumulated reasoning as ONE expandable blockquote.
 
         ``<blockquote expandable>`` is Telegram's collapsed quote, its nearest match
-        to Slack's 💭 thread reply: there for whoever wants it, one line for everyone
+        to Slack's reasoning thread reply: there for whoever wants it, one line for everyone
         else. Posted after the answer so the answer is what the notification previews.
         """
         if self._thinking_posted:
@@ -1210,7 +1210,7 @@ class TelegramRenderer(Renderer):
             err: dict[str, Any] = {}
             mid = await self._client.send_message(
                 self._chat_id,
-                f"<blockquote expandable>💭 {inner}</blockquote>",
+                f"<blockquote expandable>Thinking: {inner}</blockquote>",
                 parse_mode="HTML",
                 retry_plain=False,
                 message_thread_id=self._thread_id,
@@ -1570,7 +1570,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _EDIT_THROTTLE_S,
     )
     from kiro_crew.telegram.renderer_status import (  # noqa: F401
-        _CTX_GAUGE,
         _FOOTER_MIN_CTX_PCT,
         _FOOTER_MIN_SECS,
         _HARD_STALL_MARK,

@@ -99,7 +99,13 @@ class TestApiCronToChat:
                 # may have edited since. Pinning it here keeps a later
                 # refactor from silently pairing the two again.
                 mock_inject.assert_called_once_with(
-                    state, job, "Hello world", history=ANY, dismissed=ANY, include_prompt=False
+                    state,
+                    job,
+                    "Hello world",
+                    history=ANY,
+                    dismissed=ANY,
+                    stored_folder=ANY,
+                    include_prompt=False,
                 )
 
     @pytest.mark.asyncio

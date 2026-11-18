@@ -279,6 +279,19 @@ def _handle_workspace(args: argparse.Namespace) -> None:
         copy_from = getattr(args, "copy_from", None)
         staged_path: Path | None = None
         install_state = {"installed": False}
+
+        def _name_left_copy(path: Path) -> None:
+            # The staged copy keeps the source's .git, whose read-only files
+            # rmtree_force clears; a file another program still holds open can
+            # keep the folder, so name it rather than leave it hidden.
+            from kiro_crew.terminal_safe import safe_terminal_line
+
+            print(
+                f"Note: could not remove the partial copy at "
+                f"'{safe_terminal_line(str(path))}'; delete it by hand.",
+                file=sys.stderr,
+            )
+
         if copy_from:
             if copy_from not in cfg.workspaces:
                 print(
@@ -376,7 +389,7 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                     # A source that cannot be read (a folder that denies
                     # listing, a file copytree cannot open) copies nothing;
                     # the create goes on empty and says so.
-                    shutil.rmtree(staging, ignore_errors=True)
+                    removed = platform_compat.rmtree_force(staging)
                     from kiro_crew.terminal_safe import safe_terminal_line
 
                     print(
@@ -384,8 +397,11 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                         f"({safe_terminal_line(type(exc).__name__)}); nothing was copied",
                         file=sys.stderr,
                     )
+                    if not removed:
+                        _name_left_copy(staging)
                 except BaseException:
-                    shutil.rmtree(staging, ignore_errors=True)
+                    if not platform_compat.rmtree_force(staging):
+                        _name_left_copy(staging)
                     raise
                 else:
                     staged_path = staging
@@ -457,7 +473,8 @@ def _handle_workspace(args: argparse.Namespace) -> None:
 
         def _drop_staging() -> None:
             if staged_path is not None and not install_state["installed"]:
-                shutil.rmtree(staged_path, ignore_errors=True)
+                if not platform_compat.rmtree_force(staged_path):
+                    _name_left_copy(staged_path)
 
         def _rollback_install() -> None:
             if install_state["installed"]:
@@ -472,7 +489,8 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
             elif staged_path is not None:
-                shutil.rmtree(staged_path, ignore_errors=True)
+                if not platform_compat.rmtree_force(staged_path):
+                    _name_left_copy(staged_path)
 
         _locked_config_write(
             _mutate_ws_create,

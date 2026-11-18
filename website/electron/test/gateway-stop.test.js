@@ -981,6 +981,40 @@ test("classifyPortOwner: an unreadable command is reported unread, not as someon
   );
 });
 
+test("classifyPortOwner: this app's own live child is ours without a command read", async () => {
+  // A Windows command read that times out (PowerShell past its budget, no WMIC
+  // behind it) answers "". For the child this app spawned that must not decide
+  // anything: the app holds that ChildProcess.
+  const reads = [];
+  const logs = [];
+  const owner = await classifyPortOwner(5476, {
+    getListenPids: async () => [29292],
+    getCommand: async (pid) => { reads.push(pid); return ""; },
+    isOwnChild: (pid) => pid === 29292,
+    log: (line) => logs.push(line),
+  });
+  assert.strictEqual(owner, "kirocrew");
+  assert.deepStrictEqual(reads, [], "the command line is not read for our own child");
+  assert.ok(logs.some((line) => line.includes("own gateway child pid=29292")));
+});
+
+test("classifyPortOwner: a holder that is not our child is still judged by its command", async () => {
+  const holders = [];
+  const isOwnChild = (pid) => pid === 29292;
+  assert.strictEqual(await classifyPortOwner(5476, {
+    getListenPids: async () => [909],
+    getCommand: async () => "",
+    isOwnChild,
+    holders,
+  }), "unidentified");
+  assert.deepStrictEqual(holders, [{ pid: 909, command: null }]);
+  assert.strictEqual(await classifyPortOwner(5476, {
+    getListenPids: async () => [909],
+    getCommand: async () => "ssh -NL 5476:localhost:5476 build-host",
+    isOwnChild,
+  }), "foreign");
+});
+
 test("classifyPortOwner: holders are reported only with a foreign verdict", async () => {
   const holders = [];
   const owner = await classifyPortOwner(5476, {

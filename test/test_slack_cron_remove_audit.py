@@ -142,7 +142,7 @@ class TestSlackRemoveAllAudit:
         svc.list_jobs.return_value = [_job("j1"), _job("j2")]
         svc.remove_jobs = AsyncMock(return_value=(["j2"], ["j1"]))
         out = await mc.cron_remove_all_reply(svc, source="slack", caller="U123")
-        assert out.startswith("✅ Removed 1 cron job(s):")
+        assert out.startswith("Removed 1 cron job(s):")
         assert "`j2`" in out and "`j1`" not in out
 
     @pytest.mark.asyncio

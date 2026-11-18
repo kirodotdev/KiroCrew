@@ -640,8 +640,9 @@ function legacyKasSignedOutRoute(content: string): '' | 'relay' | 'bundle' | nul
   // row carries, never shown here (the token's catalog copy is).
   if (!content.endsWith(', then start a new chat.') && !content.endsWith(', then send your message again.')) return null
   const head = content.slice(0, content.lastIndexOf(', then '))
-  // The path names the Kiro Agent row the card sits in; older rows name it without.
-  const lead = /^(?<lead>.*?)Not signed in to Kiro\. Sign in from Settings → Agent Harness → (?:Kiro Agent → )?Kiro sign-in$/u
+  // The path names where the card was when the row was stored: its own Kiro
+  // account tab now, the Kiro Agent row before that, the harness tab before that.
+  const lead = /^(?<lead>.*?)Not signed in to Kiro\. Sign in from Settings → (?:Kiro account|Agent Harness → (?:Kiro Agent → )?Kiro sign-in)$/u
     .exec(head)?.groups?.lead
   if (lead === undefined) return null
   if (lead === '') return ''

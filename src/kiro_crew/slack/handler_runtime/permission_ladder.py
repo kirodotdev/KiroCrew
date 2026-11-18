@@ -146,7 +146,7 @@ async def _screen_tool_call(turn: _SlackTurn, event: LLMEvent) -> None:
             _flagged_title, _ = redact_exfiltration_urls(event.title)
             _flagged_title, _ = redact_credentials(_flagged_title)
             answer.accumulated += (
-                f"\n⚠️ _Tool `{_flagged_title}` flagged by security "
+                f"\nWarning: _Tool `{_flagged_title}` flagged by security "
                 f"hooks (already executing; cannot be stopped here)._"
             )
             sel().log_tool_invocation(
@@ -287,7 +287,7 @@ async def _answer_permission_request(
             # event.title is LLM-authored — redact before posting.
             _blocked_title, _ = redact_exfiltration_urls(event.title)
             _blocked_title, _ = redact_credentials(_blocked_title)
-            answer.accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
+            answer.accumulated += f"\n_Tool `{_blocked_title}` blocked by hooks._"
             return False
 
     # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
@@ -614,10 +614,10 @@ async def _request_approval(
     try:
         await slack.delete_message(channel, approval_ts)
     except Exception:
-        status = "✅ Approved" if outcome == _OUTCOME_APPROVED else "🚫 Rejected"
+        status = "Approved" if outcome == _OUTCOME_APPROVED else "Rejected"
         title_safe, _ = redact_exfiltration_urls(event.title)
         title_safe, _ = redact_credentials(title_safe)
-        await _safe_update(slack, channel, approval_ts, f"🔐 *{title_safe}* — {status}")
+        await _safe_update(slack, channel, approval_ts, f"*{title_safe}* — {status}")
 
     return outcome
 

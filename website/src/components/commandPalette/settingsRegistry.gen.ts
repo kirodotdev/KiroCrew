@@ -64,16 +64,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "agent.orchestrator_memory"
   },
   {
-    "id": "agent.kiro-sign-in",
-    "labelKey": "pages.developer.kiroSignInCard.search_label",
-    "tab": "agent",
-    "type": "buttonGroup",
-    "occurrence": 1,
-    "settingId": "kiro-sign-in",
-    "label": "Sign out or switch Kiro account",
-    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
-  },
-  {
     "id": "browser.max-frame-rate",
     "label": "Max frame rate",
     "labelKey": "pages.settings.browserPanel.max_fps_label",
@@ -1081,6 +1071,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "whatsapp"
     }
+  },
+  {
+    "id": "chat.apply-folder-suggestions-automatically",
+    "label": "Apply folder suggestions automatically",
+    "labelKey": "pages.settings.chatPanel.folder_suggestions_auto_apply",
+    "description": "File a new session into the matching folder without asking. A card says where it went, with an undo.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.folder_suggestions_auto_apply"
   },
   {
     "id": "chat.auto-compact-threshold",
@@ -2536,19 +2539,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.run-kas-on-kiro-crew-s-own-engine",
     "label": "Run KAS on Kiro Crew's own engine",
     "labelKey": "pages.developer.kasBundleCard.toggle_label",
-    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.secrets-vault-redesign",
-    "label": "Secrets vault redesign",
-    "labelKey": "pages.developer.featurePreviewsTab.secrets_vault",
-    "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes.",
+    "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Kiro account. Takes effect when Kiro Crew restarts.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2678,6 +2669,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "zoom"
     }
+  },
+  {
+    "id": "display.dark-from",
+    "label": "Dark from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_dark_from",
+    "hint": "Scheduled mode switches to dark at this time, in this device's time zone.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_dark"
   },
   {
     "id": "display.default-for-new-sessions",
@@ -2863,6 +2867,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "view"
     }
+  },
+  {
+    "id": "display.light-from",
+    "label": "Light from",
+    "labelKey": "pages.settings.displayPanel.theme_schedule_light_from",
+    "hint": "Scheduled mode switches to light at this time, in this device's time zone.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    },
+    "configKey": "dashboard.theme_schedule_light"
   },
   {
     "id": "display.minimize-to-tray",
@@ -3089,6 +3106,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "configKey": "instances.enabled",
     "label": "Enable remote crew management"
+  },
+  {
+    "id": "kiro-account.kiro-sign-in",
+    "labelKey": "pages.developer.kiroSignInCard.search_label",
+    "tab": "kiro-account",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "settingId": "kiro-sign-in",
+    "label": "Sign out or switch Kiro account",
+    "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
   },
   {
     "id": "notifications.sound-category-approval",

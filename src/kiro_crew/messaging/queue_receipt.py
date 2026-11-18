@@ -1,9 +1,9 @@
-"""Mid-turn queue receipts — the single collapsing "⏳ Queued (N): …" bubble.
+"""Mid-turn queue receipts — the single collapsing "Queued (N): …" bubble.
 
 A message that arrives while a turn is running is either folded into that turn
 as a steer or queued for after it. Queued messages get ONE receipt bubble that
 is edited in place as the burst grows, then flipped to a durable record when the
-turn drains it ("▶️ Now answering") or cancelled ("🛑 Cancelled"). Two channels
+turn drains it ("Now answering") or cancelled ("Cancelled"). Two channels
 grew the same subsystem independently -- Telegram and Discord, ~560 duplicated
 lines -- and this module is the half of it that is genuinely channel-neutral.
 
@@ -141,10 +141,10 @@ def receipt_text(
     if count > RECEIPT_MAX_ITEMS:
         items += f" · …and {count - RECEIPT_MAX_ITEMS} more"
     if cancelled:
-        return f"🛑 Cancelled ({count}): {items}"
+        return f"Cancelled ({count}): {items}"
     if answering:
-        return f"▶️ Now answering ({count}): {items}"
-    return f"⏳ Queued ({count}): {items}"
+        return f"Now answering ({count}): {items}"
+    return f"Queued ({count}): {items}"
 
 
 @dataclass(frozen=True)
@@ -391,7 +391,7 @@ class ReceiptSurface(Protocol):
         documents, is an ordinary non-2xx answer. Returning it is what lets the
         registry tell "the bubble now shows this" from "the bubble still shows the
         old text", which is the difference between a durable record and a bubble
-        stranded reading "⏳ Queued".
+        stranded reading "Queued".
 
         An implementation that cannot tell may return ``None``; that is silence,
         not a reported failure, and :meth:`ReceiptQueue._edit` treats it as landed.
@@ -503,7 +503,7 @@ class ReceiptQueue:
         *,
         owner: str,
     ) -> None:
-        """Flip the receipt to a durable "▶️ Now answering" record.
+        """Flip the receipt to a durable "Now answering" record.
 
         Drops the live entry so the next mid-turn burst opens a fresh receipt.
         ``answered`` is the subset this turn actually answers (the drain caps it),
@@ -595,7 +595,7 @@ class ReceiptQueue:
     async def finish_cancelled_locked(
         self, session_key: str, surface: ReceiptSurface, owner: str = ""
     ) -> None:
-        """Finalize the receipt to a "🛑 Cancelled" record, if present.
+        """Finalize the receipt to a "Cancelled" record, if present.
 
         Caller MUST hold :attr:`lock` across clear_queue + this call.
 
@@ -721,7 +721,7 @@ class ReceiptQueue:
         """Hold the registry to :data:`RECEIPT_MAX_DEBTS` terminal entries, counting each.
 
         Live entries are not touched: a live entry's messages are still QUEUED, so
-        dropping one strands its bubble on "⏳ Queued" and opens a second bubble beside
+        dropping one strands its bubble on "Queued" and opens a second bubble beside
         it. Only terminal entries are candidates, and they are released least-recently-
         attempted first. The entry just retained is at the back, so the bound never
         reaches the record it was called about.

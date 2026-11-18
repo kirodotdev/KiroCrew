@@ -1,6 +1,7 @@
 """Size-rotation tests for kiro_crew.sel, and the writers and readers that race it.
 
-Pins rotation at the size cap and segment retention, the cross-process rotation lock,
+Pins rotation at the size cap and segment retention (and the operator's ``sel.keep``
+raise of the count kept), the cross-process rotation lock,
 which threads may rotate, genesis handling in a fresh log, the collision retry's
 unconditional re-anchor, and a prune or a foreign process racing a rotation. It also
 holds the session-directory ratchet, which judges every module listed in
@@ -569,6 +570,7 @@ class TestRetentionStopsAtAnUndeletableSegment:
 
         monkeypatch.setattr(sel_mod, "_SEGMENT_KEEP", 3)
         assert len(accumulated) - sel_mod._SEGMENT_KEEP == 3, "precondition: 3 to sweep"
+        log._keep_fresh = True  # as if this batch had just read the count
         oldest = accumulated[0]
         real_unlink = Path.unlink
 
@@ -587,6 +589,162 @@ class TestRetentionStopsAtAnUndeletableSegment:
                 f"{kept.name} was deleted to make room for a segment that could not "
                 "be removed -- newer audit history traded for older"
             )
+
+
+def _write_config(sel_dir: Path, text: str, name: str = "config.json") -> None:
+    (sel_dir / name).write_text(text, encoding="utf-8")
+
+
+class TestTheOperatorKeepCount:
+    """``sel.keep`` raises the count kept, and no writer trims below a count it did not read.
+
+    ``small_segments`` sets the shipped keep count to 3; the log lives beside the config.
+    """
+
+    @pytest.mark.parametrize("name", ["config.json", "config.local.json"])
+    def test_a_raised_count_is_kept(self, sel_dir, small_segments, name):
+        _write_config(sel_dir, json.dumps({"sel": {"keep": 5}}), name)
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 900)
+        assert len(log._segments_oldest_first()) == 5
+
+    def test_a_writer_built_before_the_raise_keeps_the_new_count(self, sel_dir, small_segments):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 600)
+        assert len(log._segments_oldest_first()) == 3
+        _write_config(sel_dir, json.dumps({"sel": {"keep": 5}}))
+        _fill(log, 900, start=600)
+        assert len(log._segments_oldest_first()) == 5
+
+    @pytest.mark.parametrize(("keep", "kept"), [(1, 3), (99, 4)])
+    def test_an_out_of_range_count_is_held_to_the_bounds(
+        self, sel_dir, small_segments, monkeypatch, caplog, keep, kept
+    ):
+        monkeypatch.setattr("kiro_crew.sel_rotation._SEGMENT_KEEP_CEILING", 4)
+        _write_config(sel_dir, json.dumps({"sel": {"keep": keep}}))
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            _fill(log, 900)
+        assert len(log._segments_oldest_first()) == kept
+        assert [r.getMessage() for r in caplog.records].count(
+            "SEL config key sel.keep must be a whole number from 3 to 4; using the nearest of the two"
+        ) == 1
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "{not json",
+            "[]",
+            json.dumps({"sel": {"keep": "sk-pasted-secret"}}),
+            json.dumps({"sel": {"keep": True}}),
+            json.dumps({"sel": {"keep": 5.0}}),
+            json.dumps({"sel": "sk-pasted-secret"}),
+        ],
+    )
+    def test_an_unclean_read_keeps_up_to_the_ceiling_and_warns_once(
+        self, sel_dir, small_segments, monkeypatch, caplog, text
+    ):
+        monkeypatch.setattr("kiro_crew.sel_rotation._SEGMENT_KEEP_CEILING", 5)
+        _write_config(sel_dir, text)
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            _fill(log, 900)
+        assert len(log._segments_oldest_first()) == 5, "not the ceiling: trimmed to 3, or unbounded"
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len([m for m in warnings if "keeping up to" in m]) == 1
+        assert not any("sk-pasted-secret" in m for m in warnings)
+
+    def test_a_range_warning_does_not_hide_a_later_type_warning(
+        self, sel_dir, small_segments, caplog
+    ):
+        _write_config(sel_dir, json.dumps({"sel": {"keep": 1}}))
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            _fill(log, 300)
+            _write_config(sel_dir, json.dumps({"sel": {"keep": "30"}}))
+            _fill(log, 300, start=300)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(m.endswith("using the nearest of the two") for m in messages)
+        assert any(m.endswith("keeping up to the larger until it is") for m in messages)
+
+    def test_a_config_missing_after_a_clean_read_is_not_read_as_the_default(
+        self, sel_dir, small_segments
+    ):
+        """An editor that deletes the file before writing the new one must not read as 3."""
+        _write_config(sel_dir, json.dumps({"sel": {"keep": 5}}))
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 900)
+        before = log._segments_oldest_first()
+        assert len(before) == 5
+        (sel_dir / "config.json").unlink()
+        _fill(log, 300, start=900)
+        after = log._segments_oldest_first()
+        assert set(before) <= set(after) and len(after) > 5
+        _write_config(sel_dir, json.dumps({"sel": {"keep": 5}}))
+        _fill(log, 300, start=1200)
+        assert len(log._segments_oldest_first()) == 5
+
+    def test_a_saved_config_missing_on_first_read_is_not_read_as_the_default(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """A process whose first read lands in an editor's save window must not read 3."""
+        from kiro_crew.config import loosening_provenance
+
+        # No config.json on disk, served as it is (no seal), but the gateway saved one.
+        monkeypatch.setattr("kiro_crew.sel_rotation._SEGMENT_KEEP_CEILING", 5)
+        monkeypatch.setattr(loosening_provenance, "enforcement_active", lambda: False)
+        monkeypatch.setattr(loosening_provenance, "leaf_for", lambda path: path.name)
+        monkeypatch.setattr(loosening_provenance, "endorsed_bytes", lambda leaf: b'{"sel": {}}')
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 600)
+        assert len(log._segments_oldest_first()) == 5, "read the mid-save file as the default"
+
+    def test_a_batch_that_read_no_count_trims_only_to_the_ceiling(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """A sibling can push the log over the cap while this batch waits for the chain lock.
+
+        Its pre-lock stat then saw a small file and read nothing, so it must not trim to 3.
+        """
+        monkeypatch.setattr("kiro_crew.sel_rotation._SEGMENT_KEEP_CEILING", 5)
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+
+        def saw_a_small_file(inner_self):
+            inner_self._keep_fresh = False
+
+        with patch.object(SecurityEventLog, "_refresh_operator_keep", saw_a_small_file):
+            _fill(log, 900)
+        assert (
+            len(log._segments_oldest_first()) == 5
+        ), "rotation stopped, a batch trimmed to 3, or the count is unbounded"
+
+    def test_a_failing_read_never_costs_the_audit_record(self, sel_dir, small_segments):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+
+        def broken_read(log_dir, seen):
+            raise RuntimeError("unexpected")
+
+        with patch.object(kiro_crew_sel._sel_rotation, "_read_operator_keep", broken_read):
+            _fill(log, 300)
+        assert log._segments_oldest_first(), "rotation stopped"
+        assert log.recent(limit=1)[0]["resources"] == "seq=299", "the last audit record was lost"
+
+    def test_the_count_is_read_with_no_lock_held(self, sel_dir, small_segments):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        rotation_lock = sel_dir / "security_events.d" / ".rotate.lock"
+        chain_lock = sel_dir / "trust" / "security_events.lock"
+        held: list[bool] = []
+        real_read = kiro_crew_sel._sel_rotation._read_operator_keep
+
+        def recording_read(log_dir, seen):
+            held.append(
+                log._lock.locked() or _lock_is_held(rotation_lock) or _lock_is_held(chain_lock)
+            )
+            return real_read(log_dir, seen)
+
+        with patch.object(kiro_crew_sel._sel_rotation, "_read_operator_keep", recording_read):
+            _fill(log, 200)
+        assert held and not any(held), "the config was read under a lock audits wait on"
 
 
 class TestASiblingsAppendDoesNotReadAsCorruption:

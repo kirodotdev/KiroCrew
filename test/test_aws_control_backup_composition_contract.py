@@ -265,6 +265,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "last_runs",
     "layer_b_grant_covers_conversations",
     "list_remote_backups",
+    "loads_user_json",
     "logger",
     "logging",
     "make_job_runner",

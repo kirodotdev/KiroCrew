@@ -438,9 +438,9 @@ async def test_native_slack_controls_do_not_wait_for_model_capacity(
             assert records == []
         replies = [payload["text"] for kind, payload in slack.actions if kind == "post"]
         if revoked:
-            assert "🔒 YOLO mode disabled." in replies
+            assert "YOLO mode disabled." in replies
         if user == "UOTHER":
-            assert "⛔ Owner-only command." in replies
+            assert "Blocked: Owner-only command." in replies
     finally:
         release.set()
         if command is not None and not command.done():

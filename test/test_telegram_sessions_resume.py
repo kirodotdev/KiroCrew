@@ -141,9 +141,9 @@ class TestTelegramInboundResumeRouting:
     @pytest.mark.parametrize(
         ("command", "native_reply"),
         [
-            pytest.param("/help", "🦞 Kiro Crew — Telegram\n", id="/help"),
+            pytest.param("/help", "Kiro Crew — Telegram\n", id="/help"),
             pytest.param("/status", "uptime ", id="/status"),
-            pytest.param("/new", "✅ New conversation started.", id="/new"),
+            pytest.param("/new", "New conversation started.", id="/new"),
             pytest.param("/unlink", "This conversation wasn't linked.", id="/unlink"),
         ],
     )
@@ -1058,15 +1058,15 @@ class TestResumedRefusalsCharacterization:
     """
 
     _BUSY = (
-        "⏳ That session is busy with a turn started elsewhere. Send your message again "
+        "That session is busy with a turn started elsewhere. Send your message again "
         "once it finishes, or /unlink to return to your Telegram conversation."
     )
     _PRIVACY = (
-        "🔒 Privacy mode can't be changed while a dashboard session is resumed. Your "
+        "Privacy mode can't be changed while a dashboard session is resumed. Your "
         "message was NOT processed. Use /unlink or /new first."
     )
     _BUSY_OPTION = (
-        "🔘 That conversation is busy with another turn, so your choice was NOT "
+        "That conversation is busy with another turn, so your choice was NOT "
         "applied. Type it as a message once the turn finishes."
     )
 

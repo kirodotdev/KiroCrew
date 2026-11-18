@@ -140,6 +140,10 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
 
   if (failures.data === null || isStaleOwnerSession(failures.error)) return null
   const rows = failures.data?.failures ?? []
+  // With no rows, or while an open draft holds every row's button, the table
+  // holds nothing focusable, so while it hides columns its scroller is the
+  // named Tab stop; otherwise a row's Draft lesson button is the stop.
+  const keyboardStop = (tableEdges.left || tableEdges.right) && (rows.length === 0 || draft !== null)
   const th = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium'
   const td = 'px-2.5 py-2 border-b border-border text-sm align-top'
 
@@ -166,7 +170,14 @@ export default function MemoryFailuresCard({ refreshTrigger, onLessonSaved, onDi
       {failures.isPending && <p role="status" className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.loading')}</p>}
       {failures.isSuccess && (
         // The wrapper anchors the edge cue: a scroller's own absolute children scroll with it.
-        <div className="relative"><div ref={attachScroller} className="overflow-x-auto"><table ref={attachTable} className="w-full border-collapse table-striped">
+        <div className="relative"><div
+          ref={attachScroller}
+          className="overflow-x-auto"
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop IS the fix: a table that hides columns and holds nothing focusable (no rows, or a draft open) is skipped by an engine that does not focus scrollers itself and unnamed in one that does, and axe's scrollable-region-focusable asks for the explicit stop.
+          tabIndex={keyboardStop ? 0 : undefined}
+          role={keyboardStop ? 'region' : undefined}
+          aria-label={keyboardStop ? i18nT('pages.overview.memoryFailuresCard.title') : undefined}
+        ><table ref={attachTable} className="w-full border-collapse table-striped">
           <thead>
             <tr>
               <th className={th}>{i18nT('pages.overview.memoryFailuresCard.failure')}</th>

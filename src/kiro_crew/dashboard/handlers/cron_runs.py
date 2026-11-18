@@ -19,10 +19,13 @@ from kiro_crew.cron import CronPauseNotSaved, CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.cron_inject import (
     apply_cron_turn_timeout,
+    chat_folder_exists,
+    chat_folder_refuses_store,
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
     prefetch_cron_dismissed,
     restore_cron_turn_timeout,
+    stored_cron_folder,
 )
 from kiro_crew.dashboard.cron_note_ack import (
     cron_item_already_recorded,
@@ -151,6 +154,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             job.last_result or "",
             history=history,
             dismissed=await prefetch_cron_dismissed(state, job.id),
+            stored_folder=await stored_cron_folder(state, job.id),
             include_prompt=False,
         )
         await restore_cron_turn_timeout(state, job.id)
@@ -163,6 +167,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             else []
         )
         if history:
+            # Read before the mint, so the folder is on the tab before any await
+            # (a flush there would otherwise save the tab unfiled).
+            folder = await stored_cron_folder(state, job_id)
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
             if not slot.linked_session_key:
                 slot.linked_session_key = session_key
@@ -199,6 +206,13 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 # The tab's own turn time limit is unread for the same reason:
                 # its saves carry the on-disk value until the read below lands.
                 mark_turn_timeout_unread(state, slot)
+                # The folder the closed tab was filed in, set before the read below
+                # so a flush during it keeps it; dropped when gone or refusing the store.
+                store = str(getattr(slot, "memory_store", "") or "")
+                if chat_folder_exists(state, folder) and not chat_folder_refuses_store(
+                    state, folder, store
+                ):
+                    slot.folder_id = folder
                 if state.conversation_log is not None:
                     try:
                         _meta, _readable = await asyncio.to_thread(

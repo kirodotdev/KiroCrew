@@ -300,7 +300,7 @@ class TestCronChannelDelivery:
 
         transport.send_message.assert_awaited_once()
         sent = transport.send_message.await_args.args[1]
-        assert "⏰ Cron: channel probe" in sent and "all clear" in sent
+        assert "Cron: channel probe" in sent and "all clear" in sent
         orch.slack.post_blocks.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
 
@@ -792,7 +792,7 @@ class TestCronDeliversEmbeddedImages:
 
         The image markup is already stripped from the posted text, so a silent
         upload failure would be the same disappearing-artifact bug this fixes.
-        The shared upload-reporting helper must post a ⚠️ note instead.
+        The shared upload-reporting helper must post a Warning note instead.
         """
         img = tmp_path / "mon.png"
         img.write_bytes(self._png_bytes())
@@ -818,7 +818,7 @@ class TestCronDeliversEmbeddedImages:
         # channel unset + _resolve_channel_target None → the owner DM, open_dm="D1".
         assert note_call.args[0] == "D1", "note not posted to the resolved DM channel"
         assert note_call.args[2] == "1789607951.617559", "note not in the job's thread"
-        assert "⚠️" in note_call.args[1], "the posted note is not a rejection notice"
+        assert "Warning:" in note_call.args[1], "the posted note is not a rejection notice"
 
     @pytest.mark.asyncio
     async def test_extraction_writes_sel_audit_for_admitted_and_refused(self, tmp_path):

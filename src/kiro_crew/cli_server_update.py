@@ -67,13 +67,13 @@ def _snapshot_memory_or_exit() -> None:
 
     copied, failure = snapshot_memory_before_update()
     if failure:
-        print(f"  ❌ {snapshot_refusal(failure)}")
+        print(f"  Error: {snapshot_refusal(failure)}")
         sys.exit(1)
     # Named as the DEFAULT store's directory: a bare path beside a count covering every
     # store would point at the wrong place.
     newest = memory_backup.newest_backup()
     where = f"; default store copies in {newest.parent}" if newest is not None else ""
-    print(f"  💾 Memory snapshot: {copied} store(s) copied{where}\n")
+    print(f"  Memory snapshot: {copied} store(s) copied{where}\n")
 
 
 #: Branches a detached checkout may update from, in the order they are tried.
@@ -107,19 +107,19 @@ def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
             "git ls-remote timed out after %ss during update", exc.timeout
         )
         print(
-            f"  ❌ Could not list origin's branches (git ls-remote timed out after {exc.timeout}s)"
+            f"  Error: Could not list origin's branches (git ls-remote timed out after {exc.timeout}s)"
         )
         sys.exit(1)
     if result.returncode != 0:
-        print(f"  ❌ Could not list origin's branches:\n{result.stderr.strip()}")
+        print(f"  Error: Could not list origin's branches:\n{result.stderr.strip()}")
         sys.exit(1)
     found = {line.split("\t", 1)[1].strip() for line in result.stdout.splitlines() if "\t" in line}
     for name, ref in zip(_DETACHED_BRANCH_ORDER, refs):
         if ref in found:
-            print(f"  ℹ  This checkout is on no branch; updating from origin/{name}.")
+            print(f"  Note: This checkout is on no branch; updating from origin/{name}.")
             return name
     names = ", ".join(_DETACHED_BRANCH_ORDER)
-    print("  ❌ This checkout is on no branch, and origin has none of these branches:")
+    print("  Error: This checkout is on no branch, and origin has none of these branches:")
     print(f"      {names}")
     print("  Check out the branch to update from, then retry:")
     print("      git checkout -B <branch> origin/<branch>")
@@ -227,7 +227,7 @@ def _update(force: bool = False) -> None:
     """
     from kiro_crew.platform.update_layout import InstallLayout
 
-    print("👻 Updating Kiro Crew…\n")
+    print("Updating Kiro Crew…\n")
 
     # A policy-defined provider OWNS the update on this host. Checked before any
     # layout dispatch so a manual `kirocrew update` cannot run the built-in
@@ -242,11 +242,11 @@ def _update(force: bool = False) -> None:
     applied = asyncio.run(apply_policy_update())
     if applied is not None:
         if applied:
-            print("\n✅ Update applied by the policy-defined update command.")
+            print("\nDone: Update applied by the policy-defined update command.")
             print("\n  Restart the gateway to use the new version:")
             print("    kirocrew restart")
         else:
-            print("\n❌ The policy-defined update command failed — see the log above.")
+            print("\nError: The policy-defined update command failed — see the log above.")
             print("  Not falling back to the built-in updater: this host's policy")
             print("  selects its own update mechanism.")
             sys.exit(1)
@@ -266,7 +266,7 @@ def _update(force: bool = False) -> None:
     if capability.managed_by != MANAGED_BY_GIT:
         if capability.defers:
             reason = capability.unavailable_reason or ""
-            print(f"  ℹ️  This install ({distribution()}) is managed externally.")
+            print(f"  Note: This install ({distribution()}) is managed externally.")
             print(f"  {EXTERNALLY_MANAGED_MESSAGES.get(reason, '')}")
             return
 
@@ -281,7 +281,7 @@ def _update(force: bool = False) -> None:
         _update_wheel(layout)
         return
 
-    print(f"  📂 {proj}")
+    print(f"  {proj}")
 
     from kiro_crew.platform.update_governance import (
         git_command_env,
@@ -311,10 +311,10 @@ def _update(force: bool = False) -> None:
         logging.getLogger("kiro_crew.cli_server").warning(
             "git rev-parse timed out after %ss during update", exc.timeout
         )
-        print("❌ Could not determine current branch (git rev-parse timed out)")
+        print("Error: Could not determine current branch (git rev-parse timed out)")
         sys.exit(1)
     if branch_result.returncode != 0:
-        print("❌ Could not determine current branch")
+        print("Error: Could not determine current branch")
         sys.exit(1)
     # A detached HEAD (or no branch name at all) has no branch of its own to
     # follow. Its upstream is picked from origin's own branches further down,
@@ -333,7 +333,7 @@ def _update(force: bool = False) -> None:
         resolve_remote_url(proj, fetch_env=_fetch_env, remote="origin")
     )
     if _blocked:
-        print(f"  🛡️  Update blocked by security policy: {_blocked}")
+        print(f"  Update blocked by security policy: {_blocked}")
         sys.exit(1)
 
     # The checkout is a tree agents can write, and `fetch`, `status` and
@@ -344,7 +344,7 @@ def _update(force: bool = False) -> None:
     # and unattended paths.
     _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
     if _exec_config:
-        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the update.")
+        print(f"  Update refused: {_exec_config}, which git would run during the update.")
         print("      Remove it from the checkout's git config, then retry.")
         sys.exit(1)
 
@@ -357,7 +357,7 @@ def _update(force: bool = False) -> None:
         fetch_ref = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
 
     # Fetch + reset --hard: no merge conflicts, untracked files preserved
-    print("  ⬇️  git fetch…")
+    print("  git fetch…")
     try:
         result = subprocess.run(
             # `--upload-pack` beats every configured upload-pack (an env pin does
@@ -375,7 +375,9 @@ def _update(force: bool = False) -> None:
         logging.getLogger("kiro_crew.cli_server").warning(
             "git fetch timed out after %ss during update", exc.timeout
         )
-        print(f"  ❌ git fetch timed out after {exc.timeout:g}s and kept nothing it downloaded.")
+        print(
+            f"  Error: git fetch timed out after {exc.timeout:g}s and kept nothing it downloaded."
+        )
         print("  Run `kirocrew update` again to retry the fetch.")
         sys.exit(1)
     finally:
@@ -383,7 +385,7 @@ def _update(force: bool = False) -> None:
         # every one older than its threshold, so this run's goes on a later run.
         reap_stale_tmp_packs(proj)
     if result.returncode != 0:
-        print(f"  ❌ git fetch failed:\n{result.stderr.strip()}")
+        print(f"  Error: git fetch failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
     # Pin the fetched upstream to one commit. Every judgment below -- "already
@@ -409,11 +411,11 @@ def _update(force: bool = False) -> None:
         logging.getLogger("kiro_crew.cli_server").warning(
             "git rev-parse timed out after %ss during update", exc.timeout
         )
-        print(f"  ❌ Could not resolve origin/{branch} (git rev-parse timed out)")
+        print(f"  Error: Could not resolve origin/{branch} (git rev-parse timed out)")
         sys.exit(1)
     target = pin_result.stdout.strip()
     if pin_result.returncode != 0 or not target:
-        print(f"  ❌ Could not resolve origin/{branch}:\n{pin_result.stderr.strip()}")
+        print(f"  Error: Could not resolve origin/{branch}:\n{pin_result.stderr.strip()}")
         sys.exit(1)
 
     # Check if there are new commits
@@ -436,10 +438,10 @@ def _update(force: bool = False) -> None:
         )
         # Same branch a non-zero exit takes: assume new commits exist and let
         # the divergence guard below re-classify before anything destructive.
-        print("  ⚠️  git diff timed out — continuing to the divergence check")
+        print("  Warning: git diff timed out — continuing to the divergence check")
         up_to_date = False
     if up_to_date:
-        print("\n✅ Already up to date!")
+        print("\nAlready up to date!")
         return
 
     # Divergence guard. The hard reset below discards local COMMITTED work,
@@ -476,10 +478,10 @@ def _update(force: bool = False) -> None:
         counts = count_divergence_sync(proj, target, env=_git_env)
         if isinstance(counts, DivergenceUnreadable):
             if counts.reason == UNREADABLE_UNPARSEABLE:
-                print(f"  ❌ Could not parse the commit counts against origin/{branch}:")
+                print(f"  Error: Could not parse the commit counts against origin/{branch}:")
                 print(f"     {counts.detail!r}")
             else:
-                print(f"  ❌ Could not compare HEAD against origin/{branch}:")
+                print(f"  Error: Could not compare HEAD against origin/{branch}:")
                 print(f"     {counts.detail}")
             return "unreadable", -1, -1
         ahead, behind = counts.ahead, counts.behind
@@ -491,7 +493,7 @@ def _update(force: bool = False) -> None:
 
     def _report_up_to_date(ahead: int) -> None:
         suffix = f" ({ahead} local commit(s) ahead of origin/{branch})" if ahead else ""
-        print(f"\n✅ Already up to date!{suffix}")
+        print(f"\nAlready up to date!{suffix}")
 
     verdict, ahead, behind = _divergence_verdict()
     if verdict == "unreadable":
@@ -501,14 +503,14 @@ def _update(force: bool = False) -> None:
         return
     if verdict == "diverged":
         if not force:
-            print(f"  ⚠️  This checkout has diverged from origin/{branch}:")
+            print(f"  Warning: This checkout has diverged from origin/{branch}:")
             print(f"      {ahead} local commit(s) not on origin/{branch}, {behind} behind.")
             print("  A hard reset would discard the local commits. Reconcile instead:")
             print(f"      git rebase origin/{branch}    (or: git merge origin/{branch})")
             print("  Or discard the local commits explicitly:")
             print("      kirocrew update --force")
             sys.exit(1)
-        print(f"  ⚠️  --force: discarding {ahead} local commit(s) not on origin/{branch}.")
+        print(f"  Warning: --force: discarding {ahead} local commit(s) not on origin/{branch}.")
 
     # Interpreter floor of the pinned revision, read from the commit itself. The
     # reinstall below would refuse it anyway, but only after the reset has moved
@@ -524,10 +526,10 @@ def _update(force: bool = False) -> None:
     except dep_sync.IncomingFloorUnreadable as exc:
         # Unreadable is not absent: a git failure here must refuse, or it is
         # the one way the revision the gate exists to keep out still lands.
-        print(f"  ❌ Could not read the incoming revision's interpreter requirement: {exc}")
+        print(f"  Error: Could not read the incoming revision's interpreter requirement: {exc}")
         sys.exit(1)
     if floor_breach:
-        print(f"  ❌ Refusing to update: {floor_breach}")
+        print(f"  Error: Refusing to update: {floor_breach}")
         sys.exit(1)
 
     # Re-read the repo-named driver config before `status`: the fetch above can
@@ -535,7 +537,7 @@ def _update(force: bool = False) -> None:
     # that window on every stat-dirty file.
     _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
     if _exec_config:
-        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the update.")
+        print(f"  Update refused: {_exec_config}, which git would run during the update.")
         print("      Remove it from the checkout's git config, then retry.")
         sys.exit(1)
 
@@ -557,12 +559,12 @@ def _update(force: bool = False) -> None:
         # Fail closed: this check exists to warn before the hard reset
         # discards local tracked changes, so an unreadable answer must
         # refuse the reset — same stance as the unreadable-divergence guard.
-        print("  ❌ Could not check for local changes (git status timed out)")
+        print("  Error: Could not check for local changes (git status timed out)")
         sys.exit(1)
     if status.returncode != 0:
         # A failed status prints nothing, which would read as a clean tree and
         # skip the prompt. Refuse, like the timeout above.
-        print(f"  ❌ Could not check for local changes (git status exited {status.returncode})")
+        print(f"  Error: Could not check for local changes (git status exited {status.returncode})")
         detail = (status.stderr or "").strip()
         if detail:
             print(f"      {detail.splitlines()[0]}")
@@ -571,7 +573,7 @@ def _update(force: bool = False) -> None:
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
     if tracked_changes:
-        print("  ⚠️  Local tracked-file changes will be discarded:")
+        print("  Warning: Local tracked-file changes will be discarded:")
         for line in tracked_changes[:10]:
             print(f"      {line}")
         resp = input("  Continue? [y/N] ").strip().lower()
@@ -597,7 +599,7 @@ def _update(force: bool = False) -> None:
         _report_up_to_date(ahead)
         return
     if verdict == "diverged" and not force:
-        print(f"  ⚠️  Refusing to reset: {ahead} local commit(s) appeared on HEAD while")
+        print(f"  Warning: Refusing to reset: {ahead} local commit(s) appeared on HEAD while")
         print("      this update was waiting, which a hard reset would discard.")
         print(f"      Reconcile with: git rebase origin/{branch}")
         sys.exit(1)
@@ -607,28 +609,28 @@ def _update(force: bool = False) -> None:
     # planted in it would run on the reset's checkout.
     _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
     if _exec_config:
-        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the reset.")
+        print(f"  Update refused: {_exec_config}, which git would run during the reset.")
         print("      Remove it from the checkout's git config, then retry.")
         sys.exit(1)
 
     collisions = _untracked_collisions(proj, target, _git_env)
     if collisions is None:
-        print("  ❌ Could not check for untracked files the update would overwrite")
+        print("  Error: Could not check for untracked files the update would overwrite")
         sys.exit(1)
     if collisions:
         # `git reset --hard` replaces an untracked file at a path the target adds
         # without a word, and the `??` lines skipped above never named it.
-        print("  ❌ Refusing to update: untracked files would be overwritten:")
+        print("  Error: Refusing to update: untracked files would be overwritten:")
         for name in collisions[:10]:
             print(f"      {name}")
         print(
-            "  ❌ Update refused: move or remove these untracked files: "
+            "  Error: Update refused: move or remove these untracked files: "
             + ", ".join(collisions[:10])
         )
         sys.exit(1)
 
     _snapshot_memory_or_exit()
-    print(f"  🔄 git reset --hard origin/{branch} ({target[:12]})…")
+    print(f"  git reset --hard origin/{branch} ({target[:12]})…")
     try:
         result = subprocess.run(
             ["git", "reset", "--hard", target],
@@ -643,10 +645,10 @@ def _update(force: bool = False) -> None:
         logging.getLogger("kiro_crew.cli_server").warning(
             "git reset timed out after %ss during update", exc.timeout
         )
-        print(f"  ❌ git reset timed out after {exc.timeout}s")
+        print(f"  Error: git reset timed out after {exc.timeout}s")
         sys.exit(1)
     if result.returncode != 0:
-        print(f"  ❌ git reset failed:\n{result.stderr.strip()}")
+        print(f"  Error: git reset failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
     # Update the optional kiro-cli backend if present. Pinned to an absolute
@@ -664,20 +666,20 @@ def _update(force: bool = False) -> None:
 
     if kas_bundle.kas_bundle_route():
         print(
-            "  ℹ️  kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
+            "  Note: kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
         )
         kiro_cli_bin, unpinned_kiro_cli = None, False
     else:
         kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
     if kiro_cli_bin is None and unpinned_kiro_cli:
-        print(f"  ⚠️  kiro-cli update skipped: {PATH_ONLY_INSTALL_NOTE}")
+        print(f"  Warning: kiro-cli update skipped: {PATH_ONLY_INSTALL_NOTE}")
     if kiro_cli_bin is not None and is_bundled_kiro_cli(kiro_cli_bin, os.environ):
         # The desktop app's bundled copy lives inside the signed bundle and is
         # replaced by the app update, never in place.
-        print("  ℹ️  kiro-cli is the desktop app's bundled copy; it updates with the app")
+        print("  Note: kiro-cli is the desktop app's bundled copy; it updates with the app")
         kiro_cli_bin = None
     if kiro_cli_bin is not None:
-        print("  🔄 kiro-cli update")
+        print("  kiro-cli update")
         try:
             subprocess.run(
                 [kiro_cli_bin, "update"],
@@ -689,12 +691,12 @@ def _update(force: bool = False) -> None:
             logging.getLogger("kiro_crew.cli_server").warning(
                 "kiro-cli update timed out after %ss; skipping (best-effort)", exc.timeout
             )
-            print("  ⚠️  kiro-cli update timed out — run manually: kiro-cli update")
+            print("  Warning: kiro-cli update timed out — run manually: kiro-cli update")
 
     # Ensure a supported Node.js for frontend builds
     from kiro_crew.cli import _ensure_node  # circular import: cli -> cli_server -> cli
 
-    print("  🔄 Checking Node.js…")
+    print("  Checking Node.js…")
     _ensure_node(proj)
     # ensure-node.sh records the node it chose in <data home>/node-bin-dir but
     # cannot change this process's PATH. Put the node dirs first, so the build's
@@ -715,10 +717,10 @@ def _update(force: bool = False) -> None:
     # cannot succeed and dep_sync substitutes a dependency-only sync (it reports,
     # rather than silently tolerating, a revision that repointed the script —
     # that is the one case still needing a terminal without kirocrew running).
-    print("  🔨 Installing the pulled revision…")
+    print("  Installing the pulled revision…")
 
     def _emit(message: str, error: bool) -> None:
-        print(f"  {'❌' if error else '•'} {message}")
+        print(f"  {'Error:' if error else '•'} {message}")
 
     rc = release_apply.apply_release(
         release_apply.GitRelease(Path(proj), Path(sys.executable), _emit, trusted_env=False)
@@ -726,12 +728,12 @@ def _update(force: bool = False) -> None:
     if rc != 0:
         sys.exit(1)
     if build.outcome == "failed":
-        print(f"  ❌ {build.failure_message()}")
+        print(f"  Error: {build.failure_message()}")
         see_log = "; see the log above" if build.tail else ""
         print(f"      Do not restart the gateway until the dashboard builds{see_log}.")
         sys.exit(1)
 
-    print("\n✅ Kiro Crew updated!")
+    print("\nDone: Kiro Crew updated!")
 
     _refresh_agent_config(proj)
 
@@ -790,9 +792,9 @@ def _revalidate_gateway_update_check() -> None:
             req, port, timeout=5, operation="gateway_update_revalidate"
         ) as resp:
             if int(resp.status) == 200:
-                print("  🔄 Update badge refreshed on the running gateway")
+                print("  Update badge refreshed on the running gateway")
                 return
-        print("  ℹ️  Could not refresh the update badge; it reconciles on next check")
+        print("  Note: Could not refresh the update badge; it reconciles on next check")
     except (
         _GatewayPeerRefused,
         http.client.HTTPException,
@@ -803,7 +805,7 @@ def _revalidate_gateway_update_check() -> None:
         # Includes a gateway that is not up (connection refused), a peer whose
         # ownership could not be proven on the connection, and any malformed
         # response. The update stands regardless.
-        print("  ℹ️  Could not refresh the update badge; it reconciles on next check")
+        print("  Note: Could not refresh the update badge; it reconciles on next check")
 
 
 def _refresh_agent_config(proj: str) -> None:
@@ -827,7 +829,7 @@ def _refresh_agent_config(proj: str) -> None:
       handler a slow refresh would traceback out of ``kirocrew update`` right
       after the success banner printed.
     """
-    print("  🔒 Refreshing agent config…")
+    print("  Refreshing agent config…")
     try:
         r = subprocess.run(
             platform_compat.isolated_python_argv("-P", "-m", "kiro_crew", "setup", "--agent-only"),
@@ -842,12 +844,12 @@ def _refresh_agent_config(proj: str) -> None:
         logging.getLogger("kiro_crew.cli_server").warning(
             "agent-only config refresh timed out after %ss; skipping (best-effort)", exc.timeout
         )
-        print("  ⚠️  Agent config refresh timed out — run: kirocrew setup --agent-only")
+        print("  Warning: Agent config refresh timed out — run: kirocrew setup --agent-only")
         return
     if r.returncode == 0:
-        print("  ✅ Agent config refreshed (deniedCommands + hooks updated)")
+        print("  Done: Agent config refreshed (deniedCommands + hooks updated)")
     else:
-        print("  ⚠️  Agent config refresh failed — run: kirocrew setup --agent-only")
+        print("  Warning: Agent config refresh failed — run: kirocrew setup --agent-only")
 
 
 def _update_wheel(layout) -> None:
@@ -876,13 +878,13 @@ def _update_wheel(layout) -> None:
         feed_base, artifact_base = wheel_apply.preflight_bases()
     except wheel_apply.WheelApplyRefused as exc:
         if exc.code == "blocked_by_policy":
-            print(f"  🛡️  Update blocked by security policy: {exc.message}")
+            print(f"  Update blocked by security policy: {exc.message}")
         else:
-            print("  ❌ CDN base URL contains disallowed characters")
+            print("  Error: CDN base URL contains disallowed characters")
         sys.exit(1)
     feed_url = f"{feed_base}/feed/{channel}/latest-cli.json"
 
-    print(f"  📦 Install type: {layout.kind} (channel: {channel})")
+    print(f"  Install type: {layout.kind} (channel: {channel})")
     # feed_url embeds the CDN base; a userinfo-bearing KIROCREW_CDN_BASE
     # (user:pass@host) passes cdn_bases_are_safe() and would otherwise land in
     # terminal scrollback. Redact the displayed form; the fetch below still uses
@@ -890,12 +892,12 @@ def _update_wheel(layout) -> None:
     from kiro_crew.security import redact_credentials
 
     shown_feed_url, _ = redact_credentials(feed_url)
-    print(f"  📡 Checking {shown_feed_url}…")
+    print(f"  Checking {shown_feed_url}…")
 
     # Fetch the release feed (scheme-validated to satisfy SAST — cdn_bases()
     # already enforces https but Semgrep cannot see through the indirection).
     if not feed_url.startswith("https://"):
-        print(f"  ❌ Refusing non-HTTPS feed URL: {shown_feed_url}")
+        print(f"  Error: Refusing non-HTTPS feed URL: {shown_feed_url}")
         sys.exit(1)
     from kiro_crew.asset_downloader import network_failure_cause
 
@@ -906,50 +908,50 @@ def _update_wheel(layout) -> None:
         ) as resp:
             raw = resp.read(65536 + 1)
     except (urllib.error.URLError, OSError, ValueError) as e:
-        print(f"  ❌ Could not reach release feed: {network_failure_cause(e) or e}")
+        print(f"  Error: Could not reach release feed: {network_failure_cause(e) or e}")
         print("\n  To update manually, run:")
         print(f"    {wheel_update_command(channel)}")
         sys.exit(1)
 
     if len(raw) > 65536:
-        print("  ❌ Release feed response too large — may be corrupted")
+        print("  Error: Release feed response too large — may be corrupted")
         sys.exit(1)
 
     try:
         manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        print("  ❌ Release feed is not valid JSON")
+        print("  Error: Release feed is not valid JSON")
         sys.exit(1)
 
     if not isinstance(manifest, dict):
-        print("  ❌ Release feed has unexpected format")
+        print("  Error: Release feed has unexpected format")
         sys.exit(1)
 
     if manifest.get("schema") != "kirocrew-cli-artifact-manifest-v1":
-        print("  ❌ Release feed schema mismatch — update the installer first")
+        print("  Error: Release feed schema mismatch — update the installer first")
         print(f"    {wheel_update_command(channel)}")
         sys.exit(1)
 
     if manifest.get("channel") != channel:
-        print(f"  ❌ Feed channel mismatch (expected {channel}, got {manifest.get('channel')})")
+        print(f"  Error: Feed channel mismatch (expected {channel}, got {manifest.get('channel')})")
         sys.exit(1)
 
     remote_version = manifest.get("version", "")
     if not remote_version or not isinstance(remote_version, str):
-        print("  ❌ No version in release feed")
+        print("  Error: No version in release feed")
         sys.exit(1)
 
-    print(f"  📋 Current: {local_version}")
-    print(f"  📋 Latest:  {remote_version}")
+    print(f"  Current: {local_version}")
+    print(f"  Latest:  {remote_version}")
 
     # Compare versions using the same logic as the dashboard
     from kiro_crew.dashboard.handlers.updates import _is_newer
 
     newer = _is_newer(remote_version, local_version)
     if newer is None:
-        print("  ⚠️  Could not compare versions — updating anyway to be safe")
+        print("  Warning: Could not compare versions — updating anyway to be safe")
     elif not newer:
-        print("\n✅ Already on the latest version!")
+        print("\nAlready on the latest version!")
         return
 
     # The managed-venv shape takes the shadow path: the new version is built
@@ -974,7 +976,7 @@ def _update_wheel(layout) -> None:
         upgrade, restart = non_managed_pip_update_hint()
         from kiro_crew.security import redact_credentials
 
-        print("\n  ⚠️  This looks like a plain `pip install` in an environment you manage.")
+        print("\n  Warning: This looks like a plain `pip install` in an environment you manage.")
         print("  Re-running the installer would add a second copy and leave this one")
         if upgrade.command is not None:
             # The upgrade command embeds the CDN base, and a userinfo-bearing
@@ -1002,12 +1004,12 @@ def _update_wheel(layout) -> None:
 
     # Run the installer
     cmd = wheel_update_command(channel)
-    print("\n  🔄 Running installer…")
+    print("\n  Running installer…")
     print(f"     {cmd}\n")
 
     # Platform guard: cli.sh is a POSIX shell script; on Windows there is no sh.
     if sys.platform == "win32":
-        print("  ❌ Wheel self-update is not supported on Windows.")
+        print("  Error: Wheel self-update is not supported on Windows.")
         print("  To update manually, run in PowerShell:")
         print(f"    {cmd}")
         sys.exit(1)
@@ -1025,7 +1027,7 @@ def _update_wheel(layout) -> None:
         proc = subprocess.Popen(["sh", "-c", cmd], start_new_session=True)
         returncode = proc.wait(timeout=300)
     except FileNotFoundError:
-        print("  ❌ 'sh' not found — cannot run the installer.")
+        print("  Error: 'sh' not found — cannot run the installer.")
         print("  To update manually, run:")
         print(f"    {cmd}")
         sys.exit(1)
@@ -1037,7 +1039,7 @@ def _update_wheel(layout) -> None:
                 )
             except KeyboardInterrupt:
                 pass  # the stop already completed; still print the guidance below
-        print("\n  ❌ Installer timed out (5 min)")
+        print("\n  Error: Installer timed out (5 min)")
         print("  Try running manually:")
         print(f"    {cmd}")
         sys.exit(1)
@@ -1054,12 +1056,12 @@ def _update_wheel(layout) -> None:
                 pass  # a second Ctrl-C during the stop; the stop already completed
         sys.exit(130)
     if returncode != 0:
-        print(f"\n  ❌ Installer exited with code {returncode}")
+        print(f"\n  Error: Installer exited with code {returncode}")
         print("  Try running manually:")
         print(f"    {cmd}")
         sys.exit(1)
 
-    print(f"\n✅ Kiro Crew updated to {remote_version}!")
+    print(f"\nDone: Kiro Crew updated to {remote_version}!")
     print("\n  Restart the gateway to use the new version:")
     print("    kirocrew restart")
 
@@ -1103,7 +1105,7 @@ def _update_managed_venv(
     from kiro_crew.platform import release_apply, wheel_apply
     from kiro_crew.platform.wheel_engine import WheelUpdateError
 
-    print("\n  🔄 Building the new version beside the current one…")
+    print("\n  Building the new version beside the current one…")
 
     def _progress(msg: str) -> None:
         print(f"     {msg}")
@@ -1135,9 +1137,9 @@ def _update_managed_venv(
         failure = exc
     outcome = wheel_apply.classify(failure)
     if outcome.status == "promoted":
-        print(f"\n✅ Kiro Crew {remote_version} installed at {promoted}")
+        print(f"\nDone: Kiro Crew {remote_version} installed at {promoted}")
         if reattach:
-            print(f"\n  ⚠️  {wheel_apply.userns_reattach_after_apply(remote_version)}")
+            print(f"\n  Warning: {wheel_apply.userns_reattach_after_apply(remote_version)}")
             return
         print("\n  Restart the gateway to switch to it:")
         print("    kirocrew restart")
@@ -1148,15 +1150,15 @@ def _update_managed_venv(
     if outcome.status == "busy":
         if _gateway_holds_update_lock():
             # Not a failure: the gateway restarts onto the update itself once it lands.
-            print("\n  ⏳ The running gateway is already installing an update and restarts onto")
+            print("\n  The running gateway is already installing an update and restarts onto")
             print("     it once the install succeeds. If `kirocrew --version` has not changed")
             print("     when it is done, run `kirocrew update` again.")
             return
-        print(f"\n  ⏳ {message}")
+        print(f"\n  {message}")
         print("     Another update (possibly the gateway's own) is in progress. Wait for it")
         print("     to finish, then run `kirocrew update` again.")
         sys.exit(1)
-    print(f"\n  ❌ {message}")
+    print(f"\n  Error: {message}")
     if outcome.status in ("snapshot_failed", "deferred"):
         sys.exit(1)
     if outcome.status == "incompatible":

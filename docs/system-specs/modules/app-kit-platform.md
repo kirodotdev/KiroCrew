@@ -9820,8 +9820,13 @@ slot.
 `state` read is `GET /api/browser/media?session_key=`, so a player's poll writes no row
 through the mutating-call audit middleware) is the
 owner's play, pause, seek and volume on a session's tab: the internal secret, a non-owner
-and an app token are refused, `capabilities.browse` is asked, and the slot must be owned by
-an app holding sites (`not_app_browser`). It never starts the browser (`no_tab`), touches
+and an app token are refused, `capabilities.browse` is asked (an action's refusal is
+audited, a state poll's is not), and the slot must be owned by an app holding sites
+(`not_app_browser`). The route cannot tell which app's page calls it: a page module
+runs in the dashboard document with the owner's cookie, so telling one app's page from
+another's needs an app-scoped credential, which this route does not have. A slot held to
+`NO_PAGES` answers with `browser_ops.SITES_REVOKED_TEXT`, which says the sites were
+withdrawn and that approving them again on the app's page ends the hold. It never starts the browser (`no_tab`), touches
 nothing while the person has taken the tab over (`user_in_control`), takes the op lock and
 the takeover fence (`LiveHub.op_fence`), points the daemon at the session's own tab without raising it, and runs the
 walker's `media` method in the isolated world (`browser_harness/media.py`), after the same

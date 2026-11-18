@@ -1339,6 +1339,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_folders_records import (  # noqa: F401
         _KNOWN_INTERNAL_CALLERS,
         CREATED_BY_SESSION,
+        FOLDER_MEMBER_KEYS_CHECKED_MARKER,
         FOLDER_MEMBER_LABELS_MARKER,
         LAYOUT_ONLY_FIELDS,
         MAX_CHAT_FOLDERS,
@@ -1350,6 +1351,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         FolderOwnershipError,
         _caller_reaches_a_channel,
         _folder_history_counts,
+        _folders_moved_onto_a_crewmate,
         _folders_with_history_counts,
         _refuse_unattributable_caller,
         _slot_home_folder_id,

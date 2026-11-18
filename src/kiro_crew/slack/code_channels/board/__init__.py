@@ -13,6 +13,8 @@ workspace's own per-channel refresh (no second publisher):
 * **The Code tab** (``workspace.service._build_diff``): the combined change, the
   channel's own diff, then each worker's commits under a header naming it.
 * **The wrap-up** (:func:`outcome_lines`): one outcome line per worker.
+* **The context bar** (``workspace.context_bar``): one Workers item with the
+  board's counts (:func:`.model.bar_label`), linked to the pinned board.
 
 Slack's ``agents.sessions.setStatus`` takes no text in a code channel (it has no
 ``loading_messages``), so the aggregate lives in the board header; the native

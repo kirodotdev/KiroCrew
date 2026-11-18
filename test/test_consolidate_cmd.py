@@ -429,8 +429,8 @@ class TestConsolidateCmdExceptionPath:
 
         assert exit_info.value.code == 1
         captured = capsys.readouterr()
-        assert "  good: done ✓" in captured.out
-        assert "  later: done ✓" in captured.out
+        assert "  good: done\n" in captured.out
+        assert "  later: done\n" in captured.out
         assert "  bad: failed (RuntimeError)" in captured.err
         assert "1 session(s) did not finish consolidating." in captured.err
         assert "secret transcript text" not in captured.err + captured.out
@@ -462,7 +462,7 @@ class TestConsolidateCmdExceptionPath:
         _consolidate_cmd(argparse.Namespace(session_key="empty", consolidate_all=False))
 
         captured = capsys.readouterr()
-        assert "  good: done ✓" in captured.out
+        assert "  good: done\n" in captured.out
         assert "  empty: no unconsolidated messages, skipping" in captured.out
         assert captured.out.count("Done. Check ~/.kiro/crew/skills/auto/ for new skills.") == 2
         assert captured.err == ""

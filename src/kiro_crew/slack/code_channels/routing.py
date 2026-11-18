@@ -31,7 +31,8 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from functools import partial
+from typing import Any
 
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
@@ -58,6 +59,7 @@ from kiro_crew.slack.code_channels.creation import (
 )
 from kiro_crew.slack.code_channels.models import ChannelInfo, CodeChannelApiError, CreateRequest
 from kiro_crew.slack.code_channels.recognition import ChannelKind
+from kiro_crew.slack.code_channels.route_gate import Admit, _route_to_slot, admitted
 from kiro_crew.slack.code_channels.store import (
     ROUTE_CODE_CHANNEL,
     Binding,
@@ -66,15 +68,12 @@ from kiro_crew.slack.code_channels.store import (
     store,
 )
 
-if TYPE_CHECKING:
-    from kiro_crew.slack.handler import LinkedRoute
-
 logger = logging.getLogger(__name__)
 
 _MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
 
 NOT_AUTHORIZED_TEXT = (
-    "⛔ You are not authorized to use this bot. Ask the owner to add you to the allowlist."
+    "Blocked: You are not authorized to use this bot. Ask the owner to add you to the allowlist."
 )
 
 
@@ -726,7 +725,7 @@ def _folder_name(state: Any, folder_id: str) -> str:
 def _kickoff_text(title: str, state: Any, folder_id: str) -> str:
     where = _folder_name(state, folder_id) if folder_id else ""
     dashboard = f"the *{where}* folder of your dashboard" if where else "your dashboard"
-    heading = f"🛠️ *{title}*\n" if title else ""
+    heading = f"*{title}*\n" if title else ""
     return (
         f"{heading}This channel is one Kiro Crew session: reply here, no @mention "
         f"needed, and use Stop to interrupt me. It is also open in {dashboard}."
@@ -1031,49 +1030,6 @@ def options_answer_permitted(channel: str, sender: str = "") -> bool:
     return False
 
 
-async def _route_to_slot(
-    orch: Any,
-    binding: Binding,
-    text: str,
-    sender_id: str,
-    *,
-    sender: dict[str, str] | None = None,
-    request_id: str = "",
-) -> LinkedRoute:
-    """Deliver *text* to the bound session as a person's message.
-
-    *sender* is the message's Slack sender (:func:`creation.slack_sender`),
-    stored on the session's user row as ``meta["slack_sender"]`` for
-    attribution; None leaves the key off. *request_id* names the Slack message
-    a first turn delivers (:func:`_request_id`), stored as
-    ``meta["slack_request"]`` on the row or its queued entry so a re-delivered
-    event can tell this request reached the session.
-
-    Only :attr:`LinkedRoute.ROUTED` means the session has the message. A
-    REFUSED one was answered in the channel and appended nowhere, so it is
-    never recorded as delivered.
-    """
-    from kiro_crew.slack.handler import LinkedRoute, route_linked_thread
-
-    meta: dict[str, Any] = {}
-    if sender:
-        meta["slack_sender"] = dict(sender)
-    if request_id:
-        meta[REQUEST_META_KEY] = request_id
-    routed = await route_linked_thread(
-        text,
-        binding.session_key,
-        sender_id,
-        binding.channel_id,
-        _slack(orch),
-        binding.anchor_ts,
-        user_meta=meta or None,
-    )
-    if routed is LinkedRoute.ROUTED:
-        _adopt_temps(binding.session_key)
-    return routed
-
-
 UNROUTED_TEXT = (
     "I could not reach this channel's session just now. Open it in your dashboard, "
     "or try again in a moment."
@@ -1136,13 +1092,21 @@ async def _dispatch_directed(
 
 
 async def deliver_directed(
-    orch: Any, result: InboundResult, event: dict[str, Any], clean_text: str, sender_id: str
+    orch: Any,
+    result: InboundResult,
+    event: dict[str, Any],
+    clean_text: str,
+    sender_id: str,
+    *,
+    admit: Admit | None = None,
 ) -> bool:
     """Deliver a DIRECTED message to the channel's session; True when it reached it.
 
     A message the gate admitted is never handed back to the normal path, which
     would answer it in a thread session the channel does not belong to; when it
-    cannot be delivered, the sender is told so in the channel.
+    cannot be delivered, the sender is told so in the channel. *admit* (a
+    channel command's live fences) is asked right before the route, after the
+    awaits here; a refusal returns False with nothing posted (the caller says why).
     """
     channel = str(event.get("channel") or "")
     if _asks_for_privacy(clean_text):
@@ -1181,6 +1145,13 @@ async def deliver_directed(
             refused = bool(
                 surface.channel_policy_refusal(channel, operation=operation, caller=sender_id)
             )
+            needs_bind = not (archived or refused) and (
+                binding is None or bound_slot(_dashboard_state(), binding) is None
+            )
+            if needs_bind and admit is not None and await admit(binding):
+                # A bind posts the kickoff and makes a session: a command's own
+                # fences are asked right before it, after the lock's wait.
+                return False
             if archived or refused:
                 pass  # nothing is adopted, rebound or prepared for these
             elif binding is None:
@@ -1239,6 +1210,8 @@ async def deliver_directed(
     # spend the bind budget twice on one message.
     from kiro_crew.slack.handler import LinkedRoute
 
+    if admit is not None and not await admitted(binding, admit):
+        return False  # a command's own fences, asked last before the sync checks below
     if surface.channel_policy_refusal(channel, operation=operation, caller=sender_id):
         return False  # again after the bind's awaits, right before the turn (and its worktree)
     current = store().get_binding(channel)
@@ -1248,10 +1221,14 @@ async def deliver_directed(
         _audit(sender_id, "slack.code_channel.message", "denied", f"channel={channel}", "archived")
         await _post(orch, channel, ARCHIVED_TEXT, None)
         return False
-    routed = await _route_to_slot(orch, binding, clean_text, sender_id, sender=slack_sender(event))
+    # The command's fences again at the route's commit point, after its own awaits.
+    gate = None if admit is None else partial(admitted, binding, admit)
+    routed = await _route_to_slot(
+        orch, binding, clean_text, sender_id, sender=slack_sender(event), admit=gate
+    )
     if routed is LinkedRoute.UNROUTED:
         await _post(orch, channel, UNSUPPORTED_COMMAND_TEXT, None)
-    # REFUSED: the refusal itself was the reply. Only ROUTED reached the session.
+    # REFUSED: the refusal was the reply; HELD: the command's gate (its caller says why).
     return routed is LinkedRoute.ROUTED
 
 

@@ -318,7 +318,7 @@ class TestTurnFooter:
         clock.t += 64.2
         await renderer.on_done()
         await renderer.close()
-        assert client.sealed[-1] == "the answer\n\n-# Finished in 1m 4s · 🟢 ctx 18%"
+        assert client.sealed[-1] == "the answer\n\n-# Finished in 1m 4s · ctx 18%"
 
     @pytest.mark.asyncio
     async def test_footer_renders_once_across_repeated_done(self) -> None:
@@ -385,7 +385,7 @@ class TestTurnFooter:
         clock.t += 4.0
         await renderer.on_done(stop_reason="error")
         await renderer.close()
-        assert client.texts == ["⚠️ Error — please try again\n\n-# Finished in 4s"]
+        assert client.texts == ["Error: please try again\n\n-# Finished in 4s"]
 
     @pytest.mark.asyncio
     async def test_footer_is_dropped_rather_than_overflow_the_platform_cap(self) -> None:
@@ -407,7 +407,7 @@ class TestShowThinkingToggle:
         await renderer.on_done()
         await renderer.close()
         assert not any("chain of thought" in text for text in client.texts)
-        assert not any(text.startswith("-# 💭") for text in client.texts)
+        assert not any(text.startswith("-# Thinking:") for text in client.texts)
 
     @pytest.mark.asyncio
     async def test_on_posts_reasoning_as_subtext_above_the_answer(self) -> None:
@@ -417,7 +417,7 @@ class TestShowThinkingToggle:
         await renderer.on_text_chunk("answer")
         await renderer.on_done()
         await renderer.close()
-        assert client.sent[0][0] == "-# 💭 weighing the options"
+        assert client.sent[0][0] == "-# Thinking: weighing the options"
         assert "answer" in client.texts[1]
 
     @pytest.mark.asyncio
@@ -430,7 +430,7 @@ class TestShowThinkingToggle:
         await renderer.on_text_chunk(" more")
         await renderer.on_done()
         await renderer.close()
-        assert sum(text.startswith("-# 💭") for text in client.texts) == 1
+        assert sum(text.startswith("-# Thinking:") for text in client.texts) == 1
 
     @pytest.mark.asyncio
     async def test_on_still_posts_reasoning_from_a_turn_with_no_answer(self) -> None:
@@ -439,7 +439,7 @@ class TestShowThinkingToggle:
         await renderer.on_thinking("thought with no answer")
         await renderer.on_done()
         await renderer.close()
-        assert client.sent[0][0] == "-# 💭 thought with no answer"
+        assert client.sent[0][0] == "-# Thinking: thought with no answer"
 
     @pytest.mark.asyncio
     async def test_multi_line_reasoning_marks_every_line(self) -> None:
@@ -448,7 +448,7 @@ class TestShowThinkingToggle:
         await renderer.on_thinking("first line\n\nsecond line")
         await renderer.on_text_chunk("answer")
         await renderer.close()
-        assert client.sent[0][0] == "-# 💭 first line\n-# second line"
+        assert client.sent[0][0] == "-# Thinking: first line\n-# second line"
 
     @pytest.mark.asyncio
     async def test_reasoning_is_redacted_before_it_is_posted(self) -> None:

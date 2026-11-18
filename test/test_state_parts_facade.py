@@ -153,6 +153,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "_dirty": ("property", False, False, "(self) -> 'bool'"),
     "_has_reader": ("property", False, False, "(self) -> 'bool'"),
+    "_project_picked": ("property", False, False, "(self) -> 'bool'"),
     "_trust": ("property", False, False, "(self) -> 'bool'"),
     "_trust_reads": ("property", False, False, "(self) -> 'bool'"),
     "_turn_timeout_hydrated": ("property", False, False, "(self) -> 'bool'"),

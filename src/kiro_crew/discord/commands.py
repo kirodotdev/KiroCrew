@@ -221,7 +221,7 @@ def application_command_payload() -> list[dict[str, Any]]:
     return rows
 
 
-_HELP_HEADER = "🦞 **Kiro Crew — Discord**"
+_HELP_HEADER = "**Kiro Crew — Discord**"
 _HELP_FOOTER = (
     "While a reply is running, prefix a message to control it:\n"
     "`!queue <msg>` — answer it after the current turn\n"
@@ -296,6 +296,6 @@ def unknown_command_usage(text: str) -> str:
     # Echoing the token back is safe because the shape check above admits only
     # ``[a-z0-9_-]``, so it carries no backtick, mention or credential syntax.
     return (
-        f"❓ `{token}` isn't a command. To chat, send the message without the "
+        f"`{token}` isn't a command. To chat, send the message without the "
         f"leading `!`.\n\n{build_help_text()}"
     )

@@ -199,7 +199,7 @@ def test_a_chat_reply_shows_the_admission_timeout_diagnosis() -> None:
 
     text = transport_dispatch._transport_error_text(exc)
     assert text != transport_dispatch._TRANSPORT_ERROR_TEXT
-    assert text.startswith("❌ ")
+    assert text.startswith("Error: ")
     assert f"(PID 4242) into its scope {_UNIT}" in text
     assert "within 210s, so the agent has not started" in text
     assert "systemctl --user list-units --state=failed --no-legend | wc -l" in text
@@ -225,7 +225,7 @@ def test_a_chat_reply_shows_the_runtime_admission_timeout_diagnosis() -> None:
     assert is_user_worded_failure(exc)
     text = transport_dispatch._transport_error_text(exc)
     assert text != transport_dispatch._TRANSPORT_ERROR_TEXT
-    assert text.startswith("❌ ")
+    assert text.startswith("Error: ")
     assert f"(PID 4242) into its scope {_UNIT}" in text
     assert "within 210s, so the agent has not started" in text
     assert "systemctl --user list-units --state=failed --no-legend | wc -l" in text

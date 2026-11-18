@@ -415,6 +415,7 @@ class TestGateParityWithCi:
         {
             "check_brand_name.py",
             "check_comment_history.py",
+            "check_backend_emoji.py",
             "check_emoji_icons.py",
             "check_focus_cue.py",
             "check_harness_parity.py",

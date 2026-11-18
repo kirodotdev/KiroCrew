@@ -7,8 +7,6 @@ import { api, type SecretsUsageResponse, type SecretUsagePlace } from '../../api
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
 import { FieldRow, FieldRows } from '../../components/ui/field-row'
-import { whenPreviewFlagSaved } from '../../hooks/usePreviewFlagServerSync'
-import { PREVIEW_SECRETS_VAULT } from '../../utils/previewFlags'
 
 /** Under the panel's `['secrets']` key, so every vault write that refreshes
  *  the list refreshes where its items are used too. */
@@ -32,12 +30,7 @@ function useSecretUsage() {
     // (a grant approved on Schedule, a server added) with no vault write here.
     staleTime: 0,
     refetchOnMount: 'always',
-    // Same order as the panel's list: the route answers only once the gateway
-    // has the preview switch's save.
-    queryFn: async () => {
-      await whenPreviewFlagSaved(PREVIEW_SECRETS_VAULT)
-      return api.secretsUsage()
-    },
+    queryFn: () => api.secretsUsage(),
   })
 }
 

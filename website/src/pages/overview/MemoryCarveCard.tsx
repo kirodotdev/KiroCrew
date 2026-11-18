@@ -8,6 +8,7 @@ import { sliceCodePoints } from '../../utils/codePoints'
 import SimpleSelect from '../../components/SimpleSelect'
 import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { MemoryScopeNotice, memoryQueryRetry, useMemoryStores } from './MemoryStoreCard'
 
 /**
@@ -63,6 +64,11 @@ export default function MemoryCarveCard({ store }: { store: string }) {
   const [countBy, setCountBy] = useState<string>(FACET_AXES[1])
   const [filter, setFilter] = useState<CarveFilter | null>(null)
   const stores = useMemoryStores()
+  // The entry table's cells are plain text, so nothing inside ever takes focus:
+  // while it hides columns its scroller is the named Tab stop the arrow keys
+  // scroll. A table that fits gets no stop.
+  const [attachScroller, edges, , attachTable] = useScrollEdges<HTMLDivElement>()
+  const clipped = edges.left || edges.right
   const summary = stores.data?.stores.find(item => item.name === store)
   // Global V1 has no facets. Other stores report the capability in their listing;
   // skip an inapplicable request rather than turning its rejection into status.
@@ -174,8 +180,15 @@ export default function MemoryCarveCard({ store }: { store: string }) {
                       </article>
                     ))}
                   </div>
-                  <div className="hidden overflow-x-auto sm:block">
-                    <table className="w-full border-collapse table-striped">
+                  <div
+                    ref={attachScroller}
+                    className="hidden overflow-x-auto sm:block"
+                    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop IS the fix: a scroller that hides columns and holds nothing focusable is skipped by an engine that does not focus scrollers itself and unnamed in one that does, and axe's scrollable-region-focusable asks for the explicit stop.
+                    tabIndex={clipped ? 0 : undefined}
+                    role={clipped ? 'region' : undefined}
+                    aria-label={clipped ? i18nT('memoryV2.analysis_title') : undefined}
+                  >
+                    <table ref={attachTable} className="w-full border-collapse table-striped">
                       <thead>
                         <tr>
                           <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('memoryV2.group_kind')}</th>

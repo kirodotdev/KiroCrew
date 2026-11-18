@@ -347,6 +347,7 @@ describe('CI supplies a base commit on both paths', () => {
     // Add the new gate's env name when it lands, and check its wiring is in the loop.
     const names = wirings.map((line) => line.trim().split(':')[0]).sort()
     expect(names).toEqual([
+      'BACKEND_EMOJI_BASE_REF',
       'BRAND_BASE_REF',
       'CHANGELOG_BASE_REF',
       'COMMENT_HISTORY_BASE_REF',

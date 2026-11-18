@@ -6,6 +6,7 @@
  * and Open handing the shell the endpoint ID only.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import * as React from 'react'
 import { act, render, screen, waitFor, cleanup, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -442,6 +443,50 @@ describe('TeamCrewsGroup', () => {
     await screen.findByTestId('relay-crews-list-refusal')
     expect(screen.queryByTestId('relay-crews-list-sign-in')).toBeNull()
     expect(screen.getByRole('menuitem', { name: /ask the agent/i })).toBeTruthy()
+  })
+
+  it.each([
+    ['a remote Crew pane', { activeId: 'remote-1', relayActive: null }],
+    ['a relay Crew pane', { activeId: null, relayActive: 'relay-1' }],
+  ] as const)('offers the way to Settings > Kiro account on a signed-out list refusal, over %s', async (_name, cover) => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
+      new ApiError(401, 'signed out', JSON.stringify({ error: 'signed out', code: 'SIGNED_OUT' })),
+    )
+    vi.spyOn(api, 'listInstances').mockResolvedValue(listResp([]))
+    const history = createMemoryHistory({ initialEntries: ['/chat'] })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = createTestStore({ instances: { warm: {}, mru: [], unread: {}, ...cover } })
+    function Routed() {
+      const [loc, setLoc] = React.useState(history.location)
+      React.useEffect(() => history.listen(({ location }) => setLoc(location)), [])
+      return <Router location={loc} navigator={history}><TeamCrewsSwitcher variant="inline" /></Router>
+    }
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <ThemeProvider><Routed /></ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    const u = userEvent.setup()
+    await openGroup(u)
+    await u.click(await screen.findByRole('menuitem', { name: 'Sign in to Kiro' }))
+    expect(history.location.pathname).toBe('/settings/kiro-account')
+    // A remote pane covered the local Crew: it is brought forward, so the tab is seen.
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(store.getState().instances.relayActive ?? null).toBeNull()
+  })
+
+  it('offers no Kiro account item on a list refusal that is not about sign-in', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
+      new ApiError(503, 'down', JSON.stringify({ error: 'down', code: 'SERVICE_ERROR' })),
+    )
+    mount()
+    await openGroup(userEvent.setup())
+    await screen.findByTestId('relay-crews-list-refusal')
+    expect(screen.queryByTestId('relay-crews-list-sign-in')).toBeNull()
   })
 
   it('shows a load failure, not an Open failure, when the list read fails with no known code', async () => {

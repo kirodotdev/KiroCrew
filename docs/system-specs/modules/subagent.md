@@ -395,7 +395,9 @@ unlearned price and any local bucket's learned settled figure, never under
 `subagent_cost_gb`), a lower bound since the warming reserve lives in the
 gateway's manager. When that bar is not met the tool says
 new top-level subagents cannot start and that they wait in the queue, in place
-of the AMPLE guidance. For a session bound to a remote workspace no reading is
+of the AMPLE guidance. Both numbers print at two decimals; a blocked line
+rounds the figure down and the bar up, so the figure shown is always below the
+bar shown. For a session bound to a remote workspace no reading is
 taken and nothing is reported blocked, since the gate prices that session's
 children without the floor.
 
@@ -1575,8 +1577,8 @@ made; no gate reads it back. Two consumers:
   `{"status": "queued", ...}` record for a member that had not started when its
   wait ended (and reports it only there, never also as an error), `kirocrew spawn run` prints `Queued subagent <id> …`, and the
   channel `spawn <task>` keyword (`messaging/commands.py`) replies
-  `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`, and
-  `⚠️ Subagent … was not started: <error>` for a refusal (a terminal record, not
+  `Queued subagent …` with the reason instead of `Spawned subagent …`, and
+  `Warning: Subagent … was not started: <error>` for a refusal (a terminal record, not
   None). A
   `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
   shape and clears within seconds. Neither the admission verdicts nor the memory
@@ -2004,6 +2006,20 @@ SEL row vocabulary (`SubagentRows`) live in `tool_permission.py`; which stages
 the subagent runs and in which order live in `_permission_policy`, and what reads
 or moves this run's own state (the approval prompt's wait flag and crew-log
 pair, the log lines, the counter, `tool_count`) lives beside it in `run.py`.
+
+**A turn that ends on a host refusal resumes.** Two backends end the turn on the
+reject itself, so no steer reaches the model: codex aborts it (`cancelled`), and
+opencode closes the call with its stock "user rejected permission" text and ends
+it `end_turn` with nothing after it. The run then withholds that ending and sends
+`deny_notice.build_refused_turn_resume_prompt` (the redacted notice, plus the fact
+that the turn was stopped) as the next prompt on the same session, at most
+`REFUSED_TURN_RESUME_MAX` times per run (`subagent_manager/run_turn.py`). The clean
+ending resumes only on opencode (the provider's `is_opencode_backend`; other
+harnesses go on after a reject, so their clean ending is the model's own), and
+only when the model wrote no text and made no new tool call after the latest
+refusal; a
+turn the model went on with, a person's no in the same attempt, and a stop, reap
+or shutdown end as they ended. Pinned by `test_subagent_refused_turn_resume.py`.
 
 The `is_yolo()` read happens once, when `parent_policy` is resolved at
 `_run_inner` start — a YOLO toggle mid-execution takes effect on the next

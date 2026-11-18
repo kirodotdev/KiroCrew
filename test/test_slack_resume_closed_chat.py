@@ -138,10 +138,10 @@ class TestResumeReply:
         orch.dashboard_state.slot_exists = MagicMock(return_value=True)
         await _resume("thread")
         orch.slack.post_message.assert_any_await(
-            "C5", "🧵 *My chat*\nSession resumed. Continue the conversation in this thread."
+            "C5", "*My chat*\nSession resumed. Continue the conversation in this thread."
         )
         text = aiohttp_sess.post.await_args.kwargs["json"]["text"]
-        assert text == "▶️ Resumed *My chat* in thread."
+        assert text == "Resumed *My chat* in thread."
         orch.sessions.set_slack_link.assert_called_once_with("dashboard:s1", "ts1", "C5")
         orch.dashboard_state.link_slack.assert_called_once_with("s1", "ts1", "C5")
 
@@ -153,7 +153,7 @@ class TestResumeReply:
         orch.dashboard_state.slot_exists = MagicMock(return_value=False)
         await _resume("thread", key="taskrunner_run_t1")
         text = aiohttp_sess.post.await_args.kwargs["json"]["text"]
-        assert text == "▶️ Resumed *My chat* in thread."
+        assert text == "Resumed *My chat* in thread."
 
     @pytest.mark.asyncio
     async def test_tab_not_yet_restored_is_not_called_closed(
@@ -165,4 +165,4 @@ class TestResumeReply:
         orch.dashboard_state = state
         await _resume("thread")
         text = aiohttp_sess.post.await_args.kwargs["json"]["text"]
-        assert text == "▶️ Resumed *My chat* in thread."
+        assert text == "Resumed *My chat* in thread."

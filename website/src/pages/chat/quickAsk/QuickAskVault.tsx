@@ -5,13 +5,11 @@ import { Btn, Checkbox } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import InfoTip from '../../../components/InfoTip'
 import { i18nT } from '../../../i18n/t'
-import { usePreviewFlag } from '../../../hooks/usePreviewFlag'
-import { PREVIEW_SECRETS_VAULT } from '../../../utils/previewFlags'
 import { askUi } from './askUi'
 import type { QuickAsk, QuickAskVaultLogin } from './types'
 
 /**
- * The sign-in sheet's Secrets vault part (preview `PREVIEW_SECRETS_VAULT`).
+ * The sign-in sheet's Secrets vault part.
  *
  * The gateway sends the NAMES of the vault logins for the ask's site (same
  * base domain; see `browser_harness/vault_fill.py`). A click on one asks the gateway to fill it: the username and
@@ -20,10 +18,9 @@ import type { QuickAsk, QuickAskVaultLogin } from './types'
  * (off by default); the gateway saves what was typed only after the fill lands.
  */
 
-/** The ask's vault part, or null: the preview is off, or the gateway sent none. */
+/** The ask's vault part, or null when the gateway sent none. */
 export function useVaultPart(ask: QuickAsk): { items: QuickAskVaultLogin[]; more?: number } | null {
-  const on = usePreviewFlag(PREVIEW_SECRETS_VAULT)
-  return on && ask.vault ? ask.vault : null
+  return ask.vault ?? null
 }
 
 /** How many login buttons show before "More". */

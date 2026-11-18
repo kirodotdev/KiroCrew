@@ -240,8 +240,95 @@ class TestCommandFailureReachesTheUser:
         )
         assert job.last_status == "error"
         bodies = _bodies(gw)
-        assert any("exit_code=2" in b for b in bodies)
+        assert any("exit code 2" in b for b in bodies)
         assert any("connection refused" in b for b in bodies)
+
+    @pytest.mark.asyncio
+    async def test_failed_command_dm_reads_header_then_stderr(self) -> None:
+        """The exit code is said once, in the header; the fence holds only output.
+
+        Shape from a real post: a command that wrote only stderr rendered as two
+        exit-code lines, an emoji inside the fence and four empty lines.
+        """
+        gw = _make_gw()
+        err = "/bin/bash: /tmp/run.sh: No such file or directory"
+        result = {
+            "status": "error",
+            "output": f"⚠️ Exit code 127\n\nstderr:\n{err}",
+            "exit_code": 127,
+            "stdout": "",
+            "stderr": err,
+        }
+        await _run_command(gw, _command_job(name="prepush"), result)
+        _, text = gw.slack.post_message.await_args.args
+        header, body = text.split("\n", 1)
+        assert "Run failed with exit code 127 on" in header
+        assert body == f"```{err}```"
+
+    @pytest.mark.asyncio
+    async def test_failed_command_dm_puts_stderr_before_stdout(self) -> None:
+        gw = _make_gw()
+        result = {
+            "status": "error",
+            "output": "⚠️ Exit code 1\n\nstarting\n\nstderr:\nboom",
+            "exit_code": 1,
+            "stdout": "starting",
+            "stderr": "boom",
+        }
+        await _run_command(gw, _command_job(), result)
+        _, text = gw.slack.post_message.await_args.args
+        assert text.split("\n", 1)[1] == "```boom\n\nstdout:\nstarting```"
+        assert "Exit code" not in text and "exit_code=" not in text
+
+    @pytest.mark.asyncio
+    async def test_failed_command_long_stderr_keeps_its_tail(self) -> None:
+        """The alert's body cap keeps a head, so a long stderr must hand it the tail."""
+        gw = _make_gw()
+        err = "warn " * 300 + "fatal: actual cause"
+        result = {"status": "error", "output": "x", "exit_code": 1, "stdout": "", "stderr": err}
+        await _run_command(gw, _command_job(), result)
+        _, text = gw.slack.post_message.await_args.args
+        assert "fatal: actual cause```" in text
+
+    @pytest.mark.asyncio
+    async def test_failed_command_with_no_output_says_so(self) -> None:
+        gw = _make_gw()
+        result = {
+            "status": "error",
+            "output": "⚠️ Exit code 3",
+            "exit_code": 3,
+            "stdout": "",
+            "stderr": "",
+        }
+        await _run_command(gw, _command_job(), result)
+        _, text = gw.slack.post_message.await_args.args
+        assert "exit code 3" in text
+        assert text.endswith("```no output```")
+
+    @pytest.mark.asyncio
+    async def test_process_killed_by_sighup_keeps_its_exit_code(self) -> None:
+        """-1 is also a real returncode (SIGHUP); a process that ran keeps it."""
+        gw = _make_gw()
+        result = {
+            "status": "error",
+            "output": "⚠️ Exit code -1",
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "",
+        }
+        await _run_command(gw, _command_job(), result)
+        _, text = gw.slack.post_message.await_args.args
+        assert "Run failed with exit code -1 on" in text
+
+    @pytest.mark.asyncio
+    async def test_command_that_never_ran_names_no_exit_code(self) -> None:
+        """A timeout's -1 is a sentinel, not an exit code, and its ❌ is the header's."""
+        gw = _make_gw()
+        result = {"status": "error", "output": "❌ Command timed out after 5s", "exit_code": -1}
+        await _run_command(gw, _command_job(), result)
+        _, text = gw.slack.post_message.await_args.args
+        assert "exit code" not in text and "exit_code" not in text
+        assert text.endswith("```Command timed out after 5s```")
 
     @pytest.mark.asyncio
     async def test_non_ok_with_no_output_still_alerts(self) -> None:

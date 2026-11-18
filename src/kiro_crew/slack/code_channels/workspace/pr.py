@@ -43,6 +43,8 @@ class PullRequest:
     ci: str = ""
     #: ``(passed, total, running)`` for the checks ``ci`` rolls up, or ``None``.
     checks: tuple[int, int, int] | None = None
+    #: The PR's title ("" when the read did not carry it).
+    title: str = ""
 
 
 #: The internal ``ciCounts`` marker: ``"<passed>/<total>/<running>"``.
@@ -109,7 +111,10 @@ def _pick(rows: object, repo: RepoRef) -> PullRequest | None:
         raw = str(row.get("state") or "").lower()
         state = "draft" if raw == "open" and row.get("isDraft") else raw
         if state in PR_STATES:
-            candidates.append(PullRequest(number, url, state))
+            title = row.get("title")
+            candidates.append(
+                PullRequest(number, url, state, title=title if isinstance(title, str) else "")
+            )
     for pr in candidates:
         if pr.state in {"open", "draft"}:
             return pr
@@ -139,7 +144,7 @@ async def find_pull_request(repo: RepoRef, branch: str) -> PrLookup:
             "--state",
             "all",
             "--json",
-            "number,url,state,isDraft",
+            "number,url,state,isDraft,title",
             "--limit",
             "5",
             host=repo.host,
@@ -161,7 +166,9 @@ async def find_pull_request(repo: RepoRef, branch: str) -> PrLookup:
     if isinstance(status, dict):
         state = status.get("state") if status.get("state") in PR_STATES else pr.state
         ci = status.get("ci") if status.get("ci") in CI_STATES else ""
-        pr = PullRequest(pr.number, pr.url, str(state), str(ci or ""), _checks(status))
+        pr = PullRequest(
+            pr.number, pr.url, str(state), str(ci or ""), _checks(status), title=pr.title
+        )
     return PrLookup("found", pr)
 
 

@@ -8,8 +8,8 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster``,
-``_awaiting_permission``, ``_between_turn_credits``,
-``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_goose_active_run_id``,
+``_awaiting_permission``, ``_between_turn_credits``, ``_cancel_ts``, ``_cancel_unacked``,
+``_cancelled``, ``_compaction_terminal_seen``, ``_goose_active_run_id``,
 ``_goose_steers``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
@@ -452,6 +452,7 @@ async def _run_turn(
     # "end_turn" making a timed-out cancel look acked, or "" → a spurious
     # hard kill of the shared runtime). Mirrors AcpClient.
     self._last_stop_reason = ""
+    self._cancel_unacked = False
     # Set by prompt()'s builder when this turn is a KAS compaction request;
     # the terminal flag records that the engine already reported its outcome.
     self._kas_compact_turn = False

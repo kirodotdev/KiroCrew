@@ -1820,17 +1820,21 @@ keys`. Three exclusions from that warning are named in code:
   no builtin declares one. Captured and round-tripped like any unknown section,
   and NOT reported as unrecognized: the product told the operator to write it.
   Private to the warning that is its only consumer.
-- `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`) — a section this core itself
-  writes and reads but does not model as a field. The settings UI persists it
+- `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`, `sel`) — a section this core
+  reads but does not model as a field, written by the settings UI or by hand as the docs say. The settings UI persists it
   (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
   back on startup via `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
   and read by `telegram/transport_dispatch.py`). Captured and round-tripped like any unknown
-  section, and NOT reported as unrecognized because the product wrote it itself.
+  section, and NOT reported as unrecognized because the product wrote it, or told the
+  operator to.
   `connections` is the second member: the Settings → Connections OAuth app form writes
   `connections.oauth_clients.<slug>.client_id`
   (`dashboard/handlers/connections.py`), which
   `connections/oauth_clients.py` reads back, and
   `agent_materialization/mcp_aliases.py` reads `connections.tool_aliases`.
+  `sel` is the third: the operator writes `sel.keep` by hand (the security event log's
+  keep count, `configuration.md` "Security event log") and `sel_rotation._read_operator_keep`
+  reads it in every process that trims the log.
   A separate set from `_APP_OWNED_TOP_KEYS` because the owner is core, not an
   app: it has no app to declare it through host grants.
   Both sets exempt only the shape the reader keeps — a JSON object — so a scalar
@@ -3634,7 +3638,7 @@ class AgentConfig:
     model_context_tokens: dict[str, int] = {}  # operator-declared served context window per EXACT agent.model id, e.g. {"server-a/org/model-7b": 32768}; value an int in [1024, 10000000], first 64 entries read, a warning per dropped entry (coerce_model_context_tokens); live via model_registry.apply_operator_windows
     provider: str = "acp"          # fixed to "acp" (kiro-cli) — the only provider
     bot_name: str = ""             # the name the agent identifies as in conversations (the {bot_name} placeholder in prompts); "" = the provider's default (Kiro). Loaded through _sanitize_bot_name (sections_agent_fields.py): NFC-normalized, capped at 50 code points (_BOT_NAME_MAX), then filtered to Unicode letters (Lu/Ll/Lt/Lm/Lo), the combining marks that attach to them (Mn/Mc), decimal digits (Nd) and letter numbers (Nl, the ideographic zero) in any script, plus the ASCII space, "_", "-" and "." -- the character policy of the artifact tag rule (artifacts.md § Validation & Limits), applied as a filter that drops instead of a validator that refuses. Everything else is dropped: braces (the placeholder must not recurse), other punctuation, symbols and emoji, enclosing marks (the keycap), other numbers (², ½), controls, format characters (zero-width, bidi), the letters and marks that render as nothing (variation selectors, Hangul fillers: terminal_safe._is_invisible, the one shared table), surrogates and private-use. A non-ASCII space (NO-BREAK SPACE, IDEOGRAPHIC SPACE) becomes the plain space; a space run a removal leaves behind folds to one and a leading or trailing one is stripped; a double space the user typed is kept; the result is NFC-normalized again, since a removal can leave a composable pair adjacent. Three tag rules are not applied: compatibility forms (full-width ｋｉｒｏ) are kept as typed because a drop cannot name the plain spelling; a name may open with a separator; and a run of combining marks is not bounded, since the bound guards a chip's width and nothing draws this name. A name that filters to "" takes the default. Nothing is logged when a name changes, and the CLI `config set` echo shows the raw value (#18728 follow-ups). dashboard.bot_name is a separate field and is not filtered.
-    sandbox: str = "auto"          # "auto" (default: standard tier -- namespace on Linux, seatbelt on macOS; leaves ~/.aws, ~/.ssh, ~/.kube visible for credential tooling; delegates to kiro-cli's internal sandbox on macOS when enabled) | "strict" (opt-in: also hides ~/.aws incl. sso/cache, ~/.ssh bar known_hosts, ~/.kube, ~/.config/gh and the _CC_FILES credential files; applies to sessions started after the change) | "off" (skips Kiro Crew's sandbox). Any other value falls back to "auto"
+    sandbox: str = "auto"          # "auto" (default: standard tier -- namespace on Linux, seatbelt on macOS; leaves ~/.aws, ~/.ssh, ~/.kube visible for credential tooling; delegates to kiro-cli's internal sandbox on macOS when enabled) | "strict" (opt-in: also hides ~/.aws incl. sso/cache, ~/.ssh bar known_hosts, ~/.kube, ~/.config/gh and the _CC_FILES credential files; a stricter value restarts each running session under it at its next turn, a looser one applies to sessions started after the change) | "off" (skips Kiro Crew's sandbox). Any other value falls back to "auto"
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
@@ -3817,7 +3821,9 @@ class DashboardConfig:
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
     preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
-    theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
+    theme_mode: str = ""           # "dark" | "light" | "system" | "schedule"; empty = unset (frontend falls back to localStorage or "system")
+    theme_schedule_light: str = "" # 24-hour "HH:MM" the "schedule" mode turns light, device time zone; empty = never set (07:00)
+    theme_schedule_dark: str = ""  # 24-hour "HH:MM" the "schedule" mode turns dark, device time zone; empty = never set (19:00)
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     instance_label: str = ""       # a short name for this gateway: the browser tab title (`<detail> — <label> — <bot>`), a favicon of its initial on the theme accent, and the `origin` of a session transferred to another instance. Run through the bot-name sanitizer at load (letters, digits, space, `_-.`; 50 code points); empty = unset (title and favicon as before, a transfer names the host). Set it in `config.json` or with `kirocrew config set dashboard.instance_label` (not dashboard-editable); the SPA reads it from the authenticated GET /api/dashboard/branding, never /api/theme/boot, so a change shows on the next page load. A pod seed drops it.
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
@@ -4420,6 +4426,13 @@ are workspace-persistent (shared across ports and devices) rather than
 browser-local. The frontend reads them at boot via `GET /api/theme/boot`; empty
 `theme_mode`/`theme_color` mean unset (the frontend falls back to `localStorage`
 or the built-in default).
+
+`theme_schedule_light` / `theme_schedule_dark` are the two times the `"schedule"`
+mode switches at (themes.md, *Mode preference*), surfaced as `schedule_light` /
+`schedule_dark` by the boot and theme-config payloads. The PUT accepts `""` or a
+24-hour `HH:MM` and refuses anything else (400); the frontend saves both together
+and adopts them at boot only when the workspace has saved one, so a browser's own
+copy holds on a workspace that never did.
 
 `translucent_panels` is the "Translucent panels" switch (Settings -> Display ->
 View; the Liquid Glass primitive). It is a string like `theme_mode`, not a bool,

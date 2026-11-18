@@ -365,14 +365,17 @@ const HEAD_CAP = 256
  *
  * The pattern finds each line's final candidate; `markersBefore` decides the rest of that
  * line. A line is accepted or refused whole: when its final candidate is refused, nothing on
- * it is a marker, so `[OPTIONS: A] [OPTIONS: B then arr[0]` keeps both as written. */
+ * it is a marker, so `[OPTIONS: A] [OPTIONS: B then arr[0]` keeps both as written.
+ * Siblings join only when the final marker offers a label, as on every channel. */
 export function findOptionMarkers(content: string): RegExpMatchArray[] {
   if ([...content.matchAll(new RegExp(HEAD_RE))].length > HEAD_CAP) return []
   const out: RegExpMatchArray[] = []
   for (const m of content.matchAll(new RegExp(OPTION_MARKER_RE))) {
     if (labelsHaveUnmatchedOpener(labelsOf(m))) continue
     const before = markersBefore(content, m)
-    if (before) out.push(...before, m)
+    if (!before) continue
+    if (optionsOf(m).length > 0) out.push(...before)
+    out.push(m)
   }
   return out
 }

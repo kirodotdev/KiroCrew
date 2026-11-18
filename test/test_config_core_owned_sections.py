@@ -1,4 +1,4 @@
-"""Top-level config.json sections that core writes and reads without a dataclass model.
+"""Top-level config.json sections that core reads without a dataclass model.
 
 ``voice_reply`` is the voice-settings block: the dashboard and Slack settings UI
 persist it into config.json (``slack/interactions_modals.py`` via ``data.setdefault``,
@@ -157,7 +157,13 @@ class TestEveryCoreOwnedKeyHasAReader:
     def test_members_are_exactly_the_documented_readers(self) -> None:
         # Extend this tuple together with validation._CORE_OWNED_TOP_KEYS and
         # add a reader test below; a member with no reader test is a silenced typo.
-        assert validation._CORE_OWNED_TOP_KEYS == frozenset({"voice_reply", "connections"})
+        assert validation._CORE_OWNED_TOP_KEYS == frozenset({"voice_reply", "connections", "sel"})
+
+    def test_sel_keep_is_read_by_the_segment_retention(self, tmp_path) -> None:
+        from kiro_crew.sel_rotation import _read_operator_keep
+
+        (tmp_path / "config.json").write_text(json.dumps({"sel": {"keep": 30}}))
+        assert _read_operator_keep(tmp_path, set()) == (True, 30)
 
     def test_connections_client_id_is_read_by_resolve_oauth_client(self) -> None:
         from kiro_crew.connections.oauth_clients import _config_client_id

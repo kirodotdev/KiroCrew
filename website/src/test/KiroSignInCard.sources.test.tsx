@@ -417,15 +417,6 @@ describe('KiroSignInCard: which account Kiro Agent runs as', () => {
     expect(screen.queryByTestId('kiro-sign-in-use-kiro-cli')).toBeNull()
   })
 
-  it('compact: two different accounts open the fold a signed-in card would keep closed', async () => {
-    kasLoginStatus.mockResolvedValue(SIGNED_IN)
-    kasLoginSources.mockResolvedValue(TWO_ACCOUNTS)
-    renderWithProviders(<KiroSignInCard compact />)
-    const card = screen.getByTestId('kiro-sign-in-card') as HTMLDetailsElement
-    await waitFor(() => expect(card.open).toBe(true))
-    expect(screen.getByTestId('kiro-sign-in-sources')).toBeInTheDocument()
-  })
-
   it('switch account refetches sources even when authenticated and the status fields stay the same', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
     kasLoginSources.mockResolvedValue({ ...TWO_ACCOUNTS, same_account: true })

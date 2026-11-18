@@ -35,7 +35,7 @@ class TestMarkButtonClicked:
         result = _mark_button_clicked(blocks, "btn_1", "A")
         assert result[0] == blocks[0]  # section unchanged
         assert result[1]["type"] == "context"
-        assert "✓ A" in result[1]["elements"][0]["text"]
+        assert "Chosen: A" in result[1]["elements"][0]["text"]
         assert result[2]["type"] == "actions"
         assert len(result[2]["elements"]) == 1
         assert result[2]["elements"][0]["action_id"] == "btn_2"

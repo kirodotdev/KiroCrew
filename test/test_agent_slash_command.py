@@ -399,7 +399,7 @@ async def test_slack_agent_command_is_owner_only():
         )
     assert handled is True
     thread_agent.assert_not_awaited()
-    slack.post_message.assert_awaited_once_with("C1", "⛔ Owner-only command.", "t1")
+    slack.post_message.assert_awaited_once_with("C1", "Blocked: Owner-only command.", "t1")
 
 
 @pytest.mark.asyncio

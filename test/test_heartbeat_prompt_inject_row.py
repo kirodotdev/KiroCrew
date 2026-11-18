@@ -16,7 +16,7 @@ from chat_runner_coverage_helpers import _slot, _state
 
 from kiro_crew.dashboard import chat, chat_runner
 
-TITLE = "💓 Heartbeat"
+TITLE = "Heartbeat"
 RESULT = "Two CRs have new comments."
 PROMPT = f"{TITLE}\n\n{RESULT}"
 

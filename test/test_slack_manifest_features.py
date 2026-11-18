@@ -115,6 +115,7 @@ class TestRendering:
             "channel_archive",
             "channel_rename",
             "channel_unarchive",
+            "code_channel_action",
             "group_archive",
             "group_rename",
             "group_unarchive",

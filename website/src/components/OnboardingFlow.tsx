@@ -91,8 +91,9 @@ const POP_BODY_KEY: Record<string, string> = {
   chat: 'components.onboardingFlow.pop_chat_body',
 }
 
-/** Catalog key for each button of the look step's mode switch. */
-const MODE_LABEL_KEYS: Record<ModePreference, string> = {
+/** Catalog key for each button of the look step's mode switch. Scheduled is
+ *  offered in Settings only: it needs two times, which first run does not ask for. */
+const MODE_LABEL_KEYS: Record<Exclude<ModePreference, 'schedule'>, string> = {
   system: 'components.onboardingFlow.mode_system',
   light: 'components.onboardingFlow.mode_light',
   dark: 'components.onboardingFlow.mode_dark',
@@ -640,7 +641,7 @@ export default function OnboardingFlow({
         <LookPreview className="w-full shrink-0 sm:w-[52%]" />
         <div className="min-w-0 flex-1">
         <RadioChipGroup className="flex gap-1 border border-border rounded-[10px] p-1" style={{ background: 'var(--panel-strong)' }} ariaLabel={i18nT('components.onboardingFlow.mode_switch_label')}>
-          {(['system', 'light', 'dark'] as ModePreference[]).map(m => (
+          {(['system', 'light', 'dark'] as const).map(m => (
             <button
               key={m}
               type="button"

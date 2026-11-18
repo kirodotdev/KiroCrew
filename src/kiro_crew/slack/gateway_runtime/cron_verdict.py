@@ -207,7 +207,7 @@ def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
     """
     if not tally.partially_blocked:
         return result_text
-    return f"⛔ {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
+    return f"Blocked: {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
 
 
 def _dedup_text(result_text: str, tally: _GateTally, *, empty_reply: bool) -> str:

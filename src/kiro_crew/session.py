@@ -594,6 +594,7 @@ class SessionManager:
     get_pid = _claims.get_pid
     _reacquire_and_validate = _claims._reacquire_and_validate
     _evict_stale_session = _claims._evict_stale_session
+    recycle_if_sandbox_tightened = _claims.recycle_if_sandbox_tightened
     _get_session_agent = _claims._get_session_agent
     _parent_runtime_kwargs = _claims._parent_runtime_kwargs
     parent_work_scratch_dir = _claims.parent_work_scratch_dir

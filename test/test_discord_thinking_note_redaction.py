@@ -22,11 +22,11 @@ _KEY = github_classic(seed=91)
 
 
 class _NoteSendFails(FakeClient):
-    """Every send lands except the ``💭`` reasoning note."""
+    """Every send lands except the ``Thinking:`` reasoning note."""
 
     async def send_message(self, channel_id: str, text: str, **kw: Any) -> Any:
         mid = await super().send_message(channel_id, text, **kw)
-        return None if "💭" in text else mid
+        return None if "Thinking:" in text else mid
 
 
 @pytest.mark.parametrize("note_lands", [True, False], ids=["note-landed", "note-failed"])

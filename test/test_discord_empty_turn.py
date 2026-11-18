@@ -211,7 +211,7 @@ class TestEmptyTurnIsNeverAFinishedReply:
     async def test_a_notice_whose_edit_fails_is_sent_fresh(self, tmp_path: Path) -> None:
         """The tool frame opened a live bubble, then the closing edit failed while
         sends still work: the notice goes out as a new message, so the turn does
-        not end on the "🔧 tool…" frame and still counts as delivered."""
+        not end on the "Running tool…" frame and still counts as delivered."""
         d, cli, sess, _log = _dispatcher(_ToolOnlyProvider(), tmp_path)
         cli.edit_ok = False
 
@@ -235,9 +235,9 @@ class TestEmptyTurnIsNeverAFinishedReply:
         body = _body(final)
         assert "steer-me-42" in body  # the user's own steer is still shown
         assert (
-            body.replace("> ↪️ steer-me-42", "").replace("> steer-me-42", "").strip()
+            body.replace("> ↪ steer-me-42", "").replace("> steer-me-42", "").strip()
         ), f"the bubble is the steer chip alone under a finished footer: {final!r}"
-        assert "⚠️" in body
+        assert "Error:" in body
 
     @pytest.mark.asyncio
     async def test_a_steer_burst_never_pushes_the_placeholder_past_the_platform_cut(self) -> None:
@@ -257,7 +257,7 @@ class TestEmptyTurnIsNeverAFinishedReply:
         final = cli.final_text()
         assert final is not None
         assert len(final) <= DISCORD_MAX_TEXT, len(final)
-        assert "⚠️ Error" in final
+        assert "Error: please" in final
         assert "-# Finished in" in final
         assert final.startswith("> steer number 00")  # the chip is cut, not dropped
 
@@ -271,7 +271,7 @@ class TestEmptyTurnIsNeverAFinishedReply:
 
         assert sess.failures
         body = _body(cli.final_text() or "")
-        assert "⚠️" in body
+        assert "Error:" in body
         rows = _rows(log, d)
         roles = [r["role"] for r in rows]
         assert roles == ["user", "error"], f"the failed turn left no record: {roles}"
@@ -294,7 +294,7 @@ class TestEmptyTurnIsNeverAFinishedReply:
         await d.handle_message(_inbound("hello?"))
 
         (row,) = [r for r in _rows(log, d) if r["role"] == "error"]
-        assert row["content"].startswith("❌ boom reading")
+        assert row["content"].startswith("Error: boom reading")
         assert "alice" not in row["content"] and secret not in row["content"]
 
     @pytest.mark.asyncio

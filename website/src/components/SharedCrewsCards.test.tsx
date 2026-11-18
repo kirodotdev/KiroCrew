@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event'
 import { api, ApiError, type RelayCrewEntry } from '../api/client'
 import SharedCrewsCards from './SharedCrewsCards'
 import { renderWithProviders } from '../test/helpers'
+import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 
 const crew = (over: Partial<RelayCrewEntry>): RelayCrewEntry => ({
   endpointId: 'ep-1',
@@ -94,6 +95,7 @@ describe('SharedCrewsCards', () => {
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Open Platform team' }))
     expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('You no longer have access to this Crew.')
     expect(screen.getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Go to Kiro account' })).toBeNull()
   })
 
   it('clears a row\'s refusal when the next Open succeeds', async () => {
@@ -146,5 +148,24 @@ describe('SharedCrewsCards', () => {
     renderWithProviders(<SharedCrewsCards />)
     expect(await screen.findByTestId('shared-crews-refusal')).toHaveTextContent('Sign in to Kiro to see your Shared Crews.')
     expect(screen.queryByTestId('shared-crews-retry')).toBeNull()
+  })
+
+  it('links a signed-out refusal to the Kiro account tab, where the sign-in is', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
+      new ApiError(401, 'Unauthorized', JSON.stringify({ code: 'SIGNED_OUT' })),
+    )
+    renderWithProviders(<SharedCrewsCards />)
+    const link = await screen.findByRole('link', { name: 'Go to Kiro account' })
+    expect(link).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
+  })
+
+  it('links a signed-out Open refusal under its row, and no other refusal', async () => {
+    withBridge(vi.fn(async () => ({ ok: false, error: 'SIGNED_OUT' })))
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})] })
+    renderWithProviders(<SharedCrewsCards />)
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Open Platform team' }))
+    expect(await screen.findByTestId('shared-crew-refusal')).toHaveTextContent('Sign in to Kiro to see your Team Crews.')
+    expect(screen.getByRole('link', { name: 'Go to Kiro account' })).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
   })
 })

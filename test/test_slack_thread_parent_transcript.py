@@ -291,7 +291,7 @@ class TestSessionsWithPriorTurnsAreUnchanged:
         assert slack.detail_calls == []
 
 
-_CRON_POST = "⏰ *Cron: nightly triage*\n\n3 new issues need an owner: 101, 102, 103."
+_CRON_POST = "*Cron: nightly triage*\n\n3 new issues need an owner: 101, 102, 103."
 
 
 def _cron_post() -> dict[str, str]:

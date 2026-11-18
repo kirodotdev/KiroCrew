@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, UserRound, Users, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
@@ -27,20 +27,24 @@ import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
-import { SecretsPanelLegacy } from './settings/SecretsPanelLegacy'
 import { useConnectionsUiEnabled, useConnectionsUiPending } from '../hooks/useConnectionsUi'
 import SettingsSearch from './settings/SettingsSearch'
-import { Btn, ContentSkeleton } from '../components/ui'
+import { Btn, CardFrameContext, ContentSkeleton } from '../components/ui'
 import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
 import ErrorNotice from '../components/ErrorNotice'
+import ErrorBoundary from '../components/ErrorBoundary'
+import { AGENT_HARNESS_SETTINGS_TAB, isKiroSignInHighlight, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
+import { useKiroSignInOffered } from './developer/useKiroSignInOffered'
 
-/**
- * Lazy: the coding-agent switch pulls in the Kiro sign-in card and its OIDC
- * chooser, which no other Settings tab needs, so the chunk is fetched when the
- * Agent Harness tab is first opened rather than on every Settings visit.
- */
 const AgentBackendTab = lazy(() =>
   import('./developer/AgentBackendTab').then(m => ({ default: m.AgentBackendTab })),
+)
+/**
+ * Lazy: the Kiro sign-in card pulls in its OIDC chooser, which no other Settings
+ * tab needs, so the chunk is fetched when the Kiro account tab is first opened.
+ */
+const KiroSignInCard = lazy(() =>
+  import('./developer/KiroSignInCard').then(m => ({ default: m.KiroSignInCard })),
 )
 /** Subagent Settings + Warm Pool, beside the backend picker: both govern how agents run. */
 const AgentRunSettings = lazy(() =>
@@ -74,7 +78,7 @@ import { SettingsCard } from '../components/settings'
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { useConfigPendingCount } from './settings/configPendingQuery'
-import { PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
@@ -98,8 +102,12 @@ function buildTabs() {
   return [
     // OverviewPage's drill-in (`?view=memory&store=…&focus=…`).
     { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus'] },
+    // Kiro sign-in, on its own tab: the agent harness is one of several things
+    // that run as this account (Team Crews and Shared Crews do too), so it is
+    // reachable whichever harness is selected.
+    { key: 'kiro-account', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.kiroAccount.label'), icon: <UserRound size={16} />, description: i18nT('settings.tabs.kiroAccount.description') },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
-    // The coding-agent switch (and the Kiro sign-in card under it) used to be a
+    // The coding-agent switch used to be a
     // Developer-page tab, which the sidebar only shows in Developer Mode. First-run
     // setup now lets a user pick Claude Code, Codex and the rest, so switching
     // agents is an ordinary preference and has to be reachable without that mode.
@@ -120,7 +128,7 @@ function buildTabs() {
     { key: 'privacy', tile: 'var(--tile-blue)', label: i18nT('privacyDisclosure.settingsLabel'), icon: <Fingerprint className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('privacyDisclosure.settingsDescription') },
     { key: 'security', tile: 'var(--tile-red)', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description'), hostsSubNav: true },
     { key: 'connections', tile: 'var(--tile-green)', label: i18nT('settings.tabs.connections.label'), icon: <Plug size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.connections.description') },
-    { key: 'secrets', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
+    { key: 'secrets', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description'), hostsSubNav: true },
     { key: 'session-environments', tile: 'var(--tile-blue)', label: i18nT('sessionEnvironments.title'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('sessionEnvironments.settingsDescription') },
     { key: 'developer', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description'), hostsSubNav: true },
     // No 'advanced' tab: Settings -> Advanced (AdvancedPanel, the All settings list)
@@ -266,15 +274,16 @@ export default function SettingsPage() {
   // would drop a draft typed into them when the read flips the page to on.
   const connectionsUiPending = useConnectionsUiPending()
   const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
-  // The list-detail Secrets panel hosts its own sub-nav; off, the tab is the
-  // single-page panel and hosts none.
-  const secretsVaultPreview = usePreviewFlag(PREVIEW_SECRETS_VAULT)
   // People exists only while the gateway reports the Shared Crew preview
   // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
   const sharedCrew = useSharedCrewCapabilities()
   const sharedCrewPreview = sharedCrewPreviewOn(sharedCrew.capabilities)
+  // The Kiro account tab exists while the build offers Kiro sign-in; an
+  // unanswered schema hides nothing, so a deep link never lands on a missing tab.
+  const kiroSignInOffered = useKiroSignInOffered() !== false
   const allTabs = buildTabs().filter(t =>
     (t.key !== 'webhooks' || webhooksPreview)
+    && (t.key !== 'kiro-account' || kiroSignInOffered)
     && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
     && (t.key !== 'people' || sharedCrewPreview),
   )
@@ -282,8 +291,7 @@ export default function SettingsPage() {
   // the dashboard waits for Apply or Discard there.
   const configPending = useConfigPendingCount() > 0
   const tabs = allTabs.map(t => (
-    t.key === 'secrets' && secretsVaultPreview ? { ...t, hostsSubNav: true }
-    : t.key === 'about' && updateAvailable ? { ...t, dot: true }
+    t.key === 'about' && updateAvailable ? { ...t, dot: true }
       : t.key === 'security' && configPending
         ? { ...t, dot: true, dotLabel: i18nT('pages.settings.securityPanel.configPending.nav_dot') }
         : t
@@ -311,6 +319,14 @@ export default function SettingsPage() {
     return <Navigate replace to={{ pathname: `${SETTINGS_BASE_PATH}/about`, search: rest ? `?${rest}` : '' }} />
   }
 
+  // The sign-in card used to sit on the Agent Harness tab; links to it there
+  // (`?highlight=key:kiro-sign-in` or the old search id, in path or legacy
+  // `?tab=` form) land on the card's own tab instead.
+  const legacySignInTab = releasesSegments[0] || memorySelection.get('tab')
+  if (legacySignInTab === AGENT_HARNESS_SETTINGS_TAB && isKiroSignInHighlight(memorySelection.get('highlight'))) {
+    return <Navigate replace to={KIRO_SIGN_IN_PATH} />
+  }
+
   return (
     <SidePanelLayout
       title={i18nT('pages.settingsPage.settings')}
@@ -330,7 +346,7 @@ export default function SettingsPage() {
       headerRight={<SettingsSearch />}
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
-      {tab => <>
+      {tab => <CardFrameContext.Provider value="grouped">
         <DataHomeOwnerStatusNotice />
         {sharedCrew.isError && !(tab === 'people' && sharedCrewPreview) && (
           <div>
@@ -343,6 +359,16 @@ export default function SettingsPage() {
           </div>
         )}
         {tab === 'overview' && <OverviewPanel />}
+        {tab === 'kiro-account' && (kiroSignInOffered && (
+          // Isolated so a throwing card cannot take the Settings page down with
+          // it. The default fallback, not `null`: the card is the whole tab, so
+          // a failure must show its error and Try Again rather than a blank pane.
+          <ErrorBoundary scope="settings-kiro-sign-in">
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <KiroSignInCard />
+            </Suspense>
+          </ErrorBoundary>
+        ))}
         {tab === 'imports' && <ImportPanel />}
         {tab === 'agent' && (
           <Suspense fallback={<ContentSkeleton rows={6} />}>
@@ -386,11 +412,9 @@ export default function SettingsPage() {
         )}
         {tab === 'secrets' && (
           <GuideTrustRootRegion>
-            {secretsVaultPreview ? (
-              <Suspense fallback={<ContentSkeleton rows={6} />}>
-                <SecretsPanel basePath={SETTINGS_BASE_PATH} />
-              </Suspense>
-            ) : <SecretsPanelLegacy />}
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <SecretsPanel basePath={SETTINGS_BASE_PATH} />
+            </Suspense>
           </GuideTrustRootRegion>
         )}
         {tab === 'session-environments' && sessionEnvironmentsPreview && (
@@ -406,7 +430,7 @@ export default function SettingsPage() {
             <AboutPanel />
           </Suspense>
         )}
-      </>}
+      </CardFrameContext.Provider>}
     </SidePanelLayout>
   )
 }

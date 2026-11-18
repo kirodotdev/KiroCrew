@@ -93,7 +93,7 @@ class TestPlaceholder:
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
-        assert c.sent == [("ROOM", "🤔 Thinking…")]
+        assert c.sent == [("ROOM", "Thinking…")]
 
     @pytest.mark.asyncio
     async def test_turn_start_idempotent(self) -> None:
@@ -136,7 +136,7 @@ class TestFinalAnswer:
         await r.on_done()
         # First chunk via edit, overflow as a follow-up message.
         assert len(c.edits) == 1
-        followups = [m for (conv, m) in c.sent if conv == "ROOM" and m != "🤔 Thinking…"]
+        followups = [m for (conv, m) in c.sent if conv == "ROOM" and m != "Thinking…"]
         assert followups == ["x" * 100]
 
     @pytest.mark.asyncio
@@ -150,7 +150,7 @@ class TestFinalAnswer:
         await r.on_text_chunk(text)
         await r.on_done()
         delivered = c.edits[0][2] + "".join(
-            m for (conv, m) in c.sent if conv == "ROOM" and m != "🤔 Thinking…"
+            m for (conv, m) in c.sent if conv == "ROOM" and m != "Thinking…"
         )
         assert delivered == text  # nothing lost
 
@@ -166,7 +166,7 @@ class TestFinalAnswer:
         await r.on_text_chunk(text)
         await r.on_done()
         chunks = [c.edits[0][2]] + [
-            m for (conv, m) in c.sent if conv == "ROOM" and m != "🤔 Thinking…"
+            m for (conv, m) in c.sent if conv == "ROOM" and m != "Thinking…"
         ]
         assert len(chunks) > 1
         source_lines = set(text.split("\n"))
@@ -454,7 +454,7 @@ class TestFinalAnswer:
         r = _renderer(c)
         await r.on_turn_start()
         await r.on_done(stop_reason="error")
-        assert "⚠️" in c.edits[-1][2]
+        assert "Error:" in c.edits[-1][2]
 
 
 class TestToolStatus:
@@ -465,7 +465,7 @@ class TestToolStatus:
         await r.on_turn_start()
         r._last_status = _LONG_AGO  # bypass throttle for the test
         await r.on_tool_call("t1", "fs_read", tool_kind="read")
-        assert any("🔧 Running: fs_read" in m for (_, _, m) in c.edits)
+        assert any("Running: fs_read" in m for (_, _, m) in c.edits)
 
     @pytest.mark.asyncio
     async def test_tool_edits_respect_budget(self) -> None:
@@ -475,7 +475,7 @@ class TestToolStatus:
         for i in range(_STATUS_EDIT_BUDGET + 5):
             r._last_status = _LONG_AGO  # bypass throttle
             await r.on_tool_call(f"t{i}", f"tool_{i}")
-        status_edits = [m for (_, _, m) in c.edits if m.startswith("🔧")]
+        status_edits = [m for (_, _, m) in c.edits if m.startswith("Running")]
         assert len(status_edits) == _STATUS_EDIT_BUDGET
 
     @pytest.mark.asyncio
@@ -487,7 +487,7 @@ class TestToolStatus:
         await r.on_tool_call("t1", "tool_a")
         r._last_status = _LONG_AGO
         await r.on_tool_call("t2", "tool_b")  # budget burned -> no second edit
-        status_edits = [m for (_, _, m) in c.edits if m.startswith("🔧")]
+        status_edits = [m for (_, _, m) in c.edits if m.startswith("Running")]
         assert len(status_edits) == 1
 
     @pytest.mark.asyncio
@@ -541,7 +541,7 @@ class TestDeliveryFailure:
             async def send_message(self, conversation_id: str, markdown: str, **kw):
                 self._sends += 1
                 self.sent.append((conversation_id, markdown))
-                if self._sends >= 2 and markdown != "🤔 Thinking…":
+                if self._sends >= 2 and markdown != "Thinking…":
                     return None  # follow-up sends fail
                 self._next_id += 1
                 return f"MSG{self._next_id}"
@@ -552,8 +552,8 @@ class TestDeliveryFailure:
         # 3 chunks: first via edit, then two follow-ups; the first follow-up fails.
         await r.on_text_chunk("x" * (2 * WEBEX_MAX_TEXT + 100))
         await r.on_done()
-        followups = [m for (conv, m) in c.sent if conv == "ROOM" and m != "🤔 Thinking…"]
-        chunks = [m for m in followups if not m.startswith("⚠️")]
+        followups = [m for (conv, m) in c.sent if conv == "ROOM" and m != "Thinking…"]
+        chunks = [m for m in followups if not m.startswith("Warning:")]
         assert len(chunks) == 1  # second follow-up chunk never attempted
         # The truncation is ANNOUNCED rather than silent: the answer stops
         # mid-sentence, and anything posted after it (an upload, a choice card)

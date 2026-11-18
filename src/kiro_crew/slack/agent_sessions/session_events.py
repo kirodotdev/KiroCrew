@@ -162,24 +162,35 @@ def dispatch(orch: GatewayOrchestrator, payload: dict, event: dict) -> None:
     event body carries none for a Stop), so the envelope id wins, as on the
     message path. An event with no workspace id at all is refused.
     """
+    event_type = str(event.get("type") or "")
+    if event_type not in AGENT_SESSION_EVENTS or not admits(orch, payload, event):
+        return
+    handler = handle_stopped if event_type == EVENT_STOPPED else handle_title_changed
+    task = asyncio.create_task(handler(orch, event))
+    orch._handler_tasks.add(task)
+    task.add_done_callback(orch._handler_tasks.discard)
+
+
+def admits(orch: GatewayOrchestrator, payload: dict, event: dict) -> bool:
+    """The checks :func:`dispatch` asks before handling *event*: its feature
+    (:func:`_feature_on`) and its workspace. Also what the context bar's Stop
+    asks before :func:`handle_stopped`, so it is the same Stop."""
     from kiro_crew.slack import events as _events
 
     event_type = str(event.get("type") or "")
-    if event_type not in AGENT_SESSION_EVENTS:
-        return
     if not _feature_on(orch, event):
         # Off means off: the subscription can outlive the switch (an app installed
         # while it was on, or code channels subscribing the Stop event), and these
         # events were ignored before this runtime existed.
         logger.debug("%s ignored: the Slack feature it belongs to is off", event_type)
-        return
+        return False
     caller = str(event.get("user") or "")
     team_id = str(payload.get("team_id") or event.get("team_id") or event.get("team") or "")
     channel = str(event.get("channel") or "")
     if not team_id:
         logger.warning("%s rejected: no team_id on the event or its envelope", event_type)
         _audit(caller, f"slack.{event_type}", "denied", error="missing_team_id")
-        return
+        return False
     if not _events.current_context().slack_gate.check_message_origin(team_id):
         logger.error("%s rejected: team_id=%s is not an allowed workspace", event_type, team_id)
         _audit(
@@ -189,11 +200,8 @@ def dispatch(orch: GatewayOrchestrator, payload: dict, event: dict) -> None:
             resources=f"team_id={team_id} channel={channel}",
             error="enterprise_origin_mismatch",
         )
-        return
-    handler = handle_stopped if event_type == EVENT_STOPPED else handle_title_changed
-    task = asyncio.create_task(handler(orch, event))
-    orch._handler_tasks.add(task)
-    task.add_done_callback(orch._handler_tasks.discard)
+        return False
+    return True
 
 
 def _feature_on(orch: GatewayOrchestrator, event: dict) -> bool:

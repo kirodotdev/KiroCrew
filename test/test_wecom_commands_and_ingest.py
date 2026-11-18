@@ -345,7 +345,7 @@ class TestLinkCommandsStayOffTheLoop:
 
         def fake_release(sessions_arg, *, key, location, channel):
             release_threads.append(threading.get_ident())
-            return "✅ Unlinked.", []
+            return "Unlinked.", []
 
         monkeypatch.setattr(
             "kiro_crew.wecom.transport_dispatch.release_conversation_location", fake_release
@@ -675,7 +675,7 @@ class TestACaptionIsNeverACommand:
 
         await d.handle_message(_inbound("/new"))
 
-        assert client.said == ["✅ 已开始新对话"]
+        assert client.said == ["已开始新对话"]
         assert sessions.reserved_generations == [d._session_key("Wei")]
         assert not drove, "a bare command must not become a turn"
 
