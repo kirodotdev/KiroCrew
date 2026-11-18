@@ -799,9 +799,9 @@ class _MarkerMatcher:
         candidate, and :func:`markers_before` decides the rest of that line: a
         candidate inside an unclosed head is refused, and the sibling markers
         before it are yielded with it as one :class:`MarkerRun`. Siblings join
-        only when the final marker offers a label. The web parser joins them
-        anyway and then keeps a row whose pills render nothing; a channel has no
-        such row rule, so joining here would empty ``[OPTIONS: A] [OPTIONS:]``.
+        only when the final marker offers a label, as the web parser's
+        ``findOptionMarkers`` does, so ``[OPTIONS: A] [OPTIONS:]`` keeps
+        ``[OPTIONS: A]`` as text instead of emptying the message.
         """
         # Imported here so a server that only lists its tools never loads the walk.
         from kiro_crew.option_marker_scan import HEAD_CAP, MarkerRun, head_count, markers_before
