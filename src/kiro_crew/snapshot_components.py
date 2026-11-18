@@ -351,6 +351,11 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
     }
 )
 
+#: The settings documents a running gateway applies within seconds of their installation.
+#: A Replace leaves a live copy of these alone unless the user picks them by name
+#: (``--include-config``, the import dialog's checkbox); a missing live file is still filled.
+SETTINGS_PICK_FILES: tuple[str, ...] = ("config.json", "config.local.json", "hooks.json")
+
 #: Flat component files whose own store reader is stricter than "a JSON object". An
 #: installed `{"prefs": []}` or `{"channel_settings": []}` passes that generic check and
 #: reads back EMPTY, and a prefs document past the store's key or byte limit makes every

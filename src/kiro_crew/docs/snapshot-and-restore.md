@@ -246,6 +246,19 @@ Rollback restores only paths whose mutation actually began. A phase-one copy of 
 later, untouched tree is not written back over live data that arrived while an earlier
 component was being replaced.
 
+A replace keeps this install's live `config.json`, `config.local.json` and
+`hooks.json` unless you pass `--include-config`, because a running gateway applies
+them within seconds (`agent.approval_mode`, `agent.jail` and
+`agent.dangerously_skip_permissions` need a restart). The command prints which of the
+three it kept; `--dry-run` prints the same notice. A file that does not exist yet is
+still installed from the bundle, and the notice names it, except `config.local.json`
+while `config.json` is kept: that overlay outranks `config.json`, so it is kept too. With `--include-config` the
+three files are overwritten after the old ones are saved. Whenever any of the three is
+installed, picked or not, hooks and cron commands come back disabled or paused, and the
+command warns that the bundle may not come from this install and that its config can
+change sandbox, approval and channel settings. The dashboard import says the same in its
+result.
+
 ### What merge does per component
 
 - **Memory**: existing entries win, new keys are added
@@ -269,8 +282,8 @@ component was being replaced.
   installed owner-only, as its own writer creates it. A bundle's `config.local.json` is never installed by a merge, even
   where the receiving install has none: that overlay outranks `config.json`, so
   it is reported (`↩️  config.local.json: not applied ...`) instead. To take the
-  bundle's settings, re-run with `--mode replace --components config`, which
-  saves the current files in the pre-restore backup first.
+  bundle's settings, re-run with `--mode replace --components config
+  --include-config`, which saves the current files in the pre-restore backup first.
 - **Workspace and skills**: only files that do not exist at the destination are
   copied
 - **Crew teams**: `teams.json` is installed only where the destination has none.
@@ -293,9 +306,13 @@ kept exactly as it is. Like `kirocrew restore`, it never installs the archive's
 `config.local.json`, even where this install has none, because that overlay
 outranks `config.json`. The result names every settings file it kept, so a Merge
 that brought none of your settings back says so. To restore the archive's
-settings over this install's, choose Replace in the mode menu and import again:
-Replace installs all four files, saving the ones it replaces to
-`pre-restore-<timestamp>/` first. A settings file in the archive that is not
+settings over this install's, choose Replace in the mode menu, tick the box that also
+replaces `config.json` and `hooks.json`, and import again. Replace always restores
+`ui-prefs.json` and `notification_settings.json`; `config.json`, `config.local.json`
+and `hooks.json` replace this install's files only with the box ticked (the dialog
+says so and, when ticked, warns that the archive may not come from this install), and
+the files it replaces are saved to `pre-restore-<timestamp>/` first. A file that does
+not exist yet is installed either way. A settings file in the archive that is not
 usable is named in the result and never installed, in either mode.
 Memory, crons, workspace files and skills follow the never-overwrite rules
 above in both tools.

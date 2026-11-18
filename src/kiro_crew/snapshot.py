@@ -134,6 +134,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     NEVER_SNAPSHOT_FILES,
     PRODUCT_TREE_DATABASES,
     SECURITY_SENSITIVE_FILES,
+    SETTINGS_PICK_FILES,
     VALID_COMPONENTS,
     ComponentRefused,
     ComponentSpec,
@@ -199,6 +200,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _drop_derived_indexes_absent_from_bundle,
     _endorse_restored,
     _install_locked_document,
+    _keeps_live_settings,
     _lock_down_restored,
     _read_at,
     _refuse_corrupt_source_databases,
@@ -212,6 +214,8 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _restore_locked_document,
     _rmtree_or_raise,
     _save_locked_document_to,
+    _settings_installed_by_replace,
+    _settings_kept_by_replace,
     _trees_absent_from_bundle,
 )
 
@@ -919,7 +923,11 @@ def _is_gateway_running() -> bool:
 
 
 def _hold_back_executables(
-    snap: Path, mc: Path, components: list[str] | None, mode: str
+    snap: Path,
+    mc: Path,
+    components: list[str] | None,
+    mode: str,
+    include_config: bool = False,
 ) -> dict[str, list[str]]:
     """Switch off, in the staged bundle, every cron and hook that would run a command.
 
@@ -950,7 +958,11 @@ def _hold_back_executables(
     if _want(components, "config"):
         # Merge keeps an existing hooks.json, so the bundle's hooks only land where
         # there is none. Still switched off either way; only named when installed.
-        installs_hooks = mode == "replace" or not os.path.lexists(mc / "hooks.json")
+        if mode == "replace":
+            # A Replace keeps a live hooks.json unless it is picked (--include-config).
+            installs_hooks = not _keeps_live_settings(mc, "hooks.json", include_config)
+        else:
+            installs_hooks = not os.path.lexists(mc / "hooks.json")
         hooks = _disable_imported_script_hooks(snap / "hooks.json")
         if installs_hooks:
             held["hooks"] = hooks
@@ -1045,6 +1057,42 @@ def _resolve_mode(explicit: str | None) -> str | None:
     return answer
 
 
+def _print_replace_settings_notice(
+    snap: Path, mc: Path, components: list[str] | None, include_config: bool
+) -> None:
+    """Say which settings files a Replace installs and which it keeps, before it writes.
+
+    Printed ahead of the dry-run branch so ``--dry-run`` shows it too. A document is
+    installed when it is picked or when this install has no live file; the warning about a
+    foreign archive follows whenever any is installed. Nothing is said when the archive
+    carries none of the three files or the config component is not selected.
+    """
+    installing = _settings_installed_by_replace(snap, mc, components, include_config)
+    kept = _settings_kept_by_replace(snap, mc, components, include_config)
+    if kept:
+        print(
+            f"Settings: a Replace keeps this install's live {', '.join(kept)}. "
+            "Add --include-config to overwrite them with the archive's."
+        )
+    if not installing:
+        return
+    if include_config:
+        print(
+            f"Settings: --include-config overwrites {', '.join(installing)} with the "
+            "archive's. Restored hooks and cron commands come back disabled or paused."
+        )
+    else:
+        print(
+            f"Settings: this install has no {', '.join(installing)}, so the archive's "
+            "will be installed. Restored hooks and cron commands come back disabled or paused."
+        )
+    print(
+        "Warning: This archive may not come from this install. Its config can change sandbox, "
+        "approval and channel settings, and a running gateway applies it within seconds "
+        "(agent.approval_mode, agent.jail and agent.dangerously_skip_permissions need a restart)."
+    )
+
+
 def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None) -> int:
     if parsed is None:
         p = argparse.ArgumentParser(
@@ -1065,6 +1113,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         )
         p.add_argument("--components")
         p.add_argument("--list-components", action="store_true")
+        p.add_argument("--include-config", action="store_true")
         p.add_argument(
             "--allow-unpinned-staging",
             action="store_true",
@@ -1085,6 +1134,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         parsed = p.parse_args(argv)
     args = parsed
     allow_unpinned = bool(getattr(args, "allow_unpinned", False))
+    include_config = bool(getattr(args, "include_config", False))
 
     if args.list_components:
         _list_components()
@@ -1391,6 +1441,8 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         if components:
             print(f"🔧 Components: {','.join(components)}")
         _warn_if_transcripts_left_behind(mc, components)
+        if mode == "replace":
+            _print_replace_settings_notice(snap, mc, components, include_config)
 
         if args.dry_run:
             print(f"\n🔍 Dry run — would restore to {mc} in {mode} mode")
@@ -1424,7 +1476,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         # import applies. Done on the staged copy, after the source checks above have
         # judged the files as the archive carried them, and before either mode reads it.
         try:
-            held_back = _hold_back_executables(snap, mc, components, mode)
+            held_back = _hold_back_executables(snap, mc, components, mode, include_config)
         except OSError as exc:
             # Only the staged copy was touched: live state is as it was.
             _audit("state_restore_rejected", f"reason=staging_rewrite_failed detail={exc}")
@@ -1436,7 +1488,20 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         # bury the one sentence saying what to do about it.
         try:
             if mode == "replace":
-                _do_replace(snap, mc, components, allow_unpinned=allow_unpinned)
+                # Taken before the replace: afterwards every name exists and none looks kept.
+                kept_settings = _settings_kept_by_replace(snap, mc, components, include_config)
+                _do_replace(
+                    snap,
+                    mc,
+                    components,
+                    allow_unpinned=allow_unpinned,
+                    include_settings=include_config,
+                )
+                if kept_settings:
+                    print(
+                        f"Note: Kept your live {', '.join(kept_settings)}; the archive's copies "
+                        "were not installed. Add --include-config to overwrite them."
+                    )
             else:
                 _do_merge(snap, mc, components, allow_unpinned=allow_unpinned)
         except pinned_fs.PinnedPathRefusal as exc:

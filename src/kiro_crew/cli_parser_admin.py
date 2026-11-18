@@ -119,6 +119,14 @@ def register_restore_parser(sub: _Commands) -> None:
         "--force", action="store_true", help="Restore even if gateway is running"
     )
     rest_parser.add_argument(
+        "--include-config",
+        action="store_true",
+        help=(
+            "With --mode replace, also overwrite this install's config.json, "
+            "config.local.json and hooks.json with the archive's (kept by default)"
+        ),
+    )
+    rest_parser.add_argument(
         "--allow-unpinned-staging",
         action="store_true",
         dest="allow_unpinned",

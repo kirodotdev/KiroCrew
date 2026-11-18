@@ -410,7 +410,14 @@ class TestTheRollbackLedgerRecordsWhatWasTouchedNotWhatWasDeclared:
             (payload / name).write_text("FROM ARCHIVE", encoding="utf-8")
 
         snap._do_replace_mutations(
-            payload, home, backup, ["config"], [], installed, allow_unpinned=True
+            payload,
+            home,
+            backup,
+            ["config"],
+            [],
+            installed,
+            allow_unpinned=True,
+            include_settings=True,
         )
         assert installed == set(carried), (
             "the ledger recorded files the copy loop skipped: "

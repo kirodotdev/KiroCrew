@@ -556,6 +556,9 @@ async def api_portability_import(request: web.Request) -> web.Response:
             {"error": "a memory-only import is merge only", "code": "memory_only_merge_only"},
             status=400,
         )
+    # The explicit pick: only the exact value "1" under Replace. An absent or any other
+    # value keeps this install's config.json, config.local.json and hooks.json.
+    include_settings = mode == "replace" and request.query.get("include_settings") == "1"
     picked_templates, bad = _requested_agent_templates(request)
     if bad is not None:
         return bad
@@ -605,7 +608,8 @@ async def api_portability_import(request: web.Request) -> web.Response:
             channel_settings=channel_settings,
             folder_merge=live_folder_merge(request.app.get("state"), asyncio.get_running_loop()),
             memory_only=memory_only or manifest_is_memory_only(manifest),
-            **({"agent_templates": picked_templates} if picked_templates else {}),
+            agent_templates=picked_templates,
+            include_settings=include_settings,
         )
 
         # `staging` is recorded here, not only returned. Nothing renders it, and
@@ -625,6 +629,7 @@ async def api_portability_import(request: web.Request) -> web.Response:
                 f"mode={mode},items={len(summary.get('items', []))},"
                 f"staging={summary.get('staging', 'unknown')}"
                 + (",components=memory" if summary.get("components") == ["memory"] else "")
+                + (",include_settings=1" if include_settings else "")
                 + (
                     f",agent_templates_installed={len(summary['agent_templates_installed'])}"
                     if summary.get("agent_templates_installed")
