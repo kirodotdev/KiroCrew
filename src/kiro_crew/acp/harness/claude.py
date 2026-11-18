@@ -773,6 +773,20 @@ class ClaudeHarness(MembershipHarness):
         # The same array as the session's own cache: the envelope's forced asks for
         # Crew-owned Connection servers are read from it (``_bridged_server_asks``).
         state._session_mcp_cache = list(mcp_servers)
+        # The held-limit asks for this array: the built-ins ``prepare`` read, plus an
+        # ``mcp__<server>`` ask per server it sends when a held limit covers MCP, as
+        # ``mate_held_rules.claude_ask_rules`` builds them on the per-session client.
+        # Rebuilt from the stored base, so a second start (a retry) does not double it.
+        held_asks = list(getattr(state, "_claude_held_builtin_asks", ()))
+        if getattr(state, "_claude_held_mcp", False):
+            from kiro_crew.agent_sdk.claude_worker_tools import claude_mcp_server_rule
+
+            held_asks.extend(
+                claude_mcp_server_rule(e["name"])
+                for e in mcp_servers
+                if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"]
+            )
+        state._claude_held_asks = tuple(dict.fromkeys(held_asks))
         meta = state._harness_session_meta(mcp_servers)
         identity = state.session_identity_env(stub_token)
         if identity:
