@@ -280,7 +280,7 @@ def _workflow_step_refusal(request: web.Request) -> web.Response | None:
     key, which the workflow service mints; a key that does not match any step
     prefix is not refused here.
     """
-    from kiro_crew.constants import is_workflow_step_key
+    from kiro_crew.workflow_step_keys import is_workflow_step_key
 
     if not is_workflow_step_key(request.headers.get("X-Session-Key", "")):
         return None

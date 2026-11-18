@@ -319,7 +319,7 @@ def named_session_key(run_id: str, name: str) -> str:
     The run id in the key keeps a script-supplied name from addressing a
     session outside the run. The ``wf:`` prefix marks the chain as a workflow
     step, which may not start a workflow of its own
-    (``constants.is_workflow_step_key``). The name is hashed so that a ``:`` in
+    (``workflow_step_keys.is_workflow_step_key``). The name is hashed so that a ``:`` in
     it cannot add a field to the key.
     """
     digest = hashlib.sha256(f"named:{name}".encode()).hexdigest()

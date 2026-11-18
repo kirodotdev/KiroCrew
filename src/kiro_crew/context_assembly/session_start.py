@@ -449,7 +449,7 @@ def build_session_context(
     # A pool worker serves several steps of its run in turn, so its transcript
     # holds the earlier steps and the results of the runs they started. None of
     # it belongs to the step this session now serves, so nothing below reads it.
-    from kiro_crew.constants import is_workflow_pool_key
+    from kiro_crew.workflow_step_keys import is_workflow_pool_key
 
     transcript = None if is_workflow_pool_key(session_key or "") else self.conversation_log
 

@@ -845,7 +845,7 @@ def build_message(
                 # the read, so tool output is never projected. A pool
                 # worker's transcript holds earlier steps of its run, which are
                 # not this step's prior turns.
-                from kiro_crew.constants import is_workflow_pool_key
+                from kiro_crew.workflow_step_keys import is_workflow_pool_key
 
                 if (
                     not session_key

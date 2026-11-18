@@ -1,7 +1,7 @@
 """A workflow step cannot start a workflow, and a reused pool worker replays no earlier step.
 
 A workflow step is a session a run opens for one of its agents, named by a key the
-workflow service mints (``constants.WORKFLOW_STEP_KEY_PREFIXES``). The three routes the
+workflow service mints (``workflow_step_keys.WORKFLOW_STEP_KEY_PREFIXES``). The three routes the
 ``workflow_run`` tool reaches, and the rerun route, refuse a call from such a session; a sub-agent and a
 dashboard session still start runs. A pool worker (``wf-pool:``) serves several steps
 of its run, and the results of runs an earlier step started are written to its

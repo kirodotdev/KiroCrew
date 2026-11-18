@@ -125,10 +125,12 @@ async def _recognize_session(
     # Dedicated children use SessionManager; shared children own runtime handles
     # through SubagentManager. Neither a saved run nor its parent's PID suffices.
     # Private proof/store authorization and restricted-mode gates stay separate.
+    from kiro_crew.workflow_step_keys import is_workflow_step_key
+
     sessions = getattr(state, "sessions", None)
     subagents = getattr(state, "subagents", None)
     in_live_session = (
-        sk.startswith(("subagent:", "wf:", "wf-pool:", "wf-unpooled:", "wf-worker:", "wf-author:"))
+        (sk.startswith("subagent:") or is_workflow_step_key(sk))
         and sessions is not None
         and sessions.has_session(sk) is True
     ) or (subagents is not None and subagents.has_live_shared_session(sk) is True)

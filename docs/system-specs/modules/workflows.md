@@ -1681,7 +1681,7 @@ never opens or reuses a session outside its run.
 A pool worker's transcript holds every step it has served in the run and the
 `[Workflow completion event]` of every run those steps started. The context
 builder reads nothing back from a `wf-pool:` key's transcript
-(`constants.is_workflow_pool_key`): no thread history, stop notes, recent
+(`workflow_step_keys.is_workflow_pool_key`): no thread history, stop notes, recent
 session snippets or prior turns for skill selection. A reused worker's next
 step therefore starts from its own prompt alone. A run's memory scope is a separate channel:
 every pool worker of the run shares it by design, so a step can still recall
@@ -2008,7 +2008,7 @@ reports, each appended only when it is a positive integer and naming the
 calls failed does not read as clean and a clean run's line is unchanged.
 The run routes (`POST /api/workflows/run`, `.../run_intent`,
 `.../definitions/{ref}/run` and `.../runs/{id}/rerun`) refuse a caller whose
-session key is a workflow step (`constants.is_workflow_step_key`: `wf:`, `wf-pool:`, `wf-unpooled:`,
+session key is a workflow step (`workflow_step_keys.is_workflow_step_key`: `wf:`, `wf-pool:`, `wf-unpooled:`,
 `wf-worker:`, `wf-author:`) with 403 `workflow_step_cannot_start_workflow`. A
 run a step started would report to the step's own session, which no agent reads
 after the step returns. A rerun is refused for a step too: from index 0 or with
