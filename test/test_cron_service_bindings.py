@@ -44,6 +44,7 @@ from typing import Any
 
 import facade_mirror_scan
 import pytest
+import source_corpus
 
 import kiro_crew.cron as cron
 from kiro_crew.cron import CronService
@@ -478,6 +479,7 @@ def test_the_patch_scan_reads_every_spelling_and_resolves_a_literal_loop() -> No
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _corpus() -> tuple[set[str], list[str]]:
     """Every name the test trees patch on ``kiro_crew.cron``, read once per process on first
     use (never at import, so collecting this file costs nothing)."""
