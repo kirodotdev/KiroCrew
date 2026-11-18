@@ -81,9 +81,9 @@ logger = logging.getLogger(__name__)
 
 # /stop's three replies. The cancel is COOPERATIVE (it only writes
 # session/cancel), so the turn stops at its next safe point: "stopping".
-_STOPPING = "⏹ Stopping the reply in progress…"
-_STOP_FAILED = "⚠️ Could not stop the reply. Please try again."
-_NOTHING_RUNNING = "ℹ️ No reply is running."
+_STOPPING = "Stopping the reply in progress…"
+_STOP_FAILED = "Warning: Could not stop the reply. Please try again."
+_NOTHING_RUNNING = "Note: No reply is running."
 
 
 def _compact_refusal_text(backend: str) -> str:
@@ -98,7 +98,7 @@ def _compact_refusal_text(backend: str) -> str:
     A single sentence here claimed the harness self-manages for every backend
     outside ``ACP_BACKENDS_COMPACT``, which is true of exactly one of them.
     """
-    return "ℹ️ " + compact_refusal_plain_text(backend)
+    return "Note: " + compact_refusal_plain_text(backend)
 
 
 class IMessageDispatcher:
@@ -235,9 +235,9 @@ class IMessageDispatcher:
                 self._session_key(handle),
                 channel_type="iMessage",
             )
-            message = "✅ Started a fresh conversation."
+            message = "Started a fresh conversation."
             if not saved:
-                message += "\n⚠️ The new conversation could not be saved for restart."
+                message += "\nWarning: The new conversation could not be saved for restart."
             await self._notify(handle, message)
             return
         if cmd == "compact":
@@ -357,11 +357,11 @@ class IMessageDispatcher:
             and await steer(inbound.text)
         )
         if steered:
-            await self._notify(inbound.handle, "⏳ Folded into the reply in progress.")
+            await self._notify(inbound.handle, "Folded into the reply in progress.")
         else:
             await self._notify(
                 inbound.handle,
-                "⏳ Still working on the previous message — please resend in a moment.",
+                "Still working on the previous message — please resend in a moment.",
             )
 
     async def _handle_stop(self, handle: str) -> None:
@@ -520,7 +520,7 @@ class IMessageDispatcher:
                 if cr["type"] == "completed":
                     await self._notify(
                         handle,
-                        "🗜️ Context was near its limit, so it was compacted automatically.",
+                        "Context was near its limit, so it was compacted automatically.",
                     )
                 else:
                     logger.warning("imessage hard-threshold compaction reported %s", cr["type"])
@@ -530,7 +530,7 @@ class IMessageDispatcher:
             self._conv.set_awaiting(handle)
             await self._notify(
                 handle,
-                "⚠️ This conversation's context is getting long — reply /compact "
+                "Warning: This conversation's context is getting long — reply /compact "
                 "to compress it, or /new to start fresh.",
             )
 
@@ -545,19 +545,19 @@ class IMessageDispatcher:
         # compact), and always release what we acquired.
         if not await self.sessions.try_acquire(session_key):
             if self.sessions.is_retiring(session_key):
-                await self._notify(handle, f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}")
+                await self._notify(handle, f"Note: {COMPACT_ACCOUNT_CHANGED_TEXT}")
             elif self.sessions.has_session(session_key):
                 await self._notify(
                     handle,
-                    "⏳ Still working on the previous message — try /compact again shortly.",
+                    "Still working on the previous message — try /compact again shortly.",
                 )
             else:
-                await self._notify(handle, "ℹ️ There's no conversation to compact yet.")
+                await self._notify(handle, "Note: There's no conversation to compact yet.")
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
-                await self._notify(handle, "ℹ️ There's no conversation to compact yet.")
+                await self._notify(handle, "Note: There's no conversation to compact yet.")
                 return
             # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
@@ -575,13 +575,13 @@ class IMessageDispatcher:
                 timeout=self.sessions.compact_wait_budget_secs()
             )
             if cr["type"] == "completed":
-                await self._notify(handle, "🗜️ Context compacted.")
+                await self._notify(handle, "Context compacted.")
             elif cr["type"] == "failed":
-                await self._notify(handle, "⚠️ Compaction failed — please try again.")
+                await self._notify(handle, "Warning: Compaction failed — please try again.")
             else:
-                await self._notify(handle, "⚠️ Compaction timed out.")
+                await self._notify(handle, "Warning: Compaction timed out.")
         except Exception:
             logger.exception("imessage /compact failed for %s", session_key)
-            await self._notify(handle, "⚠️ Compaction failed — please try again.")
+            await self._notify(handle, "Warning: Compaction failed — please try again.")
         finally:
             self.sessions.release(session_key)

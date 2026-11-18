@@ -1135,13 +1135,13 @@ class TestQueueOrSteerDecision:
             **_origin(7, 7),
             **person_tag(False),
         }
-        assert [t for t, _ in cli.sent] == ["⏳ Queued (1): “later”"]
+        assert [t for t, _ in cli.sent] == ["Queued (1): “later”"]
 
     def test_a_busy_option_press_is_refused_byte_exact(self) -> None:
         from kiro_crew.telegram import transport_dispatch as td
 
         busy = (
-            "🔘 That conversation is busy with another turn, so your choice was NOT "
+            "That conversation is busy with another turn, so your choice was NOT "
             "applied. Type it as a message once the turn finishes."
         )
         assert td._BUSY_OPTIONS_REFUSAL == busy
@@ -1166,7 +1166,7 @@ class TestQueueOrSteerDecision:
         from kiro_crew.telegram import transport_dispatch as td
 
         stale = (
-            "🔘 These buttons belong to a conversation this chat has since moved away "
+            "These buttons belong to a conversation this chat has since moved away "
             "from, so your choice was NOT applied. Type it as a message instead."
         )
         assert td._STALE_OPTIONS_REFUSAL == stale
@@ -1200,7 +1200,7 @@ class TestQueueOrSteerDecision:
         from kiro_crew.telegram import transport_dispatch as td
 
         untagged = (
-            "🔘 These buttons predate a session-safety update, so which conversation "
+            "These buttons predate a session-safety update, so which conversation "
             "they belong to cannot be verified and your choice was NOT applied. "
             "Type it as a message instead."
         )
@@ -1321,13 +1321,13 @@ class TestModelPickerOutcomes:
         asyncio.run(d.on_callback(_press("m:0", message_id=999)))
         assert cli.edits[-1] == (
             999,
-            "⌛ This model list is no longer active — send /model again.",
+            "This model list is no longer active — send /model again.",
             {"inline_keyboard": []},
         )
         asyncio.run(d.on_callback(_press("g:0", message_id=998)))
         assert cli.edits[-1] == (
             998,
-            "⌛ This agent list is no longer active — send /agent again.",
+            "This agent list is no longer active — send /agent again.",
             {"inline_keyboard": []},
         )
 
@@ -1369,7 +1369,7 @@ class TestModelPickerOutcomes:
 
         assert cli.edits[-1] == (
             101,
-            "⌛ This model list belongs to a session this chat no longer controls. "
+            "This model list belongs to a session this chat no longer controls. "
             "Send /model again.",
             {"inline_keyboard": []},
         )
@@ -1457,24 +1457,24 @@ class TestModelPickerOutcomes:
 
         assert order == ["set_model:gpt-5.6-sol", "release"]
         assert sess.acquired == [self._KEY] and sess.released == [self._KEY]
-        assert cli.edits[-1][1] == "✅ Now using gpt-5.6-sol."
+        assert cli.edits[-1][1] == "Now using gpt-5.6-sol."
 
     def test_each_switch_outcome_is_exact(self) -> None:
         label = "gpt-5.6-sol"
         next_new = (
-            f"✅ Model set to {label} — this conversation keeps its current model; "
+            f"Model set to {label} — this conversation keeps its current model; "
             "the switch applies to your next one (/new)."
         )
         cases = {
-            "not-live": f"✅ Model set to {label} — it applies to your next message.",
+            "not-live": f"Model set to {label} — it applies to your next message.",
             "busy": (
-                f"✅ Model set to {label}, but a reply is still running — this "
+                f"Model set to {label}, but a reply is still running — this "
                 "conversation keeps its current model; the switch applies to your "
                 "next one (/new)."
             ),
             "no-set-model": next_new,
             "failure": (
-                f"⚠️ Couldn't switch this conversation to {label} (RuntimeError) — "
+                f"Warning: Couldn't switch this conversation to {label} (RuntimeError) — "
                 "it applies to your next conversation (/new)."
             ),
         }
@@ -1497,13 +1497,13 @@ class TestModelPickerOutcomes:
         d, cli, sess = self._post()
         asyncio.run(d.on_callback(_press("m:0")))
         assert cli.edits[-1][1] == (
-            "✅ Model set to Auto — this conversation keeps its current model; "
+            "Model set to Auto — this conversation keeps its current model; "
             "the switch applies to your next one (/new)."
         )
         d, cli, sess = self._post()
         sess._has = False
         asyncio.run(d.on_callback(_press("m:0")))
-        assert cli.edits[-1][1] == "✅ Model set to Auto — it applies to your next message."
+        assert cli.edits[-1][1] == "Model set to Auto — it applies to your next message."
 
     def test_a_resumed_switch_never_stores_the_route_preference(self) -> None:
         d, _cli, sess = _dispatcher({7})
@@ -1511,17 +1511,17 @@ class TestModelPickerOutcomes:
         assert asyncio.run(
             d._apply_model(route, "", "dashboard:x", store_route_preference=False)
         ) == (
-            "⚠️ Auto can only be selected when starting a new Telegram conversation; "
+            "Warning: Auto can only be selected when starting a new Telegram conversation; "
             "the resumed session was not changed."
         )
         assert route not in d._model_pref
         assert asyncio.run(d._apply_model(route, "model-a", "dashboard:x")) == (
-            "✅ Now using model-a."
+            "Now using model-a."
         )
         assert route not in d._model_pref and sess.acquired == ["dashboard:x"]
         sess._gp.set_model_error = RuntimeError("x")
         assert asyncio.run(d._apply_model(route, "model-a", "dashboard:x")) == (
-            "⚠️ Couldn't switch this conversation to model-a (RuntimeError) — "
+            "Warning: Couldn't switch this conversation to model-a (RuntimeError) — "
             "the resumed session was not changed."
         )
 
@@ -1613,7 +1613,7 @@ class TestCallbackRouting:
         monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.channel_inbound_permitted", _gov)
         d, cli, _sess = _dispatcher({7})
         asyncio.run(d.on_callback(_press("a:rq1:n1:0")))
-        assert calls == [] and cli.edits[-1][1] == "⌛ This approval already expired."
+        assert calls == [] and cli.edits[-1][1] == "This approval already expired."
         for data in ("a:rq1:n1:1", "m:0", "noop"):
             calls.clear()
             asyncio.run(d.on_callback(_press(data)))
@@ -1668,7 +1668,7 @@ class TestCallbackRouting:
     def test_an_approval_press_edits_the_exact_verdict(self) -> None:
         d, cli, _sess = _dispatcher({7})
         key = TelegramApprovalDecider.key(d._session_key(("direct", "7")), "rq9")
-        for flag, verdict in (("1", "✅ Approved"), ("0", "🚫 Denied"), ("x", "🚫 Denied")):
+        for flag, verdict in (("1", "Approved"), ("0", "Denied"), ("x", "Denied")):
 
             async def _go(flag: str = flag) -> bool:
                 fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
@@ -1680,7 +1680,7 @@ class TestCallbackRouting:
             assert asyncio.run(_go()) is (flag == "1")
             assert cli.edits[-1] == (100, verdict, {"inline_keyboard": []}), flag
         asyncio.run(d.on_callback(_press("a:rq9:n1:1", message_id=100)))
-        assert cli.edits[-1][1] == "⌛ This approval already expired."
+        assert cli.edits[-1][1] == "This approval already expired."
 
     def test_an_approval_press_is_parsed_from_the_right(self, monkeypatch: Any) -> None:
         resolved: list[tuple[Any, ...]] = []
@@ -1710,7 +1710,7 @@ class TestCallbackRouting:
         tag = session_provenance_tag(d._session_key(("direct", "7")))
         asyncio.run(d.on_callback(TestDispatcher._option_callback(f"opt:0:{tag}", label="")))
         assert cli.markup_edits[-1] == (99, {"inline_keyboard": []})
-        assert cli.sent == [("⚠️ Couldn't read that choice — please type it instead.", None)]
+        assert cli.sent == [("Warning: Couldn't read that choice — please type it instead.", None)]
         assert sess.successes == []
 
     def test_an_untagged_press_is_refused_before_its_label_is_read(self) -> None:

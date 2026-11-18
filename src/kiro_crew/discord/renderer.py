@@ -7,9 +7,9 @@ the base :class:`Renderer`'s ``dispatch``) onto Discord's REST API:
   plus the status ladder's first reaction on the user's own message.
 * ``on_text_chunk`` -- throttled in-place ``edit_message`` streaming, with any
   trailing ``[OPTIONS:]`` markup held back from the visible stream.
-* ``on_thinking`` -- a ``-# 💭`` subtext note, only when ``discord.show_thinking``
+* ``on_thinking`` -- a ``-# Thinking:`` subtext note, only when ``discord.show_thinking``
   is on; off (the default) reasoning is never accumulated.
-* ``on_tool_call`` -- a transient ``🔧 {tool}…`` footer on live frames.
+* ``on_tool_call`` -- a transient ``Running {tool}…`` footer on live frames.
 * ``on_prompt_choice`` -- Approve/Deny buttons as a SEPARATE message (so
   streaming edits don't clobber them).
 * ``on_compaction`` -- a lightweight "compacting…" note.
@@ -26,7 +26,7 @@ off.
 Discord renders standard Markdown natively, so unlike Telegram there is no
 HTML translation pass -- the final seal sends the markdown as-is. Steer
 rotation (sealing the pre-steer segment and opening a fresh message headed by
-a "↪️ steered" chip) mirrors the Telegram renderer.
+a "↪ steered" chip) mirrors the Telegram renderer.
 
 Length splitting belongs to :func:`kiro_crew.messaging.split.split_markdown_safe`,
 the shared fence-safe splitter. This renderer owns no fence grammar: it consumes
@@ -328,7 +328,7 @@ class DiscordRenderer(Renderer):
         await self._seal_rotated_part(components=components, extract_uploads=True)
         clean_summary = _neutralize_md(summary)
         if clean_summary:
-            chip: str | None = "> ↪️ " + clean_summary
+            chip: str | None = "> ↪ " + clean_summary
         else:
             chip = self._chip_for_seal(self._seal_count)
         self._seal_count += 1
@@ -601,7 +601,7 @@ class DiscordRenderer(Renderer):
 
     async def _stream_live(self, *, force: bool = False) -> None:
         """Throttled in-place edit of the current segment. Sends the message on
-        first render. The transient ``🔧 {tool}…`` footer is appended ONLY here
+        first render. The transient ``Running {tool}…`` footer is appended ONLY here
         (live frames) — seals and the final render never carry it. ``force``
         bypasses the throttle so a tool-call event surfaces immediately."""
         if self._table_pending:
@@ -635,7 +635,7 @@ class DiscordRenderer(Renderer):
         # ``TurnDriver`` applies — and the display pass exists precisely for the
         # credential that is invisible until Discord renders the markdown away.
         body = _redact_transformed(body)
-        footer = f"-# 🔧 {self._tool}…" if self._tool else ""
+        footer = f"-# Running {self._tool}…" if self._tool else ""
         if footer:
             room = self._limit() - len(footer) - 2
             text = f"{body[:room]}\n\n{footer}".strip() if room > 0 else footer
@@ -755,9 +755,9 @@ class DiscordRenderer(Renderer):
         """Append refusal reasons only when the answer budget permits."""
         for rejection in rejections:
             logger.info("discord: local image not uploaded (%s)", rejection.reason)
-        lines = [f"-# ⚠️ {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
+        lines = [f"-# Warning: {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
         if len(rejections) > _MAX_REJECTION_LINES:
-            lines.append(f"-# ⚠️ …and {len(rejections) - _MAX_REJECTION_LINES} more")
+            lines.append(f"-# Warning: …and {len(rejections) - _MAX_REJECTION_LINES} more")
         note = "\n".join(lines)
         if len(body) + len(note) + 2 > self._limit():
             return body
@@ -1139,7 +1139,7 @@ class DiscordRenderer(Renderer):
                 self._buf = []
                 self._delivery_text = None
                 self._open_new_message()
-        note = _as_subtext(f"💭 {body}")
+        note = _as_subtext(f"Thinking: {body}")
         try:
             posted = await self._client.send_message(self._channel_id, note)
         except Exception:
@@ -1204,13 +1204,13 @@ class DiscordRenderer(Renderer):
                     {
                         "type": 2,
                         "style": _STYLE_SUCCESS,
-                        "label": "✅ Approve",
+                        "label": "Approve",
                         "custom_id": f"a:{rid}:{nonce}:1",
                     },
                     {
                         "type": 2,
                         "style": _STYLE_DANGER,
-                        "label": "🚫 Deny",
+                        "label": "Deny",
                         "custom_id": f"a:{rid}:{nonce}:0",
                     },
                 ],
@@ -1235,7 +1235,7 @@ class DiscordRenderer(Renderer):
                 self._ladder_paused = True
                 self._ladder.pause_stall_watchdog()
             posted = await self._client.send_message(
-                self._channel_id, f"🔐 Approve `{tool}`?", components=components
+                self._channel_id, f"Approve `{tool}`?", components=components
             )
             if not posted:
                 # This client reports a failed send by RETURNING no message id
@@ -1263,7 +1263,7 @@ class DiscordRenderer(Renderer):
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         try:
-            await self._client.send_message(self._channel_id, "🗜️ Compacting context…")
+            await self._client.send_message(self._channel_id, "Compacting context…")
         except Exception:
             logger.debug("Discord: compaction notice send failed", exc_info=True)
 
@@ -1331,7 +1331,7 @@ class DiscordRenderer(Renderer):
             # reads as a finished reply. The bare ellipsis remains only for a
             # close the driver did not judge (a cancel); a close after an
             # exception keeps the explicit error placeholder.
-            placeholder = self.empty_turn_notice or ("…" if ok else "⚠️ Error — please try again")
+            placeholder = self.empty_turn_notice or ("…" if ok else "Error: please try again")
             if steer_summary:
                 # The chip is the USER's typed words, and this path hands them to
                 # the client directly rather than through `_seal_current`, so the

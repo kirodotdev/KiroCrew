@@ -358,12 +358,12 @@ async def on_prompt_choice(  # noqa: D401 - imperative reads wrong for a handler
     keyboard = {
         "inline_keyboard": [
             [
-                {"text": "✅ Approve", "callback_data": f"a:{rid}:{nonce}:1"},
-                {"text": "🚫 Deny", "callback_data": f"a:{rid}:{nonce}:0"},
+                {"text": "Approve", "callback_data": f"a:{rid}:{nonce}:1"},
+                {"text": "Deny", "callback_data": f"a:{rid}:{nonce}:0"},
             ],
             [
                 {
-                    "text": "🤝 Trust this conversation",
+                    "text": "Trust this conversation",
                     "callback_data": f"a:{rid}:{nonce}:t",
                 }
             ],
@@ -385,7 +385,7 @@ async def on_prompt_choice(  # noqa: D401 - imperative reads wrong for a handler
     # the scan, and retry_plain re-sends without a parse_mode if the markup is
     # ever rejected.
     tool = await asyncio.to_thread(_display_safe, tool_title or self._last_tool or "this tool")
-    body = f"🔐 Approve <code>{html.escape(tool)}</code>?"
+    body = f"Approve <code>{html.escape(tool)}</code>?"
     # Show the arguments. "Approve bash?" is not a decision a user can make;
     # which command it wants to run is. Bounded so the prompt stays one message.
     detail = " ".join((tool_input or "").split())

@@ -596,11 +596,11 @@ class SessionBinder:
         existing = self.sessions.get_mirror_link(key)
         if existing is not None and existing != link:
             return (
-                f"🧵 This session is already active on "
+                f"This session is already active on "
                 f"{existing.channel_type.title()}. Unlink it there first."
             )
         if key in self.sessions.find_mirror_sessions(link, inbound_only=True):
-            return f"🧵 Already active here: {title}"
+            return f"Already active here: {title}"
         occupants = [
             candidate for candidate in self.sessions.find_mirror_sessions(link) if candidate != key
         ]
@@ -609,7 +609,7 @@ class SessionBinder:
             # resumed sessions and outbound dashboard mirrors alike -- so one
             # instruction is always followable from inside the conversation.
             return (
-                f"⚠️ This {self.copy.conversation_noun} is already attached to another "
+                f"Warning: This {self.copy.conversation_noun} is already attached to another "
                 f"session. Run `{self.copy.unlink_command}` first."
             )
         return None
@@ -650,7 +650,7 @@ class SessionBinder:
         )
         return RoutingDecision(
             refusal=(
-                f"🔗 Can't read or save which session this {self.copy.conversation_noun} "
+                f"Can't read or save which session this {self.copy.conversation_noun} "
                 "is linked to, so your message was NOT processed. This needs an operator "
                 f"to repair the gateway's expectation store; `{self.copy.sessions_command}` "
                 "still lists sessions, but a reattachment cannot be saved until it is."
@@ -678,7 +678,7 @@ class SessionBinder:
             if resolution.ambiguous:
                 return RoutingDecision(
                     refusal=(
-                        f"🔗 Ambiguous link: this {self.copy.conversation_noun} is claimed "
+                        f"Ambiguous link: this {self.copy.conversation_noun} is claimed "
                         "by more than one session, so it cannot be resumed and your "
                         f"message was NOT processed. Run `{self.copy.unlink_command}` to "
                         f"release them, then `{self.copy.sessions_command}` to reattach."
@@ -691,7 +691,7 @@ class SessionBinder:
                     return RoutingDecision()
                 return RoutingDecision(
                     refusal=(
-                        f"🔗 Detached: this {self.copy.conversation_noun} is no longer "
+                        f"Detached: this {self.copy.conversation_noun} is no longer "
                         f'linked to "{self._described(expected)}". Your message was NOT '
                         f"processed. Run `{self.copy.sessions_command}` to reattach, or "
                         "resend to continue in your own conversation."
@@ -716,7 +716,7 @@ class SessionBinder:
                 return RoutingDecision(resumed_key=resolution.key)
             return RoutingDecision(
                 refusal=(
-                    f'🔗 Now linked to "{self.display_title(title)}" instead of '
+                    f'Now linked to "{self.display_title(title)}" instead of '
                     f'"{self._described(expected)}". Your message was NOT processed. '
                     "Resend it to continue in the new conversation, or run "
                     f"`{self.copy.unlink_command}` to go back to your own."
@@ -733,7 +733,7 @@ class SessionBinder:
         )
         return RoutingDecision(
             refusal=(
-                f"🔗 This {self.copy.conversation_noun}'s link is changing right now, so "
+                f"This {self.copy.conversation_noun}'s link is changing right now, so "
                 "your message was NOT processed. Send it again in a moment."
             ),
             settle=SETTLE_NOTHING,
@@ -962,7 +962,7 @@ class SessionResumeController:
             await surface.say(surface.owner_refusal)
             return
         if self.conv_log is None:
-            await surface.say("⚠️ Recent sessions are unavailable.")
+            await surface.say("Warning: Recent sessions are unavailable.")
             return
 
         try:
@@ -983,7 +983,7 @@ class SessionResumeController:
                 error=surface.display_safe(str(exc), 200),
             )
             logger.exception("%s sessions: history listing failed", self.channel_type)
-            await surface.say("⚠️ Recent sessions are unavailable.")
+            await surface.say("Warning: Recent sessions are unavailable.")
             return
 
         sel().log_api_access(

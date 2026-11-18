@@ -19,7 +19,7 @@ from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.telegram.renderer_display import _neutralize_md as telegram_neutralize_md
 
 # The rotation chip prefix: an arrow plus emoji variation selector U+FE0F.
-ROTATION_CHIP = "> \u21aa\ufe0f "
+ROTATION_CHIP = "> \u21aa "
 
 # (typed words, escaped chip text)
 CASES = [

@@ -900,7 +900,7 @@ async def test_resume_replay_previews_long_markdown_without_breaking_a_fence() -
     assert preview.count("```") % 2 == 0, preview[-40:]  # the block is closed
     assert preview.endswith(session_resume._REPLAY_TRUNCATED)  # and says so
     # The icon sits on its own line, so the opener still starts a line.
-    assert preview.startswith("🤖\n```python\n")
+    assert preview.startswith("Agent:\n```python\n")
 
 
 @pytest.mark.asyncio
@@ -922,7 +922,7 @@ async def test_resume_replay_omits_a_fence_that_cannot_fit_safely() -> None:
     await dispatcher.on_interaction(_interaction(custom_id, message_id))
 
     replayed = [text for text, _ in client.sent if session_resume._REPLAY_TRUNCATED in text]
-    assert replayed == [f"🤖\n{session_resume._REPLAY_TRUNCATED}"]
+    assert replayed == [f"Agent:\n{session_resume._REPLAY_TRUNCATED}"]
     assert len(replayed[0]) <= DISCORD_CHUNK_LIMIT
     assert opener not in replayed[0]
 

@@ -38,7 +38,7 @@ logger = logging.getLogger("kiro_crew.telegram.transport_dispatch")
 #: (Telegram's own turn on the resumed key). An incognito or temporary session is
 #: taken like any other: those modes keep their transcript and queue.
 _RESUMED_BUSY_REFUSAL = (
-    "⏳ That session is busy with a turn started elsewhere. Send your "
+    "That session is busy with a turn started elsewhere. Send your "
     "message again once it finishes, or /unlink to return to your "
     "Telegram conversation."
 )

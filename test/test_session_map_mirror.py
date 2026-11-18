@@ -631,7 +631,7 @@ class TestReleaseConversationLocation:
         )
         # The conversation's own row falls to the key-addressed clear BEFORE
         # the sweep runs, so one binding is never double-counted.
-        assert reply == "✅ Unlinked."
+        assert reply == "Unlinked."
         assert swept == []
         assert session_map.find_mirror_sessions(self.LINK) == []
 
@@ -646,7 +646,7 @@ class TestReleaseConversationLocation:
         reply, swept = release_conversation_location(
             session_map, key=self.KEY, location=self.LINK, channel="discord"
         )
-        assert reply == "✅ Unlinked (3 bindings)."
+        assert reply == "Unlinked (3 bindings)."
         assert sorted(swept) == ["dashboard:chat-9", f"{self.KEY}:gen1"]
         assert session_map.find_mirror_sessions(self.LINK) == []
 
@@ -657,7 +657,7 @@ class TestReleaseConversationLocation:
         reply, swept = release_conversation_location(
             session_map, key=self.KEY, location=self.LINK, channel="discord"
         )
-        assert reply == "✅ Unlinked."
+        assert reply == "Unlinked."
         assert swept == []
 
     def test_a_paused_dashboard_mirror_into_this_dm_is_swept(self, session_map):
@@ -679,7 +679,7 @@ class TestReleaseConversationLocation:
         reply, swept = release_conversation_location(
             session_map, key=self.KEY, location=self.LINK, channel="discord"
         )
-        assert reply == "✅ Unlinked."
+        assert reply == "Unlinked."
         assert swept == ["dashboard:chat-42"]
         assert session_map.get_mirror_link("dashboard:chat-42") is None
         assert session_map.find_mirror_sessions(self.LINK, inbound_only=True) == []

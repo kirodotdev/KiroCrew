@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.telegram.transport_dispatch")
 
 _RELEASE_FAILURE = (
-    "⚠️ Could not leave the resumed session safely, so nothing changed. "
+    "Warning: Could not leave the resumed session safely, so nothing changed. "
     "Try again before sending another message."
 )
 
@@ -78,8 +78,7 @@ async def _handle_dashboard(
     if not self._is_private_route(route):
         await self._reply(
             chat_id,
-            "🔒 Dashboard links are only sent in a direct message — "
-            "DM me `/kirocrew dashboard`.",
+            "Dashboard links are only sent in a direct message — " "DM me `/kirocrew dashboard`.",
             thread=thread,
         )
         return
@@ -108,7 +107,7 @@ async def _handle_dashboard(
         )
         await self._reply(
             chat_id,
-            f"🔗 Dashboard link (valid {ttl_display}):\n{url}",
+            f"Dashboard link (valid {ttl_display}):\n{url}",
             thread=thread,
         )
     except Exception as exc:
@@ -127,7 +126,7 @@ async def _handle_dashboard(
             pass
         await self._reply(
             chat_id,
-            f"⚠️ Could not generate dashboard link: {exc}",
+            f"Warning: Could not generate dashboard link: {exc}",
             thread=thread,
         )
 
@@ -306,7 +305,7 @@ async def _require_direct_chat(
         )
         await self._reply(
             chat_id,
-            f"🔒 The {subject} names conversations across this whole install, so "
+            f"The {subject} names conversations across this whole install, so "
             "it is only sent when `telegram.allowed_user_ids` holds a single "
             "operator. It currently holds several, and the agent cannot tell "
             "which of them owns the install.",
@@ -323,7 +322,7 @@ async def _require_direct_chat(
     )
     await self._reply(
         chat_id,
-        f"🔒 The {subject} is only sent in a direct message. DM me `/{cmd}`.",
+        f"The {subject} is only sent in a direct message. DM me `/{cmd}`.",
         thread=thread,
     )
     return False
@@ -377,7 +376,7 @@ async def _handle_link(
     if resumed_key is not None:
         await self._reply(
             chat_id,
-            "⚠️ A resumed session is active here. Send /unlink first.",
+            "Warning: A resumed session is active here. Send /unlink first.",
             thread=thread,
         )
         return
@@ -397,7 +396,7 @@ async def _handle_link(
         logger.info("telegram link refused: conversation already held")
         await self._reply(
             chat_id,
-            "⚠️ Another session is already linked here. Send /unlink first.",
+            "Warning: Another session is already linked here. Send /unlink first.",
             thread=thread,
         )
         return
@@ -415,7 +414,7 @@ async def _handle_unlink(self: TelegramDispatcher, route: tuple[str, str], chat_
     if left_resumed is not None:
         await self._reply(
             chat_id,
-            "✅ Left the resumed session. Back to your Telegram conversation.",
+            "Left the resumed session. Back to your Telegram conversation.",
             thread=thread,
         )
         return
@@ -466,7 +465,7 @@ async def _handle_compact(
         elif self.sessions.has_session(target_key):
             await self._reply(
                 chat_id,
-                "⏳ Still working on your last message — try /compact once it finishes.",
+                "Still working on your last message — try /compact once it finishes.",
                 thread=thread,
             )
         else:
@@ -487,7 +486,7 @@ async def _handle_compact(
             await self._reply(chat_id, compact_unsupported_reply(unsupported), thread=thread)
             return
 
-        status_id = await self._reply(chat_id, "🔄 Compacting context…", thread=thread)
+        status_id = await self._reply(chat_id, "Compacting context…", thread=thread)
         result_text: str | None = None
         try:
 
@@ -507,15 +506,17 @@ async def _handle_compact(
             if cr["type"] == "completed":
                 # ``summary`` is model-facing compacted context, not a
                 # user-facing receipt. Never publish its orchestration text.
-                result_text = "✅ Context compacted."
+                result_text = "Context compacted."
             elif cr["type"] == "failed":
                 err = cr.get("summary", "")
-                result_text = f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
+                result_text = (
+                    f"Error: Compaction failed: {err}" if err else "Error: Compaction failed."
+                )
             else:
-                result_text = "⚠️ Compaction timed out."
+                result_text = "Warning: Compaction timed out."
         except Exception:
             logger.warning("Telegram /compact failed for %s", target_key, exc_info=True)
-            result_text = "❌ Compaction failed unexpectedly."
+            result_text = "Error: Compaction failed unexpectedly."
             # Drop the wedged native conversation, NOT the session's channel
             # identity: the map entry carries the mirror binding, so a full
             # ``destroy`` would silently unlink a mirrored conversation.
@@ -526,7 +527,7 @@ async def _handle_compact(
             except Exception:
                 logger.debug("Telegram: discard after compact failure failed", exc_info=True)
 
-        final = result_text or "✅ Context compacted."
+        final = result_text or "Context compacted."
         # The status line is only a placeholder: when it cannot be edited (deleted
         # during the wait, or the edit failed) the result goes out as a new message.
         if not (status_id and await self.client.edit_message(chat_id, status_id, final)):

@@ -259,7 +259,7 @@ class WhatsAppDispatcher:
             )
             message = NEW_SESSION_TEXT
             if not saved:
-                message += "\n⚠️ The new conversation could not be saved for restart."
+                message += "\nWarning: The new conversation could not be saved for restart."
             await self._say(scope, message)
         elif command == "compact":
             # Clear the nudge flag first, so the soft-threshold nudge can fire
