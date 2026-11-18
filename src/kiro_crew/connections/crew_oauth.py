@@ -688,9 +688,7 @@ async def _post_token(slug: str, form: dict[str, str]) -> dict[str, Any]:
                         body = None
                     error = body.get("error") if isinstance(body, dict) else None
                     if isinstance(error, str) and error:
-                        raise CrewOAuthError(
-                            safe_error_code(error, f"token_http_{resp.status}")
-                        )
+                        raise CrewOAuthError(safe_error_code(error, f"token_http_{resp.status}"))
                     raise CrewOAuthError(f"token_http_{resp.status}")
                 try:
                     doc = await resp.json(content_type=None)
