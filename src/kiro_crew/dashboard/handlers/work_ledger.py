@@ -147,7 +147,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_loop_held,
         _slot_looping,
         _slot_open,
+        _slot_pending,
         _slot_running,
+        _slot_turn_running,
         _tail_events,
         api_work_ledger_accept_eval,
         api_work_ledger_get,
@@ -247,6 +249,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.handlers.office_slides import (  # noqa: F401
         _KeyedLocks,
+    )
+    from kiro_crew.dashboard.session_activity import (  # noqa: F401
+        session_activity_for_key,
+        session_known_execution_active,
+        session_work_pending,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         DashboardState,

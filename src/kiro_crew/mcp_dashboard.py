@@ -763,6 +763,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _WORK_RECORD_ROUTE,
     GENERATE_TITLE_TIMEOUT_SECS,
     SESSION_STATUS_READ_TIMEOUT_SECS,
+    _activity_suffix,
     _closed_at_display,
     _create_refusal_remedy,
     _create_session,

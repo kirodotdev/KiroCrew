@@ -57,9 +57,27 @@ def _ticking_clock(_floor_monkeypatch):
         _floor_monkeypatch.setattr(module, "_now_iso", _tick)
 
 
-def _state(*, running: bool):
-    slots = {WORKER_A: SimpleNamespace(running=running)}
-    return SimpleNamespace(get_slot=slots.get, owner_id=OWNER)
+def _state(*, running: bool, subagents: bool = False, queued: bool = False, workflow: bool = False):
+    slot = SimpleNamespace(
+        key=WORKER_A,
+        linked_session_key="",
+        turn_running=running,
+        running=running,
+    )
+    manager = SimpleNamespace(
+        running_agents_for=lambda _key: [{"id": "sa-1"}] if subagents else [],
+        has_in_memory_pending_work_for=lambda _key: queued,
+        published_queued_depths=lambda: {f"dashboard:{WORKER_A}": 1} if queued else {},
+    )
+    workflows = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda _key: workflow)
+    )
+    return SimpleNamespace(
+        get_slot={WORKER_A: slot}.get,
+        owner_id=OWNER,
+        subagents=manager,
+        workflow_service=workflows,
+    )
 
 
 def _rows(item_id: str) -> list[dict]:
@@ -108,6 +126,21 @@ async def test_a_worker_running_again_no_longer_needs_the_person():
     assert board.with_worker_facts(rows, _state(running=False))[0]["awaits_person"] is True
     # The conductor messaged the worker: its turn runs, no ledger answer was written.
     assert board.with_worker_facts(rows, _state(running=True))[0]["awaits_person"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["subagents", "queued", "workflow"])
+async def test_background_work_does_not_hide_the_persons_unanswered_question(kind):
+    ids = await two_by_two()
+    await _asks()
+    rows = _rows(ids["item_a"])
+    state = _state(running=False, **{kind: True})
+
+    facts = board.with_worker_facts(rows, state)[0]
+
+    assert facts["worker"] == ("idle" if kind == "queued" else "running")
+    assert facts["stale"] is False
+    assert facts["awaits_person"] is True
 
 
 @pytest.mark.asyncio
