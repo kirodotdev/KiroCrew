@@ -458,6 +458,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.member_slot_retry": "schedule_member_slot_retry",
     "kiro_crew.dashboard.slot_queue_repository": "drain_restored_parked_sends",
     "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
+    "kiro_crew.dashboard.workflow_lineage": "lineage_lookups",
     "kiro_crew.dashboard.workflow_session_port": "WorkflowSessionPort",
     "kiro_crew.decisions": "impl_systemone local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",

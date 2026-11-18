@@ -277,6 +277,10 @@ class WorkflowSessionPort:
                 code=exc.code,
             ) from None
         key = str(result.get("target") or "")
+        # A run started from the opened session counts as this run's child.
+        workflows = getattr(self._state, "workflow_service", None)
+        if workflows is not None and key:
+            workflows.nesting.bind_session(key, run_id)
         slot = self._state.get_slot(key)
         labelled = False
         if slot is not None:
