@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers import agents as agent_handlers
 from kiro_crew.history import ConversationLog
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.template_mcp_additions import add_addition, merge_at_spawn
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 @pytest.fixture
@@ -173,6 +174,24 @@ def test_an_agent_the_custom_agents_tab_cannot_edit_is_not_told_about(
     assert not notice.editable_agent_without_tools("packaged")
     assert not notice.editable_agent_without_tools("atlas")
     assert not notice.editable_agent_without_tools("twin")
+
+
+def test_a_credential_shaped_agent_name_is_redacted_in_the_row_and_its_meta(
+    home: dict[str, Path], surfaced
+) -> None:
+    secret = github_classic()
+    _agent(home, secret)
+    key = "dashboard_chat-9"
+    _chat(key)
+
+    assert _surface(_Slot("chat-9"), key, secret)
+
+    _slot_key, _role, content, meta = surfaced[0]
+    assert secret not in content
+    # No link token: a redacted name would open some other agent's page.
+    assert meta == {"kind": notice.AGENT_NO_TOOLS_NOTICE_KIND}
+    # The once-per-chat claim still keys on the real file name.
+    assert ConversationLog().get_metadata(key)[notice.AGENT_NO_TOOLS_NOTICE_FIELD] == secret
 
 
 def test_a_chat_is_told_once_and_again_for_another_such_agent(
