@@ -731,9 +731,12 @@ class TestListingReusesTheWalk:
         clock = ManualClock(start=self._SETTLED_NS / 1e9 + 2)  # inside the 3 s window
         clock.install(monkeypatch, manager_records)
         real_scandir = manager_records.os.scandir
+        # manager_records.os is the shared os module: only the listing's own walk
+        # moves the clock, not another caller's scan of the apps folder.
+        listing_walk = manager_records._recorded_app_names.__code__
 
         def slow_walk(path=".", *args, **kwargs):
-            if not isinstance(path, int) and os.fspath(path) == os.fspath(apps_root):
+            if sys._getframe(1).f_code is listing_walk:
                 clock.advance(5)  # the walk ends past the window
             return real_scandir(path, *args, **kwargs)
 
