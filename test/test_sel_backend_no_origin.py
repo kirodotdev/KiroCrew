@@ -82,6 +82,51 @@ def test_audit_log_from_a_backend_with_a_route_but_no_owner_marker_lands_as_a_ro
     )
 
 
+#: Every module that reads ``KIROCREW_GATEWAY_ORIGIN`` outside the spawn, and the
+#: token exchange it uses with the origin. A new reader must be added here on purpose.
+_ORIGIN_CONSUMERS = {
+    "apps/sel_client.py": 'f"{self._origin}/api/apps/{urllib.parse.quote(self._app)}{path}"',
+    "apps/builtins/dev_fleet/server.py": "GatewayPointerBroker(",
+}
+
+
+def test_every_origin_consumer_needs_the_app_token_a_no_marker_app_cannot_mint(
+    app_env, monkeypatch
+) -> None:
+    """Dropping the origin from a no-marker spawn loses no working consumer.
+
+    Each reader trades ``KIROCREW_PROXY_SECRET`` at ``POST /api/apps/<app>/token`` and
+    ``validate_app_secret`` refuses that without the owner-enable marker. If a reader
+    ever works without the token, the spawn must keep the origin for it.
+    """
+    from pathlib import Path
+
+    import kiro_crew
+    from kiro_crew.dashboard.token_auth import validate_app_secret
+
+    root = Path(kiro_crew.__file__).parent
+    readers = {
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*.py")
+        if 'environ.get("KIROCREW_GATEWAY_ORIGIN"' in p.read_text(encoding="utf-8")
+        or 'env.get("KIROCREW_GATEWAY_ORIGIN"' in p.read_text(encoding="utf-8")
+    }
+    # The spawn module sets the variable and checks it for the key mask; it is not a reader.
+    readers.discard("apps/backend.py")
+    assert readers == set(_ORIGIN_CONSUMERS)
+    for rel, marker in _ORIGIN_CONSUMERS.items():
+        assert marker in (root / rel).read_text(encoding="utf-8"), rel
+    # The pointer broker trades the secret at the same token route.
+    broker = (root / "apps/builtins/dev_fleet/pointer_broker.py").read_text(encoding="utf-8")
+    assert '/api/apps/{self._app}/token"' in broker and "X-App-Secret" in broker
+
+    write_app_secret(_APP, "per-app-secret")
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: False)
+    assert validate_app_secret(_APP, "per-app-secret") is False
+    monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
+    assert validate_app_secret(_APP, "per-app-secret") is True
+
+
 @pytest.mark.parametrize(
     "bound",
     [

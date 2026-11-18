@@ -370,6 +370,20 @@ def test_an_unsupported_method_warns_once_and_does_not_raise(caplog) -> None:
         backend._private  # noqa: B018 -- only public writer names are swallowed
 
 
+def test_a_critical_call_to_a_gateway_only_writer_raises(caplog) -> None:
+    """``critical=True`` means the caller refuses the action it could not audit."""
+    from kiro_crew.apps import sel_client
+
+    backend = sel_client.SelClient(_A, "http://127.0.0.1:1", "per-app-secret")
+    with pytest.raises(sel_client.SelClientError, match="log_sel_rotation"):
+        backend.log_sel_rotation(segment="a", critical=True)
+    # Not critical: still a single warning, no raise.
+    backend.log_sel_rotation(segment="a")
+    backend.log_sel_rotation(segment="a")
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("critical", [False, True])
 async def test_a_governance_decision_becomes_an_app_attributed_api_access_row(

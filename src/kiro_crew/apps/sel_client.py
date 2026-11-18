@@ -251,13 +251,16 @@ class SelClient:
         """A gateway-only writer (``log_sel_rotation`` ...) warns once, never raises.
 
         Shared code that runs inside a backend may call one; the route has no such kind,
-        so the row is not written and the operator can see why. Anything else that is
-        missing is a plain ``AttributeError``.
+        so the row is not written and the operator can see why. With ``critical=True``
+        it raises :class:`SelClientError` instead, so the caller refuses the action it
+        could not audit. Anything else that is missing is a plain ``AttributeError``.
         """
         if not name.startswith("log_"):
             raise AttributeError(name)
 
-        def _unsupported(*_a: Any, **_kw: Any) -> None:
+        def _unsupported(*_a: Any, **kw: Any) -> None:
+            if kw.get("critical"):
+                raise SelClientError(f"{name} is gateway-only; the row was not written")
             with self._lock:
                 first = name not in self._unsupported_seen
                 self._unsupported_seen.add(name)

@@ -864,6 +864,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # app that holds the owner-enable marker (``token_auth.validate_app_secret``). An app
     # enabled before the marker existed has none, so its origin would lead every call to a
     # 403: leave it out, the same dormancy as a non-loopback bind, and say so.
+    # No origin consumer works without the marker: each trades the app secret at
+    # ``POST /api/apps/<app>/token``, which ``validate_app_secret`` refuses without it
+    # (pinned by ``test_sel_backend_no_origin``).
     # circular import: host_exec_grants -> manager -> backend
     from kiro_crew.apps.host_exec_grants import host_exec_granted
 
