@@ -689,19 +689,31 @@ class TestNativeCancelHandler:
         assert DashboardState.native_subagent_snapshots(state) == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("app", ["appA", None], ids=["app_token", "absent_claim"])
-    async def test_an_app_token_or_a_claimless_request_cannot_dismiss_a_finished_card(self, app):
-        """Same terms as the persisted-run dismissal: an app token is refused, and
-        an absent claim means the request never passed the auth middleware."""
+    async def test_a_claimless_request_cannot_dismiss_a_finished_card(self):
+        """Same terms as the persisted-run dismissal: an absent claim means the
+        request never passed the auth middleware."""
         import json
 
         state, _slot = _native_card_state("working", "terminated")
 
-        resp, audits = await self._delete(state, "native:s1", app=app)
+        resp, audits = await self._delete(state, "native:s1", app=None)
 
         assert (resp.status, json.loads(resp.text)["code"]) == (403, "app_token_forbidden")
         assert len(DashboardState.native_subagent_snapshots(state)) == 1
         assert [(a["operation"], a["outcome"]) for a in audits] == [("spawn.dismiss", "denied")]
+
+    @pytest.mark.asyncio
+    async def test_an_app_token_cannot_dismiss_a_finished_card(self):
+        """An app token is refused before the handler by the run-scope check
+        (``_spawn_scope_refusal``), which never confirms a run id it may not see."""
+        import json
+
+        state, _slot = _native_card_state("working", "terminated")
+
+        resp, _audits = await self._delete(state, "native:s1", app="appA")
+
+        assert (resp.status, json.loads(resp.text)["code"]) == (404, "task_scope_denied")
+        assert len(DashboardState.native_subagent_snapshots(state)) == 1
 
     @pytest.mark.asyncio
     async def test_a_dismissal_is_kept_when_its_audit_fails(self):
