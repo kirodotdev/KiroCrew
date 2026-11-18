@@ -545,6 +545,34 @@ def test_cli_the_sign_in_screen_takes_the_gateway_lock(
     gateway.assert_not_called()
 
 
+def test_cli_a_refused_sign_in_lock_names_who_owns_the_files(
+    lts: None,
+    signed_out: list[bool],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from kiro_crew import cli, data_home_owner
+    from kiro_crew.gateway_lock import LockFileError
+
+    found = data_home_owner.DataHomeAccess(
+        home=str(tmp_path), foreign=(str(tmp_path / "config.json"),), owner="root"
+    )
+    monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: found)
+    lock_cls = MagicMock()
+    lock_cls.return_value.acquire.side_effect = LockFileError(
+        tmp_path, f"could not open {tmp_path / 'gateway.lock'}: Permission denied"
+    )
+    monkeypatch.setattr(cli, "GatewayLock", lock_cls)
+    exit_, _boots, gateway = _cli_gateway(monkeypatch, tmp_path, "--no-open")
+    assert exit_.code == 1
+    assert signin.serve_until_signed_in.served == []  # type: ignore[attr-defined]
+    gateway.assert_not_called()
+    err = capsys.readouterr().err
+    assert found.explain() in err
+    assert err.index("could not open") < err.index(found.explain())
+
+
 def test_cli_a_second_start_on_a_served_sign_in_screen_points_at_its_link(
     lts: None,
     signed_out: list[bool],
