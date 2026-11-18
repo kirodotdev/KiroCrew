@@ -12016,6 +12016,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "Un server aggiunto qui non raggiunge i worker dei Bot. I worker di un Bot lo ricevono solo se viene aggiunto a quel Bot.",
       "title": "Server MCP",
       "view_servers": "Server",
       "view_sharing": "Condivisione"

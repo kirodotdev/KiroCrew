@@ -5318,6 +5318,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "A server added here does not reach Bots' workers. A Bot's workers get a server only when it is added to that Bot.",
       "title": "MCP Servers",
       "view_servers": "Servers",
       "view_sharing": "Sharing"

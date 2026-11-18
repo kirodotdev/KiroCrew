@@ -11496,6 +11496,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "ここで追加したサーバーは Bot のワーカーには届きません。Bot のワーカーがサーバーを使えるのは、その Bot に追加したときだけです。",
       "title": "MCP サーバー",
       "view_servers": "サーバー",
       "view_sharing": "共有"

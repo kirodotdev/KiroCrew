@@ -11496,6 +11496,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "여기서 추가한 서버는 Bot의 워커에 전달되지 않습니다. Bot의 워커는 서버를 해당 Bot에 추가했을 때만 받습니다.",
       "title": "MCP 서버",
       "view_servers": "서버",
       "view_sharing": "공유"

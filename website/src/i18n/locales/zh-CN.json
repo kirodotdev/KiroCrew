@@ -11496,6 +11496,7 @@
   },
   "pages": {
     "mcpPage": {
+      "bot_workers_note": "在这里添加的服务器不会进入 Bot 的工作者。只有把服务器添加到某个 Bot，该 Bot 的工作者才能使用它。",
       "title": "MCP 服务器",
       "view_servers": "服务器",
       "view_sharing": "共享"
