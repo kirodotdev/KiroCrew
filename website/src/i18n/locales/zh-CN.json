@@ -7803,6 +7803,11 @@
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
       "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "复制登录命令",
+      "models_signed_out": "Kiro CLI 未登录，因此无法加载完整的模型列表。",
+      "sign_in": "登录 Kiro CLI"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "未记录设置完成",
       "setup_marker_retry_body": "{{productName}} 已打开仪表板，但无法记录设置已完成。在此操作成功之前，此网关上的其他浏览器和用户可能仍会看到设置界面。",
@@ -19000,7 +19005,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "每次在 git 项目里新建聊天时，把右侧边栏展开到 Git 标签页。关闭后 Git 标签页依然会创建，只是不会自动展开。",
         "expanded_icon_name_stats": "展开（图标 + 名称 + 统计）",
         "failed_to_load_config": "加载配置失败。",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI 未登录或登录已过期。请在终端中运行 'kiro-cli login'，然后点击“重试”。",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI 未登录或登录已过期。请点击“登录 Kiro CLI”，然后点击“重试”。",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI 未登录或登录已过期。请复制登录命令，在终端中运行，然后点击“重试”。",
         "failed_to_load_dashboard_config": "加载仪表板配置失败。",
         "failed_to_save_auto_compact_threshold": "保存自动压缩阈值失败",
         "failed_to_save_completion_keep_characters": "保存完成事件保留字符数失败",

@@ -8221,6 +8221,11 @@
       "previous_sign_in_not_removed": "Connecté, mais la connexion précédente n’a pas pu être supprimée",
       "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici."
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "Copier la commande de connexion",
+      "models_signed_out": "Kiro CLI n'est pas connecté, la liste complète des modèles ne peut donc pas se charger.",
+      "sign_in": "Se connecter à Kiro CLI"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "La fin de la configuration n’a pas été enregistrée",
       "setup_marker_retry_body": "{{productName}} a ouvert le tableau de bord, mais n’a pas pu enregistrer que la configuration est terminée. Les autres navigateurs et personnes sur cette passerelle peuvent continuer à voir l’écran de configuration jusqu’à ce que cela réussisse.",
@@ -20042,7 +20047,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "Ouvre le panneau latéral sur l'onglet Git chaque fois que tu démarres une discussion dans un projet git. L'onglet Git est créé dans tous les cas.",
         "expanded_icon_name_stats": "Étendu (icône + nom + statistiques)",
         "failed_to_load_config": "Échec du chargement de la configuration.",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI n'est pas connecté ou ta session a expiré. Exécute 'kiro-cli login' dans le terminal, puis clique sur « Réessayer ».",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI n'est pas connecté ou ta session a expiré. Clique sur « Se connecter à Kiro CLI », puis sur « Réessayer ».",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI n’est pas connecté ou ta session a expiré. Copie la commande de connexion, exécute-la dans un terminal, puis clique sur « Réessayer ».",
         "failed_to_load_dashboard_config": "Échec du chargement de la configuration du tableau de bord.",
         "failed_to_save_auto_compact_threshold": "Échec de l’enregistrement du seuil de compactage automatique",
         "failed_to_save_completion_keep_characters": "Échec de l’enregistrement des caractères conservés de l’événement de fin",

@@ -8012,6 +8012,11 @@
       "previous_sign_in_not_removed": "সাইন ইন হয়েছে, কিন্তু আগের সাইন-ইন সরানো যায়নি",
       "previous_sign_in_not_removed_body": "নতুন অ্যাকাউন্ট সংরক্ষিত হয়েছে, কিন্তু আপনি যেটি থেকে বদলাচ্ছিলেন সেটি এখনও আছে এবং সেটিই অগ্রাধিকার পায়। সেটি থেকে সাইন আউট করুন, তারপর এখানে দেখানো সাইন-ইন পরীক্ষা করুন।"
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "সাইন-ইন কমান্ড কপি করো",
+      "models_signed_out": "Kiro CLI সাইন ইন করা নেই, তাই পুরো মডেল তালিকা লোড করা যাচ্ছে না।",
+      "sign_in": "Kiro CLI-তে সাইন ইন করো"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "সেটআপ সম্পূর্ণ হওয়ার তথ্য রেকর্ড করা হয়নি",
       "setup_marker_retry_body": "{{productName}} ড্যাশবোর্ড খুলেছে, কিন্তু সেটআপ সম্পূর্ণ হয়েছে তা রেকর্ড করতে পারেনি। এটি সফল না হওয়া পর্যন্ত এই গেটওয়ের অন্য ব্রাউজার ও ব্যবহারকারীরা এখনও সেটআপ স্ক্রিন দেখতে পেতে পারে।",
@@ -19521,7 +19526,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "আপনি যতবার কোনো git প্রজেক্টে চ্যাট শুরু করেন, ততবার সাইড প্যানেল Git ট্যাবে খোলে। বন্ধ থাকলেও Git ট্যাব তৈরি হয়।",
         "expanded_icon_name_stats": "বিস্তৃত (আইকন + নাম + পরিসংখ্যান)",
         "failed_to_load_config": "কনফিগ লোড করা যায়নি।",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI সাইন ইন করা নেই বা এর লগইনের মেয়াদ শেষ হয়ে গেছে। টার্মিনালে 'kiro-cli login' চালাও, তারপর \"Retry\"-তে ক্লিক করো।",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI সাইন ইন করা নেই বা এর লগইনের মেয়াদ শেষ হয়ে গেছে। \"Kiro CLI-তে সাইন ইন করো\"-তে ক্লিক করো, তারপর \"Retry\"-তে ক্লিক করো।",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI সাইন ইন করা নেই বা এর লগইনের মেয়াদ শেষ হয়ে গেছে। সাইন ইন কমান্ড কপি করো, টার্মিনালে চালাও, তারপর \"Retry\"-তে ক্লিক করো।",
         "failed_to_load_dashboard_config": "ড্যাশবোর্ড কনফিগ লোড করা যায়নি।",
         "failed_to_save_auto_compact_threshold": "অটো-কমপ্যাক্ট থ্রেশহোল্ড সেভ করা যায়নি",
         "failed_to_save_completion_keep_characters": "কমপ্লিশন-কিপ ক্যারেক্টার সেভ করা যায়নি",

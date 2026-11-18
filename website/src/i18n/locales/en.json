@@ -5162,6 +5162,11 @@
       "prev": "← Prev",
       "s_elapsed": "s elapsed"
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "Copy the sign-in command",
+      "models_signed_out": "Kiro CLI isn't signed in, so the full model list can't load.",
+      "sign_in": "Sign in to Kiro CLI"
+    },
     "kiroPrerequisiteGate": {
       "ask_the_kiro_crew_owner_to_install_kiro_cli_and": "Ask the {{productName}} owner to install Kiro CLI and sign in on this gateway. This dashboard\n          will open for you as soon as the gateway is ready.",
       "check_again": "Check again",
@@ -10758,7 +10763,8 @@
         "expand_history_sidebar_by_default": "Expand history sidebar by default",
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "Expand the side panel to the Git tab each time you start a chat in a git project. The Git tab is created either way.",
         "failed_to_load_config": "Failed to load config.",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI isn't signed in or its login has expired. Run 'kiro-cli login' in your terminal, then click Retry.",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI isn't signed in or its login has expired. Click Sign in to Kiro CLI, then click Retry.",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI isn't signed in or its login has expired. Copy the sign-in command, run it in a terminal, then click Retry.",
         "failed_to_load_dashboard_config": "Failed to load dashboard config.",
         "feature_tips": "Feature Tips",
         "file_change_chips": "File Change Chips",

@@ -676,6 +676,14 @@ its own once the cache refreshes with a list that carries it.
   model, or a default the surface cannot read carries no marker. When the config
   read or the agent-pin read fails (`useSettingsDefaultModel` reports `failed`),
   the composer shows an inline "failed to load config" notice instead.
+- When the configured list failed with `kiro_prerequisite_required` (kiro-cli's
+  own login is missing or expired; `markModelsAuthRequired` in
+  `providers/adapters/acp.ts`), both composer pickers and the Settings ▸ Chat
+  model-list banner say so and offer **Sign in to Kiro CLI**
+  (`components/KiroCliSignInInTerminal.tsx`). The button runs the prerequisite
+  status's `login_command` in the dashboard Terminal panel behind the usual Run
+  in terminal confirm, so no one types a command. A harness's own list
+  (`models_backend`) never shows the row.
 - **A dashboard chat slot with an empty `slot.model` inherits**, and keeps inheriting
   across turns and across a restart: a metadata line whose `model` is `""` restores
   `""`. Only a line with no `model` key, saved before every save wrote one, takes the
