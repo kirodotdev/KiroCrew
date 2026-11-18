@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.cli_chat_stdin import STDIN_MESSAGE
+
 #: Exit codes, one per way a run ends (rfc-builtin-eval.md §12.5).
 EXIT_DONE = 0
 EXIT_ERROR = 1
@@ -148,6 +150,10 @@ class Result:
 def options_from_args(args: argparse.Namespace) -> Options:
     """Validate the flags of one headless run; raise :class:`UsageError` on a bad set."""
     message = args.message or ""
+    if message == STDIN_MESSAGE:
+        # `-m -` reads stdin only on the interactive chat; sent here it would
+        # seed an unattended run with the text "-" and drop the piped message.
+        raise UsageError("-m - does not read stdin with --headless; use --message-file PATH")
     if getattr(args, "message_file", None):
         if message:
             raise UsageError("give -m or --message-file, not both")
