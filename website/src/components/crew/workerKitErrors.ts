@@ -30,13 +30,13 @@ const CODE_TEXT: Record<string, (detail: string) => string> = {
   capabilities_unavailable: () => i18nT('crewEditorNext.load_error'),
 }
 
-/** The `detail` a refusal body names, or `''`. */
-function refusalDetail(err: unknown): string {
+/** A string field of a refusal body (`detail`, `reason`), or `''`. */
+function refusalField(err: unknown, field: 'detail' | 'reason'): string {
   if (!(err instanceof ApiError)) return ''
   try {
     const parsed = JSON.parse(err.body) as unknown
-    const detail = parsed && typeof parsed === 'object' ? (parsed as { detail?: unknown }).detail : undefined
-    return typeof detail === 'string' ? detail : ''
+    const value = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>)[field] : undefined
+    return typeof value === 'string' ? value : ''
   } catch {
     return ''
   }
@@ -45,10 +45,13 @@ function refusalDetail(err: unknown): string {
 /** The sentence a worker-kit failure shows, or `null` when there is none. */
 export function workerKitErrorText(err: unknown): string | null {
   if (!err) return null
-  // The dashboard's own deadline on the GET: its message is the untranslated
-  // `deadline exceeded`, so it reads as the same load failure.
-  if (isDeadlineError(err)) return i18nT('crewEditorNext.load_error')
+  // A read past either deadline: the dashboard's own (the untranslated
+  // `deadline exceeded`) or the gateway's (`reason: timed_out`). Both read as
+  // the same load failure, with its likely causes.
+  if (isDeadlineError(err) || refusalField(err, 'reason') === 'timed_out') {
+    return i18nT('crewEditorNext.load_error_timed_out')
+  }
   const code = apiErrorCode(err)
-  if (Object.hasOwn(CODE_TEXT, code)) return CODE_TEXT[code](refusalDetail(err))
+  if (Object.hasOwn(CODE_TEXT, code)) return CODE_TEXT[code](refusalField(err, 'detail'))
   return err instanceof Error ? err.message : String(err)
 }

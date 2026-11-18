@@ -10,20 +10,13 @@ after that preview. All disk work runs off the event loop through
 
 from __future__ import annotations
 
-import asyncio
-
 from aiohttp import web
 
 from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
 from kiro_crew.dashboard.chat_utils import drained_to_thread
+from kiro_crew.dashboard.handlers._bounded_read import TIMED_OUT, bounded_read
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.mate_worker_kit import WorkerKitError
-
-# How long the GET waits for its read of the crewmate's own file, which can
-# block in the kernel for as long as a hung mount does. The same bound as the
-# capabilities GET (``handlers/agent_capabilities.py``), and shorter than the
-# dashboard's own deadline on the read (``ABILITIES_READ_TIMEOUT_MS``).
-_GET_TIMEOUT_SECS = 20.0
 
 
 async def api_member_worker_kit(request: web.Request) -> web.Response:
@@ -41,15 +34,14 @@ async def api_member_worker_kit(request: web.Request) -> web.Response:
             # Not ``drained_to_thread``: a GET mutates nothing, so a read still
             # blocked at the deadline is left to its thread and answered 503.
             try:
-                view = await asyncio.wait_for(
-                    asyncio.to_thread(mate_worker_kit.view, name), _GET_TIMEOUT_SECS
-                )
+                view = await bounded_read(mate_worker_kit.view, name, what="Worker-kit")
             except TimeoutError:
                 return web.json_response(
                     {
                         "error": "capabilities_unavailable",
                         "code": "capabilities_unavailable",
                         "detail": "",
+                        "reason": TIMED_OUT,
                     },
                     status=503,
                 )

@@ -81,6 +81,11 @@ const mockApi = vi.hoisted(() => ({
   saveMemoryProjects: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
+const sendErrorToChat = vi.hoisted(() => vi.fn((_prompt: string, _opts?: unknown) => true))
+vi.mock('../utils/errorReport', async (orig) => ({
+  ...(await orig<typeof import('../utils/errorReport')>()),
+  sendErrorToChat,
+}))
 
 /* The capabilities API drives both the Built From inspectors and the Approvals
    editor. Mock the module so we hand back a realistic view. */
@@ -149,6 +154,7 @@ vi.mock('../components/CrewAvatarBuilder', () => ({
 
 import CrewEditorModal from '../components/crew/CrewEditorModal'
 import { useCrewEditor } from '../components/crew/useCrewEditor'
+import { NavigationLeaveGuardProvider, useGuardedLeave, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import type { KiroCrewAgent } from '../api/types'
 import { acpBackendName } from '../api/acpBackend'
 
@@ -712,6 +718,129 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     const notice = await within(dialog).findByTestId('next-builtfrom-error')
     expect(notice).toHaveTextContent(/load this bot.s capabilities/)
     expect(notice).not.toHaveTextContent(/capabilities_unavailable|deadline exceeded/)
+  })
+
+  it.each([
+    ['the gateway timed it out', new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}')],
+    ['the dashboard deadline ended it', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
+  ])('says why a read that ran out of time failed when %s, and where the log is', async (_case, error) => {
+    mockCaps.get.mockRejectedValue(error)
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    expect(notice).toHaveTextContent(/did not finish loading in time/)
+    expect(notice).toHaveTextContent(/many added abilities/)
+    expect(notice).toHaveTextContent(/gateway log names the bot/)
+  })
+
+  it('points any other unavailable read at the gateway log', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    expect(notice).toHaveTextContent('The gateway log has the details.')
+    expect(notice).not.toHaveTextContent(/in time/)
+  })
+
+  it('reads the capabilities again on Try again and shows them once they load', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const retry = await within(dialog).findByTestId('next-builtfrom-retry')
+    const readsBefore = mockCaps.get.mock.calls.length
+    mockCaps.get.mockResolvedValue(CAPS_VIEW)
+    fireEvent.click(retry)
+    expect(await within(dialog).findByTestId('next-band-comes-with')).toBeInTheDocument()
+    expect(within(dialog).queryByTestId('next-builtfrom-error')).toBeNull()
+    expect(mockCaps.get.mock.calls.length).toBeGreaterThan(readsBefore)
+  })
+
+  it('hands the load error to the agent only through the editor leave guard', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    // The guard vetoes, as it does when the user keeps an unsaved draft.
+    leaveSpy.mockImplementationOnce(() => {})
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(leaveSpy).toHaveBeenCalledTimes(1)
+    // A vetoed hand-off leaves the editor and its notice where they were.
+    expect(within(dialog).getByTestId('next-builtfrom-error')).toBeInTheDocument()
+  })
+
+  // The Bots page's own wiring: its registered guard refuses a leave over
+  // unsaved panes and only raises the editor's discard confirm, so the
+  // hand-off must ride that confirm instead of the page guard.
+  function PageHost({ pendingWrite = false }: { pendingWrite?: boolean }) {
+    const [editingCrew, setEditingCrew] = useState('oncall')
+    const crewAgentsQuery = useQuery({ queryKey: ['kirocrew-agents'], queryFn: () => mockApi.kirocrewAgents() })
+    const leave = useGuardedLeave()
+    const ctl = useCrewEditor({
+      editingName: editingCrew,
+      agents: (crewAgentsQuery.data?.agents || []) as KiroCrewAgent[],
+      agentsLoaded: crewAgentsQuery.data !== undefined,
+      defaultAgent: crewAgentsQuery.data?.default_agent || '',
+      refetchAgents: () => {},
+      onClose: () => setEditingCrew(''),
+      leave,
+    })
+    const { dirtyPanes, requestClose } = ctl
+    useRegisterNavigationLeaveGuard(() => {
+      // A write of the page's own (a Heartbeat save) still in flight refuses.
+      if (pendingWrite) return false
+      if (!editingCrew || dirtyPanes.size === 0) return true
+      requestClose()
+      return false
+    })
+    return <CrewEditorModal ctl={ctl} />
+  }
+
+  async function openOnBotsPage(pendingWrite = false) {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({ reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer } })
+    render(
+      <QueryClientProvider client={qc}><Provider store={store}><MemoryRouter>
+        <NavigationLeaveGuardProvider><PageHost pendingWrite={pendingWrite} /></NavigationLeaveGuardProvider>
+      </MemoryRouter></Provider></QueryClientProvider>,
+    )
+    return screen.findByTestId('crew-editor-next-dialog')
+  }
+
+  it('on the Bots page, hands off at once when nothing is unsaved', async () => {
+    const dialog = await openOnBotsPage()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(sendErrorToChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('on the Bots page, hands off over unsaved edits only after the discard is confirmed', async () => {
+    const dialog = await openOnBotsPage()
+    fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(sendErrorToChat).not.toHaveBeenCalled()
+    // Keep editing: nothing is handed off, and a later close does not hand off either.
+    fireEvent.click(await screen.findByTestId('crew-sched-discard-keep'))
+    expect(sendErrorToChat).not.toHaveBeenCalled()
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
+    expect(sendErrorToChat).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByTestId('crew-editor-next-dialog')).toBeNull())
+  })
+
+  it('on the Bots page, still asks the page guard after the editor discard is confirmed', async () => {
+    const dialog = await openOnBotsPage(true)
+    fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
+    await waitFor(() => expect(screen.queryByTestId('crew-editor-next-dialog')).toBeNull())
+    // Discarding the editor's edits does not waive the page's pending write.
+    expect(sendErrorToChat).not.toHaveBeenCalled()
   })
 
   it('lists comes-with tools, MCP servers and skills in collapsible kind groups, none removable', async () => {
