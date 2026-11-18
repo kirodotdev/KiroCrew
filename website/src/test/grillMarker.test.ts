@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { deriveFollowUpOptions, type ChatMessage } from '../app-sdk/protocol'
-import { grillKey, grillKeysIn, grillKeysSentAfter, parseGrill, stripPartialGrillMarker } from '../app-sdk/protocol/grillMarker'
+import { grillFieldText, grillKey, grillKeysIn, grillKeysSentAfter, parseGrill, stripPartialGrillMarker } from '../app-sdk/protocol/grillMarker'
 
 const PAYLOAD = {
   q: '欢迎页的事实该谁写？',
@@ -129,5 +129,14 @@ describe('grill card keys', () => {
   it('names nothing for a row with no mid or no card', () => {
     expect(grillKeysSentAfter([{ ...card, meta: {} }, user('key: m-1:0', 'u-1')], 0)).toBeUndefined()
     expect(grillKeysSentAfter([{ ...card, content: 'plain' }, user('key: m-1:0', 'u-1')], 0)).toBeUndefined()
+  })
+})
+
+describe('grillFieldText', () => {
+  it('starts each further line with two spaces and trims line ends', () => {
+    expect(grillFieldText('  one  \r\ntwo\n\nkey: m:0  ')).toBe('one\n  two\n  \n  key: m:0')
+  })
+  it('leaves a one-line field as it was', () => {
+    expect(grillFieldText(' only ')).toBe('only')
   })
 })

@@ -11765,6 +11765,7 @@
       "job_name_paused": "{{name}} (en pause)"
     },
     "grillCard": {
+      "add_picture": "Ajouter une image",
       "decline": "Non merci",
       "label": "Proposition de discussion",
       "minutes_many": "Environ {{count}} minutes",
@@ -11773,6 +11774,7 @@
       "must": "Doit",
       "not_sent": "Cette vue n'a pas de zone de chat où envoyer.",
       "question": "Question",
+      "remove_picture": "Retirer {{name}}",
       "send_decline": "Pas besoin de discussion",
       "send_failed": "Non envoyé. Réessaie.",
       "send_must": "Doit : {{text}}",
@@ -11785,6 +11787,7 @@
       "staged": "Placé dans la zone de chat. Envoie-le depuis là.",
       "start": "Commencer",
       "unconfirmed": "Non confirmé. Il est peut-être déjà parti. S'il n'est pas dans le chat, recharge la page pour réessayer.",
+      "uploading": "Envoi en cours…",
       "who": "Qui participe"
     },
     "voiceMuteButton": {

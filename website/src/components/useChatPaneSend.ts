@@ -228,7 +228,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     return true
   }, [input, slotKey, openSideChat, agentLocked, paneAgentName, readPastes, setPasteBlocks, dispatch, composerRef, mountedRef, slotKeyRef, inputRef, setInput])
 
-  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void) => {
+  const doSend = useCallback((optionText?: string, steerNow?: boolean | 'auto', onOutcome?: (outcome: PaneSendOutcome) => void, ownFiles: readonly string[] = []) => {
     // `optionText` mirrors ChatPage.send's first parameter: the follow-up
     // bar's direct-send gesture (double-click / split button) hands the option
     // label here so it bypasses the setInput race, superseding any composer
@@ -242,6 +242,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     //
     // `onOutcome` hears once what an option send came to (a discussion card
     // shows it), in ChatPage.send's delivery classes: see `paneSendOutcome`.
+    //
+    // `ownFiles`: an option send's own uploaded files (a discussion card's
+    // pictures). Only these go with it, never the composer's staged files.
     const text = (optionText || input).trim()
     // A staged quote alone is a sendable message. An option pill's send is its
     // own text and leaves the stage untouched, as it leaves files and pastes.
@@ -279,7 +282,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // gate: no send-without-clear (duplicate) and no clear-without-send (silent
     // loss). Consuming the draft or attachments here would wipe text the user
     // never sent and attach files to a message they never composed.
-    const files = optionText ? [] : pendingFiles
+    const files = optionText ? [...ownFiles] : pendingFiles
     const blocks = optionText ? [] : pasteBlocks
     if (!optionText) {
       setInput('')

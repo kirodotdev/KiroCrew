@@ -807,12 +807,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // isolated (no error row, no text back in the box: the card is where the
   // result shows) and `onOutcome` hears what it came to. A `false` with no
   // undelivered call (a send that stopped before the POST) did not go out.
-  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void): ComposeSendResult | null => {
+  const { composeSend } = useStableCallbackProps({ composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void, files: readonly string[] = []): ComposeSendResult | null => {
     // A split view draws a composer per cell (ChatPane takes its own cards).
     if ((splitMode && splitFeatureEnabled) || !slot || slot !== activeSlotRef.current || composerSlotRef.current !== slot) return null
     const stopState = currentSlot?.stop_state
     if (!connected || crewModeSwitching || crewRootClosed || stopState === 'killing') {
       dispatch(setPendingInput(mergeReplyIntoDraft(inputRef.current, text)))
+      // The card's own uploaded files join this composer's (it is the card's chat).
+      if (files.length) setPendingFiles(prev => [...new Set([...prev, ...files])])
       return 'staged'
     }
     // The composer's own busy reading (a turn, or only sub-agents running), so
@@ -821,7 +823,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The refusal's framed reason too: an isolated send shows it nowhere else.
     let undelivered: 'refused' | 'indeterminate' | undefined
     let why: string | undefined
-    send(text, slot, flag, true, false, (kind, reason) => { undelivered = kind; why = reason }).then(
+    send(text, slot, flag, true, false, (kind, reason) => { undelivered = kind; why = reason }, undefined, files).then(
       ok => onOutcome(ok ? 'sent' : undelivered ?? 'refused', why),
       // send() is not meant to throw; if it does, the POST may already be out.
       () => onOutcome('indeterminate'),
