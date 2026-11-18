@@ -128,13 +128,17 @@ def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
     ``list``/``tuple`` (mirroring json's own array degradation) rather than via
     ``type(obj)(...)``: a namedtuple or a subclass with a different constructor
     signature is legal metadata today (json serializes it fine), and a
-    ``TypeError`` here would cost a whole writer batch. Keys and non-string
-    leaves pass through unchanged.
+    ``TypeError`` here would cost a whole writer batch. String keys are
+    redacted like values (a key can carry caller text too); non-string keys and
+    non-string leaves pass through unchanged.
     """
     if isinstance(obj, str):
         return redactor(obj)
     if isinstance(obj, dict):
-        return {k: _redact_deep(v, redactor) for k, v in obj.items()}
+        return {
+            (redactor(k) if isinstance(k, str) else k): _redact_deep(v, redactor)
+            for k, v in obj.items()
+        }
     if isinstance(obj, tuple):
         return tuple(_redact_deep(i, redactor) for i in obj)
     if isinstance(obj, list):
@@ -182,10 +186,19 @@ def _redact_text(text: str) -> str:
 
 # Free-form string fields on SecurityEvent that carry caller-influenced text
 # (a tool/operation name, a resources summary, an exception message) and are
-# therefore redacted by the writer alongside metadata. The identity-shaped
-# fields (caller_identity, agent, source, downstream_service, request_id) are
-# constrained vocabularies, not caller free-text, and stay verbatim.
-_REDACTED_TEXT_FIELDS = ("operation", "resources", "error")
+# therefore redacted by the writer alongside metadata. Several log_* helpers
+# pass caller strings straight into ``outcome``, ``tool_kind``,
+# ``downstream_service`` and ``request_id``, so they are redacted too. Only the
+# identity-shaped fields (caller_identity, agent, source) stay verbatim.
+_REDACTED_TEXT_FIELDS = (
+    "operation",
+    "resources",
+    "error",
+    "outcome",
+    "tool_kind",
+    "downstream_service",
+    "request_id",
+)
 
 
 def _redact_and_clip(text: str) -> str:
@@ -212,15 +225,15 @@ def _redacted_metadata_copy(metadata: dict) -> dict:
     caller-supplied text verbatim (search queries, document titles). The SEL
     file is persisted and dashboard-readable, so a secret pasted into such a
     field must never land on disk. String VALUES are redacted at any nesting
-    depth (dicts, lists, tuples); keys and non-string values pass through
-    unchanged.
+    depth (dicts, lists, tuples), as are string KEYS; non-string keys and
+    values pass through unchanged.
 
     Always builds a NEW structure: callers may reuse their metadata dict after
     logging, so redaction must never be observable through the object they
     passed in. May raise on a pathological value; the writer contains that
     per event by persisting a placeholder — the raw text is never written.
     """
-    return {k: _redact_deep(v, _redact_text) for k, v in metadata.items()}
+    return _redact_deep(metadata, _redact_text)  # type: ignore[return-value]
 
 
 @dataclass
@@ -509,12 +522,9 @@ class SecurityEventLog:
                 redacted = {"redaction_error": type(exc).__name__}
             if redacted != event.metadata:
                 # Observability only — a secret reaching audit metadata signals
-                # an upstream handling defect. Keys only, never values.
-                logger.info(
-                    "SEL: redacted metadata value(s) in a %s event (keys: %s)",
-                    event.event_type,
-                    list(event.metadata),
-                )
+                # an upstream handling defect. Never names keys or values: a key
+                # is redacted too, and the original may be the secret.
+                logger.info("SEL: redacted metadata in a %s event", event.event_type)
             event.metadata = redacted
         callback: Callable[[dict], None] | None = None
         # Chain lock FIRST, thread lock second — and in that order everywhere.
@@ -1000,8 +1010,8 @@ class SecurityEventLog:
         every spelling in-tree code writes (``ok``, ``denied``, ``completed``,
         ``rejected``, ``allowed``), so no existing row changes; it is applied
         here rather than in each caller so a new filler cannot miss it. The
-        writer's own pass is not the backstop: ``_REDACTED_TEXT_FIELDS`` omits
-        ``outcome`` because identity-shaped fields stay verbatim there.
+        writer's own pass over ``_REDACTED_TEXT_FIELDS`` (which includes
+        ``outcome``) is a second backstop.
         """
         if forwarded is None:
             forwarded = current_request_forwarded()
