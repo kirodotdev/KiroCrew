@@ -424,7 +424,10 @@ def test_live_host_guards_only_the_caller_ancestors_that_exist(
     assert str(present) in guards
     assert str(tmp_path) in guards
     assert str(tmp_path / "absent") not in guards
-    assert sandbox._live_plan_host(replace(request, backend=BACKEND_NAMESPACE)).caller_ancestor_guards == ()
+    assert (
+        sandbox._live_plan_host(replace(request, backend=BACKEND_NAMESPACE)).caller_ancestor_guards
+        == ()
+    )
 
 
 # --------------------------------------------------------------------------- #
