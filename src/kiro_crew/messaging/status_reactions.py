@@ -128,6 +128,10 @@ def merge_phase_emojis(
 
 # ── Turn timing line ────────────────────────────────────────────────────
 
+#: Context-usage bands, most-used first: the icon is a glance-level read on how
+#: close the window is to needing a compaction.
+_CTX_BANDS: tuple[tuple[float, str], ...] = ((70.0, "🔴"), (50.0, "🟠"), (30.0, "🟡"))
+_CTX_ICON_CLEAR = "🟢"
 _SECS_PER_MIN = 60
 
 
@@ -140,18 +144,26 @@ def format_elapsed(elapsed: float) -> str:
     return f"{mins}m {secs}s"
 
 
+def context_icon(context_pct: float) -> str:
+    """The band icon for a context-window usage percentage."""
+    for threshold, icon in _CTX_BANDS:
+        if context_pct >= threshold:
+            return icon
+    return _CTX_ICON_CLEAR
+
+
 def format_turn_status(elapsed: float, context_pct: float | None = None) -> str:
     """One line of turn-end status, undecorated by any channel's markup.
 
     Carries the elapsed time always and the context-usage chip only when the
     caller could read a usage figure: an absent one means "unknown", which is
-    not the same as 0% and must not render as a reassuring ``ctx 0%``.
+    not the same as 0% and must not render as a reassuring green chip.
     """
     line = f"Finished in {format_elapsed(elapsed)}"
     if context_pct is None:
         return line
     pct = round(context_pct)
-    return f"{line} · ctx {pct}%"
+    return f"{line} · {context_icon(context_pct)} ctx {pct}%"
 
 
 # ── Sink seam ───────────────────────────────────────────────────────────

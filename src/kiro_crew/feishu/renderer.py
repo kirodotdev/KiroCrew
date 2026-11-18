@@ -136,7 +136,7 @@ class FeishuRenderer(Renderer):
             body, images = await self._extract_uploads(body)
         content = self.redact_for_target(body)
         if not content and not images:
-            content = "…" if ok else "出错了，请重试"
+            content = "…" if ok else "⚠️ 出错了，请重试"
         # An answer that was nothing but images sends only the images.
         if content and not await self._client.send_reply(self._message_id, content):
             # A dropped reply must NOT be recorded as a delivered turn: the user
@@ -162,7 +162,7 @@ class FeishuRenderer(Renderer):
         if failed:
             # Extraction cut these references out of the answer, so a failed upload
             # names each path rather than leaving a reply that mentions no picture.
-            note = self.redact_for_target("Warning: Couldn't upload:\n" + "\n".join(failed))
+            note = self.redact_for_target("⚠️ Couldn't upload:\n" + "\n".join(failed))
             if content or len(failed) < len(images):
                 await self._best_effort_reply(note, "the failed-upload list")
             elif not await self._client.send_reply(self._message_id, note):
@@ -215,7 +215,7 @@ class FeishuRenderer(Renderer):
     async def _extract_uploads(self, body: str) -> tuple[str, list[OutboundFile]]:
         """Pull the answer's local image references out for upload, fail-soft.
 
-        A refused reference keeps its markup and gains a ``Warning: … not sent`` line;
+        A refused reference keeps its markup and gains a ``⚠️ … not sent`` line;
         an extraction error costs the pictures, never the answer.
         """
         try:
@@ -248,11 +248,9 @@ class FeishuRenderer(Renderer):
             )
         text = result.rewritten_text.strip()
         if result.rejections:
-            lines = [
-                f"Warning: {rejection}" for rejection in result.rejections[:_MAX_REJECTION_LINES]
-            ]
+            lines = [f"⚠️ {rejection}" for rejection in result.rejections[:_MAX_REJECTION_LINES]]
             if len(result.rejections) > _MAX_REJECTION_LINES:
-                lines.append(f"Warning: …and {len(result.rejections) - _MAX_REJECTION_LINES} more")
+                lines.append(f"⚠️ …and {len(result.rejections) - _MAX_REJECTION_LINES} more")
             notes = "\n".join(lines)
             text = f"{text}\n\n{notes}" if text else notes
         return text, result.files

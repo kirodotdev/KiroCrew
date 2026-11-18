@@ -1001,6 +1001,6 @@ async def _maybe_notice(
         assert self.client is not None
         await self._reply(
             chat_id,
-            "Warning: Context is getting long. Use /compact to compress or " "/new to start fresh.",
+            "⚠️ Context is getting long. Use /compact to compress or " "/new to start fresh.",
             thread=self._route_thread(route),
         )

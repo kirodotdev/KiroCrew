@@ -109,9 +109,9 @@ logger = logging.getLogger(__name__)
 # /stop's three replies, worded as Weixin's. The cancel is COOPERATIVE: it only
 # writes session/cancel, so the turn stops at its next safe point -- hence
 # "stopping", not "stopped".
-_STOPPING = "正在停止当前回复…"
-_STOP_FAILED = "警告：停止失败，请重试。"
-_NOTHING_RUNNING = "提示：当前没有正在生成的回复。"
+_STOPPING = "⏹ 正在停止当前回复…"
+_STOP_FAILED = "⚠ 停止失败，请重试。"
+_NOTHING_RUNNING = "ℹ 当前没有正在生成的回复。"
 
 
 class FeishuDispatcher:
@@ -252,9 +252,9 @@ class FeishuDispatcher:
                 self._session_key(route),
                 channel_type="Feishu",
             )
-            message = "已开始新对话"
+            message = "✅ 已开始新对话"
             if not saved:
-                message += "\n警告：新对话无法保存，重启后可能恢复到上一段对话。"
+                message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
             await self.client.send_reply(inbound.message_id, message)
             return
         if cmd == "compact":
@@ -471,9 +471,9 @@ class FeishuDispatcher:
             and await steer(inbound.text)
         )
         if steered:
-            await self.client.send_reply(inbound.message_id, "已合并到当前回复")
+            await self.client.send_reply(inbound.message_id, "⏳ 已合并到当前回复")
         else:
-            await self.client.send_reply(inbound.message_id, "正在处理上一条，请稍后重发")
+            await self.client.send_reply(inbound.message_id, "⏳ 正在处理上一条，请稍后重发")
 
     async def _handle_stop(self, inbound: "LarkInbound") -> None:
         """Hard cancel: abort the reply that is running on this route's session.
@@ -562,15 +562,15 @@ class FeishuDispatcher:
                 await self.client.send_reply(inbound.message_id, COMPACT_ACCOUNT_CHANGED_REPLY_ZH)
             elif self.sessions.has_session(session_key):
                 await self.client.send_reply(
-                    inbound.message_id, "正在处理上一条消息，请稍后再试 /compact。"
+                    inbound.message_id, "⏳ 正在处理上一条消息，请稍后再试 /compact。"
                 )
             else:
-                await self.client.send_reply(inbound.message_id, "提示：当前没有可压缩的对话。")
+                await self.client.send_reply(inbound.message_id, "ℹ️ 当前没有可压缩的对话。")
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
-                await self.client.send_reply(inbound.message_id, "提示：当前没有可压缩的对话。")
+                await self.client.send_reply(inbound.message_id, "ℹ️ 当前没有可压缩的对话。")
                 return
             # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
@@ -593,14 +593,14 @@ class FeishuDispatcher:
                 timeout=self.sessions.compact_wait_budget_secs()
             )
             if cr["type"] == "completed":
-                await self.client.send_reply(inbound.message_id, "已压缩上下文。")
+                await self.client.send_reply(inbound.message_id, "🗜️ 已压缩上下文。")
             elif cr["type"] == "failed":
-                await self.client.send_reply(inbound.message_id, "警告：压缩失败，请重试。")
+                await self.client.send_reply(inbound.message_id, "⚠️ 压缩失败，请重试。")
             else:
                 await self.client.send_reply(inbound.message_id, COMPACT_TIMED_OUT_REPLY_ZH)
         except Exception:
             logger.exception("Feishu /compact failed for %s", session_key)
-            await self.client.send_reply(inbound.message_id, "警告：压缩失败，请重试。")
+            await self.client.send_reply(inbound.message_id, "⚠️ 压缩失败，请重试。")
         finally:
             self.sessions.release(session_key)
 
@@ -737,7 +737,9 @@ class FeishuDispatcher:
                     timeout=self.sessions.compact_wait_budget_secs()
                 )
                 if cr["type"] == "completed":
-                    await self.client.send_reply(inbound.message_id, "上下文接近上限，已自动压缩。")
+                    await self.client.send_reply(
+                        inbound.message_id, "🗜️ 上下文接近上限，已自动压缩。"
+                    )
                 else:
                     logger.warning("Feishu hard-threshold compaction reported %s", cr["type"])
             except Exception:
@@ -748,5 +750,5 @@ class FeishuDispatcher:
             self._conv.set_awaiting(route)
             await self.client.send_reply(
                 inbound.message_id,
-                "警告：对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。",
+                "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。",
             )

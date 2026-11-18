@@ -211,7 +211,7 @@ only images sends only the images.
   working directory or its own scratch directory.
 - Each image may be up to 10 MB, with ten images and 64 MiB per answer.
 - An incognito or temporary conversation never sends a local file.
-- A refused image keeps its path, with a `Warning: … not sent` line saying why. An
+- A refused image keeps its path, with a `⚠️ … not sent` line saying why. An
   image that fails to upload (for example, the app lacks `im:resource`) is
   named by its path in a follow-up message.
 - If the answer text cannot be sent, no image is sent either.

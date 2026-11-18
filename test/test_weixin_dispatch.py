@@ -603,9 +603,9 @@ def test_compact_on_a_flagged_session_says_the_account_changed(tmp_path):
 @pytest.mark.parametrize(
     ("kind", "reply"),
     [
-        ("completed", "已压缩上下文。"),
-        ("failed", "警告：压缩失败，请重试。"),
-        ("timeout", "警告：压缩超时。"),
+        ("completed", "🗜️ 已压缩上下文。"),
+        ("failed", "⚠️ 压缩失败，请重试。"),
+        ("timeout", "⚠️ 压缩超时。"),
     ],
 )
 def test_compact_command_receipt_follows_the_compaction_result(tmp_path, kind, reply):

@@ -110,8 +110,8 @@ def approval_card(tool: str, *, nonce: str, request_id: str) -> dict[str, Any]:
             _text(tool or "this tool"),
         ],
         [
-            _submit("Approve", KIND_APPROVAL, "approve", nonce, request_id),
-            _submit("Deny", KIND_APPROVAL, "deny", nonce, request_id),
+            _submit("✅ Approve", KIND_APPROVAL, "approve", nonce, request_id),
+            _submit("🚫 Deny", KIND_APPROVAL, "deny", nonce, request_id),
         ],
     )
 

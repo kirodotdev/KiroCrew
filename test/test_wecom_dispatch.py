@@ -372,7 +372,7 @@ class TestTurn:
         # Must not raise — the dispatcher swallows and finalizes.
         await d.handle_message(_inbound("hi"))
 
-        # Placeholder finalized (no perma-"…") even though get_or_create failed.
+        # Placeholder finalized (no perma-"🤔 …") even though get_or_create failed.
         assert any(f["finish"] for f in client.frames)
         # Never held the semaphore -> never release / record_failure it.
         assert sessions.released == []
@@ -450,7 +450,7 @@ class TestCommands:
 
         await d.handle_message(_inbound("/new"))
 
-        assert client.said == ["已开始新对话"]
+        assert client.said == ["✅ 已开始新对话"]
         assert d._conv.current_gen("Wei") == 1  # generation bumped
         assert sessions.reserved_generations == [d._session_key("Wei")]
         assert sessions.successes == []  # no LLM turn
@@ -468,12 +468,12 @@ class TestCommands:
         assert provider.compacted is True
         assert sessions.acquired == [key]
         assert sessions.released == [key]
-        assert client.said == ["已压缩上下文。"]
+        assert client.said == ["🗜️ 已压缩上下文。"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("kind", "reply"),
-        [("failed", "警告：压缩失败，请重试。"), ("timeout", "警告：压缩超时。")],
+        [("failed", "⚠️ 压缩失败，请重试。"), ("timeout", "⚠️ 压缩超时。")],
     )
     async def test_compact_command_reports_an_unsuccessful_result(self, kind, reply) -> None:
         provider = FakeProvider([])
@@ -583,7 +583,7 @@ class TestCommands:
 
         assert provider.compacted is False
         assert sessions.released == []
-        assert client.said == ["正在处理上一条消息，请稍后再试 /compact。"]
+        assert client.said == ["⏳ 正在处理上一条消息，请稍后再试 /compact。"]
 
     @pytest.mark.asyncio
     async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
@@ -610,7 +610,7 @@ class TestCommands:
         await d.handle_message(_inbound("/compact"))
 
         assert sessions.released == []
-        assert client.said == ["提示：当前没有可压缩的对话。"]
+        assert client.said == ["ℹ️ 当前没有可压缩的对话。"]
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -712,7 +712,7 @@ class TestCommands:
 
         await d.handle_message(_inbound("@Kiro /new"))
 
-        assert client.said == ["已开始新对话"]
+        assert client.said == ["✅ 已开始新对话"]
         assert d._conv.current_gen("Wei") == 1
         assert sessions.successes == []  # no LLM turn
 
@@ -726,7 +726,7 @@ class TestCommands:
         await d.handle_message(_inbound("@Kiro /compact"))
 
         assert provider.compacted is True
-        assert client.said == ["已压缩上下文。"]
+        assert client.said == ["🗜️ 已压缩上下文。"]
 
     @pytest.mark.asyncio
     async def test_mentioned_prose_still_runs_a_turn_with_text_intact(self) -> None:

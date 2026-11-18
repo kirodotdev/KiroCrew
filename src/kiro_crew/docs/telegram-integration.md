@@ -185,14 +185,14 @@ sent, decided by the file's leading bytes rather than its name, and only from
 inside the session's own working directory; anything refused keeps its original
 markdown so you can see what was skipped and why.
 
-While a reply is forming you get a live typing indicator and a `Running tool…` footer
+While a reply is forming you get a live typing indicator and a `🔧 tool…` footer
 naming what the agent is doing. If nothing moves for a while the footer says so
-(`still working…` at 15 seconds, `this is taking a while…` at 45), which is the one thing the typing indicator
+(`🥱` at 15 seconds, `😨` at 45), which is the one thing the typing indicator
 cannot tell you. A tool waiting on your approval is not a stall, so the mark
 stays away while a prompt is open.
 
 When a turn is worth commenting on, a quoted line under the answer reports it —
-`Finished in 1m 20s · ctx 54%`. It appears only past a threshold (10 seconds,
+`Finished in 1m 20s · 🟠 ctx 54%`. It appears only past a threshold (10 seconds,
 or 50% context): a footer under every single reply is one you learn to skip,
 including on the turn where the context warning finally matters.
 

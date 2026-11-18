@@ -51,7 +51,7 @@ logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 _REPLY_COMMANDS = frozenset({"status"})
 
 _RELEASE_FAILURE = (
-    "Warning: Couldn't save the session release, so the command was NOT completed. "
+    "⚠️ Couldn't save the session release, so the command was NOT completed. "
     "Fix the gateway's storage problem, then retry."
 )
 
@@ -80,7 +80,7 @@ async def _handle_link(
     if resumed_key is not None:
         await self.client.send_message(
             channel_id,
-            "Warning: A resumed session is active here. Send `!unlink` first.",
+            "⚠️ A resumed session is active here. Send `!unlink` first.",
         )
         return
     try:
@@ -100,7 +100,7 @@ async def _handle_link(
         logger.info("discord link refused: conversation already held")
         await self.client.send_message(
             channel_id,
-            "Warning: Another session is already linked here. Send `!unlink` first.",
+            "⚠️ Another session is already linked here. Send `!unlink` first.",
         )
         return
     await self.client.send_message(channel_id, reply)
@@ -121,7 +121,7 @@ async def _handle_unlink(
     if left_resumed is not None:
         await self.client.send_message(
             channel_id,
-            "Left the resumed session. Back to your Discord conversation.",
+            "✅ Left the resumed session. Back to your Discord conversation.",
         )
         return
     key = self._session_key(user_id, thread_id)
@@ -160,7 +160,7 @@ async def _handle_compact(
         elif self.sessions.has_session(session_key):
             await self.client.send_message(
                 channel_id,
-                "Still working on your last message — try `!compact` " "once it finishes.",
+                "⏳ Still working on your last message — try `!compact` " "once it finishes.",
             )
         else:
             await self.client.send_message(channel_id, "No active session to compact.")
@@ -180,7 +180,7 @@ async def _handle_compact(
             await self.client.send_message(channel_id, compact_unsupported_reply(unsupported))
             return
 
-        status_id = await self.client.send_message(channel_id, "Compacting context…")
+        status_id = await self.client.send_message(channel_id, "🔄 Compacting context…")
         result_text: str | None = None
 
         def _safe(text: str) -> str:
@@ -210,17 +210,15 @@ async def _handle_compact(
             if cr["type"] == "completed":
                 # ``summary`` is model-facing compacted context, not a
                 # user-facing receipt. Never publish its orchestration text.
-                result_text = "Context compacted."
+                result_text = "✅ Context compacted."
             elif cr["type"] == "failed":
                 err = _safe(cr.get("summary", ""))
-                result_text = (
-                    f"Error: Compaction failed: {err}" if err else "Error: Compaction failed."
-                )
+                result_text = f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
             else:
-                result_text = "Warning: Compaction timed out."
+                result_text = "⚠️ Compaction timed out."
         except Exception:
             logger.warning("Discord !compact failed for %s", session_key, exc_info=True)
-            result_text = "Error: Compaction failed unexpectedly."
+            result_text = "❌ Compaction failed unexpectedly."
             # Drop the wedged native conversation, NOT the session's channel
             # identity: the map entry carries the mirror binding, so a full
             # ``destroy`` would silently unlink a mirrored conversation.
@@ -234,7 +232,7 @@ async def _handle_compact(
                     exc_info=True,
                 )
 
-        final = result_text or "Context compacted."
+        final = result_text or "✅ Context compacted."
         # The status line is only a placeholder: when it cannot be edited (deleted
         # during the wait, or the edit failed) the result goes out as a new message.
         if not (status_id and await self.client.edit_message(channel_id, status_id, final)):
@@ -271,7 +269,7 @@ async def _handle_status(
     so = safety_override()
     yolo = f"ON ({describe_grant_lifetime()})" if so.is_active() else "OFF"
     await reply(
-        f"{Stats().summary()}\n"
+        f"📊 {Stats().summary()}\n"
         f"agent `{self._resolve_agent(scope_id)}` · approval `{self.approval_mode}` · "
         f"YOLO {yolo}"
     )

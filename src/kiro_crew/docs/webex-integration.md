@@ -6,7 +6,7 @@ you're talking.
 
 Webex needs no public URL and no webhooks: Kiro Crew registers a device with
 Webex and receives messages over an outbound WebSocket, so it works from
-behind a firewall or NAT. Replies finish as one or more messages split at the 7,000 UTF-8-byte transport cap, with a live status placeholder ("Thinking…" → "Running: …") while the agent works.
+behind a firewall or NAT. Replies finish as one or more messages split at the 7,000 UTF-8-byte transport cap, with a live status placeholder ("🤔 Thinking…" → "🔧 Running: …") while the agent works.
 
 ## The easy way: use Settings
 
@@ -110,7 +110,7 @@ choose:
 | `/steer <message>` | Fold it into the running reply now |
 
 Set `messaging.queue_mode` to `queue` to make queueing the default. A queued
-message gets a `Queued` receipt that updates in place, and a burst is answered
+message gets a `⏳ Queued` receipt that updates in place, and a burst is answered
 as one reply rather than several.
 
 ### Approving a tool
@@ -119,7 +119,7 @@ When a tool needs your approval the bot posts Approve / Deny buttons on an
 Adaptive Card, and the same question as text:
 
 ```
-Approve `fs_write`?
+🔐 Approve `fs_write`?
 
 Reply 1 to approve or 2 to deny.
 ```
