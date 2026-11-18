@@ -22,6 +22,7 @@ from turn_harness import TurnScript, run_turn
 from kiro_crew import link_unfurl
 from kiro_crew import mcp_oauth_discovery as discovery
 from kiro_crew import security
+from kiro_crew import sel as sel_module
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_MCP_OAUTH_REQUEST,
@@ -31,8 +32,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.dashboard.chat_runner import _drain_session_init_oauth_requests
 from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 from kiro_crew.dashboard.state import _ChatSlot
-from kiro_crew.security import exfil
-from kiro_crew.sel import SecurityEventLog
+from kiro_crew.security import exfil, exfil_oauth
 from kiro_crew.testing.clock import ManualClock
 
 MCP_URL = "https://mcp.unlisted-idp.example/mcp"
@@ -99,7 +99,7 @@ def _isolated(_floor_monkeypatch):
     _floor_monkeypatch.setattr(exfil, "_OAUTH_DISCOVERED_ENDPOINTS", {})
     _floor_monkeypatch.setattr(discovery, "_NEGATIVE", {})
     _floor_monkeypatch.setattr(exfil, "_load_operator_oauth_endpoints", lambda: frozenset())
-    _floor_monkeypatch.setattr(exfil, "SecurityEventLog", MagicMock())
+    _floor_monkeypatch.setattr(exfil_oauth, "sel", MagicMock())
 
 
 @pytest.fixture
@@ -151,8 +151,8 @@ async def test_discovery_match_approves_the_endpoint(configured, served):
     served(_documents())
     assert await discovery.approve_discovered_oauth_endpoint("idp", _consent_url())
     assert not security.oauth_url_contains_credential(_consent_url())
-    exfil.SecurityEventLog.return_value.log.assert_called_once()
-    event = exfil.SecurityEventLog.return_value.log.call_args.args[0]
+    exfil_oauth.sel.return_value.log.assert_called_once()
+    event = exfil_oauth.sel.return_value.log.call_args.args[0]
     assert event.event_type == "oauth_endpoint_discovered"
     assert event.metadata["mcp_url"] == MCP_URL
 
@@ -276,7 +276,7 @@ async def test_salesforce_key_only_an_operator_entry_clears_makes_no_request(con
     assert not await discovery.approve_discovered_oauth_endpoint("idp", url)
     assert fetched == []
     assert exfil._OAUTH_DISCOVERED_ENDPOINTS == {}
-    exfil.SecurityEventLog.return_value.log.assert_not_called()
+    exfil_oauth.sel.return_value.log.assert_not_called()
     assert security.oauth_url_contains_credential(url)
 
 
@@ -484,11 +484,11 @@ class TestRecordDiscoveredEndpoint:
             "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=long_url
         )
         assert all(isinstance(v, float) for v in exfil._OAUTH_DISCOVERED_ENDPOINTS.values())
-        event = exfil.SecurityEventLog.return_value.log.call_args.args[0]
+        event = exfil_oauth.sel.return_value.log.call_args.args[0]
         assert len(event.metadata["mcp_url"]) == exfil._OAUTH_DISCOVERED_MCP_URL_MAX_LEN
 
     def test_re_recording_audits_once(self, monkeypatch, sel_private_root):
-        monkeypatch.setattr(exfil, "SecurityEventLog", SecurityEventLog)
+        monkeypatch.setattr(exfil_oauth, "sel", sel_module.sel)
         for _ in range(3):
             security.record_discovered_oauth_endpoint(
                 "auth.unlisted-idp.example", "/oauth/authorize", mcp_url=MCP_URL
