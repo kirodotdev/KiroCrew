@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import DetailView from '../pages/knowledge/DetailView'
 import * as api from '../pages/knowledge/api'
@@ -62,7 +63,6 @@ beforeEach(() => {
     if (path.endsWith('/related')) return Promise.resolve([])
     return Promise.resolve(ITEM)
   }) as typeof api.knowledgeApi)
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
 })
 
 const sentWith = (method: string) =>
@@ -72,6 +72,7 @@ describe('DetailView actions with the source-first list cached', () => {
   it('deletes the item and drops it from the cached source list', async () => {
     const { qc, onBack } = renderWithListCache()
     fireEvent.click(await screen.findByRole('button', { name: i18nT('pages.knowledge.detailView.delete') }, DETAIL_ACTION_CHAIN()))
+    await confirmAction(i18nT('pages.knowledge.detailView.delete'))
 
     await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1), DETAIL_ACTION_CHAIN())
     expect(sentWith('DELETE').map(([path]) => path)).toEqual(['/items/i1'])
