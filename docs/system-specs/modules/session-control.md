@@ -2897,7 +2897,7 @@ Wave 1 of [rfc-conductor-remote-dispatch.md](../../request-for-change/rfc-conduc
 |---|---|
 | create | `POST api/chat/slots` `{memory_mode, agent?, model?}`, then `PATCH api/chat/slots/{s}/title` when a title was given |
 | send | `POST api/chat?ws=1` `{message, slot, turn_origin: "agent", steer?}` |
-| read | `GET api/chat/slots/{s}?limit=N` (1-100, no `since`) |
+| read | `GET api/chat/slots/{s}?limit=N` (1-100); with `since=S`, `?before=S+N&limit=N` |
 | stop | `POST api/chat/slots/{s}/stop` |
 | close | `DELETE api/chat/slots/{s}` |
 
@@ -2911,6 +2911,8 @@ Each call is checked in this order, and each refusal has its own code:
 4. **Target fence.** send/read/stop/close reach only a peer slot this caller's slot created with `session_create(crew=)` on that same crew (`crew_target_not_dispatched`). The record lives in gateway memory, at most 64 slots per caller (`crew_dispatch_limit`), and a close forgets the slot. It does not survive a hub restart. An open item on the caller's own ledger bound to that slot on that crew (`worker_session_key` + `worker_instance_id`, wave 4) also admits the slot, and that pair does survive a restart.
 5. **Version.** The crew's `major.minor` must match this hub's (`crew_version_mismatch`); a disconnected crew answers `proxy_peer_not_connected`.
 6. **Path fence and redaction.** Every peer path is built from the table above, its slot key held to one plain segment, and passes `_proxy_canonical_path` before `SshTunnelManager.proxy_request` sees it (`proxy_path_denied`). A reply cut off mid-body is refused `crew_peer_interrupted`. A peer reply must be JSON within `PROXY_REDACT_BUFFER_MAX_BYTES` and is run through `_redact_peer_payload` before any field is read. A create reply whose `key` is not one plain segment is refused `crew_reply_malformed` and nothing is recorded.
+
+A crew read returns each row's `index` and a `next_since`, like the local read, whenever the crew's page carries `next_before` and `total`. The positions are the crew's own collapsed wire rows: row `i` of its page is `next_before + i`. `since=S` is the crew's older-page read for rows `[S, S+N)`; the hub drops rows below `S`, so it is one peer GET like a tail read, and the crew's `from`/`since`/`digest` cursor is not used because only the crew can compute its digest. `next_since` stops before the first in-flight row (a role in `chat_persistence._TRANSIENT_ROLES`, `streaming` included) and the reply then carries `streaming: true`; a since read sends no row at or past it. A row the crew renders as nothing holds a position it does not send, so later positions read low and the next read re-sends a row rather than skipping one. Refusals: `since` not an integer `invalid_pagination`, below 0 `invalid_since` (both 400, before any peer call); past the crew's `total` `cursor_unavailable` (409); a page the crew cut by bytes so it starts after `S` `crew_page_cut` (409, read again with a smaller `limit`; `limit=1` always fits); a since read whose crew reply carries no positions `crew_reply_malformed` (502).
 
 Every send carries `turn_origin: "agent"` (`dashboard/agent_origin.py`), so the crew runs it as an agent's turn that holds no person-only right. Outgoing message and title text passes the exfiltration-URL then the credential redactor; an incognito or temporary caller is refused `ephemeral_caller`.
 

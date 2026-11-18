@@ -169,25 +169,28 @@ def run_crew_send(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def run_crew_read(args: dict[str, Any], ctx: ToolContext) -> str:
-    if args.get("since") is not None:
-        return "Error: session_read_message with crew does not take since."
     query = (
         f"target={quote(str(args['target']))}&crew={quote(str(args['crew']))}"
         f"&limit={int(args.get('limit', 20))}"
     )
+    if args.get("since") is not None:
+        query += f"&since={int(args['since'])}"
     try:
         resp = ctx.client.get(f"/api/session-control/read?{query}", session_key=ctx.caller_key)
     except DashboardError as refused:
         return redact(f"Error: could not read that crew session: {refused.error}")
     state = "still working" if resp.get("running") else "idle"
-    lines = [
-        f"\U0001f4d6 `{resp.get('target', '')}` {_on(resp)} — {resp.get('title', '')} ({state})"
-    ]
+    total = f"; total={resp['total']}" if "total" in resp else ""
+    title = resp.get("title", "")
+    lines = [f"\U0001f4d6 `{resp.get('target', '')}` {_on(resp)} — {title} ({state}{total})"]
     rows = [r for r in resp.get("messages") or [] if isinstance(r, dict)]
     if not rows:
         lines.append("No messages yet.")
     for row in rows:
-        lines.append(f"[{row.get('role') or '?'}] {row.get('content') or ''}")
+        at = f"[{row['index']}] " if "index" in row else ""
+        lines.append(f"{at}[{row.get('role') or '?'}] {row.get('content') or ''}")
+    if "next_since" in resp:
+        lines.append(f"Pass since={resp['next_since']} on your next read to see only what is new.")
     return redact("\n".join(lines))
 
 

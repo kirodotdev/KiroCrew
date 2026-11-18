@@ -190,11 +190,22 @@ The tunnel only opens hub → peer, so the peer cannot call the hub back.
 |---|---|---|
 | `session_create(crew=, work_item=, title, agent, model)` | `POST api/chat/slots` (+ `work_item`, §3), then `PATCH api/chat/slots/{s}/title` | `api/chat` |
 | `session_send(crew=, target, message)` | `POST api/chat?ws=1` `{message, slot}` | `api/chat` |
-| `session_read_message(crew=, target)` | `GET api/chat/slots/{s}?limit=N` | `api/chat` |
+| `session_read_message(crew=, target, since)` | `GET api/chat/slots/{s}?limit=N`; with `since=S`, `?before=S+N&limit=N` | `api/chat` |
 | `session_stop(crew=, target)` | `POST api/chat/slots/{s}/stop` | `api/chat` |
 | `session_close(crew=, target)` | `DELETE api/chat/slots/{s}` | `api/chat` |
 
 The `api/chat` row alone suffices. `api/stream` is not used: no tool streams.
+
+**The read cursor.** `since` and `next_since` are the crew's own row positions:
+its page answers rows `[next_before, total)`, so row `i` of the page is
+`next_before + i`. `since=S` maps to the crew's older-page read
+`before=S+N&limit=N`, which holds rows `[S, S+N)`; the hub drops any row below
+`S`. The crew's `from`/`since`/`digest` cursor is not used, because only the
+crew can compute its digest. `next_since` stops before the first in-flight row
+(a streaming fold, a pending approval), as the local read's cursor does. A
+`since` past `total` is refused `cursor_unavailable`; a page the crew cut by
+bytes so it starts after `S` is refused `crew_page_cut` (read again with a
+smaller `limit`).
 
 `crew=` takes an instance id or exact name. On
 `session_create(work_item=)` it is optional: omitted, the hub places the item

@@ -68,7 +68,9 @@ tell the user instead of retrying.
 **Driving it.** `session_send`, `session_read_message`, `session_stop` and
 `session_close` take the same `crew=` and reach only a crew session you created
 or one an open item of yours is bound to. After a hub restart only the open
-item counts, so close the worker's session before you `close` its item. A
+item counts, so close the worker's session before you `close` its item.
+`session_read_message(crew=)` takes `since` like the local read: pass the
+`next_since` it returned to get only what is new. A
 `decide` whose forward fails says it "did NOT reach the worker's crew"; record
 it again to retry. A remote row adds `worker_instance_id`, `crew_state`,
 `crew_down_since`, `pending_approval`, `remote_error` and
