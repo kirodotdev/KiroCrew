@@ -54,6 +54,14 @@ def test_a_table_alone_still_wants_rich() -> None:
     assert _wants_rich(TABLE)
 
 
+def test_a_heading_beside_a_malformed_table_keeps_the_monospace_seal() -> None:
+    # The glued-header table: the rich server would flatten its rows into one
+    # paragraph, so the heading must not pull it onto the rich path.
+    glued = "## Results\nHere is the table you asked for:| a | b |\n| --- | --- |\n| 1 | 2 |"
+    assert _has_heading(glued)
+    assert not _wants_rich(glued)
+
+
 def _client(rich_mid: int | None = None, rich_err: dict[str, Any] | None = None) -> Any:
     """A client held to ``TelegramClient``'s real signature.
 

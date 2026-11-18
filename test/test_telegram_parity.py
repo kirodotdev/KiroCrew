@@ -135,6 +135,9 @@ class TestDisplayFormRedaction:
         assert _TOKEN not in redacted
         assert warnings
         renderer, client = _renderer()
+        # A heading takes the rich path first; refuse it so the HTML send and
+        # then the plaintext fallback this test is about are the ones that run.
+        client.rich_fails = True
         original_send = client.send_message
 
         async def reject_html(chat_id, text, **kwargs):
@@ -147,6 +150,18 @@ class TestDisplayFormRedaction:
         await renderer.on_done()
 
         landed = "".join(text for text, _ in client.sent)
+        assert _TOKEN not in landed
+        assert "[REDACTED" in landed
+
+    @pytest.mark.asyncio
+    async def test_a_heading_secret_is_redacted_on_the_rich_path(self) -> None:
+        payload = "SecretAccessKey\n# : " + _TOKEN
+        renderer, client = _renderer()
+        renderer._buf = [payload]
+        await renderer.on_done()
+
+        assert client.rich_sent, "a heading must take the rich path"
+        landed = "".join(markdown for markdown, _, _ in client.rich_sent)
         assert _TOKEN not in landed
         assert "[REDACTED" in landed
 

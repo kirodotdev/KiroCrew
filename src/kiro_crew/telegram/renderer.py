@@ -1581,7 +1581,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TYPING_REFRESH_S,
     )
     from kiro_crew.telegram.renderer_tables import (  # noqa: F401
+        _HEADING_RE,
         _TABLE_SEP_CHARS,
+        _has_heading,
+        _has_malformed_table,
         _is_table_separator,
         _row_cell_count,
         _row_cells,
