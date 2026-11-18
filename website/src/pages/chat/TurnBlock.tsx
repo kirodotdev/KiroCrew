@@ -256,6 +256,28 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
 
 const NO_ACTIVE_KEYS: ReadonlySet<string> = new Set()
 
+/** Row `k`'s activity reporter: each call marks the row live and returns the
+ *  undo. Built here, outside the component, because the block caches it for
+ *  its whole life: a closure made during a render keeps that render's scope
+ *  (its items and row elements) alive through V8's shared closure context. */
+function makeRowReporter(
+  k: string,
+  activeCounts: Map<string, number>,
+  setActiveKeys: (update: (s: ReadonlySet<string>) => ReadonlySet<string>) => void,
+): RowActivityReporter {
+  return () => {
+    const n = (activeCounts.get(k) ?? 0) + 1
+    activeCounts.set(k, n)
+    if (n === 1) setActiveKeys(s => new Set(s).add(k))
+    return () => {
+      const m = (activeCounts.get(k) ?? 1) - 1
+      if (m > 0) { activeCounts.set(k, m); return }
+      activeCounts.delete(k)
+      setActiveKeys(s => { if (!s.has(k)) return s; const next = new Set(s); next.delete(k); return next })
+    }
+  }
+}
+
 /** The tool call rendered an MCP App (persisted on the message), so its row may host one again. */
 const NEVER_LIVE = (): boolean => false
 const hadMcpApp = (it: TurnItem) => it.kind === 'single' && it.msg.meta?.mcp_app === true
@@ -550,17 +572,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const reporterFor = (k: string): RowActivityReporter => {
     let r = reporters.current.get(k)
     if (!r) {
-      r = () => {
-        const n = (activeCounts.current.get(k) ?? 0) + 1
-        activeCounts.current.set(k, n)
-        if (n === 1) setActiveKeys(s => new Set(s).add(k))
-        return () => {
-          const m = (activeCounts.current.get(k) ?? 1) - 1
-          if (m > 0) { activeCounts.current.set(k, m); return }
-          activeCounts.current.delete(k)
-          setActiveKeys(s => { if (!s.has(k)) return s; const next = new Set(s); next.delete(k); return next })
-        }
-      }
+      r = makeRowReporter(k, activeCounts.current, setActiveKeys)
       reporters.current.set(k, r)
     }
     return r

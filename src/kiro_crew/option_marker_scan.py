@@ -42,6 +42,11 @@ def line_start(text: str, end: int) -> int:
     return max(text.rfind(br, 0, end) for br in LINE_BREAKS) + 1
 
 
+def crosses_line(text: str) -> bool:
+    """Whether *text* holds a line break: a marker's labels never may, as on the web."""
+    return any(br in text for br in LINE_BREAKS)
+
+
 def head_at(text: str, i: int) -> int:
     """Length of the head starting at *i*, in any ASCII casing, else 0."""
     for head in MARKER_HEADS:

@@ -98,6 +98,28 @@ class TestAddAgentDocumentRoute:
         assert (body["error"], body["code"]) == ("too short", "document_rejected")
 
     @pytest.mark.asyncio
+    async def test_extraction_that_cannot_run_is_a_coded_503(self, store, monkeypatch):
+        # The document was fine; this host cannot extract it (Kiro CLI signed out).
+        monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
+        monkeypatch.setattr(
+            f"{MODULE}.add_agent_document",
+            AsyncMock(
+                return_value={
+                    "status": "error",
+                    "error": "sign in",
+                    "code": "knowledge_kiro_cli_signed_out",
+                }
+            ),
+        )
+        async with _client(_make_app(store, pipeline=MagicMock())) as client:
+            resp = await client.post(
+                "/api/knowledge/agent-document", json={"title": "t", "content": "c"}
+            )
+            assert resp.status == 503
+            body = await resp.json()
+        assert (body["error"], body["code"]) == ("sign in", "knowledge_kiro_cli_signed_out")
+
+    @pytest.mark.asyncio
     async def test_accepted_document_returns_result_and_coerces_fields(self, store, monkeypatch):
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
         fake_add = AsyncMock(return_value={"status": "added", "title": "T", "item_ids": ["i1"]})

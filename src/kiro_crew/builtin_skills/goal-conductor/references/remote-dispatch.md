@@ -96,7 +96,7 @@ file, or a worker log that rolled past the last pull); above 0, read the
 worker's session for what you missed.
 
 **Follow-ups use `reply`.** To ask a finished worker something, keep its item
-open, `session_send` the question in an owner turn, and tell it to answer with
+open, `session_send` the question with `steer: true` in an owner turn, and tell it to answer with
 `work_report status=reply`. A `reply` wakes you once pulled and claims nothing,
 so it needs no acceptance: relay its summary to the worker that asked. A
 `reply` replaces the item's status like any report, so verify a `done` before

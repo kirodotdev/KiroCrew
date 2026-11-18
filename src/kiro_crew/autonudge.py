@@ -1273,14 +1273,17 @@ class AutoNudgeService:
         task.add_done_callback(_finish)
 
     def _worker_running(self, session_key: str) -> bool:
-        """Whether *session_key*'s slot has a turn in flight.
+        """Whether *session_key* owns proven current or queued work.
 
-        False when no resolver was injected, which is the direction that cannot
-        lose a signal: the work-ledger probe uses this for the "not running" half
-        of the staleness conjunction, so an unknown liveness produces a stall wake
-        the conductor may not have needed (one turn) rather than silence about a
-        worker that stopped without reporting (the task). A resolver that raises is
-        treated the same way -- a slot-table read must not kill a tick.
+        The injected resolver defines the positive liveness fact. The work-ledger
+        binding uses ``session_activity.session_work_pending``; another caller may
+        supply a narrower predicate. False when no resolver was injected, which is
+        the direction that cannot lose a signal: the work-ledger probe uses this
+        for the "not running" half of the staleness conjunction, so an unknown
+        liveness produces a stall wake the conductor may not have needed (one turn)
+        rather than silence about a worker that stopped without reporting (the task).
+        A resolver that raises is treated the same way -- a state read must not kill
+        a tick.
         """
         resolver = self._worker_running_resolver
         if resolver is None or not session_key:

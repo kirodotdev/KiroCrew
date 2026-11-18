@@ -411,6 +411,10 @@ class AcpRuntime:
         # runtime until a callback succeeds or the reason changes: a signed-out
         # engine re-asks about twice a second, and one line says it all.
         self._kas_host_auth_failure_logged: str | None = None
+        # kas_host_auth.token_digest of the last access token this runtime's
+        # callback served, never the token: lets a fail-closed start renew the
+        # very token the engine is holding (kas_host_auth.sign_in_refused).
+        self._kas_served_token_digest: str | None = None
         # The one MCP sign-in in flight on this process, as (session_id,
         # server_name). The engine's consent-URL request names neither, so at
         # most one sign-in runs at a time and its URL goes to the session that

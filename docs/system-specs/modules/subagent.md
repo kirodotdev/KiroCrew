@@ -136,6 +136,24 @@ switch after the parent started never sends the child's reads or writes to anoth
 provider. A child already frozen keeps its own choice. Detail:
 [memory-skills-hooks](memory-skills-hooks.md), "Memory providers".
 
+## Parent execution activity
+
+`SubagentManager.has_current_execution_for(parent_session_key)` is the loop-safe,
+in-memory execution predicate for session activity. It includes unfinished run
+records except parked spawn approvals, live outer run tasks, live follow-up watchers
+and unfinished owned terminal reports. Each actual `_run` outer asyncio task
+registers its `(run id, parent)` ownership after the approval wait, and a task
+completion callback removes it. Task-keyed ownership survives completed-record
+eviction and removal from the run-id task index, covering both the inner
+done-to-report gap and remote or late cleanup after report settlement; overlapping
+attempts of the same run id retain independent owners. The report and watcher
+ownership maps also survive completed-record eviction. Completed tasks do not
+count even while their done callbacks have not removed them. Queue entries alone
+are not execution: `published_queued_depths()` supplies the independent queued
+activity from the producer's latest published frame. Neither probe reads the store.
+The synthesis arm's `has_in_memory_pending_work_for` retains its own broader terms;
+it is not a queued-only predicate.
+
 ## Composition
 
 `kiro_crew/subagent.py` is the facade and the one namespace of the subagent family:

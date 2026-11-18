@@ -782,11 +782,12 @@ nothing.
 
 ### Kiro Crew files belong to another account
 
-`kirocrew doctor`, the gateway log, Settings and the New Bot dialog say that some
-files in your data home (`~/.kiro/crew` unless you set `KIROCREW_HOME`) belong to
-another account, usually `root`, so Kiro Crew can't read them. When the notice
-says the files "can't be used by this account" instead, they are already yours
-but their permissions keep you out: skip to step 6.
+`kirocrew doctor`, the gateway log, a refused `kirocrew gateway` start, Settings
+and the New Bot dialog say that some files in your data home (`~/.kiro/crew`
+unless you set `KIROCREW_HOME`) belong to another account, usually `root`, so
+Kiro Crew can't read them. When the notice says the files "can't be used by this
+account" instead, they are already yours but their permissions keep you out:
+skip to step 6.
 
 This almost always means Kiro Crew was started as root once, for example with
 `sudo kirocrew ...`. `sudo` keeps your `HOME`, so that run wrote root-owned files

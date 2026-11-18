@@ -195,6 +195,11 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "(self, parent_session_key: 'str') -> 'bool'",
         "run",
     ),
+    "has_current_execution_for_impl": (
+        "function",
+        "(self, parent_session_key: 'str') -> 'bool'",
+        "run",
+    ),
     "has_in_memory_pending_work_for_impl": (
         "function",
         "(self, parent_session_key: 'str', *, exclude_id: 'str' = '') -> 'bool'",

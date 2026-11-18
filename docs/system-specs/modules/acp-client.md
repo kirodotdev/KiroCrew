@@ -1683,8 +1683,24 @@ until a result prints it. Native
 set is fed from every prompt and steer text the transport sends (`note_prompt`),
 every member's arguments and result (`printed(call_id, output)` for each update
 that carries output, `settled` for the terminal one, which alone ends the call)
-and the model's streamed text (`note_text`); any of these texts longer than
-256 KiB, a call's arguments included, marks the set incomplete; arguments, results and text join the set when their
+and the model's streamed text (`note_text`). A non-terminal update's text is
+cumulative, so `printed` reads only the part after what it already read, with a
+64-character overlap (and the two characters before it, a separator's or an
+escape's context) so a token split there is read whole. Times are read from
+there, a `:` in front refusing one at its first character, whose left neighbour
+the cut lost, since a time can be glued to a word (`..._at_12:34:56`). Word
+tokens are read from past a word cut at the overlap's front, so its tail is not
+read as a token: a word running from before the overlap past it is longer than
+any token on every read. Every other detector matches inside a window no longer
+than the overlap and its two characters of context; the one
+that does not, the JSON `"pr"` field parse (`json_pr_numbers`), runs on the whole
+text on every update, gated as `tokens_of` gates it, and never on the cut, so a
+`"pr"` nested in a JSON string is learned even when the terminal update carries
+no output. `printed` reads the whole text when the update does not continue the
+text read (a delta, a rewritten result), which a hash of the read prefix
+decides, and the terminal update is always read whole. Any of these texts longer than
+256 KiB, a call's arguments included, marks the set incomplete, a result by its
+full length whatever part of it is read; arguments, results and text join the set when their
 batch ends, so a value the model writes while composing a batch does not count
 for it. A member's arguments are read from the frame's raw arguments
 (`raw_tool_params`), not from `tool_input`, which can be a rendered edit diff
@@ -5360,11 +5376,11 @@ and the manual-handling state an unbounded tree lands in, are owned by
 
 `AcpClient._kill_process` keeps the same reaped-root window **on POSIX**, and
 there it is known and
-deferred, not closed here. The client holds no spawn of its own and therefore no
-`KIROCREW_SPAWN_INSTANCE`, so the vouched group path refuses for it by
-construction; reaching its tree needs the client to mint and carry an
-incarnation token at spawn time, which is a change to the client's own spawn
-path. What it has instead is the descendant snapshot it takes at spawn, which
+deferred, not closed here. The client now mints its `process_instance` before
+launch and writes it to the child as `KIROCREW_SPAWN_INSTANCE`, which is the
+spawn-path half of reaching its tree; `_kill_process` does not yet pass that
+token to the vouched group path, so the path still refuses for a client root
+and the window stays open until it does. What it has instead is the descendant snapshot it takes at spawn, which
 covers every client root that dies after its first scan; the uncovered case is a
 client root that dies before it, and the cost there is the same bounded leak the
 orphan sweep reports. On Windows the client needs neither the token nor the scan:
@@ -5942,9 +5958,19 @@ writes anything to the agent's stdin:
 with `_CLIENT_SCOPE_UNIT_PREFIX`), and keeps the unit systemd received in
 `_scope_unit`. The prefix is not the runtime's, so the readers of `kirocrew-rt-*`
 scopes (`session_scope_reap.kept_scopes`, `containment.populated_scopes`) do not
-count a client process. The token is the client's `process_instance`. The client
-does not write it to the child's environment, so a client child keeps the
-`KIROCREW_SPAWN_INSTANCE` it inherited. Both `initialize` sites call
+count a client process. The token is the client's `process_instance`, and the
+client writes it to the child's environment as `KIROCREW_SPAWN_INSTANCE` (with
+`KIROCREW_SPAWN_HOME`) through `LaunchRequest.env_after_marker`, as the runtime
+does. A client child therefore carries its own client's token, not one it
+inherited. That is what lets `runtime_reconcile`'s live-owner condition anchor a
+harness an agent starts from a client session's shell tool to the recorded client
+root; without it the harness read as unowned and was reclaimed while the session
+was still serving (#38809). A client can run under a runtime-stamped parent (a
+`kirocrew chat` started from an agent's shell builds its providers in that
+process), but replacing the inherited token removes nothing the outer runtime's
+teardown reached: the client spawn is `start_new_session=True` on POSIX, so its
+children lead their own process group, and the vouched group path signals only
+members of the runtime's own group. Both `initialize` sites call
 `_admit_scope` before they write the request: `_initialize_session` and the
 entitlement probe's `_entitlement_probe_answer`. The client's window is
 `_INIT_TIMEOUT` (240 s) with the same 30 s reserve, so admission can use 210 s
@@ -6248,6 +6274,20 @@ deletes the kiro-cli replay log (`agent_sdk/codex_transcripts.py`,
 - the shutdown of an incognito or temporary chat, and every other caller of
   `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`, on
   `is_codex_backend`, off the loop);
+- every caller of `AcpSessionProvider.cleanup_session`, such as the crewmate
+  lessons draft (`acp/session_handle_lifecycle.py`, `delete_native_record`, through
+  the same `TeardownPolicy.delete_disposable_record` with the runtime's `extra_env`),
+  and `SessionManager.release(key, cleanup=True)` through `_safe_cleanup` for a key
+  that cannot be continued. That call deletes the record whatever the memory mode,
+  as kiro-cli's unlink does, since nothing can load the key again. On KAS the same
+  call sends `_kiro/session/delete` on the session's runtime, and when that runtime
+  is gone it schedules the delete due now in `released_sessions`, whose sweep sends
+  it on the background runtime. A KAS `AcpProvider.cleanup_session` hands the call
+  to the `AcpSessionProvider` its runtime start put in `_client`, so a provider
+  `get_or_create` hands out unshared takes the same path after its shutdown.
+  `AcpProvider.shutdown` does not make that call on KAS: a non-persistent session's
+  `destroy` has sent `_kiro/session/delete` already, and a persistent one keeps its
+  record;
 - the subagent tombstone prune and `spawn_release`
   (`subagent_persistence._cleanup_session_files_sync` for `PROVIDER_LABEL_CODEX`);
 - the teardown of a session handle on the shared runtime

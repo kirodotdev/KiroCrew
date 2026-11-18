@@ -24,6 +24,9 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     # slot's task, minus the caller's own turn, since the turn-path consume runs
     # inside that task.
     "_a_foreign_turn_owns_the_slot": frozenset({"running"}),
+    # Session-owned activity reads both turn execution and admission reservation.
+    "session_activity": frozenset({"running", "turn_running"}),
+    "session_activity_for_key": frozenset({"running", "turn_running"}),
 }
 
 
@@ -253,14 +256,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A peer's steer needs a running turn to cut into.
                 ("session_deliver.py", "_deliver_peer"),
                 ("session_control_parts/session_create.py", "create_session"),
-                # The roster verb. Reservation state, like `read_messages` beside
-                # it and for the same reason: it reports whether a session is
-                # working so a patrol knows whether to wait.
-                ("session_control_parts/session_status.py", "created_session_status"),
-                ("session_control_parts/session_status.py", "read_messages"),
-                # The summary verb reports liveness beside the digest for the
-                # same reason `read_messages` does.
-                ("session_control_parts/session_status.py", "read_summary"),
                 # The queue verb reports liveness beside the listing, for the
                 # same reason.
                 ("session_control_queue.py", "queue_target"),
@@ -333,6 +328,21 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         **{
             site: both
             for site in {
+                # Status readers share the activity snapshot: admission and
+                # execution both keep a session working, and its `turn` kind
+                # reports the model-turn fact in their response.
+                ("session_control_parts/session_status.py", "created_session_status"),
+                ("session_control_parts/session_status.py", "read_messages"),
+                ("session_control_parts/session_status.py", "read_summary"),
+                # The same snapshot supplies the worker list, board and keyed
+                # work-ledger probes. Even a turn-only answer reads both facts
+                # while constructing that shared snapshot.
+                ("handlers/crew_workers.py", "api_crew_workers"),
+                ("handlers/work_ledger_board.py", "_build_board"),
+                ("handlers/work_ledger_read.py", "_slot_running"),
+                ("handlers/work_ledger_read.py", "_slot_pending"),
+                ("handlers/work_ledger_read.py", "_slot_turn_running"),
+                ("session_activity.py", "session_activity_for_key"),
                 # The side panel's steer into a Crew Mode worker: a RUNNING turn takes
                 # it as a steer, and only an unreserved slot has its queued text
                 # started now, the composer's own two questions.

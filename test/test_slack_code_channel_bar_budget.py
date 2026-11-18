@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import test_slack_code_channel_board as suite
 
 from kiro_crew.dashboard.handlers import worktree as wt
 from kiro_crew.slack import features
@@ -302,23 +303,9 @@ def _no_sandbox(_floor_monkeypatch: Any) -> None:
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    remote = tmp_path / "remote.git"
-    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
-    root = tmp_path / "proj"
-    root.mkdir()
-    _git("init", "-q", "-b", "main", cwd=root)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("gc.auto", "0")):
-        _git("config", key, value, cwd=root)
-    (root / "README.md").write_text("hello\n")
-    _git("add", ".", cwd=root)
-    _git("commit", "-q", "-m", "init", cwd=root)
-    _git("remote", "add", "origin", "https://github.com/acme/widgets.git", cwd=root)
-    _git("push", "-q", str(remote), "main:main", cwd=root)
-    _git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
-    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
-    return root
+# The board suite's bare remote + clone, copied per test from one per-module template.
+repo = suite.repo
+_repo_template = suite._repo_template
 
 
 def _commit(tree: Path, name: str) -> None:

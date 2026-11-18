@@ -186,6 +186,63 @@ def test_the_gateway_is_quiet_when_this_account_owns_the_home(caplog, tmp_path):
     assert caplog.text == ""
 
 
+def _start_gateway(monkeypatch, found: data_home_owner.DataHomeAccess) -> object:
+    """Run ``kirocrew gateway`` with *found* as the ownership check; its exit code."""
+    from kiro_crew import cli
+
+    monkeypatch.setattr(data_home_owner, "check_data_home", lambda home: found)
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "gateway"])
+    monkeypatch.setattr(
+        cli.platform_compat, "limit_malloc_arenas", cli.platform_compat.MallocArenaCap
+    )
+    # The gateway path arms faulthandler on the real stderr descriptor.
+    monkeypatch.setattr(cli.faulthandler, "enable", lambda: None)
+    monkeypatch.setattr(cli.asyncio, "run", lambda *a, **k: pytest.fail("the gateway ran"))
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    return excinfo.value.code
+
+
+def test_a_refused_gateway_lock_names_who_owns_the_files(monkeypatch, capsys, tmp_path):
+    from unittest.mock import MagicMock
+
+    from kiro_crew import cli
+    from kiro_crew.gateway_lock import LockFileError
+
+    lock = tmp_path / "gateway.lock"
+    lock_cls = MagicMock()
+    lock_cls.return_value.acquire.side_effect = LockFileError(
+        tmp_path, f"could not open {lock}: Permission denied"
+    )
+    monkeypatch.setattr(cli, "GatewayLock", lock_cls)
+    found = _found(tmp_path)
+    assert _start_gateway(monkeypatch, found) == 1
+    err = capsys.readouterr().err
+    assert found.explain() in err
+    assert err.index(f"could not open {lock}") < err.index(found.explain())
+
+
+@pytest.mark.parametrize("owner", ["root", ""], ids=["another account", "this account"])
+def test_a_home_that_cannot_hold_files_names_who_owns_it(monkeypatch, capsys, tmp_path, owner):
+    from kiro_crew import cli
+
+    monkeypatch.setattr(
+        cli.platform_compat,
+        "probe_file_persistence",
+        lambda directory: f"cannot create files in {directory}: Permission denied",
+    )
+    monkeypatch.setattr(cli, "maybe_reexec", lambda argv: pytest.fail("reached maybe_reexec"))
+    found = _found(tmp_path, owner)
+    assert _start_gateway(monkeypatch, found) == 1
+    err = capsys.readouterr().err
+    if owner:
+        assert found.explain() in err
+        assert err.index("Error: Cannot persist state: ") < err.index(found.explain())
+    else:
+        # This account's own read-only home: the refusal line already names the cause.
+        assert found.explain() not in err
+
+
 def test_doctor_reports_the_files_owner_and_docs(monkeypatch, capsys, tmp_path):
     from kiro_crew.doctor_checks import install
 

@@ -125,6 +125,13 @@ arguments, so trusting the five bundled scripts cannot be told apart from
 trusting arbitrary shell. A conductor session that was not armed therefore stalls
 on its first probe, not on its first intervention.
 
+After the initial seed, every direct Pipeline Conductor message to an existing
+worker passes `steer: true`. Rulings, corrections, nudges, resume requests and
+follow-ups therefore reach a busy worker's current turn instead of queueing
+behind it; an idle worker starts a turn. The initial seed remains a plain
+`session_send` because the new session has no turn to steer. A superseding steer
+names any older queued instruction it replaces.
+
 ## The pipeline spec file
 
 The operator's seed message names a JSON spec. It is data the conductor reads,

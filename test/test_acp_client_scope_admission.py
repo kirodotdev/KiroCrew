@@ -461,8 +461,9 @@ async def test_the_spawn_names_its_scope_after_its_process_instance(tmp_path: Pa
     assert client._scope_unit == unit
     at = args.index("--")
     assert args[at - 2 : at] == ("--unit", unit)
-    # Only the runtime stamps its token on the child.
-    assert env.get(KIROCREW_SPAWN_INSTANCE_ENV) != instance
+    # The child carries the same token, so the reconciler can anchor a harness the
+    # session's shell tool starts to this recorded process.
+    assert env.get(KIROCREW_SPAWN_INSTANCE_ENV) == instance
 
 
 @_POSIX_LAUNCHER_ONLY

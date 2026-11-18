@@ -471,6 +471,12 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
 
     *start* is the ``$``; *end* is just past the matching ``)`` when *proven*, else the end
     of *text*. A ``)`` in a heredoc body inside the substitution does not end it.
+
+    A heredoc body starts after the newline that ends its ``<<`` line, so when the text
+    the close walk read has no newline after its first ``<<`` (none at all, a ``<<<``
+    here-string, a ``$(( 1 << n ))`` shift), no body can change that walk and the
+    heredoc re-read is skipped. Each body that does hold a heredoc before its close
+    still re-reads the rest of *text*, so a line of many such bodies stays quadratic.
     """
     spans: "list[tuple[int, int, bool]]" = []
     i, state = 0, 0
@@ -481,9 +487,13 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
             dollars = dollars + 1 if step.state == 2 and step.text == "$" else 0
             if dollars % 2 and text.startswith("(", at + 1):
                 rest = text[at + 2 :]
-                for start, end in heredoc_text_spans(rest):
-                    rest = rest[:start] + re.sub("[^\n]", " ", rest[start:end]) + rest[end:]
-                end, proven = _shell._matching_close_paren(rest, 0)
+                end, proven, reach = _walk._matching_close_paren_reach(rest, 0)
+                window = rest if reach is None else rest[:reach]
+                k = window.find("<<")
+                if k >= 0 and "\n" in window[k:]:
+                    for start, stop in heredoc_text_spans(rest):
+                        rest = rest[:start] + re.sub("[^\n]", " ", rest[start:stop]) + rest[stop:]
+                    end, proven = _shell._matching_close_paren(rest, 0)
                 spans.append((at, at + 2 + end if proven else len(text), proven))
                 i, state = spans[-1][1], 2
                 break

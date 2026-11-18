@@ -672,6 +672,25 @@ def test_an_unexpected_apply_error_is_recorded_and_never_raised(calls, monkeypat
     assert update_next_start.read().pending_apply_error == "state directory is read-only"
 
 
+def test_a_record_the_counter_cannot_read_is_an_apply_error_and_runs_no_apply(
+    calls, monkeypatch
+) -> None:
+    from kiro_crew import atomic_write
+
+    def locked(path, **kwargs):
+        raise PermissionError("[WinError 32] the record is held open")
+
+    update_next_start.arm("2.0.0")
+    monkeypatch.setattr(atomic_write, "read_bytes_with_retry", locked)
+
+    assert _boot() is False
+
+    assert calls.child == 0 and calls.execs == []
+    after = update_next_start.read()
+    assert "WinError 32" in after.pending_apply_error
+    assert after.armed is False
+
+
 def test_an_apply_error_that_cannot_even_be_recorded_still_never_raises(calls, monkeypatch) -> None:
     def refuse(*args, **kwargs):
         raise RuntimeError()
