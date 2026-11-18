@@ -1575,7 +1575,7 @@ jobs:
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
           # An explicit worker count, as in backend-test, instead of the xdist
-          # budget behind `-n auto`: that budget reserves 5 GiB a worker for a
+          # budget: that budget reserves 5 GiB a worker for a
           # FULL-suite collection and grants a file shard only 2 of the fleet
           # runner's 8 cores. One worker per 3 GiB after 2 GiB for the host,
           # capped at the core count: 4 on the 15 GiB fleet runner and on a
