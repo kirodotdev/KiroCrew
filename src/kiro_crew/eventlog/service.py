@@ -1208,6 +1208,12 @@ class MemberEventLogService:
 
         ``below`` bounds the range when the caller is about to drive its own event
         (the append path); a read folds to the end. ``drive`` is idempotent per cell.
+
+        Every caller has just loaded, refreshed or appended *log*, so the events it
+        holds are the file's, and the gap is read from them rather than by a walk of
+        the whole file. A commit that lands after that refresh is not missed: the
+        closer's ``append_if`` sees the tail move and re-folds through ``_get_log``,
+        and every other read refreshes first.
         """
         floor = self._registry.observed_floor(slug)
         if floor < 0:
@@ -1220,11 +1226,7 @@ class MemberEventLogService:
                 (ev for ev in log.iter_events() if below is None or ev["seq"] < below),
             )
             return
-        # The append path (``below`` given) has just loaded or extended the log through
-        # its own event, so the events held answer it without a walk of the whole file.
-        # A read keeps the walk, which is what sees another process's newest entries.
-        gap = log.iter_events() if below is None else log.iter_held_events_after(floor)
-        for earlier in gap:
+        for earlier in log.iter_held_events_after(floor):
             if earlier["seq"] <= floor:
                 continue
             if below is not None and earlier["seq"] >= below:

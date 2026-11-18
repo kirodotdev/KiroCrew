@@ -591,8 +591,10 @@ member logs, median of thirty appends, six rounds:
 | 19,930 | 334.7 ms | 6.2 ms |
 
 What still parses the whole log: the first load of a member in a process, a reload
-after the file changed under the instance, the first fold of a member after boot, and
-`append_if` (the closer path, once per ended patrol). Not seen by the proof, or by a
+after the file changed under the instance, and the first fold of a member after boot.
+A closer (`append_if`) takes the same proof as `append`, and the gap fold before any
+write reads the events the instance holds, since every caller has just loaded,
+refreshed or appended. Not seen by the proof, or by a
 read: an older record rewritten in place to the same length within the clock tick of
 the load stamp. On Windows the stat's change time is the file's creation time, so a
 same-length rewrite whose modification time is put back is not seen there either.
