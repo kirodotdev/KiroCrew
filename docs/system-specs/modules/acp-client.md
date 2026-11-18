@@ -5418,7 +5418,13 @@ update's refresh included) runs the same sweep when the version is already there
 and no install runs: an install ended from outside (the refresh's hard-stop
 `os._exit`, the update's 900 s kill) runs no cleanup and left it. A younger tree,
 a link or junction at a listed name, and a `.staging-retired-*` or
-`.staging-lipo-*` tree are kept, and a sweep failure is logged, never fatal. On a Linux
+`.staging-lipo-*` tree are kept, and a sweep failure is logged, never fatal. `kirocrew kas
+remove --version V` (`remove_version`) is whole-or-nothing the same way: it renames the
+version to a hidden `.staging-retired-*` sibling first, which Windows refuses while a
+session holds a file inside open, so a held engine stays installed and usable (exit 1
+naming the version) and a delete of the renamed tree that then fails leaves a hidden
+folder, never a half-engine at the version's name. Removing every version still
+deletes in place. On a Linux
 host whose glibc is below the official Node floor (2.28; Amazon Linux 2 ships
 2.26) the install refuses up front, before any download, naming the found glibc,
 the minimum, and that the bundled Node needs glibc 2.28 while Amazon Linux 2-era

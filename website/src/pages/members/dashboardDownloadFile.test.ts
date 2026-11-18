@@ -101,7 +101,7 @@ describe('buildDashboardDownload', () => {
     expect(doc).toContain('data-dashboard-field="open"')
     expect(doc).toContain('--bg')
     expect(doc).toContain('#101010')
-    expect(doc).toContain('<body class="dark"')
+    expect(doc).toContain('<body data-mode="dark"')
     expect(doc).toMatch(/http-equiv="Content-Security-Policy"/)
     expect(doc).toContain("connect-src 'none'")
   })

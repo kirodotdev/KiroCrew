@@ -337,6 +337,10 @@ its neighbours, and a shuffled order. A FIX to a flaky test also shows the force
 condition (a coarse clock, a late executor, a delay at the named seam) red on the parent
 commit and green on the fix (testing-conventions § Proving a determinism fix).
 
+Run that proof on a real machine of the OS the test fails on, the parent first, and put
+it in the PR's `## Real-machine verification` (testing-conventions § Real-machine
+verification).
+
 The sixth class has a tell of its own: **the run ends early, not red.** On Windows a test that
 blocks past `--timeout` is not failed, its xdist worker is killed, and with
 `--max-worker-restart=0` the run aborts with every uncollected result missing. If a full run

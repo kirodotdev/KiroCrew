@@ -93,7 +93,9 @@ class TestListReviewRequested(_Home):
         self.assertEqual((len(rows), truncated), (100, True))
 
     def test_every_retained_field_is_bounded(self):
-        big = "x" * 100_000
+        # Just past each cap: enough to show a field is clipped, without building
+        # hundreds of MiB of JSON for a check that only reads lengths.
+        big = "x" * (discovery._QUEUE_MAX_TEXT + 100)
         hit = _hit(
             1,
             title=big,
@@ -101,7 +103,7 @@ class TestListReviewRequested(_Home):
             author={"login": big},
             repository={"nameWithOwner": big},
             updatedAt=big,
-            labels=[{"name": big}] * 1000,  # more than GitHub allows
+            labels=[{"name": big}] * (discovery._QUEUE_MAX_LABELS + 10),
         )
         (rows, _), _ = self._run(stdout=json.dumps([hit]))
         row = rows[0]
