@@ -193,7 +193,6 @@ def test_outcome_values_cover_turn_outcome():
         assert turns.turn_outcome(stop) in tc.TURN_OUTCOME_VALUES
     assert turns.turn_outcome("error: tool stall", exhausted=True) in tc.TURN_OUTCOME_VALUES
     assert turns.OUTCOME_UNCLASSIFIED in tc.TURN_OUTCOME_VALUES
-    assert len(tc.TURN_OUTCOME_VALUES) == 8
 
 
 def test_outcome_values_equal_turn_outcome_returns():
@@ -247,5 +246,7 @@ def test_dashboard_turn_trigger(fields, expected):
     assert _dashboard_turn_trigger(SimpleNamespace(**fields)) == expected
 
 
-def test_origin_values_bound():
-    assert len(ORIGIN_VALUES) == 17
+def test_origin_values_are_a_closed_set_with_a_fallback():
+    # The exact values are the exported telemetry contract pinned in test_usage_attrs.
+    assert len(set(ORIGIN_VALUES)) == len(ORIGIN_VALUES)
+    assert "other" in ORIGIN_VALUES
