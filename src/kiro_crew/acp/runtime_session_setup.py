@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     overlay_project_scope,
 )
+from kiro_crew.agent_files import LITE_AGENT_FILENAME
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
@@ -189,16 +190,20 @@ def _pooled_session_servers_and_ref_spec(
 def _kas_worker_stub_names(
     backend: str, agent: str | None, session_key: str, pooled: list[dict[str, Any]]
 ) -> frozenset[str] | None:
-    """The stub names a KAS crewmate worker's projection subtracts, or ``None``.
+    """The stub names a KAS projection subtracts and withdraws against, or ``None``.
 
     The names of the entries :func:`_pooled_session_servers_and_ref_spec` just
     returned for this session, so KAS withholds from its projection exactly the
     servers ``session/new`` injects: one lookup answers both, and a crewmate edit
-    or an overlay refresh landing in between cannot make them differ. ``None``
-    for every other host, agent, or a session with no key: the projection then
-    asks the overlay by agent name, as before.
+    or an overlay refresh landing in between cannot make them differ. Handed in
+    for a crewmate worker session, and for the background helper, whose
+    projection withdraws every stub its spec does not mount. ``None`` for every
+    other host, agent, or a worker session with no key: the projection then asks
+    the overlay by agent name, as before.
     """
-    if backend == ACP_BACKEND_KAS and agent == MATE_WORKER_AGENT and session_key:
+    if backend == ACP_BACKEND_KAS and (
+        (agent == MATE_WORKER_AGENT and session_key) or agent == Path(LITE_AGENT_FILENAME).stem
+    ):
         return frozenset(
             str(entry["name"]) for entry in pooled if isinstance(entry, dict) and entry.get("name")
         )

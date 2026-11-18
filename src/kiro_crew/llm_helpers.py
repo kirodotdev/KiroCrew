@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.llm_helpers_parts.background_turns import (  # noqa: F401
         _background_crew_log_owner,
+        _background_spawn_backend,
         _cleanup_memory_consolidation_session,
         _lite_resets_failed,
         _lite_rewrite_tasks,
