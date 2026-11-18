@@ -40,6 +40,7 @@ def public_tag_exists(ref: str, timeout: float) -> bool:
         headers={"Accept": "application/vnd.github+json", "User-Agent": _USER_AGENT},
     )
     try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- the URL is the fixed https PUBLIC_TAG_API_URL plus a percent-quoted tag
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = response.status
     except urllib.error.HTTPError as exc:
