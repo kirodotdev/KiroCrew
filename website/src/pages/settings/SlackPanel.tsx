@@ -449,7 +449,13 @@ export function SlackPanel() {
   )
 
   return (
-    <>
+    // Placeholders here are sample IDs (U0123ABC456, E0123ABC456) that look
+    // like real values. The app-wide placeholder colour is --muted, the
+    // secondary-text token, which in light themes sits close to typed text, so
+    // a sample read as a saved ID. 75% of --muted keeps 3:1 on the field in
+    // every built-in palette (SlackPanel.placeholderTone.test.ts) and is clearly
+    // lighter than typed text. `contents` keeps the layout identical.
+    <div className="contents [&_:is(input,textarea)::placeholder]:text-muted/75">
       {/* ── Header ── */}
       <div className="flex items-start gap-3 mb-1 mt-1">
         <div className="w-9 h-9 rounded-lg bg-bg-elevated border border-border flex items-center justify-center flex-none">
@@ -730,6 +736,6 @@ export function SlackPanel() {
             hand-off unmounts this panel and would lose them. */}
         <ErrorNotice message={error} variant="inline" />
       </div>}
-    </>
+    </div>
   )
 }
