@@ -2215,7 +2215,16 @@ The owners, lowest layer first:
   `*_RECOVERY_PREFIX`, and the recovery deciders and continuation-prompt builders.
 - `state_parts/notification_log.py` — the durable notification log and its IO pool.
 - `state_parts/source_links.py` — source-link chips: budgets, the public-repo status
-  gate and its audit, and the slot's derivation, dismissal and cache.
+  gate and its audit, and the slot's derivation, dismissal and cache. The
+  dashboard-user gate writes one `source_link_public_status` SEL row per change
+  link (`allowed` or `denied`, deduplicated per link per 300 s), so only a pass a
+  non-owner dashboard user receives runs it: that user's slot list GET and
+  WebSocket connect snapshot, and the broadcast's dashboard-user view, which
+  `_do_slots_broadcast` builds only while a non-owner dashboard-user socket that
+  receives it is open (an app socket's filtered rows are the same from the bare
+  list). The owner-only crew-workers routes and a `slot_patch` row, which send no
+  source link, serialize the bare audience and write no such row
+  (`test_source_link_audit_audience.py`).
 - `state_parts/slot_sidebar.py` — folder, pin, tags, colour and theme fields, and the
   process-wide tags revision.
 - `state_parts/slot_todo.py` — the todo list, its overrides and its sync prompts.
