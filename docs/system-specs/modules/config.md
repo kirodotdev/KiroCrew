@@ -2074,6 +2074,7 @@ a present value the reader cannot use takes the reader's value:
   drops every server `mcp_gateway.cwd_use` answers `uses_cwd` (read by
   `_resolve_cwd_use`). Neither
   the base nor the followers are ever written back to `stub_servers`.
+  `mcp_gateway.cwd_use_launch` (read by `_resolve_cwd_use_launch`) records the declared command+args hashes a `not_used` answer was given for; `effective_cwd_answer` reads that answer as unanswered when the name now declares a different launch, and keeps it when no binding exists or the launch cannot be read. The runtime routed set ignores it.
 
 This list describes the build stage. Values that the read stage's schema
 validation rejects never reach it. The deliberate departures, all unchanged by the

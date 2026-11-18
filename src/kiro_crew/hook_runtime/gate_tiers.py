@@ -1223,12 +1223,18 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
         identity_grant = False
     if _operator_confirms(facts, grant_targets):
         return None
+    # Observe-only launch check; imported here so the tool list stays light.
+    from kiro_crew.tool_grant_launch_audit import observe_granted_call
+
     for pattern in facts.config.auto_approve_tools:
         if any(_tool_matches(pattern, target) for target in grant_targets):
+            if identity_grant:
+                observe_granted_call(facts.call, facts.agent, "pattern")
             return ToolHookResult.auto_approve(identity_grant=identity_grant)
     if identity_ref and any(
         grant.lower() == identity_ref.lower() for grant in facts.config.auto_approve_tool_identities
     ):
+        observe_granted_call(facts.call, facts.agent, "identity")
         return ToolHookResult.auto_approve(identity_grant=True)
     if identity_ref:
         # Runtime breadcrumb for the deliberate title-match exclusion: a pattern
