@@ -210,8 +210,18 @@ def _succeeded(channel: str, key: str) -> None:
     _held_until.pop((channel, key), None)
 
 
+def _retry_after_hold(channel: str, delay: float) -> None:
+    """Arm *channel*'s refresh once a finite hold ends, on the board's timer (which
+    runs with or without a board); a permanent hold (``0`` or for ever) arms none."""
+    if 0 < delay < _FOREVER:
+        from kiro_crew.slack.code_channels import board
+
+        board.retry_later(channel, delay)
+
+
 def _refusal(channel: str, key: str, view_type: str, exc: CodeChannelApiError) -> float:
-    """Hold *key* (or the whole view type) after Slack's refusal; returns the delay."""
+    """Hold *key* (or the whole view type) after Slack's refusal; returns the delay
+    (``0`` for a permanent hold)."""
     if exc.code == "invalid_view_type":
         _note(channel, f"type:{view_type}", exc.code, until=_FOREVER)
         return 0.0
@@ -220,7 +230,7 @@ def _refusal(channel: str, key: str, view_type: str, exc: CodeChannelApiError) -
         return 0.0
     if exc.code == views.TOO_MANY_VIEWS:
         _note(channel, key, exc.code, until=_clock() + FULL_RETRY_SECS)
-        return 0.0
+        return FULL_RETRY_SECS
     # A rate limit's Retry-After holds the tab at least that long.
     return _backoff(channel, key, exc.code, retry_after=exc.retry_after)
 
@@ -401,7 +411,11 @@ async def sync_pr_tabs(
         free = max(0, views.MAX_PR_TABS - len(keep))
         want = dict(sorted(want.items(), key=lambda kv: kv[1].number, reverse=True)[:free])
         for view in stale:
-            if view in keep or _held(channel, f"remove:{view['key']}"):
+            if view in keep:
+                continue
+            left = _held(channel, f"remove:{view['key']}")
+            if left:
+                _retry_after_hold(channel, left)  # asked early: the refresh comes back
                 continue
             # By what the tab SHOWS, recorded when it was written: a former own
             # PR's tab stays the channel's after its own PR moves on.
@@ -422,7 +436,10 @@ async def sync_pr_tabs(
             else:
                 # Slack's own Retry-After (a rate limit) holds the removal too.
                 wait = refused[-1].retry_after if refused else 0.0
-                _backoff(channel, f"remove:{view['key']}", "view_remove_failed", retry_after=wait)
+                mark = f"remove:{view['key']}"
+                _retry_after_hold(
+                    channel, _backoff(channel, mark, "view_remove_failed", retry_after=wait)
+                )
         # A settled PR whose tab the record does not hold (its setView answer was
         # lost, or a restart cut off its record): removed by key, once per process.
         held_keys = {v["key"] for v in held}
@@ -432,7 +449,9 @@ async def sync_pr_tabs(
                 await _sweep(client, binding, key, ledger=ledger(key))
         for key, pr in want.items():
             # Checked per PR: a refusal of the type on one PR stops the rest.
-            if _held(channel, f"type:{views.PR_VIEW_TYPE}"):
+            typed = _held(channel, f"type:{views.PR_VIEW_TYPE}")
+            if typed:
+                _retry_after_hold(channel, typed)
                 break
             record = await get_async(channel)
             current = views.recorded(record, key)
@@ -449,7 +468,9 @@ async def sync_pr_tabs(
                 ):
                     await views.set_origin(channel, key, origin)
                 continue
-            if _held(channel, key):
+            left = _held(channel, key)
+            if left:
+                _retry_after_hold(channel, left)
                 continue
             recorded = getattr(record, "views", None) or ()
             if current is None and sum(views.is_pr_tab(v) for v in recorded) >= (views.MAX_PR_TABS):
@@ -497,7 +518,7 @@ async def _open_pr_tab(
         )
     except CodeChannelApiError as exc:
         if exc.code not in _FENCED_CODES:
-            _refusal(channel, key, views.PR_VIEW_TYPE, exc)
+            _retry_after_hold(channel, _refusal(channel, key, views.PR_VIEW_TYPE, exc))
         return
     except CodeChannelError as exc:  # refused locally, before it was sent
         _note(channel, key, str(exc)[:80], until=_FOREVER)
@@ -594,6 +615,8 @@ async def _publish_workers(
     if _held(channel, "type:block_kit"):
         return "held"
     wait = _held(channel, key)
+    if wait == _FOREVER:
+        return "held"  # refused for good: no refresh is armed for it
     if wait:
         _retry_at[channel] = wait
         return "backoff"

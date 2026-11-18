@@ -70,6 +70,14 @@ class Clock:
         return self.now
 
 
+def _clear_board_timers() -> None:
+    from kiro_crew.slack.code_channels import board
+
+    for _due, handle in board._timers.values():
+        handle.cancel()
+    board._timers.clear()
+
+
 @pytest.fixture(name="no_host_dns", autouse=True)
 def no_host_dns_fixture(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """The board scrubber's host-name read (``getfqdn``) may reverse-resolve over
@@ -140,7 +148,11 @@ def env_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     from kiro_crew.slack.agent_sessions import fence
 
     monkeypatch.setattr(fence, "_LIVE", type(fence._LIVE)())
+    # A tab's hold arms the board's per-channel timer (one per channel, earliest
+    # wins): none may carry over from another test, or outlive this one.
+    _clear_board_timers()
     yield e
+    _clear_board_timers()
     set_surface_store(None)
     surface.set_slack_provider(None)
     source.set_scope_predicate(None)

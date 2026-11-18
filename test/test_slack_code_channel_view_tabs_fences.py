@@ -28,6 +28,7 @@ from slack_code_channel_view_tabs_helpers import (  # noqa: F401 - fixtures by n
     _row,
     _scope_flag,
     _set_views,
+    _snapshot,
     _stop_payload,
     _v,
     env_fixture,
@@ -1506,6 +1507,131 @@ async def test_a_sweep_slack_refuses_for_now_arms_a_refresh_after_its_backoff(
     await sweep()
     key = "pr-12" if which == "own_pr_tab" else "workers"
     assert _calls(env, "agents.conversations.removeView")[-1] == {"channel_id": CH, "view_key": key}
+
+
+@pytest.mark.parametrize("what", ["write", "full", "removal"])
+@pytest.mark.asyncio
+async def test_a_pr_tab_slack_holds_back_arms_a_refresh_after_its_hold(
+    env: Any, monkeypatch: Any, what: str
+) -> None:
+    # A channel with no board has nothing else to bring the refresh back.
+    from slack_code_channel_view_tabs_helpers import _rate_limited
+
+    from kiro_crew.slack.code_channels import board
+
+    armed: list[tuple[str, Any]] = []
+    monkeypatch.setattr(board, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
+    binding = _bind(env)
+    _scope_flag(monkeypatch)
+    pr = [tabs.PrRef(12, PR_URL.format(n=12), "open")]
+    if what == "removal":
+        _set_views(env)
+        await tabs.sync_pr_tabs(binding, pr)
+        env.api.responses["agents.conversations.removeView"] = _rate_limited("50")
+        run, wait = (lambda: tabs.sync_pr_tabs(binding, [], settled={12})), 50.0
+    else:
+        refused = (
+            _rate_limited("40") if what == "write" else {"ok": False, "error": "too_many_views"}
+        )
+        env.api.responses["agents.conversations.setView"] = refused
+        run, wait = (lambda: tabs.sync_pr_tabs(binding, pr)), (
+            40.0 if what == "write" else tabs.FULL_RETRY_SECS
+        )
+    await run()
+    assert armed == [(CH, wait)]
+    env.clock.now += 10
+    await run()  # asked again inside the hold: armed for the time left
+    assert armed[-1] == (CH, wait - 10)
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_own_pr_tab_on_a_channel_with_no_board_comes_back(
+    env: Any, monkeypatch: Any
+) -> None:
+    # The refresh's PR-tab step on an idle channel with no work board, Slack
+    # answering 429: the refresh comes back once Retry-After has passed.
+    from slack_code_channel_view_tabs_helpers import _rate_limited
+
+    from kiro_crew.slack.code_channels import board
+    from kiro_crew.slack.code_channels.workspace import service as svc
+
+    armed: list[tuple[str, Any]] = []
+    monkeypatch.setattr(board, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
+    env.api.responses["agents.conversations.setView"] = _rate_limited("40")
+    record = SimpleNamespace(
+        slack_off="", pr_number=12, pr_url=PR_URL.format(n=12), pr_state="open"
+    )
+    service = svc.WorkspaceService(lambda: None)
+    await service._publish_pr_tabs(_bind(env), record, None)
+    assert armed == [(CH, 40.0)]
+    env.clock.now += 41  # the armed refresh runs after the hold
+    _set_views(env)
+    await service._publish_pr_tabs(_bind(env), record, None)
+    assert views.recorded(surface_store().get(CH), "pr-12") is not None
+
+
+@pytest.mark.parametrize("code", ["invalid_pr_url", "not_view_owner", "invalid_view_type"])
+@pytest.mark.asyncio
+async def test_a_pr_tab_slack_refuses_for_good_arms_no_refresh(
+    env: Any, monkeypatch: Any, code: str
+) -> None:
+    from kiro_crew.slack.code_channels import board
+
+    armed: list[tuple[str, Any]] = []
+    monkeypatch.setattr(board, "_schedule", lambda ch, delay=None: armed.append((ch, delay)))
+    binding = _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": False, "error": code}
+    pr = [tabs.PrRef(12, PR_URL.format(n=12), "open")]
+    await tabs.sync_pr_tabs(binding, pr)
+    await tabs.sync_pr_tabs(binding, pr)
+    assert armed == []
+    assert len(_calls(env, "agents.conversations.setView")) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_workers_tab_slack_refuses_for_good_arms_no_refresh(env: Any) -> None:
+    binding = _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": False, "error": "not_view_owner"}
+    await tabs.publish_workers(binding, _snapshot(), link_for=_link)
+    tabs.take_retry(CH)
+    env.clock.now += 60
+    assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "held"
+    assert tabs.take_retry(CH) == 0.0  # no refresh is armed for a permanent hold
+
+
+@pytest.mark.asyncio
+async def test_repeated_rate_limits_keep_one_timer_per_channel(env: Any) -> None:
+    # Each pass inside the hold re-arms, but on the board's one timer per
+    # channel (the earliest wins): no tight loop and no pile of timers.
+    from slack_code_channel_view_tabs_helpers import _rate_limited
+
+    from kiro_crew.slack.code_channels import board
+
+    binding = _bind(env)
+    env.api.responses["agents.conversations.setView"] = _rate_limited("40")
+    pr = [tabs.PrRef(12, PR_URL.format(n=12), "open")]
+    loop = asyncio.get_running_loop()
+    for _ in range(5):
+        await tabs.sync_pr_tabs(binding, pr)
+        env.clock.now += 1
+    assert len(_calls(env, "agents.conversations.setView")) == 1
+    assert list(board._timers) == [CH]
+    due, _handle = board._timers[CH]
+    assert due - loop.time() > 30  # not sooner than the hold that is left
+
+
+@pytest.mark.asyncio
+async def test_a_full_channel_holding_back_the_workers_tab_retries_after_the_window(
+    env: Any,
+) -> None:
+    binding = _bind(env)
+    env.api.responses["agents.conversations.setView"] = {"ok": False, "error": "too_many_views"}
+    env.api.responses["agents.conversations.listViews"] = {
+        "ok": True,
+        "views": [{"view_id": f"Vtheirs{n}"} for n in range(5)],
+    }
+    assert await tabs.publish_workers(binding, _snapshot(), link_for=_link) == "failed"
+    assert tabs.take_retry(CH) == tabs.FULL_RETRY_SECS
 
 
 @pytest.mark.parametrize("what", ["policy", "off_or_review"])
