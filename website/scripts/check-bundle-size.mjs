@@ -149,10 +149,15 @@ export const CHUNK_BUDGETS = {
   // The dashboard's own first-load code, cut by import depth into four parts of
   // near-equal size; `main` is the top part, holding the entry. Because the cut
   // is by size, growth anywhere in it raises all four by about a quarter each.
-  'first-load-0': 1003 * KB, // measured 977,976 B
+  //
+  // `main` and `first-load-0` re-measured on an analyze build of main @
+  // 666d93c742, same 5% rule (#39199): `main` was 1,016 B over its 1341 KB
+  // ceiling and `first-load-0` had 203 B left, after ~66 KB of first-load
+  // growth spread across many features since c275f70106.
+  'first-load-0': 1053 * KB, // measured 1,026,869 B
   'first-load-1': 1164 * KB, // measured 1,134,732 B
   'first-load-2': 1179 * KB, // measured 1,149,207 B
-  main: 1341 * KB, // measured 1,307,743 B
+  main: 1410 * KB, // measured 1,374,200 B
 
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
   // which is why one decoder is this large. `utils/heicImage.ts`
