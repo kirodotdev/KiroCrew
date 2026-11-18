@@ -10806,10 +10806,6 @@
       "changes_count_one": "{{count}} modification",
       "changes_count_many": "{{count}} modifications",
       "changes_count_other": "{{count}} modifications",
-      "reset_confirm_title": "Réinitialiser cet agent sur « {{name}} » ?",
-      "reset_confirm_body": "Tes modifications — « {{fields}} » — seront abandonnées. Cet agent utilisera le modèle « {{name}} » tel quel.",
-      "switch_confirm_title": "Passer à « {{name}} » ?",
-      "switch_confirm_body": "Tes modifications sur « {{origin}} » (« {{fields}} ») seront abandonnées. Cet agent utilisera le modèle « {{name}} » tel quel.",
       "discard_and_switch": "Abandonner les modifications et changer"
     },
     "restartRequiredBadge": {

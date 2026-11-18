@@ -11047,10 +11047,6 @@
       "changes_count_few": "{{count}} изменения",
       "changes_count_many": "{{count}} изменений",
       "changes_count_other": "{{count}} изменения",
-      "reset_confirm_title": "Сбросить этого агента до «{{name}}»?",
-      "reset_confirm_body": "Ваши изменения — «{{fields}}» — будут отменены. Этот агент будет использовать шаблон «{{name}}» как есть.",
-      "switch_confirm_title": "Переключиться на «{{name}}»?",
-      "switch_confirm_body": "Ваши изменения в «{{origin}}» («{{fields}}») будут отменены. Этот агент будет использовать шаблон «{{name}}» как есть.",
       "discard_and_switch": "Отменить изменения и переключиться"
     },
     "restartRequiredBadge": {

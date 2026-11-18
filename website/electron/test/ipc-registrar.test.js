@@ -21,6 +21,8 @@ const {
   SHELL_HANDLES,
   SHELL_LISTENERS,
   UPDATE_HANDLES,
+  preloadChannels,
+  channelsRegisteredOutsideRegistrar,
   loadRegistrar,
   harness,
   updaterHandle,
@@ -28,6 +30,11 @@ const {
   wslEvent,
   assertWslRejected,
 } = require("./ipc-registrar-test-helpers");
+
+test("the updater's handlers are the update:* channels the preload invokes", () => {
+  const invoked = [...preloadChannels().invoked].filter((c) => c.startsWith("update:")).sort();
+  assert.deepEqual(invoked, UPDATE_HANDLES);
+});
 
 test("module boundary never imports Electron directly", () => {
   assert.doesNotMatch(
@@ -57,18 +64,25 @@ test("factory requires an integer primary port", () => {
   );
 });
 
-test("registerShell owns the exact shell channel set and is idempotent", () => {
+test("registerShell answers the preload's shell channels and is idempotent", () => {
   const h = harness();
   assert.strictEqual(h.registrar.registerShell(), h.registrar.summonDashboard);
   assert.doesNotThrow(() => h.registrar.registerShell());
 
-  // The exact sorted channel lists above decide the inventory, one channel per
-  // line; a hand-kept total beside them added no check and was the one line two
-  // changes adding different channels both rewrote to the same number
-  // (testing-conventions.md § Merge-safe ratchets and counts).
+  // Read from the preload scripts, so a channel added on both sides passes
+  // without editing this file, while a handler no renderer reaches fails here.
+  // The next test checks the other direction: a preload call with no owner.
+  const { invoked, sent } = preloadChannels();
+  assert.ok(invoked.size > 0 && sent.size > 0, "preload scan found no channels");
+  assert.ok(h.handlers.size > 0 && h.listeners.size > 0);
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.ok(h.handlers.size > 0 && h.listeners.size > 0);
+  for (const channel of h.handlers.keys()) {
+    assert.ok(invoked.has(channel), `registerShell handles ${channel} but no preload invokes it`);
+  }
+  for (const channel of h.listeners.keys()) {
+    assert.ok(sent.has(channel), `registerShell listens on ${channel} but no preload sends it`);
+  }
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
@@ -1109,7 +1123,23 @@ test("bind and unregister remain owned by the dedicated hotkey helper", () => {
   assert.equal(h.hotkey.state.current, "");
 });
 
-test("registerUpdater owns seven handlers and preserves lazy gateway hooks", async () => {
+test("every channel a preload calls has a main-process owner", () => {
+  // The reverse direction of the shell test: an invoke with no handler rejects
+  // and a send with no listener is dropped, both silently for the user.
+  const h = harness({ downloadExpectations: { register() {} } });
+  h.registrar.registerShell();
+  h.registerUpdater(h.registrar);
+  const outside = channelsRegisteredOutsideRegistrar();
+  const { invoked, sent } = preloadChannels();
+  for (const channel of invoked) {
+    assert.ok(h.handlers.has(channel) || outside.has(channel), `a preload invokes ${channel} but nothing handles it`);
+  }
+  for (const channel of sent) {
+    assert.ok(h.listeners.has(channel) || outside.has(channel), `a preload sends ${channel} but nothing listens on it`);
+  }
+});
+
+test("registerUpdater owns the preload's update handlers and preserves lazy gateway hooks", async () => {
   const updater = updaterHandle({ disabled: "test-disabled" });
   let initCalls = 0;
   let deps;

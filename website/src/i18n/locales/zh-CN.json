@@ -10324,10 +10324,6 @@
     },
     "agentTemplateDetail": {
       "changes_count_other": "{{count}} 处改动",
-      "reset_confirm_title": "将该代理重置为 “{{name}}”？",
-      "reset_confirm_body": "你的改动 — “{{fields}}” — 将被丢弃。该代理将原样使用 “{{name}}” 模板。",
-      "switch_confirm_title": "切换到 “{{name}}”？",
-      "switch_confirm_body": "你在 “{{origin}}” 上的改动（“{{fields}}”）将被丢弃。该代理将原样使用 “{{name}}” 模板。",
       "discard_and_switch": "丢弃改动并切换"
     },
     "restartRequiredBadge": {

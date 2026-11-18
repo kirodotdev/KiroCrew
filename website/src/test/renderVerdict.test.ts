@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { parse as parseYaml } from 'yaml'
 import { partitionBaseSurfaces } from '../../scripts/lib/i18n-surfaces.mjs'
 import {
   BUCKETS,
@@ -322,57 +323,115 @@ describe('CI supplies a base commit on both paths', () => {
   // nothing. That makes the workflow wiring load-bearing: if a push to main stopped
   // passing `github.event.before`, merges would silently go unchecked and the unit
   // tests above would still pass.
-  // Both blocking workflows, not just ci.yml. The cheap diff-scoped gates moved
-  // into fast-gate.yml, which ci.yml blocks on through `await-fast-gate`; reading
-  // ci.yml alone would have silently dropped nine of the thirteen wirings out of this
-  // file's view while every assertion below still passed on the remaining four.
-  const workflowSources = ['ci.yml', 'fast-gate.yml'].map((name) => ({
-    name,
-    text: readFileSync(resolve(process.cwd(), `../.github/workflows/${name}`), 'utf-8'),
-  }))
-  // Any `*_BASE_REF` wiring, not just the i18n ones: `brand-lint` passes
-  // `BRAND_BASE_REF` and `harness-parity` passes `HARNESS_BASE_REF` through the
-  // same resolver and both need the same guarantees.
-  const wiringsBySource = workflowSources.map((source) => ({
-    name: source.name,
-    lines: source.text.match(/^\s*[A-Z0-9_]*BASE_REF: \$\{\{.*$/gm) || [],
-  }))
-  const wirings = wiringsBySource.flatMap((source) => source.lines)
-
-  it('wires every diff-scoped gate step', () => {
-    // One line per wiring, not a total: a gate ADDED to either workflow cannot
-    // skip this file's `base.sha` assertion below by going unnoticed, and two PRs
-    // that each add a gate edit different lines here instead of both bumping one
-    // number (a merge-unsafe count, see testing-conventions "merge-safe ratchets").
-    // Add the new gate's env name when it lands, and check its wiring is in the loop.
-    const names = wirings.map((line) => line.trim().split(':')[0]).sort()
-    expect(names).toEqual([
-      'BACKEND_EMOJI_BASE_REF',
-      'BRAND_BASE_REF',
-      'CHANGELOG_BASE_REF',
-      'COMMENT_HISTORY_BASE_REF',
-      'DECISIONS_BASE_REF',
-      'EMOJI_ICON_BASE_REF',
-      'FEATURE_MAP_BASE_REF',
-      'FOCUS_CUE_BASE_REF',
-      'HARNESS_BASE_REF',
-      'I18N_BASE_REF',
-      'I18N_BASE_REF',
-      'I18N_BASE_REF',
-      'MEMSTORE_BASE_REF',
-      'METRICS_SCHEMA_BASE_REF',
-      'PHANTOM_BASE_REF',
-    ])
+  // Both blocking workflows, not just ci.yml: the cheap diff-scoped gates live in
+  // fast-gate.yml, which ci.yml blocks on through `await-fast-gate`. Each source
+  // must contribute at least one step, so a further split cannot hide its gates
+  // from this file behind a non-empty total.
+  const RESOLVER = /resolve-i18n-base\.sh"?\s*\\?\s*"\$\{?([A-Z0-9_]+)\}?"/g
+  type Step = { name?: string; run?: string; env?: Record<string, unknown> }
+  const workflowSources = ['ci.yml', 'fast-gate.yml'].map((name) => {
+    const doc = parseYaml(
+      readFileSync(resolve(process.cwd(), `../.github/workflows/${name}`), 'utf-8'),
+    ) as { jobs: Record<string, { steps?: Step[] }> }
+    const steps = Object.entries(doc.jobs).flatMap(([job, def]) =>
+      (def.steps ?? []).map((step, i) => ({ ...step, job, index: i, where: `${name} ${job} step ${step.name ?? i}` })),
+    )
+    // Any `*_BASE_REF` wiring, not just the i18n ones: `brand-lint` passes
+    // `BRAND_BASE_REF` and `harness-parity` passes `HARNESS_BASE_REF` through the
+    // same resolver and both need the same guarantees.
+    const wiring = steps.filter((step) =>
+      Object.entries(step.env ?? {}).some(
+        ([key, value]) => key.endsWith('BASE_REF') && String(value).includes('${{'),
+      ),
+    )
+    const resolving = steps
+      .map((step) => ({ step, refs: [...(step.run ?? '').matchAll(RESOLVER)].map((m) => m[1]) }))
+      .filter(({ step }) => (step.run ?? '').includes('resolve-i18n-base.sh'))
+    return { name, steps, wiring, resolving }
   })
 
-  it('still sees a wiring in each workflow it reads', () => {
-    // The count above is the only thing standing between a moved gate and an
-    // unchecked one, and a total can be met while one source contributes zero --
-    // which is exactly what a further split would do. Naming each source keeps
-    // the scan honest instead of merely non-empty.
-    for (const source of wiringsBySource) {
-      expect(source.lines.length, `${source.name} contributed no BASE_REF wiring`)
-        .toBeGreaterThan(0)
+  // The steps that NEED a base, found from what they run rather than from their
+  // wiring: a step that runs a gate script reading `X_BASE_REF` (directly or via
+  // `npm run`) must wire `X_BASE_REF`, or the script falls back to a moving or
+  // empty base and enforces nothing.
+  const repo = resolve(process.cwd(), '..')
+  const npmScripts = (JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf-8'))
+    .scripts ?? {}) as Record<string, string>
+  const refsByScript = ['scripts', '.github/scripts', 'website/scripts'].flatMap((dir) =>
+    readdirSync(resolve(repo, dir))
+      .filter((file) => file !== 'resolve-i18n-base.sh' && statSync(resolve(repo, dir, file)).isFile())
+      .map((file) => ({
+        file,
+        refs: [...new Set(
+          [...readFileSync(resolve(repo, dir, file), 'utf-8').matchAll(/\b([A-Z0-9_]+_BASE_REF)\b/g)]
+            .map((m) => m[1]),
+        )].filter((ref) => ref !== 'GITHUB_BASE_REF'),
+      }))
+      .filter(({ refs }) => refs.length > 0),
+  )
+  const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const requiredRefs = (run: string) => {
+    const text = [
+      run,
+      ...[...run.matchAll(/npm (?:--prefix \S+ )?run(?:-script)? ([\w:.-]+)/g)].map((m) => npmScripts[m[1]] ?? ''),
+    ].join('\n')
+    return [...new Set(
+      refsByScript
+        .filter(({ file }) => new RegExp(`(^|[\\s/"'])${escapeRe(file)}\\b`).test(text))
+        .flatMap(({ refs }) => refs),
+    )]
+  }
+  const consumers = workflowSources.map((source) => ({
+    name: source.name,
+    needs: source.steps
+      // A ref the step's own shell assigns before use (`X_BASE_REF="$BASE_SHA" cmd`)
+      // with no env wiring is computed there, not read from the event.
+      .map((step) => ({
+        step,
+        refs: requiredRefs(step.run ?? '').filter(
+          (ref) => step.env?.[ref] !== undefined || !new RegExp(`\\b${ref}=`).test(step.run ?? ''),
+        ),
+      }))
+      .filter(({ refs }) => refs.length > 0),
+  }))
+
+  it('wires the base ref every gate script a step runs reads', () => {
+    expect(refsByScript.length, 'no gate script reads a *_BASE_REF').toBeGreaterThan(0)
+    for (const { name, needs } of consumers) {
+      expect(needs.length, `${name} runs no script that reads a *_BASE_REF`).toBeGreaterThan(0)
+      const steps = workflowSources.find((source) => source.name === name)!.steps
+      const wired = (step: (typeof steps)[number], ref: string) => String(step.env?.[ref] ?? '').includes('${{')
+      for (const { step, refs } of needs) {
+        for (const ref of refs) {
+          // A wired step earlier in the same job may hand the resolved base on
+          // through `$GITHUB_ENV`.
+          const exported = steps.some((earlier) =>
+            earlier.job === step.job && earlier.index < step.index && wired(earlier, ref)
+            && (earlier.run ?? '').includes('GITHUB_ENV') && (earlier.run ?? '').includes(`${ref}=`))
+          expect(wired(step, ref) || exported, `${step.where} runs a script reading ${ref} but does not wire it`)
+            .toBe(true)
+        }
+      }
+    }
+  })
+
+  it('sees diff-scoped gate steps in each workflow it reads', () => {
+    for (const source of workflowSources) {
+      expect(source.wiring.length, `${source.name} contributed no BASE_REF wiring`).toBeGreaterThan(0)
+      expect(source.resolving.length, `${source.name} contributed no resolver call`).toBeGreaterThan(0)
+    }
+  })
+
+  it('sets the env each resolver call reads, so no gate step runs without a base', () => {
+    for (const { resolving } of workflowSources) {
+      for (const { step, refs } of resolving) {
+        expect(refs.length, `${step.where} calls the resolver without a "$X_BASE_REF" argument`)
+          .toBeGreaterThan(0)
+        for (const ref of refs) {
+          expect(step.env?.[ref], `${step.where} passes $${ref} to the resolver but sets no ${ref} env`)
+            .toBeTypeOf('string')
+        }
+      }
     }
   })
 
@@ -384,27 +443,37 @@ describe('CI supplies a base commit on both paths', () => {
     // billed 58 render findings for `WelcomeView` translations its head did not have.
     // `base.sha` is the commit the merge ref was computed against, so the two sides are
     // consistent by construction.
-    for (const line of wirings) {
-      expect(line).toContain("github.event_name == 'pull_request'")
-      expect(line).toContain('github.event.pull_request.base.sha')
-      expect(line, 'the base branch TIP must not be used — it moves under the run')
-        .not.toContain('base.ref')
-      // A push to `main` has no PR base, so it diffs the commit it replaced.
-      expect(line).toContain('github.event.before')
+    for (const { wiring } of workflowSources) {
+      for (const step of wiring) {
+        for (const [key, raw] of Object.entries(step.env ?? {})) {
+          if (!key.endsWith('BASE_REF')) continue
+          const value = String(raw)
+          const where = `${step.where} ${key}`
+          expect(value, where).toContain("github.event_name == 'pull_request'")
+          expect(value, where).toContain('github.event.pull_request.base.sha')
+          expect(value, where).toContain('github.event.merge_group.base_sha')
+          expect(value, `${where}: the base branch TIP must not be used — it moves under the run`)
+            .not.toContain('base.ref')
+          // A push to `main` has no PR base, so it diffs the commit it replaced.
+          expect(value, where).toContain('github.event.before')
+        }
+      }
     }
   })
 
-  it('routes each step through the shared resolver', () => {
-    // Relative, not a stored total: a step that wires a base ref must also route
-    // through the shared resolver, so the two move together as gates are added
-    // and neither number has to be maintained by hand. Counted PER WORKFLOW, so a
-    // gate wired in one file cannot be paid for by a resolver call in the other.
-    for (const source of wiringsBySource) {
-      const text = workflowSources.find((s) => s.name === source.name)!.text
-      expect(
-        text.match(/resolve-i18n-base\.sh/g) || [],
-        `${source.name} wires ${source.lines.length} base ref(s) but does not route each one`,
-      ).toHaveLength(source.lines.length)
+  it('routes each wired step through the shared resolver', () => {
+    // Checked per step, so a gate wired in one place cannot be paid for by a
+    // resolver call somewhere else, and a raw `git diff "$X_BASE_REF"` that skips
+    // the resolver's missing-commit handling fails here.
+    for (const { wiring, resolving } of workflowSources) {
+      for (const step of wiring) {
+        const passed = resolving.find((r) => r.step === step)?.refs ?? []
+        const wired = Object.keys(step.env ?? {}).filter((k) => k.endsWith('BASE_REF'))
+        for (const key of wired) {
+          expect(passed, `${step.where} sets ${key} but never passes it to resolve-i18n-base.sh`)
+            .toContain(key)
+        }
+      }
     }
   })
 })
@@ -464,9 +533,16 @@ describe('addedFindings — name the findings, not just the number that moved', 
 describe('bucket metadata the log prints', () => {
   it('classifies latent by set membership, not by one hard-coded name', () => {
     expect(LATENT_SIGNATURES.has('ellipsis-with-flex-parent')).toBe(true)
-    // Behaviour must be unchanged today: exactly one member, so no count moves.
-    expect([...LATENT_SIGNATURES]).toEqual(['ellipsis-with-flex-parent'])
+    for (const signature of LATENT_SIGNATURES) {
+      expect(bucketOf({ kind: 'layout', signature }), signature).toBe('latent')
+    }
     expect(bucketOf({ kind: 'layout', signature: 'unbreakable-token' })).toBe('layout')
+  })
+
+  it('exempts only the recorded latent signatures from the layout bucket', () => {
+    // Ratchet: a latent signature is moved out of the layout bucket the render gate
+    // counts, so the set is an exemption list and may only shrink.
+    expect([...LATENT_SIGNATURES]).toEqual(['ellipsis-with-flex-parent'])
   })
 
   it('explains every bucket, so the log can reconcile signatures with counts', () => {

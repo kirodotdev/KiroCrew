@@ -10565,10 +10565,6 @@
     "agentTemplateDetail": {
       "changes_count_one": "{{count}} बदलाव",
       "changes_count_other": "{{count}} बदलाव",
-      "reset_confirm_title": "इस एजेंट को “{{name}}” पर रीसेट करें?",
-      "reset_confirm_body": "तुम्हारे बदलाव — “{{fields}}” — हटा दिए जाएँगे। यह एजेंट “{{name}}” टेम्पलेट को जैसा है वैसा इस्तेमाल करेगा।",
-      "switch_confirm_title": "“{{name}}” पर स्विच करें?",
-      "switch_confirm_body": "“{{origin}}” में तुम्हारे बदलाव (“{{fields}}”) हटा दिए जाएँगे। यह एजेंट “{{name}}” टेम्पलेट को जैसा है वैसा इस्तेमाल करेगा।",
       "discard_and_switch": "बदलाव हटाकर स्विच करें"
     },
     "restartRequiredBadge": {

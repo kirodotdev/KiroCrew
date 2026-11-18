@@ -10565,10 +10565,6 @@
     "agentTemplateDetail": {
       "changes_count_one": "{{count}} Änderung",
       "changes_count_other": "{{count}} Änderungen",
-      "reset_confirm_title": "Diesen Agenten auf „{{name}}“ zurücksetzen?",
-      "reset_confirm_body": "Deine Änderungen — „{{fields}}“ — werden verworfen. Dieser Agent verwendet die Vorlage „{{name}}“ unverändert.",
-      "switch_confirm_title": "Zu „{{name}}“ wechseln?",
-      "switch_confirm_body": "Deine Änderungen an „{{origin}}“ („{{fields}}“) werden verworfen. Dieser Agent verwendet die Vorlage „{{name}}“ unverändert.",
       "discard_and_switch": "Änderungen verwerfen und wechseln"
     },
     "restartRequiredBadge": {
