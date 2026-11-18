@@ -188,7 +188,7 @@ def test_the_pr_slot_is_the_channels_own_pr_and_no_worker_item_reaches_the_bar()
     assert slot == {
         "key": "pr",
         "label": "PR #42 is open · tests passing",
-        "icon": "hierarchy",
+        "icon": "link",
         "url": "https://github.com/acme/widgets/pull/42",
     }
     # Workers alone take no PR slot, and no per-worker item reaches the bar, ever.
@@ -232,7 +232,7 @@ def test_the_workers_label_is_the_boards_tally(rows: list[str], label: str) -> N
     snap = model.BoardSnapshot(rows=tuple(_row(f"it_{n:08x}", s) for n, s in enumerate(rows)))
     assert model.bar_label(snap) == label
     item = build_items(BarState(board=snap, board_url=BOARD_URL))[0]
-    assert item == {"key": "workers", "label": label, "icon": "hierarchy", "url": BOARD_URL}
+    assert item == {"key": "workers", "label": label, "icon": "life-ring", "url": BOARD_URL}
 
 
 def test_the_workers_label_ignores_what_a_worker_last_said() -> None:
@@ -247,6 +247,27 @@ def test_the_workers_item_links_only_once_the_board_permalink_is_known() -> None
 
 
 # ── documented limits: labels, icons ───────────────────────────────────────
+
+
+def test_each_bar_item_has_its_own_pinned_icon() -> None:
+    pr = PullRequest(42, "https://github.com/acme/widgets/pull/42", "open", "passed")
+    able = dict(can_open_pr=True, branch_has_commits=True)
+    full = build_items(
+        _state(pr=pr, board=_three_workers(), board_url=BOARD_URL, stop=True, dashboard_url=DASH)
+    )
+    icons = {i["key"]: i["icon"] for i in full}
+    assert icons == {
+        "workers": "life-ring",
+        "repo": "folder",
+        "branch": "branch",
+        ACTION_STOP: "terminal",
+        "pr": "link",
+    }
+    assert len(full) <= 5 and all(i["icon"] in ICONS for i in full)
+    create = {i["key"]: i for i in build_items(_state(**able))}[ACTION_CREATE_PR]
+    assert create["icon"] == "link"
+    # The PR and the workers never share an icon.
+    assert icons["pr"] != icons["workers"]
 
 
 def test_every_icon_the_bar_can_use_is_one_slack_documents() -> None:
@@ -557,7 +578,7 @@ def test_three_workers_fit_one_bar_linked_to_the_pinned_board(
     link = "https://acme.slack.com/archives/C1/p1001"
     # The board posted this pass is linked: the bar is sent again once it is known.
     assert bar == [
-        {"key": "workers", "label": "2 working · 1 needs you", "icon": "hierarchy", "url": link},
+        {"key": "workers", "label": "2 working · 1 needs you", "icon": "life-ring", "url": link},
         {
             "key": "repo",
             "label": "acme/widgets",

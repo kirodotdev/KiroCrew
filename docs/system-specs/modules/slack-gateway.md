@@ -2677,7 +2677,10 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   all, `pr_capability` holds and the branch has commits past the Code tab's own base
   (`_fork_point`). Each worker's PR is on the board. That is five at most; the agent's items and then **Open in
   dashboard** (a `session_deep_link`, never a click token; only an https one) take only
-  a slot left free. A bar is not resent when it matches the last send that landed
+  a slot left free. Icons: **Workers** `life-ring`, **Stop** `terminal`, the PR item
+  and **Create PR** `link`, repo `folder`, branch `branch`, dashboard `link`; the PR,
+  Create PR and Workers icons are `context_bar.py` constants. A bar is not resent
+  when it matches the last send that landed
   (kept in memory per channel, whichever publisher sent it, and stored as `bar_hash`). The agent may not use any of those keys (`agent_bar.reserved`), and its
   tool reports what the last built bar actually shows (`published_keys`). An action item
   never carries a `url` (Slack would save it as info), and `set_context_bar` refuses
