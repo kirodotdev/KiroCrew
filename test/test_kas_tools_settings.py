@@ -8,6 +8,9 @@ names only what the translation cannot carry.
 
 from __future__ import annotations
 
+import os
+import sys
+
 import pytest
 
 from kiro_crew.acp import kas_agents
@@ -432,3 +435,73 @@ def test_fail_closed_is_read_from_the_agent_config(tmp_path, _floor_monkeypatch,
     agent = {} if stored is None else {"kas_fail_closed_web_fetch_blocked": stored}
     (tmp_path / "config.json").write_text(json.dumps({"agent": agent}), encoding="utf-8")
     assert fails_closed_on_uncarried_blocked() is on
+
+
+_FLAG_ON = '{"agent": {"kas_fail_closed_web_fetch_blocked": true}}'
+
+
+@pytest.mark.parametrize(
+    ("text", "on"),
+    [
+        # Nothing to say the owner turned it on: off, as before.
+        (None, False),
+        ("{}", False),
+        ('{"agent": {"kas_fail_closed_web_fetch_blocked": false}}', False),
+        ('{"memory": 5}', False),
+        ('{"memory": 5, "agent": {"kas_fail_closed_web_fetch_blocked": true}}', True),
+        # The read cannot say what the owner chose: the fence stays on.
+        (_FLAG_ON[:30], True),
+        ('{"agent": "oops"}', True),
+    ],
+    ids=[
+        "absent",
+        "empty",
+        "false",
+        "other-section-bad",
+        "other-section-bad-on",
+        "torn",
+        "agent-bad",
+    ],
+)
+def test_fail_closed_stays_on_when_the_config_cannot_be_read(
+    tmp_path, _floor_monkeypatch, text, on
+):
+    """A broken config never drops the owner's choice; a fresh install stays off."""
+    from kiro_crew.acp.kas_unread_commands import fails_closed_on_uncarried_blocked
+
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    if text is not None:
+        (tmp_path / "config.json").write_text(text, encoding="utf-8")
+    assert fails_closed_on_uncarried_blocked() is on
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs a POSIX mode bit the user cannot read past",
+)
+def test_fail_closed_stays_on_when_the_config_is_unreadable(tmp_path, _floor_monkeypatch):
+    from kiro_crew.acp.kas_unread_commands import fails_closed_on_uncarried_blocked
+
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    path = tmp_path / "config.json"
+    path.write_text(_FLAG_ON, encoding="utf-8")
+    path.chmod(0)
+    try:
+        assert fails_closed_on_uncarried_blocked() is True
+    finally:
+        path.chmod(0o600)
+
+
+def test_fail_closed_reads_the_gateways_last_applied_config(tmp_path, _floor_monkeypatch):
+    """The live snapshot wins over a torn file on disk, so a bad write does not flip it."""
+    from kiro_crew.acp.kas_unread_commands import fails_closed_on_uncarried_blocked
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    path = tmp_path / "config.json"
+    path.write_text('{"agent": {"kas_fail_closed_web_fetch_blocked": false}}', encoding="utf-8")
+    applied = KiroCrewConfig.load()
+    path.write_text(_FLAG_ON[:30], encoding="utf-8")
+    _floor_monkeypatch.setattr(live, "snapshot", lambda: applied)
+    assert fails_closed_on_uncarried_blocked() is False
