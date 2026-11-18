@@ -346,8 +346,10 @@ def _home_refusals() -> list[str]:
             or entry.pw_dir in ("", "/", me.pw_dir)
         ):
             continue
-        if entry.pw_shell.endswith(("nologin", "false")):
-            continue  # a service account, not a person who could hold credentials
+        if os.path.basename(entry.pw_shell) in ("nologin", "false", "true"):
+            # A service account (nologin, false or true as its shell), not a
+            # person who could log in and hold credentials.
+            continue
         try:
             os.listdir(entry.pw_dir)
         except OSError:
