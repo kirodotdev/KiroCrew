@@ -490,6 +490,8 @@ ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 # object its MCP client sends. opencode stays out: its ask carries ``rawInput`` ``{}``
 # and the arguments arrive only after the answer
 # (``acp_frames/opencode/crew-oauth-bridge-args-live.jsonl``), so no approval binds them.
+# Its remote servers stay loaded; one that asks for a sign-in is named by Crew's own
+# credential-free probe (``acp/mcp_sign_in_probe.py``).
 # Captured live: kas ``acp_frames/kas/mcp-live-apply-live.jsonl`` (``_meta.kiro.mcpTool``
 # on the request), claude ``acp_frames/claude/mcp-stdio-mount-live.jsonl`` (the placed
 # server on ``_meta.claudeCode.mcpServer``), goose

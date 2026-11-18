@@ -89,6 +89,7 @@ class TestBuckets:
             "failures": {},
             "restart_to_load": [],
             "reload_pending": [],
+            "sign_in_suspected": [],
         }
 
     def test_failure_records_its_reason(self):
@@ -127,6 +128,7 @@ class TestBuckets:
             "failures": {},
             "restart_to_load": [],
             "reload_pending": [],
+            "sign_in_suspected": [],
         }
 
     def test_initialized_then_failure_moves_to_failed(self):
