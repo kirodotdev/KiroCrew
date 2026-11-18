@@ -7,6 +7,7 @@ once the listener serves.
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -48,6 +49,12 @@ def _register_config_watch(
     if initial is not None:
         model_registry.apply_operator_windows(initial.agent.model_context_tokens)
     live.bind("agent.model_context_tokens", model_registry.apply_operator_windows)
+
+    from kiro_crew.notifications import config_syntax_note
+
+    # A save that leaves a config file unparseable keeps the settings in force; the
+    # bell says so, and where the file breaks, until a later save parses.
+    live.watch().tear_reporter = functools.partial(config_syntax_note.publish_tear, state)
 
     async def _switch_provider(cfg: KiroCrewConfig) -> None:
         # Refresh agent artifacts so the target provider is immediately usable.

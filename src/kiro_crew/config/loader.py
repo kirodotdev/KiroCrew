@@ -908,6 +908,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _refuse_deepseek_env_plaintext,
         _refuse_unpublishable,
         _refuse_vault_env_plaintext,
+        _replace_keeping_unreadable,
         _shadowed_base_sections,
         _store_validated_data,
         _stored_agent_value,

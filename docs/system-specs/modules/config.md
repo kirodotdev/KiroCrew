@@ -1281,7 +1281,14 @@ whole-document `KiroCrewConfig.save()` refuses to publish a snapshot of a file
 it could not read (see its API entry). Two explicit, user-invoked paths replace
 the document instead: `kirocrew config set --file` installs the given file
 whole (under the same lock, with `on_corrupt="reset"`, so it also overwrites an
-unreadable file), and the dashboard import's **Replace** installs the archive's
+unreadable file; the reset keeps the unreadable bytes in `<file>.unreadable`,
+owner-only because the file can hold inline credentials and replaced by each later
+reset that lands. They are staged beside it and take that name only after the new
+document is written, so a write the publish floor refuses leaves the earlier copy
+alone and logs nothing; a landed reset logs a WARNING naming the file, the parse
+error and the copy, and bytes that cannot be read or staged refuse with the
+`ConfigReadError`, which the three CLI writers print as `Error: …` with nothing written —
+`.bak` stays the migration's copy of a valid file), and the dashboard import's **Replace** installs the archive's
 `config.json`. `--file --local` installs the given file as the overlay
 (`config.local.json`), not the base, and is not meta-stamped; like a base
 `--file` write it refuses a new or changed workspace `dir` that is not an existing
@@ -3322,7 +3329,30 @@ applier and no `current()` reader ever sees the all-defaults document the
 loader answers for an unparseable file (a forum activation of `always`, an
 empty allow-list, for the length of the tear). Once the file parses again the
 load is adopted as it is, still flagged, and a repair to new values diffs and
-dispatches them. A load that *succeeds degraded* with the file parseable (a
+dispatches them. The person who saved the torn file is told: the WARNING names
+each torn file with the parser's line and column, and the watcher hands the same
+sentences to `ConfigWatch.tear_reporter`, which the gateway points at
+`notifications/config_syntax_note.publish_tear`. The position sentence is
+`syntax_report.position_sentence`, the one the start report uses, and the note is
+the start report's slot: the one critical `system.agent` bell note keyed
+`config-syntax-error`, here saying the settings it has loaded stay and the
+saved edit is not applied. The fingerprint is recorded after a torn read, so the
+report runs once per distinct save; the same error saved again rings nothing new,
+a different one replaces the note, and a read adopted whole removes it. Every
+read adopted whole reports, and the report settles the note from the files on disk,
+not from the copy the loader served: where the sandbox holds a hand edit for review
+the endorsed copy parses while the saved file does not, so the note stays (or rings
+for a new error, in the start report's words) until the files on disk parse. That
+also removes a note stored before a restart when the file was repaired while no
+gateway ran. A report whose bell change
+is not stored raises, stays unsent, and is retried on every tick, unchanged ones
+included. A gateway that booted on a torn file runs on defaults, not on earlier
+settings: the reporter is told so, and rings the start report's note, built from the
+files on disk (a body already stored is not rung again, a different error replaces
+it), and the watcher's own sentences only for what the start report does not name (a
+file that is not a JSON object, or cannot be read). A read adopted whole removes the
+note. No text from the file is quoted, and the file is never touched. A
+load that *succeeds degraded* with the file parseable (a
 section the loader itself discarded, named in `degraded_sections`) does
 dispatch: the watcher does not refuse on the applier's behalf, because whether
 a default is safe is a property of the consumer. A fail-closed applier — every

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -184,3 +185,25 @@ def test_file_with_local_judges_each_workspace_on_its_own(home, capsys):
     assert "'proj'" in captured.err
     written = json.loads((home / "config.local.json").read_text(encoding="utf-8"))
     assert written["workspaces"] == {"keep": {"dir": gone}, "proj": {"dir": also_gone}}
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="needs a file the user cannot read",
+)
+def test_file_over_an_overlay_that_cannot_be_read_says_so_and_writes_nothing(home, capsys):
+    overlay = home / "config.local.json"
+    overlay.write_text('{"agent": {"provider": "kas"', encoding="utf-8")
+    overlay.chmod(0o000)
+    src = home / "new.json"
+    src.write_text(json.dumps({"agent": {"provider": "acp"}}), encoding="utf-8")
+    try:
+        with pytest.raises(SystemExit) as raised:
+            _run(home, _args(file=str(src), local=True))
+        overlay.chmod(0o600)
+        assert overlay.read_text(encoding="utf-8") == '{"agent": {"provider": "kas"'
+    finally:
+        overlay.chmod(0o600)
+    assert raised.value.code == 1
+    assert capsys.readouterr().err.startswith("Error: ")
+    assert not list(home.glob("config.local.json.unreadable*"))

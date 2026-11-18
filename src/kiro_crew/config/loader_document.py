@@ -13,6 +13,7 @@ import hashlib as _hashlib
 import json
 import logging
 import os
+import secrets
 import stat as _stat
 import sys
 from collections.abc import Callable, Iterator
@@ -1029,19 +1030,23 @@ def update_config_locked(
     except OSError:
         pass
     with _config_write_lock(p, wait=wait_for_lock):
+        unreadable: ConfigReadError | None = None
         try:
             data = read_config_for_update(p)
-        except ConfigReadError:
+        except ConfigReadError as e:
             if on_corrupt == "fail":
                 raise
             # on_corrupt="reset": treat as empty inside the same lock hold.
-            data = {}
+            unreadable, data = e, {}
         result = mutate(data)
         if result is None:
             return data
         if stamp_meta:
             result = stamp_config_meta(result)
-        write_config_atomically(p, result, fsync=fsync, resolving_pending=resolving_pending)
+        if unreadable is None:
+            write_config_atomically(p, result, fsync=fsync, resolving_pending=resolving_pending)
+        else:
+            _replace_keeping_unreadable(p, result, unreadable, fsync, resolving_pending)
         # A same-size replacement can retain an indistinguishable fingerprint
         # on a coarse-timestamp filesystem. Clear eagerly before reporting the
         # write complete so the next load cannot serve the pre-write snapshot,
@@ -1052,6 +1057,44 @@ def update_config_locked(
         if after_write is not None:
             after_write()
         return result
+
+
+def _replace_keeping_unreadable(
+    p: Path, result: dict, error: ConfigReadError, fsync: bool, resolving_pending: bool
+) -> None:
+    """Write *result* over the unreadable *p*, keeping its bytes in ``<p>.unreadable``.
+
+    ``.bak`` is the migration's copy of a valid file, so this copy takes its own
+    name, and it is owner-only before any byte lands: the file can hold inline
+    credentials. The bytes are staged beside it first and take the name only once
+    the write has landed, so a write the publish floor refuses leaves the earlier
+    copy as it was. A copy that cannot be staged refuses the reset rather than lose
+    the only bytes there are.
+    """
+    kept = p.with_name(p.name + ".unreadable")
+    # A name of its own per attempt: a copy an earlier reset left under its staged
+    # name (the rename failed) is the only bytes it saved, and this one must not
+    # overwrite it or, if the write is refused, delete it.
+    staged = p.with_name(f"{p.name}.unreadable.{secrets.token_hex(4)}.staged")
+    try:
+        # Read as the loader reads, so a FIFO or device is refused, not waited on
+        # while the config write lock is held.
+        unreadable_bytes = loosening_provenance.read_regular_with_retry(p)
+        atomic_write(staged, unreadable_bytes, restrict_to_owner=True)
+    except OSError as copy_error:
+        raise error from copy_error
+    try:
+        write_config_atomically(p, result, fsync=fsync, resolving_pending=resolving_pending)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            staged.unlink()
+        raise
+    try:
+        os.replace(staged, kept)
+    except OSError:
+        # The bytes are safe under the staged name; say where they are.
+        kept = staged
+    logger.warning("%s; replaced it and kept its previous bytes in %s", error, kept)
 
 
 def _notify_live_watch() -> None:
