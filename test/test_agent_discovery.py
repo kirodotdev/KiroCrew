@@ -927,6 +927,47 @@ class TestListAgentsDedup:
         assert len(warnings) == 1
         assert "'atlas.json'" in warnings[0] and "'atlas_v2.json'" in warnings[0]
 
+    @pytest.mark.parametrize(
+        ("filename", "declared"),
+        [("my_atlas.json", "atlas"), ("myreviewer.json", "reviewer")],
+    )
+    def test_stem_merely_ending_with_name_is_not_a_package(
+        self, tmp_path: Path, filename: str, declared: str
+    ) -> None:
+        """Only ``{package}-{name}`` marks a package agent; a stem that just
+        ends with the declared name is the user's own plain file."""
+        clear_list_agents_cache()
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / filename).write_text(
+            json.dumps({"name": declared, "model": "auto"}), encoding="utf-8"
+        )
+        [row] = [a for a in list_agents(agents_dir=agents_dir) if a.name == declared]
+        assert (row.filename, row.source, row.package) == (filename, "builtin", "")
+
+    def test_suffix_lookalike_does_not_displace_the_plain_file(self, tmp_path: Path) -> None:
+        """``my_atlas.json`` declaring ``atlas`` must not win dedup over the
+        real ``atlas.json`` by posing as a packaged row."""
+        clear_list_agents_cache()
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        for filename in ("atlas.json", "my_atlas.json"):
+            (agents_dir / filename).write_text(
+                json.dumps({"name": "atlas", "model": "auto"}), encoding="utf-8"
+            )
+        rows = [a for a in list_agents(agents_dir=agents_dir) if a.name == "atlas"]
+        assert [(a.filename, a.source) for a in rows] == [("atlas.json", "builtin")]
+
+    def test_dash_separated_stem_is_still_a_package(self, tmp_path: Path) -> None:
+        clear_list_agents_cache()
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "my-atlas.json").write_text(
+            json.dumps({"name": "atlas", "model": "auto"}), encoding="utf-8"
+        )
+        [row] = [a for a in list_agents(agents_dir=agents_dir) if a.name == "atlas"]
+        assert (row.source, row.package) == ("package", "my")
+
     def test_plain_file_duplicate_warning_escapes_the_declared_name(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
