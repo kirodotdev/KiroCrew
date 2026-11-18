@@ -41,6 +41,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # it with its own strict sandbox; Claude Code's containment is the
         # dedicated eval OS user the preflight requires (RFC §4.1, §4.2, §11).
         "eval/tasks.py::drive_arm",
+        # `--use-operator-credentials` preflight (RFC §4.3): `kiro-cli whoami` or
+        # `claude -p "say ok"`, fixed argv, the operator's own env by their explicit
+        # choice, stdin DEVNULL, a time limit. Runs before any case or agent exists.
+        "eval/arms.py::_probe",
         # The case's hidden check (`python <suite>/hidden/check.py <origin>`).
         # Not routed on purpose: the check's child process imports the code the
         # agent pushed, by design, so a strict-sandbox route is a recorded

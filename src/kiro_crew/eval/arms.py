@@ -20,8 +20,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any
+
+from kiro_crew import platform_compat
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 #: What a Crew headless ``--json`` status means for the scorer (§12.5): a status
 #: here is VOID (the harness could not run the task), every other one is scored.
@@ -65,6 +69,9 @@ class Arm:
     needs_gateway = False
     #: Env variables passed through to the arm (its eval-only sign-in, §4.3).
     env_keys: tuple[str, ...] = ()
+    #: ``--use-operator-credentials`` (§4.3): run as the operator, with their own env,
+    #: ``HOME`` and existing sign-ins, instead of inside the eval-user fence.
+    operator_credentials = False
     cost_unit = ""
 
     def unavailable(self) -> str:
@@ -73,6 +80,10 @@ class Arm:
 
     def missing_credential(self, env: dict[str, str]) -> str:
         """Why the eval sign-in this arm needs is absent from *env*, or ""."""
+        return ""
+
+    def operator_check(self, env: dict[str, str]) -> str:
+        """With ``--use-operator-credentials``: why the operator's own sign-in fails, or ""."""
         return ""
 
     def argv(self, seed: str, repo: str, caps: Caps, model: str, tools: list[str]) -> list[str]:
@@ -91,6 +102,16 @@ class CrewChatArm(Arm):
 
     def missing_credential(self, env: dict[str, str]) -> str:
         return "" if env.get("KIRO_API_KEY") else "KIRO_API_KEY is not set (an eval-only key, §4.3)"
+
+    def operator_check(self, env: dict[str, str]) -> str:
+        import tempfile
+
+        found = operator_kiro_cli(env)
+        if not found:
+            return "kiro-cli is not installed"
+        # With a fresh KIRO_HOME, as each run gets: proves the sign-in the runs will see.
+        with tempfile.TemporaryDirectory() as kiro_home:
+            return _probe([found], ["whoami"], {**env, "KIRO_HOME": kiro_home})
 
     def argv(self, seed: str, repo: str, caps: Caps, model: str, tools: list[str]) -> list[str]:
         from kiro_crew.platform_compat import isolated_python_argv
@@ -136,12 +157,22 @@ class ClaudeCodeArm(Arm):
     cost_unit = "usd"
 
     def binary(self) -> str:
-        """``claude`` by its real path: a PATH shim may not work under the run's HOME."""
+        """``claude`` by its real path: a PATH shim may not work under the run's HOME.
+
+        Under the operator's own ``HOME`` (``--use-operator-credentials``) the shim
+        works, so it is kept as found.
+        """
         found = shutil.which("claude")
-        return os.path.realpath(found) if found else ""
+        if not found:
+            return ""
+        # Absolute either way: the arm starts in the task repo, not the caller's directory.
+        return os.path.abspath(found) if self.operator_credentials else os.path.realpath(found)
 
     def unavailable(self) -> str:
         return "" if self.binary() else "claude is not on PATH"
+
+    def operator_check(self, env: dict[str, str]) -> str:
+        return _probe([self.binary()], ["-p", "say ok"], env)
 
     def missing_credential(self, env: dict[str, str]) -> str:
         if env.get("ANTHROPIC_API_KEY"):
@@ -227,6 +258,63 @@ ARMS: dict[str, Arm] = {
         NotBuiltArm("codex"),
     )
 }
+
+
+def operator_kiro_cli(env: dict[str, str]) -> str | None:
+    """The kiro-cli a gateway session would run, as an absolute path (symlinks kept).
+
+    One answer for the ``--use-operator-credentials`` preflight ``whoami`` and the
+    runs' pinned ``KIROCREW_KIRO_BIN``, which start in other directories.
+    """
+    from kiro_crew.kiro_cli import resolve_kiro_cli
+
+    found = resolve_kiro_cli(environ=env)
+    return os.path.abspath(found) if found else None
+
+
+#: Seconds a ``--use-operator-credentials`` sign-in probe may take.
+_PROBE_TIMEOUT_S = 120.0
+
+
+def _probe(cmd: list[str], args: list[str], env: dict[str, str]) -> str:
+    """Run a fixed sign-in probe in the operator's env; "" on exit 0, else why not."""
+    shown = " ".join([os.path.basename(cmd[0]), *(f'"{a}"' if " " in a else a for a in args)])
+    try:
+        # Its own process group, killed whole on every exit: a wrapper that forks the
+        # real CLI must not leave it running with the operator's sign-in.
+        proc = subprocess.Popen(
+            [*cmd, *args],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            **UTF8_TEXT,
+        )
+    except OSError as exc:
+        return f"`{shown}` could not run: {exc}"
+    try:
+        # kiro-cli whoami may refresh a token; claude -p calls the model.
+        out, err = proc.communicate(timeout=_PROBE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return f"`{shown}` did not answer within {_PROBE_TIMEOUT_S:g} s"
+    finally:
+        try:
+            platform_compat.kill_process_group(proc.pid, platform_compat.SIGKILL)
+        except (OSError, ValueError):
+            pass  # the group is already gone
+        # Bounded reap, pipes closed: a child that left the group may still hold them.
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
+    if proc.returncode != 0:
+        tail = (err or out).strip().splitlines()[-1:] or [""]
+        return f"`{shown}` failed (exit {proc.returncode}): {tail[0][:200]}"
+    return ""
 
 
 def _json_line(line: str) -> dict[str, Any] | None:

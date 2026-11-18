@@ -384,7 +384,17 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
 
 #: Flags that only mean something after ``kirocrew eval run`` (dest names).
-_EVAL_RUN_ONLY = ("suite", "tier", "harness", "case_ids", "eval_home", "out", "json", "check")
+_EVAL_RUN_ONLY = (
+    "suite",
+    "tier",
+    "harness",
+    "case_ids",
+    "eval_home",
+    "out",
+    "json",
+    "check",
+    "use_operator_credentials",
+)
 #: Scenario flags ``kirocrew eval run`` does not take (dest names).
 _SCENARIO_ONLY = (
     "all_scenarios",
@@ -450,9 +460,17 @@ def _run_eval_tasks(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(safe_terminal_line(f"Error: {exc}"), file=sys.stderr)
         return 2
+    operator = bool(getattr(args, "use_operator_credentials", False))
+    if operator:
+        import copy
+
+        arms = [copy.copy(arm) for arm in arms]  # never the shared ARMS instances
+        for arm in arms:
+            arm.operator_credentials = True
+        print(safe_terminal_line(tasks.OPERATOR_RISK_LINE), file=sys.stderr)
     if not args.eval_home:
         print(
-            "Error: --suite tasks needs --eval-home DIR; task arms never run in your own home.",
+            "Error: --suite tasks needs --eval-home DIR; each run gets a fresh home under it.",
             file=sys.stderr,
         )
         return 2
@@ -484,6 +502,7 @@ def _run_eval_tasks(args: argparse.Namespace) -> int:
     summary: dict[str, object] = {
         "timestamp": ts,
         "suite": "tasks",
+        "credentials": tasks.OPERATOR_RISK_LINE if operator else "eval-only",
         "summary": rows,
         "runs": records,
     }

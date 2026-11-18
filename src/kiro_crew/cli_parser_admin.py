@@ -258,6 +258,12 @@ Examples:
     run.add_argument("--out", metavar="DIR", help="Results directory (default: ./eval_results)")
     run.add_argument("--json", action="store_true", help="Print the summary as one JSON object")
     run.add_argument(
+        "--use-operator-credentials",
+        dest="use_operator_credentials",
+        action="store_true",
+        help="Run every arm as you, with your own kiro-cli and Claude Code sign-ins (risky)",
+    )
+    run.add_argument(
         "--check",
         action="store_true",
         help="No model: check each case fails on its base and passes on its reference",
