@@ -137,6 +137,26 @@ def test_preflight_refuses_credential_dirs_and_a_readable_person_home(monkeypatc
     ]
 
 
+def test_preflight_skips_a_true_shell_service_account_but_not_a_real_shell(monkeypatch, tmp_path):
+    mine, home = tmp_path / "eval", tmp_path / "svc"
+    mine.mkdir()
+    home.mkdir()
+    _fake_users(
+        monkeypatch,
+        _pw("eval", 4000, mine),
+        [
+            _pw("snitch", 43318, home, "/bin/true"),
+            _pw("usr-true", 43319, home, "/usr/bin/true"),
+            _pw("untrue", 43320, home, "/usr/bin/untrue"),  # basename, not a substring
+            _pw("carol", 43321, home, "/bin/zsh"),
+        ],
+    )
+    assert tasks.preflight([], {}) == [
+        f"untrue's home {home} is readable by the eval user",
+        f"carol's home {home} is readable by the eval user",
+    ]
+
+
 def test_preflight_passes_a_clean_eval_user(monkeypatch, tmp_path):
     (tmp_path / "eval").mkdir()
     _fake_users(
