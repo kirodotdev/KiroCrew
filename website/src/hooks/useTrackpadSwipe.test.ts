@@ -11,6 +11,7 @@ import {
   relayedWheelTime, FRAME_WHEEL_MAX_AGE_MS, FINGER_HOLD_MAX_MS,
   type TrackpadSwipeDir, type WheelSample, type WheelVerdict,
 } from './useTrackpadSwipe'
+import { fingerSign } from '../lib/trackpadGesture'
 
 /** A run of `n` wheel events 16ms apart, starting at `at`. */
 function run(dx: number, dy: number, n: number, at: number, extra: Partial<WheelSample> = {}): WheelSample[] {
@@ -668,6 +669,108 @@ describe('relayedWheelTime', () => {
   })
   it('never reads a time past now, though two origins may differ by a fraction of a ms', () => {
     expect(relayedWheelTime(epoch(now + 0.5), 4999, now)).toBe(now)
+  })
+})
+
+describe('fingerSign', () => {
+  it("reads the event's WebKit flag first, then the shell's, and defaults to Natural scrolling on", () => {
+    expect(fingerSign(true, false)).toBe(1)
+    expect(fingerSign(false, true)).toBe(-1)
+    expect(fingerSign(undefined, false)).toBe(-1)
+    expect(fingerSign(undefined, true)).toBe(1)
+    expect(fingerSign(undefined, null)).toBe(1)
+    expect(fingerSign('false', null)).toBe(1)
+  })
+})
+
+describe('useTrackpadSwipe: macOS Natural scrolling off', () => {
+  afterEach(() => {
+    delete (window as Window & { electronAPI?: unknown }).electronAPI
+    document.documentElement.style.overscrollBehaviorX = ''
+    document.body.replaceChildren()
+  })
+
+  function mount(acceptFrame?: (f: HTMLIFrameElement) => boolean) {
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const onDragStart = vi.fn()
+    const onDragMove = vi.fn()
+    const wants = vi.fn(() => true)
+    renderHook(() => useTrackpadSwipe({ current: root }, {
+      enabled: true, wants, onDragStart, onDragMove, onDragEnd: () => {}, onSwipe: () => {}, acceptFrame,
+    }))
+    let at = 0
+    /** `n` wheels 16ms apart over `target`; `inverted` is WebKit's flag. */
+    const swipe = (dx: number, n: number, inverted?: boolean, target: Element = root) => {
+      at += 1000
+      for (let i = 0; i < n; i++) {
+        const ev = new WheelEvent('wheel', { deltaX: dx, deltaY: 0, bubbles: true, cancelable: true })
+        Object.defineProperty(ev, 'timeStamp', { value: (at += 16) })
+        if (inverted !== undefined) Object.defineProperty(ev, 'webkitDirectionInvertedFromDevice', { value: inverted })
+        target.dispatchEvent(ev)
+      }
+    }
+    return { root, swipe, wants, onDragStart, onDragMove }
+  }
+
+  it("follows the fingers when the event's WebKit flag says Natural scrolling is off", () => {
+    const { swipe, onDragStart, onDragMove } = mount()
+    // Fingers moving left report a NEGATIVE deltaX with Natural scrolling off.
+    swipe(-20, 3, false)
+    expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+    expect(onDragMove.mock.calls.map(([sum]) => sum)).toEqual([20, 40, 60])
+    onDragStart.mockClear()
+    swipe(20, 3, false)
+    expect(onDragStart).toHaveBeenLastCalledWith('right', undefined)
+  })
+
+  it("follows the desktop shell's report when the event does not say, and the event's flag wins over it", () => {
+    ;(window as Window & { electronAPI?: unknown }).electronAPI = { getNaturalScrolling: () => false }
+    const { swipe, onDragStart } = mount()
+    swipe(-20, 3)
+    expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+    swipe(-20, 3, true)
+    expect(onDragStart).toHaveBeenLastCalledWith('right', undefined)
+  })
+
+  it('with Natural scrolling on or unknown, reads deltaX as before', () => {
+    const { swipe, onDragStart } = mount()
+    swipe(20, 3)
+    expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+    swipe(20, 3, true)
+    expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+  })
+
+  it('asks a sideways scroller about the raw deltaX: the way the browser will scroll it', () => {
+    const { root, swipe, onDragStart } = mount()
+    // At its left edge: it can scroll only toward a positive deltaX.
+    const scroller = document.createElement('div')
+    scroller.style.overflowX = 'auto'
+    Object.defineProperty(scroller, 'scrollWidth', { value: 800 })
+    Object.defineProperty(scroller, 'clientWidth', { value: 300 })
+    Object.defineProperty(scroller, 'scrollLeft', { value: 0 })
+    root.appendChild(scroller)
+    // Natural off, fingers right: deltaX > 0 scrolls it, so the run is its own.
+    swipe(20, 3, false, scroller)
+    expect(onDragStart).not.toHaveBeenCalled()
+    // Fingers left: deltaX < 0, no room that way, so the page takes the swipe.
+    swipe(-20, 3, false, scroller)
+    expect(onDragStart).toHaveBeenLastCalledWith('left', undefined)
+  })
+
+  it("reads a frame's relayed wheel with the frame's own flag", () => {
+    const { root, wants } = mount(() => true)
+    const frame = document.createElement('iframe')
+    // The test DOM gives every frame a null `contentWindow`: stand one in.
+    Object.defineProperty(frame, 'contentWindow', { value: { postMessage: () => {} } })
+    root.appendChild(frame)
+    const post = (dx: number, inv: unknown) => {
+      const ev = new MessageEvent('message', { data: { type: 'mc-frame-wheel', dx, dy: 0, mode: 0, inv } })
+      Object.defineProperty(ev, 'source', { value: frame.contentWindow })
+      window.dispatchEvent(ev)
+    }
+    post(20, false)
+    expect(wants).toHaveBeenLastCalledWith('right', true)
   })
 })
 

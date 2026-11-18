@@ -48,9 +48,14 @@
  * and, if it was a clear horizontal swipe past {@link SWIPE_THRESHOLD_PX},
  * `onSwipe(dir)` fires once when it ends.
  *
- * Directions name the FINGERS: `left` is a swipe toward the left, which a
- * trackpad reports as a positive `deltaX` (the content moves right to left,
- * the way a drag on a phone reveals a panel anchored on the right).
+ * Directions name the FINGERS: `left` is a swipe toward the left (the content
+ * moves right to left, the way a drag on a phone reveals a panel anchored on
+ * the right). `deltaX` is the scroll, not the fingers: with macOS Natural
+ * scrolling on (the default) fingers moving left report a positive `deltaX`,
+ * and with it off a negative one. Every sample is turned into finger travel
+ * where it enters the reader (lib/trackpadGesture `fingerSign`), so the reader,
+ * `onDragMove`'s sum and the pages only ever see the fingers. Whether content
+ * under the pointer can still scroll is asked with the raw `deltaX`.
  *
  * A frame inside the root swallows the wheel while the pointer is over it.
  * A frame built with `relayWheel` (lib/widgetSrcdoc) posts its unowned
@@ -60,8 +65,8 @@
  */
 import { useEffect, useRef, type RefObject } from 'react'
 import { WHEEL_LINE_PX } from './useWheelToHorizontal'
-import { hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackpadGesture'
-import { subscribeScrollTouch } from '../lib/scrollTouch'
+import { fingerSign, hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackpadGesture'
+import { shellNaturalScrolling, subscribeScrollTouch } from '../lib/scrollTouch'
 import { isModalLayer } from './modalLayer'
 
 export type TrackpadSwipeDir = 'left' | 'right'
@@ -670,7 +675,9 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // slow frame arrive in a burst, and handling time would read that frame
       // as a gap in the fingers and end the drag under them.
       const when = e.timeStamp > 0 ? e.timeStamp : performance.now()
-      const sample = { dx: e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, owned, at: when }
+      // The reader reads the fingers: undo Natural scrolling's sign here.
+      const sign = fingerSign((e as WheelEvent & { webkitDirectionInvertedFromDevice?: unknown }).webkitDirectionInvertedFromDevice, shellNaturalScrolling())
+      const sample = { dx: sign * e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, owned, at: when }
       if (run(sample)) e.preventDefault()
     }
     /** Tell a relaying frame whether this host is listening. A frame that is
@@ -679,9 +686,11 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
     const arm = (frame: HTMLIFrameElement, on: boolean) => {
       try {
         // '*' because the frame is a sandboxed srcdoc document we built, with an
-        // opaque origin no target string can name; the payload is one boolean.
+        // opaque origin no target string can name; the payload is two booleans.
+        // `natural`: the shell's Natural scrolling, so the frame can tell which
+        // way the fingers moved when its own wheel does not say.
         // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-        frame.contentWindow?.postMessage({ type: FRAME_WHEEL_ARMED, on }, '*')
+        frame.contentWindow?.postMessage({ type: FRAME_WHEEL_ARMED, on, natural: shellNaturalScrolling() }, '*')
       } catch { /* gone */ }
     }
     /** Only frames whose document carries the relay (`data-wheel-relay`, set
@@ -690,7 +699,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
     const frames = () => Array.from(root.querySelectorAll<HTMLIFrameElement>('iframe[data-wheel-relay]'))
     if (optsRef.current.acceptFrame) for (const f of frames()) arm(f, true)
     const onMessage = (event: MessageEvent) => {
-      const d = event.data as { type?: unknown; dx?: unknown; dy?: unknown; mode?: unknown; t?: unknown } | null
+      const d = event.data as { type?: unknown; dx?: unknown; dy?: unknown; mode?: unknown; t?: unknown; inv?: unknown } | null
       if (!d || (d.type !== FRAME_WHEEL_MESSAGE && d.type !== FRAME_WHEEL_HELLO)) return
       // A message with no source window names no frame, and must never match a
       // frame whose own window is not there yet.
@@ -709,7 +718,9 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       const mode = d.mode === 1 || d.mode === 2 ? d.mode : 0
       // The frame posts only wheels its own content does not own. The wheel's
       // own time, not the message's: it decides run gaps and the release speed.
-      run({ dx: d.dx, dy: d.dy, mode, ctrl: false, owned: false, at: relayedWheelTime(d.t, event.timeStamp), fromFrame: true })
+      // `inv` is the frame's own wheel's webkitDirectionInvertedFromDevice.
+      const sign = fingerSign(d.inv, shellNaturalScrolling())
+      run({ dx: sign * d.dx, dy: d.dy, mode, ctrl: false, owned: false, at: relayedWheelTime(d.t, event.timeStamp), fromFrame: true })
     }
     let liftFrame: number | undefined
     let pendingLift: (() => void) | undefined

@@ -9,6 +9,22 @@
  *  swipe over the frame would never reach the page. */
 export const SWIPE_GESTURE_IDLE_MS = 100
 
+/** What turns a wheel's `deltaX` into the fingers' travel: `1` when a positive
+ *  `deltaX` is the fingers moving left, `-1` when it is the fingers moving
+ *  right. `deltaX` is the SCROLL, and macOS flips its sign when Natural
+ *  scrolling is off.
+ *
+ *  `inverted` is the event's `webkitDirectionInvertedFromDevice` (WebKit only):
+ *  `true` with Natural scrolling on. `natural` is the desktop shell's report
+ *  (lib/scrollTouch). The event's own flag wins; when neither is known the
+ *  sign is `1`, the macOS default.
+ *
+ *  The frame's wheel relay (lib/widgetSrcdoc) carries a copy of this rule. */
+export function fingerSign(inverted: unknown, natural: boolean | null): 1 | -1 {
+  const on = typeof inverted === 'boolean' ? inverted : natural
+  return on === false ? -1 : 1
+}
+
 /** Whether a horizontal scroller can still move the way a wheel's `deltaX`
  *  pushes it (positive `dx` raises `scrollLeft`). `max` is `scrollWidth -
  *  clientWidth`. Left to right, `scrollLeft` runs over [0, max]; right to left
