@@ -1,12 +1,12 @@
 ---
 title: Session search by meaning, routed so an exact identifier still wins
-status: draft
+status: partial
 author: dma9527
 created: 2026-10-26
-last-audited: 2026-11-01
-audited-at: 42243e7c
+last-audited: 2026-11-17
+audited-at: e6e9fff7
 doc-pr: 24478
-implementation-prs: []
+implementation-prs: [31794]
 tracking-issues: [24476]
 supersedes: []
 superseded-by: []
@@ -14,12 +14,15 @@ superseded-by: []
 
 # RFC: Session search by meaning
 
-- Status: draft. Nothing built. Acceptance by a maintainer of session search comes
-  before the first implementation pull request (section 10).
+- Status: partial. Accepted by a maintainer on
+  [#24476](https://github.com/kirodotdev/KiroCrew/issues/24476). Phase 1, the
+  session-recall bench, is on main as [#31794](https://github.com/kirodotdev/KiroCrew/pull/31794);
+  phases 2 to 4 are not built (section 10).
 - Tracking issue: [#24476](https://github.com/kirodotdev/KiroCrew/issues/24476).
 - Depends on [#23603](https://github.com/kirodotdev/KiroCrew/pull/23603) (configurable
   scan window and the `SearchRows` result type, for [#22233](https://github.com/kirodotdev/KiroCrew/issues/22233)).
-- Code read at `f172b404`. Code is cited by symbol name; every symbol is as of that commit.
+- The design read the code at `f172b404`; symbols are cited by name as of that commit.
+  `audited-at` above is the commit the status was last checked against.
 - Numbers come from one operator's host: 614 to 638 session files, 363 distinct
   conversations after twinned copies are folded, mixed English and Chinese. They were
   taken between 2026-10-13 and 2026-10-26 with the shipped `qwen3-embedding-0.6b`
