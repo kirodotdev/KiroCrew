@@ -15265,6 +15265,7 @@
       "disconnect_spec_not_rewritten": "Diese {{productName}}-Instanz konnte die Agent-Konfiguration nicht aktualisieren, daher laden neue Chats diese Verbindung weiterhin. Den Grund findest du auf der Seite „Protokolle“.",
       "disconnect_entry_not_ours": "Die gespeicherte Berechtigung wurde entfernt. Ihre Serverkonfiguration wurde nicht verändert. Dieser Eintrag kann im Tab „MCP-Server“ verwaltet werden.",
       "connect_hand_written_row": "{{provider}} ist in deiner eigenen mcp.json als „{{name}}“ von Hand eingerichtet, und {{productName}} ändert diese Datei nicht. Entferne den Eintrag dort und klicke dann auf „Verbinden“, um {{provider}} hier hinzuzufügen.",
+      "connect_rendered_copy_only": "{{provider}} steht nicht mehr in deiner eigenen mcp.json, aber {{productName}} behält noch eine eigene Kopie von „{{name}}“. Klicke in „MCP-Server“ bei „{{name}}“ auf „Deinstallieren“ und dann auf „Anwenden“, und klicke danach auf „Verbinden“, um {{provider}} hier hinzuzufügen.",
       "disconnect_grant_shared": "Die gespeicherte Berechtigung wurde beibehalten, da derselbe Endpunkt auch von Folgenden konfiguriert wird: {{names}}. Ein Widerruf beim Anbieter würde auch deren Zugriff beenden.",
       "disconnect_grant_survived": "Ein Teil der gespeicherten Berechtigung konnte nicht entfernt werden. Widerrufen Sie den Zugriff beim Anbieter.",
       "disconnected_locally": "Lokal getrennt. Widerrufe den Zugriff beim Anbieter, um die Freigabe vollständig aufzuheben.",
