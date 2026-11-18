@@ -276,8 +276,10 @@ class TestPersistedListingDenialsAreAudited:
         """Collect the handler's own WARNING lines.
 
         The package logger does not propagate to root, so caplog sees nothing;
-        the call itself is what this pins anyway.
+        the call itself is what this pins anyway. The listing warns once per
+        change, so each test starts from a listing nothing has reported yet.
         """
+        monkeypatch.setattr(messaging, "_persisted_listing_reports", {})
         lines: list[str] = []
         monkeypatch.setattr(
             messaging.logger,
@@ -484,6 +486,64 @@ class TestPersistedListingDenialsAreAudited:
         # a routine cap event beside the ownership refusals an operator reads
         # that stream to find.
         assert calls == []
+
+    @pytest.mark.parametrize(("internal", "expected"), [(False, 1), (True, 2)])
+    def test_a_polled_owner_listing_warns_once_per_change(
+        self, agent_root, monkeypatch, internal, expected
+    ):
+        """The dashboard polls the owner's listing, so the same cut is said once.
+
+        An internal caller's listing is scoped to its own session and is not
+        remembered, so it keeps a WARNING per truncated listing.
+        """
+        moment = time.time()
+        for index in range(3):
+            write_record(
+                agent_root,
+                f"po{index:04d}",
+                parent_session="dashboard:chat-1",
+                mtime=moment - index,
+            )
+        monkeypatch.setattr(messaging, "PERSISTED_SUBAGENT_REPLAY_KEEP", 1)
+        warned = self.warnings(monkeypatch)
+        bodies = [
+            self.run_listing(
+                monkeypatch,
+                agent_root,
+                slot_app="",
+                caller="dashboard:chat-1",
+                scope=None,
+                internal=internal,
+            )[1]
+            for _ in range(2)
+        ]
+        assert bodies[0] == bodies[1]
+        assert len(bodies[0]["agents"]) == 1
+        assert len([line for line in warned if "truncated" in line]) == expected
+
+    def test_an_unreadable_listing_is_not_reported_as_complete_again(self, agent_root, monkeypatch):
+        """A read that failed says nothing about truncation, so the report stands."""
+        warned = self.warnings(monkeypatch)
+        messaging._persisted_listing_reports[""] = (True, False)
+        infos: list[str] = []
+        monkeypatch.setattr(messaging.logger, "info", lambda msg, *a, **k: infos.append(str(msg)))
+
+        def unreadable(**_kwargs):
+            raise OSError("scan failed")
+
+        monkeypatch.setattr(messaging, "read_panel_records", unreadable)
+        _calls, body = self.run_listing(
+            monkeypatch,
+            agent_root,
+            slot_app="",
+            caller="dashboard:chat-1",
+            scope=None,
+            internal=False,
+        )
+        assert body["agents"] == []
+        assert messaging._persisted_listing_reports == {"": (True, False)}
+        assert [line for line in infos if "complete again" in line] == []
+        assert [line for line in warned if "truncated" in line] == []
 
     def test_a_saturated_window_is_reported_even_at_a_zero_count(self, agent_root, monkeypatch):
         """The case the count itself cannot see.

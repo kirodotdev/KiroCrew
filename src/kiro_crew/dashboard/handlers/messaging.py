@@ -230,6 +230,7 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _failover_fields,
     _parent_turn_holding,
     _redact,
+    _report_persisted_truncation,
     _session_turn_holding,
     _spawn_result_view,
     api_spawn_list,
@@ -453,6 +454,20 @@ _SLACK_SECRET_FIELDS = {
 #: and ``unified`` is a session-key bucket rather than a transport.
 _SEND_MESSAGE_CHANNEL_TYPES: frozenset[str] = frozenset(CHANNEL_SEND_NAMESPACES)
 logger = logging.getLogger(__name__)
+
+#: What ``GET /api/spawn`` last reported about its persisted half, per listing
+#: scope (the caller's app id, ``""`` for the dashboard owner): ``(truncated,
+#: lower_bound)``. Read and written on the event loop only. An internal caller's
+#: listing is scoped to its session and is never remembered here.
+_persisted_listing_reports: dict[str, tuple[bool, bool]] = {}
+#: How many scopes ``_persisted_listing_reports`` holds. Past it the least
+#: recently truncated scope is forgotten, so an app that stopped polling does not
+#: keep its entry forever; a forgotten scope warns afresh.
+_PERSISTED_LISTING_REPORT_SCOPES = 256
+#: The longest scope string ``_persisted_listing_reports`` keeps, an app id's own
+#: length. A longer one is reported as an unremembered scope, never cut short:
+#: two cut keys could collide and end each other's report.
+_PERSISTED_LISTING_SCOPE_MAX_LEN = 128
 
 
 class _ThresholdPairInverted(Exception):
