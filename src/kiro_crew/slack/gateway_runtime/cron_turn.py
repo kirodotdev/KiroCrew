@@ -293,6 +293,20 @@ async def _cron_run_sequence(
                         "Cron '%s': step session replaced during re-projection; abandoning",
                         job.name,
                     )
+                    if step is steps[0]:
+                        # Nothing was sent on this fire, so it is retained like
+                        # every other undispatched exit, not recorded as a success.
+                        _defer_cron_before_dispatch(
+                            job, "the session was replaced by a Stop before this run started"
+                        )
+                    else:
+                        # Earlier steps already ran: a retry would replay them, so
+                        # the fire is not kept as never started, nor a success.
+                        job.last_status = "error"
+                        job.last_error = (
+                            f"the session of sequence step {step.alias!r} was replaced "
+                            "by a Stop; the steps before it ran, the rest did not"
+                        )
                     return None
                 # Publish this turn's session identity so managed MCP
                 # tools resolve their parent session. The cron path was
@@ -845,6 +859,9 @@ async def _cron_run_single(
             # owns during the staleness probe: abandon this run, do not stream
             # on the popped session. The finally releases and closes the gap.
             logger.info("Cron '%s': session replaced during re-projection; abandoning", job.name)
+            _defer_cron_before_dispatch(
+                job, "the session was replaced by a Stop before this run started"
+            )
             return None
         # The job's tab reads this lease as running, and with surface_channel_sessions
         # off no reconcile pass pushes the start.

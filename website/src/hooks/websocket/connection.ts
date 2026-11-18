@@ -32,6 +32,9 @@ function endQuiet(quietRef: MutableRefObject<QuietReconnect | null>): void {
 const RECONNECT_INITIAL_MS = 1000
 /** Ceiling for the doubled reconnect delay. */
 const RECONNECT_MAX_MS = 10000
+/** Quiet relay closes in a row, each of a socket that dropped before it proved
+ *  healthy, that still reconnect at once; the next one takes the backoff. */
+const QUIET_YOUNG_LIMIT = 5
 /** The live socket is going away: start the backoff over when it proved healthy.
  *  True when it opened and is going away before that. */
 function settleBackoff(openedAtRef: MutableRefObject<number>, reconnectRef: MutableRefObject<number>): boolean {
@@ -123,6 +126,7 @@ export function useSocketConnection(): SocketConnection {
   const causeRef = useRef<OfflineCause | undefined>(undefined)
   const openedAtRef = useRef(0)  // when the live socket opened; 0 while it has not
   const droppedYoungRef = useRef(false)  // the last socket opened, then closed before it proved healthy
+  const quietYoungRef = useRef(0)  // quiet closes in a row of sockets that dropped young
   const wasConnectedRef = useRef(false)
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
   const logCbRef = useRef<LogCallback>(null)
@@ -185,6 +189,7 @@ export function useSocketConnection(): SocketConnection {
       // Stale WS (e.g. from StrictMode cleanup) — ignore entirely.
       if (wsRef.current !== ws) return
       wsRef.current = null
+      const opened = openedAtRef.current !== 0
       // Settled on every path below, the quiet reconnect and the token-renewal
       // stop included: `forceReconnect` reads what this socket's close left.
       droppedYoungRef.current = settleBackoff(openedAtRef, reconnectRef)
@@ -193,10 +198,12 @@ export function useSocketConnection(): SocketConnection {
       const failedQuiet = quietRef.current
       endQuiet(quietRef)
       const kind = classifyClose(code)
-      if (!failedQuiet && !closingRef.current && isQuietClose(kind)) {
-        // shortcut: a relay that closed a fresh socket with 4401 again would
-        // reconnect quietly each time; a refused token is a plain 401 at the
-        // upgrade, so the next socket never opens and this ends below.
+      // A relay that closes every fresh socket quietly would otherwise get a
+      // reconnect at 0 ms forever: past the limit the close takes the backoff
+      // below, which never stops retrying. A healthy socket starts the count over.
+      if (opened && !droppedYoungRef.current) quietYoungRef.current = 0
+      else if (droppedYoungRef.current && isQuietClose(kind)) quietYoungRef.current++
+      if (!failedQuiet && !closingRef.current && isQuietClose(kind) && quietYoungRef.current <= QUIET_YOUNG_LIMIT) {
         releaseVoice()
         // The grace ran out with the reconnect still opening: say so. The entry
         // stays, so that socket's own close still reads as a failed reconnect.
@@ -262,7 +269,8 @@ export function useSocketConnection(): SocketConnection {
       }
       clearTimeout(reconnectTimerRef.current)
       endQuiet(quietRef)
-      settleBackoff(openedAtRef, reconnectRef)
+      const opened = openedAtRef.current !== 0
+      if (!settleBackoff(openedAtRef, reconnectRef) && opened) quietYoungRef.current = 0
       droppedYoungRef.current = false
       if (ws.readyState !== WebSocket.CLOSED) {
         releaseVoice()
