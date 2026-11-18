@@ -3040,6 +3040,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.reuse_current"
   },
   {
+    "id": "display.reverse-trackpad-swipe",
+    "label": "Reverse trackpad swipe",
+    "labelKey": "pages.settings.displayPanel.reverse_trackpad_swipe",
+    "hint": "Turn this on if a two-finger swipe moves the side panel the opposite way to your fingers. This happens in Chrome and Firefox when macOS Natural scrolling is off, because those browsers do not tell the page how it is set. Safari and the desktop app detect it on their own, so there this switch changes nothing.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.show-channels",
     "label": "Show Channels",
     "labelKey": "pages.settings.displayPanel.channels",
