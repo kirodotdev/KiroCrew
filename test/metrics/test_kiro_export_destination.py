@@ -325,6 +325,42 @@ class TestNotice:
             == beacon.PRIVACY_NOTICE_VERSION
         )
 
+    def test_a_provider_that_does_not_list_it_does_not_hold_the_chapter(self, home, monkeypatch):
+        """Keep on records only privacy_ack_version there, so a hold would never clear."""
+        from kiro_crew.dashboard.handlers import core as core_handlers
+        from kiro_crew.platform.interfaces import OtlpDestination
+
+        own = OtlpDestination(
+            name="edition-collector", endpoint=OPS, signals=frozenset({"metrics"})
+        )
+
+        class _EditionProvider(DefaultTelemetryProvider):
+            def otlp_destinations(self, cfg):
+                return (own,)
+
+        monkeypatch.setattr(pm, "_telemetry_provider", _EditionProvider)
+        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
+        cfg = KiroCrewConfig.load()
+        assert kiro_export.destinations() and not kiro_export.notice_shown(cfg)
+        assert not kiro_export.listed(pm.otlp_egress_listing(cfg.telemetry))
+        assert (
+            core_handlers._theme_payload(cfg)["privacy_ack_version"]
+            == beacon.PRIVACY_NOTICE_VERSION
+        )
+
+    def test_an_unreadable_listing_does_not_hold_the_chapter(self, home, monkeypatch):
+        from kiro_crew.dashboard.handlers import core as core_handlers
+
+        def boom(cfg):
+            raise RuntimeError("provider failed")
+
+        monkeypatch.setattr(pm, "otlp_egress_listing", boom)
+        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
+        assert (
+            core_handlers._theme_payload(KiroCrewConfig.load())["privacy_ack_version"]
+            == beacon.PRIVACY_NOTICE_VERSION
+        )
+
     def test_a_failed_print_does_not_count_as_told(self, home):
         from kiro_crew.metrics import notice
 

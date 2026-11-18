@@ -1702,7 +1702,7 @@ class TestTelemetryEnabledPatch:
         _arm(app, _live_state())
         metrics_provider.watch_config()
         try:
-            with patch("kiro_crew.metrics.provider.shutdown") as reset:
+            with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
                 async with TestClient(TestServer(app)) as c:
                     # False: the default is on, so writing true would change nothing.
                     assert (await _patch(c, "telemetry.enabled", False)).status == 200
@@ -1716,14 +1716,14 @@ class TestTelemetryEnabledPatch:
     async def test_unrelated_field_leaves_the_recorder_alone(self, tmp_config) -> None:
         # Rebuilding the recorder flushes and restarts the exporter thread, so it
         # must not ride along on every unrelated config write.
-        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+        with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "session.timeout_secs", 600)).status == 200
         reset.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rejected_value_leaves_the_recorder_alone(self, tmp_config) -> None:
-        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+        with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", "yes")).status == 400
         reset.assert_not_called()
@@ -1732,7 +1732,7 @@ class TestTelemetryEnabledPatch:
     async def test_recorder_reset_failure_does_not_fail_the_write(self, tmp_config) -> None:
         # The value is already durable by this point; a flush that raises must not
         # report the save as failed and send the UI's switch back.
-        with patch("kiro_crew.metrics.provider.shutdown", side_effect=RuntimeError("boom")):
+        with patch("kiro_crew.metrics.provider._detach", side_effect=RuntimeError("boom")):
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", True)).status == 200
         data = json.loads(tmp_config.read_text(encoding="utf-8"))
@@ -1859,7 +1859,7 @@ class TestTelemetryEnabledEgressGate:
     @pytest.mark.asyncio
     async def test_refused_enable_does_not_touch_the_recorder(self, tmp_config) -> None:
         self._seed_endpoint(tmp_config, "http://otel.internal:4318/v1/metrics")
-        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+        with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", True)).status == 409
         reset.assert_not_called()
