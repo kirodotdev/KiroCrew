@@ -799,7 +799,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         const k = isDecidedRow(m) && m.meta?.resolved ? decidedRowKey(m) : undefined
         if (k) localResolved.set(k, { resolved: m.meta!.resolved, ...(m.meta!.answer !== undefined ? { answer: m.meta!.answer } : {}) })
       }
-      const hydrated = messages.map(m => {
+      // The backend never stores `meta.pastes`, so re-collapse the pane's sent pastes first.
+      const hydrated = mergePreservedPastes(warmCache, messages).map(m => {
         const k = isDecidedRow(m) ? decidedRowKey(m) : undefined
         const local = k ? localResolved.get(k) : undefined
         return local ? { ...m, meta: { ...m.meta, ...local } } : m
