@@ -163,7 +163,11 @@ class TestHookFailuresAreNonFatal:
         )
 
         assert fired[0]["tool_name"] == "ls -la"
-        assert fired[0]["tool_response"] == {"output": "total 0"}
+        assert fired[0]["tool_response"] == {
+            "output": "total 0",
+            "truncated": False,
+            "output_length": len("total 0"),
+        }
 
     @pytest.mark.asyncio
     async def test_post_tool_hook_error_is_swallowed(self, tmp_path, monkeypatch):

@@ -5,8 +5,9 @@ Source: https://kiro.dev/docs/hooks/, plus its `types` and `actions` subpages
 documented as one page across every surface).
 
 > **Carries local additions.** Kiro Crew's fail-closed `PreToolUse` exit contract,
-> its command-length limit and its notes on output size and caching have no
-> upstream counterpart. A re-fetch must preserve them.
+> its command-length limit, its `PostToolUse` `tool_response.output` cap, and
+> its notes on output size and caching have no upstream counterpart. A
+> re-fetch must preserve them.
 
 Execute custom commands, or inject an agent prompt, at specific points during
 agent lifecycle and tool execution.
@@ -109,6 +110,13 @@ contract (see Hook output). Receives `tool_name`, `tool_input`.
 
 ### PostToolUse
 Runs after tool execution. Receives `tool_name`, `tool_input`, `tool_response`.
+
+**`tool_response.output` cap (Kiro Crew).** `tool_response.output` is cut to
+its first 2000 characters, after redaction, with nothing upstream in the
+payload to say a cut happened. Kiro Crew's own `PostToolUse` call sites (ACP,
+dashboard, subagent and messaging) add two sibling fields alongside `output`
+so a hook can tell: `truncated` (whether the original text was longer than
+2000 characters) and `output_length` (its length before the cut).
 
 ### Stop
 Runs when assistant finishes responding (end of each turn). No matcher. Useful

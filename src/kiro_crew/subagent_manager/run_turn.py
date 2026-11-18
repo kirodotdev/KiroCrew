@@ -1455,15 +1455,22 @@ async def _run_inner_impl(
             )
             if self._manager.hook_store is not None and _terminal:
                 try:
+                    from kiro_crew.hook_output import bounded_hook_output
+
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
-                    _out = _redact((event.tool_output or "")[:2000])
+                    # ``truncated``/``output_length`` are measured against the
+                    # FULL (pre-cut) text; the ``output`` value itself keeps the
+                    # existing cut-then-redact order for this site unchanged.
+                    _raw_out = event.tool_output or ""
+                    _tool_response = bounded_hook_output(_raw_out)
+                    _tool_response["output"] = _redact(_raw_out[:2000])
                     # The child's own ACP session id, for its spec hooks only.
                     _sid = getattr(client, "session_id", "") if _spec.hooks else ""
                     await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
-                        tool_response={"output": _out},
+                        tool_response=_tool_response,
                         # This child's own key, for per-session attribution;
                         # parent_session_key below names who spawned it.
                         session_key=session_key,

@@ -281,7 +281,11 @@ async def test_an_allowed_call_runs_and_its_post_tool_use_meets_execute_bash(
     # The `execute_bash` matcher met the call; its stdin names it as kiro-cli's
     # V2 engine does (`spec_hooks.kiro_cli_hook_payload`).
     assert post_event["tool_name"] == "shell"
-    assert post_event["tool_response"] == {"output": "ran"}
+    assert post_event["tool_response"] == {
+        "output": "ran",
+        "truncated": False,
+        "output_length": len("ran"),
+    }
     assert post_event["session_key"] == _SESSION
 
 

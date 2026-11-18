@@ -820,10 +820,35 @@ class TestAcpClientToolHooks:
 
         post = [c for c in store.calls if c["event"] == "PostToolUse"]
         assert len(post) == 1
-        fired_output = post[0]["tool_response"]["output"]
+        fired_response = post[0]["tool_response"]
+        fired_output = fired_response["output"]
         assert len(fired_output) == 2000  # bounded to first 2000 chars
         assert _SECRET not in fired_output  # raw credential scrubbed
         assert "[REDACTED: credential]" in fired_output  # redaction survives truncation
+        # The cut is no longer silent (issue #38593): a hook can tell it happened.
+        # ``output_length`` is measured on the FULL text AFTER redaction (redaction
+        # runs before the cut), so it is not simply len(raw_output).
+        from kiro_crew.security import redact
+
+        assert fired_response["truncated"] is True
+        assert fired_response["output_length"] == len(redact(raw_output))
+
+    @pytest.mark.asyncio
+    async def test_post_fire_reports_no_truncation_for_short_output(self, monkeypatch):
+        """A short output arrives unchanged, with ``truncated: False`` (issue #38593)."""
+        store = self._Store()
+        monkeypatch.setattr(acp_client, "get_global_hook_store", lambda: store)
+        client = AcpClient(session_key="sk", agent="code-review-sage", audit_source="subagent")
+        client._observed_tool_calls["tc1"] = ("Reading /x/SKILL.md", "read")
+        raw_output = "y" * 1500
+        await client._maybe_fire_post_tool_hooks(self._result_ev(output=raw_output))
+
+        post = [c for c in store.calls if c["event"] == "PostToolUse"]
+        assert len(post) == 1
+        fired_response = post[0]["tool_response"]
+        assert fired_response["output"] == raw_output
+        assert fired_response["truncated"] is False
+        assert fired_response["output_length"] == 1500
 
     @pytest.mark.asyncio
     async def test_pre_fire_redacts_credential_in_tool_input(self, monkeypatch):
