@@ -3,6 +3,7 @@ import type { Components } from 'react-markdown'
 import type { Element as HastElement } from 'hast'
 import { TAG_ATTRS } from './sanitize'
 import { CopyableBlockquote } from './CopyableBlockquote'
+import { directionProps } from './contentDirection'
 import {
   MD_EM_CLS,
   MD_HEADING_CLS,
@@ -23,13 +24,11 @@ import {
  * element renders.
  */
 
-/** Forward the `data-sourcepos` attribute from rehypeSourcepos onto the
- *  rendered element. Used in every MD_COMPONENTS override; returns an
- *  empty-valued attribute when sourcePos is disabled (React omits it from
- *  the DOM). */
+/** Forward source positions and semantic direction/language through styled
+ *  overrides. React omits attributes the sanitized node does not carry. */
 export const sp = (node?: HastElement) => {
   const v = node?.properties?.['data-sourcepos']
-  return { 'data-sourcepos': typeof v === 'string' ? v : undefined }
+  return { 'data-sourcepos': typeof v === 'string' ? v : undefined, ...directionProps(node) }
 }
 
 /** `sp` plus every attribute the sanitize schema admits for `tag`.
@@ -117,8 +116,8 @@ function slugify(children: React.ReactNode): string | undefined {
 
 export const ELEMENT_OVERRIDES = {
   // Headers carry the column's meaning, so never break them mid-label.
-  th({ node, children }) { return <th {...spa('th', node)} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th> },
-  td({ node, children }) { return <td {...spa('td', node)} className={MD_TABLE_CELL_CLS}>{children}</td> },
+  th({ node, children, style }) { return <th {...spa('th', node)} style={style} className={`${MD_TABLE_HEAD_CELL_CLS} whitespace-nowrap`}>{children}</th> },
+  td({ node, children, style }) { return <td {...spa('td', node)} style={style} className={MD_TABLE_CELL_CLS}>{children}</td> },
   blockquote({ node, children }) { return <CopyableBlockquote node={node}>{children}</CopyableBlockquote> },
   hr({ node }) { return <hr {...sp(node)} className="border-border my-4" /> },
   h1({ node, children }) { const id = slugify(children); return <h1 {...sp(node)} id={id} className={MD_HEADING_CLS[0]}>{children}</h1> },
@@ -166,7 +165,7 @@ export const ELEMENT_OVERRIDES = {
     // wrap turned each inline chunk (text node / code chip) into a separate
     // flex item, so text wrapped inside one chunk while siblings floated next
     // to it — and flex min-width:auto blocked wrapping entirely, forcing
-    // horizontal scroll. Block flow + hanging indent (pl/-indent pair) keeps
+    // horizontal scroll. Block flow + logical padding and hanging indent keeps
     // the checkbox aligned with the first line and wrapped lines under the
     // text; nested lists reset the indent and drop below.
     //
@@ -181,7 +180,7 @@ export const ELEMENT_OVERRIDES = {
     return (
       <li
         {...spa('li', node)}
-        className="text-sm leading-normal break-words pl-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0"
+        className="text-sm leading-normal text-start break-words ms-4 ps-5 -indent-5 [&_input[type=checkbox]]:me-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0"
       >
         {children}
       </li>

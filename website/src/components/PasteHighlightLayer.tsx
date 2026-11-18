@@ -59,10 +59,11 @@ const PasteHighlightLayer = forwardRef<HTMLDivElement, Props>(function PasteHigh
   return (
     <div
       ref={ref}
+      dir="auto"
       aria-hidden
       data-composer-typo
       className={`pointer-events-none absolute inset-0 overflow-hidden [scrollbar-gutter:stable] select-none text-transparent whitespace-pre-wrap break-words ${typo}`}
-      style={{ overflowWrap: 'break-word', wordBreak: 'normal' }}
+      style={{ overflowWrap: 'break-word', wordBreak: 'normal', unicodeBidi: 'plaintext', textAlign: 'start' }}
     >
       {nodes}
       {/* A trailing newline isn't given height by a block the way a textarea

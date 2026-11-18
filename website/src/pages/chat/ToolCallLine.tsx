@@ -1266,7 +1266,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
         <Icon size={12} className={`shrink-0 ${iconClass}`} style={{ marginTop: '4px' }} />
         {isShimmering ? (
           <motion.span
-            data-testid="tool-pill-label"
+            data-testid="tool-pill-label" dir="auto"
             className={`${labelWrapClass} ${pillLabelFaceClass} min-w-0 leading-5 bg-clip-text`}
             style={{
               backgroundImage: `linear-gradient(90deg, ${shimmerBase} 0%, ${shimmerBase} 40%, ${shimmerHighlight} 50%, ${shimmerBase} 60%, ${shimmerBase} 100%)`,
@@ -1278,7 +1278,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
             transition={{ duration: 2.4, repeat: Infinity, ease: 'linear' }}
           >{shownLabel}</motion.span>
         ) : (
-          <span data-testid="tool-pill-label" className={`${labelWrapClass} ${pillLabelFaceClass} min-w-0 leading-5 text-muted hover:text-text transition-colors`}>{shownLabel}</span>
+          <span data-testid="tool-pill-label" dir="auto" className={`${labelWrapClass} ${pillLabelFaceClass} min-w-0 leading-5 text-muted hover:text-text transition-colors`}>{shownLabel}</span>
         )}
       </button>
       {pillTipText && (

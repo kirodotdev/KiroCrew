@@ -64,6 +64,20 @@ afterEach(() => {
 })
 
 describe('ChatEmbed list continuation', () => {
+  it('keeps mixed-script input and its paste mirror in native paragraph direction', async () => {
+    const ta = await mount()
+    const text = 'שלום @agent (123)\nEnglish שלום\n123 — עברית'
+    await typeAt(ta, text, 5)
+    const mirror = ta.parentElement!.querySelector('[aria-hidden][data-composer-typo]')!
+    for (const element of [ta, mirror]) {
+      expect(element).toHaveAttribute('dir', 'auto')
+      expect(element).toHaveStyle({ unicodeBidi: 'plaintext', textAlign: 'start' })
+    }
+    expect(ta.value).toBe(text)
+    expect(ta.selectionStart).toBe(5)
+    expect(mirror.textContent).toBe(text)
+  })
+
   it('continues a numbered list with the next number', async () => {
     const ta = await mount()
     await typeAt(ta, '1. first')

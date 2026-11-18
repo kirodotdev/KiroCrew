@@ -903,7 +903,7 @@ export default function LexicalComposerInput({
   const initialConfig = useMemo(() => ({
     namespace: 'KiroCrewComposer',
     nodes: [PasteTokenNode],
-    theme: INLINE_MARKDOWN_THEME,
+    theme: { ...INLINE_MARKDOWN_THEME, paragraph: '[unicode-bidi:plaintext] text-start' },
     editable: !disabled && !readOnly,
     editorState: () => $replaceComposerValue(initialValueRef.current.value, initialValueRef.current.blocks),
     onError(error: Error, _editor: LexicalEditor) {

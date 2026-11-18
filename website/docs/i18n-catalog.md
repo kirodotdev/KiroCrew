@@ -104,6 +104,13 @@ and unmirrored directional icons, so an RTL catalog would render correct text in
 visibly wrong shell. Adding one needs `dir="rtl"` plus a logical-property
 conversion (`ps-*`/`pe-*`, `start-*`/`end-*`) first, not just a catalog.
 
+Content direction is independent of the interface language. Hebrew and mixed-script
+chat prose, titles and drafts use local automatic direction inside the English
+shell. Markdown preserves authored `dir`/`lang` attributes; technical code and paths
+retain LTR isolation. This does not register a Hebrew interface locale or change
+the document direction. The renderer and composer contract is in
+[frontend-conventions](frontend-conventions.md).
+
 Adding a language is a **data change**: four edits, no component or test changes.
 
 1. `locales/<tag>.json`, with the same key set as `en.json` plus `en.manual.json`.

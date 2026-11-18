@@ -1601,6 +1601,8 @@ function ChatEmbed({
             <PasteHighlightLayer ref={pasteEditor.mirrorRef} value={draft} blocks={pastes.blocks} typo={`${EMBED_EDITOR_TYPO} border-transparent rounded-md`} />
             <ComposerEditor
               ref={setEditorRef}
+              dir="auto"
+              style={{ unicodeBidi: 'plaintext', textAlign: 'start' }}
               rows={1}
               {...composition}
               onBlur={e => { composition.onBlur(e); pasteEditor.hoverRef.current?.handleMouseLeave() }}

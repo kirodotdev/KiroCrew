@@ -29,19 +29,21 @@ vi.mock('../hooks/useBranding', () => ({
 type LightboxDetail = { images: { src: string; alt: string }[]; index: number }
 
 describe('MarkdownRenderer list indentation', () => {
-  it('renders ul with pl-8 and marker:text-muted', () => {
+  it('indents unordered items at their own inline start', () => {
     const { container } = render(<MarkdownRenderer content={'- a\n- b'} />)
     const ul = container.querySelector('ul')
     expect(ul).not.toBeNull()
-    expect(ul!.className).toContain('pl-8')
+    expect(ul!.className).toContain('ps-0')
+    expect(ul!.querySelector('li')!.className).toContain('ms-8')
     expect(ul!.className).toContain('marker:text-muted')
   })
 
-  it('renders ol with pl-8 and marker:text-muted', () => {
+  it('indents ordered items at their own inline start', () => {
     const { container } = render(<MarkdownRenderer content={'1. a\n2. b'} />)
     const ol = container.querySelector('ol')
     expect(ol).not.toBeNull()
-    expect(ol!.className).toContain('pl-8')
+    expect(ol!.className).toContain('ps-0')
+    expect(ol!.querySelector('li')!.className).toContain('ms-8')
     expect(ol!.className).toContain('marker:text-muted')
   })
 })

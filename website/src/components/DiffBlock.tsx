@@ -399,7 +399,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, l
   return (
     /* The header shows the basename, so two changed files sharing a name render
        as identical blocks; the full path lives here as a tooltip. */
-    <div className="diff-block group/diff rounded-xl border border-border overflow-hidden" title={headerPath ?? undefined}>
+    <div dir="ltr" className="diff-block group/diff rounded-xl border border-border overflow-hidden" title={headerPath ?? undefined}>
       <div className="relative pierre-surface">
         {/* One title row per file, drawn by the block for the block's whole
             life: filename, a note in words where the file's change is more

@@ -43,36 +43,37 @@ export const MD_HEADING_CLS = [
 export const MD_FLOW_ROOT_CLS = '[&>:first-child>:first-child]:mt-0 [&>:first-child>:first-child>:first-child]:mt-0'
 
 /** A paragraph: 3u above, nothing below, so a list under it sits at 1.5u. */
-export const MD_PARAGRAPH_CLS = 'mt-[0.75em] mb-0 leading-normal'
+export const MD_PARAGRAPH_CLS = 'mt-[0.75em] mb-0 leading-normal text-start'
 
 /** Shared list rhythm: 1.5u above the list and between its items. */
 const MD_LIST_RHYTHM_CLS = 'mt-[0.375em] mb-0 [&>li+li]:mt-[0.375em]'
 
 /** A bulleted list. */
-export const MD_UL_CLS = `list-disc pl-8 ${MD_LIST_RHYTHM_CLS} marker:text-muted`
+export const MD_UL_CLS = `list-disc ps-0 ${MD_LIST_RHYTHM_CLS} marker:text-muted`
 
 /** A numbered list without its marker token, which a typed `<ol>` replaces
  *  with an inline `list-style-type`. */
-export const MD_OL_BASE_CLS = `pl-8 ${MD_LIST_RHYTHM_CLS} marker:text-muted`
+export const MD_OL_BASE_CLS = `ps-0 ${MD_LIST_RHYTHM_CLS} marker:text-muted`
 
 /** A numbered list with the decimal marker. */
 export const MD_OL_CLS = `list-decimal ${MD_OL_BASE_CLS}`
 
 /** A task list (`- [ ]` items), either `<ul>` or `<ol>`. */
-export const MD_TASK_LIST_CLS = `list-none pl-4 ${MD_LIST_RHYTHM_CLS}`
+export const MD_TASK_LIST_CLS = `list-none ps-0 [&>li]:ms-4 ${MD_LIST_RHYTHM_CLS}`
 
-/** A list item (not a task item). */
-export const MD_LIST_ITEM_CLS = 'text-sm leading-normal'
+/** Each item's inline-start gutter follows its own direction, even in a mixed list. */
+export const MD_LIST_ITEM_CLS = 'text-sm leading-normal text-start ms-8'
 
 /** A table header cell, before the surface's wrapping rule. No fill: the
  *  header reads as the strongest row through weight and colour, and the first
  *  column starts flush with the prose around the table (#27001). Padding is
- *  in `em` of the 13px header text: 2u above and below, 4u to the right. */
-export const MD_TABLE_HEAD_CELL_CLS = 'text-left text-text-strong text-[13px] font-semibold pl-0 pr-[1.0769em] py-[0.5385em] border-b border-border-strong'
+ *  in `em` of the 13px header text: 2u above and below, 4u to the right.
+ *  Column gaps stay physical so adjacent RTL/LTR cells share one gutter. */
+export const MD_TABLE_HEAD_CELL_CLS = 'text-start text-text-strong text-[13px] font-semibold pl-0 pr-[1.0769em] py-[0.5385em] border-b border-border-strong'
 
 /** A table body cell, before the surface's wrapping rule: 2.5u above and
  *  below, 4u to the right, flush left like the header. */
-export const MD_TABLE_CELL_CLS = 'pl-0 pr-[1em] py-[0.625em] border-b border-border text-sm leading-normal'
+export const MD_TABLE_CELL_CLS = 'pl-0 pr-[1em] py-[0.625em] border-b border-border text-sm leading-normal text-start'
 
 /** Bold and italic inline runs. */
 export const MD_STRONG_CLS = 'font-semibold text-text-strong'

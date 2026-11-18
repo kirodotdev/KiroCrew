@@ -1091,3 +1091,21 @@ describe('SessionTitleControl offline rename gate', () => {
     expect(screen.getByTestId('session-title-offline').className).not.toContain('basis-full')
   })
 })
+
+
+describe('SessionTitleControl content direction', () => {
+  it('isolates the title and auto-directs rename without directing the control row', () => {
+    const { store } = renderControl()
+    const title = 'שלום (API 42)'
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT, title })) })
+    const label = screen.getByText(title)
+    expect(label.closest('bdi')?.getAttribute('dir')).toBe('auto')
+    expect(label.closest('[role="button"]')?.hasAttribute('dir')).toBe(false)
+    const input = openEditorFor(title)
+    expect(input.getAttribute('dir')).toBe('auto')
+    expect(input.style.unicodeBidi).toBe('isolate')
+    expect(input.value).toBe(title)
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(api.renameSlot).not.toHaveBeenCalled()
+  })
+})
