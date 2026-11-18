@@ -392,6 +392,7 @@ ROWS: tuple[Mapping[str, Any], ...] = (
             "password",
             "passwd",
             "secret",
+            "token",
             "api_key",
             "apikey",
             "api_secret",
@@ -484,6 +485,16 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "scheme": "bearer",
         "min_length": 8,
         # A published JWT example after ``Bearer`` is documentation too.
+        "allow_values": list(JOSE_EXAMPLES),
+    },
+    {
+        # ``Bearer <token>`` with no ``Authorization`` name before it (a logged request line,
+        # a pasted curl ``-H`` value, a prose sentence). Words ("Bearer of bad news") stay.
+        "id": "http.bearer_bare",
+        "tier": SECRET,
+        "detector": "header",
+        "reader": "bearer",
+        "min_length": 8,
         "allow_values": list(JOSE_EXAMPLES),
     },
     {
@@ -1258,10 +1269,10 @@ def _build_url_userinfo(row: Mapping[str, Any]) -> UrlUserinfoRow:
 
 
 _HEADER_READERS = frozenset(
-    {"header", "cookie", "curl_user", "mysql_password", "docker_login", "netrc"}
+    {"header", "cookie", "curl_user", "mysql_password", "docker_login", "netrc", "bearer"}
 )
 #: Readers that anchor on their own fixed flags or keyword and read no ``names``.
-_NAMELESS_READERS = frozenset({"curl_user", "netrc"})
+_NAMELESS_READERS = frozenset({"curl_user", "netrc", "bearer"})
 
 
 def _build_header(row: Mapping[str, Any]) -> HeaderRow:

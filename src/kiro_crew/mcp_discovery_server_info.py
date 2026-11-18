@@ -195,21 +195,19 @@ def redact_mcp_error(error: object, headers: object, extra_values: Iterable[str]
 
     Two layers, so every consumer (``to_dict``, the probe cache, the probe
     endpoints) satisfies one invariant — no credential-shaped text survives to
-    serialized output:
+    serialized output. They run in this order, so a generic match never masks
+    only part of a configured value before the exact scrubber looks for it:
 
-    1. The site-wide scanners (``redact_credentials`` /
+    1. The configured-value scrubber below catches the exact header values and
+       Authorization suffixes, including encoded spellings the generic
+       scanners cannot know about.
+    2. The site-wide scanners (``redact_credentials`` /
        ``redact_exfiltration_urls``) catch anything credential-SHAPED that a
        remote server reflects, whether or not it matches configured values —
        the same pass ``_sanitize_probe_error`` applies to probe exceptions.
-    2. The configured-value scrubber below catches the exact header values and
-       Authorization suffixes, including encoded spellings the generic
-       scanners cannot know about.
     """
     if not isinstance(error, str) or not isinstance(headers, dict):
         return error if isinstance(error, str) else ""
-
-    error, _ = redact_exfiltration_urls(error)
-    error, _ = redact_credentials(error)
 
     # Values map to whether they require lexical boundaries. Full header values
     # and long credentials are bare substring matches; only SHORT credentials
@@ -246,9 +244,15 @@ def redact_mcp_error(error: object, headers: object, extra_values: Iterable[str]
             continue
         values.setdefault(extra, len(extra) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH)
 
-    if not values:
-        return error
+    if values:
+        error = _scrub_configured_values(error, values)
+    error, _ = redact_exfiltration_urls(error)
+    error, _ = redact_credentials(error)
+    return error
 
+
+def _scrub_configured_values(error: str, values: dict[str, bool]) -> str:
+    """*error* with every configured value in *values* (value -> needs boundaries) masked."""
     # Check the characters outside a suffix instead of using \b: base64 padding
     # ends in a non-word "=", so \b would fail between that padding and ordinary
     # punctuation. Longest-first keeps a full header ahead of its own suffix.
