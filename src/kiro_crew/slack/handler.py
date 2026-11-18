@@ -530,7 +530,7 @@ _IDENTITY_NAME_MAX = 200
 
 # Slack UX strings
 _THINKING = "_Thinking…_"
-_THINKING_PLACEHOLDER = "*Thinking…*"
+_THINKING_PLACEHOLDER = "💭 _Thinking…_"
 _WORKING = "Working…"
 #: Row meta key naming the Slack message a thread import read the row from.
 _SLACK_TS_META = "slack_ts"
@@ -562,7 +562,7 @@ DELIVERY_DEBT_NOTICE = (
 )
 
 # Max chars of reasoning to surface inline in Slack before truncating. Keeps
-# the Thinking block from becoming a wall of text; the full
+# the 💭 Thinking block from becoming a wall of text; the full
 # reasoning remains available in the dashboard Activity panel.
 _THINKING_PREVIEW_LIMIT = 600
 
@@ -579,7 +579,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         limit: Soft character cap before truncation.
 
     Returns:
-        A Slack-mrkdwn string headed by ``*Thinking*``.
+        A Slack-mrkdwn string headed by ``💭 *Thinking*``.
     """
     text = mrkdwn.strip()
     truncated = False
@@ -595,7 +595,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         truncated = True
     quoted = "\n".join(f"> {ln}" if ln.strip() else ">" for ln in text.splitlines())
     suffix = "\n> _…full reasoning in dashboard Activity_" if truncated else ""
-    return f"*Thinking*\n{quoted}{suffix}"
+    return f"💭 *Thinking*\n{quoted}{suffix}"
 
 
 # Pending approvals: keyed by f"{channel}:{approval_msg_ts}"
@@ -779,7 +779,7 @@ _COMPACTION_FAILED_RETRIES = 2
 # directly, never through the turn's own reply path: the abandoned attempt
 # persists nothing and mirrors nothing, so the conversation log records the
 # message once, with the reply the replay produces.
-_COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
+_COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
 
 # Terminals the session handle synthesizes for a turn the backend never
 # finished: its own turn ceiling ("timeout") and a stale turn its probe
@@ -787,7 +787,7 @@ _COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
 # is failed, the thread is told, and the session is reset so the next message
 # starts a fresh runtime.
 _UNFINISHED_STOP_REASONS = frozenset({"timeout", STOP_REASON_STALE_RECOVER})
-_TIMEOUT_REPLY = "Error: Request timed out. Please try again."
+_TIMEOUT_REPLY = "⏱️ Request timed out. Please try again."
 
 
 @dataclass(frozen=True)

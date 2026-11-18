@@ -1018,7 +1018,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         covering all call sites (the native handler guards its twin the same
         way): the unguarded ``on_tool_call`` call site runs before any text
         streams, and a propagated Slack error there reaches the transport
-        catch-all in ``transport_dispatch``, which posts a terminal "Error:
+        catch-all in ``transport_dispatch``, which posts a terminal "🔧
         Something went wrong (transport path)" reply on a turn that is still
         live.
         """
@@ -1110,7 +1110,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         if not self._active_task_id:
             return
         elapsed = self._tool_elapsed_str()
-        title = f"{self._active_task_title} · {elapsed}" if elapsed else self._active_task_title
+        title = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
         outcome = self._tool_outcomes.pop(self._active_tool_call_id, "") or ""
         succeeded = not outcome or outcome == "completed"
         if succeeded:
@@ -1140,8 +1140,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             return ""
         mins, secs = divmod(elapsed, 60)
         if mins:
-            return f"{int(mins)}m {secs:.1f}s"
-        return f"{secs:.1f}s"
+            return f"⏱ {int(mins)}m {secs:.1f}s"
+        return f"⏱ {secs:.1f}s"
 
     async def _tool_elapsed_updater(self) -> None:
         """Every 30s, refresh the active task card's title with elapsed time."""
@@ -1154,7 +1154,7 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
                 # Elapsed goes in the TITLE (Slack replaces title on same
                 # task_id), never details (which Slack appends).
                 await self._append_task(
-                    self._active_task_id, f"{self._active_task_title} · {time_str}", "in_progress"
+                    self._active_task_id, f"{self._active_task_title}  ⏱ {time_str}", "in_progress"
                 )
 
     def _start_tool_timer(self) -> None:

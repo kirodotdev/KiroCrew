@@ -94,7 +94,7 @@ PICKER_LABEL = "*Approval mode*"
 PICKER_PLACEHOLDER = "Choose a mode"
 SET_NOTE = "Approval mode set to *{label}* by <@{user}>."
 UNKNOWN_TEXT = (
-    "Error: `{word}` isn't a mode. Use `/{command} approval normal`, "
+    "❌ `{word}` isn't a mode. Use `/{command} approval normal`, "
     "`/{command} approval reads` or `/{command} approval trust`."
 )
 YOLO_OFF_TEXT = (
@@ -102,7 +102,7 @@ YOLO_OFF_TEXT = (
     "(Kiro Crew calls it YOLO) is off too."
 )
 YOLO_ON_NOTE = (
-    "An override is on: every tool runs without asking in every session, "
+    "⚡ An override is on: every tool runs without asking in every session, "
     "whatever this select shows (Kiro Crew calls this YOLO). Kiro Crew's owner turns "
     "it off with the `yolo off` Slack command or the approval mode picker on the dashboard."
 )
@@ -172,31 +172,31 @@ CONFIRM_TEXT = "Switch this channel to *{label}*? {effect}"
 CONFIRM_BUTTON = "Switch to {label}"
 CONFIRM_KEEP_NOTE = "Ignore this to keep the current mode. The button expires in 10 minutes."
 CONFIRM_STALE_TEXT = (
-    "Blocked: That confirmation has expired or was already used. Pick the mode again in the "
+    "⛔ That confirmation has expired or was already used. Pick the mode again in the "
     "first message."
 )
 #: Confirmation buttons already pressed (each is good for one click). In memory:
 #: a restart drops it, and the session pin and the age bound still hold then.
 _used_confirms: set[str] = set()
 TRUST_WARNING = (
-    "Warning: <@{user}> put this channel on *Trust*: tools run without asking for the agent "
+    "⚠️ <@{user}> put this channel on *Trust*: tools run without asking for the agent "
     f"and for {HELPERS}. Set *Approval mode* in the "
     "first message back to Normal, or run `/{command} approval normal`, to turn it off."
 )
-FAILED_TEXT = "Warning: Could not change the approval mode: {reason}"
+FAILED_TEXT = "⚠️ Could not change the approval mode: {reason}"
 NO_SESSION_TEXT = "This channel's session isn't open right now. Try again in a moment."
-NOT_ALLOWED_TEXT = "Blocked: You can't change this channel's approval mode."
-OWNER_ONLY_TEXT = "Blocked: Only Kiro Crew's owner can change this channel's approval mode."
-NOT_THIS_CARD_TEXT = "Blocked: That approval isn't this channel's to trust."
-NOT_LIVE_TEXT = "Blocked: That approval isn't waiting any more, so nothing changed."
+NOT_ALLOWED_TEXT = "⛔ You can't change this channel's approval mode."
+OWNER_ONLY_TEXT = "⛔ Only Kiro Crew's owner can change this channel's approval mode."
+NOT_THIS_CARD_TEXT = "⛔ That approval isn't this channel's to trust."
+NOT_LIVE_TEXT = "⛔ That approval isn't waiting any more, so nothing changed."
 REBOUND_TEXT = (
     "This channel moved to a new session, so nothing changed. Use the channel's latest "
     "kickoff message or `/{command} approval <normal|reads|trust>`."
 )
 #: The same words ``apply_approval_mode`` answers a spent prompt with (its 409).
 STALE_REASON = "the approval is no longer waiting"
-TRUSTED_CARD_TEXT = "Approved, and this channel is now on Trust (<@{user}>)."
-RAN_UNDER_TRUST = "Ran under Trust: <@{user}> put this channel on Trust."
+TRUSTED_CARD_TEXT = "🤝 Approved, and this channel is now on Trust (<@{user}>)."
+RAN_UNDER_TRUST = "🤝 Ran under Trust: <@{user}> put this channel on Trust."
 
 #: Code-channel approval cards the channel's Trust answered and re-wrote in
 #: place, so ``_run_chat``'s cleanup keeps them instead of deleting them.
@@ -558,7 +558,7 @@ async def set_channel_mode(
             _audit("allowed", f"{resources} result=unchanged")
             return ModeResult(
                 "unchanged",
-                f"Note: This channel is already on *{label(mode)}*.{_failed_note(failed)}",
+                f"ℹ️ This channel is already on *{label(mode)}*.{_failed_note(failed)}",
                 partial=bool(failed),
             )
         # Each waiting card's own future, captured before any await, so a card
@@ -669,7 +669,7 @@ async def set_channel_mode(
     ended = YOLO_OFF_TEXT if yolo_before and not _yolo_on() else ""
     return ModeResult(
         "set",
-        f"This channel is now on *{label(mode)}*.{ended}{_failed_note(failed)}",
+        f"✅ This channel is now on *{label(mode)}*.{ended}{_failed_note(failed)}",
         partial=bool(failed),
         trusted_cards=trusted if mode == "trust" else frozenset(),
     )
@@ -745,7 +745,7 @@ def _failed_note(failed: list[str]) -> str:
     if not failed:
         return ""
     shown = ", ".join(failed[:5]) + (f" and {len(failed) - 5} more" if len(failed) > 5 else "")
-    return f" Warning: Couldn't change {len(failed)} running worker(s): {shown}."
+    return f" ⚠️ Couldn't change {len(failed)} running worker(s): {shown}."
 
 
 def _own_pending_cards(binding: Binding, slot: Any) -> dict[str, asyncio.Future[str]]:

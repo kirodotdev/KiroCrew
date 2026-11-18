@@ -2,7 +2,7 @@
 
 Each choice is a plain button whose click sends that choice, more than five wrap into
 further rows, and the last row's ⋯ menu opens a modal for picking several. After any
-answer the card is edited in place to "<who> chose <choice> · <time>"; a second or
+answer the card is edited in place to "✅ <who> chose <choice> · <time>"; a second or
 stale click gets a private "Already answered" and sends nothing.
 """
 
@@ -206,7 +206,7 @@ class TestOneClick:
         assert not [b for b in blocks if b["type"] == "actions"], "buttons removed"
         assert blocks[0]["type"] == "section", "the question stays"
         line = blocks[-1]["elements"][0]["text"]
-        assert line.startswith("<@U1> chose *Alpha* · <!date^")
+        assert line.startswith("✅ <@U1> chose *Alpha* · <!date^")
         orch.slack.post_blocks.assert_not_called()
 
     @pytest.mark.asyncio

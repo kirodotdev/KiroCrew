@@ -225,9 +225,7 @@ class TestAnyManifestCommandIsAnswered:
     async def test_a_caller_who_is_not_the_owner_is_refused(self) -> None:
         orch = MagicMock()
         posted, audit = await _slash(_rendered_command("jdoe"), owner=False, orch=orch)
-        assert [p["text"] for p in posted] == [
-            "Blocked: You are not authorized to use this command."
-        ]
+        assert [p["text"] for p in posted] == ["⛔ You are not authorized to use this command."]
         assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
         assert orch.slack_command == "kirocrew"  # a refused caller renames nothing
 
