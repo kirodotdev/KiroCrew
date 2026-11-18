@@ -723,7 +723,7 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
     }
     if not bot_token:
         body["install"] = scope_probe.ManifestStatus(scope_probe.STATUS_NOT_CONFIGURED).as_dict()
-        body["app_manifest_url"] = None
+        body["app_manifest_url"] = body["app_basic_info_url"] = body["app_dm_url"] = None
         return body
 
     key = hashlib.sha256((bot_token + "\0" + ",".join(sorted(enabled))).encode("utf-8")).hexdigest()
@@ -756,7 +756,12 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
         _status_cache.clear()  # one install per gateway: keep only the newest answer
         _status_cache[key] = (now, install)
     body["install"] = install
-    body["app_manifest_url"] = slack_manifest.app_manifest_url(str(install.get("app_id") or ""))
+    app_id = str(install.get("app_id") or "")
+    body["app_manifest_url"] = slack_manifest.app_manifest_url(app_id)
+    # The setup wizard's two links: where to generate the app-level token, and
+    # the bot's DM for the first message.
+    body["app_basic_info_url"] = slack_manifest.app_basic_info_url(app_id)
+    body["app_dm_url"] = slack_manifest.app_dm_url(app_id, str(install.get("team_id") or ""))
     return body
 
 
