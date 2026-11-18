@@ -125,7 +125,7 @@ def _sandboxed_config_write_hint(exc: OSError) -> str | None:
     if not _names_sealed_config(exc):
         return None
     return (
-        "❌ The config file was not written. Inside the agent sandbox config.json and "
+        "Error: The config file was not written. Inside the agent sandbox config.json and "
         "config.local.json are read-only, so an agent cannot change the settings that "
         "confine it: change the setting in the dashboard (Settings), or run this command "
         "from your own terminal. Outside the sandbox, check the file's permissions."
@@ -191,7 +191,7 @@ def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
 
     ``config set`` stores and echoes the raw value, but the loader runs it
     through ``_sanitize_bot_name`` before any session reads it, dropping emoji,
-    symbols and braces and capping the length.  The echoed ``✅`` line is the
+    symbols and braces and capping the length.  The echoed ``Done:`` line is the
     typed value, so without this the user learns nothing when the loaded name
     will differ — including the case where every character is dropped and the
     default name is used instead.  A non-text value never gets here: the
@@ -205,13 +205,13 @@ def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
         return
     if loaded:
         print(
-            f"⚠️  {key} will load as {json.dumps(loaded)}, not {json.dumps(parsed)} — "
+            f"Warning: {key} will load as {json.dumps(loaded)}, not {json.dumps(parsed)} — "
             "the loader drops characters it cannot use in a name.",
             file=sys.stderr,
         )
     else:
         print(
-            f"⚠️  {key} will load as empty — the loader drops every character of "
+            f"Warning: {key} will load as empty — the loader drops every character of "
             f"{json.dumps(parsed)}, so the default name is used instead.",
             file=sys.stderr,
         )
@@ -237,12 +237,12 @@ def _warn_if_not_finite(key: str, parsed: object) -> None:
     ``nan``, ``inf`` and an overflowing ``1e999`` parse as floats, pass the declared
     number type, and are written as the non-standard JSON tokens ``NaN`` and
     ``Infinity``. The loader's number reader (``config.fields._safe_float`` / ``_safe_int``) then
-    replaces a non-finite value with the key's default, so the ``✅`` line names a
+    replaces a non-finite value with the key's default, so the ``Done:`` line names a
     value that never takes effect. Advice only: the write itself already succeeded.
     """
     for path in _non_finite_paths(key, parsed):
         print(
-            f"⚠️  {path} is not a finite number: it is saved, but a number setting "
+            f"Warning: {path} is not a finite number: it is saved, but a number setting "
             "loads it as its default, so it will not take effect.",
             file=sys.stderr,
         )
@@ -266,7 +266,7 @@ def _warn_if_address_space_capped(key: str, parsed: object) -> None:
     if not ResourceLimitsConfig.from_raw(section).max_address_space_mb:
         return
     print(
-        f"⚠️  {_ADDRESS_SPACE_KEY} caps VIRTUAL address space (RLIMIT_AS) on every "
+        f"Warning: {_ADDRESS_SPACE_KEY} caps VIRTUAL address space (RLIMIT_AS) on every "
         "spawned tool, not resident memory. Node/V8 (kiro-cli, npx MCP servers) and "
         "GraalVM native binaries reserve far more than they use and can fail to "
         "start below about 64 GiB (65536). To cap resident memory, set "
@@ -284,7 +284,7 @@ def _warn_unapproved_share_names(key: str, parsed: object) -> None:
 
     The share list names servers, but what a shared server runs is approved by
     content in MCP Management. The next gateway start refuses a listed server
-    with no approved launch, and only the dashboard says so; the ``✅`` line
+    with no approved launch, and only the dashboard says so; the ``Done:`` line
     alone reads as if sharing were on. The write itself still succeeded, so
     this is advice, not a refusal.
     """
@@ -294,7 +294,7 @@ def _warn_unapproved_share_names(key: str, parsed: object) -> None:
 
     for name in unapproved_share_names(parsed):
         print(
-            f"⚠️  {name} has no approved launch, so the gateway will not share it until "
+            f"Warning: {name} has no approved launch, so the gateway will not share it until "
             "you approve it in MCP Servers.",
             file=sys.stderr,
         )
@@ -331,7 +331,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             return
         val = _dict_get(d, key)
         if val is _MISSING:
-            print(f"❌ Unknown key: {key}", file=sys.stderr)
+            print(f"Error: Unknown key: {key}", file=sys.stderr)
             sys.exit(1)
         if isinstance(val, (dict, list)):
             print(json.dumps(val, indent=2))
@@ -344,7 +344,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
         # means "set empty text".
         encoded = getattr(args, "value_base64", None)
         if encoded is not None and file_path:
-            print("❌ --value-base64 cannot be combined with --file", file=sys.stderr)
+            print("Error: --value-base64 cannot be combined with --file", file=sys.stderr)
             sys.exit(1)
         if file_path and args.key is not None:
             # ``--file`` replaces the whole document, so a positional key/value
@@ -352,7 +352,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # ``--file`` write (the behaviour today) and say the key/value was
             # ignored, rather than silently dropping it.
             print(
-                f"⚠️  ignoring the key/value ({args.key}) given with --file: "
+                f"Warning: ignoring the key/value ({args.key}) given with --file: "
                 "--file replaces the whole document",
                 file=sys.stderr,
             )
@@ -363,17 +363,17 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             try:
                 data = json.loads(safe_read_file(str(fp)))
             except PermissionError as e:
-                print(f"❌ {e}", file=sys.stderr)
+                print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
             except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
-                print(f"❌ Invalid JSON: {e}", file=sys.stderr)
+                print(f"Error: Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(data, dict):
                 # A JSON array or scalar parses fine but is not a config. Refusing
                 # here keeps the file untouched; writing it through would leave a
                 # config.json that every reader rejects.
                 print(
-                    f"❌ Not a config object: {fp} holds a JSON "
+                    f"Error: Not a config object: {fp} holds a JSON "
                     f"{type(data).__name__}, expected an object",
                     file=sys.stderr,
                 )
@@ -436,7 +436,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 # paths: nothing was written. The message names an env-var key
                 # (never its value) or a workspace and its dir. Anchored on the file,
                 # since there is no single key to name.
-                print(f"❌ {fp}: {e}", file=sys.stderr)
+                print(f"Error: {fp}: {e}", file=sys.stderr)
                 sys.exit(1)
             sel().log_api_access(
                 caller="cli",
@@ -447,11 +447,11 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             )
             dest = "config.local.json" if use_local else file_path
             if use_local:
-                print(f"✅ Overlay loaded from {file_path} (saved to {dest})")
+                print(f"Done: Overlay loaded from {file_path} (saved to {dest})")
                 for warning in local_warnings:
-                    print(f"⚠  {warning}", file=sys.stderr)
+                    print(f"Warning: {warning}", file=sys.stderr)
             else:
-                print(f"✅ Config loaded from {file_path}")
+                print(f"Done: Config loaded from {file_path}")
             gateway_section = data.get("mcp_gateway")
             if isinstance(gateway_section, dict):
                 _warn_unapproved_share_names(_SHARE_LIST_KEY, gateway_section.get("stub_servers"))
@@ -462,14 +462,14 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             if encoded is not None:
                 if value is not None:
                     print(
-                        "❌ Give the value as VALUE or as --value-base64, not both",
+                        "Error: Give the value as VALUE or as --value-base64, not both",
                         file=sys.stderr,
                     )
                     sys.exit(1)
                 try:
                     value = _decode_value_base64(encoded)
                 except ValueError as decode_error:
-                    print(f"❌ --value-base64: {decode_error}", file=sys.stderr)
+                    print(f"Error: --value-base64: {decode_error}", file=sys.stderr)
                     sys.exit(1)
             if not key or value is None:
                 print("Usage: kirocrew config set <key> <value>", file=sys.stderr)
@@ -486,7 +486,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 else:
                     parsed = _parse_value(value)
             except ValueError as list_error:
-                print(f"❌ {key}: {list_error}", file=sys.stderr)
+                print(f"Error: {key}: {list_error}", file=sys.stderr)
                 sys.exit(1)
             # A declared enum is checked on EVERY write, stored or not, and what is
             # written is the enum's own spelling. The load path's answer to a
@@ -497,7 +497,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             try:
                 parsed = _declared_enum_value(key, parsed)
             except ValueError as enum_error:
-                print(f"❌ {key}: {enum_error}", file=sys.stderr)
+                print(f"Error: {key}: {enum_error}", file=sys.stderr)
                 sys.exit(1)
             # `stt.threads` stores an int but accepts `auto` as the spelling of 0.
             # Refused here rather than written and degraded at load, for the same
@@ -509,7 +509,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 threads = parse_threads(parsed)
                 if threads is None:
                     print(
-                        f"❌ {key}: {parsed!r} is not 'auto', 0, or a thread count "
+                        f"Error: {key}: {parsed!r} is not 'auto', 0, or a thread count "
                         f"from 1 to {MAX_THREADS}",
                         file=sys.stderr,
                     )
@@ -520,7 +520,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # always checked together.
             if key.startswith("agent.acp_failover."):
                 print(
-                    "❌ agent.acp_failover is set as one object, e.g. "
+                    "Error: agent.acp_failover is set as one object, e.g. "
                     '\'{"enabled": true, "chain": ["codex", "claude"]}\'',
                     file=sys.stderr,
                 )
@@ -531,7 +531,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 try:
                     parsed = validate_acp_failover(parsed)
                 except ValueError as failover_error:
-                    print(f"❌ {key}: {failover_error}", file=sys.stderr)
+                    print(f"Error: {key}: {failover_error}", file=sys.stderr)
                     sys.exit(1)
             # Fourth write path to telemetry.beacon_enabled, after the dashboard
             # PATCH and `telemetry enable`. Gated here too, and BEFORE the
@@ -546,7 +546,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 # its own tool name so the trail says which control refused.
                 if beacon.is_governance_pinned_off(audit_tool="config_set_cli"):
                     print(
-                        "❌ The anonymous beacon is pinned OFF by your "
+                        "Error: The anonymous beacon is pinned OFF by your "
                         "administrator's security policy (capabilities.telemetry).",
                         file=sys.stderr,
                     )
@@ -565,7 +565,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
 
                 if tailnet.is_governance_pinned_off(audit_tool="config_set_cli_tailnet"):
                     print(
-                        "❌ Tailnet dashboard access is pinned OFF by your "
+                        "Error: Tailnet dashboard access is pinned OFF by your "
                         "administrator's security policy "
                         "(capabilities.tailnet_origin).",
                         file=sys.stderr,
@@ -582,7 +582,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             _refuse_unknown_key(key, parsed, overlay=use_local)
             model_error = _extraction_model_error(key, parsed)
             if model_error:
-                print(f"❌ {key}: {model_error}", file=sys.stderr)
+                print(f"Error: {key}: {model_error}", file=sys.stderr)
                 sys.exit(1)
             if use_local:
                 p = config_local_path()
@@ -613,7 +613,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 except ConfigWriteRefused as e:
                     # The publish floor refused the document before writing it; the
                     # message names the offending env-var key and never its value.
-                    print(f"❌ {key}: {e}", file=sys.stderr)
+                    print(f"Error: {key}: {e}", file=sys.stderr)
                     sys.exit(1)
 
                 sel().log_api_access(
@@ -623,7 +623,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     source="cli",
                     resources=f"{key}={json.dumps(parsed)}",
                 )
-                print(f"✅ {key} = {json.dumps(parsed)} (saved to config.local.json)")
+                print(f"Done: {key} = {json.dumps(parsed)} (saved to config.local.json)")
                 if dropped:
                     _print_dropped_overlay_keys(key, dropped)
                 _warn_if_bot_name_altered(key, parsed)
@@ -649,14 +649,14 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     update_config_locked(config_path(), mutate=_mutate_base)
                 except ConfigReadError as e:
                     print(
-                        f"❌ Cannot set key in a corrupt config.json: {e}",
+                        f"Error: Cannot set key in a corrupt config.json: {e}",
                         file=sys.stderr,
                     )
                     sys.exit(1)
                 except ConfigWriteRefused as e:
                     # Same shape as the corrupt-file refusal: nothing was written, and
                     # the message names the offending env-var key, never its value.
-                    print(f"❌ {key}: {e}", file=sys.stderr)
+                    print(f"Error: {key}: {e}", file=sys.stderr)
                     sys.exit(1)
                 sel().log_api_access(
                     caller="cli",
@@ -665,7 +665,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     source="cli",
                     resources=f"{key}={json.dumps(parsed)}",
                 )
-                print(f"✅ {key} = {json.dumps(parsed)}")
+                print(f"Done: {key} = {json.dumps(parsed)}")
                 shadowed = _overlay_shadowing_keys(_written_leaf_paths(key, parsed))
                 if shadowed:
                     _print_overlay_shadowed_keys(sorted({_addressable_key(s) for s in shadowed}))
@@ -683,7 +683,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
         if not p.exists():
             cfg = KiroCrewConfig()
             cfg.save()
-            print(f"👻 Created default config: {p}")
+            print(f"Created default config: {p}")
         sel().log_api_access(
             caller="cli",
             operation="config_edit",
@@ -731,7 +731,7 @@ def _edit_config_endorsed(editor: str) -> None:
         original_text = read_endorsed_config_text(config_path())
     except UnicodeDecodeError as e:
         print(
-            f"❌ {config_path()} is not UTF-8 text, so it cannot be edited here: {e}",
+            f"Error: {config_path()} is not UTF-8 text, so it cannot be edited here: {e}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -758,7 +758,7 @@ def _edit_config_endorsed(editor: str) -> None:
         kept = f"; the edited copy is kept at {staged}" if keep else ""
         if status != 0:
             print(
-                f"❌ The editor exited with status {status}; nothing was written{kept}",
+                f"Error: The editor exited with status {status}; nothing was written{kept}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -773,11 +773,11 @@ def _edit_config_endorsed(editor: str) -> None:
         try:
             data = json.loads(strip_utf8_bom(edited.decode("utf-8")))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"❌ Invalid JSON: {e}{kept}", file=sys.stderr)
+            print(f"Error: Invalid JSON: {e}{kept}", file=sys.stderr)
             sys.exit(1)
         if not isinstance(data, dict):
             print(
-                f"❌ Not a config object: the edit holds a JSON "
+                f"Error: Not a config object: the edit holds a JSON "
                 f"{type(data).__name__}, expected an object{kept}",
                 file=sys.stderr,
             )
@@ -799,10 +799,10 @@ def _edit_config_endorsed(editor: str) -> None:
         try:
             update_config_locked(config_path(), mutate=_mutate, on_corrupt="reset")
         except ConfigWriteRefused as e:
-            print(f"❌ {e}{kept}", file=sys.stderr)
+            print(f"Error: {e}{kept}", file=sys.stderr)
             sys.exit(1)
         keep = False
-        print(f"✅ Saved {config_path()}")
+        print(f"Saved {config_path()}")
     finally:
         if not keep:
             shutil.rmtree(staging, ignore_errors=True)
@@ -848,18 +848,18 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
     try:
         raw = json.loads(read_config_text(path))
     except FileNotFoundError:
-        print("✅ No config.json yet — the current defaults already apply.")
+        print("No config.json yet — the current defaults already apply.")
         return
     except OSError as e:
-        print(f"❌ Could not read {path}: {e}", file=sys.stderr)
+        print(f"Error: Could not read {path}: {e}", file=sys.stderr)
         sys.exit(1)
     except ValueError as e:
         # ValueError covers both shapes of unreadable content without restating
         # them: json.JSONDecodeError and UnicodeDecodeError are both subclasses.
-        print(f"❌ Could not read {path}: {e}", file=sys.stderr)
+        print(f"Error: Could not read {path}: {e}", file=sys.stderr)
         sys.exit(1)
     if not isinstance(raw, dict):
-        print(f"❌ {path} is not a JSON object", file=sys.stderr)
+        print(f"Error: {path} is not a JSON object", file=sys.stderr)
         sys.exit(1)
 
     # acked={} so the operator sees the whole truth; an ack answers the unsolicited
@@ -872,7 +872,7 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         unknown = [k for k in wanted if k not in known]
         if unknown:
             print(
-                "❌ Not holding a superseded default or a coerced value: " + ", ".join(unknown),
+                "Error: Not holding a superseded default or a coerced value: " + ", ".join(unknown),
                 file=sys.stderr,
             )
             print(
@@ -884,7 +884,7 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         coerced = [(c, v) for c, v in coerced if c.dotted_key in wanted]
 
     if not drifted and not coerced:
-        print("✅ No stored value holds a superseded default.")
+        print("No stored value holds a superseded default.")
         return
 
     keeping = getattr(args, "keep", False)
@@ -894,7 +894,7 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         # setting that never takes effect.
         for centry, stored in coerced:
             print(
-                f"⚠️  {centry.dotted_key} ({stored!r}) cannot be kept — "
+                f"Warning: {centry.dotted_key} ({stored!r}) cannot be kept — "
                 f"the loader replaces it. Use --adopt to drop it.",
                 file=sys.stderr if wanted else sys.stdout,
             )
@@ -909,7 +909,7 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         # still acts on it -- that is the operator saying so again.
         drifted = [e for e in drifted if e.dotted_key not in acked]
         if not drifted and not coerced:
-            print("✅ Nothing left to act on — every remaining value is acknowledged.")
+            print("Nothing left to act on — every remaining value is acknowledged.")
             print("   Name a key explicitly to change one of those.")
             return
 
@@ -957,16 +957,16 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         try:
             update_config_locked(config_path(), mutate=_mutate)
         except ConfigReadError as e:
-            print(f"❌ Cannot edit a corrupt config.json: {e}", file=sys.stderr)
+            print(f"Error: Cannot edit a corrupt config.json: {e}", file=sys.stderr)
             sys.exit(1)
         except ConfigWriteRefused as e:
-            print(f"❌ {e}", file=sys.stderr)
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         except OSError as e:
             # A read-only or full data home, or a refused link: report it and stop,
             # rather than letting the CLI die on a traceback.
             print(
-                _sandboxed_config_write_hint(e) or f"❌ Could not write {config_path()}: {e}",
+                _sandboxed_config_write_hint(e) or f"Error: Could not write {config_path()}: {e}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -976,7 +976,7 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
             if removed:
                 drop_acks(removed)
         except OSError as e:
-            print(f"⚠️  Adopted, but could not update acknowledgments: {e}", file=sys.stderr)
+            print(f"Warning: Adopted, but could not update acknowledgments: {e}", file=sys.stderr)
         sel().log_api_access(
             caller="cli",
             operation="config_adopt_defaults",
@@ -990,11 +990,15 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         overridden = _overlay_keys(removed)
         for key in removed:
             if key in rewritten:
-                print(f"✅ {key} set to {rewritten[key]!r} — what the stored value already ran as")
+                print(
+                    f"Done: {key} set to {rewritten[key]!r} — what the stored value already ran as"
+                )
             elif key in overridden:
-                print(f"✅ {key} removed from config.json — config.local.json still overrides it")
+                print(
+                    f"Done: {key} removed from config.json — config.local.json still overrides it"
+                )
             else:
-                print(f"✅ {key} removed — the current default now applies")
+                print(f"Done: {key} removed — the current default now applies")
         if not removed:
             print("Nothing removed — the stored values changed since they were listed.")
         # The schema's restart=True mark is the one statement of which fields a
@@ -1017,13 +1021,13 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         try:
             recorded = record_acks(keys)
         except ConfigReadError as e:
-            print(f"❌ Cannot read a corrupt config.json: {e}", file=sys.stderr)
+            print(f"Error: Cannot read a corrupt config.json: {e}", file=sys.stderr)
             sys.exit(1)
         except ConfigWriteRefused as e:
-            print(f"❌ {e}", file=sys.stderr)
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         except OSError as e:
-            print(f"❌ Could not record acknowledgments: {e}", file=sys.stderr)
+            print(f"Error: Could not record acknowledgments: {e}", file=sys.stderr)
             sys.exit(1)
         if not recorded:
             print("Nothing recorded — the stored values changed since they were listed.")
@@ -1037,7 +1041,7 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         )
         notes = {e.dotted_key: e.note for e in drifted if e.note}
         for key in recorded:
-            print(f"✅ {key} recorded as intentional — no longer reported")
+            print(f"Done: {key} recorded as intentional — no longer reported")
             if key in notes:
                 # Said again at the moment of affirming: the note is a fact the
                 # choice to keep depends on, and this is the last line they read.
@@ -1046,10 +1050,10 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         return
 
     for entry in drifted:
-        mark = "✅ acknowledged as intentional" if entry.dotted_key in acked else "ℹ️ "
+        mark = "Acknowledged as intentional:" if entry.dotted_key in acked else "Note:"
         print(f"{mark} {drift_summary(entry)}\n")
     for centry, stored in coerced:
-        print(f"ℹ️  {coercion_summary(centry, stored)}\n")
+        print(f"Note: {coercion_summary(centry, stored)}\n")
     if coerced or any(e.dotted_key not in acked for e in drifted):
         print("Take the current defaults:  kirocrew config defaults --adopt")
         print("Affirm your values:         kirocrew config defaults --keep")
@@ -1066,7 +1070,7 @@ def _print_adopted() -> None:
     the upgrade change in my file" is exactly the question a bare listing asks.
     """
     for dotted, removed in sorted(adopted_superseded().items()):
-        print(f"ℹ️  {adoption_summary(dotted, removed)}\n")
+        print(f"Note: {adoption_summary(dotted, removed)}\n")
 
 
 def _overlay_keys(dotted_keys: list[str]) -> set[str]:
@@ -1167,7 +1171,7 @@ def _print_overlay_shadowed_keys(keys: list[str]) -> None:
     """
     for key in keys:
         print(
-            f"⚠️  {key} is also set in config.local.json, which overrides config.json, "
+            f"Warning: {key} is also set in config.local.json, which overrides config.json, "
             "so the value just saved does not apply until that key is removed there. "
             f"`kirocrew config get {key}` shows the value that loads; "
             f"`kirocrew config set --local {key} <value>` changes it.",
@@ -1238,7 +1242,7 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
     if declared is None:
         if stored:
             return
-        print(f"❌ Unknown key: {key}", file=sys.stderr)
+        print(f"Error: Unknown key: {key}", file=sys.stderr)
         if preserved:
             print(
                 "   It is in config.json, but this version does not read it, "
@@ -1250,7 +1254,7 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
         return
     type_error = _declared_type_error(declared, parsed)
     if type_error:
-        print(f"❌ {key}: {type_error}", file=sys.stderr)
+        print(f"Error: {key}: {type_error}", file=sys.stderr)
         if declared.type == "string":
             print(
                 """   To store it as text, quote it as JSON, e.g. '"007"'.""",
@@ -1275,13 +1279,14 @@ def _refuse_emitted_elsewhere_value(key: str, section: str, name: str, parsed: o
         if entry is not None:
             error = _declared_type_error(entry, parsed)
             if error:
-                print(f"❌ {key}: {error}", file=sys.stderr)
+                print(f"Error: {key}: {error}", file=sys.stderr)
                 sys.exit(1)
             break
     if key == "slack.dm_activation" and _validate_activation(str(parsed)) != parsed:
         allowed = ", ".join(sorted(_VALID_ACTIVATIONS))
         print(
-            f"❌ {key}: {parsed!r} is not one of the selectable values: {allowed}", file=sys.stderr
+            f"Error: {key}: {parsed!r} is not one of the selectable values: {allowed}",
+            file=sys.stderr,
         )
         sys.exit(1)
 
@@ -1313,7 +1318,7 @@ def _print_dropped_overlay_keys(key: str, dropped: list[str]) -> None:
     hint only makes it visible and names the form that keeps siblings.
     """
     print(
-        f"⚠️  {key} was replaced in config.local.json, so it no longer pins: "
+        f"Warning: {key} was replaced in config.local.json, so it no longer pins: "
         f"{', '.join(dropped)}",
         file=sys.stderr,
     )

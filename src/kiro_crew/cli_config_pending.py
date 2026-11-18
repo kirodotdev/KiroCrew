@@ -100,9 +100,9 @@ def _resolve(leaf: str, *, apply: bool, signature: str) -> None:
         _refuse(op, f"{leaf}=unwritable", f"{leaf} could not be written: {exc}", outcome="error")
     _audit(op, "ok", leaf)
     if not apply:
-        print(f"✅ Discarded the outside change to {leaf}; the saved version is back.")
+        print(f"Done: Discarded the outside change to {leaf}; the saved version is back.")
         return
-    print(f"✅ Applied the outside change to {leaf}.")
+    print(f"Done: Applied the outside change to {leaf}.")
     if restart:
         print("Restart the gateway for a running instance to pick it up.")
 
@@ -116,7 +116,7 @@ def _not_pending(leaf: str) -> str:
 
 def _refuse(op: str, resources: str, message: str, *, outcome: str = "denied") -> NoReturn:
     _audit(op, outcome, resources)
-    print(f"❌ {message}", file=sys.stderr)
+    print(f"Error: {message}", file=sys.stderr)
     sys.exit(1)
 
 

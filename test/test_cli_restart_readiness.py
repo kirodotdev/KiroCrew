@@ -28,7 +28,7 @@ class TestRestartReadinessVerdict:
     gateway — which is exactly the behaviour under test here, so inheriting it
     would mask every one of these tests.
 
-    Before this verdict existed, ``restart`` printed "✅ Started detached gateway
+    Before this verdict existed, ``restart`` printed "Done: Started detached gateway
     (pid N)" straight off the ``Popen`` pid and exited 0, so a replacement that
     the ``KIROCREW_HOME`` ownership guard refused (exit 1, milliseconds later)
     reported success with NO gateway running.
@@ -97,14 +97,14 @@ class TestRestartReadinessVerdict:
         return [c.kwargs["outcome"] for c in mock_sel.log_api_access.call_args_list]
 
     def test_replacement_that_dies_is_reported_as_a_failure(self, capsys):
-        """An immediately-exiting replacement must exit non-zero, not print ✅."""
+        """An immediately-exiting replacement must exit non-zero, not print "Done:"."""
         code, mock_sel, mock_token_url = self._drive(
             poll=1, ready_status=0, marker_pid=[None, None]
         )
 
         assert code == 1
         out = capsys.readouterr().out
-        assert "✅" not in out
+        assert "Done: " not in out
         assert "died immediately" in out
         # The exit status is the diagnosis (1 == refused by the ownership guard),
         # and the log is where the reason is.
@@ -315,7 +315,7 @@ class TestRestartReadinessVerdict:
 
         assert code == 1
         out = capsys.readouterr().out
-        assert "✅" not in out
+        assert "Done: " not in out
         assert "did not become ready" in out
         assert "4321" in out
         assert self._outcomes(mock_sel) == ["denied"]
@@ -334,7 +334,7 @@ class TestRestartReadinessVerdict:
         )
 
         assert code is None
-        assert "✅ Started detached gateway (pid 4321)" in capsys.readouterr().out
+        assert "Done: Started detached gateway (pid 4321)" in capsys.readouterr().out
         assert self._outcomes(mock_sel) == ["allowed"]
         mock_token_url.assert_called_once()
 
@@ -357,7 +357,7 @@ class TestRestartReadinessVerdict:
 
         assert code == 1
         out = capsys.readouterr().out
-        assert "✅" not in out
+        assert "Done: " not in out
         assert "could not confirm that replacement gateway" in out
         mock_token_url.assert_not_called()
 
@@ -376,7 +376,7 @@ class TestRestartReadinessVerdict:
 
         assert code == 1
         out = capsys.readouterr().out
-        assert "✅" not in out
+        assert "Done: " not in out
         assert "not serving" not in out
         assert "could not confirm that replacement gateway (pid 4321) is the one serving" in out
         assert "re-running restart would stop it" in out

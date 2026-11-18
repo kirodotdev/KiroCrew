@@ -810,7 +810,7 @@ why. `kirocrew logout` and `kirocrew cron trigger` read that reason through
 `loopback_http.http_error_reason`: at most 4096 bytes of the body, its `error`
 string (or its `code` string when `error` is missing or blank), with control
 characters dropped and a 200-character cap. The line becomes `HTTP <code>:
-<reason>`, for example `❌ Failed to revoke sessions: HTTP 500: could not persist
+<reason>`, for example `Failed to revoke sessions: HTTP 500: could not persist
 session revocation; logout not completed`, so a revocation the gateway could not
 persist is not mistaken for a refused secret. An HTML, empty or non-JSON body
 keeps the bare `HTTP <code>`.
@@ -1794,7 +1794,7 @@ if args.command == "gateway":
 
 The preflight runs `probe_file_persistence` on the data home (created through
 `config_dir()` when missing) and, when the home cannot hold files, prints one
-`❌ Cannot persist state: …` line and exits 1, so a read-only home, a missing home
+`Error: Cannot persist state: …` line and exits 1, so a read-only home, a missing home
 under a read-only parent or a read-only mount never reaches a traceback.
 
 `maybe_reexec` reads the live-target pointer (`config_dir() / "live_target.json"`)

@@ -189,13 +189,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
                 port_int = int(port)
             except ValueError:
                 print(
-                    f"👻 --port must be an integer or 'auto', got {port!r}.",
+                    f"Error: --port must be an integer or 'auto', got {port!r}.",
                     file=sys.stderr,
                 )
                 sys.exit(2)
             if not 1 <= port_int <= 65535:
                 print(
-                    f"👻 --port {port_int} out of range (1..65535).",
+                    f"Error: --port {port_int} out of range (1..65535).",
                     file=sys.stderr,
                 )
                 sys.exit(2)
@@ -205,7 +205,7 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
         home_env = os.environ.get("KIROCREW_HOME", "")
         if not home_env:
             print(
-                "👻 --approval yolo refused: KIROCREW_HOME must be explicitly set "
+                "Error: --approval yolo refused: KIROCREW_HOME must be explicitly set "
                 "to an isolated path (not the default ~/.kiro/crew).",
                 file=sys.stderr,
             )
@@ -228,13 +228,13 @@ def _resolve_gateway_args(args: argparse.Namespace) -> dict:
                     protected_homes.add(home)
         except OSError as exc:
             print(
-                f"👻 --approval yolo refused: failed to resolve KIROCREW_HOME: {exc}",
+                f"Error: --approval yolo refused: failed to resolve KIROCREW_HOME: {exc}",
                 file=sys.stderr,
             )
             sys.exit(2)
         if home_resolved in protected_homes:
             print(
-                "👻 --approval yolo refused: KIROCREW_HOME resolves to a main "
+                "Error: --approval yolo refused: KIROCREW_HOME resolves to a main "
                 f"gateway home ({home_resolved}). Set KIROCREW_HOME to an isolated "
                 "path before re-running.",
                 file=sys.stderr,
@@ -316,5 +316,5 @@ def _refuse_unpersistable_data_home() -> None:
     except OSError as exc:
         error = f"cannot create files in {peek_data_home()}: {exc}"
     if error is not None:
-        print(f"❌ Cannot persist state: {error}", file=sys.stderr)
+        print(f"Error: Cannot persist state: {error}", file=sys.stderr)
         raise SystemExit(1)
