@@ -357,6 +357,14 @@ class TestExtractThemeZip:
             theme_zip.extract_theme_zip(_zip(entries), tmp_path)
         assert not (tmp_path / "big.txt").exists()
 
+    def test_one_byte_past_the_real_unpack_budget_is_refused(self, tmp_path: Path) -> None:
+        # The real budget, not a patched one: a deflate member one byte past it.
+        payload = b"\x00" * (theme_zip._MAX_UNPACKED_BYTES + 1)
+        data = _one_member_zip(zipfile.ZIP_DEFLATED, name="big.bin", payload=payload)
+        with pytest.raises(ValueError, match="more than a theme"):
+            theme_zip.extract_theme_zip(data, tmp_path)
+        assert not (tmp_path / "big.bin").exists()
+
     def test_a_header_that_under_reports_its_size_cannot_inflate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
