@@ -380,6 +380,9 @@ process (`reap_stale_workers`) stops workers a previous gateway left running.
 
 #### Connected computers transport
 
+Connected computers are off while the Shared Crew preview is active, because a
+teammate's chat must not reach another person's computer before ownership checks exist.
+
 A connected computer (the user's own local machine, behind a feature flag that
 is off by default) reuses `WorkspaceRelay` and the bridge unchanged; only the
 link differs. The local machine dials OUT one WebSocket per grant through the

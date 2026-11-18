@@ -72,6 +72,9 @@ else is 400 `invalid_body`. Each PUT is written to the SEL
 - Gate off also keeps question cards owner-only: `collaborators.is_collaborator_actor` admits no one and no collaborator socket receives a card, so `/api/ask-question` reads, answers and dismissals refuse non-owners as before.
 - Gate on: config decides, as every section below describes.
 
+Connected computers are off while Shared Crew is on, because ownership checks do
+not yet prevent a teammate's chat from reaching another person's computer.
+
 `GET /api/shared-crew/capabilities` reports the gate as `shared_crew_preview` (true or false).
 Each field's help in the Settings schema says it needs Shared Crew turned on in Feature Previews.
 
