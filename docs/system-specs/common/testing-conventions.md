@@ -6768,8 +6768,13 @@ summed test seconds come out even, and every other file keeps its hash owner. A
 pin only changes which shard owns a file, so a new or renamed file is still
 collected, on its hash shard. `scripts/ci_file_shard_pins.py` regenerates the pin
 file from the `linux-pytest-progress-<N>` artifacts of several green `main` runs;
-regenerate it when the Linux shards' `Run tests` times drift apart again. Windows,
-macOS, release and the reduced and leaf scopes keep pure hash ownership.
+regenerate it when the Linux shards' `Run tests` times drift apart again. The
+nightly macOS shards (`platform-tests.yml`) do the same with their own
+`scripts/ci_file_shard_pins_macos.txt`, built by `scripts/ci_file_shard_pins.py
+--platform macos` from the `macos-pytest-progress-<N>` artifacts those shards
+upload: Linux timings do not predict macOS cost (git- and subprocess-heavy files
+are several times slower there), so the Linux pins cannot balance them. Windows,
+release and the reduced and leaf scopes keep pure hash ownership.
 
 macOS assigns whole files like the other platforms, in eight shards. The shard
 count is the knob to reach for when the suite grows, not the 60-minute cap,
