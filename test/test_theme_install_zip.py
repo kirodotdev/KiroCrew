@@ -77,8 +77,9 @@ def _corrupt_bzip2_zip() -> bytes:
 
 
 def _under_reported_lzma_zip() -> bytes:
-    """~2.5 KB of LZMA expanding to 16 MiB, its headers claiming 10 bytes."""
-    data = bytearray(_one_member_zip(zipfile.ZIP_LZMA, payload=b"\x00" * (16 * 1024 * 1024)))
+    """A few KB of LZMA expanding just past the unpack budget, its headers claiming 10 bytes."""
+    payload = b"\x00" * (theme_zip._MAX_UNPACKED_BYTES + 1024)
+    data = bytearray(_one_member_zip(zipfile.ZIP_LZMA, payload=payload))
     with zipfile.ZipFile(io.BytesIO(bytes(data))) as zf:
         info = zf.getinfo("theme.json")
     small = (10).to_bytes(4, "little")
