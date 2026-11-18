@@ -1320,6 +1320,16 @@ _CMD_SEPARATOR_RE = re.compile(r"&&|\|\||[;|\n]")
 _SHELL_SEGMENT_SEPARATORS = ("&&", "||", ";", "|")
 
 
+#: Fail closed: any abbreviation git accepts for ``--receive-pack`` /
+#: ``--upload-pack`` / ``--exec`` (every long option starting ``--r``, ``--u``
+#: or ``--e``), any ``-c`` / ``--config-env`` (``remote.*.receivepack``,
+#: ``core.sshCommand``, hooks) and any ``GIT_*=`` prefix (``GIT_SSH_COMMAND``).
+#: A false match only restores main's per-line split.
+_GIT_EXEC_OPTION_RE = re.compile(
+    r"(?:^|\s)(?:--[rue][\w-]*|-c|--config-env\b)|\bGIT_\w*=", re.IGNORECASE
+)
+
+
 def _quoted_newlines_are_data(text: str) -> bool:
     """True when a newline inside quotes in *text* can stay inside its word.
 
@@ -1333,7 +1343,15 @@ def _quoted_newlines_are_data(text: str) -> bool:
     apostrophe in it would hold a quote open past the tag line and swallow a
     following ``git push origin main`` -- and a walk ending on an open quote or
     a dangling escape. A word that keeps a newline never equals a protected name.
+
+    It also stays when the line may hand git a value it RUNS
+    (``--receive-pack`` / ``--upload-pack`` / ``--exec`` or an abbreviation,
+    ``-c``, ``--config-env``, a ``GIT_*=`` prefix): for a local transport a
+    quoted value holding a newline and a second push is executed, and only the
+    per-line split surfaces that inner push.
     """
+    if _GIT_EXEC_OPTION_RE.search(text):
+        return False
     state = 0
     for step in _iter_shell_chars(text):
         if step.trailing_escape:

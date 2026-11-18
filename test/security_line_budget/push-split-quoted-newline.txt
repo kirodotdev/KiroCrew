@@ -1,0 +1,2 @@
++56
+The git-publish floor's push split keeps a newline inside its quoted word (a multi-line commit message before a feature-branch push), through _quoted_newlines_are_data in shell_normalizer_walk. It keeps the per-line split for a heredoc, an open quote or dangling escape, and any line that may hand git a value it runs (--receive-pack / --upload-pack / --exec and their abbreviations, -c, --config-env, a GIT_*= prefix).

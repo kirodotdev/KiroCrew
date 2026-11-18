@@ -276,6 +276,27 @@ class TestTokenizerContractBetweenTheLayers:
         # A here-string is not a heredoc, so its quoted newline stays data.
         assert security._git_publish_floor_tags("cat <<<'a\nb' && git push origin x") == frozenset()
 
+    def test_a_newline_in_a_git_executable_option_value_keeps_the_per_line_split(self):
+        # git RUNS a --receive-pack / --upload-pack / --exec value for a local
+        # transport, so a quoted value holding a newline and a second push must
+        # still be split per line to surface that inner push.
+        # git accepts a unique prefix of a long option, and -c / GIT_* carry
+        # values git runs too (remote.*.receivepack, core.sshCommand).
+        inner = "git push origin main\nx"
+        for head, tail in (
+            ('git push --receive-pack="', '" /tmp/r.git feat/x'),
+            ('git push --upload-pack="', '" /tmp/r.git feat/x'),
+            ('git push --exec="', '" /tmp/r.git feat/x'),
+            ("git push --receive-pack '", "' /tmp/r.git feat/x"),
+            ('git push --receive="', '" /tmp/r.git feat/x'),
+            ('git push --up="', '" /tmp/r.git feat/x'),
+            ('git -c remote.r.receivepack="', '" push /tmp/r.git feat/x'),
+            ('git -c core.sshCommand="', '" push origin feat/x'),
+            ('GIT_SSH_COMMAND="', '" git push origin feat/x'),
+        ):
+            cmd = head + inner + tail
+            assert security._git_publish_floor_tags(cmd), cmd
+
     def test_a_wrapped_payload_is_one_word_not_a_bare_git_token(self):
         # ``str.split`` tore a wrapper's quoted payload into fragments, so the
         # OUTER line — which is not itself a push — parsed as one and its
