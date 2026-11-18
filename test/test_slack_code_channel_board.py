@@ -510,6 +510,14 @@ def test_needs_you_text_mentions_the_owner_and_links():
     assert not render.needs_you_text(row, "", _link).startswith("<@")
 
 
+def test_the_bar_label_counts_every_worker_in_short_words():
+    snap = model.BoardSnapshot(
+        rows=tuple(_row(f"it_0000000{i}", branch=f"b{i}") for i in range(1, 6))
+    )
+    assert model.bar_label(snap) == "5 working"
+    assert model.bar_label(model.BoardSnapshot()) == ""
+
+
 # ── publisher ───────────────────────────────────────────────────────────────
 
 
@@ -1397,8 +1405,9 @@ def test_the_approval_command_is_shown_redacted_and_only_on_the_board(monkeypatc
     call = _approval_call(snap)
     assert call.startswith("deploy --key ") and key not in call
     assert home not in call and call.endswith(f" {model._home_token()}/…/x.txt")
-    # The page never carries the command.
+    # The page and the bar never carry the command.
     assert "deploy" not in render.needs_you_text(first, "U1", _link)
+    assert "deploy" not in " ".join(i["label"] for i in _bar_of(snap))
 
 
 def test_a_windows_home_in_the_approval_command_is_shown_as_the_token(monkeypatch):
@@ -1412,6 +1421,12 @@ def test_a_windows_home_in_the_approval_command_is_shown_as_the_token(monkeypatc
         monkeypatch, "execute", title=f"Running: deploy {win_home}/secrets/x.txt {win_home}\\a.txt"
     )
     assert _approval_call(snap) == "deploy %USERPROFILE%/…/x.txt %USERPROFILE%\\…\\a.txt"
+
+
+def _bar_of(snap):
+    from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
+
+    return build_items(BarState(board=snap))
 
 
 @pytest.mark.parametrize(

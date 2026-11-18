@@ -503,6 +503,29 @@ def test_a_tab_refused_at_its_send_goes_again_as_the_channels_own(tmp_path, repo
     assert h.published == []
 
 
+def test_a_tab_fenced_by_an_off_at_its_send_sends_no_channel_only_tab(tmp_path, repo, monkeypatch):
+    """Set to Off or Review during the refresh: the combined tab is fenced at the
+    send, and the channel-only fallback asks the same fence (no tab goes out)."""
+    h = _Harness(tmp_path, snapshot=_secret_worker(tmp_path, repo, monkeypatch))
+    binding = _FakeBinding(project_dir=str(repo))
+    rec = asyncio.run(h.svc.ensure(binding))
+    (Path(rec.worktree) / "README.md").write_text("channel change\n")
+    on = {"now": True}
+    monkeypatch.setattr(service, "_activation_admits", lambda b: on["now"])
+    real_call = h.svc._call
+
+    async def call(method, record, *args, **kwargs):
+        if method == "set_diff_view" and kwargs.get("gate") is not None:
+            on["now"] = False  # the operator sets the channel Off during the refresh
+        return await real_call(method, record, *args, **kwargs)
+
+    monkeypatch.setattr(h.svc, "_call", call)
+    source.set_scope_predicate(lambda state, b: on["now"])
+    board = model.BoardSnapshot(rows=(_row(title="Fix login"),))
+    assert not asyncio.run(h.svc._publish_diff(rec, binding, board))
+    assert [m for m, _kw in h.client.calls if m == "set_diff_view"] == []
+
+
 def test_a_failed_channel_only_rebuild_takes_the_worker_tab_down(tmp_path, repo, monkeypatch):
     h = _Harness(tmp_path)
     binding = _FakeBinding(project_dir=str(repo))

@@ -576,6 +576,12 @@ async def _point_summary(channel: str, ts: str) -> None:
         await client.set_summary_message(channel, ts)
     except CodeChannelApiError as exc:
         logger.info("code channel %s: summary_message not recorded: %s", channel, exc.code)
+        return
+    try:
+        # The work board reads it: a current wrap-up is never displaced as the summary.
+        await update_async(channel, summary_message_ts=ts)
+    except Exception:
+        logger.debug("code channel %s: summary pointer not stored", channel)
 
 
 async def on_turn_start(binding: Binding, event: Any) -> None:
