@@ -8,6 +8,7 @@ import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
 import SessionSwitchToggle from './SessionSwitchToggle'
 import { ManageModelsFooter, MORE_BELOW_MASK } from './ModelEffortDropdown'
+import { KiroCliModelsSignInNotice, useKiroCliCanRunHere, useKiroCliSignInInTerminal } from './KiroCliSignInInTerminal'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { settingsPath } from './settingsPath'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
@@ -84,10 +85,15 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
 }
 
 export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate }: MenuProps) {
-  const { modelDD, modelBtnRect, hiddenModelsQ, selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride, effortAutoNote } = models
+  const { modelDD, modelBtnRect, hiddenModelsQ, selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, kiroCliSignedOut, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride, effortAutoNote } = models
   const { modelDialogIme, onModelListKeyDown, switchModel } = actions
+  // Hosted here, not inside the portal: the picker closes before the confirm opens.
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // Both the pane and the active chat that owns the terminal receiver must run here.
+  const kiroCliCanRun = useKiroCliCanRunHere(paneSlot?.executor !== 'remote' && models.paneRunsHere === true && models.activeSlotRunsHere === true)
   return (
     <>
+      {kiroCliSignIn.dialog}
       {/* Model picker portal — anchored to the input-bar model button. */}
       {modelDD.open && modelBtnRect && <OverlayPortal>{
         /* The labeled dialog owns roving-focus key handling for its descendants. */
@@ -163,6 +169,11 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
               </Btn>
             </div>
           )}
+          {kiroCliSignedOut && <KiroCliModelsSignInNotice signIn={{
+            run: () => { modelDD.setOpen(false); kiroCliSignIn.askToSignIn() },
+            command: kiroCliSignIn.command,
+            canRun: kiroCliCanRun,
+          }} />}
           {/* Same bottom fade as ModelEffortDropdown's list (see MORE_BELOW_MASK). */}
           <div ref={attachModelList} role="listbox" aria-label={i18nT('components.chatPane.model_list')} className={`min-h-[96px] flex-1 overflow-y-auto max-h-[280px] ${modelListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
             <ModelDropdownList models={modelDD.filtered} activeModel={jevRouteShownModel(shownModel, paneSlot)} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} />

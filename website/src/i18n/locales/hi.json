@@ -8012,6 +8012,11 @@
       "previous_sign_in_not_removed": "साइन इन हो गया, लेकिन पिछला साइन-इन हटाया नहीं जा सका",
       "previous_sign_in_not_removed_body": "नया खाता सहेज लिया गया है, लेकिन जिस खाते से तुम बदल रहे थे वह अभी भी मौजूद है और उसे प्राथमिकता मिलती है। उससे साइन आउट करो, फिर यहाँ दिखाया गया साइन-इन जाँचो।"
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "साइन-इन कमांड कॉपी करो",
+      "models_signed_out": "Kiro CLI साइन इन नहीं है, इसलिए पूरी मॉडल सूची लोड नहीं हो सकती।",
+      "sign_in": "Kiro CLI में साइन इन करो"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "सेटअप पूरा होना रिकॉर्ड नहीं हुआ",
       "setup_marker_retry_body": "{{productName}} ने डैशबोर्ड खोल दिया, लेकिन यह रिकॉर्ड नहीं कर सका कि सेटअप पूरा हो गया है। जब तक यह सफल नहीं होता, इस गेटवे पर मौजूद अन्य ब्राउज़र और लोग सेटअप स्क्रीन देखते रह सकते हैं।",
@@ -19521,7 +19526,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "जब भी आप किसी git प्रोजेक्ट में चैट शुरू करते हैं, साइड पैनल को Git टैब पर खोलता है। बंद होने पर भी Git टैब बनता है।",
         "expanded_icon_name_stats": "विस्तृत (आइकन + नाम + आँकड़े)",
         "failed_to_load_config": "कॉन्फ़िग लोड नहीं हो सका।",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI साइन इन नहीं है या इसका लॉगिन समाप्त हो गया है। टर्मिनल में 'kiro-cli login' चलाओ, फिर \"Retry\" पर क्लिक करो।",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI साइन इन नहीं है या इसका लॉगिन समाप्त हो गया है। \"Kiro CLI में साइन इन करो\" पर क्लिक करो, फिर \"Retry\" पर क्लिक करो।",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI साइन इन नहीं है या इसका लॉगिन समाप्त हो गया है। साइन इन कमांड कॉपी करो, इसे टर्मिनल में चलाओ, फिर \"Retry\" पर क्लिक करो।",
         "failed_to_load_dashboard_config": "डैशबोर्ड कॉन्फ़िग लोड नहीं हो सका।",
         "failed_to_save_auto_compact_threshold": "ऑटो-कॉम्पैक्ट थ्रेशोल्ड सहेजने में विफल",
         "failed_to_save_completion_keep_characters": "कम्प्लीशन-कीप कैरेक्टर सहेजने में विफल",

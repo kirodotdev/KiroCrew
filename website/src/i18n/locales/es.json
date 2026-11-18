@@ -8221,6 +8221,11 @@
       "previous_sign_in_not_removed": "Sesión iniciada, pero no se pudo eliminar el inicio de sesión anterior",
       "previous_sign_in_not_removed_body": "La cuenta nueva está guardada, pero la cuenta de la que cambiaste sigue ahí y tiene prioridad. Cierra esa sesión y luego comprueba el inicio de sesión que se muestra aquí."
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "Copiar el comando de inicio de sesión",
+      "models_signed_out": "Kiro CLI no ha iniciado sesión, así que no se puede cargar la lista completa de modelos.",
+      "sign_in": "Iniciar sesión en Kiro CLI"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "No se registró que la configuración terminó",
       "setup_marker_retry_body": "{{productName}} abrió el panel, pero no pudo registrar que la configuración está completa. Otros navegadores y personas en este gateway pueden seguir viendo la pantalla de configuración hasta que esto se complete.",
@@ -20042,7 +20047,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "Abre el panel lateral en la pestaña Git cada vez que inicias un chat en un proyecto git. La pestaña Git se crea de todos modos.",
         "expanded_icon_name_stats": "Expandido (icono + nombre + estadísticas)",
         "failed_to_load_config": "No se pudo cargar la configuración.",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI no ha iniciado sesión o tu sesión ha caducado. Ejecuta 'kiro-cli login' en la terminal y haz clic en «Reintentar».",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI no ha iniciado sesión o tu sesión ha caducado. Haz clic en «Iniciar sesión en Kiro CLI» y luego en «Reintentar».",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI no ha iniciado sesión o tu sesión ha caducado. Copia el comando de inicio de sesión, ejecútalo en una terminal y luego haz clic en \"Reintentar\".",
         "failed_to_load_dashboard_config": "No se pudo cargar la configuración del panel.",
         "failed_to_save_auto_compact_threshold": "No se pudo guardar el umbral de compactación automática",
         "failed_to_save_completion_keep_characters": "No se pudieron guardar los caracteres del evento de finalización",
