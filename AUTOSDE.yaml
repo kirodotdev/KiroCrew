@@ -1285,7 +1285,9 @@ custom-rules:
       site is a ratchet: it exists so that adding an unreviewed instance of some
       class fails. Re-pinning it because the diff added a legitimate instance is
       correct. LOOSENING it so the diff fits is not, and it is the most
-      comfortable way to ship the defect the ratchet was written to catch.
+      comfortable way to ship the defect the ratchet was written to catch. A pin
+      that EVERY legitimate addition must move is not a ratchet but a change
+      detector (CHANGE DETECTORS below).
 
       FLAG, in a test the diff touches:
       - a universal assertion (`for site in sites: assert ok(site)`) replaced by
@@ -1309,6 +1311,10 @@ custom-rules:
       comment naming the roles moves with it; a slice/region marker is widened so
       an extracted fragment still executes with every name it references defined;
       the assertion is genuinely re-derived and stated to be stronger; a
+      pin that CHANGE DETECTORS below classifies as a change detector (never a
+      shrink-only ratchet, a review list of dangerous sites, or a contract)
+      replaced by a per-member property over a set the test derives from source,
+      with a non-empty check -- that removes a copy, not a check; a
       `skipif` on a test this diff adds, and on that test alone (not one
       moved, renamed or split out of an existing test), whose reason names a
       host capability (an OS, kernel or platform facility, or an external
@@ -1328,9 +1334,11 @@ custom-rules:
       hand-kept total asserted beside an exact table or set that already
       decides it; a message that tells the author to record "the amount over"
       a shared budget instead of the change's own delta. Do NOT flag a frozen
-      snapshot of a one-time event no later change edits. Moving a shared
-      number to a keyed record whose every key stays exact is tightening, not
-      loosening (testing-conventions.md § Merge-safe ratchets and counts).
+      snapshot of a one-time event no later change edits. In a shrink-only
+      ratchet, moving a shared number to a keyed record whose every key stays
+      exact is tightening, not loosening (testing-conventions.md § Merge-safe
+      ratchets and counts); for a scan of what exists, one line per item is
+      still a change detector (CHANGE DETECTORS below).
       `test/test_flake_pattern_ratchet.py` (K21) already refuses a new count
       pinned `==` an integer literal of 10 or more, or `==` / `!=` an ALL-CAPS
       `BASELINE` / `COUNT` / `TOTAL` / `EXPECTED` / `ROWS` constant, in a test
@@ -1341,6 +1349,37 @@ custom-rules:
 
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.
+
+      CHANGE DETECTORS. A test may not copy by hand what the source already holds and compare
+      the copy with it: the size or the members of a registry, the steps of a
+      workflow, a module's imports or exports, the rows a page draws. Such a
+      change detector finds no bug; only a legal addition turns it red, every
+      new entry must edit it, and two changes that each add one break `main`
+      (one shared number) or conflict (one shared list).
+
+      FLAG, in lines the diff ADDS:
+      - `len(REG) == <int>`, `toHaveLength(<int>)`, `.length).toBe(<int>)` or
+        a pinned total where REG comes from product code or a parsed repo file;
+      - a literal list, set, tuple, dict or fixture file that enumerates every
+        member of such a set, compared for equality with it, including one
+        written one entry per line.
+
+      The fix: derive the set from its source in the test, assert the property
+      every member must hold (the bug the copy was meant to catch), and assert
+      the derived set is non-empty (per source when there are several). A
+      relation between two sets that both come from source is fine.
+
+      Do NOT flag: a shrink-only ratchet or baseline (new bad sites fail,
+      removing one lowers its line); a review list of dangerous call sites a
+      new entry must be added to on purpose; a contract (wire values, a
+      telemetry schema, persisted settings values, a public API, a platform
+      fact) with a comment or `flake-ok` naming it; a frozen snapshot of a
+      one-time split; a count that is the OUTPUT of code run on the test's own
+      inputs. `test/test_flake_pattern_ratchet.py` K22 / J7 already refuse a
+      new literal pin of a `kiro_crew` / product-module ALL-CAPS registry;
+      flag what they cannot see: a list read from a workflow, a module's AST,
+      the DOM, or a lower-case or private registry
+      (testing-conventions.md § No change-detector tests).
 
   - id: a-stopwatch-is-not-a-barrier
     blocking: false
