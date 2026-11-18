@@ -708,6 +708,19 @@ def sweep_stale_staging(root: Path) -> None:
         logger.info("removed the stale KAS staging tree %s (%d bytes)", tree, size)
 
 
+def _move_aside(path: Path) -> Path:
+    """Rename *path* to a hidden ``.staging-retired-*`` sibling and return that name.
+
+    Windows refuses the rename while a process holds a file inside *path* open
+    without delete sharing (a running session's ``node.exe``); the :class:`OSError`
+    then leaves *path* untouched.
+    """
+    retired = Path(tempfile.mkdtemp(prefix=_RETIRED_STAGING_PREFIX, dir=path.parent))
+    retired.rmdir()
+    os.rename(path, retired)
+    return retired
+
+
 def install_bundle(
     manifest: KasBundleManifest,
     *,
@@ -795,10 +808,8 @@ def install_bundle(
         # and the no-replace publish turns that into a refusal, never a swap.
         retired: Path | None = None
         if force and final.exists():
-            retired = Path(tempfile.mkdtemp(prefix=_RETIRED_STAGING_PREFIX, dir=root))
-            retired.rmdir()
             try:
-                os.rename(final, retired)
+                retired = _move_aside(final)
             except OSError as exc:
                 # Windows refuses to rename a directory while a process holds a file
                 # in it open, as a running session's node.exe does; the installed
@@ -840,6 +851,35 @@ def installed_versions(*, root: Path | None = None) -> list[str]:
     except FileNotFoundError:
         return []
     return sorted(n for n in names if _VERSION_RE.match(n) and not n.startswith("."))
+
+
+def remove_version(version: str, *, root: Path | None = None) -> None:
+    """Remove the installed engine *version* from *root* whole, or leave it whole.
+
+    *version* is a name :func:`installed_versions` listed. The folder is renamed to
+    a hidden ``.staging-retired-*`` sibling first, as ``install_bundle(force=True)``
+    does: Windows refuses that rename while a process holds a file inside open
+    without delete sharing (a running session's ``node.exe``), so a held engine
+    fails before anything is deleted and stays installed. Once renamed, the version
+    is out of :func:`installed_versions`; a failed delete of the renamed tree leaves
+    a hidden folder that costs disk space, never a half-engine at the version's
+    name. Raises :class:`KasBundleError`.
+    """
+    home = (root or kas_engines_root()) / version
+    try:
+        retired = _move_aside(home)
+    except OSError as exc:
+        raise KasBundleError(
+            f"KAS {version} at {home} could not be removed ({exc.strerror or exc}); "
+            "if a KAS session is running it, stop that session and retry"
+        ) from exc
+    try:
+        shutil.rmtree(retired)
+    except OSError as exc:
+        raise KasBundleError(
+            f"KAS {version} is removed, but its files at {retired} could not be deleted "
+            f"({exc.strerror or exc}); delete that folder once nothing holds it"
+        ) from exc
 
 
 def install_pinned(
