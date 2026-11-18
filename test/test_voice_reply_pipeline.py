@@ -9,7 +9,9 @@ every failure exit.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import os
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -770,6 +772,66 @@ class TestStitchMp3s:
         finally:
             if allocated and os.path.exists(allocated[0]):
                 os.unlink(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_output_check_runs_off_the_event_loop(self, tmp_path, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        loop_thread = threading.current_thread()
+        checked_on: list[threading.Thread] = []
+        real_exists = os.path.exists
+
+        def recording_exists(path):
+            if allocated and os.fspath(path) == allocated[0]:
+                checked_on.append(threading.current_thread())
+            return real_exists(path)
+
+        monkeypatch.setattr(os.path, "exists", recording_exists)
+
+        async def fake_exec(*cmd, **kwargs):
+            with open(cmd[-1], "wb") as f:
+                f.write(b"stitched-mp3-data")
+            return _mock_subprocess(returncode=0)
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        try:
+            assert result == allocated[0]
+            assert checked_on, "the output check never ran"
+            assert loop_thread not in checked_on, "the output check ran on the event loop thread"
+        finally:
+            if allocated and os.path.exists(allocated[0]):
+                os.unlink(allocated[0])
+
+
+class TestStreamingVoiceReplyReadsOffTheLoop:
+    @pytest.mark.asyncio
+    async def test_chunk_file_is_read_off_the_event_loop(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew import voice_reply
+
+        chunk = tmp_path / "chunk.mp3"
+        chunk.write_bytes(b"x" * 200)
+        loop_thread = threading.current_thread()
+        read_on: list[threading.Thread] = []
+        real_open = builtins.open
+
+        def recording_open(file, *args, **kwargs):
+            if os.fspath(file) == str(chunk):
+                read_on.append(threading.current_thread())
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", recording_open)
+
+        async def one_chunk(ssml, **kwargs):
+            return str(chunk)
+
+        with patch("kiro_crew.voice_reply._synthesize_polly", side_effect=one_chunk):
+            collected = [data async for _i, _sent, data in voice_reply.streaming_voice_reply("Hi.")]
+
+        assert collected == [b"x" * 200]
+        assert read_on, "the chunk read never ran"
+        assert loop_thread not in read_on, "the chunk read ran on the event loop thread"
+        assert not chunk.exists()
 
 
 class TestSynthesizeSpeechDoesNotSwallowARefusal:

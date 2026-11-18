@@ -1415,6 +1415,17 @@ def _stitch_ffmpeg() -> str | None:
     return found
 
 
+def _stitch_output_missing_or_empty(output: str) -> bool:
+    # The mkstemp allocation always exists, so "ffmpeg produced no output"
+    # manifests as an empty file, not an absent one.
+    return not os.path.exists(output) or os.path.getsize(output) == 0
+
+
+def _read_file_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
     """Concatenate MP3 files into a single file using ffmpeg.
 
@@ -1507,13 +1518,7 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             except Exception:
                 logger.debug("ffmpeg wait after kill failed", exc_info=True)
             raise
-        if (
-            proc.returncode != 0
-            or not os.path.exists(output)
-            # The mkstemp allocation always exists, so "ffmpeg produced no
-            # output" manifests as an empty file, not an absent one.
-            or os.path.getsize(output) == 0
-        ):
+        if proc.returncode != 0 or await asyncio.to_thread(_stitch_output_missing_or_empty, output):
             return None
         succeeded = True
         return output
@@ -1584,8 +1589,7 @@ async def streaming_voice_reply(
         if not mp3_path:
             continue
         try:
-            with open(mp3_path, "rb") as f:
-                mp3_bytes = f.read()
+            mp3_bytes = await asyncio.to_thread(_read_file_bytes, mp3_path)
             yield i, sentence, mp3_bytes
         finally:
             try:
