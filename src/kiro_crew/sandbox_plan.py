@@ -1390,8 +1390,19 @@ def _seatbelt_plan(
     hide_ssh = tier == "strict"
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
+    # A caller mask is a path rule here, so renaming a directory above it would reach the
+    # masked file under a new name: guard every ancestor the way the runtime parents' are.
+    caller_ancestor_guards = path_ancestor_guards(
+        m.path for m in masks if m.origin == "caller" and not m.cancelled
+    )
     ancestor_guards = list(
-        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.readonly_ancestor_guards))
+        dict.fromkeys(
+            (
+                *host.voice_runtime_ancestor_guards,
+                *host.readonly_ancestor_guards,
+                *caller_ancestor_guards,
+            )
+        )
     )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
