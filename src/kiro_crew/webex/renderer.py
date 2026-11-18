@@ -12,7 +12,7 @@ The budget is therefore split once, explicitly: ``_STATUS_EDIT_BUDGET`` frames
 of progress and ``_RESERVED_FINAL_EDITS`` held back so the final answer always
 has an edit left.
 
-* ``on_turn_start`` -- posts a "Thinking…" placeholder message.
+* ``on_turn_start`` -- posts a "🤔 Thinking…" placeholder message.
 * ``on_text_chunk`` -- buffered, and the buffer's tail rides the next status
   frame so a long agentic turn shows the answer forming rather than a bare tool
   name followed minutes later by everything at once.
@@ -157,21 +157,21 @@ def webex_display_safe(text: str) -> str:
 
 
 # Placeholder shown immediately while the agent is still generating.
-_THINKING = "Thinking…"
+_THINKING = "🤔 Thinking…"
 
-_ERROR_TEXT = "Error: Something went wrong — please try again."
+_ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
-_STEER_NOTE = "↪ _folded in your mid-turn message._"
+_STEER_NOTE = "↪️ _folded in your mid-turn message._"
 
 # Shown when a follow-up chunk of a multi-message answer could not be delivered.
 # Without it the answer simply stops mid-sentence and anything posted after it (an
 # upload, a choice card) reads as attached to a reply the user believes is whole.
-_TRUNCATED_NOTE = "Warning: _The rest of this answer could not be delivered — ask me to continue._"
+_TRUNCATED_NOTE = "⚠️ _The rest of this answer could not be delivered — ask me to continue._"
 
 # Header for the reference-restoring message after a failed upload. Extraction has
 # already taken the markup out of the answer, so without this the file is missing
 # AND unmentioned.
-_UPLOAD_FAILED_HEADER = "Warning: Couldn't upload these — they're on the machine at:"
+_UPLOAD_FAILED_HEADER = "⚠️ Couldn't upload these — they're on the machine at:"
 
 # Lead-in on the choice card's message. Webex REQUIRES text or markdown alongside
 # a card, and that text is what a client which cannot render one receives — so the
@@ -356,7 +356,7 @@ class WebexRenderer(Renderer):
         # affordance, and it always ships. The card rides alongside it because the
         # inbound half of a press travels over the undocumented device websocket:
         # if that frame never arrives, a typed 1/2 still resolves the prompt.
-        text = f"Approve `{tool}`?\n\nReply **1** to approve or **2** to deny."
+        text = f"🔐 Approve `{tool}`?\n\nReply **1** to approve or **2** to deny."
         attachments = None
         if self.capabilities.rich_blocks and self._mint_approval_nonce is not None:
             # The nonce is minted by the approval REGISTRY, against the pending
@@ -568,7 +568,7 @@ class WebexRenderer(Renderer):
         """
         parts = []
         if self._tool:
-            parts.append(f"Running: {self._tool}…")
+            parts.append(f"🔧 Running: {self._tool}…")
         tail = self.text()
         if tail and self._uploads_enabled():
             # Hide a local path the final answer will turn into an upload, so it

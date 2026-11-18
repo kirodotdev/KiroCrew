@@ -602,7 +602,7 @@ class TestRenderer:
         assert cli.final_text() == "one two three"  # final formatted content
 
     def test_tool_footer_surfaces_immediately_on_tool_call(self) -> None:
-        # A mid-turn tool call surfaces a transient "Running {tool}…" footer on the
+        # A mid-turn tool call surfaces a transient "🔧 {tool}…" footer on the
         # live bubble immediately (force bypasses the edit throttle), so long
         # agentic turns show activity instead of a dead typing indicator.
         cli = self._drive(
@@ -613,7 +613,7 @@ class TestRenderer:
             ]
         )
         frames = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
-        assert any("Running grep…" in f for f in frames)  # footer shown live
+        assert any("🔧 grep…" in f for f in frames)  # footer shown live
 
     def test_tool_footer_cleared_by_text_and_absent_from_final(self) -> None:
         # The footer is transient: cleared the moment text resumes, and never
@@ -629,9 +629,9 @@ class TestRenderer:
             ]
         )
         frames = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
-        assert any("Running fs_read…" in f for f in frames)
-        assert any("Running shell…" in f for f in frames)
-        assert "Running " not in cli.final_text()  # final is clean
+        assert any("🔧 fs_read…" in f for f in frames)
+        assert any("🔧 shell…" in f for f in frames)
+        assert "🔧" not in cli.final_text()  # final is clean
         assert cli.final_text() == "Found it. All done."
 
     def test_strips_steering_marker_from_output(self) -> None:
@@ -676,7 +676,7 @@ class TestRenderer:
         assert texts[0] == "Root at 86% used."  # frozen pre-steer bubble
         assert "STEERING" not in texts[0] and "STEERING" not in texts[1]
         # The chip heads the new bubble with the MARKER's summary (not the quote).
-        assert texts[1].startswith("<blockquote>↪ stop</blockquote>")
+        assert texts[1].startswith("<blockquote>↪️ stop</blockquote>")
         assert "BANANA" in texts[1] and "used.BANANA" not in texts[1]  # no leak
 
     def test_end_of_stream_marker_posts_no_tail_bubble(self) -> None:
@@ -753,7 +753,7 @@ class TestRenderer:
 
     def test_tool_only_message_not_orphaned_at_steer_boundary(self) -> None:
         # Codex finding: a tool call BEFORE any assistant text creates a live
-        # "Running tool…" message. If a steer marker then arrives with no pre-marker
+        # "🔧 tool…" message. If a steer marker then arrives with no pre-marker
         # text, nothing is sealed — the renderer must KEEP that message id so
         # the steered continuation replaces the transient footer in place,
         # instead of orphaning a permanent tool-footer bubble.
@@ -771,7 +771,7 @@ class TestRenderer:
         assert len(cli.sent) == 1
         assert cli.final_text() is not None
         assert "steered answer" in cli.final_text()
-        assert "Running " not in cli.final_text()
+        assert "🔧" not in cli.final_text()
 
     def test_options_only_response_keeps_keyboard(self) -> None:
         # Codex finding: a response that is ONLY "[OPTIONS: A | B]" leaves an
@@ -1244,7 +1244,7 @@ class TestRenderer:
             await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="hi"))
             await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
             n = len(cli.sent)
-            await r.close(failure_reason="Warning: too late")
+            await r.close(failure_reason="⚠️ too late")
             return len(cli.sent) - n
 
         assert asyncio.run(_go()) == 0

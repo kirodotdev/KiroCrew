@@ -68,7 +68,7 @@ class TestTelegramSessionPidPublish:
 class TestUserSafeFailureReason:
     def test_user_worded_acp_error_yields_bounded_single_line(self) -> None:
         exc = AcpError("line one\nline two\ttail", transient=False, user_worded=True)
-        assert _user_safe_failure_reason(exc) == "Warning: line one line two tail"
+        assert _user_safe_failure_reason(exc) == "⚠️ line one line two tail"
 
     def test_local_paths_are_redacted(self) -> None:
         exc = AcpError(
@@ -81,8 +81,8 @@ class TestUserSafeFailureReason:
     def test_length_hard_cap(self) -> None:
         out = _user_safe_failure_reason(AcpError("x" * 5000, transient=False, user_worded=True))
         assert out is not None
-        # "Warning: " prefix + capped body (ellipsis included in the cap).
-        assert len(out) <= 500 + len("Warning: ")
+        # "⚠️ " prefix + capped body (ellipsis included in the cap).
+        assert len(out) <= 500 + len("⚠️ ")
         assert out.endswith("…")
 
     def test_non_retryable_provider_fallback_returns_none(self) -> None:
@@ -145,19 +145,19 @@ class TestTurnLifecycleCharacterization:
 
         assert (
             _user_safe_failure_reason(AcpError("x" * 500, transient=False, user_worded=True))
-            == "Warning: " + "x" * 500
+            == "⚠️ " + "x" * 500
         )
         assert _user_safe_failure_reason(
             AcpError("x" * 501, transient=False, user_worded=True)
-        ) == ("Warning: " + "x" * 499 + "…")
+        ) == ("⚠️ " + "x" * 499 + "…")
         assert _user_safe_failure_reason(
             AcpError("a" * 498 + " " + "b" * 10, transient=False, user_worded=True)
-        ) == ("Warning: " + "a" * 498 + "…")
+        ) == ("⚠️ " + "a" * 498 + "…")
         scrubbed = _user_safe_failure_reason(
             AcpError("failed reading /srv/op/.kiro/crew/creds", transient=False, user_worded=True)
         )
         assert scrubbed is not None and "/srv/op" not in scrubbed
-        assert scrubbed.startswith("Warning: failed reading ")
+        assert scrubbed.startswith("⚠️ failed reading ")
         credential = github_classic()
         secret = _user_safe_failure_reason(
             AcpError(f"token {credential} rejected", transient=False, user_worded=True)
@@ -165,7 +165,7 @@ class TestTurnLifecycleCharacterization:
         assert secret is not None and credential not in secret
         assert _user_safe_failure_reason(
             UnknownMemoryStore("private memory 'm' is unavailable")
-        ) == ("Warning: private memory 'm' is unavailable")
+        ) == ("⚠️ private memory 'm' is unavailable")
 
         class _Unprintable(AcpError):
             def __str__(self) -> str:
@@ -370,7 +370,7 @@ class TestTurnLifecycleCharacterization:
         cases = [
             (
                 AcpError("model not in your plan", transient=False, user_worded=True),
-                "Warning: model not in your plan",
+                "⚠️ model not in your plan",
             ),
             # Non-retryable, but the provider's own fallback text: generic reply.
             (AcpError("provider said: {'data': 'opaque'}", transient=False), None),
@@ -378,7 +378,7 @@ class TestTurnLifecycleCharacterization:
             (RuntimeError("boom"), None),
             (
                 UnknownMemoryStore("private memory 'm' is unavailable"),
-                "Warning: private memory 'm' is unavailable",
+                "⚠️ private memory 'm' is unavailable",
             ),
         ]
         for exc, reason in cases:

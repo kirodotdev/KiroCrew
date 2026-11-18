@@ -133,7 +133,7 @@ class TestErrorDone:
         c = FakeClient()
         r = _renderer(c)
         await r.on_done(stop_reason="error")
-        assert c.replies[0][1] == "出错了，请重试"
+        assert c.replies[0][1] == "⚠️ 出错了，请重试"
 
 
 class TestIdempotency:
@@ -325,7 +325,7 @@ class TestOutboundImages:
         assert c.images == []
         ((_, text),) = c.replies
         assert f"![chart]({outside})" in text
-        assert "Warning:" in text and "not sent" in text
+        assert "⚠️" in text and "not sent" in text
 
     @pytest.mark.asyncio
     async def test_past_three_refusals_the_rest_collapse_into_a_count(self, tmp_path: Path) -> None:
@@ -335,7 +335,7 @@ class TestOutboundImages:
         await r.on_done()
         ((_, text),) = c.replies
         assert text.count("not sent") == 3
-        assert text.endswith("Warning: …and 2 more")
+        assert text.endswith("⚠️ …and 2 more")
 
     @pytest.mark.asyncio
     async def test_a_failed_upload_is_named_by_its_path(self, tmp_path: Path) -> None:
@@ -348,7 +348,7 @@ class TestOutboundImages:
         await r.on_done()  # the answer landed, so a failed picture is not a failed turn
         answer, follow_up = (text for _, text in c.replies)
         assert answer == "Done."
-        assert follow_up == f"Warning: Couldn't upload:\n{chart}"
+        assert follow_up == f"⚠️ Couldn't upload:\n{chart}"
 
     @pytest.mark.asyncio
     async def test_an_image_only_answer_whose_upload_fails_still_fails_the_turn(

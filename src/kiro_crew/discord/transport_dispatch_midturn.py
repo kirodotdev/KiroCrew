@@ -40,7 +40,7 @@ logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
 #: (Discord's own turn on the resumed key). An incognito or temporary session is
 #: taken like any other: those modes keep their transcript and queue.
 _RESUMED_BUSY_REFUSAL = (
-    "That session is busy with a turn started elsewhere. "
+    "⏳ That session is busy with a turn started elsewhere. "
     "Send it again once it finishes, or `!unlink` to go back to "
     "your own conversation."
 )

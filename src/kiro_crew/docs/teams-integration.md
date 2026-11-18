@@ -192,7 +192,7 @@ of your message that the Teams client attaches as rich text does not, so a typed
 While a reply is running, prefix a message to control it: `/queue <message>`
 answers it after the current reply, `/steer <message>` folds it into the reply in
 progress. A message sent mid-turn is never lost — if it cannot be folded in, it is
-held and shown in a single "Queued (N)" receipt that is edited in place, then
+held and shown in a single "⏳ Queued (N)" receipt that is edited in place, then
 answered as one combined turn.
 
 ### Continuing an earlier conversation

@@ -419,7 +419,7 @@ class TestOutboundImages:
     @pytest.mark.asyncio
     async def test_an_image_only_reply_leaves_no_transient_footer_above_it(self) -> None:
         # Extraction consumes the whole body, so there is no text to seal — but a
-        # live bubble may already carry a "Running {tool}…" footer or a stall mark, and
+        # live bubble may already carry a "🔧 {tool}…" footer or a stall mark, and
         # leaving it makes that transient frame the turn's FINAL text message,
         # sitting above the picture forever.
         renderer, client = _renderer()
@@ -470,12 +470,12 @@ class TestUploadRejections:
         renderer, _ = _renderer()
         out = renderer._append_rejections("The answer.", [self._rejection()])
         assert out.startswith("The answer.")
-        assert "Warning:" in out and out != "The answer."
+        assert "⚠️" in out and out != "The answer."
 
     def test_past_the_line_budget_the_rest_collapse_into_a_tally(self) -> None:
         renderer, _ = _renderer()
         out = renderer._append_rejections("A.", [self._rejection() for _ in range(7)])
-        assert out.count("Warning:") == 4  # 3 named + 1 tally
+        assert out.count("⚠️") == 4  # 3 named + 1 tally
         assert "and 4 more" in out
 
     def test_the_note_is_dropped_rather_than_pushing_the_answer_over_budget(self) -> None:
@@ -505,7 +505,7 @@ class TestUploadRejections:
             renderer._buf = ["See it. ![c](/tmp/chart.png)"]
             await renderer.on_done()
         landed = "".join(t for t, _ in client.sent) + "".join(t for _, t, _ in client.edits)
-        assert "/tmp/chart.png" in landed and "Warning:" in landed
+        assert "/tmp/chart.png" in landed and "⚠️" in landed
         assert client.media_sent == []
 
 
@@ -604,14 +604,7 @@ class TestThinking:
 class TestStallMarks:
     @pytest.mark.parametrize(
         "idle,expect",
-        [
-            (0.0, ""),
-            (14.9, ""),
-            (15.0, "still working"),
-            (44.9, "still working"),
-            (45.0, "taking a while"),
-            (600.0, "taking a while"),
-        ],
+        [(0.0, ""), (14.9, ""), (15.0, "🥱"), (44.9, "🥱"), (45.0, "😨"), (600.0, "😨")],
     )
     def test_the_mark_is_read_from_the_clock_not_latched(
         self, monkeypatch: pytest.MonkeyPatch, idle: float, expect: str
@@ -651,7 +644,7 @@ class TestStallMarks:
         await renderer._stream_live()
         frame = ([t for t, _ in client.sent] + [t for _, t, _ in client.edits])[-1]
         # Naming what is happening beats reporting that nothing is.
-        assert "grep" in frame and "still working" not in frame
+        assert "grep" in frame and "🥱" not in frame
 
     @pytest.mark.asyncio
     async def test_a_late_frame_cannot_overwrite_a_sealed_message(self) -> None:
@@ -691,7 +684,7 @@ class TestStallMarks:
         await renderer._stream_live()
         await renderer.on_done()
         final = ([t for _, t, _ in client.edits] or [t for t, _ in client.sent])[-1]
-        assert "still working" not in final and "taking a while" not in final
+        assert "🥱" not in final and "😨" not in final
 
 
 # ---------------------------------------------------------------------------

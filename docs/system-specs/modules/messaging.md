@@ -1011,9 +1011,11 @@ reason.
 
 **The turn-end line** is the module's other half and carries no ladder state.
 `format_turn_status(elapsed, context_pct)` renders `Finished in 3m 7s` plus a
-plain `· ctx N%` context-usage figure, and omits it entirely when the caller could
-not read a usage figure: absent means unknown, which is not 0% and must not render
-as a reassuring `ctx 0%`.
+context-usage chip banded by how close the window is to needing a compaction
+(green below 30%, yellow from 30%, orange from 50%, red from 70%), and omits it
+entirely when the
+caller could not read a usage figure: absent means unknown, which is not 0% and
+must not render as a reassuring green.
 
 Discord is the first channel on the shared ladder: `discord/renderer_status.py` owns
 `DISCORD_PHASE_EMOJIS` (unicode rather than shortcodes, one code point each,
@@ -2253,14 +2255,14 @@ the message is held and surfaced through a **single** receipt message that grows
 in place:
 
 ```
-Queued (2): "what time is it" · "and the weather?"
+⏳ Queued (2): "what time is it" · "and the weather?"
 ```
 
 The first five items are listed verbatim (`RECEIPT_MAX_ITEMS`), the rest
 collapse into `…and N more` so a large burst cannot blow the message cap.
 
 **The receipt is EDITED, never deleted.** At the end of the turn it flips to
-`Now answering (N): …`; a `/stop` finalizes it to `Cancelled (N): …`.
+`▶️ Now answering (N): …`; a `/stop` finalizes it to `🛑 Cancelled (N): …`.
 Neither dispatcher calls a delete API on it. This is deliberate: the receipt is
 the durable record of what the user asked and how it was routed, so deleting it
 would erase the only evidence that a message was accepted at all.
@@ -2280,11 +2282,11 @@ have already LEFT the queue can strand a bubble, and for those the entry is KEPT
 becomes **terminal**, carrying `owed_bodies` -- the records it owes, oldest first. A
 terminal entry is
 not live (`has_receipt` reports it absent) and is never grown, because growing it
-would put already-answered text back under `Queued` beside the new message; the
+would put already-answered text back under `⏳ Queued` beside the new message; the
 next mid-turn message writes the owed record first and opens a FRESH bubble. The body
 travels with the entry so a retry writes the record that transition computed, and a
-later transition never recomputes it: writing `Cancelled` over an owed
-`Now answering` would say the opposite of what happened, permanently.
+later transition never recomputes it: writing `🛑 Cancelled` over an owed
+`▶️ Now answering` would say the opposite of what happened, permanently.
 
 More than one record can be owed at once, and that is the point of a list. A
 transition meeting an entry that already owes one is meeting a channel that is usually
@@ -2322,7 +2324,7 @@ and a key can span several conversations: one permanently unwritable chat -- the
 removed from the thread -- would otherwise take the terminal branch on every burst
 forever, so no HEALTHY sibling on that key gets a bubble or a drain record again either.
 Releasing the key is what lets the next arriving message open a fresh bubble on its own
-surface. What it costs is the stale `Queued` text in the conversation that takes no
+surface. What it costs is the stale `⏳ Queued` text in the conversation that takes no
 writes, which no write could have corrected.
 
 How MANY debts the registry holds is `RECEIPT_MAX_DEBTS`, enforced where the retention
@@ -2335,7 +2337,7 @@ released. Position follows every attempt, not only every retention, because a de
 on each burst is the opposite of silent and still has a channel to hope for: ordering on
 retentions alone would leave it at the front and evict it while an untouched orphan sat
 behind it. A LIVE entry is never released -- its messages are still queued, so dropping it
-strands that bubble on `Queued` and opens a second beside it.
+strands that bubble on `⏳ Queued` and opens a second beside it.
 
 Both releases go through one counted seam, which also releases the key, so "published"
 and "given up" mean the same thing to every transition above -- this key owes nothing --
@@ -2357,7 +2359,7 @@ bubble's only handle. Editing is tried first, so the record lands in the bubble 
 reader is already looking at; when the bubble refuses edits the record is POSTED as a
 new message instead, since past a per-message edit cap no edit of that id will ever
 land and retrying alone would owe the record for the life of the process. The stale
-bubble still reading `Queued` and the posted record are together true; a silent
+bubble still reading `⏳ Queued` and the posted record are together true; a silent
 bubble alone is not. Several owed records publish OLDEST FIRST -- only the oldest can
 take the bubble, since there is one bubble and the rest arrived after it, so each later
 one is posted beneath it. Each leaves the debt only once it LANDS, one at a time, so a
@@ -2739,7 +2741,7 @@ it is the audience's record for the turn and the turn's teardown clears it.
 Every outcome is confirmed in the DM (`Steering that session …` /
 `Queued for that session …`): a dashboard-driven turn's reply reaches the DM,
 if at all, through the dashboard's own cross-surface leg and not through this
-dispatcher, so a silent hand-off would read as a drop. The refusal (`That session is busy with a turn started elsewhere …`)
+dispatcher, so a silent hand-off would read as a drop. The refusal (`⏳ That session is busy with a turn started elsewhere …`)
 stays for the cases the slot cannot take (`slot_unable_to_take`, fail-closed on
 an attribute the slot cannot answer): no open slot for the key, a closing slot, a
 relay archive (`executor == "remote"`, no local drain), and a slot that is NOT itself driving the
@@ -2776,7 +2778,7 @@ command intercept still precedes every busy check.
 
 `/stop` (alias `/cancel`; `!stop` / `!cancel` on Discord) aborts the running
 turn, drops the CALLER's queued messages, and withdraws that caller's lines from
-the receipt -- finalizing it to `Cancelled` only once nothing else is queued.
+the receipt -- finalizing it to `🛑 Cancelled` only once nothing else is queued.
 `clear_queue` and the receipt finalize run together under `ReceiptQueue.lock`.
 A `/stop` while the session is compacting automatically is declined: nothing is
 stopped and the queue is kept, and the caller is told so. The same caller's repeat
@@ -2814,7 +2816,7 @@ belongs to, and a wrong guess rewrites a stranger's message.
 
 A refused `send_receipt` opens no bubble either, but its line is KEPT, on an entry with
 no `msg_id` that nothing ever writes to. The next message at that address sends ONE
-bubble listing every held line, so `Queued (N)` still counts the message whose bubble
+bubble listing every held line, so `⏳ Queued (N)` still counts the message whose bubble
 was refused. A drain or a `/stop` meeting that entry has no bubble to write and only
 takes off the lines it answered. A message from another address replaces the entry
 rather than joining it, so a held line is only ever shown in its own conversation.
@@ -2829,12 +2831,12 @@ treating the group-space member as a stranger leaves their message recorded but
 never shown.
 
 So a caller-scoped `/stop` withdraws the caller's lines from the record, and writes
-only when the caller's surface addresses the bubble: it finalizes as `Cancelled`
+only when the caller's surface addresses the bubble: it finalizes as `🛑 Cancelled`
 over the caller's own withdrawn lines, never over what remains, which may have
 arrived from another chat. A SECOND condition precedes that one and has nothing to do
 with addressing: while the bubble's OWN chat still has lines listed on it, nothing is
 written and the entry stays LIVE. Those messages are still queued, so "Cancelled"
-would say they went -- and retiring the key would strand the bubble on `Queued` for
+would say they went -- and retiring the key would strand the bubble on `⏳ Queued` for
 good, because the later drain finds no entry to flip and the next burst opens a second
 bubble beside the stale one. Lines from another chat do not hold the bubble: they were
 never rendered on it, so it owes them nothing and is finalized without them.
@@ -2842,7 +2844,7 @@ never rendered on it, so it owes them nothing and is finalized without them.
 The entry is dropped once it owes nothing, and a refused final edit does not by itself
 create a debt: the record is POSTED at the bubble's own address right away, because a
 retained body is written only by a LATER transition and a burst that ends at that
-refusal would otherwise leave the bubble asserting `Queued` over messages that were
+refusal would otherwise leave the bubble asserting `⏳ Queued` over messages that were
 answered or cleared, with no path that ever corrects it. The stale bubble plus the
 posted record are together true. The entry is RETAINED only when that post fails too,
 and then it is terminal and carries what it owes. A refused GROW is the branch that
@@ -2866,7 +2868,7 @@ of its own yet and its line is not recorded either: no path reads a terminal ent
 lines, so keeping them would change nothing a reader sees while holding a verbatim burst
 for as long as the channel refuses. Nothing is lost by that -- the caller enqueued
 before calling and the drain renders its record from what it dequeued -- and the
-residual is one missing `Queued` acknowledgement -- one per message that arrives while
+residual is one missing `⏳ Queued` acknowledgement -- one per message that arrives while
 the debt is held, which is exactly what `RECEIPT_MAX_PUBLISH_ATTEMPTS` bounds the number
 of.
 
@@ -2903,11 +2905,11 @@ still queued, which is why the entry goes back LIVE rather than being dropped.
 A flip addressed to the bubble has a SECOND condition before it retires the key, and it
 is the partial stop's condition asked at the other transition: while a line belonging to
 ANOTHER principal is still listed at the bubble's own address, the bubble is re-rendered
-as `Queued` over what remains and the entry stays LIVE. A shared ADDRESS makes this
+as `⏳ Queued` over what remains and the entry stays LIVE. A shared ADDRESS makes this
 ordinary rather than an edge -- a group space gives every member one session key and one
 receipt address, so both members' lines sit on the one bubble and the flip is addressed
 by either of them -- while the drain still answers ONE principal per turn. Retiring the
-key there wrote `Now answering (1)` over a list of two: an acknowledgement erased for
+key there wrote `▶️ Now answering (1)` over a list of two: an acknowledgement erased for
 a message still on the queue, and then no record for it at all, because that entry was
 its only handle and its own later drain finds nothing to flip. So the flip is told WHOSE
 messages it answered (the same owner token the queue entries carry) and takes only those
@@ -3745,7 +3747,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **A cut text file or document is handed over whole, redacted**: when the redacted text of a TEXT or DOCUMENT attachment is longer than `max_text_inject`, the prompt keeps its first `max_text_inject` characters, the marker says how many of how many were shown (`[… truncated: N of M characters of text shown]`), and the WHOLE redacted text is written to a new temporary `.txt`, created and written through its own descriptor in one offloaded call, so the gateway never writes through a path an agent could replace; a turn cancelled while it is written cannot stop that worker, so the copy is deleted when the worker finishes. That copy is handed over in `IngestResult.file_paths` under the opaque-file lifecycle, with a `[Its whole text is in <path> until this turn ends]` line. The download is deleted as before, so the raw bytes are never kept: the copy hides exactly what the inline part hides. If the copy cannot be stored, the block keeps the marker alone. Text under the limit is inlined whole and nothing is kept.
 - **Unknown formats remain passive and complete**: `messaging/attachments.py` preserves video and unrecognized formats as byte-identical, randomized temporary files, supplies their local paths and original metadata to the agent, and transfers cleanup ownership through the current or queued turn. Opaque bytes are never automatically parsed, extracted, or executed; an inlineable image suffix is stripped from the temporary path so the suffix-typed ACP image sink cannot claim them, and any later tool access still crosses the normal permission and hook boundaries.
 - **Weixin inbound media is CDN-indirect**: iLink envelopes never carry bytes, only a `CDNMedia` reference (`encrypt_query_param` + `aes_key`) whose object is AES-128-ECB encrypted on the WeChat CDN. `weixin/media.py` owns that protocol work (URL construction with percent-encoded params, key decoding, decrypt, a streaming size cap enforced on bytes read rather than `Content-Length`); `weixin/attachments.py` maps the four CDN-backed item types onto the shared `Attachment` and hands them to `messaging/attachments.py`, which keeps classification, limits, signature validation and temp-file ownership channel-neutral. The `aes_key` field carries **two** encodings for the same value — `base64(raw 16 bytes)` for images, `base64(ascii hex)` for file/voice/video — discriminated by decoded length plus a strict hex check, because guessing wrong yields plausible garbage rather than an error. A voice item that already carries server-side `text` short-circuits the download: iLink voice is SILK, which no shipped transcription backend decodes, so the local path is strictly worse than the transcript the server gave us. `files_inbound=True` reflects this; `files_outbound` stays `False` until the `getuploadurl` + encrypted CDN PUT half lands.
-- **A mid-turn queue receipt is edited, never deleted**: it flips in place to `Now answering` on drain and to `Cancelled` on `/stop`. It is the durable record that a held message was accepted, so no path may delete it. A caller-scoped `/stop` withdraws that caller's OWN lines from the record. While lines remain at the bubble's own address (`texts_at_address()`), the entry stays LIVE and nothing is written, because it is the only handle those queued messages have. Otherwise the entry is dropped and `Cancelled` is written over the withdrawn lines only when the caller's surface addresses the bubble (`receipt.addressed_by(surface)`) -- otherwise `msg_id` names a message in somebody else's conversation; an edit the platform refuses leaves an owed record to retry. Both terminal transitions are preceded by the same condition, which is about neither addressing nor who is calling: while ANOTHER principal's line is still listed at the bubble's own address, nothing terminal is written and the entry stays LIVE -- the stop writes nothing at all, and the drain re-renders `Queued` over what remains -- because that entry is the only handle those still-queued messages have.
+- **A mid-turn queue receipt is edited, never deleted**: it flips in place to `▶️ Now answering` on drain and to `🛑 Cancelled` on `/stop`. It is the durable record that a held message was accepted, so no path may delete it. A caller-scoped `/stop` withdraws that caller's OWN lines from the record. While lines remain at the bubble's own address (`texts_at_address()`), the entry stays LIVE and nothing is written, because it is the only handle those queued messages have. Otherwise the entry is dropped and `🛑 Cancelled` is written over the withdrawn lines only when the caller's surface addresses the bubble (`receipt.addressed_by(surface)`) -- otherwise `msg_id` names a message in somebody else's conversation; an edit the platform refuses leaves an owed record to retry. Both terminal transitions are preceded by the same condition, which is about neither addressing nor who is calling: while ANOTHER principal's line is still listed at the bubble's own address, nothing terminal is written and the entry stays LIVE -- the stop writes nothing at all, and the drain re-renders `⏳ Queued` over what remains -- because that entry is the only handle those still-queued messages have.
 - **A queued burst drains as ONE turn, under ONE envelope taken from the messages**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact. Because `dm_scope = "unified"` can fold several people onto one queue, every queue-carrying channel records a per-entry origin, collapses only entries sharing a sender and a place, and replays from the first entry's origin -- grouping on sender and place, never on a per-message id, which would stop the collapse altogether. Beside that origin every entry also records a neutral `queued_owner`, read off the same sender key, which is what lets `/stop` drop one person's queued messages and leave everybody else's. A deferred entry is re-enqueued WITH its origin, or it would inherit the next first entry's identity one iteration later. An entry recorded by ANOTHER transport sharing that queue is set aside and its owner's drain is woken (`messaging/queue_drain.py`), because setting aside an already-receipted message without waking anyone leaves it unanswered until that transport next speaks.
 - **A mid-turn steer requires a genuinely live turn**: gate on `provider.has_active_turn()`, never on `sessions.is_busy()` alone, which stays true through post-turn bookkeeping. Steering an ended prompt is silently swallowed, producing an acknowledgement with no answer.
 - **Cancel is cooperative before it is fatal**: `/stop` sends the ACP `session/cancel` notification and lets the turn stop at its next safe point; escalation to a hard kill happens only after the soft-stop budget elapses without an ack. On a shared runtime the cooperative path is the only one that cannot take a co-tenant down with it.
@@ -4125,7 +4127,7 @@ about what happened, never as the same `…` the live frame showed while it was
 running under a "Finished in" footer. The bare `…` survives only for a close the
 driver did not judge (a cancel), and a close after an exception (the dispatcher's
 `finally` reaching `close()` with the turn unfinished) keeps the explicit
-`Error: please try again`; a stream that ended with no terminal is not that
+`⚠️ Error — please try again`; a stream that ended with no terminal is not that
 case — the dispatcher dispatches the `DONE` the driver could not, verdict
 attached, so the bubble reads the same sentence as the transcript. The renderer's
 "earlier segments carried the turn, stay silent" shortcut yields to the verdict:
@@ -5067,7 +5069,7 @@ platform cannot retire, "already answered" is the common case and claiming a
 denial would tell a user their approved tool was refused.
 
 The renderer is shaped by Webex's 10-edits-per-message cap: no typewriter
-streaming (`streaming=False`). A "Thinking…" placeholder is posted at turn
+streaming (`streaming=False`). A "🤔 Thinking…" placeholder is posted at turn
 start; status frames carry the running tool AND a bounded tail of the answer
 buffered so far, so a long agentic turn shows the answer forming instead of a bare
 tool name. The budget is split explicitly — status frames get 8 of the 10 edits,
@@ -6599,7 +6601,7 @@ between a send and its copies answers those copies too.
 
 **Rendering.** Only the final answer is delivered; reasoning and tool activity
 stay in the gateway. There is no placeholder message, because there is no edit
-to rewrite it with — every other channel's "Thinking…" would be stranded
+to rewrite it with — every other channel's "🤔 Thinking…" would be stranded
 above the reply permanently. Markdown is flattened (`plaintext.py`) before
 sending, with **fenced code-block contents passed through verbatim**: code is
 what a user copies out of a message, and unwrapping or re-indenting it corrupts

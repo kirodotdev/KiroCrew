@@ -4,11 +4,11 @@ Maps the channel-neutral ``OutputEvent`` stream (routed by the base
 :class:`Renderer`'s ``dispatch``) onto WeCom AI-bot ``aibot_respond_msg`` WS
 frames:
 
-* ``on_turn_start`` -- a "…" placeholder stream frame.
+* ``on_turn_start`` -- a "🤔 …" placeholder stream frame.
 * ``on_text_chunk`` -- throttled full-text stream frames (each frame REPLACES
   the bubble content), with any trailing ``[OPTIONS:]`` markup stripped (WeCom
   can't render tappable chips).
-* ``on_tool_call`` -- a transient ``正在运行：{tool}…`` footer.
+* ``on_tool_call`` -- a transient ``🔧 正在运行：{tool}…`` footer.
 * ``on_prompt_choice`` -- no-op: WeCom has no interactive buttons, and the
   driver only dispatches this for INTERACTIVE + a decider; WeCom runs
   decider-less (deny-by-default), so this never fires.
@@ -124,7 +124,7 @@ _UPLOAD_LIMITS = ExtractLimits(
 
 # Sent when an extracted picture could not be delivered: extraction already cut its
 # reference out of the answer, so the path comes back as text instead.
-_UPLOAD_FAILED_HEADER = "警告：以下图片未能发送，文件仍在本机："
+_UPLOAD_FAILED_HEADER = "⚠️ 以下图片未能发送，文件仍在本机："
 
 #: The transport's ``send_document(conversation_id, file)``: a non-empty marker on
 #: a confirmed send, ``None`` on a failure.
@@ -365,7 +365,7 @@ class WeComRenderer(Renderer):
             # at all about a turn that failed, while the inbound msgid stays deduped
             # against WeCom's retry. That combination is what makes a lost message
             # look like silence.
-            content = "…" if ok else "出错了，请重试"
+            content = "…" if ok else "⚠️ 出错了，请重试"
             if not (self._stream_ok and await self._send_final_chunk(content)):
                 await self._client.send_reply(self._response_url, content)
             return
@@ -611,7 +611,7 @@ class WeComRenderer(Renderer):
         self._suppressed_reasoning = 0
         if suppressed:
             try:
-                note = f"提示：推理过程较长，已省略 {suppressed} 次推理预览更新（回答不受影响）。"
+                note = f"ℹ️ 推理过程较长，已省略 {suppressed} 次推理预览更新（回答不受影响）。"
                 delivered = False
                 if self._chat_id:
                     delivered = await self._client.send_proactive(self._chat_id, note)
@@ -1068,7 +1068,7 @@ class WeComRenderer(Renderer):
                     self._shown_reasonings.append(shown)
             self._last_send = now
             return
-        footer = f"正在运行：{self._tool}…" if self._tool else ""
+        footer = f"🔧 正在运行：{self._tool}…" if self._tool else ""
         cap = self.capabilities.max_message_chars
         if cap > 0:
             # The footer is transient decoration; the answer is the payload, so the
