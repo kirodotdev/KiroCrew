@@ -203,7 +203,9 @@ class TestTheEffortChannel:
         assert "effort_config_option_value(" in inspect.getsource(
             client_module._push_model_via_effort_split
         )
-        assert "effort_config_option_value(" in inspect.getsource(llm_pool.AcpWorker._apply_effort)
+        # The knowledge pool's workers share one writer, ``_apply_effort_to``.
+        assert "effort_config_option_value(" in inspect.getsource(llm_pool._apply_effort_to)
+        assert "_apply_effort_to(" in inspect.getsource(llm_pool.AcpWorker._apply_effort)
 
 
 # The ordinary pi model: an id out of the operator's own ``models.json``, which is
