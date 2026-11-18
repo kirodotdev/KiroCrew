@@ -465,6 +465,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # lives under .github/scripts). It judges no code and its input exists
         # only once the review workflows have run on a pushed head.
         "scripts/ai-block-hold.sh",
+        # Lists the jobs of its own CI run over the GitHub API and starts
+        # ci.yml's Windows backend shards once the Linux shards of that run
+        # passed (it lives under .github/scripts). It judges no code and its
+        # input exists only once the run's shards have started.
+        "scripts/windows_shards_hold.py",
         # Computes which test_*.py files a non-leaf PR added or modified (via git
         # diff against base.sha from the pull_request event payload). The scope
         # depends on the PR base commit, which only exists once the PR event

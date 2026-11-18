@@ -117,6 +117,10 @@ _LINT_JOBS = ("backend-lint", "frontend-lint")
 #: The opt-in AI review hold. It runs after the lint jobs and the gate reads its
 #: `hold` output, so it feeds the gate and cannot wait for it.
 _AI_HOLD = "ai-block-hold"
+#: (job, need) pairs where the need is an opt-in hold that sits BEHIND the lint
+#: gate and is skipped by default, so the job reads the hold's output and runs
+#: when the hold was skipped. Each job must also need the gate itself.
+_RUNS_BEHIND_A_SKIPPED_HOLD = {("backend-test-windows", "windows-shards-hold")}
 #: Cheap jobs that deliberately do NOT wait for lint: lint-first saves the minutes
 #: of heavy jobs, and holding a 10-minute check behind an 8-minute lint adds
 #: latency to its own verdict for no saving.
@@ -1373,11 +1377,20 @@ class TestLintRunsBeforeTheHeavyJobs:
         # gate unless it also requires the gate's success. Only the jobs that fail
         # closed on skips may omit that, and each is checked.
         fail_closed = {_LINT_GATE, "coverage-gate", "frontend-coverage-merge"}
+        for job, parent in _RUNS_BEHIND_A_SKIPPED_HOLD:
+            # The hold is skipped unless its repository variable is set, so the
+            # job must run behind it. It still cannot run behind a skipped gate:
+            # it needs the gate itself and requires its success.
+            assert _LINT_GATE in self._needs(ci, job), job
+            assert f"needs.{_LINT_GATE}.result == 'success'" in str(ci["jobs"][job]["if"]), job
+            assert parent in self._needs(ci, job), (job, parent)
         for job, spec in ci["jobs"].items():
             guard = str(spec.get("if", ""))
             if job in fail_closed or not ("always()" in guard or "!cancelled()" in guard):
                 continue
             for parent in self._needs(ci, job):
+                if (job, parent) in _RUNS_BEHIND_A_SKIPPED_HOLD:
+                    continue
                 if parent == _LINT_GATE or self._reaches(ci, parent, _LINT_GATE):
                     assert (
                         f"needs.{parent}.result == 'success'" in guard

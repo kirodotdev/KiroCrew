@@ -1540,6 +1540,86 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  # ── Windows shards hold (off unless CI_WINDOWS_SHARDS is set) ────────
+  # The eight Windows backend shards start beside the Linux ones and take
+  # longer, so a head whose Linux shards go red, or that a new push replaces
+  # while they run, has already spent the Windows runners on a commit nobody
+  # will merge. This job waits for the Linux shards of THIS run and
+  # `backend-test-windows` skips when it reports a hold.
+  #
+  # The repository variable CI_WINDOWS_SHARDS switches it:
+  #   unset (or any other value)  the job is skipped and nothing changes
+  #   after-linux   the Windows shards start once all eight Linux shards
+  #                 passed, and do not start when one of them is red
+  #
+  # A `needs:` edge from `backend-test-windows` to `backend-test` would do the
+  # same without a job, but `needs:` takes no expression, so the edge would
+  # hold the Windows shards behind the Linux ones with the variable unset too.
+  # A skipped job is the one edge that costs nothing when it is off.
+  #
+  # It holds only on a red Linux shard it read, and every read it cannot make
+  # starts the Windows shards (see windows_shards_hold.py).
+  # `backend-test-windows` keys on the `hold` output and not on this job's
+  # result, so a runner fault or a timeout here starts them too.
+  #
+  # Same-repository pull requests only. A fork pull request, a merge group and
+  # a push to main or a release branch skip the job, and the Windows shards
+  # start beside the Linux ones as they always have.
+  #
+  # A held run is red twice over: the Linux shard failed, and this job fails.
+  # "Re-run failed jobs" re-runs both; this job then reads the new attempt's
+  # shards and starts the Windows shards when they pass.
+  windows-shards-hold:
+    name: Windows Shards Hold
+    needs: [changes, await-fast-gate, lint-gate]
+    if: >-
+      ${{ !cancelled()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && vars.CI_WINDOWS_SHARDS == 'after-linux'
+      && needs.lint-gate.result == 'success' }}
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    # Covers TOTAL_BUDGET (2700s, windows_shards_hold.py), after which the
+    # script starts the Windows shards itself.
+    timeout-minutes: 50
+    permissions:
+      # actions:read is what lets this list its own run's jobs. Job-level
+      # permissions REPLACE the top-level grant, so contents:read is restated
+      # for the checkout.
+      actions: read
+      contents: read
+    outputs:
+      hold: ${{ steps.read.outputs.hold }}
+    steps:
+      # Sparse, shallow and credential-free, like the barrier's checkout: only
+      # .github/scripts is needed, and the gh reads authenticate with GH_TOKEN.
+      # A checkout that fails must not red the run: the step below starts the
+      # Windows shards when the script is not there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Start the Windows shards only after the Linux shards passed
+        id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          MODE: ${{ vars.CI_WINDOWS_SHARDS }}
+          # The `name:` and the shard count of `backend-test`; its shards are
+          # the checks named "<LINUX_JOB> (<python>, <n>)".
+          LINUX_JOB: Backend Tests
+          LINUX_SHARDS: "8"
+        run: |
+          if [ ! -f .github/scripts/windows_shards_hold.py ]; then
+            echo "::warning::Windows Shards Hold: the script was not checked out. Starting the Windows shards."
+            exit 0
+          fi
+          python3 .github/scripts/windows_shards_hold.py
+
   # Windows regression line: the backend supports Windows natively via
   # kiro_crew.platform_compat (see docs/guides/windows-install.md for the
   # per-feature status), but until this job existed nothing in CI held
@@ -1556,10 +1636,14 @@ jobs:
   # regenerates it.
   backend-test-windows:
     name: Backend Tests (Windows)
-    needs: [changes, await-fast-gate, lint-gate]
-    # Skipped only on a fork head the `changes` job judged Windows-neutral;
-    # `!= 'false'` keeps an absent output running the suite.
-    if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.windows_tests != 'false' }}
+    needs: [changes, await-fast-gate, lint-gate, windows-shards-hold]
+    # Skipped on a fork head the `changes` job judged Windows-neutral
+    # (`!= 'false'` keeps an absent output running the suite), and when
+    # `windows-shards-hold` read a red Linux shard. That job is a need so this
+    # one starts after it, and its `hold` output is the only thing read from
+    # it: skipped (the default), green, failed for another reason or timed
+    # out, it leaves the output empty and this job runs.
+    if: ${{ !cancelled() && needs.lint-gate.result == 'success' && needs.changes.outputs.windows_tests != 'false' && needs.windows-shards-hold.outputs.hold != 'true' }}
     # All eight shards share the actor-gated large label; absent output is hosted.
     runs-on: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && format('codebuild-kirocrew-gha-windows-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.windows_runner || 'windows-latest' }}
     # Retain the existing Windows budget and coverage-free run.

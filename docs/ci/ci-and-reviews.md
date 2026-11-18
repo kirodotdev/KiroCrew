@@ -52,7 +52,9 @@ reviewers wait for its verdict rather than racing it; then the two lint jobs
 run before the heavy jobs start (see [Lint first](#lint-first)). A third edge
 is off unless a repository variable turns it on: the heavy jobs do not start on
 a head a blocking line reviewer has already BLOCKed (see
-[AI review hold](#ai-review-hold)).
+[AI review hold](#ai-review-hold)). A fourth is off the same way: the Windows
+backend shards start only after the Linux ones passed (see
+[Windows shards hold](#windows-shards-hold)).
 
 ```
 pull_request
@@ -717,7 +719,8 @@ yet decided: install from a committed constraints file, or set
 | `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and not on a queue-landed push, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml`. Black here and the four scope-resolving gates in `backend-ratchets` read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
 | `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, an explicit xdist worker count within each (`-n "$WORKERS"`: one per 2 GiB after 2 GiB for the host, capped at the core count, so 6 on the 15 GiB fleet runner; the memory budget behind `-n auto` reserves 5 GiB a worker for a full-suite collection (it granted a file shard 4 when it reserved 3); the job logs its peak memory); 60-minute job budget on CodeBuild, 70 off the fleet where the shards run four-wide, both including coverage upload, with the 120-second per-test timeout retained. A test still running 30 seconds past its own pytest-timeout has every thread's stack dumped to the log (`scripts/ci_faulthandler_budget.py`, `--faulthandler-grace=30`), so a hang that timeout's `SIGALRM` could not end names its frame. The dump never fires inside a test's budget: faulthandler walks threads without the GIL, and a walk of a thread still running Python can segfault the worker. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback. Installs the `voice`, `desktop` and `otlp` extras, as `backend-test-windows` and `platform-tests.yml` do, so the `requires_otlp` wire tests run instead of skipping |
-| `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; an explicit xdist worker count within each (`-n "$WORKERS"`: one per 3 GiB after 2 GiB for the host, capped at the core count, so 4 on the 15 GiB fleet runner and on a 4-core hosted runner; the job logs its peak memory); `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
+| `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; an explicit xdist worker count within each (`-n "$WORKERS"`: one per 3 GiB after 2 GiB for the host, capped at the core count, so 4 on the 15 GiB fleet runner and on a 4-core hosted runner; the job logs its peak memory); `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. Also SKIPPED when `windows-shards-hold` reports a hold. See the migration contract below |
+| `windows-shards-hold` | "Windows Shards Hold". Skipped unless the repository variable `CI_WINDOWS_SHARDS` is `after-linux`, and only on a same-repository pull request. It starts when `lint-gate` has passed, lists its own run's jobs until the eight `backend-test` shards have a verdict, and fails with the `hold` output when one of them is red; `backend-test-windows` then skips. It holds `actions: read` and `contents: read`. See [Windows shards hold](#windows-shards-hold) |
 | `backend-test-ipv6` | Five native IPv6 cases on hosted Linux and Windows; fail-closed report check, Linux full-run coverage merged with the ordinary shards |
 | `backend-test-kernel-lock-owner` | Runs the two strict live-holder/orphan flock cases on an uncontainerized hosted VM (the `kirocrew-runners` group here, `ubuntu-latest` in a fork) with `KIROCREW_LOCK_OWNER_STRICT=1`; full-scope coverage is merged with the shard and IPv6 artifacts. **Skipped on a frontend-only diff** (`only_frontend`); Coverage Gate accepts `skipped` in that case |
 | `pod-boot-windows` | Boots a real worktree Pod under Windows Task Scheduler and pins three canary tests. A PR carrying `ci:pod-scenarios` before its next push also runs the 55-test Pod scenario suite against a built SPA |
@@ -815,6 +818,103 @@ pull requests, and on 26 of the 51 pushes the head also had a deterministic red
   always mean a verdict, and they were not measured.
 - **Revert.** Unset the variable. To remove the edge, drop `ai-block-hold` from
   `lint-gate`'s `needs:` and its `if:`, and from Coverage Gate.
+
+### Windows shards hold
+
+**Off by default.** With the repository variable `CI_WINDOWS_SHARDS` unset, the
+`windows-shards-hold` job is skipped and `backend-test-windows` starts beside
+`backend-test` when `lint-gate` passes, exactly as described above.
+
+| `CI_WINDOWS_SHARDS` | What the job does |
+|---|---|
+| unset, or any other value | Skipped. No read, no wait, no change |
+| `after-linux` | Waits for the eight `backend-test` shards of the same run. All passed: the Windows shards start. One red: the job fails and the Windows shards do not start |
+
+**Why.** The eight Windows backend shards are the largest single cost in
+`ci.yml` and the last jobs to finish. In a sample of 582 pushes on 150 merged
+pull requests (2026-11-10 to 2026-11-18) they used 38.5% of all pull-request
+vCPU-minutes (job duration times the runner's vCPU count; the Windows runner is
+assumed to be 8 vCPU, the Linux `instance-size:large` figure). They start with
+the Linux shards and run longer, so when a Linux shard goes red, or a new push
+replaces the head while the Linux shards run, the Windows runners have already
+been spent on a commit nobody will merge. They rarely say something the Linux
+shards did not: on the 390 pushes where the Linux shards reached a verdict and
+the Windows shards ran, a Windows shard was red with every Linux shard green on
+9 (2.3%), and red beside a red Linux shard on 76.
+
+**What it is expected to save and cost.** Replaying those 582 pushes under the
+rule (each push's first `CI` run; the Windows shards shifted to start at the
+first poll after the last Linux shard passed, and cut at the next push):
+
+| | Share of Windows shard vCPU-minutes | Share of all pull-request vCPU-minutes |
+|---|---|---|
+| Not spent: a Linux shard was red (106 pushes) | 23.5% | 9.1% |
+| Not spent: the run was cancelled before the Linux shards finished (53 pushes) | 4.9% | 1.9% |
+| Not spent: Linux passed, the later Windows start was cut by the next push (279 pushes) | 3.7% | 1.4% |
+| Added: the waiting job, one default Linux runner | -4.8% | -1.9% |
+| **Net** | **27.4%** | **10.6%** |
+
+The price is wall clock on a green head. The Linux shards passed a median 26.6
+minutes after `lint-gate` released them (p90 31.6), and the Windows shards now
+start only then, at the next poll. On the 230 green heads that were not replaced
+while CI ran, the time from push to the last lane finishing moves from a median
+61.5 to 86.0 minutes; the p90 stays at 135.6, because on 38% of those heads
+another lane (a human approval, CodeQL) already ended later than the Windows
+shards. A head with a red Linux shard is done sooner: a median 51.3 minutes
+becomes 36.7. These are replayed figures, not a measurement of the mode
+running, and the runner sizes are the assumption stated above.
+
+- **Why a job and not a `needs:` edge.** `needs:` takes no expression, so an
+  edge from `backend-test-windows` to `backend-test` would hold the Windows
+  shards behind the Linux ones whether the variable is set or not. A job that
+  is skipped by default is the one edge that adds no wait when it is off: its
+  own needs are the ones the Windows shards already had.
+- **It holds only on a red it read.** `.github/scripts/windows_shards_hold.py`
+  lists the run's jobs and keeps, for each Linux shard, the row of the newest
+  attempt. It holds when one of them is `completed` with `failure`,
+  `timed_out` or `cancelled`, and it does not wait for the other shards first.
+- **It fails open.** Everything else starts the Windows shards, with a
+  `::warning::` when it is not a plain pass: three listing reads in a row that
+  fail, a listing with no Linux shard in it, a conclusion the script does not
+  judge, and a wait of 2700 s (the Linux shards normally finish well inside
+  it). `backend-test-windows` keys on the job's `hold` output and not on its
+  result, so a runner fault or a timeout in the job starts them too (the
+  failed job still reds the run until it is re-run).
+- **A held head is red, never green.** The script writes `hold=true` only on a
+  red Linux shard and then exits 1, so a run whose Windows shards were held has
+  two failed jobs, the Linux shard and `Windows Shards Hold`, and concludes
+  `failure`. `PR Readiness` reads the `CI` run's conclusion, so it cannot
+  report that head ready; Coverage Gate, which never read the Windows shards,
+  fails closed on `backend-test` as it always has. The job's error and its
+  summary name the red shards and say the head has no Windows verdict.
+- **What the author sees on a Linux red.** The red Linux shard, a red `Windows
+  Shards Hold`, `Backend Tests (Windows)` shown as skipped, and a red Coverage
+  Gate. Any Windows failure on that head is not shown until the Linux shards
+  pass: fix the Linux failure first.
+- **Getting out.** Push a fix: the new head gets a new run. For a Linux
+  failure that passes on a re-run, choose "Re-run failed jobs" on the `CI` run:
+  it re-runs the shard and this job together, the job reads the new attempt's
+  rows, and the Windows shards start when they pass. Re-running only the one
+  Linux shard leaves this job failed and the run red; re-run this job as well.
+- **A cancelled run.** A new push cancels the run, this job with it, and the
+  Windows shards never start: that is most of what the mode saves on a
+  replaced head. A single Linux shard that hits its own timeout is read as red.
+- **With the AI review hold.** In `CI_AI_BLOCK_HOLD=enforce`, a held head
+  skips `lint-gate`, and this job and both shard jobs skip behind it. After the
+  AI hold is released by a re-run, this job starts with the shards.
+- **Budget.** One default Linux runner for as long as the Linux shards take,
+  and one listing (one GET per 100 jobs of the run) at 600 s and then every
+  180 s: a mean of 5.7 listings a push in the replay, from the `github.token`
+  pool that `pr-readiness.yml` shares. Every call is a GET.
+- **Scope.** Same-repository pull requests only, into `main` or a release
+  branch. A fork pull request, a merge group, and a push to `main` or a release
+  branch skip the job, so the Windows shards run there exactly as before.
+  `ci.yml` does not run on a draft-to-ready transition, so that changes
+  nothing. Which tests the Windows shards run, the other Windows jobs
+  (`pod-boot-windows`, `backend-test-windows-fail-closed`, the Windows IPv6
+  leg, `electron-test-windows`) and the Linux shards are untouched.
+- **Revert.** Unset the variable. To remove the edge, drop
+  `windows-shards-hold` from `backend-test-windows`'s `needs:` and its `if:`.
 
 ### The find_ui index is strict only where the PR caused it, and at release
 

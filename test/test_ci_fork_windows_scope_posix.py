@@ -104,9 +104,12 @@ class TestTheForkWindowsScopeWiring:
     def test_the_windows_job_skips_only_on_an_explicit_false(self) -> None:
         job = _ci()["jobs"]["backend-test-windows"]
         # `!= 'false'`, so an absent output (the changes job failed) still runs it.
+        # The last clause is the opt-in Windows shards hold, which a fork pull
+        # request never starts (test_windows_shards_hold.py).
         assert job["if"] == (
             "${{ !cancelled() && needs.lint-gate.result == 'success'"
-            " && needs.changes.outputs.windows_tests != 'false' }}"
+            " && needs.changes.outputs.windows_tests != 'false'"
+            " && needs.windows-shards-hold.outputs.hold != 'true' }}"
         )
 
     def test_the_output_comes_from_the_scope_step(self) -> None:
