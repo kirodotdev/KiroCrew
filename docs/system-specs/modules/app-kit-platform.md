@@ -7376,10 +7376,26 @@ cancel_ack_secs)` runs one turn under `ToolApprovalPolicy.HOOK_BASED` with
 `app=<ctx.name>`, so the PreToolUse gate resolves `POLICY ∩ PROFILE` for this app,
 and passes the gateway's approval prompt as `on_tool_approval`: `_init_task_runner`
 registers `agent_turn_sdk.set_turn_approver(lambda app:
-self._interactive_approval("app", requester=f"app {app}"))`, so a call the gate
-neither denies nor grants asks the owner as a cron job's does (`"app"` is in
-`_BACKGROUND_APPROVAL_SOURCES`, the deny-fast unattended window) instead of reaching
-`_resolve_permission`'s caller-less default approve. With no prompt registered (a
+self._interactive_approval("app", requester=f"app {app}",
+follows_approval_mode=own_agent))`, where `run()` passes `own_agent` from
+`_is_own_agent(app, <recorded agent>)` (true only when `session_agent_spec_path`,
+the file a session of that agent loads, with the crewmate folder for the mate
+service agents and `agent.spec_pins` applied, sits in the user agents folder and
+is named `<app>--<agent>.json`; no file, any other file or a resolver error is
+not own). `run()` judges this once, on the turn whose `get_or_create` started the
+session (`is_new`), and stores the verdict with the app and recorded agent in
+`_own_agent_by_session`. A reused session keeps that verdict, because a re-pin
+made later does not change the file the live session loaded. A reused session
+with no stored verdict, or whose app or recorded agent differs from the stored
+one, is not own. `_cancel_or_reset` drops the entry when it resets the session.
+A call the gate neither denies nor grants asks the
+owner as a cron job's does (`"app"` is in `_BACKGROUND_APPROVAL_SOURCES`, the
+deny-fast unattended window) instead of reaching `_resolve_permission`'s caller-less
+default approve. `follows_approval_mode` makes that prompt answer as a channel turn
+does under the gateway's approval mode (`--approval`, else `agent.approval_mode`):
+under `auto` the call is approved without asking, unless it falls under a held Bot
+limit, is a low-fidelity child request, or `session_mode_permitted("trust")` is
+false. With no prompt registered (a
 bare test application) the turn passes an approver that refuses, so a call the gate
 does not settle is rejected, with or without a hook manager. The turn is admitted through
 `run_admitted_or_raise(automation=True,
