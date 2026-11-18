@@ -1287,3 +1287,35 @@ def test_non_object_metadata_line_does_not_abort_the_whole_restore(tmp_path, mon
     state2._persist_open_slots()
     persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
     assert persisted == {"chat-0-ok", "chat-2-ok"}
+
+
+def test_a_persons_folder_pick_survives_a_restart(tmp_path, monkeypatch):
+    """A Bot worker restored after a restart still keeps the folder a person picked."""
+    import asyncio
+
+    from kiro_crew import crewmate_worktree as cw
+    from kiro_crew.dashboard import crewmate_worktree_scope as scope
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    proj = tmp_path / "picked"
+    proj.mkdir()
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-picked")
+    slot = state.get_or_create_slot("chat-1-picked")
+    slot.project = str(proj)
+    slot._project_picked = True
+    assert _save_slot_to_history(state, slot, force=True)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-picked"], "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    assert state2._slots == {}
+    assert restore_open_slots(state2) == 1
+    restored = state2._slots["chat-1-picked"]
+    assert (restored.project, restored._project_picked) == (str(proj), True)
+
+    hit = cw.CrewmateWorktree(repo=str(proj), path="/ws/wt", branch="crew/a/p", cwd="/ws/wt")
+    monkeypatch.setattr(scope, "_worker_crewmate", lambda *_a: "Atlas")
+    monkeypatch.setattr(scope, "resolve_worker_project", lambda *_a: hit)
+    assert asyncio.run(scope.scope_worker_turn(state2, restored, None, None, "")) == ""
+    assert restored.project == str(proj)

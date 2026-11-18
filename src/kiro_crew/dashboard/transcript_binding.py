@@ -11,6 +11,7 @@ object. ``_ChatSlot.project`` reads and writes it through a property, so every
 ``slot.project = x`` already writes the shared cell and every ``slot.project is token``
 rollback check reads it. A rollback therefore skips a peer's newer write (the identity
 differs) and restores the whole group otherwise, with no per-peer rollback contract.
+``_ChatSlot._project_picked`` (whether a person picked that directory),
 ``_ChatSlot.autocompact_pct`` (the session's compaction threshold) and
 ``_ChatSlot.turn_timeout_secs`` (its own turn time limit, with whether that limit has
 been read back yet) are held the same way, so a value set through one alias is the
@@ -34,6 +35,7 @@ class TranscriptBinding:
     __slots__ = (
         "project",
         "assigned",
+        "picked",
         "_commit",
         "autocompact_pct",
         "autocompact_set",
@@ -45,6 +47,7 @@ class TranscriptBinding:
         self,
         project: str = "",
         assigned: bool = False,
+        picked: bool = False,
         autocompact_pct: float | None = None,
         autocompact_set: bool = False,
         turn_timeout_secs: int | None = None,
@@ -54,9 +57,12 @@ class TranscriptBinding:
         # Whether the group has chosen its directory: it held one, or cleared one it
         # held. A slot born linked and never seeded holds "" without choosing it.
         self.assigned = assigned
-        # (token, assigned before it) for the newest provisional commit, so its
+        # Whether a person picked this directory (``api_chat_slot_project``). A write
+        # that changes the directory clears it; the pick route sets it after its write.
+        self.picked = picked
+        # (token, assigned and picked before it) for the newest provisional commit, so its
         # rollback can put ``assigned`` back. Identity-keyed, like the rollback.
-        self._commit: tuple[object, bool] | None = None
+        self._commit: tuple[object, bool, bool] | None = None
         # The session's compaction threshold override (percent); None follows the
         # crew's default, else the global ``session.autocompact_pct``.
         self.autocompact_pct = autocompact_pct
@@ -81,9 +87,11 @@ def write_project(binding: TranscriptBinding, value: str) -> None:
     from kiro_crew.dashboard.chat_handlers import _CommitToken
 
     if isinstance(value, _CommitToken):
-        binding._commit = (value, binding.assigned)
+        binding._commit = (value, binding.assigned, binding.picked)
     if value or binding.project:
         binding.assigned = True
+    if value != binding.project:
+        binding.picked = False
     binding.project = value
 
 
@@ -105,6 +113,7 @@ def rollback_project(slot: Any, token: str, prior: str) -> None:
     binding.project = prior
     if commit is not None and commit[0] is token:
         binding.assigned = commit[1]
+        binding.picked = commit[2]
     binding._commit = None
 
 
@@ -145,6 +154,7 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
                 # joiner's own value, often just read from disk, is the group's.
                 shared.project = own.project
                 shared.assigned = True
+                shared.picked = own.picked
             if own.autocompact_set and not shared.autocompact_set:
                 # The same rule for the threshold: a peer nothing wrote takes the joiner's.
                 shared.autocompact_pct = own.autocompact_pct
@@ -172,6 +182,7 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
         slot._binding = TranscriptBinding(
             project=slot._binding.project,
             assigned=slot._binding.assigned,
+            picked=slot._binding.picked,
             autocompact_pct=slot._binding.autocompact_pct,
             autocompact_set=slot._binding.autocompact_set,
             turn_timeout_secs=slot._binding.turn_timeout_secs,
@@ -241,20 +252,29 @@ def arm_project_reset(state: Any, slot: Any, key: str, *, clears_cwd: bool = Fal
         target._pending_reset_clears_cwd = clears_cwd
 
 
-def seed_project_from_disk(state: Any, slot: Any, value: str) -> None:
+def seed_project_from_disk(state: Any, slot: Any, value: str, picked: object = False) -> None:
     """Write a stored directory onto *slot* unless a live alias's choice outranks it.
 
     The one entry for disk seeds (restore read and channel surfacing). When the seed
     moves a binding live aliases share, a running session keeps its old directory
-    until teardown, so the deferred reset is armed for the group.
+    until teardown, so the deferred reset is armed for the group. *picked* is the
+    line's ``project_picked`` (only ``True`` counts): whether a person picked that
+    directory, restored only when the directory itself is.
     """
     if not value or live_project_outranks_disk(state, slot):
         return
     shared = bool(_peers(state, slot))
     changed = value != slot.project
     slot.project = value
+    if picked is True:
+        slot._project_picked = True
     if shared and changed:
         _reset_if_running(state, slot)
+
+
+def seed_project_line(state: Any, slot: Any, meta: dict) -> None:
+    """Seed a metadata line's directory, and the person's pick beside it."""
+    seed_project_from_disk(state, slot, meta.get("project") or "", meta.get("project_picked"))
 
 
 def seed_autocompact_from_disk(state: Any, slot: Any, value: float | None) -> None:
