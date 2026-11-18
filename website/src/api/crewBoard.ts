@@ -91,6 +91,23 @@ export interface WorkBoardItem {
   terminal: boolean
   alive: AliveState
   events: WorkBoardEvent[]
+  /** Where a discussion this item's worker hosts stands, from its last report
+   *  (`work_vocab.coerce_discussion`). Absent when the worker hosts none. */
+  discussion?: WorkDiscussion | null
+}
+
+/** A worker-hosted discussion, as its last `work_report` carried it. */
+export interface WorkDiscussion {
+  phase: 'talking' | 'checking' | 'asking' | 'done'
+  round?: number
+  minutes?: number
+  direction?: string
+  /** An http(s) link or an in-app path (`/chat/...`), checked server-side. */
+  thread?: string
+  agreed?: string[]
+  checking?: string[]
+  disputed?: { point: string; sides?: string }[]
+  recent?: { who: string; text: string }[]
 }
 
 /** The conductor's own record. No `worker_session_key` anywhere in it. */
