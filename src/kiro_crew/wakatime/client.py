@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import ipaddress
 import logging
 import math
 import platform
@@ -38,6 +37,7 @@ from typing import Any
 import aiohttp
 
 from kiro_crew import __version__ as _kirocrew_version
+from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
@@ -55,14 +55,7 @@ def _proxy_for(url: str) -> str | None:
     loopback destination must not leave the machine.
     """
     host = urllib.parse.urlparse(url).hostname or ""
-    if host.lower() == "localhost":
-        return None
-    try:
-        if ipaddress.ip_address(host).is_loopback:
-            return None
-    except ValueError:
-        pass
-    return resolve_proxy(url)
+    return None if is_loopback(host) else resolve_proxy(url)
 
 
 # WakaTime's own recommended cap on heartbeats per request. Callers batching

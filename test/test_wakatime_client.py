@@ -340,7 +340,13 @@ async def test_api_and_verify_go_through_the_configured_proxy(
 
 
 @pytest.mark.parametrize(
-    "base", ["http://localhost:3000/api", "http://127.0.0.1:3000/api", "http://[::1]:3000/api"]
+    "base",
+    [
+        "http://localhost:3000/api",
+        "http://127.0.0.1:3000/api",
+        "http://[::1]:3000/api",
+        "http://kirocrew.localhost:3000/api",
+    ],
 )
 async def test_a_loopback_wakapi_is_never_sent_through_the_proxy(
     monkeypatch: pytest.MonkeyPatch, base: str
