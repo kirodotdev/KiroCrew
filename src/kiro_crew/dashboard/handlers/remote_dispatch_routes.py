@@ -816,7 +816,7 @@ async def _read(
         first, total = span
         if since > total:
             # Same refusal as the local read: a rewind or regenerate shrank the
-            # transcript, so the old position no longer lines up.
+            # transcript, so the held position points past its end.
             raise CrewCallError(
                 409,
                 "cursor_unavailable",
@@ -873,9 +873,20 @@ async def _read(
         # after it then read low, which re-sends a row rather than skipping one.
         end = first + len(rows) if since is None else min(since + limit, total, first + len(rows))
         result["total"] = total
-        result["next_since"] = cursor if cursor is not None else max(end, since or 0)
         if cursor is not None:
             result["streaming"] = True
+        if since is None and result["running"]:
+            # A tail read of a running session issues no cursor. An in-flight
+            # row can sit BEFORE the page: a segment cut deferred for an open
+            # construct keeps the chunk run in place while tool rows land after
+            # it, and the later cut deletes that run, so every row after it
+            # moves down one. No position this page sees is safe to resume
+            # from, so the caller reads the tail again. A since read can resume:
+            # its rows from since on are all on its page, and since itself came
+            # from an idle read or an earlier since read, so no in-flight row
+            # sits below it.
+            return result
+        result["next_since"] = cursor if cursor is not None else max(end, since or 0)
     return result
 
 

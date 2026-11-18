@@ -389,6 +389,24 @@ def test_a_tail_read_carries_indexes_and_a_cursor(env):
     assert env.peer.calls[0]["params"] == {"limit": "2"}
 
 
+def test_a_tail_read_of_a_running_session_issues_no_cursor(env):
+    # [user, streaming, tool]: limit=1 sees only the tool. The later segment cut
+    # deletes the chunk run and appends the reply at 2, so a cursor of 3 would
+    # skip it for good.
+    page = {**_page(2, 3, ["tool"]), "running": True}
+    status, body = _read_since(env, page, limit=1)
+    assert status == 200, body
+    assert [m["index"] for m in body["messages"]] == [2]
+    assert "next_since" not in body and body["total"] == 3
+
+
+def test_a_since_read_of_a_running_session_still_resumes(env):
+    page = {**_page(4, 6, ["user", "assistant"]), "running": True}
+    status, body = _read_since(env, page, limit=5, since=4)
+    assert status == 200, body
+    assert body["next_since"] == 6
+
+
 def test_close_forgets_the_slot(env):
     target = _create(env)
     assert _call(env, "close", crew="lab", target=target)[0] == 200

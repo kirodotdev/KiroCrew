@@ -171,6 +171,12 @@ def test_read_passes_since_through_and_renders_the_cursor():
     assert "Pass since=5 on your next read" in out
 
 
+def test_read_says_why_a_running_tail_has_no_cursor():
+    client = _Client({"target": "chat-77", "running": True, "total": 3, "messages": []})
+    out = tools.run_crew_read({"crew": "lab", "target": "chat-77"}, _ctx(client))
+    assert "No cursor while it is still working" in out and "Pass since" not in out
+
+
 def test_read_renders_a_refusal():
     out = tools.run_crew_read({"crew": "lab", "target": "t"}, _ctx(_Client(refuse=_REFUSAL)))
     assert out.startswith("Error: could not read that crew session")

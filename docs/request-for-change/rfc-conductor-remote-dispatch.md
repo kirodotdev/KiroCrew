@@ -202,7 +202,7 @@ its page answers rows `[next_before, total)`, so row `i` of the page is
 `before=S+N&limit=N`, which holds rows `[S, S+N)`; the hub drops any row below
 `S`. The crew's `from`/`since`/`digest` cursor is not used, because only the
 crew can compute its digest. `next_since` stops before the first in-flight row
-(a streaming fold, a pending approval), as the local read's cursor does. A
+(a streaming fold, a pending approval), as the local read's cursor does, and a tail read of a running session returns none, because an in-flight row may sit below its page. A
 `since` past `total` is refused `cursor_unavailable`; a page the crew cut by
 bytes so it starts after `S` is refused `crew_page_cut` (read again with a
 smaller `limit`).

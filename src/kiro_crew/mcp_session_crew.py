@@ -180,9 +180,11 @@ def run_crew_read(args: dict[str, Any], ctx: ToolContext) -> str:
     except DashboardError as refused:
         return redact(f"Error: could not read that crew session: {refused.error}")
     state = "still working" if resp.get("running") else "idle"
-    total = f"; total={resp['total']}" if "total" in resp else ""
-    title = resp.get("title", "")
-    lines = [f"\U0001f4d6 `{resp.get('target', '')}` {_on(resp)} — {title} ({state}{total})"]
+    if "total" in resp:
+        state += f"; total={resp['total']}"
+    lines = [
+        f"\U0001f4d6 `{resp.get('target', '')}` {_on(resp)} — {resp.get('title', '')} ({state})"
+    ]
     rows = [r for r in resp.get("messages") or [] if isinstance(r, dict)]
     if not rows:
         lines.append("No messages yet.")
@@ -191,6 +193,8 @@ def run_crew_read(args: dict[str, Any], ctx: ToolContext) -> str:
         lines.append(f"{at}[{row.get('role') or '?'}] {row.get('content') or ''}")
     if "next_since" in resp:
         lines.append(f"Pass since={resp['next_since']} on your next read to see only what is new.")
+    elif "total" in resp and resp.get("running"):
+        lines.append("No cursor while it is still working: read again without since.")
     return redact("\n".join(lines))
 
 
