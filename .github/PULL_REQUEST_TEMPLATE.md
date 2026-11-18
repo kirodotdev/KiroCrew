@@ -96,6 +96,19 @@
      (integration paths, UI, external services). State "N/A — unit coverage
      sufficient" only when genuinely true, with a one-line why. -->
 
+## Real-machine verification
+
+<!-- A PR passes only after a real machine shows the bug on the base, the fix
+     on the head with the same command, and the machine deleted. Procedure:
+     docs/system-specs/common/testing-conventions.md § Real-machine verification.
+     Never paste a credential here. A diff that runs nothing (docs, comments)
+     writes: N/A -- <what in the diff runs nothing>
+
+       Machine: <EC2 type or your computer>, <OS + version>, <arch>, <vCPU / memory>
+       Before (main <sha12>): `<command>` -> <result; a flaky test gives fails N/M>
+       After (head <sha12>): `<command>` -> <result; fails 0/M>
+       Cleanup: <instance terminated, security group and key pair deleted, tag search empty | own computer> -->
+
 ## Screenshots / video
 
 <!-- MANDATORY for any user-visible UI change (new/changed panels, components,
