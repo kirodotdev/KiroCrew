@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.browser_harness import discover
 from kiro_crew.browser_harness import install as harness_install
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
@@ -211,6 +213,74 @@ async def test_an_install_the_owner_already_started_is_left_alone(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("finish_early", [False, True], ids=["running", "failed"])
+async def test_startup_leaves_a_job_started_during_discovery_alone(
+    tmp_path, monkeypatch, finish_early
+) -> None:
+    _current(monkeypatch, False)
+    sup = _FakeSupervisor(
+        tmp_path, kind="user_chrome", headless=False, installed=False, chromium=False
+    )
+    state = SimpleNamespace()
+    discovering, resume_discovery = asyncio.Event(), asyncio.Event()
+    installing, finish_install = asyncio.Event(), asyncio.Event()
+    to_thread = asyncio.to_thread
+    runs: list[tuple[str, ...]] = []
+
+    async def gated_to_thread(func, /, *args, **kwargs):
+        if func is routes._auto_components:
+            discovering.set()
+            await await_until(resume_discovery, what="startup discovery released")
+        return await to_thread(func, *args, **kwargs)
+
+    async def fake_install(home, progress, *, components, refresh=False):
+        runs.append(components)
+        if len(runs) == 1:
+            installing.set()
+            await await_until(finish_install, what="the existing install released")
+            raise harness_install.InstallError("preparing", "offline")
+        return harness_install.install_state(home)
+
+    monkeypatch.setattr(routes.asyncio, "to_thread", gated_to_thread)
+    monkeypatch.setattr(harness_install, "install", fake_install)
+    startup = asyncio.create_task(
+        routes.auto_setup_browser_harness(state, supervisor=sup, environ=_GATEWAY_ENV)
+    )
+    existing_task = None
+    try:
+        await await_until(discovering, what="startup awaiting component discovery")
+        routes._start_install_job(state, (harness_install.COMPONENT_HARNESS,))
+        existing_job = state._browser_harness_install_job
+        existing_task = state._browser_harness_install_task
+        await await_until(installing, what="the competing install started")
+        if finish_early:
+            finish_install.set()
+            await await_until(existing_task, what="the competing install failed")
+        resume_discovery.set()
+        outcome = await await_until(startup, what="startup observed the existing job")
+        assert state._browser_harness_install_job is existing_job
+        assert state._browser_harness_install_task is existing_task
+        assert runs == [(harness_install.COMPONENT_HARNESS,)]
+        assert outcome == (
+            routes.AUTO_INSTALL_FAILED if finish_early else routes.AUTO_INSTALL_RUNNING
+        )
+        assert existing_job.status == (
+            routes.STATUS_FAILED if finish_early else routes.STATUS_RUNNING
+        )
+        assert sup.tested == []
+    finally:
+        resume_discovery.set()
+        finish_install.set()
+        tasks = {startup}
+        if existing_task is not None:
+            tasks.add(existing_task)
+        current_task = getattr(state, "_browser_harness_install_task", None)
+        if current_task is not None:
+            tasks.add(current_task)
+        await await_until(asyncio.gather(*tasks), what="startup and install cleanup")
+
+
+@pytest.mark.asyncio
 async def test_settings_sees_the_auto_job_running_and_refuses_a_second(
     tmp_path, monkeypatch
 ) -> None:
@@ -313,3 +383,132 @@ async def test_the_startup_hook_reclaims_first_then_auto_sets_up(monkeypatch) ->
         await hook(app)
     await asyncio.gather(*list(state._background_tasks))
     assert order == ["stop", "auto"]
+
+
+# ── an install that breaks after the startup check ──
+
+
+def _install_whose_interpreter_is_gone(home: Path) -> None:
+    """A finished install whose venv links to a Python an update has since removed."""
+    prefix = harness_install.harness_prefix(home)
+    python = harness_install.venv_python(prefix)
+    python.parent.mkdir(parents=True)
+    python.symlink_to(home / "runtime-0.0.1" / "bin" / "python3")
+    marker = {"version": harness_install.HARNESS_VERSION, "lock_sha256": "x", "source": "runtime"}
+    (prefix / harness_install.MARKER_FILE).write_text(json.dumps(marker), encoding="utf-8")
+
+
+@requires_symlinks
+@pytest.mark.asyncio
+async def test_an_install_broken_after_startup_is_reinstalled_once_without_a_click(
+    tmp_path, installs, monkeypatch
+) -> None:
+    _install_whose_interpreter_is_gone(tmp_path)
+    assert harness_install.install_state(tmp_path).installed is False
+    sup = _FakeSupervisor(
+        tmp_path, kind="kiro_chromium", headless=True, installed=False, chromium=True
+    )
+    state = _State()
+    # The startup check already ran and found the install whole.
+    state._browser_harness_auto_attempted = True
+    _current(monkeypatch, False)
+    assert await routes.repair_browser_harness(state, supervisor=sup, environ=_GATEWAY_ENV)
+    await await_until(state._browser_harness_install_task, what="the repair's install finished")
+    assert installs == [(harness_install.COMPONENT_HARNESS,)]
+    assert state._browser_harness_install_job.status == routes.STATUS_SUCCEEDED
+    # Once per gateway: a repair that did not take is the person's Retry, not a loop.
+    assert not await routes.repair_browser_harness(state, supervisor=sup, environ=_GATEWAY_ENV)
+    assert len(installs) == 1
+
+
+@requires_symlinks
+@pytest.mark.asyncio
+async def test_repair_leaves_a_never_installed_home_a_failed_job_and_test_rigs_alone(
+    tmp_path, installs, monkeypatch
+) -> None:
+    _current(monkeypatch, False)
+    fresh = _FakeSupervisor(
+        tmp_path / "fresh", kind="kiro_chromium", headless=True, installed=False, chromium=True
+    )
+    assert not await routes.repair_browser_harness(_State(), supervisor=fresh, environ={})
+    broken_home = tmp_path / "broken"
+    _install_whose_interpreter_is_gone(broken_home)
+    broken = _FakeSupervisor(
+        broken_home, kind="kiro_chromium", headless=True, installed=False, chromium=True
+    )
+    failed = _State()
+    failed._browser_harness_install_job = routes.InstallJob(
+        "j", ("harness",), routes.STATUS_FAILED, "preparing", 0.0, 0.0
+    )
+    assert not await routes.repair_browser_harness(failed, supervisor=broken, environ={})
+    assert not await routes.repair_browser_harness(_State(), supervisor=broken, environ={"CI": "1"})
+    assert installs == []
+
+
+@requires_symlinks
+@pytest.mark.asyncio
+async def test_two_repairs_at_once_start_one_job_and_keep_its_failure(
+    tmp_path, monkeypatch
+) -> None:
+    """Both callers pass the first checks before either starts a job; the second must
+    not replace the first's job, even after it failed fast."""
+    _install_whose_interpreter_is_gone(tmp_path)
+    _current(monkeypatch, False)
+    runs: list[tuple[str, ...]] = []
+
+    async def failing_install(home, progress, *, components, refresh=False):
+        runs.append(components)
+        raise harness_install.InstallError("preparing", "boom")
+
+    monkeypatch.setattr(harness_install, "install", failing_install)
+    gates = [asyncio.Event(), asyncio.Event()]
+    waiting: list[int] = []
+    both_waiting = asyncio.Event()
+
+    async def gated_policy(_key: str) -> bool:
+        mine = len(waiting)
+        waiting.append(mine)
+        if len(waiting) == 2:
+            both_waiting.set()
+        await await_until(gates[mine], what=f"policy check {mine} released")
+        return False
+
+    monkeypatch.setattr(routes, "browse_denied_async", gated_policy)
+    sup = _FakeSupervisor(
+        tmp_path, kind="kiro_chromium", headless=True, installed=False, chromium=True
+    )
+    state = _State()
+    first = asyncio.create_task(
+        routes.repair_browser_harness(state, supervisor=sup, environ=_GATEWAY_ENV)
+    )
+    second = asyncio.create_task(
+        routes.repair_browser_harness(state, supervisor=sup, environ=_GATEWAY_ENV)
+    )
+    try:
+        await await_until(both_waiting, what="both repairs at the policy check")
+        # Either task may have reached the check first; release that one alone.
+        gates[0].set()
+        done, pending = await await_until(
+            asyncio.ensure_future(
+                asyncio.wait({first, second}, return_when=asyncio.FIRST_COMPLETED)
+            ),
+            what="one repair finished",
+        )
+        assert len(done) == 1 and done.pop().result() is True
+        await await_until(state._browser_harness_install_task, what="the repair's install failed")
+        failed = state._browser_harness_install_job
+        assert failed.status == routes.STATUS_FAILED
+        gates[1].set()
+        assert not await await_until(pending.pop(), what="the second repair returned")
+        assert state._browser_harness_install_job is failed
+        assert runs == [(harness_install.COMPONENT_HARNESS,)]
+    finally:
+        for gate in gates:
+            gate.set()
+        tasks = {first, second}
+        install_task = getattr(state, "_browser_harness_install_task", None)
+        if install_task is not None:
+            tasks.add(install_task)
+        await await_until(
+            asyncio.gather(*tasks, return_exceptions=True), what="repairs and install cleanup"
+        )
