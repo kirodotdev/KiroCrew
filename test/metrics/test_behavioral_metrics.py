@@ -114,7 +114,10 @@ def test_each_metric_gets_its_shape(name, attrs, expected):
 
 def test_every_metric_is_covered_by_the_shape_table_above():
     """A new entry must come with a row in the parametrized table."""
-    assert len(BEHAVIORAL_METRICS) == 10
+    (table,) = [m for m in test_each_metric_gets_its_shape.pytestmark if m.name == "parametrize"]
+    covered = {name for name, _attrs, _expected in table.args[1]}
+    assert BEHAVIORAL_METRICS, "BEHAVIORAL_METRICS is empty"
+    assert sorted(BEHAVIORAL_METRICS - covered) == []
 
 
 def test_a_missing_activity_attribute_reads_other():

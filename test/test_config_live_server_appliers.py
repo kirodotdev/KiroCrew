@@ -630,23 +630,30 @@ class TestServerAppliers:
         assert calls == [newer, scheduled]
 
     def test_every_applier_is_registered_and_scoped(self) -> None:
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard.server_runtime import config_watch
+
         subs = self._register(SimpleNamespace(workflow_service=None, channel_manager=None))
-        assert set(subs) == {
-            "agent.provider",
-            "agent.model",
-            "agent.role_models.background",
-            "agent.log_level",
-            "browser.settings",
-            "agent.crew_mode_agent",
-            "dashboard.feature_previews",
-            "dashboard.stale_wake",
-            "dashboard.chat_runtime_sharing_toggle",
-            "apps",
-            "dashboard.command_bar_enabled",
-            "dashboard.channels_enabled",
-            "dashboard.terminal.enabled",
-            "crewmate.harness_fallback",
+        assert subs, "no config-watch subscription was registered"
+        # Every applier closure ``_register_config_watch`` defines is some
+        # subscription's callback, so an applier written but left out of the
+        # subscription list fails here.
+        (register,) = [
+            node
+            for node in ast.walk(ast.parse(inspect.getsource(config_watch)))
+            if isinstance(node, ast.FunctionDef) and node.name == "_register_config_watch"
+        ]
+        appliers = {
+            node.name
+            for node in register.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith(("_apply_", "_push_", "_sync_", "_count_", "_alarm_"))
         }
+        assert appliers, "no applier closure was found in _register_config_watch"
+        registered = {getattr(sub.callback(), "__name__", "") for sub in subs.values()}
+        assert sorted(appliers - registered) == []
         # None of them is a catch-all: an unrelated write must dispatch nothing.
         for sub in subs.values():
             assert sub.prefixes, f"{sub.name} would fire on every reload"
