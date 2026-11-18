@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import time
 from dataclasses import asdict
@@ -289,6 +290,10 @@ class TestSizeRotation:
 
     def test_rotation_failure_still_writes_the_event(self, sel_dir, small_segments, caplog):
         """An audit record must never be lost to a rotation that cannot happen."""
+        # Each failed rotation logs a warning with a traceback, about 35 MiB over this
+        # test, and pytest keeps captured logs for the whole session. No assertion
+        # reads them.
+        caplog.set_level(logging.ERROR, logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
         before = len(log.recent(limit=10_000))
@@ -506,7 +511,11 @@ class TestRotationIsSerializedAcrossProcesses:
         assert protected.read_bytes() == before, "rotation wrote through the planted link"
         assert not planted.is_symlink(), "the planted link survived"
 
-    def test_an_unremovable_lock_link_declines_to_rotate(self, sel_dir, small_segments):
+    def test_an_unremovable_lock_link_declines_to_rotate(self, sel_dir, small_segments, caplog):
+        # Each declined rotation logs a warning with a traceback, about 35 MiB over
+        # this test, and pytest keeps captured logs for the whole session. No
+        # assertion reads them.
+        caplog.set_level(logging.ERROR, logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
         before = log._segments_oldest_first()
