@@ -10336,6 +10336,7 @@
         "auto_open_git_panel": false,
         "side_panel_always_open": false,
         "side_panel_pin_summary": false,
+        "auto_open_conductor_board": true,
         "session_card_source_links": true,
         "terminal": {
           "enabled": true
@@ -11504,6 +11505,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.auto_open_conductor_board",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auto-open the Board in the side panel",
+      "help": "Open the right side panel on the Board tab the first time you open a conductor mode chat. With this off, a conductor mode chat opens like any other chat: its panel stays closed unless Keep the side panel open is on, and the Board is still the panel's first tab. Turning conductor mode on in a chat still opens the Board. This setting does not apply on a phone.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.session_card_source_links",

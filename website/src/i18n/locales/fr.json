@@ -19974,6 +19974,8 @@
         "auto_compact_exact_hint": "Saisis une valeur de {{min}} à {{max}}. Elle est enregistrée avec Entrée ou quand le champ perd le focus.",
         "auto_compact_threshold_clamped": "{{stored}} enregistré. {{requested}} est hors de la plage autorisée ({{min}} à {{max}}).",
         "auto_ingest_limit_per_scan": "Limite d’ingestion automatique par analyse",
+        "auto_open_conductor_board": "Ouvrir automatiquement le Tableau dans le panneau latéral",
+        "auto_open_conductor_board_hint": "Ouvre le panneau latéral sur le Tableau la première fois que tu ouvres une discussion en Conductor mode. Si tu le désactives, la discussion s'ouvre comme les autres, avec son panneau fermé, sauf si « Garder le panneau latéral ouvert » est activé. Si tu actives Conductor mode dans une discussion, le Tableau s'ouvre quand même. Sur un téléphone, ce réglage ne s'applique pas.",
         "auto_open_git_panel": "Ouvrir automatiquement Git dans le panneau latéral",
         "auto_register_project_documents": "Enregistrer automatiquement les documents de projet",
         "background_effort": "Effort en arrière-plan",

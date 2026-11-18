@@ -10724,6 +10724,8 @@
         "auto_compact_exact_hint": "Type any value from {{min}} to {{max}}. It saves on Enter or when the field loses focus.",
         "auto_compact_threshold_clamped": "Saved {{stored}}. {{requested}} is outside the allowed range ({{min}} to {{max}}).",
         "auto_ingest_limit_per_scan": "Auto-Ingest Limit Per Scan",
+        "auto_open_conductor_board": "Auto-Open Board in Side Panel",
+        "auto_open_conductor_board_hint": "Opens the side panel on the Board the first time you open a conductor mode chat. When this is off, the chat opens like any other chat, with its panel closed unless Keep Side Panel Open is on. Turning on conductor mode in a chat still opens the Board. This setting does not apply on a phone.",
         "auto_open_git_panel": "Auto-Open Git in Side Panel",
         "auto_register_project_documents": "Auto-Register Project Documents",
         "combine_follow_up_messages_into_a_single_labeled": "Combine follow-up messages into a single labeled prompt while the agent is busy",

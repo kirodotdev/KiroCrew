@@ -208,16 +208,20 @@ describe('LTS: Feature Previews off', () => {
 
   it('keeps conductor mode off, though it is on with no preview in the oss edition', () => {
     // Maintainer ruling: conductor mode left Feature Previews, and LTS keeps it off.
-    const newChatDefault = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.new_chat_crew_mode')
-    if (!newChatDefault) throw new Error('dashboard.new_chat_crew_mode missing from the registry')
+    const conductorKeys = ['dashboard.new_chat_crew_mode', 'dashboard.auto_open_conductor_board']
+    const conductorSettings = conductorKeys.map(key => {
+      const entry = SETTINGS_REGISTRY.find(e => e.configKey === key)
+      if (!entry) throw new Error(`${key} missing from the registry`)
+      return entry
+    })
     lockOss()
     expect(crewModeEnabled()).toBe(true)
-    expect(settingEntryOffered(newChatDefault, GOVERNANCE)).toBe(true)
+    for (const entry of conductorSettings) expect(settingEntryOffered(entry, GOVERNANCE)).toBe(true)
     lockLts()
     expect(crewModeEnabled()).toBe(false)
     expect(crewModeRoot({ crew_mode_root: true })).toBe(false)
     expect(crewRootOf({ crew_root: 'root' })).toBe('')
-    expect(settingEntryOffered(newChatDefault, GOVERNANCE)).toBe(false)
+    for (const entry of conductorSettings) expect(settingEntryOffered(entry, GOVERNANCE)).toBe(false)
   })
 })
 

@@ -577,6 +577,16 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('shows Auto-Open Board in Side Panel on by default and persists turning it off', async () => {
+    wrap('sidepanel')
+    const sw = await settledSwitch('Auto-Open Board in Side Panel')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ auto_open_conductor_board: false })
+    )
+  })
+
   it('offers Start New Chats in conductor mode with no preview turned on, and persists it', async () => {
     const label = 'Start New Chats in conductor mode'
     wrap('sessions')

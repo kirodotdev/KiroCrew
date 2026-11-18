@@ -1123,6 +1123,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "session.autocompact_pct"
   },
   {
+    "id": "chat.auto-open-board-in-side-panel",
+    "label": "Auto-Open Board in Side Panel",
+    "labelKey": "pages.settings.chatPanel.auto_open_conductor_board",
+    "hint": "Opens the side panel on the Board the first time you open a conductor mode chat. When this is off, the chat opens like any other chat, with its panel closed unless Keep Side Panel Open is on. Turning on conductor mode in a chat still opens the Board. This setting does not apply on a phone.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sidepanel"
+    },
+    "configKey": "dashboard.auto_open_conductor_board"
+  },
+  {
     "id": "chat.auto-open-git-in-side-panel",
     "label": "Auto-Open Git in Side Panel",
     "labelKey": "pages.settings.chatPanel.auto_open_git_panel",

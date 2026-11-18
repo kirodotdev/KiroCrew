@@ -19453,6 +19453,8 @@
         "auto_compact_exact_hint": "Gib einen Wert von {{min}} bis {{max}} ein. Er wird mit Enter gespeichert oder wenn das Feld den Fokus verliert.",
         "auto_compact_threshold_clamped": "{{stored}} gespeichert. {{requested}} liegt außerhalb des zulässigen Bereichs ({{min}} bis {{max}}).",
         "auto_ingest_limit_per_scan": "Auto-Aufnahmegrenze pro Durchlauf",
+        "auto_open_conductor_board": "Board automatisch im Seitenpanel öffnen",
+        "auto_open_conductor_board_hint": "Öffnet das Seitenpanel auf dem Board, wenn du zum ersten Mal einen Chat im Conductor mode öffnest. Ist die Einstellung aus, öffnet sich der Chat wie jeder andere, mit geschlossenem Panel, es sei denn, „Seitenpanel offen halten“ ist eingeschaltet. Schaltest du in einem Chat den Conductor mode ein, öffnet sich das Board trotzdem. Auf dem Smartphone gilt diese Einstellung nicht.",
         "auto_open_git_panel": "Git automatisch im Seitenpanel öffnen",
         "auto_register_project_documents": "Projektdokumente automatisch registrieren",
         "background_effort": "Hintergrund-Aufwand",

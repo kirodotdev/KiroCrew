@@ -19974,6 +19974,8 @@
         "auto_compact_exact_hint": "Inserisci un valore da {{min}} a {{max}}. Viene salvato con Invio o quando il campo perde il focus.",
         "auto_compact_threshold_clamped": "Salvato {{stored}}. {{requested}} è fuori dall'intervallo consentito ({{min}}–{{max}}).",
         "auto_ingest_limit_per_scan": "Limite di acquisizione automatica per scansione",
+        "auto_open_conductor_board": "Apri automaticamente la Bacheca nel pannello laterale",
+        "auto_open_conductor_board_hint": "Apre il pannello laterale sulla Bacheca la prima volta che apri una chat in Conductor mode. Se lo disattivi, la chat si apre come tutte le altre, con il pannello chiuso, a meno che non sia attivo «Tieni aperto il pannello laterale». Se attivi Conductor mode in una chat, la Bacheca si apre comunque. Sul telefono questa impostazione non si applica.",
         "auto_open_git_panel": "Apri automaticamente Git nel pannello laterale",
         "auto_register_project_documents": "Registra automaticamente i documenti di progetto",
         "background_effort": "Sforzo in background",
