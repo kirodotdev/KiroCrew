@@ -963,6 +963,34 @@ def test_the_owner_step_refuses_a_malformed_write(env, tmp_path):
     assert additions.read_additions("kirocrew-conductor") == {}
 
 
+@pytest.mark.parametrize("server", [{}, [], 5, None], ids=["dict", "list", "int", "null"])
+def test_a_masked_write_with_a_non_string_server_is_refused_like_the_unmasked_one(
+    env, tmp_path, monkeypatch, server
+):
+    """The same 400 ``server_invalid`` either path gives, and no config lookup."""
+    from kiro_crew.dashboard.handlers import member_capability_catalog as catalog
+    from kiro_crew.dashboard.handlers.member_capability_catalog import SETTING_MASK
+
+    def lookup(*_a, **_k):
+        raise AssertionError("a non-string server must not reach the config lookup")
+
+    monkeypatch.setattr(catalog, "gateway_entry_behind", lookup)
+    store = CardStore(tmp_path / "c.json")
+    masked = {**GATEWAY_ENTRY, "env": {"API_KEY": SETTING_MASK}}
+
+    async def go(c):
+        out = []
+        for entry in (masked, GATEWAY_ENTRY):
+            r = await c.post(ADD, json={"server": server, "entry": entry}, headers=OWNER_WITH_CARD)
+            out.append((r.status, await r.json()))
+        return out
+
+    for status, body in _bare(store, go):
+        assert (status, body["code"]) == (400, "addition_refused")
+        assert "server_invalid" in json.dumps(body)
+    assert additions.read_additions("kirocrew-conductor") == {}
+
+
 def test_an_unwritable_record_is_a_503_on_both_steps(env, tmp_path, monkeypatch):
     store = CardStore(tmp_path / "c.json")
 

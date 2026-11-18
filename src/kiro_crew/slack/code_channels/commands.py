@@ -274,8 +274,8 @@ def _first_delivery(payload: dict[str, Any]) -> bool:
     """False for a repeat of an invocation already handled."""
     key = str(payload.get("trigger_id") or "")
     if not key:
-        parts = [str(payload.get(k) or "") for k in ("channel_id", "user_id", "command", "text")]
-        key = "nt:" + hashlib.sha256("\0".join(parts).encode()).hexdigest()
+        # No id: a redelivery cannot be told from a deliberate repeat, so run it.
+        return True
     global _seen
     if _seen is None:
         from kiro_crew.slack.events import SeenCache
