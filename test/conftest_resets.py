@@ -388,9 +388,19 @@ def forget_home_bound_caches() -> None:
     the test's ``monkeypatch`` included, so a stand-in a test patched in is
     already gone and only a real leftover is cleared. Never called before a
     test, so that pre-boot check still catches a leak this does not know about.
+
+    It also empties aiohttp's middleware cache, which no boot check reads.
     """
     import sys
 
+    # aiohttp memoizes each app's middleware chain in a module-level lru_cache keyed
+    # on the Application, so every app a test served stays alive, with its app state
+    # and every mock in it, for the life of the worker. The name is private to aiohttp,
+    # so a version without it is skipped rather than failed.
+    web_app = sys.modules.get("aiohttp.web_app")
+    cached = getattr(web_app, "_cached_build_middleware", None)
+    if callable(getattr(cached, "cache_clear", None)):
+        cached.cache_clear()
     governance = sys.modules.get("kiro_crew.platform.governance")
     if governance is not None:
         governance._CONFIRM_PATTERNS_MEMO = None
