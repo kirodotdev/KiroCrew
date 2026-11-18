@@ -611,6 +611,16 @@ def token_auth_middleware(
                     _log_auth(request, "internal", "denied", "no internal secret configured")
                     return _deny(request, "Forbidden")
                 if _ipc_granted or _ct_eq(internal_secret, _provided_secret):
+                    # This branch writes one audit row for the grant and no
+                    # ``_log_auth`` row. That ``dashboard.token_auth`` row would
+                    # name only the literal caller ``internal``, while this one
+                    # names the peer address (empty on a unix socket) or the
+                    # verified tailnet login, the forwarded flag and the
+                    # admitting credential. Every MCP call and keepalive takes
+                    # this branch, so a second row would double the log's
+                    # largest share. The agent-socket gate above writes its own
+                    # capability row, and the secret refusals around this branch
+                    # keep both of their rows.
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -621,7 +631,6 @@ def token_auth_middleware(
                         resources=path,
                         error="agent socket capability" if _ipc_granted else "",
                     )
-                    _log_auth(request, "internal", "granted", "")
                     # Mark the grant so handlers can distinguish "the internal
                     # loopback caller (kiro-cli / MCP) authenticated" from "no
                     # auth ran at all".
