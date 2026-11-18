@@ -57,11 +57,17 @@ def _manifest(*crons: dict) -> AppManifest:
 
 
 def _digest(**extra) -> dict:
-    return {"name": "digest", "every": 600, "message": "digest the inbox", **extra}
+    return {
+        "name": "digest",
+        "every": 600,
+        "message": "digest the inbox",
+        "agent": "app-agent",
+        **extra,
+    }
 
 
 def _weekly() -> dict:
-    return {"name": "weekly", "every": 604800, "message": "weekly report"}
+    return {"name": "weekly", "every": 604800, "message": "weekly report", "agent": "app-agent"}
 
 
 @pytest.fixture()
@@ -126,7 +132,9 @@ async def _install_v1(svc: CronService) -> dict[str, tuple[str, bool]]:
     """v1 declares two crons; the app also creates one at runtime; the person pauses one."""
     _register_crons(APP, _manifest(_digest(), _weekly()))
     await register_app_crons_with_service(APP, svc)
-    await CronSDK(APP, svc).add_job_async(RUNTIME, "made by on_startup", every_secs=3600)
+    await CronSDK(APP, svc).add_job_async(
+        RUNTIME, "made by on_startup", every_secs=3600, agent="app-agent"
+    )
     assert await svc.enable_job_async(_jobs(svc)[KEPT][0], False)
     return _jobs(svc)
 
@@ -243,7 +251,9 @@ def test_a_reload_judges_jobs_written_by_another_process(home, monkeypatch):
         other = CronService(base_dir=home / "crons")
         _register_crons(APP, _manifest(_digest()))
         await register_app_crons_with_service(APP, other)
-        await CronSDK(APP, other).add_job_async(KEPT, "runtime twin", every_secs=3600)
+        await CronSDK(APP, other).add_job_async(
+            KEPT, "runtime twin", every_secs=3600, agent="app-agent"
+        )
         written = {
             j.message: j.id
             for j in other.list_jobs(include_disabled=True)
@@ -587,7 +597,12 @@ def test_an_app_job_the_store_upgrade_keeps_on_utc_stays_there(home, monkeypatch
     monkeypatch.setattr(
         "kiro_crew.cron_service.zone_default_migration.configured_default_zone", lambda: ""
     )
-    nine = {"name": "digest", "cron_expr": "0 9 * * *", "message": "digest the inbox"}
+    nine = {
+        "name": "digest",
+        "cron_expr": "0 9 * * *",
+        "message": "digest the inbox",
+        "agent": "app-agent",
+    }
 
     async def first(svc):
         _register_crons(APP, _manifest(nine))

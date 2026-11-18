@@ -300,13 +300,19 @@ async def api_cron_tools(request: web.Request) -> web.Response:
     # ``agent``). Such a job carries no ``app:`` tag, so this is the only point
     # that judges it. Answered as the tool answers any refused create.
     app_caller = _app_caller(request)
-    if app_caller and name in {"cron_add", "cron_update"}:
+    # The app a schedule is made for: the caller's claim, else the app the calling
+    # session's record was captured for. A scheduled run of a job that ``cron_add``
+    # made from an app's session carries no ``app:`` tag, so only its record names it.
+    schedule_app = app_caller
+    if not schedule_app and name in {"cron_add", "cron_update"}:
+        schedule_app = await asyncio.to_thread(_session_app, actual)
+    if schedule_app and name in {"cron_add", "cron_update"}:
         try:
             # Judge the same normalized values that the tool will store.
             arguments = mcp_cron._validate_args(name, arguments)
         except ValidationError:
             # Let dispatch return its usual validation error without judging identity.
-            app_caller = ""
+            app_caller = schedule_app = ""
     if app_caller and (name == "cron_add" or (name == "cron_update" and "agent" in arguments)):
         from kiro_crew.cron_service.identity import app_schedule_names_bot
 
@@ -341,6 +347,13 @@ async def api_cron_tools(request: web.Request) -> web.Response:
                     "result": "Error: an app's schedule cannot run as a Bot; name an agent of the app's own"
                 }
             )
+    if schedule_app and (name == "cron_add" or (name == "cron_update" and "agent" in arguments)):
+        from kiro_crew.cron_service.identity import APP_JOB_NEEDS_AGENT
+
+        refused = await _app_tool_schedule_lacks_agent(state, name, arguments, actual)
+        if refused:
+            _audit_app_cron(schedule_app, "cron.tools", "denied", APP_JOB_NEEDS_AGENT)
+            return web.json_response({"result": f"Error: {APP_JOB_NEEDS_AGENT}"})
 
     presented_token = request.headers.get("X-Session-Token", "")
     # Read while the verified caller's tab is open; cron_add records the answer.
@@ -388,6 +401,56 @@ async def api_cron_tools(request: web.Request) -> web.Response:
         )
     state.push_refresh("crons")
     return web.json_response({"result": result})
+
+
+def _session_app(session_key: str) -> str:
+    """The app *session_key*'s execution record was captured for, or ``""``.
+
+    The record is the one ``/api/spawn`` reads app identity from. A key with no
+    readable record names no app. Reads the session record from disk.
+    """
+    from kiro_crew.execution_context import read_session_execution
+
+    try:
+        execution = read_session_execution(session_key) if session_key else None
+    except (OSError, ValueError):
+        return ""
+    return str(getattr(execution, "app", "") or "") if execution is not None else ""
+
+
+async def _app_tool_schedule_lacks_agent(
+    state: DashboardState, name: str, arguments: dict[str, Any], maker_session: str
+) -> bool:
+    """Whether an app session's ``cron_add`` or ``cron_update`` leaves a job with no agent.
+
+    A ``cron_add`` is judged as the create it makes from *maker_session*: a job that
+    names no agent runs on the agent that session runs on, which is the app's own
+    unless the session itself runs on the owner's default. A ``cron_update`` is
+    judged on the job it changes; an id this store does not hold is left to the
+    tool, whose ownership check refuses a job that is not the maker's. Arguments of
+    the wrong type are left to the tool's own validation.
+    """
+    from kiro_crew.cron_service.identity import app_schedule_lacks_agent, app_update_lacks_agent
+
+    agent = arguments.get("agent")
+    if not isinstance(agent, (str, type(None))):
+        return False
+    if name == "cron_update":
+        crons = getattr(state, "crons", None)
+        job_id = arguments.get("job_id")
+        job = crons.get_job(job_id) if crons is not None and isinstance(job_id, str) else None
+        return job is not None and app_update_lacks_agent(job, agent or "")
+    member, command, script = (arguments.get(k) for k in ("member_id", "command", "script"))
+    if not all(isinstance(v, (str, type(None))) for v in (member, command, script)):
+        return False
+    return await asyncio.to_thread(
+        app_schedule_lacks_agent,
+        agent or "",
+        member or "",
+        command=command or "",
+        script=script or "",
+        maker_session=maker_session,
+    )
 
 
 def _resolve_chat_folder_id(
@@ -901,7 +964,12 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # reply path cannot bind. An explicit ``member_id`` is left as the caller set it.
     # The split reads the member roster from the configuration on disk, so it runs
     # on a worker thread and never holds the event loop.
-    from kiro_crew.cron_service.identity import app_schedule_names_bot, split_cron_agent_member
+    from kiro_crew.cron_service.identity import (
+        APP_JOB_NEEDS_AGENT,
+        app_schedule_lacks_agent,
+        app_schedule_names_bot,
+        split_cron_agent_member,
+    )
 
     # An app does not reach a Bot's own memory or chat by naming the Bot, the rule
     # the App Kit SDK's create holds (``apps.cron_sdk``). Refused before the split
@@ -916,6 +984,13 @@ async def api_crons_create(request: web.Request) -> web.Response:
             app_caller, "crons.create", "denied", "an app's schedule cannot run as a Bot"
         )
         return _owner_denial_response(request)
+    # Every job this route makes starts a model turn, and one that names no agent
+    # would run on the owner's default agent with all of the owner's tools.
+    if app_caller and app_schedule_lacks_agent(agent_id or "", member_id or ""):
+        _audit_app_cron(app_caller, "crons.create", "denied", APP_JOB_NEEDS_AGENT)
+        return web.json_response(
+            {"error": APP_JOB_NEEDS_AGENT, "code": "app_cron_agent_required"}, status=400
+        )
     agent_id, member_id = await asyncio.to_thread(
         split_cron_agent_member, agent_id or "", member_id or ""
     )
@@ -1365,6 +1440,14 @@ async def api_cron_update(request: web.Request) -> web.Response:
                 app_caller, "crons.update", "denied", "an app's schedule cannot run as a Bot"
             )
             return _owner_denial_response(request)
+        # Nor does it clear its job's agent, the rule create holds.
+        from kiro_crew.cron_service.identity import APP_JOB_NEEDS_AGENT, app_update_lacks_agent
+
+        if "agent_id" in kwargs and app_update_lacks_agent(current, kwargs["agent_id"]):
+            _audit_app_cron(app_caller, "crons.update", "denied", APP_JOB_NEEDS_AGENT)
+            return web.json_response(
+                {"error": APP_JOB_NEEDS_AGENT, "code": "app_cron_agent_required"}, status=400
+            )
     if "model" in body:
         model_raw = body["model"]
         if model_raw is not None and not isinstance(model_raw, str):

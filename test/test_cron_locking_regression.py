@@ -706,7 +706,7 @@ class TestAppSDKMutationLoopSafety:
 
             svc._file_lock = guarded_lock  # type: ignore[method-assign, assignment]
 
-            job = await sdk.add_job_async(name="demo-app/x", message="m", every_secs=3600)
+            job = await sdk.add_job_async(name="demo-app/x", message="m", every_secs=3600, agent="app-agent")
             assert job is not None and job.created_by == "app:demo-app"
             # Fully persisted through the (off-loop) locked core.
             assert any(j.id == job.id for j in svc.list_jobs(include_disabled=True))
@@ -733,7 +733,7 @@ class TestAppSDKMutationLoopSafety:
             assert not hasattr(svc, "rearm_after_offload")
             assert not hasattr(svc, "_arm_after_offload")
 
-            await sdk.add_job_async(name="demo-app/y", message="m", every_secs=3600)
+            await sdk.add_job_async(name="demo-app/y", message="m", every_secs=3600, agent="app-agent")
 
             assert svc._timer_task is not None and not svc._timer_task.done()
             assert svc._timer_task is not before, "add must (re)arm the timer in-service"

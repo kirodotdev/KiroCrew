@@ -158,6 +158,7 @@ Rules that will not bend:
 
 ```
 app.json                  manifest: crons, permissions, store listing
+agents/                   the two agents the crons run on (heartbeat, dispatch)
 backend/
   routes.py               composition root: route registration, the enable gate,
                           audit and the redaction floor

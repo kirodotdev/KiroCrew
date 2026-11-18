@@ -374,7 +374,7 @@ class TestCronChannelDelivery:
         ],
     )
     async def test_the_result_dm_opens_to_a_person_never_an_owner_tag(
-        self, created_by: str, dm_user: str
+        self, created_by: str, dm_user: str, monkeypatch
     ):
         """An app's or an import's ``created_by`` is a tag, not a Slack user id.
 
@@ -383,7 +383,15 @@ class TestCronChannelDelivery:
         """
         transport = _channel_transport()
         orch = self._orch(transport)
-        job = _job(id="jc5", name="app probe", session_key="", created_by=created_by)
+        # An app's job names one of its own agents; the others may name none.
+        agent = "standup-digest-agent" if created_by.startswith("app:") else ""
+        # The test home holds no spec for the app's agent named here.
+        from kiro_crew.cron_service import agent_presence
+
+        monkeypatch.setattr(agent_presence, "cron_agent_missing", lambda *_a: False)
+        job = _job(
+            id="jc5", name="app probe", session_key="", created_by=created_by, agent_id=agent
+        )
 
         with patch.object(gw, "_resolve_channel_target", self._target):
             async with _cron_message_cb(orch, result_text="digest") as callback:

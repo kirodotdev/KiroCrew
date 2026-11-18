@@ -29,6 +29,7 @@ from kiro_crew.apps.bridges import (
     load_app_cron_defs,
     register_app_crons_with_service,
 )
+from kiro_crew.apps.bridges_crons import _MANIFEST_OWNED_CRON_KEYS
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.cron import CronService
 
@@ -56,7 +57,13 @@ def _manifest(cron: dict) -> AppManifest:
 
 
 def _agent_cron(**extra) -> dict:
-    return {"name": SHORT, "every": 600, "message": "digest the inbox", **extra}
+    return {
+        "name": SHORT,
+        "every": 600,
+        "message": "digest the inbox",
+        "agent": "app-agent",
+        **extra,
+    }
 
 
 def _command_cron(**extra) -> dict:
@@ -158,6 +165,7 @@ class TestChangedManifestReachesTheJob:
                 "name": SHORT,
                 "cron_expr": "0 9 * * 1-5",
                 "message": "digest the inbox",
+                "agent": "app-agent",
                 "timezone": "America/New_York",
                 "skip_dates": ["2026-12-25"],
             }
@@ -269,7 +277,9 @@ class TestOnlyTheChangedFieldsAreApplied:
         async def scenario(svc):
             _register_crons(APP, _manifest(_agent_cron()))
             await register_app_crons_with_service(APP, svc)
-            _register_crons(APP, _manifest({"name": SHORT, "every": 600, "message": ""}))
+            _register_crons(
+                APP, _manifest({"name": SHORT, "every": 600, "message": "", "agent": "app-agent"})
+            )
             with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.bridges"):
                 await register_app_crons_with_service(APP, svc)
                 await register_app_crons_with_service(APP, svc)
@@ -517,7 +527,7 @@ class TestTheStampIsPersisted:
                 "name": NAME,
                 "every": 600,
                 "cron_expr": "",
-                "agent": "",
+                "agent": "app-agent",
                 "message": "digest the inbox",
                 "command": "",
                 "script": "",
@@ -572,7 +582,7 @@ class TestDigest:
         job = _run_scenario(home, scenario)
 
         assert job.timeout_secs == 900
-        assert len(job.app_manifest_digest.split(",")) == 16
+        assert len(job.app_manifest_digest.split(",")) == len(_MANIFEST_OWNED_CRON_KEYS)
 
     def test_a_stamp_missing_one_key_counts_that_key_alone(self, home):
         """A key added to the manifest after the stamp was written is the only one re-applied."""

@@ -400,7 +400,15 @@ class TestEnableRegistersCrons:
     dormant until a restart.
     """
 
-    CRONS = [{"name": "poller", "every": 900, "message": "poll things", "silent": True}]
+    CRONS = [
+        {
+            "name": "poller",
+            "every": 900,
+            "message": "poll things",
+            "agent": "app-agent",
+            "silent": True,
+        }
+    ]
 
     def _store_job_names(self):
         from kiro_crew.config import config_dir
@@ -465,10 +473,16 @@ class TestEnableRegistersCrons:
             svc_b._load()
             return await asyncio.gather(
                 CronSDK("cli-test-app", svc_a).add_job_if_absent_async(
-                    "cli-test-app/poller", "poll things", every_secs=900
+                    "cli-test-app/poller",
+                    "poll things",
+                    every_secs=900,
+                    agent="app-agent",
                 ),
                 CronSDK("cli-test-app", svc_b).add_job_if_absent_async(
-                    "cli-test-app/poller", "poll things", every_secs=900
+                    "cli-test-app/poller",
+                    "poll things",
+                    every_secs=900,
+                    agent="app-agent",
                 ),
             )
 

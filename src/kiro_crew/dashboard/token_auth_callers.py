@@ -1015,6 +1015,13 @@ def folder_principal(state: object, request: web.Request) -> str:
 def _cron_job_owner(jobs: object, job_id: str) -> str:
     """The app that created a cron job, or ``""`` (person-created, or no such job).
 
+    A job is the app's when it carries the app's ``created_by`` stamp, or when its
+    maker session is a run of a job that is the app's: a job an app's job made from
+    its own run carries no stamp, so the makers are followed back to the first one
+    that is not a cron run. Each job is visited once, so a maker cycle ends there.
+    A captured app claim is not read: it cannot be told apart from a session the
+    owner bound to a Bot for an app.
+
     Reads the in-memory job list CACHE-ONLY: no store lock, no ``_sync``, no
     disk I/O, because this runs ON the event loop and the cron store's
     synchronous readers deliberately refuse to be called there. The list is
@@ -1030,14 +1037,21 @@ def _cron_job_owner(jobs: object, job_id: str) -> str:
         snapshot = list(cast("Iterable[Any]", jobs))  # one coherent list; never torn
     except Exception:  # noqa: BLE001 - an auth path must never 500 on this
         return ""
-    for job in snapshot:
-        if str(getattr(job, "id", "") or "") != job_id:
-            continue
+    by_id = {str(getattr(job, "id", "") or ""): job for job in snapshot}
+    seen: set[str] = set()
+    while job_id and job_id not in seen:
+        seen.add(job_id)
+        job = by_id.get(job_id)
+        if job is None:
+            return ""
         created_by = str(getattr(job, "created_by", "") or "")
         if created_by.startswith("app:"):
             return created_by[len("app:") :]
-        # A job the person created.
-        return ""
+        maker = str(getattr(job, "session_key", "") or "")
+        if not maker.startswith("cron:"):
+            # A job the person created.
+            return ""
+        job_id = _key_segment(maker)
     return ""
 
 

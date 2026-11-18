@@ -38,7 +38,7 @@ JOB = f"{APP}/{CRON}"
 def _manifest_extra(message: str) -> dict[str, Any]:
     return {
         "permissions": {"cron": True},
-        "crons": [{"name": CRON, "every": 600, "message": message}],
+        "crons": [{"name": CRON, "every": 600, "message": message, "agent": "app-agent"}],
     }
 
 

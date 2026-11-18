@@ -522,11 +522,13 @@ from kiro_crew.slack.gateway_runtime.cron_failure import (
 from kiro_crew.slack.gateway_runtime.cron_fire import (
     APP_JOB_BOT_REFUSAL,
     _annotate_model_downgrade,
+    _app_job_lacks_agent,
     _app_job_names_bot,
     _app_job_runs_as_bot,
     _cron_extra_env,
     _CronCapture,
     _job_is_an_apps,
+    _job_owning_app,
 )
 from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _CRON_FAILURE_DETAIL_CAP,
