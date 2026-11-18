@@ -304,6 +304,31 @@ async def test_a_settlement_revalidates_before_it_deactivates(
 
 
 @pytest.mark.asyncio
+async def test_a_delivered_terminal_recheck_reads_a_slug_respelled_in_another_case(
+    tmp_path, monkeypatch
+):
+    """GitHub slugs are case-insensitive, so the recheck reads the same pull request."""
+    monkeypatch.setattr(_an.irq, "poll", _terminal_poll("MERGED"))
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
+    monitor = _structured_monitor(kind="gh-pr", target="Acme/Widgets#42")
+    monitor.terminal_delivered = "success"
+    loop = NudgeLoop(
+        id="monitor-recheck-case",
+        slot_key="slack:C123:1700000000.1",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._terminal_still_holds(loop, monitor) == "holds"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
 async def test_an_unobservable_subject_does_not_get_settled(tmp_path, monkeypatch):
     """Absence of evidence must not retire a watch.
 
