@@ -1641,8 +1641,24 @@ until a result prints it. Native
 set is fed from every prompt and steer text the transport sends (`note_prompt`),
 every member's arguments and result (`printed(call_id, output)` for each update
 that carries output, `settled` for the terminal one, which alone ends the call)
-and the model's streamed text (`note_text`); any of these texts longer than
-256 KiB, a call's arguments included, marks the set incomplete; arguments, results and text join the set when their
+and the model's streamed text (`note_text`). A non-terminal update's text is
+cumulative, so `printed` reads only the part after what it already read, with a
+64-character overlap (and the two characters before it, a separator's or an
+escape's context) so a token split there is read whole. Times are read from
+there, a `:` in front refusing one at its first character, whose left neighbour
+the cut lost, since a time can be glued to a word (`..._at_12:34:56`). Word
+tokens are read from past a word cut at the overlap's front, so its tail is not
+read as a token: a word running from before the overlap past it is longer than
+any token on every read. Every other detector matches inside a window no longer
+than the overlap and its two characters of context; the one
+that does not, the JSON `"pr"` field parse (`json_pr_numbers`), runs on the whole
+text on every update, gated as `tokens_of` gates it, and never on the cut, so a
+`"pr"` nested in a JSON string is learned even when the terminal update carries
+no output. `printed` reads the whole text when the update does not continue the
+text read (a delta, a rewritten result), which a hash of the read prefix
+decides, and the terminal update is always read whole. Any of these texts longer than
+256 KiB, a call's arguments included, marks the set incomplete, a result by its
+full length whatever part of it is read; arguments, results and text join the set when their
 batch ends, so a value the model writes while composing a batch does not count
 for it. A member's arguments are read from the frame's raw arguments
 (`raw_tool_params`), not from `tool_input`, which can be a rendered edit diff
