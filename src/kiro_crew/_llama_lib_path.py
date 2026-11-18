@@ -56,19 +56,20 @@ _BUNDLED_LIBS_PATH_TAIL = ("kiro_crew", "_vendor", _LIBS_DIR_NAME)
 # BLAS backend in its Linux CPU wheels (macOS gets `libggml-blas` only because
 # it links the system Accelerate framework). The Linux `libggml-cpu` carries the
 # optimized GEMM/repack kernels instead, so the CPU path is complete without it.
+# The Linux ggml names are private sonames (`_vendor/README.md`).
 _REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
     "linux_x86_64": (
         "libllama.so",
-        "libggml.so.0",
-        "libggml-base.so.0",
-        "libggml-cpu.so.0",
+        "libggml-f8c1924a.so.0",
+        "libggml-base-5cdc9aad.so.0",
+        "libggml-cpu-c29a841c.so.0",
         "libgomp-a34b3233.so.1.0.0",
     ),
     "linux_aarch64": (
         "libllama.so",
-        "libggml.so.0",
-        "libggml-base.so.0",
-        "libggml-cpu.so.0",
+        "libggml-de95cd8d.so.0",
+        "libggml-base-6da567d1.so.0",
+        "libggml-cpu-47ecf749.so.0",
         "libgomp-d22c30c5.so.1.0.0",
     ),
     "macos_arm64": (
@@ -92,9 +93,9 @@ _REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
     # linux_aarch64 only on a host whose every core reports `asimddp`.
     "linux_aarch64_dotprod": (
         "libllama.so",
-        "libggml.so.0",
-        "libggml-base.so.0",
-        "libggml-cpu.so.0",
+        "libggml-7f42cd95.so.0",
+        "libggml-base-e198f951.so.0",
+        "libggml-cpu-a45ca40c.so.0",
         "libgomp-d22c30c5.so.1.0.0",
     ),
     "win_amd64": (

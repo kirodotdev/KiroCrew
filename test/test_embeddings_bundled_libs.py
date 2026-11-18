@@ -532,7 +532,12 @@ class TestBundledLinuxAarch64DotprodVariant:
     def test_an_incomplete_dotprod_dir_loads_todays_dir(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
         _stub_libs(tmp_path, "linux_aarch64", _DOTPROD_DIR)
-        (tmp_path / embeddings_mod._LIBS_DIR_NAME / _DOTPROD_DIR / "libggml-cpu.so.0").unlink()
+        ggml_cpu = next(
+            name
+            for name in embeddings_mod._REQUIRED_VENDORED_LIBS[_DOTPROD_DIR]
+            if name.startswith("libggml-cpu")
+        )
+        (tmp_path / embeddings_mod._LIBS_DIR_NAME / _DOTPROD_DIR / ggml_cpu).unlink()
         assert _published_libs_dir(monkeypatch, tmp_path, "linux_aarch64", lambda: True) == (
             "linux_aarch64"
         )

@@ -29,6 +29,16 @@ What was changed relative to the upstream wheel:
   still-present previous install's: point the override at a directory of your
   own, whose path does not end in that shape.
 - `llama_cpp/server/` removed (FastAPI server — unused, heavy deps).
+- The Linux `libggml.so.0`, `libggml-base.so.0` and `libggml-cpu.so.0` carry
+  private names: each file is renamed `<stem>-<hash>.so.0`, its soname is set
+  to that name, and the `libllama.so` and ggml dependency entries name the new
+  files (see "Private ggml names on Linux" below). With upstream's public names,
+  a user-installed whisper.cpp build in the same process (a source-built
+  `pywhispercpp` for GPU speech, say) makes the dynamic loader reuse whichever
+  ggml loaded first for both: ours then fails on a symbol their ggml lacks, or
+  theirs runs on our CPU-only ggml. `.text` and `.rodata` stay byte-identical
+  to the unpatched files; patchelf moves the dynamic strings into an added load
+  segment.
 - `llama_cpp.llama_cache`'s module-level `import diskcache` is satisfied by a
   `sys.modules` stub installed in `kiro_crew.embeddings._install_diskcache_stub`
   (KiroCrew never uses disk-backed LLM state caching; a real installed
@@ -167,9 +177,11 @@ upstream). Python version does not touch the native build (the wheel is
 `py3-none`); cp310 is used because the image no longer carries upstream's cp38.
 From the repaired wheel take `llama_cpp/lib/{libllama.so,libggml.so.0,
 libggml-base.so.0,libggml-cpu.so.0}` and `llama_cpp_python.libs/libgomp-d22c30c5.so.1.0.0`
-— the same closure as `linux_aarch64/`. `llama_print_system_info()` reads
+— the same closure as `linux_aarch64/` — then apply the rename step in
+"Private ggml names on Linux" below. `llama_print_system_info()` reads
 `NEON = 1 | ARM_FMA = 1 | DOTPROD = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1`.
-Two clean builds gave byte-identical files:
+Two clean builds gave byte-identical files (the build output, before the
+rename step):
 
 ```
 1bf6689c1efcf92b1c5b20d404eb501774d1933cea78faf0c912b6609cf4332d  libllama.so
@@ -179,11 +191,78 @@ a45ca40cab2825576218359bcee9de11ba46c00216074ace5ba052642a4d3321  libggml-cpu.so
 bd0f8bc6b22d5cde4365332ba87c1151416bfc6fa4c51c6f669308de507bd35f  libgomp-d22c30c5.so.1.0.0
 ```
 
+### Private ggml names on Linux
+
+Applied to `linux_x86_64/`, `linux_aarch64/` and `linux_aarch64_dotprod/` after
+the closure is extracted, with patchelf 0.17.2 (`pip install patchelf==0.17.2.1`).
+The new name is auditwheel's scheme, the one the vendored `libgomp` files
+already use: `<stem>-<first 8 hex of the sha256 of the UNPATCHED file>.so.0`.
+Each name is taken from its file's sha256 before that file is patched, because
+patching changes the bytes. `libllama.so` keeps its file name (ctypes opens it
+by base name) and its soname; `libgomp` is untouched. Run in each directory,
+with bash:
+
+```
+set -euo pipefail
+repl=()
+for old in libggml.so.0 libggml-base.so.0 libggml-cpu.so.0; do
+  new="${old%.so.0}-$(sha256sum "$old" | cut -c1-8).so.0"
+  mv "$old" "$new"
+  patchelf --set-soname "$new" "$new"
+  repl+=(--replace-needed "$old" "$new")
+done
+for f in libllama.so libggml-*.so.0; do patchelf "${repl[@]}" "$f"; done
+```
+
+`--replace-needed` leaves a file that does not need a name unchanged, so the
+same list is passed to every file. Check the result: `readelf -d` shows each
+`libggml*` soname equal to its file name, no `libggml*.so.0` public name in any
+`NEEDED` entry, and the `RPATH` (not `RUNPATH`) value unchanged;
+`objcopy -O binary --only-section=.text` (and `.rodata`) of each patched file,
+with an objcopy for its architecture (`aarch64-linux-gnu-objcopy` for the arm64
+dirs), is byte-identical to the unpatched file's. Two runs from the same inputs
+give byte-identical files. `test/test_vendored_llama_payload.py` fails if a
+public ggml name, a soname that differs from its file name, or a `RUNPATH`
+appears.
+
+The private names keep the two ggml copies apart only because both sides load
+them RTLD_LOCAL (ctypes' Linux default in `llama_cpp/_ctypes_extensions.py`,
+and Python's for extension modules): the `ggml_*` symbols stay public and
+unversioned, so a binding that opened these libraries RTLD_GLOBAL would bring
+the collision back by symbol name. The step also assumes every ggml file is
+reached through a dependency entry: a runtime that adds a ggml file, or uses
+ggml's dynamically loaded backends (`GGML_BACKEND_DL`, which finds
+`libggml-<name>-*.so` by file name), needs it revisited.
+
+The source wheel and sdist sha256s above identify the inputs; the shipped bytes
+are pinned by git and `scripts/vendor_manifest.sha256`. sha256 before and after
+the rename (the after column equals the manifest; re-record both columns on
+every upgrade):
+
+| Dir | Before | After |
+|-----|--------|-------|
+| `linux_x86_64/` | `libllama.so` 9c1b95c4b475cceb91a65e5685befcb798f0921dcc81c28fec8793442bc6ffbb | `libllama.so` 4ea570afcc181e027127c955aa4cc5a70c4a846dab2473ca42d899766e54c4b2 |
+| `linux_x86_64/` | `libggml.so.0` f8c1924a465a5cb65beab9a441472ad6404c47da946ea4fb07f0f5b4c3324832 | `libggml-f8c1924a.so.0` b2aac95dfa2da41086d6a72fd70f0fdcfceac5e8105b3d77673c7aeaea0f221c |
+| `linux_x86_64/` | `libggml-base.so.0` 5cdc9aad31bf77160b64bd1275a55bec4e809408cd8e26427bd8e035ffffd3b2 | `libggml-base-5cdc9aad.so.0` d67918267231fcf4f35dc2aac76733d078f3f9b8180e5e27a8919dd3c0dad483 |
+| `linux_x86_64/` | `libggml-cpu.so.0` c29a841c67b6ac4df1e8acbfd20fab16345eaad816b6e421e3dd2b18456cd97c | `libggml-cpu-c29a841c.so.0` 7295b019b79af98aa55fcfee179f85cb604227eb1d86714a06ae295d9d39197a |
+| `linux_aarch64/` | `libllama.so` c9b722bd52645d605f07698dc0d646dd4719588957f76ef6183132387f1cdc45 | `libllama.so` cd6e195169dd95b67227e586161a28f30c9619f693b03d62efbc901e527ff807 |
+| `linux_aarch64/` | `libggml.so.0` de95cd8d39ef2f9222681a01a40897c4099aa28460f28e33ef864b4960f95fb5 | `libggml-de95cd8d.so.0` d4e885fe69b8aa3ba8a197c9a1011bbf4d3b790ff35c9c0a0f104f808d48f34b |
+| `linux_aarch64/` | `libggml-base.so.0` 6da567d19c7f7e87667e08033c4b81b57c8082842e2b60ba4c825214497ef315 | `libggml-base-6da567d1.so.0` b584d420ee4c6fcdc06ededcba2c3b86554d85f96e3a6f8c9317d28a193e6196 |
+| `linux_aarch64/` | `libggml-cpu.so.0` 47ecf749fd96cc4e9ba7a411b08d167a22a97e9b0dd683201e3e7b2bca66a57c | `libggml-cpu-47ecf749.so.0` b06b6fea18bdfce27ca135153e75e90b6694e028be502b9aaee05d181171b69b |
+| `linux_aarch64_dotprod/` | `libllama.so` 1bf6689c1efcf92b1c5b20d404eb501774d1933cea78faf0c912b6609cf4332d | `libllama.so` 4d707ea382f90ae5214e2eda7c8b933bf64d7ce248f3fb28df91ef2e649c726e |
+| `linux_aarch64_dotprod/` | `libggml.so.0` 7f42cd95daab68bcda30a8d12aa5ed4985650069548e1fbd0bfbc4f05c939a8a | `libggml-7f42cd95.so.0` ac667de95e940ede7d1316022881ba43c2d1d3b71ea597b10ebc4d157b429435 |
+| `linux_aarch64_dotprod/` | `libggml-base.so.0` e198f95172099605d3310132961f50aed9d4c20aae8f2f8673d927ede8c60e93 | `libggml-base-e198f951.so.0` a3db2a3bca1edf11f5d403518c9527bb18711ec82b01f0f3afb7b5708f93b395 |
+| `linux_aarch64_dotprod/` | `libggml-cpu.so.0` a45ca40cab2825576218359bcee9de11ba46c00216074ace5ba052642a4d3321 | `libggml-cpu-a45ca40c.so.0` b98e5dddebd0a3303da45f9a7b8fc2546a34c3cbdad808659813030f89264d17 |
+
+The `libgomp` files keep their names and bytes.
+
 To upgrade: download the four wheels for the new version (plus rebuild
 `macos_x86_64/` from the new sdist with the CMAKE_ARGS above, and
 `linux_aarch64_dotprod/` with the recipe above), re-extract the
 same closure (`libllama` + `libggml*` + vendored `libgomp` on Linux; top-level
-dylibs on macOS), replace `llama_cpp/` with the new wheel's Python code (minus
+dylibs on macOS), apply the rename step in "Private ggml names on Linux" to the
+three Linux directories and update their names in `_REQUIRED_VENDORED_LIBS`,
+replace `llama_cpp/` with the new wheel's Python code (minus
 `lib/` and `server/`), re-mirror the cache-less architecture set (below), and
 re-run the embedding smoke test in `test/test_embeddings.py`.
 
@@ -216,6 +295,8 @@ The upgrade step above replaces `llama_cpp/` wholesale with the new wheel's
 Python code, which would silently drop the patches below. Each is marked in
 source with a `kiro_crew DIVERGENCE FROM UPSTREAM` comment, so
 `grep -rn 'kiro_crew DIVERGENCE' llama_cpp/` lists what must be re-applied.
+That grep cannot find a binary patch: the Linux ggml rename is re-applied by
+the step in "Private ggml names on Linux".
 
 - `llama_cpp/llama.py`, `Llama.__init__` — the eager `self.scores` per-token
   logits buffer is allocated with **zero rows** when the model is opened in
