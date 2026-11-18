@@ -234,6 +234,19 @@
         "route": "/ops-mission-control",
         "icon": "Radio"
       }
+    },
+    {
+      "name": "crew-companion",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-crew-companion",
+      "commit": "2eb2e98469149ea740d7f82b6df701dbf872c9a3",
+      "version": "1.0.1",
+      "treeSha256": "adc679f0cbaabed51d978a660303cb050076eb4ebb277f50600e644d854c5808",
+      "archiveSha256": "abfbd1a0b2729b10d51edb7ef23d88b194b63cf93638fb4d1fcf735845626f44",
+      "minAppSdkLevel": 7,
+      "legacyNav": {
+        "route": "/crew-companion",
+        "icon": "Ghost"
+      }
     }
   ]
 }
