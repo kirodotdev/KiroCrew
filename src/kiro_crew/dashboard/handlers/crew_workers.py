@@ -75,8 +75,12 @@ async def _stamped_rows(state: Any) -> list[dict[str, Any]]:
 
     Yielding pass: with a few hundred open sessions a synchronous pass holds the
     loop past the stall budget, and the stall alarm restarts the gateway.
+
+    The bare audience: these routes are owner-only and send no source link, so
+    the pass decides no chip status for anyone. The dashboard-user audience would
+    write a public-status SEL row per link for a non-owner who never asked.
     """
-    return list(await state.serialize_slots_yielding(dashboard_user=True))
+    return list(await state.serialize_slots_yielding())
 
 
 #: The two kinds of root these routes answer: a Crew Mode conductor, and a crewmate

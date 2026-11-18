@@ -727,8 +727,8 @@ class WebSocketHub:
 
         Returns how many sockets it was handed to. Only dashboard-user sockets
         are ever flagged (see ``api_ws``), so no scope gate applies here: the
-        frame carries fields of the dashboard-user slot projection, which those
-        sockets already receive in full.
+        frame carries slot fields that read the same in every audience's
+        projection, which those sockets already receive in full.
         """
         dead: list[web.WebSocketResponse] = []
         sent = 0
