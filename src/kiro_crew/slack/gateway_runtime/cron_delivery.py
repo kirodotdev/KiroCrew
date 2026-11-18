@@ -145,6 +145,9 @@ async def _deliver_cron_agent_result(
         return result_text
 
     if self.dashboard_state:
+        # The folder a tab closed mid-run was filed in, which a re-mint files it back in.
+        from kiro_crew.dashboard.cron_inject import stored_cron_folder
+
         # Inject into slot BEFORE notification so has_slot() is true for notify_meta.
         # hide_in_chat=True keeps the cron out of the active session list — the
         # result still reaches Slack/bell below, and the run stays visible in the
@@ -174,6 +177,7 @@ async def _deliver_cron_agent_result(
                 history=history,
                 context_reading=_ctx_reading,
                 turn_stats=_turn_stats,
+                stored_folder=await stored_cron_folder(self.dashboard_state, job.id),
             )
         run_tab = ""
         if job.new_chat_per_run and not job.persistent_session and not job.hide_in_chat:
