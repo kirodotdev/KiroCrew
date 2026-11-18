@@ -470,6 +470,14 @@ def _register_config_watch(
                 await lifecycle.shutdown()
             except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
                 logger.warning("Dynamic cards shutdown failed", exc_info=True)
+        # Cancel back-off retry timers for unconfirmed KAS close handles so they
+        # do not fire after the event loop is closed.
+        try:
+            from kiro_crew.bot_chat_app_tools import cancel_pending_close_timers
+
+            cancel_pending_close_timers()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Bot-chat pending-close timer cancel failed", exc_info=True)
 
     app.on_cleanup.append(_config_watch_shutdown)
 

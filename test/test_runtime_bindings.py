@@ -143,7 +143,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "ead9c31b8aca",
         "runtime_session_setup",
     ),
-    "_mirrored_session_mcp": ("function", True, "1a8f8533ecff", "runtime_session_setup"),
+    "_mirrored_session_mcp": ("function", True, "7ea526faad69", "runtime_session_setup"),
     "_mirrored_spec_check_needed": ("function", False, "3cd7cb3cf81a", "runtime_session_setup"),
     "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime_mode_activation"),
     "_mount_member_panel": ("function", True, "bcc6c7135aaa", "runtime_session_setup"),
@@ -233,7 +233,10 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "create_session": ("function", True, "17d59b6340ea", "runtime_session_create"),
     "death_summary": ("function", False, "f21e39ec5ffb", "runtime_liveness"),
     "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime_class"),
-    "evict_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
+    "evict_session": ("function", True, "762cb291397b", "runtime_session_registry"),
+    # Returns bool (True = session/close confirmed by KAS, False = timed out /
+    # refused). Trust-revocation paths use the return value to decide whether to
+    # retry the remote close before confirming teardown.
     "forget_request": ("function", False, "a0b46301fd2c", "runtime_wire"),
     "has_active_or_initializing_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
     "has_active_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),

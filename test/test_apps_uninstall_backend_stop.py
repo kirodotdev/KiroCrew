@@ -468,3 +468,304 @@ class TestTheDisablePathKeepsItsExistingDisposition:
         ):
             assert await deregister_app_crons_from_service("demo", MagicMock()) == 0
             assert await deregister_app_crons_reporting_failures("demo", MagicMock()) == 0
+
+
+# ---------------------------------------------------------------------------
+# bot_chat_stop_failed in uninstall response
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_uninstall_sets_bot_chat_stop_failed_key_in_response(monkeypatch):
+    """_run_uninstall must set ``bot_chat_stop_failed`` in the response body when
+    stop_app_bot_chat_servers returns failed slugs.
+
+    Remove the ``resp["bot_chat_stop_failed"] = _uninstall_bot_chat_stop_failed``
+    line and the response body has no ``bot_chat_stop_failed`` key; the frontend
+    function ``uninstallBotChatStopFailedNotice`` reads ``result.bot_chat_stop_failed``
+    and never shows the warning.
+    """
+    import kiro_crew.bot_chat_app_tools as tools
+    from kiro_crew.apps.routes_uninstall import _run_uninstall
+
+    APP_NAME = "uninstall-bot-stop-fail-app"
+    slug = "atlas"
+
+    # Stub bot-stop to report failure.
+    async def _stop_failing(state, app_name):
+        return [], [slug]
+
+    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _stop_failing)
+    monkeypatch.setattr(tools, "revoke_app_generation", lambda name: None)
+    monkeypatch.setattr(tools, "after_app_change", AsyncMock())
+    monkeypatch.setattr(tools, "_PENDING_CLOSE", {})
+    monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    fake_app = {
+        "name": APP_NAME,
+        "manifest": {},
+        "resources": "gateway",
+        "lifecycle": "normal",
+        "enabled": True,
+    }
+    request = MagicMock()
+    request.match_info = {"name": APP_NAME}
+    fake_sessions = MagicMock()
+    fake_sessions.mapped_session_keys.return_value = set()
+    fake_sessions.session_keys.return_value = set()
+    fake_state = MagicMock()
+    fake_state.sessions = fake_sessions
+    request.app = {"state": fake_state}
+    request.json = AsyncMock(return_value={})
+
+    with (
+        patch("kiro_crew.apps.routes.get_app", return_value=fake_app),
+        patch(
+            "kiro_crew.apps.routes.uninstall_app",
+            return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True, "name": APP_NAME}),
+        ),
+        patch(
+            "kiro_crew.apps.routes._refuse_while_startup_hook_runs",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "kiro_crew.apps.routes.trust_grant_removal_blocked",
+            return_value=None,
+        ),
+        patch(
+            "kiro_crew.apps.routes_uninstall.stop_app_hooks_for_uninstall",
+            new=AsyncMock(return_value=MagicMock(warnings=[], failures=[])),
+        ),
+        patch(
+            "kiro_crew.apps.routes._stop_backend_and_observe",
+            new=AsyncMock(return_value=(None, True)),
+        ),
+        patch("kiro_crew.apps.routes._deregister_app_off_loop", new=AsyncMock()),
+        patch(
+            "kiro_crew.apps.routes.classify_and_clean_for_uninstall",
+            new=AsyncMock(return_value={"removable": [], "shared": [], "userInstalled": []}),
+        ),
+        patch(
+            "kiro_crew.apps.routes.clean_dependencies",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch("kiro_crew.apps.routes.app_lifecycle_lock") as mock_lock,
+        patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+        patch(
+            "kiro_crew.apps.routes_uninstall._deregister_crons_with_retry",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("kiro_crew.apps.routes.invalidate_app_secret_cache"),
+        patch("kiro_crew.apps.routes._unregister_notification_channels"),
+        patch("kiro_crew.apps.routes.forget_app_hooks"),
+    ):
+        mock_lock.return_value.__aenter__ = AsyncMock(return_value=None)
+        mock_lock.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        resp = await _run_uninstall(
+            request,
+            APP_NAME,
+            fake_app,
+            keep_data=True,
+            keep_dependencies=True,
+            keep_specific=[],
+        )
+
+    body = json.loads(resp.text or "{}")
+    assert "bot_chat_stop_failed" in body, (
+        "_run_uninstall must set ``bot_chat_stop_failed`` in the response body when "
+        "stop_app_bot_chat_servers returns failed slugs. Without it the frontend "
+        "``uninstallBotChatStopFailedNotice`` never shows the warning."
+    )
+    assert slug in body.get(
+        "bot_chat_stop_failed", []
+    ), "The failed slug must appear in bot_chat_stop_failed"
+
+
+@pytest.mark.asyncio
+async def test_uninstall_sets_bot_chat_stop_failed_when_stop_raises(monkeypatch):
+    """_run_uninstall must set ``bot_chat_stop_failed`` when stop_app_bot_chat_servers
+    raises, not silently report a clean uninstall.
+
+    Remove the sentinel-append in the ``except Exception`` block of _run_uninstall
+    and the response has no ``bot_chat_stop_failed`` key when stop raises.
+    """
+    import kiro_crew.bot_chat_app_tools as tools
+    from kiro_crew.apps.routes_uninstall import _run_uninstall
+
+    APP_NAME = "uninstall-bot-stop-raises-app"
+
+    async def _raises(state, app_name):
+        raise RuntimeError("simulated stop failure")
+
+    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _raises)
+    monkeypatch.setattr(tools, "revoke_app_generation", lambda name: None)
+    monkeypatch.setattr(tools, "after_app_change", AsyncMock())
+    monkeypatch.setattr(tools, "_PENDING_CLOSE", {})
+    monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    fake_app = {
+        "name": APP_NAME,
+        "manifest": {},
+        "resources": "gateway",
+        "lifecycle": "normal",
+        "enabled": True,
+    }
+    request = MagicMock()
+    request.match_info = {"name": APP_NAME}
+    fake_sessions = MagicMock()
+    fake_sessions.mapped_session_keys.return_value = set()
+    fake_sessions.session_keys.return_value = set()
+    fake_state = MagicMock()
+    fake_state.sessions = fake_sessions
+    request.app = {"state": fake_state}
+    request.json = AsyncMock(return_value={})
+
+    with (
+        patch("kiro_crew.apps.routes.get_app", return_value=fake_app),
+        patch(
+            "kiro_crew.apps.routes.uninstall_app",
+            return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True, "name": APP_NAME}),
+        ),
+        patch(
+            "kiro_crew.apps.routes._refuse_while_startup_hook_runs",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("kiro_crew.apps.routes.trust_grant_removal_blocked", return_value=None),
+        patch(
+            "kiro_crew.apps.routes_uninstall.stop_app_hooks_for_uninstall",
+            new=AsyncMock(return_value=MagicMock(warnings=[], failures=[])),
+        ),
+        patch(
+            "kiro_crew.apps.routes._stop_backend_and_observe",
+            new=AsyncMock(return_value=(None, True)),
+        ),
+        patch("kiro_crew.apps.routes._deregister_app_off_loop", new=AsyncMock()),
+        patch(
+            "kiro_crew.apps.routes.classify_and_clean_for_uninstall",
+            new=AsyncMock(return_value={"removable": [], "shared": [], "userInstalled": []}),
+        ),
+        patch("kiro_crew.apps.routes.clean_dependencies", new=AsyncMock(return_value=[])),
+        patch("kiro_crew.apps.routes.app_lifecycle_lock") as mock_lock,
+        patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+        patch(
+            "kiro_crew.apps.routes_uninstall._deregister_crons_with_retry",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("kiro_crew.apps.routes.invalidate_app_secret_cache"),
+        patch("kiro_crew.apps.routes._unregister_notification_channels"),
+        patch("kiro_crew.apps.routes.forget_app_hooks"),
+    ):
+        mock_lock.return_value.__aenter__ = AsyncMock(return_value=None)
+        mock_lock.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        resp = await _run_uninstall(
+            request,
+            APP_NAME,
+            fake_app,
+            keep_data=True,
+            keep_dependencies=True,
+            keep_specific=[],
+        )
+
+    body = json.loads(resp.text or "{}")
+    assert "bot_chat_stop_failed" in body, (
+        "_run_uninstall must set ``bot_chat_stop_failed`` when stop raises; "
+        "remove the ``_uninstall_bot_chat_stop_failed.append('unknown')`` and no key is set"
+    )
+    assert "unknown" in body.get(
+        "bot_chat_stop_failed", []
+    ), "sentinel 'unknown' must appear in bot_chat_stop_failed when stop raises"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_ok", [True, False])
+async def test_uninstall_holds_the_stop_fence_through_the_removal_and_releases_it_once(
+    monkeypatch, write_ok
+):
+    """Rule 1, uninstall: the stop fence is held while the Bot stop runs and while
+    ``uninstall_app`` removes the app from disk, and released exactly once after,
+    on a failed removal too. Release it twice (or not at all) and the count after
+    is not 0 with a second span open; drop the span and both samples read 0.
+    """
+    import kiro_crew.bot_chat_app_tools as tools
+    from kiro_crew.apps.routes_uninstall import _run_uninstall_fenced as _run_uninstall
+
+    name = "uninstall-fence-app"
+    seen: dict[str, int] = {}
+
+    async def _stop(state, app_name):
+        seen["stop"] = tools._FENCE_HOLD_COUNTS.get(app_name, 0)
+        return [], []
+
+    def _uninstall(app_name, **kw):
+        seen["write"] = tools._FENCE_HOLD_COUNTS.get(app_name, 0)
+        return MagicMock(ok=write_ok, error="boom", to_dict=lambda: {"ok": write_ok})
+
+    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _stop)
+    monkeypatch.setattr(tools, "revoke_app_generation", lambda n: None)
+    monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    # A second, outer span stays open, so a double release shows as count 0.
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {name: 1})
+    fake_app = {"name": name, "manifest": {}, "resources": "gateway", "enabled": True}
+    request = MagicMock()
+    fake_sessions = MagicMock()
+    fake_sessions.mapped_session_keys.return_value = set()
+    fake_sessions.session_keys.return_value = set()
+    request.app = {"state": MagicMock(sessions=fake_sessions)}
+    with (
+        patch("kiro_crew.apps.routes.uninstall_app", side_effect=_uninstall),
+        patch(
+            "kiro_crew.apps.routes._refuse_while_startup_hook_runs",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("kiro_crew.apps.routes.trust_grant_removal_blocked", return_value=None),
+        patch(
+            "kiro_crew.apps.routes_uninstall.stop_app_hooks_for_uninstall",
+            new=AsyncMock(return_value=MagicMock(warnings=[], failures=[])),
+        ),
+        patch(
+            "kiro_crew.apps.routes._stop_backend_and_observe",
+            new=AsyncMock(return_value=(None, True)),
+        ),
+        patch("kiro_crew.apps.routes._deregister_app_off_loop", new=AsyncMock()),
+        patch("kiro_crew.apps.routes.app_lifecycle_lock") as mock_lock,
+        patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
+        patch(
+            "kiro_crew.apps.routes_uninstall._deregister_crons_with_retry",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("kiro_crew.apps.routes.invalidate_app_secret_cache"),
+        patch("kiro_crew.apps.routes._unregister_notification_channels"),
+        patch("kiro_crew.apps.routes.forget_app_hooks"),
+    ):
+        mock_lock.return_value.__aenter__ = AsyncMock(return_value=None)
+        mock_lock.return_value.__aexit__ = AsyncMock(return_value=None)
+        await _run_uninstall(
+            request, name, fake_app, keep_data=True, keep_dependencies=True, keep_specific=[]
+        )
+
+    assert seen == {"stop": 2, "write": 2}
+    assert tools._FENCE_HOLD_COUNTS.get(name) == 1, "the span must release exactly once"
+
+
+def test_every_uninstall_entry_runs_through_the_fenced_run_uninstall():
+    """``uninstall_app_in_process`` and ``handle_migrate_cleanup`` reach the fence
+    only through ``_run_uninstall_fenced``. Give either its own removal path and
+    this fails."""
+    import inspect
+
+    from kiro_crew.apps import routes_uninstall
+
+    for fn in (
+        routes_uninstall.handle_uninstall_app,
+        routes_uninstall.uninstall_app_in_process,
+        routes_uninstall.handle_migrate_cleanup,
+    ):
+        assert "await _run_uninstall_fenced(" in inspect.getsource(fn), fn.__name__
+    assert "app_stop_fence(name)" in inspect.getsource(routes_uninstall._run_uninstall_fenced)

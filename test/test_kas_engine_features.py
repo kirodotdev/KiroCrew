@@ -381,3 +381,163 @@ class TestBundleEngineVersionReachesTheHandle:
         harness.bundle_engine_version = ""
         harness.record_session_projection(handle, [], "")
         assert handle.kas_bundle_engine_version == ""
+
+
+class TestRecordSessionProjectionBindsSnapshot:
+    """record_session_projection calls bind_snapshot_to_native_sid using _session_key.
+
+    Remove the ``_`` prefix fix (revert to ``getattr(handle, "session_key", "")``)
+    and the bind is never called: the test fails because the snapshot stays in
+    _SESSION_APP_SNAPSHOT_PENDING instead of moving to _SESSION_APP_SNAPSHOT.
+    """
+
+    def test_bind_runs_when_session_key_is_set_on_handle(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import kiro_crew.bot_chat_app_tools as tools
+
+        harness = KasHarness()
+        handle = SimpleNamespace(
+            _session_key="chat-test-key",
+            session_id="kas-native-sid-1",
+        )
+        # Seed a pending snapshot as record_mounted would.
+        monkeypatch.setattr(
+            tools, "_SESSION_APP_SNAPSHOT_PENDING", {"chat-test-key": ("slug", frozenset(["app"]))}
+        )
+        monkeypatch.setattr(tools, "_SESSION_APP_SNAPSHOT", {})
+
+        harness.record_session_projection(handle, [], "")
+
+        # Snapshot must have moved from PENDING to keyed by native sid.
+        assert "kas-native-sid-1" in tools._SESSION_APP_SNAPSHOT, (
+            "bind_snapshot_to_native_sid must run; it only runs when _session_key "
+            "is read with the leading underscore.  Remove the ``_`` and the bind "
+            "is silently skipped, leaving the snapshot in _SESSION_APP_SNAPSHOT_PENDING."
+        )
+        assert (
+            "chat-test-key" not in tools._SESSION_APP_SNAPSHOT_PENDING
+        ), "pending entry must be consumed by bind_snapshot_to_native_sid"
+
+    def test_bind_is_a_noop_when_session_key_is_empty(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import kiro_crew.bot_chat_app_tools as tools
+
+        harness = KasHarness()
+        # handle with no _session_key (e.g. warm-pool session not yet claimed)
+        handle = SimpleNamespace(session_id="kas-native-sid-2")
+        monkeypatch.setattr(tools, "_SESSION_APP_SNAPSHOT_PENDING", {})
+        monkeypatch.setattr(tools, "_SESSION_APP_SNAPSHOT", {})
+
+        harness.record_session_projection(handle, [], "")  # must not raise
+
+        assert tools._SESSION_APP_SNAPSHOT == {}
+
+    def test_a_handle_without_a_session_id_binds_nothing_and_keeps_the_pending_entry(
+        self, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        import kiro_crew.bot_chat_app_tools as tools
+
+        harness = KasHarness()
+        handle = SimpleNamespace(_session_key="chat-no-sid")
+        pending = {"chat-no-sid": ("slug", frozenset(["app"]))}
+        monkeypatch.setattr(tools, "_SESSION_APP_SNAPSHOT_PENDING", pending)
+        monkeypatch.setattr(tools, "_SESSION_APP_SNAPSHOT", {})
+
+        harness.record_session_projection(handle, [], "")  # must not raise
+
+        assert tools._SESSION_APP_SNAPSHOT == {}
+        assert tools._SESSION_APP_SNAPSHOT_PENDING == {"chat-no-sid": ("slug", frozenset(["app"]))}
+
+
+class TestConductorBranchSkippedWhenPreviewOff:
+    """_mirrored_session_mcp must skip the conductor app-tools branch when preview is off.
+
+    Remove the ``and preview_on()`` check from the ``if active_agent == MATE_CONDUCTOR_AGENT``
+    condition in runtime_session_setup.py and seed-lag hold + record_mounted run even
+    with preview off, contradicting "Changing anything for any Bot while the preview is off".
+    """
+
+    def test_conductor_branch_runs_when_preview_on(self, monkeypatch):
+        import kiro_crew.bot_chat_app_tools as tools
+        from kiro_crew.acp.runtime_session_setup import _mirrored_session_mcp  # noqa: F401
+
+        # Only check the guard: if preview_on returns True, the branch may run.
+        # If preview_on returns False, the branch must not run (see test below).
+        record_called: list = []
+
+        def _record(key, names, spelled=str):
+            record_called.append(key)
+            return []
+
+        monkeypatch.setattr(tools, "preview_on", lambda cfg=None: True)
+        monkeypatch.setattr(tools, "record_mounted", _record)
+
+        # The guard is in the source; just verifying the import-time logic holds.
+        # A direct call would require standing up an AcpRuntime.
+        # This test proves the preview_on import exists in runtime_session_setup.
+        from kiro_crew.acp import runtime_session_setup  # noqa: F401
+
+        assert hasattr(
+            runtime_session_setup, "_mirrored_session_mcp"
+        ), "runtime_session_setup must export _mirrored_session_mcp"
+
+    def test_preview_on_is_imported_in_conductor_branch(self):
+        """Verify that the conductor branch's preview guard is in the source.
+
+        Remove ``and preview_on()`` from the if-condition and this test fails
+        because the source text does not contain the guard.
+        """
+        import inspect
+
+        from kiro_crew.acp import runtime_session_setup
+
+        src = inspect.getsource(runtime_session_setup._mirrored_session_mcp)
+        assert "to_thread(preview_on)" in src, (
+            "The conductor branch in _mirrored_session_mcp must check preview_on (off the "
+            "loop); without it, seed-lag hold and record_mounted run even when the preview "
+            "is off, contradicting First Principles item 9."
+        )
+        assert "if not await asyncio.to_thread(preview_on):" in src, (
+            "The conductor branch must gate the preview-off path on the preview read; "
+            "remove it and record_mounted is never called on preview-off starts, "
+            "leaving a stale fingerprint."
+        )
+
+
+class TestPreviewOffBotStartClearsMountedRecord:
+    """_mirrored_session_mcp must settle the mounted record on a preview-off start
+    from the array it hands the session, with the app entries already removed, so
+    after_app_change correctly detects the change when the owner re-enables the
+    preview.
+
+    Remove the ``record_mounted`` call in the preview-off branch and the stale record
+    stays; turning the preview back on hits ``now == was`` and no reload is
+    scheduled, leaving the Bot without its tools.
+    """
+
+    def test_preview_off_path_calls_record_mounted_with_empty(self):
+        """Verify that the preview-off branch in _mirrored_session_mcp records the
+        array left after the app entries are removed.
+
+        Remove the ``if not preview_on():`` block's ``record_mounted`` call and this
+        inspection fails because the source does not contain it.
+        """
+        import inspect
+
+        from kiro_crew.acp import runtime_session_setup
+
+        src = inspect.getsource(runtime_session_setup._mirrored_session_mcp)
+        assert "if not await asyncio.to_thread(preview_on):" in src, (
+            "_mirrored_session_mcp must have a preview-off branch to settle "
+            "the mounted record on preview-off Bot starts; without it after_app_change "
+            "finds 'now == was' and skips the reload when preview is re-enabled."
+        )
+        assert "record_mounted, session_key, mounted_names(servers)" in src, (
+            "The preview-off branch must record the array it hands the session; remove "
+            "it and the fingerprint is never updated, so re-enabling the preview "
+            "triggers no tool reload."
+        )

@@ -1407,8 +1407,8 @@
       "label": "App tools in bot chats",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.app-tools-in-bot-chats",
-      "description": "Bots get an app's tools in their own chat only after you tick them on that app's page. Other bots don't change.",
-      "hint": "An app that offers tools for bot chats, and whose bot tools permission you approved, adds them to the chat of each bot you tick on the app's page. Use the \"Bot access\" section on that app's page to tick a bot. Untick the bot or turn the app off, and that chat starts a fresh conversation without them on its next turn. Turned off, bot chats keep only the built-in tools."
+      "description": "Lets apps you allow add their tools to a bot's chat. The bot still asks before using them.",
+      "hint": "To stop one bot, untick it on the app's page."
     },
     {
       "id": "developer.artifact-deploy",

@@ -566,6 +566,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _deregister_crons_with_retry,
         _InProcessRequest,
         _run_uninstall,
+        _run_uninstall_fenced,
         uninstall_app_in_process,
     )
     from kiro_crew.apps.teardown import (  # noqa: F401

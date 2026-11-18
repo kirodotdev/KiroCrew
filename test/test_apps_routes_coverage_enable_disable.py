@@ -819,3 +819,173 @@ class TestEnableReportsWindowsExecBackendRefusal:
             body = await resp.json()
         assert resp.status == 200
         assert "backend_refused" not in body
+
+
+# ---------------------------------------------------------------------------
+# bot_chat_stop_failed in disable response
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_disable_sets_bot_chat_stop_failed_when_bot_stop_fails(tmp_path, monkeypatch):
+    """handle_disable_app must set ``bot_chat_stop_failed`` when teardown_app_runtime
+    reports Bot-chat stop failures, and not repeat them as raw ``warnings``.
+
+    Remove the ``if _disable_bot_stop_failures:`` block and the response body has
+    no ``bot_chat_stop_failed`` key, so the Apps page shows no stop-failed notice;
+    add the slugs to ``warnings`` and the page shows the Bot's raw slug beside it.
+    """
+    import kiro_crew.bot_chat_app_tools as tools
+
+    slug = "atlas"
+
+    # Stub bot stop to report failure.
+    async def _stop_failing(state, app_name):
+        return [], [slug]
+
+    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _stop_failing)
+    monkeypatch.setattr(tools, "revoke_app_generation", lambda name: None)
+
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(tools, "after_app_change", lambda state: _asyncio.sleep(0))
+    monkeypatch.setattr(tools, "_PENDING_CLOSE", {})
+    monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    _install(tmp_path)
+    async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+        resp = await client.post(f"/api/apps/{APP}/disable")
+        body = await resp.json()
+
+    assert resp.status == 200, f"disable must succeed even when Bot stop fails: {body}"
+    assert "bot_chat_stop_failed" in body, (
+        "handle_disable_app must set ``bot_chat_stop_failed`` in the response when "
+        "teardown_app_runtime.bot_stop_failures is non-empty. "
+        "Without it the UI shows a clean disable while the Bot chat still runs."
+    )
+    assert slug in body.get(
+        "bot_chat_stop_failed", []
+    ), "The failed slug must appear in bot_chat_stop_failed"
+    assert not any(slug in w for w in body.get("warnings", []))
+
+
+@pytest.mark.asyncio
+async def test_disable_reports_bot_stop_error_when_stop_raises(tmp_path, monkeypatch):
+    """handle_disable_app must set ``bot_chat_stop_failed`` when
+    stop_app_bot_chat_servers raises, not silently claim the disable was clean.
+
+    Remove the ``teardown.bot_stop_errored`` branch from handle_disable_app and the
+    response has no ``bot_chat_stop_failed`` key even though the stop failed.
+    """
+    import kiro_crew.bot_chat_app_tools as tools
+
+    async def _raises(state, app_name):
+        raise RuntimeError("simulated stop failure")
+
+    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _raises)
+    monkeypatch.setattr(tools, "revoke_app_generation", lambda name: None)
+
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(tools, "after_app_change", lambda state: _asyncio.sleep(0))
+    monkeypatch.setattr(tools, "_PENDING_CLOSE", {})
+    monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    _install(tmp_path)
+    async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+        resp = await client.post(f"/api/apps/{APP}/disable")
+        body = await resp.json()
+
+    assert resp.status == 200, f"disable must succeed even when bot stop raises: {body}"
+    assert "bot_chat_stop_failed" in body, (
+        "handle_disable_app must set ``bot_chat_stop_failed`` when bot_stop_errored is True; "
+        "remove the elif bot_stop_errored branch and no key is set"
+    )
+    assert body["bot_chat_stop_failed"] == ["unknown"]
+
+
+@pytest.mark.asyncio
+async def test_disable_holds_the_stop_fence_from_teardown_through_the_disabled_write(
+    tmp_path, monkeypatch
+):
+    """Rule 1, ordinary disable: the stop fence is held while the Bot stop runs and
+    while ``disable_app`` writes the disabled state, and released afterwards. The
+    two samples are the sync points: a Bot chat that cold-starts at either moment
+    has the app voided by ``record_mounted``.
+
+    Hold the fence only for ``withdrawing_trust`` (or not at all) and both samples
+    read 0, so this fails.
+    """
+    import kiro_crew.bot_chat_app_tools as tools
+
+    seen: dict[str, int] = {}
+
+    async def _stop(state, app_name):
+        seen["stop"] = tools._FENCE_HOLD_COUNTS.get(app_name, 0)
+        return [], []
+
+    real_disable = routes_mod.disable_app
+
+    def _disable(name):
+        seen["write"] = tools._FENCE_HOLD_COUNTS.get(name, 0)
+        return real_disable(name)
+
+    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _stop)
+    monkeypatch.setattr(tools, "revoke_app_generation", lambda name: None)
+    monkeypatch.setattr(tools, "after_app_change", lambda state: asyncio.sleep(0))
+    monkeypatch.setattr(routes_mod, "disable_app", _disable)
+    monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    _install(tmp_path)
+    async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+        resp = await client.post(f"/api/apps/{APP}/disable")
+        assert resp.status == 200, await resp.text()
+
+    assert seen == {"stop": 1, "write": 1}
+    assert tools._FENCE_HOLD_COUNTS.get(APP, 0) == 0
+    assert APP not in tools._REVOCATION_FENCE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracked", [True, False])
+async def test_disable_of_a_missing_app_stops_its_tracked_bot_chats(tmp_path, monkeypatch, tracked):
+    """The app deleted its installed record but a Bot chat still mounts its server:
+    disable stops that chat from the Bot tracking tables and answers 409 when the
+    stop fails. Nothing tracked keeps the plain 404. Return the 404 before
+    consulting the tables and the tracked case reads 404 with no stop."""
+    import kiro_crew.bot_chat_app_tools as tools
+
+    ghost = "ghost-app"
+    calls: list[str] = []
+
+    async def _stop(state, app_name):
+        calls.append(app_name)
+        return [], ["atlas"]
+
+    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _stop)
+    monkeypatch.setattr(tools, "_MOUNTED", {"atlas": {f"{ghost}:lead": "fp"}} if tracked else {})
+    monkeypatch.setattr(tools, "_MOUNTED_SESSION_KEYS", {"atlas": "dashboard_atlas"})
+    monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    monkeypatch.setattr(tools, "_PENDING_DELIVERY", {})
+    monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
+    monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+
+    _install(tmp_path)
+    async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+        resp = await client.post(f"/api/apps/{ghost}/disable")
+        body = await resp.json()
+
+    if tracked:
+        assert calls == [ghost]
+        assert resp.status == 409, body
+        assert body["code"] == "bot_chat_stop_incomplete"
+        assert body["bot_chat_stop_failed"] == ["atlas"]
+    else:
+        assert calls == []
+        assert resp.status == 404

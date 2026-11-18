@@ -773,6 +773,7 @@ class TestEnsureReady:
         client._kill_process = AsyncMock(side_effect=lambda **kw: order.append(f"kill {kw}"))
         client._reset_state = MagicMock(side_effect=lambda: order.append("reset"))
         client._process_tree_confirmed_dead = True
+        client._process = MagicMock()
 
         await client.shutdown()
 
@@ -783,7 +784,9 @@ class TestEnsureReady:
             f"kill {{'force': True, 'exit_grace': {_EOF_EXIT_GRACE_SECS!r}}}",
             "reset",
         ]
-        # A stale confirmation from an earlier kill does not survive into this one.
+        # A stale confirmation from an earlier kill does not survive into a kill of
+        # a live process. (With no process left, the reaping reset's verdict stands:
+        # test_bot_chat_app_stop_confirmation.)
         assert client._process_tree_confirmed_dead is False
 
 

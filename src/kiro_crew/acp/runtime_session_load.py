@@ -81,6 +81,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.tool_search import with_client_meta_settings
+from kiro_crew.bot_chat_ending_fence import runtime_session_start
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import StartPriority
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.runtime")
 
 
+@runtime_session_start
 async def load_session(
     self: AcpRuntime,
     session_file: str,

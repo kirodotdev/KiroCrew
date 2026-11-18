@@ -12,6 +12,7 @@ tests import and patch; this module never imports it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 
@@ -753,139 +754,186 @@ async def api_trusted_app_revoke(request: web.Request) -> web.Response:
 
         disabled = False
         teardown_warnings: list[str] = []
+        _bot_failed: list[str] = []  # populated inside the was_granted block; read at the end
         # A builtin is never torn down: shipped code is exempt at the gate, so no
         # grant governs it and revoking one must not switch it off.
-        if was_granted and not is_builtin:
-            # Stop any Bot chat still running this app's servers immediately,
-            # regardless of whether the app's metadata is readable.  An app can
-            # corrupt or delete its own installed.json; gating the Bot teardown on
-            # get_app() lets a hostile app evade revocation at exactly the moment
-            # it matters most.  Bump the revocation generation first so any
-            # in-flight projection is fenced at mount time.
-            from kiro_crew import bot_chat_app_tools
+        from kiro_crew import bot_chat_app_tools
 
-            bot_chat_app_tools.revoke_app_generation(name)
-            _bot_stopped, _bot_failed = await bot_chat_app_tools.stop_app_bot_chat_servers(
-                request.app.get("state"), name
-            )
-            if _bot_failed:
-                logger.warning(
-                    "trust revoke for %r: could not stop Bot chats for slugs %s",
-                    name,
-                    _bot_failed,
-                )
-                _audit(
-                    request,
-                    operation=op,
-                    outcome="failed",
-                    resources=f"{name} bot_chat_stop_incomplete slugs={_bot_failed}",
-                )
+        # Run Bot teardown when: (a) this revoke just removed the grant
+        # (was_granted), OR (b) a previous 409 left Bot chats still running
+        # for this app (_MOUNTED still has an entry, or _PENDING_CLOSE_APPS
+        # still has an unconfirmed handle).  Condition (b) covers retries
+        # after the first 409: by that point was_granted is False (trust was
+        # already written), but the Bots are still running and must be stopped.
+        bots_still_active = bot_chat_app_tools.app_has_active_bot_sessions(name)
+        needs_bot_teardown = (was_granted or bots_still_active) and not is_builtin
+        # The stop fence spans the teardown AND the trust write below, and is
+        # released on every exit (refusal, write failure, exception).
+        fence = (
+            bot_chat_app_tools.app_stop_fence(name)
+            if needs_bot_teardown
+            else contextlib.nullcontext()
+        )
+        async with fence:
+            if needs_bot_teardown:
+                # When the app record is not readable (hostile app deleted its own
+                # installed.json), still stop Bot chats — gating on get_app() lets a
+                # hostile app evade revocation at the moment it matters most.
+                # Bump the generation first so in-flight projections are fenced.
+                # On the normal path (record exists), teardown_app_runtime runs the
+                # bot stop itself.
+                record = await _run_off_loop(lambda: get_app(name))
+                if record is None:
+                    bot_chat_app_tools.revoke_app_generation(name)
+                    _bot_stopped, _bot_failed = await bot_chat_app_tools.stop_app_bot_chat_servers(
+                        request.app.get("state"), name
+                    )
+                    if _bot_failed:
+                        logger.warning(
+                            "trust revoke for %r: could not stop Bot chats for slugs %s",
+                            name,
+                            _bot_failed,
+                        )
+                if record:
+                    # Teardown runs regardless of the PERSISTED ``enabled`` flag.
+                    #
+                    # That flag is metadata, NOT evidence about the runtime.
+                    # ``disable_app`` is a pure metadata write, and the CLI
+                    # (``kirocrew app disable``) calls it from a DIFFERENT PROCESS
+                    # that cannot reach the gateway's backend child — so
+                    # ``enabled: false`` while the app's code is still executing is
+                    # an ordinary state, not a corner case. Gating the teardown on
+                    # the flag therefore skipped it for exactly the apps whose
+                    # recorded state was least trustworthy, and revoke answered 200
+                    # while third-party code kept running.
+                    #
+                    # Running it unconditionally is safe rather than merely
+                    # thorough: every step is idempotent (deregistration of absent
+                    # symlinks/manifests is a no-op), and a backend that genuinely
+                    # is NOT running produces no failure, because the teardown
+                    # reports one only when it can OBSERVE the port still listening.
+                    # So for an app that really was off this is a sequence of
+                    # no-ops, and for one whose flag lied it is the whole point.
+                    was_enabled = bool(record.get("enabled"))
+                    result = await teardown_app_runtime(
+                        name,
+                        record,
+                        withdrawing_trust=True,
+                        state=request.app.get("state"),
+                    )
+                    for warning in result.warnings:
+                        logger.info("revoke teardown of %r: %s", name, warning)
+                    # Returned, not only logged. A warning here is something the
+                    # operator has to be able to LEARN — the leading case is the app's
+                    # own on_shutdown hook failing, which means state it was buffering
+                    # may be gone. The revocation still succeeded (its code is stopped),
+                    # so this rides on the 200 rather than turning into a refusal.
+                    teardown_warnings = list(result.warnings)
+                    # Merge bot-stop failures from teardown into _bot_failed so the
+                    # 409 path below can report them.
+                    if result.bot_stop_failures:
+                        _bot_failed = list(result.bot_stop_failures)
+                    elif result.bot_stop_errored:
+                        # stop_app_bot_chat_servers raised: unknown stop state.
+                        # Use a sentinel so the caller reports bot_chat_stop_incomplete.
+                        _bot_failed = ["unknown"]
+                    if not result.ok:
+                        # The app's code is NOT fully stopped — most importantly its
+                        # crons may still fire. Reporting success here is the exact
+                        # defect this endpoint was rewritten to remove, so fail loudly
+                        # and leave the grant in place for a retry.
+                        for failure in result.failures:
+                            logger.warning("revoke teardown of %r FAILED: %s", name, failure)
+                        _audit(
+                            request,
+                            operation=op,
+                            outcome="failed",
+                            resources=f"{name} teardown_incomplete",
+                        )
+                        # teardown failed — grant is kept for retry; leaving the
+                        # fence span releases the hold.
+                        return web.json_response(
+                            {
+                                "error": (
+                                    f"trust for {name!r} was NOT revoked: its code could not be "
+                                    "fully stopped, so the grant is left in place — retry"
+                                ),
+                                "code": "teardown_incomplete",
+                                "failures": result.failures,
+                            },
+                            status=409,
+                        )
+                    # ``disabled`` answers "did WE switch it off", so it stays keyed
+                    # on the PRE-teardown flag. ``disable_app`` returns ok for an app
+                    # that was already off, so reporting that as a disable would tell
+                    # the operator we changed something we did not touch.
+                    if was_enabled:
+                        disabled = bool(await _run_off_loop(lambda: disable_app(name).ok))
+                    # after_app_change is called inside teardown_app_runtime; no
+                    # separate call needed here.
+
+            def _mutate(agent_raw: dict) -> None:
+                agent_raw["apps_trusted"] = [a for a in _trusted_list_raw(agent_raw) if a != name]
+                repositories = _trusted_repositories_raw(agent_raw)
+                repositories.pop(name, None)
+                agent_raw["apps_trusted_local"] = [
+                    a for a in _trusted_local_list_raw(agent_raw) if a != name
+                ]
+                agent_raw["apps_trusted_repositories"] = repositories
+
+            try:
+                await _mutate_agent_config(_mutate)
+            except ConfigCorruptError as exc:
+                _audit(request, operation=op, outcome="denied", resources=f"{name}=config_corrupt")
+                # Trust write failed — app still trusted; leaving the fence span
+                # releases the hold.
+                return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
+            except TrustSettingOverlayOwned as exc:
+                # 409, not 200: writing config.json here changes NOTHING while the
+                # overlay owns the setting, and a success response would tell the
+                # operator a grant was revoked while the app stays trusted.
+                _audit(request, operation=op, outcome="denied", resources=f"{name}=overlay_owned")
+                # Trust write failed — same as config_corrupt.
                 return web.json_response(
                     {
-                        "error": (
-                            f"trust for {name!r} was NOT fully revoked: "
-                            f"Bot chats {_bot_failed} could not be stopped — retry"
-                        ),
-                        "code": "teardown_incomplete",
-                        "failures": _bot_failed,
+                        "error": str(exc),
+                        "code": "trust_setting_overlay_owned",
+                        "overlaySettings": exc.keys,
                     },
                     status=409,
                 )
-            record = await _run_off_loop(lambda: get_app(name))
-            if record:
-                # Teardown runs regardless of the PERSISTED ``enabled`` flag.
-                #
-                # That flag is metadata, NOT evidence about the runtime.
-                # ``disable_app`` is a pure metadata write, and the CLI
-                # (``kirocrew app disable``) calls it from a DIFFERENT PROCESS
-                # that cannot reach the gateway's backend child — so
-                # ``enabled: false`` while the app's code is still executing is
-                # an ordinary state, not a corner case. Gating the teardown on
-                # the flag therefore skipped it for exactly the apps whose
-                # recorded state was least trustworthy, and revoke answered 200
-                # while third-party code kept running.
-                #
-                # Running it unconditionally is safe rather than merely
-                # thorough: every step is idempotent (deregistration of absent
-                # symlinks/manifests is a no-op), and a backend that genuinely
-                # is NOT running produces no failure, because the teardown
-                # reports one only when it can OBSERVE the port still listening.
-                # So for an app that really was off this is a sequence of
-                # no-ops, and for one whose flag lied it is the whole point.
-                was_enabled = bool(record.get("enabled"))
-                result = await teardown_app_runtime(name, record, withdrawing_trust=True)
-                for warning in result.warnings:
-                    logger.info("revoke teardown of %r: %s", name, warning)
-                # Returned, not only logged. A warning here is something the
-                # operator has to be able to LEARN — the leading case is the app's
-                # own on_shutdown hook failing, which means state it was buffering
-                # may be gone. The revocation still succeeded (its code is stopped),
-                # so this rides on the 200 rather than turning into a refusal.
-                teardown_warnings = list(result.warnings)
-                if not result.ok:
-                    # The app's code is NOT fully stopped — most importantly its
-                    # crons may still fire. Reporting success here is the exact
-                    # defect this endpoint was rewritten to remove, so fail loudly
-                    # and leave the grant in place for a retry.
-                    for failure in result.failures:
-                        logger.warning("revoke teardown of %r FAILED: %s", name, failure)
-                    _audit(
-                        request,
-                        operation=op,
-                        outcome="failed",
-                        resources=f"{name} teardown_incomplete",
-                    )
-                    return web.json_response(
-                        {
-                            "error": (
-                                f"trust for {name!r} was NOT revoked: its code could not be "
-                                "fully stopped, so the grant is left in place — retry"
-                            ),
-                            "code": "teardown_incomplete",
-                            "failures": result.failures,
-                        },
-                        status=409,
-                    )
-                # ``disabled`` answers "did WE switch it off", so it stays keyed
-                # on the PRE-teardown flag. ``disable_app`` returns ok for an app
-                # that was already off, so reporting that as a disable would tell
-                # the operator we changed something we did not touch.
-                if was_enabled:
-                    disabled = bool(await _run_off_loop(lambda: disable_app(name).ok))
-                # Deferred reconciliation for any Bot chats without a live slot
-                # (gateway restart race) and for ordinary grant-change bookkeeping.
-                from kiro_crew import bot_chat_app_tools
 
-                await bot_chat_app_tools.after_app_change(request.app.get("state"))
-
-        def _mutate(agent_raw: dict) -> None:
-            agent_raw["apps_trusted"] = [a for a in _trusted_list_raw(agent_raw) if a != name]
-            repositories = _trusted_repositories_raw(agent_raw)
-            repositories.pop(name, None)
-            agent_raw["apps_trusted_local"] = [
-                a for a in _trusted_local_list_raw(agent_raw) if a != name
-            ]
-            agent_raw["apps_trusted_repositories"] = repositories
-
-        try:
-            await _mutate_agent_config(_mutate)
-        except ConfigCorruptError as exc:
-            _audit(request, operation=op, outcome="denied", resources=f"{name}=config_corrupt")
-            return web.json_response({"error": str(exc), "code": "config_corrupt"}, status=409)
-        except TrustSettingOverlayOwned as exc:
-            # 409, not 200: writing config.json here changes NOTHING while the
-            # overlay owns the setting, and a success response would tell the
-            # operator a grant was revoked while the app stays trusted.
-            _audit(request, operation=op, outcome="denied", resources=f"{name}=overlay_owned")
-            return web.json_response(
-                {
-                    "error": str(exc),
-                    "code": "trust_setting_overlay_owned",
-                    "overlaySettings": exc.keys,
-                },
-                status=409,
-            )
-
+    if _bot_failed:
+        # Trust was written successfully but some Bot chats could not be stopped.
+        # Return 409 with the FRESH snapshot so the caller renders the updated
+        # trust state (the grant really IS gone) while knowing teardown is
+        # incomplete.  The grant is ALREADY revoked at this point.
+        _audit(
+            request,
+            operation=op,
+            outcome="partial",
+            resources=(
+                f"{name} was_granted={was_granted} disabled={disabled}"
+                f" bot_stop_failed={_bot_failed}"
+            ),
+        )
+        fresh_snap = await build_trusted_apps_snapshot_async()
+        return web.json_response(
+            {
+                "apps": fresh_snap["apps"],
+                "ineffective": fresh_snap["ineffective"],
+                "allowAll": fresh_snap["allowAll"],
+                "disabled": disabled,
+                "warnings": teardown_warnings,
+                "error": (
+                    f"trust for {name!r} was revoked but "
+                    f"Bot chats {_bot_failed} could not be stopped — retry"
+                ),
+                "code": "bot_chat_stop_incomplete",
+                "bots": _bot_failed,
+            },
+            status=409,
+        )
     _audit(
         request,
         operation=op,
@@ -909,7 +957,6 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
     # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
     # reaches back into sibling handler modules, so importing the helper at
     # module scope from here would close a cycle.
-    from kiro_crew.config.loader import PendingEditBlocksSave
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     denied = await require_owner_dashboard_request(request, op)
@@ -930,6 +977,43 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "value must be a boolean", "code": "invalid_value"}, status=400
         )
+    if value is not False:
+        return await _apply_allow_all(request, value, op)
+    # Falling edge: one stop fence per app the flag may be admitting, opened before
+    # the first sweep and released after the flag write, the second sweep and the
+    # Bot-chat pass, so no Bot chat mounts any of them while trust is withdrawn.
+    from kiro_crew import bot_chat_app_tools
+
+    async with contextlib.AsyncExitStack() as fences:
+        for app in sorted(await _blanket_fence_apps()):
+            await fences.enter_async_context(bot_chat_app_tools.app_stop_fence(app))
+        response = await _apply_allow_all(request, value, op)
+    return response
+
+
+async def _blanket_fence_apps() -> set[str]:
+    """Every app the blanket flag may be admitting: installed third-party apps
+    without their own grant, plus any app a Bot chat has mounted, is projecting
+    or has an unconfirmed close for."""
+    from kiro_crew import bot_chat_app_tools
+
+    granted = set((await build_trusted_apps_snapshot_async())["apps"])
+    builtins = await _run_off_loop(builtin_app_names)
+    installed = {str(a.get("name") or "") for a in await _run_off_loop(list_apps)}
+    live = (
+        bot_chat_app_tools.mounted_app_names()
+        | bot_chat_app_tools.in_flight_projection_app_names()
+        | bot_chat_app_tools.pending_close_app_names()
+    )
+    return (installed | live) - granted - builtins - {""}
+
+
+async def _apply_allow_all(request: web.Request, value: bool, op: str) -> web.Response:
+    """Persist the blanket flag *value*; on the falling edge, sweep around the write.
+
+    :func:`api_trusted_apps_allow_all` holds the stop fences for the falling edge.
+    """
+    from kiro_crew.config.loader import PendingEditBlocksSave
 
     def _mutate(agent_raw: dict) -> None:
         agent_raw["apps_allow_third_party"] = value
@@ -951,6 +1035,7 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
     # they are reported as a 409 afterwards instead.
     stopped: list[str] = []
     still_running: list[str] = []
+    bot_stop_failed: list[str] = []
     sweep_error = ""
     if value is False:
         try:
@@ -972,7 +1057,9 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
                 status=409,
             )
         try:
-            stopped, still_running = await _stop_apps_running_on_blanket_trust()
+            stopped, still_running, bot_stop_failed = await _stop_apps_running_on_blanket_trust(
+                request
+            )
         except Exception as exc:  # noqa: BLE001 - reported below, never swallowed
             # NOT a 500 and NOT a success. An unreadable app directory or a thrown
             # teardown means apps the flag was admitting may still be executing,
@@ -1030,8 +1117,8 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
         # safe direction for a security control, and the 409 points the operator
         # straight at it. Retrying is idempotent and re-sweeps.
         try:
-            late_stopped, late_still = await _stop_apps_running_on_blanket_trust(
-                require_enabled=True
+            late_stopped, late_still, late_bot_stop_failed = (
+                await _stop_apps_running_on_blanket_trust(request, require_enabled=True)
             )
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             logger.warning("post-write blanket-trust sweep failed", exc_info=True)
@@ -1039,10 +1126,10 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
         else:
             stopped = sorted(set(stopped) | set(late_stopped))
             still_running = sorted(set(still_running) | set(late_still))
+            bot_stop_failed = sorted(set(bot_stop_failed) | set(late_bot_stop_failed))
 
     # Rule C: only stop Bot chats when withdrawing trust (value is False).
     # When value is True (granting / reaffirming), leave Bot sessions alone.
-    bot_stop_failed: list[str] = []
     if value is False:
         # Stop Bot chats that are running any revoked apps' servers.  This must run
         # even when `stopped` is empty: an app the CLI disabled (enabled=False) is not
@@ -1050,40 +1137,69 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
         # still be mounted in a Bot chat.  Use `_MOUNTED` as the authority.
         from kiro_crew import bot_chat_app_tools
 
-        state = request.app.get("state")
         granted = set((await build_trusted_apps_snapshot_async())["apps"])
         builtins = await _run_off_loop(builtin_app_names)
-        mounted_apps = {
-            alias.split(":")[0]
-            for mounts in bot_chat_app_tools._MOUNTED.values()
-            for alias in mounts
-        }
-        # Also include apps in in-flight projections (_PROJECTION_GENS) that
-        # have not yet reached record_mounted -- they would be missed by _MOUNTED.
-        in_flight_apps = {
-            alias.split(":")[0]
-            for gens in bot_chat_app_tools._PROJECTION_GENS.values()
-            for alias in gens
-        }
+        mounted_apps = bot_chat_app_tools.mounted_app_names()
+        # Also include apps with unconfirmed KAS close handles (_PENDING_CLOSE):
+        # these sessions may still be resident on the shared engine.
+        pending_close_apps = bot_chat_app_tools.pending_close_app_names()
+        # Also include apps in in-flight projections that have not yet reached
+        # record_mounted -- they would be missed by _MOUNTED.
+        in_flight_apps = bot_chat_app_tools.in_flight_projection_app_names()
         # All installed apps without individual grants, not builtins.
         all_candidate_apps = (
             {str(a.get("name") or "") for a in await _run_off_loop(list_apps) if a.get("name")}
             - granted
             - builtins
         )
-        # Revoked = any of the above sets.
-        revoked_mounted = (mounted_apps | in_flight_apps | all_candidate_apps) - granted - builtins
+        # Apps that actually need a fence: running, in-flight, or pending-close.
+        # These will have revoke_app_generation called on them (raises the fence).
+        actually_running = (mounted_apps | in_flight_apps | pending_close_apps) - granted - builtins
+        # Revoked = running + all candidates (generation bump for all; fence only for running).
+        revoked_mounted = (actually_running | all_candidate_apps) - granted - builtins
         if revoked_mounted:
-            for _app in revoked_mounted:
-                # Bump generation first to fence in-flight projections.
+            for _app in sorted(actually_running):
+                # Every app a Bot chat runs, has in flight or has an unconfirmed
+                # close for is stopped here from the Bot records alone, whether or
+                # not its installed metadata is still there: an app that deleted
+                # its own installed.json is invisible to both sweeps above. A stop
+                # the sweep already ran finds nothing left and returns at once.
                 bot_chat_app_tools.revoke_app_generation(_app)
-            for _app in mounted_apps - granted - builtins:
-                _, _bot_failed = await bot_chat_app_tools.stop_app_bot_chat_servers(state, _app)
-                bot_stop_failed.extend(_bot_failed)
-            if bot_stop_failed:
-                logger.warning("blanket trust revoke: could not stop Bot chats %s", bot_stop_failed)
+                try:
+                    _stopped_bots, _failed_bots = (
+                        await bot_chat_app_tools.stop_app_bot_chat_servers(
+                            request.app.get("state"), _app
+                        )
+                    )
+                except Exception:  # noqa: BLE001 - reported as incomplete, never swallowed
+                    logger.warning("blanket-off: Bot chat stop for %r failed", _app, exc_info=True)
+                    _failed_bots = ["unknown"]
+                bot_stop_failed = sorted(set(bot_stop_failed) | set(_failed_bots))
+            # Candidates-only apps (not running) only need their generation bumped
+            # so stale in-flight projections are fenced at delivery.  Walk the same
+            # revoke_app_generation path (locked, fence + void) so an in-flight
+            # check_and_filter_projection that passed admission but has not yet
+            # registered in _PENDING_DELIVERY is also blocked.
+            for _app in (all_candidate_apps - actually_running) - granted - builtins:
+                bot_chat_app_tools.revoke_app_generation(_app)
+            # Bot stop for the apps the sweeps tore down also ran inside
+            # teardown_app_runtime; its failures were collected there.
+            # For apps that had a fence raised but no running Bot chat, lower the
+            # fence now (the open stop-fence spans defer it to their exit).
+            fence_raised_no_running = (
+                (
+                    (in_flight_apps - mounted_apps - pending_close_apps)
+                    | (all_candidate_apps - actually_running)
+                )
+                - granted
+                - builtins
+            )
+            for _app in fence_raised_no_running:
+                bot_chat_app_tools.revocation_fence_clear(_app)
         if stopped or revoked_mounted:
-            await bot_chat_app_tools.after_app_change(state)
+            # after_app_change is called inside each teardown_app_runtime; no
+            # separate call needed here.
+            pass
 
     # Rule D: failed Bot shutdowns count toward partial failure.
     incomplete = bool(still_running or sweep_error or bot_stop_failed)
@@ -1119,10 +1235,20 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
                 "allowAll": snapshot["allowAll"],
                 "stopped": sorted(stopped),
                 "stillRunning": sorted(still_running),
+                "botStopFailed": sorted(bot_stop_failed),
                 "error": (
                     sweep_error
-                    or "blanket trust is off, but these apps could not be stopped "
-                    "and may still be executing: " + ", ".join(sorted(still_running))
+                    or (
+                        "blanket trust is off, but these apps could not be stopped "
+                        "and may still be executing: "
+                        + ", ".join(sorted(still_running))
+                        + (
+                            "; Bot chats that could not be stopped: "
+                            + ", ".join(sorted(bot_stop_failed))
+                            if bot_stop_failed
+                            else ""
+                        )
+                    )
                 ),
                 "code": "blanket_trust_sweep_incomplete",
             },
@@ -1134,8 +1260,10 @@ async def api_trusted_apps_allow_all(request: web.Request) -> web.Response:
 
 
 async def _stop_apps_running_on_blanket_trust(
-    *, require_enabled: bool = False
-) -> tuple[list[str], list[str]]:
+    request: "web.Request",
+    *,
+    require_enabled: bool = False,
+) -> tuple[list[str], list[str], list[str]]:
     """Tear down third-party apps that hold no per-app grant.
 
     Called on the FALLING edge of ``agent.apps_allow_third_party``. An app in this
@@ -1198,18 +1326,28 @@ async def _stop_apps_running_on_blanket_trust(
 
     stopped: list[str] = []
     still_running: list[str] = []
+    bot_stop_failed: list[str] = []
+    from kiro_crew import bot_chat_app_tools
+
     for name in await _run_off_loop(_candidates):
         try:
-            async with app_lifecycle_lock(name):
+            # The stop fence spans the teardown and the disabled-state write.
+            async with app_lifecycle_lock(name), bot_chat_app_tools.app_stop_fence(name):
                 record = await _run_off_loop(lambda n=name: get_app(n))
                 if not record:
                     continue
                 was_enabled = bool(record.get("enabled"))
                 if require_enabled and not was_enabled:
                     continue
-                swept = await teardown_app_runtime(name, record, withdrawing_trust=True)
+                swept = await teardown_app_runtime(
+                    name, record, withdrawing_trust=True, state=request.app.get("state")
+                )
                 for note in (*swept.warnings, *swept.failures):
                     logger.warning("blanket-trust teardown of %r: %s", name, note)
+                if swept.bot_stop_failures:
+                    bot_stop_failed.extend(swept.bot_stop_failures)
+                elif swept.bot_stop_errored:
+                    bot_stop_failed.append("unknown")
                 if not swept.ok:
                     still_running.append(name)
                     continue
@@ -1226,7 +1364,7 @@ async def _stop_apps_running_on_blanket_trust(
         except Exception:  # noqa: BLE001 - one app must not block the others
             logger.warning("could not stop blanket-trusted app %r", name, exc_info=True)
             still_running.append(name)
-    return stopped, still_running
+    return stopped, still_running, bot_stop_failed
 
 
 # Named by the path callers import it from: the facade that serves it.

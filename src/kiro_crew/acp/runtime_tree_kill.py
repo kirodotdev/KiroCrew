@@ -10,7 +10,7 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_bound_workspace_fd``, ``_child_pids``, ``_descendant_rescan_task``,
 ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``, ``_scope_unit``,
-``_start_tree_scans``, ``_spawn_work_dir``.
+``_start_tree_scans``, ``_spawn_work_dir``, ``_unreaped_pids``.
 
 Instance fields read: ``_KILL_TREE_WAIT_SECS``, ``_close_remote_workspace``, ``_descendant_scan_lock``,
 ``_exit_watch_task``, ``_native_skill_projection``, ``_pid``, ``_reader_task``,
@@ -608,7 +608,11 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
     """
     if not authorize_runtime_kill(self, reason=reason or "runtime kill", caller="AcpRuntime.kill"):
         return
-    self._process_tree_confirmed_dead = False
+    # A kill with no process left keeps the verdict the kill that reaped it wrote:
+    # resetting it here would read a tree confirmed dead earlier as unconfirmed.
+    if self._process is not None:
+        self._process_tree_confirmed_dead = False
+        self._unreaped_pids = ()
     try:
         await self._kill_inner(expected=expected, reason=reason)
         # The skill views the process ran on are its resources too: released
@@ -769,6 +773,7 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         # the placeholder true for a tree it could not confirm.
         self._note_reaped_after_kill(process.returncode)
         self._process_tree_confirmed_dead = process.returncode is not None
+        self._unreaped_pids = ()
         self._process = None
         self._process_instance = ""
         self._scope_unit = ""
@@ -903,3 +908,5 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
                     survivors,
                 )
         self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+        # What a later evict re-checks: the PIDs this kill could not show gone.
+        self._unreaped_pids = tuple(survivors) + ((pid,) if not root_confirmed_dead else ())

@@ -585,5 +585,11 @@
   "pages.settings.slackSharedAccess.confirm_label",
   "components.globalChatSearch.more_matches",
   "pages.settings.slackPanel.slackCode.box_slack_mcp",
-  "pages.mcpManagement.share_diagram_copies"
+  "pages.mcpManagement.share_diagram_copies",
+  "pages.appsPage.bot_chat_stop_incomplete_revoked",
+  "pages.appsPage.uninstall_bot_chat_stop_failed",
+  "pages.appsPage.disable_bot_chat_stop_failed",
+  "pages.appsPage.bot_chat_stop_retry",
+  "pages.appsPage.bot_chat_stop_retry_all",
+  "pages.appsPage.blanket_bot_chat_stop_failed"
 ]

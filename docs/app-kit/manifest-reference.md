@@ -1379,9 +1379,11 @@ app's page. The server joins that one chat as `<app>:<server>`, with
 Bot calls it. A platform server of the same name wins. Each call still goes
 through the Bot's own approvals.
 
-Unticking the Bot, disabling, updating or uninstalling the app takes the server
-off: that chat's next turn starts a fresh conversation without it. Ticking a Bot
-or enabling the app reloads the chat in place.
+Unticking the Bot or updating the app takes the server off at the start of that
+chat's next turn: the chat restarts fresh without it. Disabling or uninstalling
+the app stops Bot chats that are using its servers immediately, interrupting the
+current turn if one is running. Ticking a Bot or enabling the app reloads the
+chat in place.
 
 A Bot whose chat runs on the Kiro CLI harness gets none of these servers: Kiro CLI
 reads the Bot's agent file off disk and has no per-session channel to carry them.

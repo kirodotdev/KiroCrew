@@ -185,6 +185,20 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
+        # No installed record, but a Bot chat may still run the app's tools.
+        from kiro_crew.bot_chat_ending_fence import stop_tracked_bot_chats
+
+        failed = await stop_tracked_bot_chats(request.app.get("state"), name)
+        if failed:
+            return web.json_response(
+                {
+                    "error": f"app {name!r} is not installed, but its Bot chats could not be stopped",
+                    "code": "bot_chat_stop_incomplete",
+                    "bot_chat_stop_failed": failed,
+                    "retryable": True,
+                },
+                status=409,
+            )
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
     lifecycle = info.get("lifecycle", "gateway")
@@ -216,9 +230,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         # A missing or malformed body keeps the safe defaults set above.
         pass
 
-    from kiro_crew import bot_chat_app_tools
-
-    resp = await _run_uninstall(
+    resp = await _run_uninstall_fenced(
         request,
         name,
         info,
@@ -226,30 +238,8 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         keep_dependencies=keep_dependencies,
         keep_specific=keep_specific,
     )
-    # Only stop Bot chats when the uninstall actually succeeded (status < 400).
-    # A rejected uninstall (trust_grant_not_removed, cron-store 409, startup-hook
-    # refusal, 400 not_orphaned) leaves the app unchanged; stopping Bot chats that
-    # are running its servers while claiming nothing happened is incorrect.
-    if resp.status < 400:
-        # Bump generation before stopping so in-flight projections are fenced.
-        bot_chat_app_tools.revoke_app_generation(name)
-        _stopped, _failed = await bot_chat_app_tools.stop_app_bot_chat_servers(
-            request.app.get("state"), name
-        )
-        if _failed:
-            logger.warning("uninstall of %r: could not stop Bot chats for slugs %s", name, _failed)
-            # Rule D: propagate Bot-stop failure in the response body.
-            # Use status 200 (not dynamic): the uninstall succeeded, this is a
-            # cleanup warning. A fixed status avoids the dynamic-status ratchet.
-            import json as _json
-
-            try:
-                body = _json.loads(resp.text or "{}")
-            except Exception:
-                body = {}
-            body["bot_chat_stop_failed"] = _failed
-            resp = web.json_response(body)
-        await bot_chat_app_tools.after_app_change(request.app.get("state"))
+    # Bot chat stop is handled inside _run_uninstall so all callers (dashboard,
+    # uninstall_app_in_process, handle_migrate_cleanup) are covered.
     return resp
 
 
@@ -265,6 +255,9 @@ async def _run_uninstall(
     caller: str = "dashboard",
 ) -> web.Response:
     """Run the uninstall preconditions and teardown for an owner-authorized request.
+
+    Every caller reaches it through :func:`_run_uninstall_fenced`, which holds the
+    app's stop fence around it.
 
     *request* is read only for ``request.app`` (the gateway state), so an in-process
     caller passes a stand-in that carries the application; *caller* names it in the
@@ -300,6 +293,7 @@ async def _run_uninstall(
     # will still resume, and `dropped` on its own reads as a clean sweep.
     dropped = 0
     pointer_flush_failed = False
+    _uninstall_bot_chat_stop_failed: list[str] = []
     async with app_lifecycle_lock(name):
         if retired_builtin:
             from kiro_crew.apps.manager import migrated_builtin_cleanup_applies
@@ -549,6 +543,42 @@ async def _run_uninstall(
                 uninstall_log.append(cleaned)
             if script_output.get("failed"):
                 uninstall_log.append("onUninstall script failed (exit code non-zero)")
+
+        # Step 2.5: Stop Bot chats that have this app's servers mounted.
+        # This is the ONE place the bot stop runs for the uninstall path, so
+        # uninstall_app_in_process and handle_migrate_cleanup (via _run_uninstall)
+        # are covered too.  Runs before the in-process teardown to close the tool
+        # surface first.
+        try:
+            from kiro_crew.bot_chat_app_tools import (
+                revoke_app_generation,
+                stop_app_bot_chat_servers,
+            )
+
+            revoke_app_generation(name)
+            _bot_stopped, _bot_failed = await stop_app_bot_chat_servers(
+                request.app.get("state"), name
+            )
+            if _bot_failed:
+                logger.warning(
+                    "uninstall of %r: could not stop Bot chats for slugs %s", name, _bot_failed
+                )
+                backend_warnings.extend(
+                    f"Bot chat stop incomplete for slot {slug}" for slug in _bot_failed
+                )
+                uninstall_log.extend(
+                    f"Bot chat stop incomplete for slot {slug}" for slug in _bot_failed
+                )
+                # Rule D: expose the failure set under the key the frontend reads
+                # (LibraryPage.uninstallBotChatStopFailedNotice reads
+                # result.bot_chat_stop_failed).  Set it now so the value is
+                # available when _run_uninstall builds the final response dict.
+                _uninstall_bot_chat_stop_failed.extend(_bot_failed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("uninstall of %r: bot chat stop failed: %s", name, exc, exc_info=True)
+            # stop_app_bot_chat_servers raised: unknown stop state.
+            # Surface via bot_chat_stop_failed so the caller knows cleanup is incomplete.
+            _uninstall_bot_chat_stop_failed.append("unknown")
 
         # Step 3: Stop the backend, then deregister gateway-managed resources.
         #
@@ -883,7 +913,50 @@ async def _run_uninstall(
         resp["warnings"] = backend_warnings
     if cleaned_deps:
         resp["cleaned_dependencies"] = cleaned_deps
+    if _uninstall_bot_chat_stop_failed:
+        # The key the frontend reads: LibraryPage.uninstallBotChatStopFailedNotice
+        # returns a warning only when result.bot_chat_stop_failed is set.
+        resp["bot_chat_stop_failed"] = _uninstall_bot_chat_stop_failed
+    # Reconcile after the uninstall so live Bot chats that were affected reload.
+    try:
+        from kiro_crew.bot_chat_app_tools import after_app_change
+
+        await after_app_change(request.app.get("state"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("uninstall of %r: after_app_change failed: %s", name, exc, exc_info=True)
     return web.json_response(resp)
+
+
+async def _run_uninstall_fenced(
+    request: web.Request,
+    name: str,
+    info: dict[str, Any],
+    *,
+    keep_data: bool,
+    keep_dependencies: bool,
+    keep_specific: list[str],
+    retired_builtin: bool = False,
+    caller: str = "dashboard",
+) -> web.Response:
+    """:func:`_run_uninstall` inside the app's stop fence.
+
+    The fence (``bot_chat_app_tools.app_stop_fence``) spans the whole sequence, the
+    lifecycle lock and the removal from disk included, so no Bot chat mounts the app
+    in between; it is released on every exit.
+    """
+    from kiro_crew.bot_chat_app_tools import app_stop_fence
+
+    async with app_stop_fence(name):
+        return await _run_uninstall(
+            request,
+            name,
+            info,
+            keep_data=keep_data,
+            keep_dependencies=keep_dependencies,
+            keep_specific=keep_specific,
+            retired_builtin=retired_builtin,
+            caller=caller,
+        )
 
 
 class _InProcessRequest:
@@ -912,6 +985,18 @@ async def uninstall_app_in_process(
     """
     info = await asyncio.to_thread(get_app, name)
     if not info:
+        from kiro_crew.bot_chat_ending_fence import stop_tracked_bot_chats
+
+        failed = await stop_tracked_bot_chats(app.get("state"), name)
+        if failed:
+            return {
+                "ok": False,
+                "status": 409,
+                "error": f"app {name!r} is not installed, but its Bot chats could not be stopped",
+                "code": "bot_chat_stop_incomplete",
+                "bot_chat_stop_failed": failed,
+                "retryable": True,
+            }
         return {"ok": False, "status": 404, "error": f"app {name!r} not installed"}
     if info.get("lifecycle", "gateway") == "locked":
         return {
@@ -919,7 +1004,7 @@ async def uninstall_app_in_process(
             "status": 400,
             "error": f"app {name!r} cannot be uninstalled (lifecycle=locked)",
         }
-    response = await _run_uninstall(
+    response = await _run_uninstall_fenced(
         _InProcessRequest(app),  # type: ignore[arg-type]
         name,
         info,
@@ -971,6 +1056,20 @@ async def handle_migrate_cleanup(request: web.Request) -> web.Response:
     if _check_path_safety(name):
         meta = await asyncio.to_thread(_read_installed, name)
         if meta is None:
+            # No installed record, but a Bot chat may still run the app's tools.
+            from kiro_crew.bot_chat_ending_fence import stop_tracked_bot_chats
+
+            failed = await stop_tracked_bot_chats(request.app.get("state"), name)
+            if failed:
+                return web.json_response(
+                    {
+                        "error": f"app {name!r} is not installed, but its Bot chats could not be stopped",
+                        "code": "bot_chat_stop_incomplete",
+                        "bot_chat_stop_failed": failed,
+                        "retryable": True,
+                    },
+                    status=409,
+                )
             result = AppResult(ok=True, name=name, message="not installed — nothing to clean up")
         elif meta.origin != "builtin":
             result = AppResult(
@@ -979,7 +1078,7 @@ async def handle_migrate_cleanup(request: web.Request) -> web.Response:
         elif await asyncio.to_thread(migrated_builtin_cleanup_applies, name):
             info = await asyncio.to_thread(get_app, name)
             if info is not None:
-                response = await _run_uninstall(
+                response = await _run_uninstall_fenced(
                     request,
                     name,
                     info,

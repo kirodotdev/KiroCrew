@@ -7,6 +7,7 @@ The member-dispatch mount on both paths, ``load_session`` against
 import asyncio
 import json
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1435,3 +1436,288 @@ async def test_the_kas_keep_record_reentry_forwards_every_keyword(monkeypatch):
     reentry.assert_awaited_once()
     forwarded = reentry.await_args.kwargs
     assert {name: forwarded.get(name) for name in keywords} == given
+
+
+@pytest.mark.asyncio
+async def test_evict_session_confirms_on_acp_runtime_error_with_rpc_error(monkeypatch):
+    """evict_session confirms when AcpRuntimeError carries a 'Session not found' rpc_error.
+
+    ``_runtime_rpc_exception`` raises ``AcpRuntimeError`` when the host answers with a
+    JSON-RPC error frame.  Only when the frame positively identifies the session as
+    absent (``"Session not found"`` in message or data) is the teardown confirmed.
+
+    Remove the ``_rpc_error_is_session_absent`` guard in the ``except _AcpRuntimeError``
+    branch and an internal-error reply would also incorrectly confirm teardown (see
+    the companion test below).
+    """
+    from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError as _AcpRuntimeError
+
+    rt, _, _ = _make_runtime()
+    sid = "kas-rpc-error-sid-001"
+
+    # Host replies: session is gone ("Session not found").
+    rpc_error_obj = {"code": -32600, "message": "Session not found"}
+
+    async def _fake_send(method, params, timeout=None):
+        exc = _AcpRuntimeError("host rejected session")
+        exc.rpc_error = rpc_error_obj
+        raise exc
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    rt._session_queues[sid] = asyncio.Queue()
+
+    result = await rt.evict_session(sid)
+
+    assert result is True, (
+        "AcpRuntimeError with 'Session not found' rpc_error must be confirmed; "
+        "remove the _rpc_error_is_session_absent check and this test still passes "
+        "but test_evict_session_does_not_confirm_on_internal_error fails"
+    )
+    assert (
+        sid not in rt._unconfirmed_teardowns
+    ), "confirmed eviction must discard sid from _unconfirmed_teardowns"
+
+
+@pytest.mark.asyncio
+async def test_evict_session_does_not_confirm_on_internal_error(monkeypatch):
+    """evict_session must NOT confirm when AcpRuntimeError carries an internal-error rpc_error.
+
+    An ``"Internal error"`` reply does not prove the session is gone — the host may
+    have failed to process the close while the session is still resident.  Keeping
+    ``_unconfirmed_teardowns`` and returning False lets the caller retain a retry handle.
+
+    Remove the ``_rpc_error_is_session_absent`` guard (treat every rpc_error as
+    confirmed) and this test fails: ``result`` becomes True and the sid is discarded.
+    """
+    from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError as _AcpRuntimeError
+
+    rt, _, _ = _make_runtime()
+    sid = "kas-internal-error-sid-001"
+
+    # Host replies with an internal error — the session may still be resident.
+    internal_error_rpc = {"code": -32603, "message": "Internal error", "data": "lock timeout"}
+
+    async def _fake_send(method, params, timeout=None):
+        exc = _AcpRuntimeError("internal error from host")
+        exc.rpc_error = internal_error_rpc
+        raise exc
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    rt._session_queues[sid] = asyncio.Queue()
+
+    result = await rt.evict_session(sid)
+
+    assert result is False, (
+        "An internal-error rpc_error must NOT confirm teardown; "
+        "remove the _rpc_error_is_session_absent check and result incorrectly becomes True"
+    )
+    # _unconfirmed_teardowns must still hold sid so a retry can confirm it later.
+    # (evict_session's finally calls unregister_session which may clear queues,
+    # but _unconfirmed_teardowns is only discarded on a confirmed close.)
+    # We check that the function did NOT discard it by verifying result is False above;
+    # the actual set membership depends on whether unregister_session clears it,
+    # so we confirm the return value is the authoritative signal.
+
+
+@pytest.mark.asyncio
+async def test_evict_session_confirms_when_runtime_dead(monkeypatch):
+    """evict_session confirms when AcpRuntimeDead is raised, the process has exited,
+    AND the whole process tree is confirmed dead.
+
+    When all three hold, the session cannot be resident — it is gone with the
+    process.  evict_session must return True.
+
+    Remove the ``except _AcpRuntimeDead`` / ``_process_exited and
+    process_tree_confirmed_dead`` branch and confirmed stays False.
+    """
+    from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead as _AcpRuntimeDead
+
+    rt, _, _ = _make_runtime()
+    sid = "kas-dead-runtime-sid-001"
+    # Simulate a process that has actually exited AND the whole tree is confirmed dead.
+    rt._process.returncode = 0
+    rt._process_tree_confirmed_dead = True
+
+    async def _fake_send(method, params, timeout=None):
+        raise _AcpRuntimeDead("process exited")
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    rt._session_queues[sid] = asyncio.Queue()
+
+    result = await rt.evict_session(sid)
+
+    assert result is True, (
+        "Runtime death with exited process and confirmed process tree must confirm teardown; "
+        "remove the process_tree_confirmed_dead check in the AcpRuntimeDead branch and "
+        "result stays True only until a detached descendant scenario is introduced"
+    )
+
+
+@pytest.mark.asyncio
+async def test_evict_session_does_not_confirm_when_process_exited_but_tree_not_confirmed(
+    monkeypatch,
+):
+    """evict_session must NOT confirm when the process exited but the process tree
+    is not fully confirmed dead (a detached app-server descendant may still be running).
+
+    Remove the ``process_tree_confirmed_dead`` check (revert to only checking
+    ``_process.returncode is not None``) and result becomes True, prematurely
+    confirming that the app server stopped.
+    """
+    from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead as _AcpRuntimeDead
+
+    rt, _, _ = _make_runtime()
+    sid = "kas-dead-tree-unconfirmed-sid-001"
+    # Process exited but tree not confirmed (detached descendant may still run).
+    rt._process.returncode = 0
+    rt._process_tree_confirmed_dead = False
+
+    async def _fake_send(method, params, timeout=None):
+        raise _AcpRuntimeDead("process exited but descendant alive")
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    rt._session_queues[sid] = asyncio.Queue()
+
+    result = await rt.evict_session(sid)
+
+    assert result is False, (
+        "Process exited but tree not confirmed dead must NOT confirm teardown; "
+        "a detached app-server descendant may still be running. "
+        "Remove the process_tree_confirmed_dead check and result becomes True."
+    )
+
+
+@pytest.mark.asyncio
+async def test_evict_session_does_not_confirm_when_transport_dead_but_process_alive(monkeypatch):
+    """evict_session must NOT confirm when the transport is dead but the process is still running.
+
+    A stdin-stall death marks ``_dead=True`` without killing the child process
+    (``_mark_dead(stdin_stalled=True)``).  When ``_send_and_await`` raises
+    ``AcpRuntimeDead`` in this scenario, ``_process.returncode`` is still None
+    (the process is alive).  The session may still be resident, so evict_session
+    must return False and keep the retry handle.
+
+    Remove the ``returncode is not None`` check (treat every AcpRuntimeDead as
+    confirmed) and this test fails: ``result`` becomes True.
+    """
+    from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead as _AcpRuntimeDead
+
+    rt, _, _ = _make_runtime()
+    sid = "kas-stdin-stall-sid-001"
+    # Process is still running — only the transport (stdin) stalled.
+    assert rt._process.returncode is None, "precondition: process alive"
+
+    async def _fake_send(method, params, timeout=None):
+        raise _AcpRuntimeDead("stdin stalled")
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    rt._session_queues[sid] = asyncio.Queue()
+
+    result = await rt.evict_session(sid)
+
+    assert result is False, (
+        "A transport-dead-only scenario (stdin stall, process alive) must NOT confirm "
+        "teardown — the session may still be resident; "
+        "remove the returncode check and result incorrectly becomes True"
+    )
+
+
+@pytest.mark.asyncio
+async def test_evict_session_does_not_confirm_when_dead_before_send(monkeypatch):
+    """evict_session must NOT confirm when the transport was already dead before the
+    send, and the child process is still running.
+
+    This covers the path where ``self._dead`` is True at the top of ``evict_session``
+    (not raised during ``_send_and_await``).  When the transport is dead but the child
+    has not exited, the session may still be resident, so evict_session must return
+    False and retain the session_id in _unconfirmed_teardowns.
+
+    Remove the up-front ``if self._dead`` block (or revert ``confirmed`` to start
+    as ``True``) and this test fails: ``result`` becomes True.
+    """
+    rt, _, _ = _make_runtime()
+    sid = "kas-pre-dead-sid-001"
+    # Mark transport dead before the call — process still running (returncode is None).
+    rt._dead = True
+    assert rt._process.returncode is None, "precondition: process alive"
+    rt._session_queues[sid] = asyncio.Queue()
+
+    result = await rt.evict_session(sid)
+
+    assert result is False, (
+        "transport already dead and process still alive before the call must NOT confirm "
+        "teardown; revert the up-front if-dead block and result incorrectly becomes True"
+    )
+    assert sid in rt._unconfirmed_teardowns, (
+        "session_id must be retained in _unconfirmed_teardowns so the drain loop can retry; "
+        "remove the _unconfirmed_teardowns.add in the if-dead/not-exited branch and "
+        "this assertion fails"
+    )
+
+
+def _recorded_evict_error(harness: str) -> dict:
+    """The JSON-RPC error a live host sent for an evicted session id."""
+    path = Path(__file__).parent / "fixtures" / "acp_frames" / harness / "session-evict-live.jsonl"
+    for line in path.read_text().splitlines():
+        frame = json.loads(line)
+        if isinstance(frame, dict) and "error" in frame:
+            return frame["error"]
+    raise AssertionError(f"no error frame in {path}")
+
+
+@pytest.mark.parametrize("harness", ["kiro", "kas", "codex"])
+def test_session_absent_classifier_matches_each_hosts_recorded_reply(harness):
+    """Each host words "unknown session" differently; all three must confirm closure.
+
+    KAS quotes the id ("Session '<sid>' not found") and codex nests it in a data dict,
+    so a plain "session not found" substring check misses both and the retry never
+    drains.
+    """
+    from kiro_crew.acp.runtime_session_registry import _rpc_error_is_session_absent
+
+    assert _rpc_error_is_session_absent(_recorded_evict_error(harness))
+
+
+@pytest.mark.parametrize(
+    "rpc_error",
+    [
+        {"code": -32603, "message": "Internal error", "data": "lock timeout"},
+        {"code": -32602, "message": "Tool not found"},
+        {"code": -32603, "message": "Internal error", "data": {"details": "model not found"}},
+    ],
+)
+def test_session_absent_classifier_rejects_other_errors(rpc_error):
+    from kiro_crew.acp.runtime_session_registry import _rpc_error_is_session_absent
+
+    assert not _rpc_error_is_session_absent(rpc_error)
+
+
+@pytest.mark.asyncio
+async def test_evict_session_does_not_confirm_when_process_exited_but_tree_unconfirmed_dead_before_send(
+    monkeypatch,
+):
+    """evict_session must NOT confirm when transport was already dead, process exited,
+    but the process tree is not fully confirmed dead (detached descendant may survive).
+
+    Remove the ``and self.process_tree_confirmed_dead`` requirement (revert to only
+    ``_proc is None or _proc.returncode is not None``) and this test fails: result
+    becomes True, prematurely reporting the app server as stopped.
+    """
+    rt, _, _ = _make_runtime()
+    sid = "kas-pre-dead-tree-unconfirmed-sid-001"
+    # Transport dead, process exited, but tree NOT confirmed (a detached descendant survived).
+    rt._dead = True
+    rt._process.returncode = 0
+    rt._process_tree_confirmed_dead = False
+    rt._session_queues[sid] = asyncio.Queue()
+
+    result = await rt.evict_session(sid)
+
+    assert result is False, (
+        "transport dead + process exited but tree not confirmed must NOT confirm teardown; "
+        "a detached app-server descendant may still be running. "
+        "Remove the process_tree_confirmed_dead check and result incorrectly becomes True."
+    )
+    assert (
+        sid in rt._unconfirmed_teardowns
+    ), "session_id must stay in _unconfirmed_teardowns when tree is not confirmed"

@@ -113,11 +113,19 @@ def _fresh_record(_floor_monkeypatch):
     _floor_monkeypatch.setattr(tools, "_VOIDED_DELIVERY", {})
     _floor_monkeypatch.setattr(tools, "_PENDING_CLOSE", {})
     _floor_monkeypatch.setattr(tools, "_PENDING_CLOSE_APPS", set())
+    _floor_monkeypatch.setattr(tools, "_PENDING_CLOSE_RETRIES", {})
+    _floor_monkeypatch.setattr(tools, "_PENDING_CLOSE_BACKOFF_IDX", {})
+    _floor_monkeypatch.setattr(tools, "_PENDING_CLOSE_TIMERS", {})
     _floor_monkeypatch.setattr(tools, "_REVOCATION_FENCE", set())
     _floor_monkeypatch.setattr(tools, "_RECONCILER", None)
     _floor_monkeypatch.setattr(tools, "_PROJECTION_GENS", {})
     _floor_monkeypatch.setattr(tools, "_PROJECTION_SLUGS", {})
+    _floor_monkeypatch.setattr(tools, "_FENCE_HOLD_COUNTS", {})
+    _floor_monkeypatch.setattr(tools, "_PROJECTION_OFFER_FP", {})
+    _floor_monkeypatch.setattr(tools, "_PENDING_CLOSE_WITHHELD", {})
     _floor_monkeypatch.setattr(tools, "_HAD_SIDECAR", set())
+    _floor_monkeypatch.setattr(tools, "_SESSION_APP_SNAPSHOT", {})
+    _floor_monkeypatch.setattr(tools, "_SESSION_APP_SNAPSHOT_PENDING", {})
 
 
 @pytest.fixture
@@ -460,8 +468,9 @@ async def test_reload_reconnects_an_idle_chat_and_leaves_a_queued_fresh_start_al
 
     calls: list[tuple[str, str]] = []
 
-    async def _reload(state, slot, *, notice):
+    async def _reload(state, slot, *, notice, on_reloaded=None):
         calls.append((slot.key, notice))
+        on_reloaded()
         return reload_mod.RELOADED
 
     monkeypatch.setattr(reload_mod, "reload_if_idle", _reload)
@@ -474,6 +483,22 @@ async def test_reload_reconnects_an_idle_chat_and_leaves_a_queued_fresh_start_al
     assert out == {"ada": reload_mod.RELOADED, "uma": tools.PENDING_FRESH}
     assert calls == [("s-ada", tools._RELOAD_NOTICE)]
     assert _owed_to_bot(slots["ada"]) == [tools._RELOAD_NOTICE]
+
+
+@pytest.mark.asyncio
+async def test_a_busy_chat_is_not_told_it_reloaded(monkeypatch):
+    """Tell the Bot on any answer but GONE and a busy chat, still on its old tools,
+    reads "Session reloaded"; the notice waits for the reload it describes."""
+    import kiro_crew.dashboard.crewmate_worker_reload as reload_mod
+
+    async def _reload(state, slot, *, notice, on_reloaded=None):
+        return reload_mod.BUSY
+
+    monkeypatch.setattr(reload_mod, "reload_if_idle", _reload)
+    slot = _notice_slot([], key="s-ada", _pending_discard_conversation_key=None)
+    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: slot)
+    assert await tools.reload_bot_chats(object(), ["ada"]) == {"ada": reload_mod.BUSY}
+    assert _owed_to_bot(slot) == []
 
 
 @pytest.mark.parametrize("route", ["install", "install-stream"])
@@ -1313,650 +1338,196 @@ def test_the_shared_runtime_offloads_the_seed_check_so_the_lock_does_not_block_t
     assert out is not None and out.servers != []
 
 
-@pytest.mark.asyncio
-async def test_a_failed_revocation_clears_pending_so_the_next_reconciliation_retries(
-    world, monkeypatch
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_the_preview_going_off_mid_projection_drops_the_app_servers_it_records_as_gone(
+    tmp_path, world, monkeypatch, backend
 ):
-    """When ``_live_slot`` returns ``None`` (DM-binding read failed), ``fresh_bot_chats``
-    must clear the ``_PENDING`` entry so the next ``after_app_change`` can retry.
-    If the pending entry is NOT cleared, the deduplication guard at
-    ``after_app_change:571`` skips it and the tool revocation is permanently stuck.
+    """Rule 3: the mounted record names exactly the array the session is handed.
 
-    Remove either ``_PENDING.pop`` in ``fresh_bot_chats`` and this test fails because
-    the second call to ``fresh_bot_chats`` receives an empty slug list (the
-    deduplication guard fires) instead of ``["atlas"]``."""
-    import kiro_crew.dashboard.chat_runner as runner
+    The mirror's projection is the sync point: it turns the preview off while it
+    runs, after the app server was already projected. ``_mirrored_session_mcp``
+    must then drop the app entry from the outgoing array before it records.
+    Keep the app entry in ``servers`` on the preview-off branch and the handed
+    array carries ``team-app:team`` while the record is empty, so this fails.
+    """
+    import asyncio
 
-    armed: list[object] = []
-    monkeypatch.setattr(runner, "_arm_pending_reset_retry", lambda state, slot: armed.append(slot))
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.chat_utils.effective_session_key", lambda s: f"dashboard_{s.key}"
-    )
+    from kiro_crew.acp import runtime as setup
+    from kiro_crew.acp import runtime_session_setup as setup_owner
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX
 
-    # First attempt: _live_slot returns None (DM-binding failure).
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: None)
-    # Seed _PENDING as after_app_change would.
-    fingerprint = {"kirocrew-core": "fp1"}
-    tools._PENDING["atlas"] = fingerprint
-    result_1 = await tools.fresh_bot_chats(object(), ["atlas"])
-    assert result_1 == []  # nothing queued
-    # _PENDING must be cleared so the next reconciliation can retry.
-    assert "atlas" not in tools._PENDING, (
-        "_PENDING was not cleared after a failed revocation; the next reconciliation "
-        "would skip it and the app tools would not be revoked"
-    )
+    tools.conductor_session_spec(dict(BASE), KEY)
+    handed = [{"name": "kirocrew-core"}, {"name": f"{APP}:team"}]
 
-    # Second attempt: _live_slot now returns a real slot.
-    rows: list[tuple] = []
-    slot = _notice_slot(
-        rows, key=SLOT, _pending_discard_conversation_key=None, _pending_discard_from_wake=True
-    )
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: slot if slug == "atlas" else None)
-    tools._PENDING["atlas"] = fingerprint  # re-seeded by a new after_app_change
-    result_2 = await tools.fresh_bot_chats(object(), ["atlas"])
-    assert result_2 == ["atlas"]  # revocation queued on the second attempt
-    assert slot._pending_discard_conversation_key is not None
-
-
-@pytest.mark.asyncio
-async def test_a_failed_reload_clears_pending_so_the_next_reconciliation_retries(monkeypatch):
-    """When ``_live_slot`` returns ``None`` in ``reload_bot_chats``, the ``_PENDING``
-    entry must be cleared so the next reconciliation can retry the reload.
-
-    Remove the ``_PENDING.pop`` in ``reload_bot_chats``'s ``slot is None`` branch and
-    this test fails because ``_PENDING`` still holds the entry after the failed attempt,
-    which would cause the deduplication guard to skip the next reconciliation."""
-    import kiro_crew.dashboard.crewmate_worker_reload as reload_mod
-
-    # First attempt: _live_slot returns None.
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: None)
-    fingerprint = {"kirocrew-core": "fp1"}
-    tools._PENDING["atlas"] = fingerprint
-    result_1 = await tools.reload_bot_chats(object(), ["atlas"])
-    assert result_1 == {}  # nothing reloaded
-    assert "atlas" not in tools._PENDING, (
-        "_PENDING was not cleared after a failed reload; the next reconciliation "
-        "would skip it and the reload would never happen"
-    )
-
-    # Second attempt: _live_slot returns a real slot and reload succeeds.
-    async def _reload(state, slot, *, notice):
-        return reload_mod.RELOADED
-
-    monkeypatch.setattr(reload_mod, "reload_if_idle", _reload)
-    rows: list[tuple] = []
-    slot = _notice_slot(rows, key=SLOT, _pending_discard_conversation_key=None)
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: slot if slug == "atlas" else None)
-    tools._PENDING["atlas"] = fingerprint  # re-seeded by a new after_app_change
-    result_2 = await tools.reload_bot_chats(object(), ["atlas"])
-    assert result_2.get("atlas") == reload_mod.RELOADED
-
-
-@pytest.mark.asyncio
-async def test_stop_app_bot_chat_servers_stops_a_busy_session_immediately(world, monkeypatch):
-    """``stop_app_bot_chat_servers`` calls ``discard_conversation`` without
-    ``skip_if_busy``, so a mid-turn Bot chat is stopped immediately.
-
-    Remove ``stop_app_bot_chat_servers`` from the trust-revoke path (or add
-    ``skip_if_busy=True``) and the second assertion fails: ``discard_conversation``
-    is never called and the slug is not in ``stopped``."""
-    # Seed _MOUNTED so the function sees "atlas" running app:lead servers.
-    tools._MOUNTED["atlas"] = {f"{APP}:lead": "fp1"}
-    tools._MOUNTED_SESSION_KEYS["atlas"] = f"dashboard_{SLOT}"
-
-    discard_calls: list[tuple[str, bool]] = []
-
-    class _FakeAlloc:
-        def begin_ending(self, key: str) -> None:
-            pass
-
-        def end_ending(self, key: str) -> None:
-            pass
-
-    class _FakeSessions:
-        async def discard_conversation(
-            self,
-            key: str,
-            *,
-            replay: bool,
-            confirm_teardown: bool = False,
-            unconfirmed_handle_out: "list | None" = None,
-        ) -> bool:
-            discard_calls.append((key, replay))
-            return True
-
-        def _allocation_boundary(self) -> "_FakeAlloc":
-            return _FakeAlloc()
-
-    rows: list[tuple] = []
-    slot = _notice_slot(rows, key=SLOT)
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: slot if slug == "atlas" else None)
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.chat_utils.effective_session_key", lambda s: f"dashboard_{s.key}"
-    )
-
-    class _State:
-        sessions = _FakeSessions()
-
-    stopped, failed = await tools.stop_app_bot_chat_servers(_State(), APP)
-
-    assert stopped == ["atlas"]
-    assert failed == []
-    # discard_conversation was called without skip_if_busy (default False).
-    assert discard_calls == [(f"dashboard_{SLOT}", False)]
-
-
-@pytest.mark.asyncio
-async def test_stop_app_bot_chat_servers_returns_failure_when_discard_raises(world, monkeypatch):
-    """When ``discard_conversation`` raises, the slug goes into ``failed`` and
-    the caller (trust-revoke path) can return a 409.
-
-    Remove the ``except Exception`` / ``failed.append`` in ``stop_app_bot_chat_servers``
-    and this test fails because the exception propagates instead of being captured."""
-    tools._MOUNTED["atlas"] = {f"{APP}:lead": "fp1"}
-    tools._MOUNTED_SESSION_KEYS["atlas"] = f"dashboard_{SLOT}"
-
-    class _FailingSessions:
-        async def discard_conversation(self, key: str, **_kw: object) -> None:
-            raise RuntimeError("simulated discard failure")
-
-        def _allocation_boundary(self) -> object:
-            class _A:
-                def begin_ending(self, k: str) -> None:
-                    pass
-
-                def end_ending(self, k: str) -> None:
-                    pass
-
-            return _A()
-
-    rows: list[tuple] = []
-    slot = _notice_slot(rows, key=SLOT)
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: slot if slug == "atlas" else None)
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.chat_utils.effective_session_key", lambda s: f"dashboard_{s.key}"
-    )
-
-    class _State:
-        sessions = _FailingSessions()
-
-    stopped, failed = await tools.stop_app_bot_chat_servers(_State(), APP)
-
-    assert stopped == []
-    assert failed == ["atlas"]
-
-
-@pytest.mark.asyncio
-async def test_stop_app_bot_chat_servers_stops_a_cli_disabled_app_on_blanket_revoke(
-    world, monkeypatch
-):
-    """An app the CLI disabled (``enabled=False``) but whose servers are still mounted
-    in ``_MOUNTED`` must be stopped when blanket trust is revoked.
-
-    The ``stopped`` list in ``api_trusted_apps_allow_all`` only contains apps with
-    ``enabled=True``; ``stop_app_bot_chat_servers`` looks at ``_MOUNTED`` directly
-    and must therefore see the CLI-disabled app.
-
-    Remove the ``revoked_mounted`` path in ``api_trusted_apps_allow_all`` (or gate it
-    on ``stopped``) and this test fails because ``discard_conversation`` is never
-    called for the disabled app."""
-    # Seed _MOUNTED as if the app was enabled, its server mounted, and then CLI-disabled.
-    tools._MOUNTED["atlas"] = {f"{APP}:lead": "fp1"}
-    tools._MOUNTED_SESSION_KEYS["atlas"] = f"dashboard_{SLOT}"
-
-    discard_calls: list[str] = []
-
-    class _FakeSessions:
-        async def discard_conversation(self, key: str, **_kw: object) -> bool:
-            discard_calls.append(key)
-            return True
-
-    rows: list[tuple] = []
-    slot = _notice_slot(rows, key=SLOT)
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: slot if slug == "atlas" else None)
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.chat_utils.effective_session_key", lambda s: f"dashboard_{s.key}"
-    )
-
-    class _State:
-        sessions = _FakeSessions()
-
-    # Directly call stop_app_bot_chat_servers with the CLI-disabled app name.
-    # (The blanket-revoke path in security_trusted_apps.py now derives this from
-    # _MOUNTED rather than from the `stopped` list, so this test proves the
-    # _MOUNTED-based lookup works for a disabled app.)
-    stopped, failed = await tools.stop_app_bot_chat_servers(_State(), APP)
-
-    assert stopped == ["atlas"], f"expected atlas stopped, got stopped={stopped} failed={failed}"
-    assert failed == []
-    assert discard_calls == [f"dashboard_{SLOT}"]
-
-
-@pytest.mark.asyncio
-async def test_stop_app_bot_chat_servers_is_not_called_when_uninstall_is_rejected(
-    world, monkeypatch
-):
-    """When ``_run_uninstall`` returns a 4xx, the uninstall left the app unchanged;
-    Bot chats must NOT be discarded.
-
-    Remove the ``resp.status < 400`` guard in ``handle_uninstall_app`` and
-    ``stop_app_bot_chat_servers`` is called unconditionally, dropping a Bot chat
-    mid-turn while the response says nothing happened."""
-    from unittest.mock import MagicMock
-
-    from aiohttp import web
-
-    from kiro_crew.apps import routes_uninstall
-
-    tools._MOUNTED["atlas"] = {f"{APP}:lead": "fp1"}
-    tools._MOUNTED_SESSION_KEYS["atlas"] = f"dashboard_{SLOT}"
-
-    stop_calls: list[str] = []
-
-    async def _fake_stop(state: object, app_name: str) -> tuple:
-        stop_calls.append(app_name)
-        return [], []
-
-    after_calls: list[int] = []
-
-    async def _fake_after(state: object) -> None:
-        after_calls.append(1)
-
-    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _fake_stop)
-    monkeypatch.setattr(tools, "after_app_change", _fake_after)
-
-    # Simulate _run_uninstall returning 409 (trust_grant_not_removed).
-    async def _rejected(*_a, **_k):
-        return web.Response(
-            status=409,
-            content_type="application/json",
-            text='{"code": "trust_grant_not_removed"}',
+    def _projection(*a, **k):
+        world["preview"] = False  # the owner switches the preview off mid-projection
+        return SimpleNamespace(
+            params={"mcpServers": list(handed)},
+            denied_tools=frozenset(),
+            derived_spec_snapshot=None,
+            agent_spec=dict(BASE),
+            zero_tools=False,
         )
 
-    monkeypatch.setattr(routes_uninstall, "_run_uninstall", _rejected)
-
-    # Bypass the owner-auth preflight so the handler reaches _run_uninstall.
-    from kiro_crew.dashboard.handlers import _shared as _dash_shared
-
-    async def _no_auth(*_a, **_k):
-        return None
-
-    monkeypatch.setattr(_dash_shared, "require_owner_dashboard_request", _no_auth)
-    # Stub get_app through the facade (kiro_crew.apps.routes) so the patch
-    # reaches all owners; patching an owner directly would cause the facade's
-    # undo to leak the owner's value into the other members.
-    import kiro_crew.apps.routes as _apps_facade
-
-    monkeypatch.setattr(_apps_facade, "get_app", lambda name: {"lifecycle": "gateway"})
-
-    # Minimal fake request using MagicMock (avoids aiohttp internals).
-    state_obj = object()
-    aiohttp_app = MagicMock()
-    aiohttp_app.get.return_value = state_obj
-    request = MagicMock()
-    request.match_info = {"name": APP}
-    request.app = aiohttp_app
-
-    async def _json():
-        return {}
-
-    request.json = _json
-
-    resp = await routes_uninstall.handle_uninstall_app(request)
-    assert resp.status == 409
-    assert stop_calls == [], (
-        "stop_app_bot_chat_servers must not be called on a rejected uninstall; "
-        "remove the resp.status < 400 guard and this assertion fails"
-    )
-    assert after_calls == [], "after_app_change must not be called on a rejected uninstall"
-
-
-# ── Rule A: execution-admission gate ──────────────────────────────────────────
-
-
-def test_app_execution_denied_blocks_bot_server_offer(world, monkeypatch):
-    """When ``app_execution_denied`` returns a denial reason, ``_app_reaches``
-    returns ``False`` even if the scope and tick are present.
-
-    Remove the ``app_execution_denied`` call from ``_app_reaches`` and the
-    admission check is bypassed: a trust-withdrawn-but-still-enabled app can
-    re-mount its server on the Bot's next cold start."""
-    from kiro_crew.apps.bot_grants import BOT_SCOPE_TOOLS
-
-    # Stub scope and tick as approved.
-    monkeypatch.setattr("kiro_crew.apps.bot_grants.app_bot_scopes", lambda app: {BOT_SCOPE_TOOLS})
-    monkeypatch.setattr("kiro_crew.apps.bot_grants.app_granted_bots", lambda app: {"atlas"})
-
-    # Case 1: execution admitted -> _app_reaches True.
-    monkeypatch.setattr("kiro_crew.apps.execution.app_execution_denied", lambda name, **_kw: None)
-    assert tools._app_reaches(APP, "atlas") is True, (
-        "admitted app should reach; remove execution_denied check and this test still passes "
-        "-- the meaningful assertion is Case 2"
-    )
-
-    # Case 2: execution denied -> _app_reaches False, even with scope + tick.
     monkeypatch.setattr(
-        "kiro_crew.apps.execution.app_execution_denied",
-        lambda name, **_kw: "trust withdrawn",
+        setup, "mirror_for", lambda b: SimpleNamespace(session_projection=_projection)
     )
-    assert tools._app_reaches(APP, "atlas") is False, (
-        "_app_reaches must return False when app_execution_denied returns a reason; "
-        "remove the app_execution_denied call and this assertion fails"
+    monkeypatch.setattr(setup, "injection_server_names", lambda *a, **k: frozenset())
+    monkeypatch.setattr(setup, "pooled_session_servers", lambda *a, **k: [])
+    monkeypatch.setattr(setup, "_ref_spec_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(setup_owner, "with_ipc_pickups", lambda servers, **k: servers)
+    acp_backend = ACP_BACKEND_CLAUDE if backend == "claude" else ACP_BACKEND_CODEX
+    rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=acp_backend)
+
+    async def _own(stubs, key):
+        return stubs, "tok"
+
+    monkeypatch.setattr(rt, "_own_stub_session", _own)
+    out = asyncio.run(
+        rt._mirrored_session_mcp(
+            "kirocrew-mate-conductor", work_dir=str(tmp_path), session_key=KEY, channel_id="c"
+        )
     )
+    assert out is not None
+    assert [e["name"] for e in out.servers] == ["kirocrew-core"]
+    assert tools._MOUNTED["atlas"] == {}
+    # The preview's drop is transient: a preview turned back on reloads the server.
+    assert f"{APP}:team" not in tools._UNMOUNTED.get("atlas", {})
 
 
-# ── Rule B: session key recorded at mount time ────────────────────────────────
+def test_create_and_load_hand_the_session_the_array_the_mirror_recorded():
+    """Rule 3 reaches both entry points: ``create_session`` and ``load_session`` each
+    take ``mcp_servers`` from ``_mirrored_session_mcp``, the function that settles
+    the record. Build either array some other way and this fails."""
+    import inspect
+
+    from kiro_crew.acp import runtime_session_create, runtime_session_load
+
+    for module in (runtime_session_create, runtime_session_load):
+        source = inspect.getsource(module)
+        assert "await self._mirrored_session_mcp(" in source, module.__name__
+        assert "mcp_servers = mirrored.servers" in source, module.__name__
 
 
-@pytest.mark.asyncio
-async def test_stop_uses_mounted_session_key_not_live_slot(world, monkeypatch):
-    """``stop_app_bot_chat_servers`` must use ``_MOUNTED_SESSION_KEYS`` rather than
-    ``_live_slot`` to find the session to discard.
+@pytest.mark.parametrize("gate", ["unticked", "voided", "no_sidecar"])
+def test_a_gate_drop_at_delivery_is_never_kept_as_permanently_unmounted(world, gate):
+    """Rule 3 / F3: only a server the harness cannot carry (or a platform server
+    shadows) goes in the permanent ``_UNMOUNTED``. An admission drop (the Bot was
+    unticked between projection and delivery), a revocation void and a missing
+    sidecar are gate drops: a later re-grant must read as an addition.
 
-    Remove the ``_MOUNTED_SESSION_KEYS.get(slug)`` path (or revert to live-slot
-    lookup) and when the DM binding is unreadable (``_live_slot`` returns None)
-    the slug ends up in ``stopped`` instead of ``failed``, silently claiming success
-    without having discarded anything."""
-    # Seed _MOUNTED with no session key recorded (simulate: mounted before the
-    # _MOUNTED_SESSION_KEYS field was written, or key was dropped from the dict).
-    tools._MOUNTED["atlas"] = {f"{APP}:lead": "fp1"}
-    tools._MOUNTED_SESSION_KEYS.pop("atlas", None)
-
-    # DM binding is unreadable: _live_slot returns None.
-    monkeypatch.setattr(tools, "_live_slot", lambda state, slug: None)
-
-    class _State:
-        class sessions:
-            @staticmethod
-            async def discard_conversation(key, **_kw):
-                raise AssertionError("discard_conversation must not be called")
-
-    stopped, failed = await tools.stop_app_bot_chat_servers(_State(), APP)
-
-    # With no live slot AND no recorded session key, the slug is a failure.
-    assert failed == ["atlas"], (
-        "unresolvable identity with no confirmed-down slot must be a failure; "
-        "revert to 'slot is None -> stopped' and this assertion fails"
-    )
-    assert stopped == []
-
-
-# ── Rule C: Bot teardown only on value=False ──────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_granting_trust_does_not_stop_bot_chats(world, monkeypatch):
-    """When ``value=True`` (granting / reaffirming blanket trust), no Bot chat
-    must be stopped.
-
-    Remove the ``if value is False:`` guard in ``api_trusted_apps_allow_all`` and
-    granting trust would call ``stop_app_bot_chat_servers``, discarding the Bot's
-    active conversation."""
-    tools._MOUNTED["atlas"] = {f"{APP}:lead": "fp1"}
-    tools._MOUNTED_SESSION_KEYS["atlas"] = "dashboard_atlas"
-
-    stop_calls: list[str] = []
-
-    async def _fake_stop(state, app_name):
-        stop_calls.append(app_name)
-        return [], []
-
-    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _fake_stop)
-    monkeypatch.setattr(tools, "after_app_change", lambda state: None)
-
-    # Directly test the guard: when value is True, stop must not be called.
-    # (The full handler also validates config, but the invariant is in the guard.)
-    value = True
-    if value is False:  # the guard in api_trusted_apps_allow_all
-        await tools.stop_app_bot_chat_servers(object(), APP)
-
-    assert stop_calls == [], (
-        "stop_app_bot_chat_servers must not be called when value=True; "
-        "remove the 'if value is False:' guard and this assertion fails"
-    )
-
-
-# ── Rule D: failed Bot shutdown is a partial failure ─────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_failed_bot_stop_counts_as_incomplete_in_blanket_revoke(world, monkeypatch):
-    """When ``stop_app_bot_chat_servers`` returns failures, those must be reflected
-    in the ``incomplete`` flag and therefore the response status.
-
-    Remove ``bot_stop_failed`` from the ``incomplete`` calculation in
-    ``api_trusted_apps_allow_all`` and a failed Bot shutdown produces 200 instead
-    of 409, silently claiming success."""
-    tools._MOUNTED["atlas"] = {f"{APP}:lead": "fp1"}
-    tools._MOUNTED_SESSION_KEYS["atlas"] = "dashboard_atlas"
-
-    # stop_app_bot_chat_servers simulates a failure.
-    async def _failing_stop(state, app_name):
-        return [], ["atlas"]  # (stopped, failed)
-
-    monkeypatch.setattr(tools, "stop_app_bot_chat_servers", _failing_stop)
-    monkeypatch.setattr(tools, "after_app_change", lambda state: None)
-
-    # Simulate the incomplete calculation in api_trusted_apps_allow_all.
-    still_running: list[str] = []
-    sweep_error: str = ""
-    bot_stop_failed: list[str] = ["atlas"]  # from the failing stop
-
-    # Rule D: bot_stop_failed must make incomplete=True.
-    incomplete = bool(still_running or sweep_error or bot_stop_failed)
-    assert incomplete is True, (
-        "failed Bot shutdown must count toward incomplete; "
-        "remove bot_stop_failed from the incomplete expression and this assertion fails"
-    )
-
-
-# ── GPT :641: revocation generation fences in-flight projections ─────────────
-
-
-def test_revocation_generation_fences_a_cold_starting_projection(world, monkeypatch):
-    """A projection that captured server entries before revocation must not mount
-    those entries when record_mounted is called after the generation was bumped.
-
-    Scenario:
-    1. ``conductor_session_spec`` builds the spec (stamps _revoke_gen=0 into entries).
-    2. ``revoke_app_generation`` bumps the generation to 1.
-    3. The harness calls ``filter_revoked_app_entries`` before ``record_mounted``.
-    4. The app's entries are discarded; ``_MOUNTED`` stays empty.
-
-    Remove the ``filter_revoked_app_entries`` call from the record path (or remove
-    the _revoke_gen stamp from ``conductor_session_spec``) and the entry survives
-    revocation, so ``_MOUNTED`` contains the app server after the test."""
-
-    # Build the projection (sidecar gen=_APP_GENERATIONS.get(APP, 0)==0 is recorded for the alias).
-    spec_out = tools.conductor_session_spec(dict(BASE), KEY)
-    assert f"{APP}:team" in spec_out.get("mcpServers", {}), "setup: entry must be present"
-    # The sidecar table holds the per-app generation snapshot taken before bot_servers().
-    assert KEY in tools._PROJECTION_GENS, "conductor_session_spec must write _PROJECTION_GENS"
-    assert tools._PROJECTION_GENS[KEY].get(f"{APP}:team") == 0, "gen should be 0 at start"
-
-    # Revocation happens: bump the per-app generation.
-    tools.revoke_app_generation(APP)
-    assert tools._APP_GENERATIONS.get(APP) == 1
-
-    # Simulate what the harness does: check_and_filter_projection, then record_mounted.
-    mcpServers = dict(spec_out.get("mcpServers") or {})
-    mcpServers_filtered = tools.check_and_filter_projection(KEY, mcpServers)
-
-    # The app's server must have been stripped.
-    assert f"{APP}:team" not in mcpServers_filtered, (
-        "check_and_filter_projection must remove entries whose generation advanced; "
-        "remove the _PROJECTION_GENS snapshot or the filter call and this assertion fails"
-    )
-
-    # Calling record_mounted with the filtered set leaves _MOUNTED empty.
-    tools.record_mounted(KEY, tools.mounted_names(mcpServers_filtered))
-    assert (
-        tools._MOUNTED.get("atlas") == {} or "atlas" not in tools._MOUNTED
-    ), "_MOUNTED must not contain the revoked app server"
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "runtime_session_setup",  # AcpRuntime mirror (Claude/Codex)
-        "client_mcp_array",  # AcpClient array (Claude/Codex)
-        "kas",  # KAS projection
-    ],
-)
-def test_check_and_filter_projection_fences_a_revocation_race_on_all_paths(world, path):
-    """On all three delivery paths, a revocation that races a cold-starting projection
-    must prevent the stale entry from mounting.
-
-    Scenario:
-    1. ``conductor_session_spec`` builds the spec; sidecar gen=0 is recorded.
-    2. ``revoke_app_generation`` bumps the generation to 1 (revocation raced).
-    3. The delivery path calls ``check_and_filter_projection``.
-    4. The app's entry is discarded.
-
-    Remove the ``check_and_filter_projection`` call from the delivery path named by
-    ``path`` and the entry survives, so ``_MOUNTED`` contains the revoked server.
-    This test drives the shared filtering logic; the three callsites are covered by
-    the parametrize fixture."""
-    # Build the projection: sidecar gen=0 is recorded for the alias.
-    spec_out = tools.conductor_session_spec(dict(BASE), KEY)
-    assert f"{APP}:team" in spec_out.get("mcpServers", {}), "setup: entry must be present"
-    assert KEY in tools._PROJECTION_GENS, "sidecar must have been written"
-
-    # Revocation races: bump generation to 1.
-    tools.revoke_app_generation(APP)
-
-    # The delivery path: servers is a dict keyed by alias (the format all three paths
-    # pass to check_and_filter_projection after normalising the array).
-    mcpServers = dict(spec_out.get("mcpServers") or {})
-
-    # --- path: runtime_session_setup / client_mcp_array / kas ---
-    # All three call check_and_filter_projection(session_key, servers_dict).
-    # We test the shared function here; the callsite wiring is in the other tests.
-    mcpServers_filtered = tools.check_and_filter_projection(KEY, mcpServers)
-
-    assert f"{APP}:team" not in mcpServers_filtered, (
-        f"[{path}] check_and_filter_projection must fence the stale entry; "
-        f"remove the call from the {path} delivery path and this assertion fails"
-    )
-
-    # Confirm record_mounted sees an empty set.
-    tools.record_mounted(KEY, tools.mounted_names(mcpServers_filtered))
-    assert (
-        tools._MOUNTED.get("atlas", {}) == {}
-    ), f"[{path}] _MOUNTED must not contain the revoked server"
-
-
-# ── Fix 1: check_and_filter_projection uses own session's Bot, not _OFFERED scan ──
-
-
-def test_revoking_one_bots_tick_does_not_drop_another_bots_server(world, monkeypatch):
-    """When Bot A's tick is revoked, Bot B's cold-start projection must still deliver
-    its servers.  The old _OFFERED-scan approach could confuse Bot B's session with
-    Bot A's older sidecar entry.
-
-    Remove the per-session slug storage from ``conductor_session_spec`` / ``_PROJECTION_SLUGS``
-    and restore the ``_OFFERED`` scan: Bot B's projection finds Bot A's _OFFERED entry
-    and may misidentify the slug, letting a revocation of A's tick drop B's servers."""
-    KEY_B = "dashboard:member-bravo.memory-member-bravo-1"
-
-    # Bot atlas (A) and bravo (B) are both ticked.
-    world["ticked"] = ("atlas", "bravo")
-    monkeypatch.setattr(
-        "kiro_crew.members.member_identity_for_session",
-        lambda key: (
-            {"slug": "atlas", "name": "Atlas"}
-            if "atlas" in key
-            else {"slug": "bravo", "name": "Bravo"}
-        ),
-    )
-
-    # Build A's projection first (gen=0 stored for atlas).
+    Drop the ``_note_transient_drop`` call at the gate under test and the alias lands
+    in ``_UNMOUNTED``, so this fails.
+    """
+    alias = f"{APP}:team"
     tools.conductor_session_spec(dict(BASE), KEY)
-    assert KEY in tools._PROJECTION_GENS
+    if gate == "unticked":
+        world["ticked"] = ()
+    elif gate == "voided":
+        tools._VOIDED_DELIVERY[KEY] = {APP}
+    else:
+        tools._PROJECTION_GENS.pop(KEY, None)
+        tools._HAD_SIDECAR.discard(KEY)
 
-    # Revoke A's tick by bumping the per-app generation.
-    tools.revoke_app_generation(APP)
-    assert tools._APP_GENERATIONS.get(APP) == 1
-
-    # Build B's projection AFTER the revocation.  B still has its tick.
-    # B's sidecar snapshot is gen=1 (the current _APP_GENERATIONS[APP]).
-    spec_b = tools.conductor_session_spec(dict(BASE), KEY_B)
-    assert f"{APP}:team" in spec_b.get("mcpServers", {}), "B's projection must include the server"
-
-    # Deliver B's array: snapshot matches current _APP_GENERATIONS[APP] so it passes.
-    mcp_b = dict(spec_b.get("mcpServers") or {})
-    filtered_b = tools.check_and_filter_projection(KEY_B, mcp_b)
-
-    assert f"{APP}:team" in filtered_b, (
-        "Bot B's server must survive the delivery gate even though Bot A was revoked; "
-        "B built its sidecar with gen=1 (after revocation), so its snapshot matches "
-        "_APP_GENERATIONS[APP] and check_and_filter_projection passes it through"
+    out = tools.check_and_filter_projection(
+        KEY, {"kirocrew-core": {"command": "k"}, alias: dict(ENTRY)}
     )
+    assert alias not in out
+    tools.record_mounted(KEY, tools.mounted_names(out))
+
+    assert alias not in tools._UNMOUNTED.get("atlas", {})
+    assert alias not in tools._MOUNTED.get("atlas", {})
 
 
-# ── Fix 2: codex-folded alias is found in sidecar ─────────────────────────────
+def test_a_harness_withheld_server_stays_permanently_unmounted(world):
+    """The permanent case still holds: a server the harness was not handed at all
+    (no gate dropped it) is kept in ``_UNMOUNTED``. Mark every missing alias
+    transient and this fails."""
+    tools.conductor_session_spec(dict(BASE), KEY)
+    tools.record_mounted(KEY, ["kirocrew-core"])
+    assert f"{APP}:team" in tools._UNMOUNTED["atlas"]
 
 
-def test_codex_folded_alias_is_fenced_on_revocation(world, monkeypatch):
-    """A server with a whitespace name ("my server") is delivered by codex as
-    "my_server".  The sidecar must store both forms so the delivery gate can
-    find the entry and enforce revocation.
+def test_the_mirror_reads_the_preview_off_the_event_loop(tmp_path, world, monkeypatch):
+    """``preview_on`` reads config.json on a cache miss, so the mirror's delivery
+    path must call it in a worker thread. The stand-in raises when it runs on the
+    event loop. Call ``preview_on()`` directly in ``_mirrored_session_mcp`` and the
+    coroutine fails."""
+    import asyncio
 
-    Remove the ``codex_name`` fallback from ``conductor_session_spec``'s sidecar
-    write (or from ``check_and_filter_projection``'s lookup) and the folded alias
-    is not found in the sidecar -- it is treated as a re-delivery and passes through
-    despite revocation."""
-    world["offers"] = [("lead", "my server")]
+    from kiro_crew.acp import runtime as setup
+    from kiro_crew.acp import runtime_session_setup as setup_owner
+    from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
 
-    spec_out = tools.conductor_session_spec(dict(BASE), KEY)
-    # The original alias is in the spec.
-    assert f"{APP}:my server" in spec_out.get("mcpServers", {}), "setup"
-    # Sidecar holds the original alias (not the codex-folded form).
-    assert f"{APP}:my server" in tools._PROJECTION_GENS.get(KEY, {}), "original must be in sidecar"
+    tools.conductor_session_spec(dict(BASE), KEY)
+    handed = [{"name": "kirocrew-core"}, {"name": f"{APP}:team"}]
 
-    # Revoke the app.
-    tools.revoke_app_generation(APP)
+    def _preview_off_loop(cfg=None) -> bool:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return True  # in a worker thread, as required
+        raise AssertionError("preview_on ran on the event loop")
 
-    # Deliver the codex-folded alias (what codex_elements hands the session),
-    # passing codex_name as the name_transform so the sidecar lookup can match.
-    from kiro_crew.providers.mirrors.codex import codex_name as _cn
-
-    folded = {f"{APP}:my_server": {"name": f"{APP}:my_server", "command": "x"}}
-    filtered = tools.check_and_filter_projection(KEY, folded, name_transform=_cn)
-
-    assert f"{APP}:my_server" not in filtered, (
-        "codex-folded alias must be fenced after revocation; "
-        "remove the name_transform fallback in check_and_filter_projection and the "
-        "alias is not found in the sidecar, so it passes through"
+    monkeypatch.setattr(tools, "preview_on", _preview_off_loop)
+    projection = SimpleNamespace(
+        params={"mcpServers": list(handed)},
+        denied_tools=frozenset(),
+        derived_spec_snapshot=None,
+        agent_spec=dict(BASE),
+        zero_tools=False,
     )
-
-
-# ── Fix 3: unknown <app>: entry without sidecar is dropped (fail-closed) ─────
-
-
-def test_app_server_without_sidecar_record_is_dropped(world, monkeypatch):
-    """An ``<app>:`` entry that has no sidecar record (did not originate from this
-    session's projection) must not mount.
-
-    The sidecar was consumed on first delivery; a second (injected) entry for a
-    different app -- one that was never offered to this session -- must be dropped.
-
-    Remove the ``if recorded_gen is None: continue`` branch and the injected entry
-    would mount even though no projection ever offered it to this session."""
-    # First projection: sets up the sidecar for APP.
-    spec_out = tools.conductor_session_spec(dict(BASE), KEY)
-    mcpServers = dict(spec_out.get("mcpServers") or {})
-
-    # Consume the sidecar by running the first delivery (passes through since gen=0 matches).
-    tools.check_and_filter_projection(KEY, mcpServers)
-
-    # Test fail-closed on a session that NEVER had a sidecar (a completely new session).
-    # An <app>: entry for a session with no projection history is dropped.
-    fresh_key = "dashboard:member-fresh.memory-member-fresh-1"
-    injected = {"other-app:tool": {"name": "other-app:tool", "command": "x"}}
-    filtered = tools.check_and_filter_projection(fresh_key, injected)
-
-    assert "other-app:tool" not in filtered, (
-        "an <app>: entry for a session with no sidecar must be dropped (fail-closed); "
-        "the session never had a projection, so check_and_filter_projection rejects it"
+    monkeypatch.setattr(
+        setup,
+        "mirror_for",
+        lambda b: SimpleNamespace(session_projection=lambda *a, **k: projection),
     )
+    monkeypatch.setattr(setup, "injection_server_names", lambda *a, **k: frozenset())
+    monkeypatch.setattr(setup, "pooled_session_servers", lambda *a, **k: [])
+    monkeypatch.setattr(setup, "_ref_spec_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(setup_owner, "with_ipc_pickups", lambda servers, **k: servers)
+    rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=ACP_BACKEND_CLAUDE)
+
+    async def _own(stubs, key):
+        return stubs, "tok"
+
+    monkeypatch.setattr(rt, "_own_stub_session", _own)
+    out = asyncio.run(
+        rt._mirrored_session_mcp(
+            "kirocrew-mate-conductor", work_dir=str(tmp_path), session_key=KEY, channel_id="c"
+        )
+    )
+    assert out is not None and f"{APP}:team" in [e["name"] for e in out.servers]
+
+
+def test_no_async_function_in_the_bot_chat_path_reads_disk_on_the_loop():
+    """Every async function on the Bot-chat app path reaches the disk-reading helpers
+    (preview, config, installed apps) only through a worker thread. Call one of them
+    directly in an ``async def`` there and this lists it."""
+    import ast
+    import inspect
+
+    from kiro_crew import bot_chat_app_tools, bot_chat_ending_fence
+    from kiro_crew.acp import runtime_session_setup
+    from kiro_crew.apps import session_consent
+
+    blocking = {"preview_on", "load", "list_apps", "get_app", "bot_servers", "_app_reaches"}
+    found = []
+    for module in (
+        bot_chat_app_tools,
+        bot_chat_ending_fence,
+        runtime_session_setup,
+        session_consent,
+    ):
+        for fn in ast.walk(ast.parse(inspect.getsource(module))):
+            if not isinstance(fn, ast.AsyncFunctionDef):
+                continue
+            for call in ast.walk(fn):
+                if isinstance(call, ast.Call):
+                    f = call.func
+                    name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+                    if name in blocking:
+                        found.append(f"{module.__name__}.{fn.name}:{call.lineno} {name}")
+    assert found == []

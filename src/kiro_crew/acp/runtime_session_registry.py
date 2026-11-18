@@ -23,7 +23,9 @@ through the runtime it holds rather than through a self parameter.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -52,6 +54,41 @@ logger = logging.getLogger("kiro_crew.acp.runtime")
 _MCP_PROGRESS_NAME_CAP = 8
 _MCP_PROGRESS_ERROR_CAP = 120
 _MCP_PROGRESS_NAME_LEN_CAP = 64
+
+#: Pattern an RPC error ``message`` or ``data`` field matches when the host reports
+#: that it does not hold the requested session.  Matching is case-insensitive.
+#: Only this answer marks the session as positively absent; any other RPC error
+#: (including ``"Internal error"`` with unrelated detail) does NOT confirm closure.
+#:
+#: Each host words it differently (recorded in
+#: ``test/fixtures/acp_frames/<harness>/session-evict-live.jsonl``):
+#:   - kiro-cli: ``data: "Session not found"``
+#:   - KAS: ``message: "Session '<sid>' not found"``
+#:   - codex-acp: ``data: {"details": "Session <sid> not found"}``
+_RPC_SESSION_ABSENT_RE = re.compile(
+    r"\bsession(?:\s+(?:'[^']*'|\"[^\"]*\"|[\w.:-]+))?\s+not found\b",
+    re.IGNORECASE,
+)
+
+
+def _rpc_error_is_session_absent(rpc_error: object) -> bool:
+    """True when *rpc_error* positively identifies the session as absent on the host.
+
+    Only returns True for recognised ``session not found`` answers.  An internal
+    error, a timeout or any unclassified failure returns False so the caller
+    retains a retry handle rather than silently dropping it.
+    """
+    if not isinstance(rpc_error, dict):
+        return False
+    # Check both `message` and `data`; codex nests the text inside a `data` dict.
+    parts: list[str] = []
+    for field in ("message", "data"):
+        value = rpc_error.get(field)
+        if isinstance(value, dict):
+            parts.extend(str(v) for v in value.values() if isinstance(v, str))
+        elif value:
+            parts.append(str(value))
+    return any(_RPC_SESSION_ABSENT_RE.search(part) for part in parts)
 
 
 def _strip_unprintable(text: str) -> str:
@@ -230,6 +267,15 @@ async def terminate_session(
         await self.evict_session(session_id)
         return
     try:
+        if self._dead:
+            # A dead transport says nothing about the child: a stdin-stall death
+            # leaves it running, and a detached descendant can outlive the root.
+            # The same rule as ``evict_session``: confirmed only when the process
+            # exited and the whole tree is confirmed dead; otherwise the close
+            # stays recorded as unconfirmed for ``teardown_confirmed``.
+            _exited = _root_exited(self._process)
+            if not (_exited and await _tree_confirmed_dead_now(self)):
+                self._unconfirmed_teardowns.add(session_id)
         if not self._dead and self._process is not None:
             policy = self._harness.teardown
             unclaimed = session_id in self._unclaimed_new_sessions
@@ -308,7 +354,35 @@ def keep_record_on_teardown(self: AcpRuntime, session_id: str) -> _RecordKeeping
     return _RecordKeepingScope(self, session_id)
 
 
-async def evict_session(self: AcpRuntime, session_id: str) -> None:
+def _root_exited(process: Any) -> bool:
+    """Whether the root process is known to have exited: none is held, or it has a
+    reaped return code. A process object that cannot say (no ``returncode``) is not
+    known to have exited, so a close judged on it stays unconfirmed."""
+    return process is None or getattr(process, "returncode", None) is not None
+
+
+async def _tree_confirmed_dead_now(runtime: AcpRuntime) -> bool:
+    """Whether *runtime*'s whole tree is confirmed dead, re-checking what its kill left.
+
+    A kill that left survivors wrote ``_unreaped_pids``; once every one of them is
+    gone (the orphan sweep reaped it, or it exited), the tree is confirmed dead from
+    then on. With no PID recorded nothing new can be shown, and the verdict stands.
+    """
+    if getattr(runtime, "process_tree_confirmed_dead", False) is True:
+        return True
+    pids = tuple(getattr(runtime, "_unreaped_pids", ()) or ())
+    if not pids:
+        return False
+    from kiro_crew.session_pid_tracking import _pid_gone_or_unmanaged
+
+    if await asyncio.to_thread(lambda: all(_pid_gone_or_unmanaged(p) for p in pids)):
+        runtime._process_tree_confirmed_dead = True
+        runtime._unreaped_pids = ()
+        return True
+    return False
+
+
+async def evict_session(self: AcpRuntime, session_id: str) -> bool:
     """Make the host drop a RESIDENT session while keeping its stored record.
 
     The standard ``session/close`` as a bounded request, then the local
@@ -325,15 +399,127 @@ async def evict_session(self: AcpRuntime, session_id: str) -> None:
     hold) is the state this call was reaching for. The local unregister always
     runs, so the reader loop stops routing to the departing queue even when the
     request could not be delivered.
+
+    Returns ``True`` when ``session/close`` was acknowledged by the host, when
+    the host rejects the id (it does not hold the session), or when the
+    runtime's transport died AND the child process has actually exited
+    (the resident copy is gone regardless).
+    Returns ``False`` when the request timed out, failed with an unknown
+    error, or when only the transport died while the child process is still
+    running (stdin-stall death): the session may still be resident; callers
+    that need a confirmed teardown should treat ``False`` as unconfirmed.
     """
+    from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead as _AcpRuntimeDead
+    from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError as _AcpRuntimeError
+    from kiro_crew.acp.transport_errors import AcpError as _AcpError
+
+    # When the transport is already dead, decide up-front whether the child has
+    # actually exited.  A stdin-stall death marks ``_dead`` while the process is
+    # still running; in that case the session may still be resident, so we start
+    # unconfirmed and return False.  When the process has exited (or there is no
+    # process object) AND the whole process tree is confirmed dead, the resident
+    # copy is gone regardless of transport state, so we start confirmed and skip
+    # the wire request.  Requiring process_tree_confirmed_dead prevents a
+    # detached app-server descendant (one that survived the KAS parent's exit)
+    # from being misreported as stopped.
+    if self._dead:
+        _proc = self._process
+        _process_exited = _root_exited(_proc)
+        if _process_exited and await _tree_confirmed_dead_now(self):
+            confirmed = True
+            logger.debug(
+                "session/close for %s skipped: runtime is dead, process exited, "
+                "and process tree confirmed dead; session is gone",
+                session_id,
+            )
+        else:
+            confirmed = False
+            self._unconfirmed_teardowns.add(session_id)
+            logger.debug(
+                "session/close for %s skipped: transport is dead but process tree "
+                "not fully confirmed dead (process_running=%s, tree_confirmed=%s); "
+                "session may still be resident — retaining unconfirmed state",
+                session_id,
+                not _process_exited,
+                self.process_tree_confirmed_dead,
+            )
+    else:
+        confirmed = True
     try:
         if not self._dead and self._process is not None:
             self._unconfirmed_teardowns.add(session_id)
+            confirmed = False  # Assume unconfirmed until the host responds.
             try:
                 await self._send_and_await(
                     METHOD_SESSION_CLOSE, {"sessionId": session_id}, timeout=_TERMINATE_TIMEOUT
                 )
                 self._unconfirmed_teardowns.discard(session_id)
+                confirmed = True
+            except _AcpError as exc:
+                # Host answered with a JSON-RPC error.  It does not hold this id,
+                # so the session is already freed — count as confirmed.
+                if getattr(exc, "code", None) is not None:
+                    logger.debug(
+                        "session/close for %s rejected by host (code %s); session already freed",
+                        session_id,
+                        exc.code,
+                    )
+                    confirmed = True
+                else:
+                    logger.debug(
+                        "session/close failed for %s (AcpError, no code); proceeding with local unregister",
+                        session_id,
+                        exc_info=True,
+                    )
+            except _AcpRuntimeDead:
+                # Only confirm when the process has actually exited (returncode set
+                # or no process object) AND the whole process tree is confirmed
+                # dead.  A stdin-stall death marks the transport dead while the
+                # child is still running; a detached app-server descendant may
+                # survive even after the KAS parent exits.  In either case the
+                # session may still be resident, so we return False and keep the
+                # retry handle.
+                _proc = self._process
+                _process_exited = _root_exited(_proc)
+                if _process_exited and await _tree_confirmed_dead_now(self):
+                    logger.debug(
+                        "session/close for %s: runtime died mid-request, process exited "
+                        "and process tree confirmed dead; session is gone",
+                        session_id,
+                    )
+                    confirmed = True
+                else:
+                    logger.debug(
+                        "session/close for %s: runtime died mid-request but process tree "
+                        "not fully confirmed dead (process_running=%s, tree_confirmed=%s); "
+                        "session may still be resident — retaining unconfirmed state",
+                        session_id,
+                        not _process_exited,
+                        self.process_tree_confirmed_dead,
+                    )
+            except _AcpRuntimeError as exc:
+                # _runtime_rpc_exception raises AcpRuntimeError (not a subclass of
+                # AcpError) when the host answers with a JSON-RPC error frame.
+                # Only confirm when the rpc_error positively identifies the session
+                # as absent: the host says "Session not found" (or equivalent).
+                # An internal-error or other failure does NOT confirm: the session
+                # may still be resident, so keep the unconfirmed record and return
+                # False so callers retain a retry handle.
+                if exc.rpc_error is not None and _rpc_error_is_session_absent(exc.rpc_error):
+                    logger.debug(
+                        "session/close for %s rejected by host (rpc_error: session absent); session already freed",
+                        session_id,
+                    )
+                    self._unconfirmed_teardowns.discard(session_id)
+                    confirmed = True
+                else:
+                    logger.debug(
+                        "session/close failed for %s (AcpRuntimeError, rpc_error=%r); "
+                        "retaining unconfirmed state — session may still be resident",
+                        session_id,
+                        exc.rpc_error,
+                        exc_info=True,
+                    )
             except Exception:
                 logger.debug(
                     "session/close failed for %s (runtime dead/slow); proceeding with local unregister",
@@ -347,6 +533,7 @@ async def evict_session(self: AcpRuntime, session_id: str) -> None:
         harness_state = self._session_harness_states.pop(session_id, None)
         if harness_state is not None:
             await self._harness.end_session(harness_state)
+    return confirmed
 
 
 def can_release(self: AcpRuntime) -> bool:

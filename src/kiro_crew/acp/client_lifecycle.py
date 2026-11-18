@@ -25,7 +25,7 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_spawn_start_token``, ``_spawn_work_dir``, ``_spec_denied_tools``,
 ``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_write_cwd``,
 ``_spec_zero_tools``, ``_stderr_lines``, ``_stderr_task``, ``_stdin_stalled``,
-``_windows_tree_cleanup_failed``.
+``_unreaped_pids``, ``_windows_tree_cleanup_failed``.
 
 Instance fields read: ``_entitlement_probe_inflight``, ``_mcp_gateway_socket``,
 ``_native_skill_projection``, ``_sandbox_hidden_dirs``, ``_sandbox_mode``,
@@ -709,6 +709,7 @@ def _reset_state(self: AcpClient) -> None:
     # unreadable PID is not enough to reclaim its working directory.
     root_confirmed_dead = bool(self._process and self._process.returncode is not None)
     saved_pid = None if platform_compat.IS_WINDOWS else self._pid
+    had_process = self._process is not None or saved_pid is not None
     saved_start_token = self._spawn_start_token
     saved_child_pids = self._child_pids
     self._process = None
@@ -839,7 +840,15 @@ def _reset_state(self: AcpClient) -> None:
                 saved_pid,
             )
     self._child_pids = {}
-    self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+    # A reset with no process behind it (already reaped by an earlier reset) keeps
+    # the verdict that reset wrote, so a tree confirmed dead is not re-read as
+    # unconfirmed and an unconfirmed one is not read as dead.
+    if had_process:
+        self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+        # What a later Bot-chat close retry re-checks (``TreeSurvivors``).
+        self._unreaped_pids = tuple(survivors) + (
+            (saved_pid,) if saved_pid is not None and not root_confirmed_dead else ()
+        )
 
 
 async def _classify_failed_start(self: AcpClient, classify: Callable[[], Awaitable[_T]]) -> _T:
@@ -976,7 +985,8 @@ async def _registration_throttle_line(self: AcpClient) -> str | None:
 
 async def shutdown(self: AcpClient) -> None:
     """Gracefully stop the ACP process."""
-    self._process_tree_confirmed_dead = False
+    if self._process is not None:
+        self._process_tree_confirmed_dead = False
     # Tear down an in-flight entitlement probe first: its throwaway client
     # spawned its OWN kiro-cli (and whatever MCP servers that started), and
     # nothing else reaps it -- `_kill_process` below kills only THIS session's

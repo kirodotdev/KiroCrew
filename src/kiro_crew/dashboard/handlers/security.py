@@ -940,6 +940,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.security_trusted_apps import (  # noqa: F401
         _TRUST_SETTING_NAMES,
         TrustSettingOverlayOwned,
+        _apply_allow_all,
+        _blanket_fence_apps,
         _mutate_agent_config,
         _overlay_owned_trust_settings,
         _preflight_agent_config_mutable,

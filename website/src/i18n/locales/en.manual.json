@@ -5498,8 +5498,6 @@
       "grants_reconsent_bots": "Bot access: what the app may do with the bots you give it.",
       "bots_title": "Bots this app can reach",
       "bots_scope_read": "See the bots you tick: name, description, busy or idle, goals and progress. Never their chats, briefings or rules.",
-      "bots_scope_tools": "Lets a bot you tick for this app use its tools in its own chat. Other bots don't change.",
-      "bots_scope_tools_preview_off": "Before you turn on <preview>App tools in bot chats</preview> in Feature previews, the ticked bots won't get this app's tools.",
       "bots_scope_wake": "Wake a bot you tick with a fixed note that names this app. The app cannot write what the bot reads.",
       "bots_pick_hint": "The app reaches only the bots you tick here.",
       "bots_none": "You have no bots yet.",
@@ -5545,7 +5543,9 @@
         "installed_needs_newer_host": "The installed version of {{name}} needs a newer {{productName}}. Update {{productName}}; your data is unchanged."
       },
       "grants_reconsent_composer_actions": "Composer buttons: lets the app add these buttons to the composer's + menu. A click inserts the app's text into your draft; the app can't see the draft or send it.",
-      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open."
+      "grants_reconsent_selection_actions": "Selected-text actions: lets the app's items be handed text you select in chat replies, and offer it back for Copy or Open.",
+      "bots_scope_tools": "Lets a bot you tick for this app use its tools in its own chat. Other bots don't change.",
+      "bots_scope_tools_preview_off": "Off until you turn on <preview>App tools in bot chats</preview>."
     },
     "appsPage": {
       "all_apps": "All apps",
@@ -10363,7 +10363,8 @@
           "allow_all_confirm_body": "Allowing every third-party app lets any app you install run its own code inside {{productName}}, with the same access {{productName}} has — your files, your saved credentials, and the internet. Trusting one app at a time is safer.",
           "allow_all_confirm_ack": "I understand every third-party app I install will be able to run its own code with {{productName}}'s access.",
           "ineffective_label": "Saved but not working",
-          "ineffective_description": "These names were saved as trusted, but {{productName}} does not accept them, so the apps are still blocked. Remove them to tidy the list."
+          "ineffective_description": "These names were saved as trusted, but {{productName}} does not accept them, so the apps are still blocked. Remove them to tidy the list.",
+          "bot_chats_not_stopped": "{{message}} Bot chats that could not be stopped: {{slugs}}."
         },
         "trustedRegistries": {
           "change_failed": "That change did not take effect: {{detail}}",
@@ -11205,9 +11206,6 @@
         "visual_refresh": "Visual refresh",
         "visual_refresh_desc": "Turns on the in-progress restyle of the dashboard. Nothing is restyled yet: pieces appear as they land, and may look unfinished or change between updates. Turn it off to go back to the current look.",
         "visual_refresh_desc_summary": "A new look for the dashboard. Nothing changes yet.",
-        "bot_chat_app_tools": "App tools in bot chats",
-        "bot_chat_app_tools_desc": "An app that offers tools for bot chats, and whose bot tools permission you approved, adds them to the chat of each bot you tick on the app's page. Use the \"Bot access\" section on that app's page to tick a bot. Untick the bot or turn the app off, and that chat starts a fresh conversation without them on its next turn. Turned off, bot chats keep only the built-in tools.",
-        "bot_chat_app_tools_desc_summary": "Bots get an app's tools in their own chat only after you tick them on that app's page. Other bots don't change.",
         "worker_grill": "Quick worker check before a hard choice",
         "worker_grill_desc": "When a conductor meets a choice with two paths and a wrong pick is hard to undo, it offers to let two or three workers talk it through first, instead of a 45-minute debate. They check the facts themselves and finish with a short brief: the answer, why, and what they picked for you. Not happy with it? Start another one.",
         "worker_grill_desc_summary": "Two or three workers test a high-stakes choice and hand you a short brief.",
@@ -11228,7 +11226,10 @@
         "remote_dispatch_desc_summary": "Runs conductor mode tasks on connected machines.",
         "remote_dispatch_save_failed": "Could not save remote dispatch. Try again.",
         "remote_dispatch_load_failed": "Could not read the remote dispatch setting.",
-        "remote_dispatch_connect": "Connect machines in <0>Settings › Remote Crew</0>."
+        "remote_dispatch_connect": "Connect machines in <0>Settings › Remote Crew</0>.",
+        "bot_chat_app_tools": "App tools in bot chats",
+        "bot_chat_app_tools_desc": "To stop one bot, untick it on the app's page.",
+        "bot_chat_app_tools_desc_summary": "Lets apps you allow add their tools to a bot's chat. The bot still asks before using them."
       },
       "kasBundleCard": {
         "installed": "Built-in engine {{version}}",
@@ -11466,9 +11467,7 @@
     },
     "secrets": {
       "managed_title": "Used automatically by {{productName}}",
-      "managed_description": "Credentials {{productName}} recognizes and uses automatically. Add or rotate their values here.",
       "gerrit_http_credential_label": "Gerrit HTTP credential",
-      "gerrit_http_credential_description": "Authenticates Gerrit change lookups for one configured host. Enter it as username:HTTP password, generated under that server’s HTTP Credentials settings.",
       "gerrit_global_unused_multi_host": "Not used by Gerrit while multiple hosts are configured. Set each host’s credential above, or delete this entry.",
       "gerrit_global_unused_host_credential": "Not used because the host-specific Gerrit credential takes precedence. Delete this entry if you no longer need the fallback.",
       "jira_api_token_label": "Jira API token",
@@ -11476,18 +11475,12 @@
       "jira_global_unused_multi_host": "Not used by Jira while multiple hosts are configured. Set each host’s credential above, or delete this entry.",
       "jira_global_unused_host_token": "Not used because the host-specific Jira credential takes precedence. Delete this entry if you no longer need the fallback.",
       "jira_host_token_label": "Jira host API token",
-      "jira_host_token_description": "Authenticates Jira issue lookups for one configured host.",
       "wakatime_api_key_label": "WakaTime API key",
       "wakatime_api_key_description": "Authenticates coding-activity sync when WakaTime is enabled.",
       "custom_title": "Custom secrets",
-      "custom_description": "Encrypted keys for MCP servers and .env settings. Reference one as secret://YOUR_KEY; the value is never shown in chat.",
-      "custom_authorize": "To let an agent in a member chat call one approved API with a secret, grant the agent {{server}}, then run the command below in a shell on the computer running the Crew.",
-      "custom_empty": "No custom secrets stored yet. Add one to reference it from an MCP server as secret://YOUR_KEY.",
       "managed_config_error": "Some automatic credentials are hidden because $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json) could not be read.",
       "wakatime_unused_hint": "Not used while WakaTime is disabled. Enable WakaTime or delete this entry.",
       "managed_name_hint": "Saving here updates {{name}} under Used automatically by {{productName}}.",
-      "managed_unconfigured_hint": "To use WakaTime or Jira automatically, enable WakaTime or add a Jira host in $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json).",
-      "managed_setup_guide": "Open the secrets setup guide",
       "delete_managed_confirm": "Permanently delete “{{name}}”? The current value cannot be recovered.",
       "delete_managed_name": "Delete {{name}}",
       "save_managed_name": "Save {{name}}",
@@ -11499,7 +11492,6 @@
       "load_error": "Could not load secrets: {{error}}",
       "wakatime_oauth_tokens_description": "Your WakaTime sign-in, kept by {{productName}}. Managed in the WakaTime panel.",
       "wakatime_oauth_tokens_manage": "Manage in WakaTime",
-      "connections_client_secret_description": "Client secret of a Connections OAuth app. Managed under Settings → Connections.",
       "connections_client_secret_manage": "Manage in Connections"
     },
     "tabs": {

@@ -71,6 +71,10 @@ export const PREVIEW_SESSION_ENVIRONMENTS = `${PREVIEW_FLAG_PREFIX}session-envir
  */
 export const PREVIEW_CONNECTED_COMPUTERS = `${PREVIEW_FLAG_PREFIX}connected-computers`
 
+/** App tools in a Bot's chat (`bot_chat_app_tools`): lets a ticked Bot use an
+ *  app's servers in its own chat. Gateway-side toggle; per-app tick on the app page. */
+export const PREVIEW_BOT_CHAT_APP_TOOLS = `${PREVIEW_FLAG_PREFIX}bot-chat-app-tools`
+
 /** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 
@@ -259,16 +263,6 @@ export const PREVIEW_WIDGETS = `${PREVIEW_FLAG_PREFIX}widgets`
 export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
 
 /**
- * App tools in a Bot's own chat: an app that offers MCP servers in its manifest's
- * `contributes.botChatServers` and holds the owner-approved `tools` Bot scope
- * (`permissions.bots`) has them mounted on the chat of every Bot the owner ticked
- * for it (`kiro_crew.bot_chat_app_tools`). Server-only: the gateway reads
- * `dashboard.feature_previews.bot_chat_app_tools` at each session start. Default
- * OFF, and OFF is every Bot chat with the platform tools only, as before.
- */
-export const PREVIEW_BOT_CHAT_APP_TOOLS = `${PREVIEW_FLAG_PREFIX}bot-chat-app-tools`
-
-/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -277,6 +271,7 @@ export const PREVIEW_BOT_CHAT_APP_TOOLS = `${PREVIEW_FLAG_PREFIX}bot-chat-app-to
  * {@link PREVIEW_INSTANCE_SESSIONS} is left out: the gateway never keeps it.
  */
 export const PREVIEW_FLAGS: readonly string[] = [
+  PREVIEW_BOT_CHAT_APP_TOOLS,
   PREVIEW_CONNECTED_COMPUTERS,
   PREVIEW_WEBHOOKS,
   PREVIEW_ARTIFACT_DEPLOY,
@@ -294,7 +289,6 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,
   PREVIEW_WIDGETS,
-  PREVIEW_BOT_CHAT_APP_TOOLS,
 ]
 
 /**
