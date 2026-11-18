@@ -17,9 +17,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from instances_helpers import _FakeTunnel, _patch_port_probe
 
 from kiro_crew.testing.wait import await_until, finished
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 # ── SshTunnelManager (mocked) ─────────────────────────────────────────────────
 

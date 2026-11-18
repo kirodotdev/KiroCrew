@@ -8,9 +8,13 @@ builtins, and must not write one audit row per poll.
 
 from __future__ import annotations
 
+import errno
 import inspect
 import json
+import os
 import sys
+import urllib.error
+import urllib.parse
 from typing import Any
 
 import pytest
@@ -23,6 +27,37 @@ from kiro_crew.apps.manager import (
 )
 
 APP = "off-contract-app"
+_PORT = 9301  # the tracked backend's port; nothing serves it
+
+
+@pytest.fixture(autouse=True)
+def _refused_health_probe(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse the health probe's loopback connect at once, as a closed port does.
+
+    The tracked record names ``_PORT`` and nothing serves it. Linux refuses that in
+    under a millisecond, Windows retries the SYN for about 2 s. Only the opener's
+    ``open`` for that port is replaced, so the probe and ``loopback_urlopen`` still
+    run and classify the same ``URLError`` a refused connect raises.
+    """
+    from kiro_crew import loopback_http
+
+    build = loopback_http.build_loopback_opener
+
+    def _build() -> Any:
+        opener = build()
+        real_open = opener.open
+
+        def _open(req: Any, *args: Any, **kwargs: Any) -> Any:
+            if urllib.parse.urlsplit(str(getattr(req, "full_url", req))).port == _PORT:
+                raise urllib.error.URLError(
+                    ConnectionRefusedError(errno.ECONNREFUSED, os.strerror(errno.ECONNREFUSED))
+                )
+            return real_open(req, *args, **kwargs)
+
+        opener.open = _open
+        return opener
+
+    _floor_monkeypatch.setattr(loopback_http, "build_loopback_opener", _build)
 
 
 def _install(tmp_path: Any, monkeypatch: pytest.MonkeyPatch, *, name: str = APP) -> None:
@@ -132,7 +167,7 @@ def _tracked(monkeypatch: pytest.MonkeyPatch, name: str = APP, *, proc: Any = ..
     )
     ap = AppProcess(
         app_name=name,
-        port=9301,
+        port=_PORT,
         healthy=True,
         mcp_healthy=True,
         proc=_LiveProc() if proc is ... else proc,

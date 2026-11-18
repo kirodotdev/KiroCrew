@@ -15,11 +15,14 @@ import json
 from pathlib import Path
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 
 from kiro_crew.dashboard import handlers_instances as handlers
 from kiro_crew.instances.registry import Instance, InstancesRegistry
 from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState, TunnelStatus
 from kiro_crew.instances.validation import SshValidationError, UnsupportedConnectionMethodError
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 _TASK = "0123456789abcdef0123456789abcdef"
 
