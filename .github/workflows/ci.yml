@@ -1765,7 +1765,6 @@ jobs:
           MEM_SAMPLER=$!
           trap 'kill "$MEM_SAMPLER" 2>/dev/null || true' EXIT
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress")
-          COMMON=(-q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv")
           # Reduced and leaf arms as in backend-test: subset lists reach pytest
           # as --file-shard-targets=PATH, never as arguments; the changed leaf
           # files run unsharded on every job, the corpus gates sharded once.
@@ -1792,25 +1791,27 @@ jobs:
             if [ "${#GATES[@]}" -gt 0 ]; then
               printf '%s\n' ${GATES[@]+"${GATES[@]}"} > "$RUNNER_TEMP/leaf-gates.txt"
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
-              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards ${COMMON[@]+"${COMMON[@]}"} \
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
                 --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
                 --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"
               echo "::endgroup::"
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
-              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} ${COMMON[@]+"${COMMON[@]}"} ${CHANGED[@]+"${CHANGED[@]}"}
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" ${CHANGED[@]+"${CHANGED[@]}"}
               echo "::endgroup::"
             done
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards ${COMMON[@]+"${COMMON[@]}"} \
+            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --file-shard-targets="$TARGETS_FILE"
             exit 0
           fi
-          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards ${COMMON[@]+"${COMMON[@]}"} \
+          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
+            --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
+            -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             --file-shard-pins scripts/ci_file_shard_pins_windows.txt
         # Ordinary shards plus backend-test-ipv6 retain every Windows test.

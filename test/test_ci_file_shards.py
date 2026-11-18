@@ -816,7 +816,12 @@ class TestFileShards(unittest.TestCase):
             if name not in ("backend-test", "backend-test-windows"):
                 self.assertNotIn("ci_file_shards", json.dumps(job))
 
-    def run_windows_scope(self, selector="printf 'test/test_a.py\\n'", **env):
+    def run_windows_scope(
+        self,
+        selector="printf 'test/test_a.py\\n'",
+        timeout=_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
+        **env,
+    ):
         """Execute backend-test-windows' "Select test scope" step; return (reduced, leaf)."""
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         step = next(
@@ -851,7 +856,7 @@ class TestFileShards(unittest.TestCase):
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS,
+            timeout=timeout,
             env={
                 "PATH": os.environ.get("PATH", ""),
                 "GITHUB_OUTPUT": str(out),
