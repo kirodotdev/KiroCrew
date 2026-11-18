@@ -2672,7 +2672,16 @@ and the drain keeps waiting, bounded by `_MCP_DRAIN_NO_REPORT_CEILING`. Once a
 report has been seen it allows up to `_MCP_DRAIN_DURATION` more and exits
 after `_MCP_DRAIN_IDLE_EXIT` of silence, so warm sessions (whose registration
 frames were staged during `session/new`) arm immediately and pay no extra
-latency. A session with no MCP servers at all is the one case that pays the
+latency. The session's MCP report (`McpSessionReport`) arms the shortcut too:
+once no server it declares is still starting (`McpSessionReport.still_starting`),
+whether a `_kiro.dev/mcp/*` frame or a `_kiro/mcp/status` snapshot carried the
+report. That is the way a KAS session normally arms it, because KAS reports
+readiness in `_kiro/mcp/status` snapshots; without it every KAS session whose
+agent declares only external servers would wait out the whole ceiling. A
+declared list cut at its cap skips the check. A mode-switched session gets the
+same check: the switch has already dropped what reported before it was
+requested (`McpSessionReport.forget_reported`). A session with no MCP servers
+at all is the one case that pays the
 full no-report ceiling; a runtime whose agent is KNOWN to be MCP-free — the
 `kirocrew-lite` background runtime, whose config Kiro Crew itself writes with
 an empty `mcpServers` map — opts out via
