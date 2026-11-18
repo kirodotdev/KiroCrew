@@ -273,6 +273,18 @@ def install_app(
         return AppResult(
             ok=False, name=name, error=f"could not clear earlier Bot access for {name!r}: {exc}"
         )
+    # Memory consent an earlier install under this name left behind goes too, before
+    # this one exists; if it cannot be removed, nothing is installed.
+    from kiro_crew.memory_provider.consent import revoke_app
+
+    try:
+        revoke_app(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"could not clear earlier memory consent for {name!r}: {exc}",
+        )
 
     source_repository = _effective_source_repository(source_repository)
     trust_denied = repository_bound_grant_denied(

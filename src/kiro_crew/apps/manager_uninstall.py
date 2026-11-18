@@ -509,6 +509,12 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         remove_granted_bots(name)
     except (OSError, ValueError):
         logger.warning("could not remove an uninstalled app's ticked Bots", exc_info=True)
+    # Its memory egress consent goes too. A grant left by a failure here (the record is
+    # read-only in a sandbox) makes the next install under this name refuse until the
+    # grant is removed, so it never reaches another app.
+    from kiro_crew.memory_provider.consent import revoke_app_soft
+
+    revoke_app_soft(name)
     refresh_app_config_keys()
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
     from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
