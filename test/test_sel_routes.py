@@ -159,6 +159,53 @@ async def test_the_operation_is_kept_under_the_apps_own_namespace(rec, op) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("op", "stored"),
+    [
+        ("Publish Doc", "Publish_Doc"),
+        ("a\nb\x00c\x1b[31md", "a_b_c__31md"),
+        ("x" * 300, "x" * 64),
+        ("", "unnamed"),
+    ],
+)
+async def test_the_operation_is_normalized_and_the_row_is_kept(rec, op, stored) -> None:
+    body = {"method": "log_api_access", "kwargs": {"operation": op, "outcome": "ok"}}
+    async with _client() as client:
+        assert await _post(client, _A, _tok(_A), body) == 204
+    assert [kw["operation"] for _n, kw in rec.app_rows()] == [f"{_A}.{stored}"]
+
+
+_TOKEN_A = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"  # 40 characters
+_TOKEN_B = "Zy9Xw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0FeDcBaAbCd"  # 40 characters
+_SECRET_OPERATIONS = [
+    ("https://user:pa55word@host.example/x", "pa55word"),
+    ("curl -u user:hunter2 host.example", "hunter2"),
+    (f"Authorization: Bearer {_TOKEN_A}", _TOKEN_A),
+    (f"https://h/x?access_token={_TOKEN_B}", _TOKEN_B),
+]
+
+
+def no_part_of(secret: str, stored: str) -> bool:
+    """True when no 5-character run of *secret* appears in *stored*."""
+    return not any(secret[i : i + 5] in stored for i in range(len(secret) - 4))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("op", "secret"), _SECRET_OPERATIONS)
+async def test_a_credential_in_the_operation_is_redacted_before_it_is_normalized(
+    rec, op, secret
+) -> None:
+    """Normalizing first would strip the delimiters the redactor reads."""
+    body = {"method": "log_api_access", "kwargs": {"operation": op, "outcome": "ok"}}
+    async with _client() as client:
+        assert await _post(client, _A, _tok(_A), body) == 204
+    (row,) = rec.app_rows()
+    stored = row[1]["operation"]
+    assert no_part_of(secret, stored)
+    assert stored.startswith(f"{_A}.") and "\n" not in stored
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stop", ["disable", "uninstall"])
 async def test_a_token_minted_before_disable_or_uninstall_stops_working(rec, stop) -> None:
     token = _tok(_A)
@@ -195,7 +242,6 @@ async def test_a_body_that_names_an_identity_field_is_a_400(rec, key) -> None:
         {"method": "log_api_access", "kwargs": {"operation": "o"}},
         {"method": "log_api_access", "kwargs": {"operation": "o", "outcome": "ok", "critical": 1}},
         ["not", "an", "object"],
-        {"method": "log_api_access", "kwargs": {"operation": "x" * 201, "outcome": "ok"}},
     ],
 )
 async def test_a_malformed_body_is_a_400_and_writes_nothing(rec, body) -> None:

@@ -63,15 +63,14 @@ _SPELLS_THE_FACADE = re.compile(
     rf"security\.{LEAF}\b|security import[^\n]*\b{LEAF}\b|security import \("
 )
 
-#: Names the test trees are known to patch, by the spelling they use: the SEL writer the OAuth
-#: audit events use, the discovered endpoint set, the exempt-host lookups, the operator file
-#: loader, the endpoint approval lookup, the extension memo and audit set, the extension audit
-#: emitter, the Slack manifest memo and the URL redactor. The scan must find all of them, so a
-#: scanner that stops matching goes red instead of passing over nothing.
+#: Names the test trees are known to patch, by the spelling they use: the discovered endpoint
+#: set, the exempt-host lookups, the operator file loader, the endpoint approval lookup, the
+#: extension memo and audit set, the extension audit emitter, the Slack manifest memo and the
+#: URL redactor. The scan must find all of them, so a scanner that stops matching goes red
+#: instead of passing over nothing.
 _KNOWN_SEAMS: dict[str, frozenset[str]] = {
     FACADE: frozenset(
         {
-            "SecurityEventLog",
             "_OAUTH_DISCOVERED_ENDPOINTS",
             "_exempt_exact_hosts",
             "_exfil_exempt_hosts",
