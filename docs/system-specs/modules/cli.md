@@ -1728,7 +1728,7 @@ the Desktop supervisor's log, the `gateway.log` of `_spawn_detached_gateway`),
 and whoever reads the log inside the link's click window can redeem it for a
 dashboard session. That boot prints every URL
 without its query string (`with_token=False`), followed by
-`👻 Sign in:   run kirocrew token for a sign-in link`.
+`Sign in:   run kirocrew token for a sign-in link`.
 
 - The test is stdout's terminal state, not a service marker. `JOURNAL_STREAM`
   and `INVOCATION_ID` pass to every descendant of a unit, a terminal emulator

@@ -172,7 +172,7 @@ class TestReceipt:
             [{"id": f"a{i}", "runtime_note": "pinned-note"} for i in range(3)],
             ["t0", "t1", "t2"],
         )
-        assert "ℹ a0, a1, a2: pinned-note" in result
+        assert "Note: a0, a1, a2: pinned-note" in result
         assert result.count("pinned-note") == 1
 
     def test_no_note_without_the_key(self):

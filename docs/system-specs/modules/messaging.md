@@ -2637,26 +2637,26 @@ message to the dashboard slot instead (`_handle_resumed_busy` →
   there, a teardown requeue its entry, a suspended registration its id, and a
   successor knows none of that; only when it holds nothing does the successor
   answer. The successor's queue carries the id → the ordinary queued
-  confirmation; the successor's transcript carries it → `✅ Delivered to that
+  confirmation; the successor's transcript carries it → `Delivered to that
   session — it was reopened while your message was in flight, and the message
   ran there as its own turn.`; the queue the close ARCHIVED carries the id — read off the
   persistence layer's own witness, `queue_persist_pending` False with the entry
   present, because the close saves the popped slot once and nothing revisits a
-  popped object → `⏳ Queued for that session — it closed while your message
+  popped object → `Queued for that session — it closed while your message
   was in flight; the message runs when the session is next resumed.`; the id
   held only in memory on the handed-to slot (the pending registration, a requeue
   the archive missed, a row appended after the save) → refused with
-  `REFUSED_UNSAVED_CLOSE` (`⏳ That session closed while your message was in
+  `REFUSED_UNSAVED_CLOSE` (`That session closed while your message was in
   flight, and the message had not been saved with it yet. If it does not run once
   the session is reopened, send it again.`); no record carries the id (a
   declined steer's unwound registration, an entry left on the detached object
   while a live successor holds the key, a hard stop's cleared pending list) →
-  refused (`REFUSED_MOVED`, `⏳ That session changed while your message was in
+  refused (`REFUSED_MOVED`, `That session changed while your message was in
   flight …`). The fallback never appends to the detached object, and on an
   unmoved slot it re-runs the admission gate, since a slot that went idle or
   started closing during the RPC can no longer take the text. The queue arm
   itself is bounded: at `MAX_LIVE_QUEUE_ENTRIES` the hand-off refuses before the
-  append (`REFUSED_QUEUE_FULL`, `⏳ That session's queue is full, so this
+  append (`REFUSED_QUEUE_FULL`, `That session's queue is full, so this
   message was NOT added …`) rather than appending past the bound or evicting a
   waiting entry, the shape every producer guarding the live queue takes.
   **A channel steer narrows the running turn's directive provenance.** The
@@ -2735,8 +2735,8 @@ the caller unwinds without the outcome, so no confirmation reaches the closing
 DM. The audience fence recorded before the RPC is not the hand-off's to release:
 it is the audience's record for the turn and the turn's teardown clears it.
 
-Every outcome is confirmed in the DM (`↪️ Steering that session …` /
-`⏳ Queued for that session …`): a dashboard-driven turn's reply reaches the DM,
+Every outcome is confirmed in the DM (`Steering that session …` /
+`Queued for that session …`): a dashboard-driven turn's reply reaches the DM,
 if at all, through the dashboard's own cross-surface leg and not through this
 dispatcher, so a silent hand-off would read as a drop. The refusal (`That session is busy with a turn started elsewhere …`)
 stays for the cases the slot cannot take (`slot_unable_to_take`, fail-closed on

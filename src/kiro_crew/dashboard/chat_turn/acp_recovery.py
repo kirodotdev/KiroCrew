@@ -629,7 +629,7 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
         # drop that instruction.
         slot.append(
             "error",
-            f"❌ {credential_give_up_text(exc)} Then send your message again.",
+            f"Error: {credential_give_up_text(exc)} Then send your message again.",
             "msg msg-err",
         )
     else:

@@ -1754,7 +1754,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 if _status == "blocked"
                 else f"size limit ({MAX_PROMPT_BYTES // 1000}KB)"
             )
-            slot.append("system", f"🔒 Prompt blocked — {label}.", "msg msg-info")
+            slot.append("system", f"Prompt blocked — {label}.", "msg msg-info")
             state.push_slots_update()
             # Append-only the session's log (flag-gated, fail-soft). This gate
             # returns before the normal emit block in _turn_dispatch_gates, so without

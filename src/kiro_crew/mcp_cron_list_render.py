@@ -340,7 +340,7 @@ def _render_cron_list_full(jobs: list[Any]) -> str:
     now = time.time()
     tz_name, local_tz = get_local_tz()
     for j in jobs:
-        status = "✅ active" if j.enabled else "⏸️ paused"
+        status = "active" if j.enabled else "paused"
         sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)
@@ -350,7 +350,7 @@ def _render_cron_list_full(jobs: list[Any]) -> str:
         entry = f"• {san_name} ({status}) [{kind}]\n  ID: {j.id} | {san_sched}{next_line}\n  → {san_msg}"
         if j.last_status == "error" and j.last_error:
             san_err = _sanitize(j.last_error)
-            entry += f"\n  ⚠️ last error: {san_err}"
+            entry += f"\n  Warning: last error: {san_err}"
         elif (
             j.last_status == "ok"
             and (j.script or j.command)
@@ -392,7 +392,7 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
     now = time.time()
     tz_name, local_tz = get_local_tz()
     for j in jobs:
-        status = "✅" if j.enabled else "⏸️"
+        status = "active" if j.enabled else "paused"
         sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)

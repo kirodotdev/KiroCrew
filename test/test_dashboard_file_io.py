@@ -1190,7 +1190,7 @@ class TestSendMessage:
                 mock_rehydrate.assert_called_once_with(state, "chat-1-1712793600")
                 state.notify.assert_called_once()
                 call_args = state.notify.call_args[0]
-                assert call_args[1] == "⏰ test-cron"
+                assert call_args[1] == "test-cron"
                 assert "session closed" in call_args[2]
 
     @pytest.mark.asyncio

@@ -299,7 +299,9 @@ class TestRefusedModelTurn:
     @staticmethod
     def _terminal(slot):
         return [
-            m for m in slot.messages if m.get("role") == "error" and m["content"].startswith("❌")
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and m["content"].startswith("Error:")
         ]
 
     @pytest.mark.asyncio
