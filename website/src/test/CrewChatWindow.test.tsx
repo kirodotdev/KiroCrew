@@ -237,6 +237,94 @@ describe('CrewChatWindow', () => {
     expect(screen.getByTestId('crew-window-dock').style.right).toBe('6px')
   })
 
+  // The local chat opens at the newest message and follows new rows unless the
+  // reader scrolled up; the crew window reads the same way.
+  describe('transcript scroll position', () => {
+    // happy-dom lays nothing out: give the scroller a 400px viewport over
+    // `contentHeight` of rows, and keep the scrollTop it is given.
+    let contentHeight = 2000
+    const scroller = () => screen.getByTestId('crew-window-dock').previousElementSibling as HTMLElement
+    beforeEach(() => {
+      contentHeight = 2000
+      const isScroller = (el: Element) => el.nextElementSibling?.getAttribute('data-testid') === 'crew-window-dock'
+      const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? contentHeight : 0 })
+      const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return isScroller(this) ? 400 : 0 })
+      onTestFinished(() => { scrollHeight.mockRestore(); clientHeight.mockRestore() })
+    })
+    const landReply = async (text: string) => {
+      detail = { ...detail, messages: [...(detail.messages as object[]), { role: 'assistant', content: text, ts: text }] }
+      FakeEventSource.all[FakeEventSource.all.length - 1].emit('chat_message', { slot: 'k1' })
+      await screen.findByText(text, {}, PEER_ROW_WAIT)
+    }
+
+    it('opens at the newest message, not the first', async () => {
+      renderWindow()
+      await screen.findByText('hello', {}, PEER_ROW_WAIT)
+      expect(scroller().scrollTop).toBe(2000)
+    })
+
+    it('follows asynchronous content growth without new messages unless the reader scrolled up', async () => {
+      const observers = new Set<FakeResizeObserver>()
+      class FakeResizeObserver implements ResizeObserver {
+        targets = new Set<Element>()
+        constructor(public cb: ResizeObserverCallback) { observers.add(this) }
+        observe(el: Element) { this.targets.add(el) }
+        unobserve(el: Element) { this.targets.delete(el) }
+        disconnect() { observers.delete(this) }
+      }
+      vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+      const { unmount } = renderWindow()
+      await screen.findByText('hello', {}, PEER_ROW_WAIT)
+      expect(scroller().scrollTop).toBe(2000)
+      const content = scroller().firstElementChild as HTMLElement
+      const growContent = (height: number) => {
+        contentHeight = height
+        // Only notify observers of the transcript content, not the viewport
+        // or composer. No peer frame or React render drives this growth.
+        act(() => {
+          for (const ro of observers) {
+            if (ro.targets.has(content)) ro.cb([{ target: content } as ResizeObserverEntry], ro)
+          }
+        })
+      }
+
+      growContent(2600)
+      expect(scroller().scrollTop).toBe(2600)
+      expect([...observers].filter(ro => ro.targets.has(content))).toHaveLength(1)
+      // A browser clamps the programmatic pin to the bottom, then emits scroll.
+      scroller().scrollTop = contentHeight - scroller().clientHeight
+      fireEvent.scroll(scroller())
+      growContent(3200)
+      expect(scroller().scrollTop).toBe(3200)
+
+      scroller().scrollTop = 300
+      fireEvent.scroll(scroller())
+      growContent(3800)
+      expect(scroller().scrollTop).toBe(300)
+
+      // Returning to the bottom re-enables following later image/diagram growth.
+      scroller().scrollTop = contentHeight - scroller().clientHeight
+      fireEvent.scroll(scroller())
+      growContent(4400)
+      expect(scroller().scrollTop).toBe(4400)
+      unmount()
+      expect([...observers].filter(ro => ro.targets.has(content))).toHaveLength(0)
+    })
+
+    it('follows a new reply at the bottom, and keeps the place of a reader who scrolled up', async () => {
+      renderWindow()
+      await screen.findByText('hello', {}, PEER_ROW_WAIT)
+      contentHeight = 2600
+      await landReply('second reply')
+      expect(scroller().scrollTop).toBe(2600)
+      scroller().scrollTop = 300
+      fireEvent.scroll(scroller())
+      contentHeight = 3200
+      await landReply('third reply')
+      expect(scroller().scrollTop).toBe(300)
+    })
+  })
+
   // A frameless line stands on the notices' glass chip, never bare over the
   // transcript. Until the version read lands, the window is not connected.
   it('shows the offline line on the notices chip while the crew is not connected', async () => {

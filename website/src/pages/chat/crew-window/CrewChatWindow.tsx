@@ -14,7 +14,7 @@
  *  peer has: the proxied reads, the peer's event feed, and the peer routes
  *  every action posts to (see `crewWindowRenderers.tsx` for the rows a hub
  *  must not draw from its own state). */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Server, X } from 'lucide-react'
@@ -68,6 +68,8 @@ interface PeerDetail { title?: string; running?: boolean; messages?: ChatMessage
 const REFETCH_THROTTLE_MS = 300
 /** How often an unmatched (or unreachable) crew's version is re-read. */
 const CAPS_RETRY_MS = 5000
+/** How far above the bottom a reader can be and still count as at the bottom. */
+const FOLLOW_BOTTOM_SLACK_PX = 48
 const NO_MESSAGES: ChatMessage[] = []
 const NO_INSTANCES: never[] = []
 
@@ -222,6 +224,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // scroller's scrollbar gutter, which the dock stops short of: the local
   // chat's own measurement.
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const { dockH, dockGutter, dockRef } = useComposerDockMetrics(scrollerRef)
   const settle = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: slotKeyQ })
@@ -339,6 +342,29 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     () => splitPaneMessages(hydrateQueuedBubbles([], normalizeQueueEntries(detailQ.data?.queue))),
     [detailQ.data?.queue],
   )
+  // Open at the newest message and stay on it as rows land or the dock grows,
+  // as the local chat does, unless the reader has scrolled up from the bottom.
+  const followBottom = useRef(true)
+  const noteScroll = useCallback(() => {
+    const el = scrollerRef.current
+    if (el) followBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_BOTTOM_SLACK_PX
+  }, [])
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (el && followBottom.current) el.scrollTop = el.scrollHeight
+  }, [messages, displayRunning, approval?.request_id, dockH])
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    const content = contentRef.current
+    if (!el || !content || typeof ResizeObserver === 'undefined') return
+    // Images and diagrams can grow without a new transcript render. Observe
+    // the content, not the fixed-height viewport; scrolling does not resize it.
+    const ro = new ResizeObserver(() => {
+      if (followBottom.current) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [])
   const approve = useCallback((approvalId: string, decision: string) => {
     let row: unknown
     try { row = JSON.parse(approvalId) } catch { row = null }
@@ -479,7 +505,8 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </div>
       )}
       <div className="relative flex-1 min-h-0">
-      <div ref={scrollerRef} className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
+      <div ref={scrollerRef} onScroll={noteScroll} className="absolute inset-0 overflow-y-auto pt-3" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
+      <div ref={contentRef} className="flex flex-col gap-1">
         <div className="px-4 flex flex-col gap-3">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
@@ -508,6 +535,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             <div className="text-muted" data-testid="crew-window-approval-elsewhere">{i18nT('pages.chat.crewWindow.approval_elsewhere', { name })}</div>
           )}
         </div>
+      </div>
       </div>
       {/* The composer dock, in the local page's shape (ComposerDockView): a bare
           box floating over the bottom of the scroller, so the transcript passes
