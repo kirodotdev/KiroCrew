@@ -103,6 +103,28 @@ class KasUnavailable(CrewmateHarnessUnavailable):
         )
 
 
+class AcpBackendUnset(CrewmateHarnessUnavailable):
+    """A session would run on KAS only because ``agent.acp_backend`` holds no choice.
+
+    Absent or ``""`` in ``config.json`` is no choice. A KAS session on a host whose
+    operator never picked a harness is refused before any process exists
+    (``lts_boot.refuse_unset_acp_backend``). Same
+    ``code`` as an unstartable pin (H17), so every caller that handles that refusal
+    handles this one.
+    """
+
+    def __init__(self) -> None:
+        self.crew = ""
+        self.stored = ""
+        RuntimeError.__init__(
+            self,
+            f"{HARNESS_UNAVAILABLE_CODE}: agent.acp_backend is not set, so this session "
+            "would start on KAS by default. Pick a harness in Settings, or set "
+            'agent.acp_backend (for example "claude" or "kas") in config.json. '
+            "Nothing runs on another harness in its place.",
+        )
+
+
 #: The two harnesses ``tool_gate.label_for`` answers with their raw id; every
 #: other known harness, Kiro CLI included, takes its name from that one map.
 _LABELS = {"kas": "Kiro Agent", "claude": "Claude Code"}
