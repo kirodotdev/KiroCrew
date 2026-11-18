@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide-react'
+import { Lock, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
@@ -332,12 +332,13 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
     <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')} hint={i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}>
       <div className="text-[12px] text-muted -mt-1 mb-2" data-setting-label={i18nT('pages.settings.notificationsPanel.sources')}>{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio_summary')}</div>
       {sources.map((source, i) => (
-        <SettingsCard key={source} index={i}>
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">
-            {source === 'system' ? <MonitorCog className="lucide-inline" /> : <Blocks className="lucide-inline" />}
-            {source}
-            {source !== 'system' && <span className="text-[10px] font-medium normal-case tracking-normal px-1.5 py-px rounded-full bg-accent-subtle text-accent">{i18nT('pages.settings.notificationsPanel.app')}</span>}
-          </div>
+        <Fragment key={source}>
+        {/* The source names its group, above the box like every group heading. */}
+        <div className="flex items-center gap-1.5 mt-4 mb-2 text-[11px] font-semibold uppercase tracking-[.05em] text-muted">
+          {source}
+          {source !== 'system' && <span className="text-[10px] font-medium normal-case tracking-normal px-1.5 py-px rounded-full bg-accent-subtle text-accent">{i18nT('pages.settings.notificationsPanel.app')}</span>}
+        </div>
+        <SettingsCard index={i}>
           {channels.filter(c => c.source === source).map(c => {
             const muted = !!c.settings.muted
             const override = c.settings.priority
@@ -402,6 +403,7 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
             )
           })}
         </SettingsCard>
+        </Fragment>
       ))}
     </SettingsSection>
   )

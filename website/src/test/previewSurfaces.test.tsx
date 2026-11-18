@@ -520,8 +520,10 @@ describe('Settings > Developer > Feature Previews', () => {
      * hand-off; neither navigates. Its Install button exists only once a status
      * says nothing is installed, which `KasBundleCard.test.tsx` pins.
      */
+    // The KAS card is a plain row of its group box; its own `data-settings-card`
+    // wrapper is the frame, so the walk stays inside the card.
     const kasFrame = () =>
-      container.querySelector('[data-testid="kas-bundle-card"]')?.closest('.animate-rise') ?? null
+      container.querySelector('[data-testid="kas-bundle-card"]')?.closest('[data-settings-card]') ?? null
     const kasButtons = () =>
       Array.from(kasFrame()?.querySelectorAll('button') ?? [])
         .map(nameOf)

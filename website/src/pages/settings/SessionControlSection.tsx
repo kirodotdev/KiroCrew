@@ -66,7 +66,7 @@ export function SessionControlSection() {
       {/* No switch until the value has been read: this one is on by default, so
           a placeholder in either position could show the wrong state. */}
       {cfgQ.data && (
-        <SettingsCard boxed>
+        <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.sessionControlSection.session_control_tools')}
             description={i18nT('pages.settings.sessionControlSection.session_control_tools_desc')}

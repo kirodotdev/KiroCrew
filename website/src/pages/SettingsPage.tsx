@@ -30,7 +30,7 @@ import { PrivacyPanel } from './settings/PrivacyPanel'
 import { SecretsPanelLegacy } from './settings/SecretsPanelLegacy'
 import { useConnectionsUiEnabled, useConnectionsUiPending } from '../hooks/useConnectionsUi'
 import SettingsSearch from './settings/SettingsSearch'
-import { Btn, ContentSkeleton } from '../components/ui'
+import { Btn, CardFrameContext, ContentSkeleton } from '../components/ui'
 import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
 import ErrorNotice from '../components/ErrorNotice'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -351,7 +351,7 @@ export default function SettingsPage() {
       headerRight={<SettingsSearch />}
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
-      {tab => <>
+      {tab => <CardFrameContext.Provider value="grouped">
         <DataHomeOwnerStatusNotice />
         {sharedCrew.isError && !(tab === 'people' && sharedCrewPreview) && (
           <div>
@@ -437,7 +437,7 @@ export default function SettingsPage() {
             <AboutPanel />
           </Suspense>
         )}
-      </>}
+      </CardFrameContext.Provider>}
     </SidePanelLayout>
   )
 }

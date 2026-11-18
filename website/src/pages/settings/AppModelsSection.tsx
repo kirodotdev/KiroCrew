@@ -15,7 +15,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
-import { SettingsCard, SettingsSelect } from '../../components/settings'
+import { SettingsCard, SettingsGroupHeader, SettingsSelect } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import { appDisplayName } from '../../components/appstore/appManifest'
 import type { InstalledApp } from '../../components/appstore/types'
@@ -139,8 +139,7 @@ export function AppModelsSection({ index }: { index?: number }) {
 
   return (
     <div className="mt-8" data-testid="app-models-section">
-      <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.appModels.title')}</h4>
-      <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.appModels.description')}</div>
+      <SettingsGroupHeader title={i18nT('pages.settings.appModels.title')} description={i18nT('pages.settings.appModels.description')} />
       {/* No hand-off: this group mounts inside ChatPanel, whose `localRoleOther` /
           `localBudget` / `localKeepChars` drafts stay mounted while the Model page
           is open, so the agent-chat navigation would discard them. A refused save

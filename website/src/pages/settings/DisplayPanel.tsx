@@ -797,13 +797,17 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               primitive over a skeleton transcript, so it follows the switch
               live and shows what the setting changes before the user leaves
               Settings. */}
-          <SettingsToggle
-            label={i18nT('pages.settings.displayPanel.translucent_panels')}
-            hint={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
-            checked={liquidGlass}
-            onChange={setLiquidGlass}
-          />
-          <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {/* The switch and its preview are one row, so the preview sits inside
+              the row's inset instead of running to the box edges. */}
+          <div>
+            <SettingsToggle
+              label={i18nT('pages.settings.displayPanel.translucent_panels')}
+              hint={i18nT('pages.settings.displayPanel.translucent_panels_desc')}
+              checked={liquidGlass}
+              onChange={setLiquidGlass}
+            />
+            <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          </div>
           {/* The top bar's search box, on by default. Browser-local like the
               switch above, because it is about how much room this window gives
               the top bar: off, the box's centre track goes to the controls on

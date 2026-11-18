@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
+import { SettingsCard, SettingsGroupHeader, SettingsSection, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Btn } from '../../components/ui'
 import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
@@ -612,8 +612,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </div>
 
         <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_background')}</h4>
-        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')}</div>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.role_background')} description={i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')} />
         <SettingsCard index={1}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.background_model')}
@@ -637,10 +636,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </div>
 
         <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.role_subagents')} />
         {/* The memory cost of a pin, at the place the pin is chosen: a pinned
             subagent cannot share its parent chat's runtime. */}
-        <div className="text-[12px] text-muted mb-1" data-testid="subagent-pin-runtime-cost">
+        <div className="text-[12px] text-muted -mt-1 mb-2 px-4 max-w-[720px]" data-testid="subagent-pin-runtime-cost">
           {i18nT('pages.settings.chatPanel.subagent_pin_runtime_cost')}
         </div>
         <SettingsCard index={2}>
@@ -665,11 +664,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
         </div>
 
-        <h4 className="text-base font-semibold text-text-strong mb-2">{i18nT('pages.settings.chatPanel.fallbacks')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.fallbacks')} />
         <KiroHarnessFallbackNote cfg={mcCfg} />
         <div className="mb-8">
-        <h5 className="text-sm font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.throttle_fallback')}</h5>
-        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_tried_when_your_current_model_stays_rate_li')}</div>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.throttle_fallback')} description={i18nT('pages.settings.chatPanel.model_tried_when_your_current_model_stays_rate_li')} size="sm" />
         <SettingsCard index={3}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.fallback_model')}
@@ -685,8 +683,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </div>
 
         <div>
-        <h5 className="text-sm font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</h5>
-        <div className="text-[12px] text-muted mb-1">
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.refusal_fallback')} size="sm" />
+        <div className="text-[12px] text-muted -mt-1 mb-2 px-4 max-w-[720px]">
           {i18nT('pages.settings.chatPanel.refusal_fallback_desc')}{' '}
           {i18nT('pages.settings.chatPanel.refusal_fallback_same_model_note')}
         </div>
@@ -745,7 +743,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       <>
       {/* Same treatment as Model: headings and spacing mark the groups, no boxes. */}
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.power')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.power')} />
         <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.chatPanel.prevent_sleep_while_running')}
@@ -759,7 +757,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.turns')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.turns')} />
         <SettingsCard index={1}>
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.turn_time_limit')}
@@ -793,7 +791,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.context')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.context')} />
         <SettingsCard index={2}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
@@ -860,7 +858,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div>
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.subagents')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.subagents')} />
         <SettingsCard index={3}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.completion_event_truncation')}
@@ -963,6 +961,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'transcript':
           return (
+        <>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_messages')}>
         <SettingsCard>
           <SettingsButtonGroup
             label={i18nT('pages.settings.chatPanel.text_streaming_style')}
@@ -990,11 +990,19 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             onDecrement={() => setChat('messageFontSize', Math.max(MIN_MESSAGE_FONT_SIZE, chatCfg.messageFontSize - 1))}
           />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.minimap_location')} hint={i18nT('pages.settings.chatPanel.minimap_location_desc')} value={chatCfg.minimapSide} options={[{ value: "left", label: i18nT('pages.settings.chatPanel.minimap_side_left') }, { value: "right", label: i18nT('pages.settings.chatPanel.minimap_side_right') }]} onChange={v => setChat('minimapSide', v as ChatConfig['minimapSide'])} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_steps')}>
+        <SettingsCard index={1}>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_thinking_inline')} hint={i18nT('pages.settings.chatPanel.show_intermediate_reasoning_text_between_tool_ca')} checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} hint={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt} onChange={v => setChat('pinLastPrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} hint={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tool_calls_start_expanded')} hint={i18nT('pages.settings.chatPanel.tool_calls_start_expanded_desc')} checked={chatCfg.toolCallsStartExpanded} onChange={v => setChat('toolCallsStartExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.reasoning_starts_expanded')} hint={i18nT('pages.settings.chatPanel.reasoning_starts_expanded_desc')} checked={chatCfg.reasoningStartsExpanded} onChange={v => setChat('reasoningStartsExpanded', v)} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_files_links')}>
+        <SettingsCard index={2}>
           <SettingsSelect label={i18nT('pages.settings.chatPanel.file_change_chips')} hint={i18nT('pages.settings.chatPanel.how_file_diff_chips_appear_below_assistant_messa')} value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={[i18nT('pages.settings.chatPanel.expanded_icon_name_stats'), i18nT('pages.settings.chatPanel.minimal_stats_only_name_on_hover')]} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
           {/* Sits beside File change chips because it governs the same surface —
               how a diff reads in the transcript. Phrased as "plain diffs ON"
@@ -1019,12 +1027,22 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw_summary')} hint={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
           <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} hint={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} draft={linkPatternsDraft} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_replies')}>
+        <SettingsCard index={3}>
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} hint={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} hint={i18nT('pages.settings.chatPanel.response_verbosity_hint')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.answer_only_details_on_request')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.preferred_language')} hint={i18nT('pages.settings.chatPanel.preferred_language_hint')} value={asPreferredLanguage(dashCfg.preferred_language)} options={PREFERRED_LANGUAGE_OPTIONS} optionLabels={preferredLanguageLabels()} onChange={v => setDash({ preferred_language: v })} disabled={dashDisabled} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_context')}>
+        <SettingsCard index={4}>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} hint={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_token_usage')} hint={i18nT('pages.settings.chatPanel.display_used_and_total_tokens_next_to_the_contex')} checked={chatCfg.showContextTokens} onChange={v => setChat('showContextTokens', v)} />
         </SettingsCard>
+        </SettingsSection>
+        </>
           )
 
         case 'sidepanel':
