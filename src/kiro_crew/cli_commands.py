@@ -843,25 +843,25 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         )
     except Exception:  # noqa: BLE001 - the line is informational; the posture above stands
         sends_to = ""
-    lines = [
-        "Local metric recording"
-        + (
-            " (when on, also sent to the metrics destination configured for this machine)"
-            if exports
-            else (
-                " (stays on this machine until telemetry.enabled: true is written)"
-                if egress_host
-                else " (stays on this machine)"
-            )
-        ),
-        "",
-        "  Enabled:     "
-        + (
+    if exports:
+        where = " (when on, also sent to the metrics destination configured for this machine)"
+    elif egress_host:
+        where = " (stays on this machine until telemetry.enabled: true is written)"
+    else:
+        where = " (stays on this machine)"
+    if effective is None:
+        enabled = (
             "unknown (telemetry.enabled is not true or false; a running gateway keeps "
             "recording until it restarts)"
-            if effective is None
-            else ("yes" if effective else "no")
-        ),
+        )
+    elif effective:
+        enabled = "yes"
+    else:
+        enabled = "no"
+    lines = [
+        "Local metric recording" + where,
+        "",
+        "  Enabled:     " + enabled,
         f"  Config:      telemetry.enabled is {'true' if cfg.telemetry.enabled else 'false'}",
     ]
     if sends_to:

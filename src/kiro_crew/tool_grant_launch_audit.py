@@ -102,7 +102,12 @@ def launch_id(entry: Mapping[str, Any], work_dir: str) -> str | None:
         folder = work_dir if os.path.isabs(work_dir or "") else ""
         if isinstance(cwd, str) and cwd:
             cwd = os.path.expanduser(cwd)
-            folder = cwd if os.path.isabs(cwd) else (os.path.join(folder, cwd) if folder else "")
+            if os.path.isabs(cwd):
+                folder = cwd
+            elif folder:
+                folder = os.path.join(folder, cwd)
+            else:
+                folder = ""
         digest = hash_command(command, args)
         if not _folds_folder(command, args, folder):
             return digest
