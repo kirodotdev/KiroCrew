@@ -428,7 +428,12 @@ class FileIndexRegistry:
         flight also returns ``None``. The build runs outside the lock so other
         roots are not blocked behind one large tree.
         """
-        root = os.path.realpath(root)
+        # ``realpath`` stats every component of the root, so a slow or dead mount
+        # would stall the loop. Run it on the request-path probe pool, which
+        # keeps a wedged call off the shared default executor.
+        root = await executors.run_in_cron_pool(
+            os.path.realpath, root, timeout=None, executor=executors.path_probe_executor()
+        )
         async with self._lock:
             idx = self._indexes.get(root)
             if idx is None:
