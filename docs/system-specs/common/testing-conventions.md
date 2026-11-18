@@ -144,7 +144,9 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   `exec_module` (a `@dataclass` module needs it), never under the real name.
   A `sys.modules` eviction restores the entry AND its parent package's attribute in the
   same scope (the rootdir package-attribute floor puts back a `kiro_crew` one a test
-  left changed, and names the test), and a new process-global ships its floor entry.
+  left changed, and names the test), and a new process-global ships its floor entry
+  (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
+  `src/kiro_crew` that no floor resets).
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
@@ -869,7 +871,13 @@ Rules that decide whether one is worth having:
   its write order proves nothing about ranking.
 - **Mark the module `xdist_group`** when the subsystem holds module globals
   (`context._memory_stores` / `_lesson_stores` behind `_stores_lock`), and reset those
-  globals through `monkeypatch`, never raw assignment.
+  globals through `monkeypatch`, never raw assignment. The floor
+  (`conftest_resets._isolate_context_store_caches`) hands every test its own copy of
+  both caches and puts the original back after it, because `ContextBuilder.__init__`
+  makes its `MemoryStore` the process default: without it, a test that builds one (the
+  eval runner, over a temporary directory it deletes) aims every later test's
+  default-store writes at its workspace, and on Windows a change-card history write
+  re-created the deleted `kirocrew_eval_*` directory and failed the temp-residue floor.
 
 ### Refusal tests: assert the refusal, name the rule only at its own bound
 
