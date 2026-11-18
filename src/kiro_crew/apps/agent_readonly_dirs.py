@@ -12,7 +12,9 @@ then fence it from every agent, the same two a core write-protected crew-home le
 * **The file-edit tool gate.** ``security.paths.sensitive_write_path_refusal`` refuses an
   agent tool's write under every declared directory, at both data-home prefixes and a
   relocated home, exactly as it refuses one under a ``_WRITE_PROTECTED_HOME_PATHS`` row.
-  Reads stay open, as for that row.
+  Reads stay open, as for that row. Where an installed app's declaration cannot be
+  read cleanly, the gate refuses writes under that app's whole data directory (both
+  places), and an ``apps/`` it cannot list refuses writes under ``apps/``.
 * **The OS sandbox, in every mode.** The sandbox seals each declared directory read-only
   as it seals a core ``READONLY`` crew-home leaf: a read-only bind on Linux (made first
   when absent, so the seal is never vacuous), a write and link deny on Seatbelt, with every
@@ -116,13 +118,24 @@ def write_protected_home_paths() -> tuple[str, ...]:
 
     The shape of a ``_WRITE_PROTECTED_HOME_PATHS`` row, so the gate anchors and
     re-anchors them (``KIROCREW_HOME``) exactly as it does a core row.
+
+    The shipped built-ins' declarations, plus the installed apps' as the strict reader
+    gives them (:func:`kiro_crew.apps.credential_masks.tool_gate_crew_leaves`): where an
+    installed declaration cannot be read cleanly, that app's whole data directory (at
+    both places) is a row, and an ``apps/`` that cannot be listed is one.
     """
     # Imported at call time, so loading this module never loads the security package.
     from kiro_crew.security.paths_lists import _CREW_HOME_PREFIXES
 
-    return tuple(
-        f"{prefix}/{leaf}" for leaf in declared_crew_leaves() for prefix in _CREW_HOME_PREFIXES
+    installed = credential_masks.tool_gate_crew_leaves(KIND)
+    leaves = sorted(
+        {
+            *credential_masks.declared_crew_leaves(installed=False, kind=KIND),
+            *installed.declared,
+            *installed.unreadable,
+        }
     )
+    return tuple(f"{prefix}/{leaf}" for leaf in leaves for prefix in _CREW_HOME_PREFIXES)
 
 
 def remember_declaration(app: str) -> None:
