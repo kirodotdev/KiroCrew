@@ -45,23 +45,28 @@ KAS_ENGINE_RETRY_COMMAND = "kirocrew kas install"
 _INSTALL_LOCK = threading.Lock()
 
 #: The dashboard's view of the install. Written under ``_STATE_LOCK`` only.
+#: ``host_unsupported`` is the last install's refusal when the host cannot run
+#: the engine at all (no build in the manifest included), '' otherwise.
 _STATE_LOCK = threading.Lock()
 _STATE: dict[str, Any] = {
     "running": False,
     "done": 0,
     "total": 0,
     "error": "",
+    "host_unsupported": "",
 }
 
 
 def install_snapshot() -> dict[str, Any]:
-    """A copy of the install state: ``running``, ``done``, ``total``, ``error``."""
+    """A copy of the install state: ``running``, ``done``, ``total``, ``error``,
+    ``host_unsupported``."""
     with _STATE_LOCK:
         return {
             "running": bool(_STATE["running"]),
             "done": int(_STATE["done"]),
             "total": int(_STATE["total"]),
             "error": str(_STATE["error"]),
+            "host_unsupported": str(_STATE.get("host_unsupported") or ""),
         }
 
 
@@ -147,7 +152,7 @@ def install_pinned_engine(
             if on_progress is not None:
                 on_progress(label, done, total)
 
-        _update(running=True, done=0, total=0, error="")
+        _update(running=True, done=0, total=0, error="", host_unsupported="")
         logger.warning(
             "KAS engine %s is not installed; downloading it now (asked by %s)",
             kas_bundle_mod.pinned_version(),
@@ -158,8 +163,10 @@ def install_pinned_engine(
         except kas_bundle_mod.KasHostUnsupported as exc:
             # Kept as its own type, so the harness and the dashboard can tell a
             # host that never runs the engine from a transfer that may work later.
+            # The local host checks cannot see a platform the fetched manifest
+            # leaves out, so the refusal itself marks the host unsupported too.
             message = host_unsupported_message(str(exc))
-            _update(running=False, error=message)
+            _update(running=False, error=message, host_unsupported=message)
             logger.warning("KAS engine cannot run on this host: %s", exc)
             record_engine_install(outcome="host_unsupported", caller=caller)
             raise kas_bundle_mod.KasHostUnsupported(message) from exc
@@ -175,7 +182,7 @@ def install_pinned_engine(
             logger.exception("KAS engine install failed")
             record_engine_install(outcome="failed", caller=caller)
             raise kas_bundle_mod.KasBundleError(message) from exc
-        _update(running=False, error="")
+        _update(running=False, error="", host_unsupported="")
         logger.info("KAS engine %s installed at %s", installed.version, installed.root)
         record_engine_install(outcome="installed", caller=caller)
         return installed

@@ -30,7 +30,8 @@ export const KAS_ENGINE_IDLE_POLL_MS = 20_000
  * gateway downloads that engine the first time a chat needs it. The download
  * takes a while, and nothing else on screen says why the chat has not started,
  * so this says so while it runs; a failed download says why and how to retry
- * (the gateway's own text names `kirocrew kas install`), with a Retry button.
+ * (the gateway's own text names `kirocrew kas install`), with a Retry button,
+ * except on a host that cannot run the engine, where it says why and nothing more.
  *
  * Nothing while KAS is not the selected backend, with no install running, or
  * once the engine is installed.
@@ -104,6 +105,9 @@ export default function KasEngineNotice() {
 
   const error = status.installed ? '' : status.error
   if (!error || dismissedError === error) return null
+  // On a host that cannot run the engine every retry is refused the same way,
+  // so the notice explains and offers no Retry.
+  const unsupported = Boolean(status.host_unsupported)
   // A Retry the gateway refused (another user's tab, an offline gateway) says so
   // under the install's own error rather than leaving the button looking dead.
   const retryError = retryMut.isError
@@ -118,7 +122,7 @@ export default function KasEngineNotice() {
       message={retryError ? `${error}\n${retryError}` : error}
       messagePlacement="below"
       actionPlacement="below"
-      footer={(
+      footer={unsupported ? undefined : (
         <div className="mt-1.5">
           <Btn type="button" primary onClick={() => retryMut.mutate()} data-testid="kas-engine-retry">
             {i18nT('components.kasEngineNotice.retry')}
