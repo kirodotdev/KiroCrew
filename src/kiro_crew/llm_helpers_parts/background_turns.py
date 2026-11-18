@@ -610,6 +610,17 @@ async def _lite_spec_unconfirmed(
     return confirmed is not True
 
 
+def _lite_spec_refusal(key: str) -> RuntimeError:
+    """The error a background turn raises when its spec mounts something."""
+    from kiro_crew.agent_spec_injections import WRITE_BACK_CAUSE
+    from kiro_crew.session import BACKGROUND_AGENT  # circular import
+
+    return RuntimeError(
+        f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
+        f"could not be confirmed to mount nothing. {WRITE_BACK_CAUSE}"
+    )
+
+
 @asynccontextmanager
 async def background_turn(
     sessions: Any,
@@ -716,10 +727,7 @@ async def background_turn(
             )
             if memory_store:
                 await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-            raise RuntimeError(
-                f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
-                "could not be confirmed to mount nothing"
-            )
+            raise _lite_spec_refusal(key)
     try:
         if agent is None:
             client, _new, _resumed = await sessions.get_or_create(key)
@@ -785,10 +793,7 @@ async def background_turn(
                 logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
             await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-        raise RuntimeError(
-            f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
-            "could not be confirmed to mount nothing"
-        )
+        raise _lite_spec_refusal(key)
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
     # begins, so identity is what separates a turn that ran from one whose
