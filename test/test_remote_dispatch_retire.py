@@ -59,7 +59,7 @@ def clock(monkeypatch) -> _Clock:
     fake = _Clock()
     monkeypatch.setattr(remote_ingest, "_monotonic", fake)
     monkeypatch.setattr(remote_ingest, "_DOWN_SEEN", {})
-    monkeypatch.setattr(remote_ingest, "_CLOSE_TRIED", set())
+    monkeypatch.setattr(remote_ingest, "_CLOSE_RETRY", {})
     monkeypatch.setattr(remote_ingest, "_retire_minutes", lambda: 30.0)
     return fake
 
@@ -186,7 +186,10 @@ def test_a_late_done_from_the_retired_worker_is_never_applied(recorded, peer):
         await _read(peer)
         item = work_ledger.read_work_item(CONDUCTOR, item_id)
         assert item.status is None and item.pr is None and item.state == "open"
-        assert not any(c["path"].endswith("/work-item") for c in peer.calls[-3:])
+        # The retired slot's close may PATCH ``trust: false``; its work item is never read.
+        assert not any(
+            c["path"].endswith("/work-item") and c["method"] == "GET" for c in peer.calls[-3:]
+        )
 
     asyncio.run(go())
 
@@ -580,8 +583,13 @@ def test_a_rebound_item_with_no_remote_record_takes_the_replacements_report(reco
         await _read(peer)
         item = work_ledger.read_work_item(CONDUCTOR, item_id)
         assert item.status == "done" and item.pr == 5
-        # Only the current binding is pulled; the retired slot is only ever closed.
-        assert all(PEER_SLOT not in c["path"] for c in peer.calls if c["method"] != "DELETE")
+        # Only the current binding is pulled; the retired slot is only ever closed
+        # (its trust ended first, then the DELETE).
+        assert all(
+            PEER_SLOT not in c["path"]
+            for c in peer.calls
+            if c["method"] != "DELETE" and c["body"] != {"trust": False}
+        )
 
     asyncio.run(go())
 
@@ -659,7 +667,7 @@ def test_partition_redispatch_reconnect_closes_the_old_slot(recorded, peer):
     asyncio.run(go())
 
 
-def test_a_failed_close_stays_fenced_and_is_not_retried(recorded, peer):
+def test_a_failed_close_stays_fenced_and_is_retried_only_after_its_backoff(recorded, peer):
     async def go() -> None:
         item_id = await _remote_item(peer)
         state = _state(peer)
@@ -678,6 +686,14 @@ def test_a_failed_close_stays_fenced_and_is_not_retried(recorded, peer):
         await remote_ingest.ingest_board(state, CONDUCTOR)
         await _closes_done()
         assert all(c["method"] != "DELETE" for c in peer.calls)
+        # Past the backoff the next read tries again; a second failure waits twice as long.
+        peer.clock.now += remote_ingest.CLOSE_RETRY_SECS  # type: ignore[attr-defined]
+        await remote_ingest.ingest_board(state, CONDUCTOR)
+        await _closes_done()
+        assert [c["method"] for c in peer.calls].count("DELETE") == 1
+        failures, not_before = remote_ingest._CLOSE_RETRY[(CREW, PEER_SLOT)]
+        assert failures == 2
+        assert not_before == peer.clock.now + 2 * remote_ingest.CLOSE_RETRY_SECS  # type: ignore[attr-defined]
         with pytest.raises(crew_routes.CrewCallError) as refused:
             await crew_routes._fenced_target_or_item(
                 state, CONDUCTOR, CONDUCTOR, CREW, PEER_SLOT, "send"
@@ -696,7 +712,7 @@ def test_no_close_is_tried_while_the_crew_is_down(recorded, peer):
         await remote_ingest.ingest_board(state, CONDUCTOR)
         await _closes_done()
         assert all(c["method"] != "DELETE" for c in peer.calls)
-        assert not remote_ingest._CLOSE_TRIED
+        assert not remote_ingest._CLOSE_RETRY
 
     asyncio.run(go())
 
@@ -712,7 +728,7 @@ def test_switch_off_never_closes_a_retired_slot_or_records_destroy(recorded, pee
         # The ledger read: no ingest, no retire, no close, no destroy.
         await _read(peer)
         await _closes_done()
-        assert peer.calls == [] and not remote_ingest._CLOSE_TRIED
+        assert peer.calls == [] and not remote_ingest._CLOSE_RETRY
         (entry,) = work_ledger.read_work_item(CONDUCTOR, item_id).retired_bindings
         assert entry["state"] == "retired"
         assert all(e.kind != "destroy" for e in work_ledger.read_events(CONDUCTOR, item_id))
@@ -988,7 +1004,7 @@ def test_a_closed_item_s_retired_slot_is_closed_by_the_boot_sweep(recorded, peer
         peer.calls.clear()
         # The hub restarts (a new process tries every slot) with the crew down; the
         # startup revive brings it back, and only then does the boot sweep run.
-        remote_ingest._CLOSE_TRIED.clear()
+        remote_ingest._CLOSE_RETRY.clear()
         peer.state = "disconnected"
 
         async def revive(registry, manager, st) -> None:

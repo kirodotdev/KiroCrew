@@ -22,7 +22,8 @@ is pulled.
 
 Each tick, and once at boot, :func:`sweep_closes` also closes retired peer slots
 on every board here, so a slot retired before its conductor stopped patrolling is
-still closed when its crew comes back.
+still closed when its crew comes back, and a close that failed is tried again on
+a later tick once its backoff has passed.
 """
 
 from __future__ import annotations
@@ -120,7 +121,9 @@ async def sweep_closes(state: "DashboardState") -> list[str]:
     later would keep the old worker running unwatched. This sweep finds those
     slots from local files alone and hands each board to
     ``remote_ingest._schedule_closes``, which sends a DELETE only to a crew whose
-    tunnel already reads connected and tries each slot once per process. It runs
+    tunnel already reads connected, and only for a slot that is neither in flight
+    nor inside the backoff a failed close left (``remote_ingest._CLOSE_RETRY``),
+    so a failed close is tried again by a later sweep, not forgotten. It runs
     once at boot, after the startup tunnel revive, and on every work-ledger patrol
     tick, with no timer of its own. Each board's items are read SETTLED, under its
     board lock as ``ingest_board`` reads them, so a retire still being recorded

@@ -70,7 +70,7 @@ async def _admit(request: Any, verb: str) -> str:
 
 @pytest.fixture
 def peer(monkeypatch) -> StubCrew:
-    monkeypatch.setattr(remote_ingest, "_CLOSE_TRIED", set())
+    monkeypatch.setattr(remote_ingest, "_CLOSE_RETRY", {})
     monkeypatch.setattr("kiro_crew.remote_dispatch.remote_dispatch_enabled", lambda: True)
     monkeypatch.setattr(crew_routes, "remote_dispatch_enabled", lambda: True)
     monkeypatch.setattr(crew_routes, "authorize_remote_dispatch", _admit)
