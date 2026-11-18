@@ -323,14 +323,16 @@ async def stop_one_worker(state: Any, slot: Any, cancel_key: str) -> dict[str, A
     ``None`` when the sweep failed).
 
     Through the channel Stop's own path for one helper
-    (:func:`..stop_helpers.stop_one_helper`), so a helper stopped from the Workers
-    tab ends as the channel's Stop leaves it. The turn's stop starts first, with no
+    (:func:`..stop_helpers.stop_one_helper`), so its turn and sub-agents end as the
+    channel's Stop ends a helper's. The turn's stop starts first, with no
     await after the caller's synchronous final gate, so it stops the turn that gate
     admitted; never escalated, so a second click is answered rather than turned
     into a kill. It authorizes nothing and records nothing: the caller has already
     decided that this slot may be stopped and that *cancel_key* is its running
-    turn, and keeps its own audit, repeat mark and "Stopped by" note. It holds
-    nothing either: a queued wake can start the helper again.
+    turn, and keeps its own audit, repeat mark and "Stopped by" note. It adds no
+    new hold (``stop_hold``) and releases none: a hold an earlier channel Stop set
+    stays until a person's message releases it, and without one a queued wake can
+    start the helper again.
 
     shortcut: ``cancel_for_parent`` takes the session's sub-agents, not one turn's,
     so a queued turn starting while the sweep is still selecting can lose one it

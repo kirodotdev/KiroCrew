@@ -2918,9 +2918,10 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   that worker's slot. Then `worker_stop.stop_one_worker` stops that one helper through
   the channel Stop's own path for one helper (`stop_helpers.stop_one_helper`): its turn
   (`stop_slot_turn(..., escalate=False, cancel_key=<that key>)`, started with no await
-  after the gate), then its sub-agents (`subagents.cancel_for_parent`), so it ends as the
-  channel's Stop leaves a helper; nothing is held, so a queued wake can start it again
-  until the hold change lands. A worker whose turn has ended at the final gate is
+  after the gate), then its sub-agents (`subagents.cancel_for_parent`). Unlike the
+  channel's Stop, it adds no new hold (`stop_hold`) and releases none: a hold an earlier
+  channel Stop set stays until a person's message releases it, and without one a queued
+  wake can start the helper again. A worker whose turn has ended at the final gate is
   answered "isn't running", and its sub-agents are still swept
   (`stop_helpers._cancel_subagents`), as the channel's Stop sweeps an idle session's.
   A repeat within 5 s is answered, not re-sent; a declined
