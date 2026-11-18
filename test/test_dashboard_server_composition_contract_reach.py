@@ -1124,7 +1124,10 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 
 
 #: The MCP route table's ``"<method> <path> <handler>"`` rows in registration order,
-#: one per line. The table is shared by both entrypoints, so a route added to it on
+#: one per line. These rows are the gateway's HTTP API contract: the MCP server
+#: processes, the dashboard page and the strict-internal path list call these paths, so a
+#: route dropped, renamed, rebound or reordered is a defect even when no caller's test
+#: names it. The table is shared by both entrypoints, so a route added to it on
 #: purpose edits its own row there; a stored count or digest of the whole table would
 #: make every such change rewrite one shared line (see testing-conventions.md
 #: § Merge-safe ratchets and counts).
