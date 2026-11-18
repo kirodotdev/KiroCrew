@@ -482,7 +482,11 @@ custom-rules:
           registered under that name in `sys.modules` before `exec_module`,
           never under the real name), and a
           `sys.modules` eviction without restoring both the entry and the
-          parent package's attribute in the same scope.
+          parent package's attribute in the same scope. A NEWLY ADDED
+          counting or recording spy set through `<mod>.os.<name>` (the stdlib
+          module itself) belongs here too when it counts every caller: count
+          only calls whose caller is the function under test, or set it on
+          the module's own `os` binding.
       12. (D11) A NEWLY ADDED autouse fixture that requests the shared
           `monkeypatch` (use `_floor_monkeypatch`), or a bare
           `monkeypatch.undo()` in a test body (scope the patch with

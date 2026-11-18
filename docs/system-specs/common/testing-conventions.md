@@ -5748,6 +5748,43 @@ The same reach applies, more mildly, to a patch of `asyncio.create_subprocess_ex
 `os.getpid` on the stdlib module: every caller in the worker sees it. Prefer an injected
 value; otherwise patch only for the span of the call, through `monkeypatch`.
 
+**A counting spy counts only the calls the code under test makes.**
+`monkeypatch.setattr(mod.os, "scandir", counting)` reads like a patch of `mod`, but
+`mod.os` IS the stdlib `os`, so the spy counts every scan of the path from every module and
+thread in the worker. A count of "how often this code walked the folder" then also counts
+another module's scan of the same folder, even one the code under test asked a shared
+pool to run. `test_app_manager_installed_record.py::TestListingReusesTheWalk` counted the
+apps folder's walks this way. When `detect_orphaned_builtins` had no cached result,
+`list_apps` validated the built-in manifests, the path gate listed the home's credential
+masks on the shared `mc-pathres` pool (`credential_masks._installed_manifests`, its own
+`os.scandir(apps)`), and the spy saw two walks. Whether that cache was cold depended on
+the tests before it on the worker. After `test_app_backend.py::TestBootSpawnLatency` it
+failed 30 of 30 runs; with the CPU busy, `-n 8` and `-p randomly` it failed 14 of 30 (9 of
+30 on an 8-core Linux host). Counting only the calls the walking function makes, both
+passed 30 of 30. Two ways do that:
+
+- Replace the module's own binding, the way `ManualClock.install` does for `time`:
+  `monkeypatch.setattr(mod, "os", SimpleNamespace(**{**vars(os), "scandir": counting}))`.
+  Not on an owner of a mirrored facade such as `kiro_crew.apps.manager`, where `os` is a
+  shared name: `test_facade_mirror_guards.py` refuses a direct owner patch of one.
+- Keep the stdlib patch but count a call only when its caller is the function under test:
+
+```python
+# Wrong: an unfiltered spy counts every module's and thread's scan of the folder.
+monkeypatch.setattr(manager_records.os, "scandir", counting)
+
+# Right: only the listing walk's own calls are counted.
+real = os.scandir
+listing_walk = manager_records._recorded_app_names.__code__
+
+def counting(path=".", *args, **kwargs):
+    if sys._getframe(1).f_code is listing_walk:
+        walks.append(os.fspath(path))
+    return real(path, *args, **kwargs)
+
+monkeypatch.setattr(os, "scandir", counting)
+```
+
 **A reload or a `sys.modules` eviction leaves the parent package pointing somewhere
 else.** A string target (`monkeypatch.setattr("kiro_crew.agent_state.config_dir", ...)`)
 is resolved through the PARENT PACKAGE's attribute, not through `sys.modules`. Two shapes
