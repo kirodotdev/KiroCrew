@@ -567,7 +567,7 @@ class TestUpdateWheelCli:
         with pytest.raises(SystemExit):
             cs._update_wheel(layout)
         out = capsys.readouterr().out
-        assert f"  Error: Could not reach release feed: {shown}\n" in out
+        assert f"  ❌ Could not reach release feed: {shown}\n" in out
         assert "cli.sh" in out  # the manual command still follows
 
     def test_schema_mismatch_exits(self, monkeypatch, tmp_path, capsys) -> None:

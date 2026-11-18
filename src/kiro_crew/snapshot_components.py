@@ -495,10 +495,10 @@ def safe_tree_root(root: Path, *, what: str, home: Path | None = None) -> Path |
     try:
         resolved = root.resolve()
     except OSError as e:  # broken link, ELOOP, permission on an ancestor
-        print(f"Warning: Skipping unresolvable {what} ({e}): {root}")
+        print(f"⚠️  Skipping unresolvable {what} ({e}): {root}")
         return None
     if base not in resolved.parents:
-        print(f"Warning: Skipping {what} that resolves outside {base}: {root} -> {resolved}")
+        print(f"⚠️  Skipping {what} that resolves outside {base}: {root} -> {resolved}")
         return None
     # Identity. Walk the segments BELOW the home only: the home itself is allowed to
     # sit behind a link (a real one often does), and resolving it once already accounted
@@ -508,7 +508,7 @@ def safe_tree_root(root: Path, *, what: str, home: Path | None = None) -> Path |
     while True:
         if platform_compat.is_link_or_junction(probe):
             print(
-                f"Warning: Skipping {what} that is reached through a link: {probe}. "
+                f"⚠️  Skipping {what} that is reached through a link: {probe}. "
                 "A component tree must be the declared directory, not a redirect to "
                 "another one — the archive is uploaded, so a redirect would ship "
                 "whatever the link points at."

@@ -1531,8 +1531,8 @@ print("wrote=" + report_path.name + "," + json_path.name)
         ):
             await cc._run_eval(_ns(all_scenarios=False, scenarios=None, judge=False))
         out = capsys.readouterr().out
-        assert "  pass memory: 4/5 (80%)" in out
-        assert "  FAIL tools: 1/2 (50%)" in out
+        assert "✅ memory: 4/5 (80%)" in out
+        assert "❌ tools: 1/2 (50%)" in out
 
     @pytest.mark.asyncio
     async def test_judge_scores_judge_assertions(

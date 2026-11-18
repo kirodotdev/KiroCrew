@@ -145,29 +145,23 @@ def _spawn_row_text(row: dict[str, object]) -> str:
     return f"{row_id}  {task}"
 
 
-# The longest status word in `spawn list` ("stopped", "running", "waiting").
-_STATUS_WIDTH = 7
-
-
 def _spawn_done_status(row: dict[str, object]) -> tuple[str, str]:
-    """A finished ``spawn list`` row's status word and note, read from its ``outcome``.
+    """A finished ``spawn list`` row's icon and note, read from its ``outcome``.
 
     ``outcome`` is the run's terminal classification; an empty ``error`` does
-    not mean success, since a user-stopped run carries none. The success
-    word is given to ``completed`` only, or to a row with neither ``outcome``
-    nor ``error`` (a gateway that does not send ``outcome``); any other value
-    shows as a failure. Each status word is padded to ``_STATUS_WIDTH`` so the
-    rows of ``spawn list`` stay lined up. The error is agent-influenced, so it
-    is confined to one line.
+    not mean success, since a user-stopped run carries none. The success icon
+    is given to ``completed`` only, or to a row with neither ``outcome`` nor
+    ``error`` (a gateway that does not send ``outcome``); any other value shows
+    as a failure. The error is agent-influenced, so it is confined to one line.
     """
     outcome = row.get("outcome")
     error = row.get("error")
     if outcome == "completed" or (outcome is None and not error):
-        return "done".ljust(_STATUS_WIDTH), ""
+        return "✅", ""
     if outcome == "stopped":
-        return "stopped".ljust(_STATUS_WIDTH), ""
+        return "⏹", "  (stopped)"
     reason = safe_terminal_line(str(error or outcome or "failed"))[:80]
-    return "failed".ljust(_STATUS_WIDTH), f"  ({reason})"
+    return "❌", f"  (failed: {reason})"
 
 
 def _client_port(cli_port: int | None) -> int:
@@ -235,23 +229,21 @@ def _spawn(args: argparse.Namespace) -> None:
             print("No subagents.")
             return
         for q in queued:
-            # Accepted, no run yet (or waiting to resume one): a distinct word,
+            # Accepted, no run yet (or waiting to resume one): a distinct icon,
             # so this is never read as a run in progress.
             tag = "resuming" if q.get("resuming") is True else "queued, not started"
-            print(
-                f"  {'queued'.ljust(_STATUS_WIDTH)} {_spawn_row_text(q)}  — {tag}: {queued_wait_text(q)}"
-            )
+            print(f"  🕒 {_spawn_row_text(q)}  — {tag}: {queued_wait_text(q)}")
         if partial:
             print("  (the queued list is partial; more spawns may be queued)")
         for a in agents:
             if a.get("done"):
                 status, note = _spawn_done_status(a)
             elif a.get("awaiting_approval"):
-                # A distinct word from a running one, so `spawn list`
+                # A distinct icon from the executing hourglass, so `spawn list`
                 # answers "is this working or waiting for me?".
-                status, note = "waiting".ljust(_STATUS_WIDTH), "  — waiting for spawn approval"
+                status, note = "🔐", "  — waiting for spawn approval"
             else:
-                status, note = "running".ljust(_STATUS_WIDTH), ""
+                status, note = "⏳", ""
             print(f"  {status} {_spawn_row_text(a)}{note}")
         return
 

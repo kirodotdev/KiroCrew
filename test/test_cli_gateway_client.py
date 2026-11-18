@@ -62,7 +62,7 @@ class TestLogout:
         assert req.get_method() == "POST"
         assert req.full_url == "http://127.0.0.1:5476/api/logout"
         assert req.get_header("X-local-secret") == "test-secret"
-        assert capsys.readouterr().out == "Done: All dashboard sessions revoked.\n"
+        assert capsys.readouterr().out == "✅ All dashboard sessions revoked.\n"
 
     def test_logout_gateway_not_running(self, tmp_path, monkeypatch):
         """Missing secret file means gateway not running."""
@@ -95,7 +95,7 @@ class TestLogout:
                 assert False, "should have exited"
             except SystemExit as e:
                 assert e.code == 1
-        assert capsys.readouterr().err == "Failed to revoke sessions: HTTP 403\n"
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403\n"
 
     @staticmethod
     async def _logout_against_the_real_route(monkeypatch, *, server_secret, cli_secret):
@@ -139,7 +139,7 @@ class TestLogout:
         )
         assert code == 1
         assert capsys.readouterr().err == (
-            "Failed to revoke sessions: HTTP 500: could not persist session "
+            "❌ Failed to revoke sessions: HTTP 500: could not persist session "
             "revocation; logout not completed\n"
         )
 
@@ -152,7 +152,7 @@ class TestLogout:
             monkeypatch, server_secret="the-real-one", cli_secret="a-stale-one"
         )
         assert code == 1
-        assert capsys.readouterr().err == "Failed to revoke sessions: HTTP 403: invalid secret\n"
+        assert capsys.readouterr().err == "❌ Failed to revoke sessions: HTTP 403: invalid secret\n"
         revoke.assert_not_called()
 
     def test_logout_connection_error(self, tmp_path, monkeypatch):
@@ -1219,8 +1219,8 @@ class TestSpawnCliAuth:
                 ]
             },
         )
-        assert not out.startswith("  done")
-        assert out.startswith("  failed  a1")
+        assert "✅" not in out
+        assert "❌" in out
         assert "failed" in out
         assert "not signed in" in out
 
@@ -1242,22 +1242,23 @@ class TestSpawnCliAuth:
                 ]
             },
         )
-        assert not out.startswith("  done")
-        assert out.startswith("  stopped a1")
+        assert "✅" not in out
+        assert "⏹" in out
+        assert "stopped" in out
 
     def test_spawn_list_unknown_outcome_is_not_shown_as_success(self, monkeypatch, capsys):
-        """An outcome this client does not know never falls back to the success word."""
+        """An outcome this client does not know never falls back to the success icon."""
         out = self._list_rows(
             monkeypatch,
             capsys,
             {"agents": [{"id": "a1", "task": "t", "done": True, "outcome": "timed_out"}]},
         )
-        assert not out.startswith("  done")
-        assert out.startswith("  failed  a1")
+        assert "✅" not in out
+        assert "❌" in out
         assert "timed_out" in out
 
     def test_spawn_list_completed_run_is_shown_as_success(self, monkeypatch, capsys):
-        """A completed run keeps the success word and no note."""
+        """A completed run keeps the success icon and no note."""
         out = self._list_rows(
             monkeypatch,
             capsys,
@@ -1273,7 +1274,7 @@ class TestSpawnCliAuth:
                 ]
             },
         )
-        assert out == "  done    a1  Reply PONG\n"
+        assert out == "  ✅ a1  Reply PONG\n"
 
     def test_spawn_list_failed_error_prints_no_terminal_controls(self, monkeypatch, capsys):
         """A failed run's error is agent-influenced: no live escape, no forged row."""

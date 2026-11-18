@@ -172,7 +172,7 @@ class TestInstallFromDir:
         assert cli_kas.kas_cmd(self._args(local_source, force=True)) == 0
         assert seen == {"version": _PIN, "source": str(local_source.resolve()), "force": True}
         out = capsys.readouterr().out
-        assert f"Done: KAS {_PIN} installed" in out
+        assert f"✅ KAS {_PIN} installed" in out
         assert out.count("engine:") >= 1
         assert "  engine:   0%" in out and "  engine:  55%" in out and "  engine: 100%" in out
         assert "  engine:  56%" not in out
@@ -281,7 +281,7 @@ class TestInstallFromDir:
         monkeypatch.setattr(kas_bundle, "install_bundle", boom)
         assert cli_kas.kas_cmd(self._args(local_source)) == 1
         err = capsys.readouterr().err
-        assert "Error: node did not run: exit 127" in err
+        assert "❌ node did not run: exit 127" in err
         assert "Traceback" not in err
 
     def test_a_host_that_cannot_run_the_engine_exits_the_unsupported_code(
@@ -298,7 +298,7 @@ class TestInstallFromDir:
         assert cli_kas.HOST_UNSUPPORTED_EXIT == 3
         assert cli_kas.kas_cmd(self._args(local_source)) == cli_kas.HOST_UNSUPPORTED_EXIT
         err = capsys.readouterr().err
-        assert "Error: this host's glibc (2.17)" in err
+        assert "❌ this host's glibc (2.17)" in err
         assert "Traceback" not in err
 
 
@@ -394,7 +394,7 @@ class TestOldGlibcRefusedFirst:
         assert cli_kas.kas_cmd(args) == cli_kas.HOST_UNSUPPORTED_EXIT
         out, err = capsys.readouterr()
         assert "Fetching" not in out and "Installing" not in out
-        assert "Error: this host's glibc (2.26) is older than KAS requires" in err
+        assert "❌ this host's glibc (2.26) is older than KAS requires" in err
 
 
 class TestInstallWhenAlreadyInstalled:
@@ -428,7 +428,7 @@ class TestInstallWhenAlreadyInstalled:
         # Only the data home's own root is asked, never the app's staged copy.
         assert present == [(tmp_path / "engines", _PIN)]
         out = capsys.readouterr().out
-        assert f"Done: KAS {_PIN} is already installed at {tmp_path / 'engines' / _PIN}" in out
+        assert f"✅ KAS {_PIN} is already installed at {tmp_path / 'engines' / _PIN}" in out
         assert "kirocrew config set agent.kas_bundle true" in out
 
     def test_the_pinned_engine_on_disk_still_sweeps_a_stale_staging_tree(

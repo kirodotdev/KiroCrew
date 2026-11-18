@@ -273,7 +273,7 @@ def test_run_chat_renders_keyboard_interrupt_as_clean_exit(monkeypatch, capsys) 
 
     cli_chat._run_chat(None, None)
 
-    assert capsys.readouterr().out == "\nBye!\n"
+    assert capsys.readouterr().out == "\nBye! 👻\n"
 
 
 def test_run_chat_prints_a_sandbox_unavailable_refusal_as_one_message(monkeypatch, capsys) -> None:
@@ -295,7 +295,7 @@ def test_run_chat_prints_a_sandbox_unavailable_refusal_as_one_message(monkeypatc
         cli_chat._run_chat("hello", None)
 
     assert excinfo.value.code == 1
-    assert f"\nError: {refusal}\n" in capsys.readouterr().err
+    assert f"\n❌ {refusal}\n" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio

@@ -168,7 +168,7 @@ class TestTokenRefusal:
         assert exc.value.code == 1
         out, err = capsys.readouterr()
         first, _, rest = err.partition("\n")
-        assert first == "Error: Gateway refused the token request (HTTP 403): refused"
+        assert first == "❌ Gateway refused the token request (HTTP 403): refused"
         assert f"code {code}:" in rest and remedy in rest
         # Each remedy is its own gate's: no line names another gate's code.
         for other in cli_server._TOKEN_REFUSAL_REMEDIES:
@@ -211,7 +211,7 @@ class TestTokenRefusal:
         with pytest.raises(SystemExit):
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
         err = capsys.readouterr().err
-        assert err.startswith("Error: Gateway refused the token request (HTTP 403): ")
+        assert err.startswith("❌ Gateway refused the token request (HTTP 403): ")
         assert err.count("\n") == 1
         assert "code " not in err
 

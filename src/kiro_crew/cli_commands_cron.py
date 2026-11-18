@@ -703,7 +703,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             return
         running = _running_since()
         for j in jobs:
-            status = "on " if j.enabled else "off"
+            status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
             folder = _cron_folder_label(j.folder_id or "", folder_names)
             # Name and message are agent-authored, like the folder name.
@@ -1226,16 +1226,16 @@ def _cron_preview(args: argparse.Namespace) -> None:
     outcome = "ok"
     try:
         func(ctx)
-        print("\nDone: Completed (no exception raised)")
+        print("\n✅ Completed (no exception raised)")
     except Skip:
-        print("\nSkipped: nothing to report")
+        print("\n⏭️  Skip (nothing to report)")
     except Report as r:
-        print(f"\nReport:\n{r}")
+        print(f"\n📢 Report:\n{r}")
     except Done as d:
-        print(f"\nDone:\n{d}")
+        print(f"\n🏁 Done:\n{d}")
     except Exception as e:
         outcome = "error"
-        print(f"\nError: {type(e).__name__}: {e}")
+        print(f"\n❌ Error: {type(e).__name__}: {e}")
         traceback.print_exc()
     finally:
         ctx.close()
