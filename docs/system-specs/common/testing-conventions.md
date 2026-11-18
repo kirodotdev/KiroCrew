@@ -243,7 +243,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), a shared total pinned exactly in a module that walks the product tree: a count asserted `==` an integer literal of 10 or more in a function that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS` (K21, [Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)), and five frontend shapes. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), an `update_metadata` or `update_metadata_if` call in a coroutine's own frame (K20, [Async tests](#async-tests)), a shared total pinned exactly in a module that walks the product tree: a count asserted `==` an integer literal of 10 or more in a function that reads the walk, or a count compared `==` / `!=` with a module-level ALL-CAPS constant whose name holds `BASELINE`, `COUNT`, `TOTAL`, `EXPECTED` or `ROWS` (K21, [Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)), a product registry's size or members pinned to literals (K22 and its frontend twin J7, [No change-detector tests](#no-change-detector-tests)), and the frontend shapes in `test/flake_pattern_js_detectors.py`. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
@@ -916,6 +916,72 @@ check: pytest fails the test on anything it raises. Do not wrap it in a
 `try`/`except` that turns an exception into a pass. Review flags this through
 `tests-are-deterministic` item 16 in `AUTOSDE.yaml`.
 
+### No change-detector tests
+
+A change detector copies by hand a list or a count that the source already holds (a
+registry, the steps of a workflow, a module's imports or exports, the rows a page
+draws) and compares the copy with the source. It finds no bug: the only thing that
+turns it red is a legal addition. Every new entry must edit the test, and two changes
+that each add one either both rewrite one number (git merges them, `main` goes red)
+or both add a line at the same spot in one list (the second change conflicts).
+Writing the copy one entry per line does not fix this; it only moves the cost from
+a red `main` to a conflict. In a 30-day scan of `main`, the lazy-import table in
+`test/test_dashboard_server_composition_contract.py` took 76 commits that changed
+nothing but its literals, and the base-ref list in
+`website/src/test/renderVerdict.test.ts` was edited by every new diff-scoped gate.
+
+Bad, a copy of the workflow:
+
+```ts
+const names = wirings.map((line) => line.trim().split(':')[0]).sort()
+expect(names).toEqual(['BRAND_BASE_REF', 'CHANGELOG_BASE_REF', /* ... one per gate */])
+```
+
+Good, the property each item must hold, over a set read from the source:
+
+```ts
+const steps = gateSteps(['ci.yml', 'fast-gate.yml'])   // every step that runs the resolver
+expect(steps.length).toBeGreaterThan(0)                // a broken parse cannot pass empty
+for (const step of steps) {
+  expect(step.env[step.baseRefName]).toContain('github.event.pull_request.base.sha')
+  expect(step.env[step.baseRefName]).toContain('github.event.before')
+}
+```
+
+- **Derive the set from where it lives.** Parse the workflow, import the registry,
+  walk the module's AST, read the rendered DOM. Never type the members.
+- **Assert what each member must satisfy.** The bug the old copy was meant to catch
+  is a member that breaks a rule (a gate with no base ref, a row with a hint but no
+  InfoTip, a lazy import moved to module level). Name that rule and check it per
+  member. A relation between two sets that both come from source
+  (`len(handlers) == len(schemas)`, `set(HANDLERS) == {d["name"] for d in schemas()}`)
+  is a property too.
+- **Assert the derived set is not empty**, per source when there are several, so a
+  derivation that silently finds nothing fails instead of passing.
+- **Prove both directions in the PR.** Make the bug in the product file and show the
+  test red; add a legal new member without touching the test and show it green.
+
+What stays, and why:
+
+| Kind | Example | Why it stays |
+|---|---|---|
+| Ratchet | `test/wait_discipline_baseline.txt`, `_ALLOWED_DROPS`, per-site bypass baselines | It may only shrink; a new bad site is what it refuses ([Merge-safe ratchets and counts](#merge-safe-ratchets-and-counts)) |
+| Review list | the [whole-tree registration pins](#a-whole-tree-registration-pin-not-selected-by-diff-relevance) for link screens and port verdicts | A new dangerous site is meant to make a person look |
+| Contract | wire protocol values, a telemetry schema, persisted settings values, a platform fact | Adding or dropping one silently is a defect. Say which contract in a one-line comment |
+| Frozen snapshot | the names a facade served when its file was split | Nobody edits it again |
+
+Enforced by the flake-pattern ratchet: K22 counts, in a Python test, an `assert` or
+`assertEqual` that pins a public ALL-CAPS name imported from `kiro_crew` (or read
+off a `kiro_crew` module) to `len(...) ==` an integer of 2 or more, or to a literal
+list, set or tuple of 3 or more strings or numbers. J7 counts, in a frontend test,
+`expect(REG).toHaveLength(n)`, `expect(REG.length).toBe(n)` or
+`expect([...REG].sort()).toEqual(['a', ...` for an ALL-CAPS `REG` imported from a
+product module, with `n` of 2 or more. Both count per file against the merge-base,
+so existing pins are not forced to burn down. A contract pin carries
+`# flake-ok: <the contract>` (`// flake-ok:` in TypeScript). Review catches what
+they cannot see, such as a list read from a workflow, an AST or the DOM (AutoSDE
+`a-ratchet-may-only-tighten`, CHANGE DETECTORS).
+
 ### Merge-safe ratchets and counts
 
 Each pull request's CI runs on its own base, and the repository merges without
@@ -931,11 +997,17 @@ the ratchet reds on `main` in 2026-11 had this shape: the lazy-import total in
 `test_pid_reader_ratchet.py`, and security line-budget rows written as the amount
 over budget.
 
-- **Never pin an aggregate the record already decides.** When the test compares the
+- **First ask whether the test needs a record at all.** A record belongs to a ratchet
+  (sites that may only shrink), a review list or a contract. A scan compared with a
+  hand list of everything that exists today is a change detector: replace both the
+  total and the list with a property over the scanned set
+  ([No change-detector tests](#no-change-detector-tests)). Turning such a total into
+  one line per item is not a fix.
+- **Never pin an aggregate the record already decides.** When a ratchet compares the
   scan with a table, mapping or set, a hand-kept total beside it adds no check and is
   the one line both changes edit identically. Drop it. A number the message must
   print is computed from the table.
-- **Key the record by what changes.** One entry per file, per site or per change: a
+- **Key a ratchet's record by what changes.** One entry per file, per site or per change: a
   dict entry on its own line, a line in a baseline file
   (`test/wait_discipline_baseline.txt`), or one row file per change
   (`test/security_line_budget/<change>.txt`). Two changes to different files then
