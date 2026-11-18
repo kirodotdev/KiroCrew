@@ -1104,6 +1104,47 @@ async def load_session(self, session_file, resume_sid, *, cwd=None, channel_id="
   disagree, so a call through a differently named alias is not seen. It costs 6 to
   8 s, because it parses single defs, not whole files (see the module docstring).
 
+### Bare session handles: one factory, so a new runtime read lands in one place
+
+A unit test of one `AcpSessionHandle` method often skips `__init__` and sets only the
+fields that method reads. Such a handle breaks as soon as the method starts reading
+something new. On 2026-11-17 #38228 made the KAS start barrier await
+`settle_kas_model_select()`, which reads `self._runtime`, and stubbed it in the bare
+handles that existed then. #38761, cut before #38228, added a new file with its own
+bare handle. Each was green on its base. Merged, both of the new file's barrier tests
+raised `AttributeError: 'AcpSessionHandle' object has no attribute '_runtime'` and
+held 15 PRs red (fixed in #38961).
+
+```python
+# WRONG: the handle has exactly the fields this file knew about on its base. A
+# handle method that reads a new runtime attribute breaks this file on merge.
+handle = AcpSessionHandle.__new__(AcpSessionHandle)
+handle._session_id = _SID
+handle._mcp_report = McpSessionReport()
+
+# RIGHT: the factory gives a real, never-spawning AcpRuntime and stubs the steps
+# tests of one method do not exercise; the change that adds a read updates it once.
+from session_handle_helpers import bare_session_handle
+
+handle = bare_session_handle(_SID)
+handle._mcp_report = McpSessionReport()
+```
+
+- **Build every constructor-less handle with `bare_session_handle()`**
+  (`test/session_handle_helpers.py`). Its default `_runtime` is a real `AcpRuntime`,
+  so every attribute a handle method reads exists with its real default. Pass
+  `runtime=<double>` to steer it, or `runtime=None` for a handle with none.
+- **A change that adds a handle step a bare test should not run stubs it in the
+  factory**, not in each test file.
+- **Enforced by `test/test_bare_session_handle_guard.py`.** It parses every file under
+  `test/` and fails on `AcpSessionHandle.__new__(...)` or
+  `object.__new__(AcpSessionHandle)` outside the factory. An exemption is one row in
+  `_EXEMPT` with its reason; a row naming a missing file fails.
+- **Measured:** on `f588907dcc` (both changes, no fix) the file failed 2 of 10. With
+  only its `_handle()` switched to the factory, 10 of 10 passed, with or without the
+  factory's `settle_kas_model_select` stub: the real runtime alone is enough. On a
+  branch where #38761's file still used `__new__`, the guard failed and named it.
+
 ### Channel wire fakes: borrow the library's read side, do not model it
 
 `kiro_crew.testing.fake_channel_wire` fakes a channel's `aiohttp` session one layer

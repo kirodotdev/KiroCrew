@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
@@ -921,7 +922,6 @@ async def test_a_switch_back_to_the_delegator_keeps_its_targets_in_the_stale_che
     """KAS keeps the whole batch across a mode switch, so once the session is back
     on the delegator its stale check still counts what its registered target
     auto-approves."""
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.types import UPDATE_CURRENT_MODE
     from kiro_crew.agent_sdk import spec_hooks
 
@@ -930,7 +930,7 @@ async def test_a_switch_back_to_the_delegator_keeps_its_targets_in_the_stale_che
     _write(agents_dir, _FETCHER)
     extras = await _extras()
     assert _ids(extras) == ["delegator", "fetcher"]
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     KasHarness().record_session_projection(handle, extras.custom_agents, "delegator")
     handle._last_kas_mode_id = "delegator"
     handle._handle_kas_update(UPDATE_CURRENT_MODE, {"currentModeId": "fetcher"})

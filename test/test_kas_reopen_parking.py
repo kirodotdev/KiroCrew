@@ -16,12 +16,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
 from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_runtime_helpers import _make_runtime
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import runtime as runtime_facade
 from kiro_crew.acp import runtime_session_load
@@ -156,10 +157,8 @@ class TestTheFirstTurnAfterAReopen:
 
     def _handle(self) -> AcpSessionHandle:
         """A loaded session whose own server and bridge are up; the user's two still connect."""
-        handle = AcpSessionHandle.__new__(AcpSessionHandle)
+        handle = bare_session_handle(runtime=None)
         handle._session_id = _SID
-        # The late-select settle step reads the runtime; this handle has none.
-        handle.settle_kas_model_select = AsyncMock()  # type: ignore[method-assign]
         handle._mcp_report = McpSessionReport(folded_on_arrival=True)
         handle._mcp_report.begin_session([])
         handle._queue = asyncio.Queue()

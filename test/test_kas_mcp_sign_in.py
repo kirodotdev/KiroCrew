@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp.mcp_session_report import STATUS_CAP
 from kiro_crew.acp.runtime import AcpRuntime
@@ -352,7 +353,7 @@ def _handle(begun: list, accept: bool = True) -> AcpSessionHandle:
         begun.append((session_id, name))
         return accept
 
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._session_id = "s1"
     handle._runtime = SimpleNamespace(begin_mcp_sign_in=begin)
     handle._mcp_sign_in_needed = set()

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import mcp_start_wait, runtime_session_load
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -109,10 +109,8 @@ def _empty_cron_status() -> JsonRpcMessage:
 
 
 def _handle(runtime: AcpRuntime) -> AcpSessionHandle:
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
-    handle._runtime = runtime
+    handle = bare_session_handle(_SID, runtime=runtime)
     handle.kas_bundle_engine_version = ""
-    handle._session_id = _SID
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])
     handle._queue = asyncio.Queue()
@@ -120,8 +118,6 @@ def _handle(runtime: AcpRuntime) -> AcpSessionHandle:
     handle._mcp_report.fold_frame(frame)
     handle._queue.put_nowait(frame)
     handle._apply_init_notification = lambda *_a, **_k: None  # type: ignore[method-assign]
-    # The bare handle has no runtime; the late model-select read is not under test.
-    handle.settle_kas_model_select = AsyncMock()  # type: ignore[method-assign]
     return handle
 
 
