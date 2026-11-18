@@ -61,6 +61,26 @@ def _crewmate_worker_spec(
     )
 
 
+def _crewmate_conductor_spec(
+    agent: str | None, spec: dict[str, Any] | None, session_key: str
+) -> dict[str, Any] | None:
+    """*spec*, or for a Bot's own chat the conductor spec built for that session.
+
+    The sibling of :func:`_crewmate_worker_spec`: the on-disk
+    ``kirocrew-mate-conductor`` is the base every Bot's chat shares, and the session's
+    own chat is that base plus the app servers its owner turned on for THIS Bot
+    (``bot_chat_app_tools.conductor_session_spec``; nothing with its preview off).
+    Any other agent, no session key or no spec keeps *spec*. Never narrows.
+    """
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if agent != MATE_CONDUCTOR_AGENT or not session_key or not isinstance(spec, dict):
+        return spec
+    from kiro_crew.bot_chat_app_tools import conductor_session_spec
+
+    return conductor_session_spec(spec, session_key)
+
+
 def crewmate_worker_deny_rules(
     agent: str | None,
     *,
@@ -82,13 +102,17 @@ def crewmate_worker_deny_rules(
     """
     from kiro_crew.acp import session_mcp
     from kiro_crew.agent_sdk.backends import (
+        ACP_BACKENDS_MATE_WORKER_KIT,
         ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
         ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
         ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     )
-    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 
-    if agent != MATE_WORKER_AGENT or not session_key:
+    # A Bot's own chat too: its spec is the shared conductor plus the app servers
+    # mounted for THIS session (``bot_chat_app_tools``), whose switched-off tools the
+    # base on disk does not name.
+    if agent not in (MATE_WORKER_AGENT, MATE_CONDUCTOR_AGENT) or not session_key:
         return None
     projection = session_mcp.session_mcp_projection(
         agent,
@@ -97,6 +121,7 @@ def crewmate_worker_deny_rules(
         worker_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
         worker_mcp_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
         worker_native_tool_limits_honoured=backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
+        bot_app_tools_carried=backend in ACP_BACKENDS_MATE_WORKER_KIT,
     )
     return worker_deny_rules(projection.disabled_tools, projection.agent_spec)
 

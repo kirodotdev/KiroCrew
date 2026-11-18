@@ -278,6 +278,16 @@ export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
 export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
 
 /**
+ * App tools in a Bot's own chat: an app that offers MCP servers in its manifest's
+ * `contributes.botChatServers` and holds the owner-approved `tools` Bot scope
+ * (`permissions.bots`) has them mounted on the chat of every Bot the owner ticked
+ * for it (`kiro_crew.bot_chat_app_tools`). Server-only: the gateway reads
+ * `dashboard.feature_previews.bot_chat_app_tools` at each session start. Default
+ * OFF, and OFF is every Bot chat with the platform tools only, as before.
+ */
+export const PREVIEW_BOT_CHAT_APP_TOOLS = `${PREVIEW_FLAG_PREFIX}bot-chat-app-tools`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -305,6 +315,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_VISUAL_REFRESH,
   PREVIEW_WIDGETS,
   PREVIEW_CREW_CLIENT,
+  PREVIEW_BOT_CHAT_APP_TOOLS,
 ]
 
 /**
