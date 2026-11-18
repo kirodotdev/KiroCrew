@@ -25,6 +25,7 @@ export type KiroUsageState =
   | 'signin-required'
   | 'signin-rejected'
   | 'api-key'
+  | 'no-limit'
   | null
 
 /**
@@ -133,6 +134,9 @@ export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefine
       const type = u.account_type
       return { accountOnly: true, accountType: typeof type === 'string' && type ? type : undefined }
     }
+    // `no-limit`: the usage service reports a used amount and no credit limit
+    // for this account, so there is no balance to show, now or on a re-read.
+    if (u.reason === 'plan_without_limit') return 'no-limit' as const
     return 'none' as const
   }
   return null
@@ -153,7 +157,7 @@ export const KIRO_USAGE_STEADY_POLL_MS = 30_000
  * the next poll sees the warmed value, so the pill sits "checking" for roughly
  * two intervals after a reopen. Polling fast while the state is unsettled
  * collapses that wait to a couple of seconds; a settled state — a real reading,
- * or a terminal `none` / `api-key` / `signin-required` / `signin-rejected` the next poll would not
+ * or a terminal `none` / `api-key` / `no-limit` / `signin-required` / `signin-rejected` the next poll would not
  * change — drops back to the steady cadence so a resolved pill is not polled
  * every few seconds forever.
  *
