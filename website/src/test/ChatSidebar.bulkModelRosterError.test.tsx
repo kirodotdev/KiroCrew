@@ -20,6 +20,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { markModelsDegraded } from '../providers/modelListHealth'
+import { EFFORT_LEVELS, effortLabel } from '../lib/effort'
 import type { RootState } from '../store'
 
 // Render framer-motion elements as plain DOM because jsdom cannot run projection.
@@ -261,7 +262,7 @@ describe('ChatSidebar — Switch All Sessions roster failure', () => {
     fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
     expect(switchBtn()).not.toBeDisabled()
     fireEvent.click(switchBtn())
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('sonnet-4.7', true))
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('sonnet-4.7', true, undefined))
   })
 
   it('keeps the notice out of the Cancel/Switch row and above the listbox', async () => {
@@ -298,10 +299,10 @@ describe('ChatSidebar — Switch All Sessions already-on-target line (#11103)', 
     expect(screen.queryByTestId('bulk-model-on-target')).toBeNull()
     fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
     expect(switchBtn().textContent).toBe('Switch 1 session')
-    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model: A and C')
     fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
     expect(switchBtn().textContent).toBe('Switch 2 sessions')
-    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model: B')
   })
 
   it('explains a disabled Switch 0 when every session is already on the pick', async () => {
@@ -315,7 +316,7 @@ describe('ChatSidebar — Switch All Sessions already-on-target line (#11103)', 
     fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
     expect(switchBtn().textContent).toBe('Switch 0 sessions')
     expect(switchBtn()).toBeDisabled()
-    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model: A and B')
     // The running session is already on the pick, so it is not ALSO counted
     // by the skip checkbox: the panel's numbers add up to the 2 rows.
     expect(screen.queryByRole('checkbox', { name: /running session/ })).toBeNull()
@@ -334,7 +335,7 @@ describe('ChatSidebar — Switch All Sessions already-on-target line (#11103)', 
     expect(screen.getByRole('checkbox', { name: 'Skip 2 running sessions' })).toBeTruthy()
     fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
     // 1 already on sonnet (running) + 1 running skipped + 1 to switch = 3 rows.
-    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model: A')
     expect(screen.getByRole('checkbox', { name: 'Skip 1 running session' })).toBeTruthy()
     expect(switchBtn().textContent).toBe('Switch 1 session')
   })
@@ -399,7 +400,7 @@ describe('ChatSidebar — Switch All Sessions buttons keep focus while busy', ()
     button.focus()
     await act(async () => { fireEvent.click(button) })
     await act(async () => { pushSlots(SLOTS.map(s => ({ ...s, model: 'opus-4.8' }))) })
-    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model: Idle A and Idle B')
     expect(button).not.toBeDisabled()
     expect(button).toHaveAttribute('aria-disabled', 'true')
     expect(document.activeElement).toBe(button)
@@ -438,5 +439,187 @@ describe('ChatSidebar — Switch All Sessions buttons keep focus while busy', ()
     await openSwitchAllPanel()
     await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
     expect(switchBtn()).toBeDisabled()
+  })
+})
+
+describe('ChatSidebar — Switch All Sessions effort', () => {
+  const effortSelect = () => screen.getByRole('combobox', { name: 'Effort' })
+  const switchBtn = () => screen.getByRole('button', { name: /^Switch \d+ sessions?$/ })
+  async function pickEffort(label: string) {
+    fireEvent.click(effortSelect())
+    fireEvent.click(await screen.findByRole('option', { name: label }))
+  }
+  const ON_OPUS = [
+    { key: 'k-a', title: 'A', running: false, messages: 1, model: 'opus-4.8', reasoning_effort: 'low' },
+    { key: 'k-b', title: 'B', running: false, messages: 1, model: 'opus-4.8', reasoning_effort: 'high' },
+  ]
+
+  it('stays disabled, and says why, until a model that uses effort is picked', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar(ON_OPUS)
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    expect(effortSelect()).toBeDisabled()
+    expect(screen.getByTestId('bulk-effort-unsupported').textContent).toBe('Pick a model that uses effort levels to set effort too.')
+    fireEvent.click(screen.getByRole('option', { name: /^auto/ }))
+    expect(effortSelect()).toBeDisabled()
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    expect(effortSelect()).not.toBeDisabled()
+    expect(screen.queryByTestId('bulk-effort-unsupported')).toBeNull()
+  })
+
+  it('counts an effort-only change and sends the level with the model', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar(ON_OPUS)
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    expect(switchBtn().textContent).toBe('Switch 0 sessions')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model: A and B')
+    await pickEffort('High')
+    // B already runs High on opus; only A changes, and keeps its conversation.
+    // A is on the model too, so the line says it counts the effort as well.
+    expect(switchBtn().textContent).toBe('Switch 1 session')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model and effort: B')
+    fireEvent.click(switchBtn())
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('opus-4.8', true, 'high'))
+  })
+
+  it('offers no Default row: a session goes back to its default from its own dropdown', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar(ON_OPUS)
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    fireEvent.click(effortSelect())
+    const keep = await screen.findByRole('option', { name: 'Keep current effort' })
+    const rows = within(keep.closest('[role="listbox"]') as HTMLElement).getAllByRole('option').map(r => r.textContent)
+    // Built from the catalog, so a level added to it needs no edit here.
+    const levels = EFFORT_LEVELS.filter(level => level !== '').map(level => effortLabel(level))
+    expect(levels.length).toBeGreaterThan(0)
+    expect(rows).toEqual(['Keep current effort', ...levels])
+    expect(rows.some(text => /default/i.test(text ?? ''))).toBe(false)
+  })
+
+  it('keeps the panel open and names the sessions whose effort waits for a restart', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    // The backend lists a deferred session in `switched` too.
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a', 'k-c'], effort_deferred: ['k-a'] })
+    renderSidebar([...ON_OPUS, { key: 'k-c', title: 'C', running: false, messages: 1, model: 'sonnet-4.7', reasoning_effort: 'high' }])
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    await pickEffort('High')
+    await act(async () => { fireEvent.click(switchBtn()) })
+    const outcome = await screen.findByTestId('bulk-model-outcome')
+    // Each session in one line: A is deferred, so it is not also "Switched".
+    expect(Array.from(outcome.children).map(c => c.textContent)).toEqual([
+      'Switched 1 session: C',
+      '1 session switches to the new effort at its next restart: A',
+    ])
+    expect(screen.getByText('Switch All Sessions')).toBeTruthy()
+    // Nothing is undone by leaving the panel now, so its exit says Close.
+    expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+  })
+
+  it('names the busy sessions a switch left alone and keeps the panel open', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a'], skipped_running: ['k-b'], effort_deferred: [] })
+    renderSidebar([ON_OPUS[0], { ...ON_OPUS[1], running: true }])
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    await act(async () => { fireEvent.click(switchBtn()) })
+    const outcome = await screen.findByTestId('bulk-model-outcome')
+    expect(Array.from(outcome.children).map(c => c.textContent)).toEqual([
+      'Switched 1 session: A',
+      '1 session was busy and was not switched: B',
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByText('Switch All Sessions')).toBeNull()
+  })
+
+  it('says a busy session that went idle is what Switch moves now, with no reply stopped', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a'], skipped_running: ['k-b'], effort_deferred: [] })
+    const slots = [ON_OPUS[0], { ...ON_OPUS[1], title: 'Debug the flaky e2e suite', running: true }]
+    const pushSlots = renderSidebar(slots)
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    await act(async () => { fireEvent.click(switchBtn()) })
+    await screen.findByTestId('bulk-model-outcome')
+    const lines = () => Array.from(screen.getByTestId('bulk-model-outcome').children).map(c => c.textContent)
+    // Still replying: Skip is ticked, so Switch leaves it alone and no line says otherwise.
+    await act(async () => { pushSlots([{ ...slots[0], model: 'sonnet-4.7' }, slots[1]]) })
+    expect(lines()).toEqual([
+      'Switched 1 session: A',
+      '1 session was busy and was not switched: Debug the flaky e2e suite',
+    ])
+    expect(switchBtn().textContent).toBe('Switch 0 sessions')
+    // Its reply ends: Switch now counts it, and the line under the busy one says so.
+    await act(async () => { pushSlots([{ ...slots[0], model: 'sonnet-4.7' }, { ...slots[1], running: false }]) })
+    expect(lines()).toEqual([
+      'Switched 1 session: A',
+      '1 session was busy and was not switched: Debug the flaky e2e suite',
+      '1 of them is idle now, so Switch moves it without stopping a reply: Debug the flaky e2e suite',
+    ])
+    expect(switchBtn().textContent).toBe('Switch 1 session')
+  })
+
+  it('hides the already-on-target line while an outcome is shown', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a'], skipped_running: ['k-b'], effort_deferred: [] })
+    const slots = [
+      { key: 'k-a', title: 'A', running: false, messages: 1, model: 'opus-4.8' },
+      { key: 'k-b', title: 'B', running: true, messages: 1, model: 'opus-4.8' },
+    ]
+    const pushSlots = renderSidebar(slots)
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    expect(screen.queryByTestId('bulk-model-on-target')).toBeNull()
+    await act(async () => { fireEvent.click(switchBtn()) })
+    await screen.findByTestId('bulk-model-outcome')
+    // The slots push moves A onto the pick. A is in the Switched line, so it
+    // is not also named as already on the model.
+    await act(async () => { pushSlots([{ ...slots[0], model: 'sonnet-4.7' }, slots[1]]) })
+    expect(Array.from(screen.getByTestId('bulk-model-outcome').children).map(c => c.textContent)).toEqual([
+      'Switched 1 session: A',
+      '1 session was busy and was not switched: B',
+    ])
+    expect(screen.queryByTestId('bulk-model-on-target')).toBeNull()
+    // A new pick retires the outcome, which reported the previous pick, and
+    // the on-target line again names the session already on the new one.
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    expect(screen.queryByTestId('bulk-model-outcome')).toBeNull()
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model: B')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
+  })
+
+  it('closes on a switch with nothing left to report', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a', 'k-b'], skipped_running: [], effort_deferred: [] })
+    renderSidebar(ON_OPUS)
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    await act(async () => { fireEvent.click(switchBtn()) })
+    await waitFor(() => expect(screen.queryByText('Switch All Sessions')).toBeNull())
+  })
+
+  it('warns that a reply stops only for a running session whose model changes', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar([{ key: 'k-a', title: 'A', running: true, messages: 1, model: 'opus-4.8', reasoning_effort: 'low' }])
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    await pickEffort('High')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Skip 1 running session' }))
+    expect(switchBtn().textContent).toBe('Switch 1 session')
+    expect(screen.queryByTestId('bulk-model-running-caveat')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    expect(screen.getByTestId('bulk-model-running-caveat')).toBeTruthy()
   })
 })

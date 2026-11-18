@@ -138,8 +138,11 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** Give this slot its own turn time limit (whole seconds), or null to follow the global. */
     setChatSlotTurnTimeout: (slot: string, secs: number | null) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/turn-timeout', { secs }).then(j) as Promise<SlotTurnTimeout & { ok?: boolean }>,
-    chatSlotsModel: (model: string, skip_running: boolean) =>
-      post('/api/chat/slots/model', { model, skip_running }).then(j) as Promise<{ ok: boolean; model: string; switched: string[]; skipped_running: string[]; unchanged: string[]; failed: string[] }>,
+    /** `reasoning_effort` undefined leaves every session's effort alone; a level
+     *  sets it, and `''` is refused (400). `effort_deferred` names the switched
+     *  sessions that keep their current effort until they next start. */
+    chatSlotsModel: (model: string, skip_running: boolean, reasoning_effort?: string) =>
+      post('/api/chat/slots/model', { model, skip_running, ...(reasoning_effort === undefined ? {} : { reasoning_effort }) }).then(j) as Promise<{ ok: boolean; model: string; switched: string[]; skipped_running: string[]; unchanged: string[]; failed: string[]; effort_deferred?: string[] }>,
     /** How many chats a person started keep a model of their own, and a digest of
      *  exactly that set for `chatSlotsFollowDefault` to confirm. Changes nothing.
      *  Also what the confirm names: the saved Default Model (`''` on Auto), how

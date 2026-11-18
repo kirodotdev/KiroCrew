@@ -432,7 +432,7 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     await openHeaderPanel('Switch all to model…')
     fireEvent.click(screen.getByRole('option', { name: /auto/i }))
     fireEvent.click(screen.getByText(/^Switch 1 session$/))
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true, undefined))
     expect(await screen.findByText('1 session failed to switch: Idle A')).toBeTruthy()
     expect(screen.getByText('Switch All Sessions')).toBeTruthy()
     // Idle A on Auto is all Switch would send, so it reads as that retry.
@@ -534,7 +534,7 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(retry).toBeEnabled()
     mocks.chatSlotsModel.mockClear()
     fireEvent.click(retry)
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true, undefined))
   })
 
   it('does not label a switch as a retry when a non-chat-page member DM becomes eligible', async () => {

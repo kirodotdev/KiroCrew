@@ -338,20 +338,6 @@ export class AcpAdapter implements ProviderAdapter {
     }
   }
 
-  /** KiroCrew's configured default reasoning effort (Settings → Chat). '' means
-   *  no default, i.e. the model picks its own. A per-slot override outranks it,
-   *  matching ConfigLoader._acp()'s `reasoning_effort_override or default`.
-   *  `readConfig` supplies the gateway config body from the caller's shared
-   *  `['kirocrewConfig']` query, avoiding a second GET at boot. */
-  async resolveDefaultEffort(readConfig: () => Promise<unknown>): Promise<string> {
-    try {
-      const c = (await readConfig()) as KirocrewAgentConfig
-      return c?.agent?.reasoning_effort || ''
-    } catch {
-      return ''
-    }
-  }
-
   async fetchUsage(): Promise<NormalizedUsage> {
     const data = await api.kiroUsage()
     const s = data?.sessions

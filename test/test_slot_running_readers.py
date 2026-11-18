@@ -208,6 +208,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_api/slot_model.py", "api_chat_slots_model"),
+                # The bulk switch's effort-only pass: a reserved slot is skipped,
+                # or deferred when the caller asked not to skip running slots.
+                ("chat_api/slot_model.py", "_bulk_effort_only_switch"),
                 ("chat_api/continue_turn.py", "continue_slot_turn"),
                 # A paused member's own Continue drains what queued for it only
                 # on an unreserved slot, as continue_slot_turn below refuses one.

@@ -31,7 +31,7 @@ function chips(caps: Caps, model = '') {
     defaultAgent: 'default',
     pendingAgent: '',
     installedAgents: [],
-    provider: { id: 'acp', capabilities: { reasoningEffort: true }, resolveModel: vi.fn().mockResolvedValue(''), resolveDefaultEffort: vi.fn().mockResolvedValue('') } as never,
+    provider: { id: 'acp', capabilities: { reasoningEffort: true }, resolveModel: vi.fn().mockResolvedValue('') } as never,
     availableModels: [{ name: 'auto', description: '' }, { name: 'claude-opus-5-5', description: '' }, { name: 'openai.gpt-6.1-sol', description: '' }],
     codexPairModels: false,
     selectionCapabilities: undefined,
