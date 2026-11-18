@@ -304,9 +304,10 @@ async def inbound_admitted(binding: Binding) -> bool:
     from kiro_crew.messaging.identity import channel_inbound_permitted
     from kiro_crew.slack.channel_policy import channel_refusal
 
+    channel = binding.channel_id
     return bool(
         await channel_inbound_permitted("slack")
-        and not channel_refusal(binding.channel_id, operation=OPERATION, audit=False)
+        and not channel_refusal(channel, operation=OPERATION, audit=False)
     )
 
 
