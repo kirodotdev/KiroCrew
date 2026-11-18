@@ -156,16 +156,25 @@ const TW_ERROR_EVENT = 'mc-tw-error'
 const TW_ERROR_INLINE_HANDLER =
   `window.__mcTwError=1;window.dispatchEvent(new Event('${TW_ERROR_EVENT}'))`
 
-/** Tailwind v4 browser build: dark mode is driven by a `.dark` class on <body>
- * (set below) via a custom variant — NOT the v3 `tailwind.config` global, which
- * v4 removed. The @tailwindcss/browser runtime auto-injects preflight + theme +
+/** The attribute that marks the frame's colour scheme on <body>: `data-mode="dark"`
+ * or `data-mode="light"`. An attribute and not a class, because the body shares the
+ * page's class namespace: a page that styles its own `.light` or `.dark` element (a
+ * status dot, a dark chip) would style the body too, in whichever theme matches the
+ * name, and lay the whole page out inside that rule. Mirrored by the gateway's
+ * `dashboard_frame.MODE_ATTRIBUTE`, so an offline run marks its body the same way. */
+export const FRAME_MODE_ATTRIBUTE = 'data-mode'
+
+/** Tailwind v4 browser build: dark mode is driven by the body's `data-mode`
+ * attribute (set below) via a custom variant — NOT the v3 `tailwind.config` global,
+ * which v4 removed. The @tailwindcss/browser runtime auto-injects preflight + theme +
  * utilities on load (verified via headless render: base reset AND utilities apply
  * without an explicit `@import "tailwindcss"`), so this block only registers the
  * dark variant. Injected as a `<style type="text/tailwindcss">` block the runtime
  * compiles on load; it must precede the runtime script so the variant registers
- * before first paint. */
+ * before first paint. Kept a plain literal: the gateway pins its own copy to this
+ * text (`dashboard_snapshot_look.TAILWIND_DIRECTIVES`). */
 const TAILWIND_V4_DIRECTIVES =
-  '@custom-variant dark (&:where(.dark, .dark *));'
+  '@custom-variant dark (&:where([data-mode=dark], [data-mode=dark] *));'
 
 /** Highlight + bubble CSS for anchored comments rendered inside the iframe. */
 const COMMENT_HIGHLIGHT_CSS =
@@ -1376,7 +1385,7 @@ export function buildSrcdoc({
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
   // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
-  // DOM and SSR paths, the :root vars, color-scheme and the body class agree.
+  // DOM and SSR paths, the :root vars, color-scheme and the body's mode attribute agree.
   const { themeVars, mode } = resolveWidgetTheme(html, requestedThemeVars, requestedMode)
 
   // SSR / unit-test fallback: when there's no DOM (Node.js, vitest before
@@ -1500,8 +1509,9 @@ export function buildSrcdoc({
     head.appendChild(overlayStyle)
   }
 
-  // <body class="dark|light">
-  body.className = mode
+  // <body data-mode="dark|light">, the attribute the dark variant above reads. The
+  // body gets no class: see FRAME_MODE_ATTRIBUTE.
+  body.setAttribute(FRAME_MODE_ATTRIBUTE, mode)
 
   // Clipboard write-fallback shim. Installed BEFORE the LLM html below so an
   // on-load attempt sees the wrapper too; without user activation its fallback
@@ -1706,7 +1716,7 @@ function buildSrcdocSSR({ html, themeVars, mode, includeHeightReporter }: BuildS
     // document unthemed — and painted white — until the script lands.
     `<style>${styleCss}</style>` +
     `<script src="${TAILWIND_RUNTIME_PATH}" crossorigin="anonymous" onerror="${TW_ERROR_INLINE_HANDLER}"><\/script>` +
-    `</head><body class="${mode}">` +
+    `</head><body ${FRAME_MODE_ATTRIBUTE}="${mode}">` +
     `<!-- SSR fallback: LLM body omitted -->` +
     // NO clipboard shim here. This SSR builder is unreachable in production
     // (buildSrcdoc only enters it when there is no DOM — i.e. pre-jsdom unit

@@ -8770,6 +8770,32 @@ Neither this rule nor serving an app that is off here changes the manifest gramm
 the gateway or a bridge call, so `APP_SDK_LEVEL` and the bridge `level` are unchanged:
 both are how this shell reads rows every gateway already sends.
 
+**Crew Companion is adopted onto its own repository.** The wheel pins Crew Companion
+(`apps/adoption-pins.json`, § 33) at `KiroCrewCaptain/kirocrew-app-crew-companion` with
+`minAppSdkLevel` 7, the level of the `displays`, `background` and `gutter` its
+`desktop.windows` declare ("Levelling" above). `scripts/adoption_pin.py` does not scan
+the window grammar and accepts a lower level, so 7 is set by hand. A host whose record
+is builtin-owned swaps it in place onto that tree at a restart, enabled or not, keeping
+`data/` (reminders, settings, stats, imported avatars and their colours), the approved
+grants and `enabled`; the rail keeps `/crew-companion` and the `Ghost` glyph, and the
+wheel copy's `version` is the pinned one (D12). The repository declares the same
+`permissions` as the wheel copy and no `credentialMasks` or `desktopCapabilities`, so
+E9 holds nothing back; its four windows are the ones the built-in's shell code draws
+(the avatar on every display, the background notification owner, the panel and the
+gallery). A newer gateway can meet an older shell: the desktop app's bundled gateway is
+never newer than the app, but one installed separately, run as a service or reached over
+a tunnel updates on its own. Over an adopted record, a shell without the window host
+(0.12 and earlier) draws the built-in windows from the pages the wheel still ships at
+`/app-windows/crew-companion/`, over the adopted routes. A 0.13.0-rc.1 shell's host
+refuses `displays`, `background` and `gutter`, so it drops the declaration whole and
+hosts nothing, and its built-in draws as before. From 0.13.0-rc.2 on, the built-in
+stands down on the record's non-`builtin` `origin` (#37430), and with this rule on its
+`desktop` block too, and the host draws the copy's windows. No shell draws both, and
+none draws anything while the app is off, so this pin does not wait for a later shell.
+The wheel's window pages are what the older shells draw, so they stay until no supported
+shell lacks a host that accepts the block. A fix to the app lands in that repository
+first; a change to the wheel copy needs its `App repo:` line.
+
 Writers: `apps/desktop_manifest.py`, `apps/desktop_capabilities.py`, `apps/manifest.py`,
 `apps/manifest_sections.py`, `apps/discovery.py`, `apps/point_grants.py`,
 `apps/manager_lookup.py`, `apps/official_catalog.py`, `apps/permissions.py`,

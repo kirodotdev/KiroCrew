@@ -272,9 +272,10 @@ class TestRejectedAgentSpecsNarrowReadiness:
 
     Two properties are load-bearing and are pinned in both directions:
 
-    * ``kiro-cli agent validate`` exits 0 whether or not it accepted the file, so
-      the verdict lives only in its output. A test that asserted on the exit code
-      would pass while detecting nothing.
+    * the exit status does not carry the verdict (older ``kiro-cli agent
+      validate`` builds exit 0 on a rejection, and 3.4.0 exits 1 for a rejection
+      and for a run that never read the file), so the verdict lives only in its
+      output. A test that asserted on the exit code would detect nothing.
     * output that is NOT a schema rejection (a sandbox denial, a vanished file)
       must NOT be reported as a rejected spec, or the gate sends the user to
       rewrite a spec that was fine.
@@ -299,6 +300,8 @@ class TestRejectedAgentSpecsNarrowReadiness:
     def _service(
         tmp_path: Path,
         runner: Any,
+        audit_writer: Any = _no_audit,
+        extra_env: dict[str, str] | None = None,
     ) -> KiroPrerequisiteService:
         # Staged inside tmp_path so binary discovery and sign-in eligibility do
         # not depend on the host: without these, a machine with a real kiro-cli
@@ -324,12 +327,186 @@ class TestRejectedAgentSpecsNarrowReadiness:
 
         return KiroPrerequisiteService(
             platform_name="linux",
-            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin", **(extra_env or {})},
             home=tmp_path,
             process_runner=runner,
-            audit_writer=_no_audit,
+            audit_writer=audit_writer,
             spec_lister=_lister,
         )
+
+    @staticmethod
+    def _signed_in_cli(tmp_path: Path) -> Any:
+        """A signed-in fake kiro-cli whose sign-in lives in its own data dir.
+
+        Models kiro-cli 3.4.0: ``whoami`` and ``agent validate`` read the sign-in
+        from ``~/.local/share/kiro-cli``, and a run that cannot see that dir
+        answers "You are not logged in" with exit 1 instead of doing its work.
+        ``agent validate`` accepts with exit 0 and no output, and rejects with
+        exit 1 and an "is invalid" line.
+        """
+        store = str(tmp_path / ".local" / "share" / "kiro-cli")
+
+        async def run(_command: str, args: list[str], **kwargs: Any) -> ProcessResult:
+            needs_sign_in = args[:1] == ["whoami"] or args[:2] == ["agent", "validate"]
+            if needs_sign_in and store in kwargs.get("extra_hidden_dirs", ()):
+                return ProcessResult(
+                    ok=False,
+                    returncode=1,
+                    output="error: You are not logged in, please log in with kiro-cli login",
+                )
+            if args[:2] == ["agent", "validate"]:
+                spec = Path(args[-1])
+                if not isinstance(json.loads(spec.read_text(encoding="utf-8")).get("name"), str):
+                    return ProcessResult(
+                        ok=False,
+                        returncode=1,
+                        output=(
+                            f"Error: Json supplied at {spec} is invalid: "
+                            "invalid type: integer `5`, expected a string"
+                        ),
+                    )
+                return ProcessResult(ok=True, returncode=0)
+            return ProcessResult(ok=True, returncode=0)
+
+        return run
+
+    @pytest.mark.asyncio
+    async def test_a_signed_in_cli_accepts_a_valid_spec_with_no_failed_audit(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Validation runs where kiro-cli can see the sign-in ``whoami`` confirmed.
+
+        ``agent validate`` refuses to run signed out, so a probe that hides the
+        CLI's own sign-in store gets "not logged in" for every spec: each check
+        then writes a failed SEL event for a spec that is fine.
+        """
+        (self._spec_dir(tmp_path) / "kirocrew.json").write_text(
+            '{"name": "kirocrew"}', encoding="utf-8"
+        )
+        events: list[dict[str, Any]] = []
+
+        async def audit(**kwargs: Any) -> None:
+            events.append(kwargs)
+
+        service = self._service(tmp_path, self._signed_in_cli(tmp_path), audit)
+        status = await service.snapshot(force=True)
+
+        assert status["authenticated"] is True
+        assert status["rejected_agent_specs"] == []
+        assert status["ready"] is True
+        outcomes = [e["outcome"] for e in events if e["action"] == "probe_agent_spec"]
+        assert outcomes == ["invoked", "completed"]
+
+    @pytest.mark.asyncio
+    async def test_a_signed_in_cli_reports_a_spec_it_rejects(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A spec the signed-in CLI refuses reaches the repair card.
+
+        If the probe hides the sign-in store, kiro-cli answers "not logged in"
+        before it looks at the file, so the rejection is never seen and the
+        refused spec reads as accepted.
+        """
+        (self._spec_dir(tmp_path) / "kirocrew.json").write_text('{"name": 5}', encoding="utf-8")
+
+        status = await self._service(tmp_path, self._signed_in_cli(tmp_path)).snapshot(force=True)
+
+        assert status["authenticated"] is True
+        assert status["rejected_agent_specs"] == ["kirocrew.json"]
+        assert status["ready"] is False
+        assert status["repair_required"] is True
+        assert "is invalid" in status["agent_spec_rejection_detail"]
+
+    @pytest.mark.asyncio
+    async def test_validate_gets_whoamis_posture_and_nothing_wider(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """``agent validate`` runs exactly as ``whoami`` does, and no wider.
+
+        Seeing the sign-in store is the whole point, so the bound is what else
+        the child gets: the same standard sandbox and hidden set as ``whoami``
+        (Kiro Crew's own data home stays hidden), and an environment drawn only
+        from the probe and identity allowlists. The kwargs are asserted after
+        ``snapshot()`` returns because the probe turns an exception raised in
+        the runner into a failed probe.
+        """
+        from kiro_crew.kiro_prerequisite_candidate import (
+            _IDENTITY_PROBE_ENV_KEYS,
+            _IDENTITY_PROXY_ENV_KEYS,
+            _PROBE_ENV_KEYS,
+        )
+
+        (self._spec_dir(tmp_path) / "kirocrew.json").write_text(
+            '{"name": "kirocrew"}', encoding="utf-8"
+        )
+        seen: dict[str, dict[str, Any]] = {}
+        cli = self._signed_in_cli(tmp_path)
+
+        async def run(command: str, args: list[str], **kwargs: Any) -> ProcessResult:
+            if args[:1] == ["whoami"] or args[:2] == ["agent", "validate"]:
+                seen[args[0]] = kwargs
+            return await cli(command, args, **kwargs)
+
+        planted = {
+            "KIRO_API_KEY": "kiro-key-for-this-test",
+            "HTTPS_PROXY": "http://proxy.invalid:3128",
+            "GH_TOKEN": "not-for-kiro-cli",
+            "SLACK_BOT_TOKEN": "not-for-kiro-cli",
+        }
+        service = self._service(tmp_path, run, extra_env=planted)
+        status = await service.snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == []
+        validate, whoami = seen["agent"], seen["whoami"]
+        assert validate["sandbox_mode"] == whoami["sandbox_mode"] == "standard"
+        assert validate["extra_hidden_dirs"] == whoami["extra_hidden_dirs"]
+        assert str(tmp_path / ".kiro" / "crew") in validate["extra_hidden_dirs"]
+        allowed = (
+            _PROBE_ENV_KEYS
+            | _IDENTITY_PROBE_ENV_KEYS
+            | _IDENTITY_PROXY_ENV_KEYS
+            | {"PATH", "NO_COLOR", "TERM"}
+        )
+        assert set(validate["env"]) <= allowed
+        assert validate["env"]["KIRO_API_KEY"] == "kiro-key-for-this-test"
+        assert "GH_TOKEN" not in validate["env"]
+        assert "SLACK_BOT_TOKEN" not in validate["env"]
+
+    @pytest.mark.asyncio
+    async def test_a_signed_in_probe_refuses_the_first_party_carve_out(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The two flags never combine: the signed-in path has no carve-out to pass on.
+
+        Refused before anything runs or is audited, so a caller that set both
+        learns it at once instead of getting a probe with the carve-out dropped.
+        """
+        calls: list[list[str]] = []
+        events: list[dict[str, Any]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            return ProcessResult(ok=True, returncode=0)
+
+        async def audit(**kwargs: Any) -> None:
+            events.append(kwargs)
+
+        service = self._service(tmp_path, run, audit)
+        with pytest.raises(ValueError, match="first-party carve-out"):
+            await service._audited_probe(
+                "probe_agent_spec",
+                "kiro-cli",
+                ["agent", "validate", "--path", "spec.json"],
+                signed_in=True,
+                first_party_fixed_argv=True,
+            )
+
+        assert calls == []
+        assert events == []
 
     @pytest.mark.asyncio
     async def test_a_rejected_required_spec_blocks_readiness_and_names_the_reason(

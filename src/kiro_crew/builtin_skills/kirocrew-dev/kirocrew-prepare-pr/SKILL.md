@@ -34,8 +34,7 @@ make it green" is the full loop. A hold turns off Phase 4's auto-merge, nothing 
 - Say in one line which mode you picked, so the user can redirect.
 
 **Never `gh pr merge` without `--auto`, and never bypass a required review or
-check.** Auto-merge hands the merge to GitHub, which lands it only once the repo's
-own required reviews and checks pass.
+check.** GitHub lands it once required reviews and checks pass.
 
 ## Kiro Crew CI at a glance
 
@@ -56,12 +55,12 @@ table (T1-T4; T3 and T4 wait for `triaged`) and the Captain's triage are in
 `PR Readiness` is the one required status: it folds every lane into one verdict
 and one `readiness:` label. The real merge gate is a human approval plus
 `PR Readiness`. Fix a red `Fast Gate` first: the heavy matrix and the fork AI
-lanes wait on it. For what any other lane checks, whether it blocks and how to
-clear it, fork PRs and the merge queue included, read `references/ci.md`.
+lanes wait on it. For any other lane (what it checks, if it blocks, how to
+clear it, fork PRs, the merge queue), read `references/ci.md`.
 
 ## Review-ready — the definition
 
-All five, together:
+All six, together:
 
 1. `pr_status.py` exits **0** — `PR Readiness` status and `readiness: passed`
    label green. `readiness: maintainer review` is not a failure to fix: the
@@ -74,6 +73,8 @@ All five, together:
 5. **Every raised concern answered on the PR** — see "Dispositions" below. A
    red `macOS Tests (on demand)` run on the current head counts as a concern:
    it is not required, but fix it or show the same test red on main.
+6. `## Real-machine verification` (testing-conventions § Real-machine
+   verification): base red, head green, cleaned up; or `N/A -- <why>`.
 
 When the diff adds or changes a test, review-ready also means the body carries that
 test's determinism proof: the repeats and a shuffled order, and for a fix to a flaky
@@ -90,9 +91,8 @@ Ask in order:
 1. **Is it legitimate?** Verify the code, reachable input, call path and consequence.
 2. **Is it proportional?** Stay within the frozen goal and actual code shape;
    reject speculative hardening, single-caller abstractions and unnecessary redesign.
-   Out of goal: rebut or defer. A defect in code this PR adds or
-   changes is always in scope and gets fixed; 'out of goal' applies only to new scope — a
-   new feature, surface, or hardening this PR does not need.
+   Out of goal (new feature, surface or hardening the PR does not need): rebut
+   or defer. A defect in code this PR adds or changes is always in scope and gets fixed.
 3. **Did an earlier round of this PR add the mechanism?** Check
    `pr_findings.py --rounds`. Before editing, compare (a) repair it and (b) remove
    it. For each, state the effect on the goal AND the defect it was added
@@ -628,7 +628,7 @@ outage is a rerun later, not a code fix.
 ## PR description contract
 
 Phase 1.5 checks the body against the diff. When `.github/PULL_REQUEST_TEMPLATE.md`
-is absent, the nine sections are in `references/pr-description-contract.md`.
+is absent, the ten sections are in `references/pr-description-contract.md`.
 
 ### Two checks, two strengths
 

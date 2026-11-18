@@ -4766,6 +4766,11 @@ preventing a planted `kiro-cli` basename from selecting the provider's trusted
 internal macOS delegation path. The strict wrapper additionally hides the
 configured data home, `~/.kiro/crew`, `~/.kirocrew`, and all known Kiro
 identity stores, so setup probes cannot read Kiro Crew state or bearer tokens.
+The per-spec `agent validate` is the one readiness probe outside that posture:
+it runs only after `whoami` succeeded, on the same binary, and Kiro CLI refuses
+it ("You are not logged in") without reading the file when its identity store is
+hidden. So it runs the way `whoami` does: `mode="standard"`, the real home, the
+identity environment, and only the Kiro Crew data homes hidden.
 
 The Tool Search gate's read of a kiro-cli found only through `PATH`
 (`kiro_cli_path_probe`) is the same shape and follows one rule: **the probe

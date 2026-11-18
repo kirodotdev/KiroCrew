@@ -121,7 +121,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_audited_probe": (
         "function",
         True,
-        "(self, action: 'str', executable: 'str', args: 'list[str]', *, first_party_fixed_argv: 'bool' = False) -> 'ProcessResult'",
+        "(self, action: 'str', executable: 'str', args: 'list[str]', *, first_party_fixed_argv: 'bool' = False, signed_in: 'bool' = False) -> 'ProcessResult'",
     ),
     "_dashboard_snapshot": ("function", True, "(self) -> 'dict[str, Any]'"),
     "_kas_bundle_route": ("staticmethod", False, "() -> 'bool'"),
