@@ -6242,6 +6242,20 @@ deletes the kiro-cli replay log (`agent_sdk/codex_transcripts.py`,
 - the shutdown of an incognito or temporary chat, and every other caller of
   `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`, on
   `is_codex_backend`, off the loop);
+- every caller of `AcpSessionProvider.cleanup_session`, such as the crewmate
+  lessons draft (`acp/session_handle_lifecycle.py`, `delete_native_record`, through
+  the same `TeardownPolicy.delete_disposable_record` with the runtime's `extra_env`),
+  and `SessionManager.release(key, cleanup=True)` through `_safe_cleanup` for a key
+  that cannot be continued. That call deletes the record whatever the memory mode,
+  as kiro-cli's unlink does, since nothing can load the key again. On KAS the same
+  call sends `_kiro/session/delete` on the session's runtime, and when that runtime
+  is gone it schedules the delete due now in `released_sessions`, whose sweep sends
+  it on the background runtime. A KAS `AcpProvider.cleanup_session` hands the call
+  to the `AcpSessionProvider` its runtime start put in `_client`, so a provider
+  `get_or_create` hands out unshared takes the same path after its shutdown.
+  `AcpProvider.shutdown` does not make that call on KAS: a non-persistent session's
+  `destroy` has sent `_kiro/session/delete` already, and a persistent one keeps its
+  record;
 - the subagent tombstone prune and `spawn_release`
   (`subagent_persistence._cleanup_session_files_sync` for `PROVIDER_LABEL_CODEX`);
 - the teardown of a session handle on the shared runtime

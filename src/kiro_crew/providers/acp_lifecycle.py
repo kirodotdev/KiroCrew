@@ -157,7 +157,13 @@ async def shutdown(self: AcpProvider) -> None:
             await self._client.shutdown()
         finally:
             try:
-                if self.memory_mode != "persistent" and session_id:
+                if self.is_kas_backend:
+                    # The ``_client.shutdown()`` above already ended a non-persistent
+                    # session with ``_kiro/session/delete`` (the handle's ``destroy``),
+                    # so a second delete would only leave a ``released_sessions``
+                    # entry for a record the engine does not hold.
+                    pass
+                elif self.memory_mode != "persistent" and session_id:
                     await self.cleanup_session(session_id)
             finally:
                 # A cancel delivered during the transcript delete must not skip the reclaim.
@@ -297,10 +303,20 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
     (``agent_sdk.codex_transcripts``). An OpenCode session's is its rows in
     OpenCode's SQLite store, found the same way (``agent_sdk.opencode_transcripts``).
     Each is deleted off the loop, to completion even when cancelled. A pi session's
-    record went before its process ended (``_delete_pi_session``).
+    record went before its process ended (``_delete_pi_session``). A KAS session's
+    record is in the engine's own store, so the call goes to the
+    ``AcpSessionProvider`` the runtime start put in ``_client``; its
+    ``delete_native_record`` sends ``_kiro/session/delete``, or schedules it in
+    ``released_sessions`` when this provider's runtime is already shut down.
     """
     if not session_id:
         return
+    if self.is_kas_backend:
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        if isinstance(self._client, AcpSessionProvider):
+            await self._client.cleanup_session(session_id)
+            return
     if self.is_claude_backend:
         work_dir = str(getattr(self._client, "_work_dir", "") or "")
         await drained_to_thread(delete_claude_session_files, session_id, work_dir)
