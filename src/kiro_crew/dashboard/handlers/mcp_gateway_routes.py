@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -404,6 +404,18 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
 # ─── Per-server poolability management ──────────────────────────────────
 
 
+def declared_launch(row: Mapping[str, Any] | None) -> str | None:
+    """The command+args hashes a server row declares, in the stored binding form.
+
+    ``None`` when the row is missing or declares no command, which every reader
+    treats as "cannot tell", never as a different launch.
+    """
+    from kiro_crew.mcp_gateway.launch_approval import serialize_identities
+
+    ids = row.get("launch_ids") if row else None
+    return serialize_identities(ids) if ids else None
+
+
 def _collect_server_rows() -> dict[str, dict[str, Any]]:
     """Scan the agent specs into one row per distinct server. BLOCKING.
 
@@ -628,6 +640,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     Whether a stubbed server SHARES its backend is not per-row: that is the one
     global switch (``mcp_gateway.enabled``), reported by the status endpoint.
     """
+    from kiro_crew.config.integration_sections import effective_cwd_answer
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
     from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
     from kiro_crew.mcp_gateway.rewriter import (
@@ -724,7 +737,13 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
                 # The operator's answer to "does it work on the project's
                 # files?" (null when unanswered), and whether it is never asked.
-                "cwd_use": (getattr(gw_cfg, "cwd_use", None) or {}).get(name),
+                # A ``not_used`` answer given for a different launch than the one
+                # this name declares now reads as unanswered, so the page asks.
+                "cwd_use": effective_cwd_answer(
+                    (getattr(gw_cfg, "cwd_use", None) or {}).get(name),
+                    (getattr(gw_cfg, "cwd_use_launch", None) or {}).get(name),
+                    declared_launch(row),
+                ),
                 "cwd_proven": name in KIROCREW_BIN_MCP_SERVERS,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
