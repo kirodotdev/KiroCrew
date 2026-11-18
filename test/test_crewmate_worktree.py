@@ -41,21 +41,30 @@ def _git(cwd, *args: str) -> str:
 
 
 @pytest.fixture
-def git_here(monkeypatch):
-    """Git for these tests: sandboxed where the host has a backend, plain otherwise.
+def git_here(monkeypatch, request):
+    """Git for these tests: plain, except in a case that asks for ``sandboxed_git``.
 
-    The Linux CI runners have no sandbox backend, and a skip there would leave
-    the worktree logic untested; the sandbox wrapper itself is tested in
-    ``test_worktree_create``. Windows is skipped up front, before any probe: the
-    sandbox fails closed there ("not Linux"), and these cases are written for
-    POSIX paths, permissions and links.
+    The worktree logic is what these cases test; the sandbox wrapper itself is
+    tested in ``test_worktree_create``. A sandboxed git costs about 0.3 s a spawn
+    on macOS (``sandbox-exec`` compiles the Seatbelt profile on every exec) and each
+    git call here is four spawns with its hook scan, so the sandbox stays off the
+    cases that do not need it. The Linux CI runners have no backend and run every
+    case plain. A case that names ``sandboxed_git`` keeps the host's real sandbox
+    where it has one, so the composition stays covered end to end.
+    Windows is skipped up front, before any probe: the sandbox fails closed there
+    ("not Linux"), and these cases are written for POSIX paths, permissions and links.
     """
     if sys.platform == "win32":
         pytest.skip("sandboxed git does not run on Windows (no backend)")
-    if _sandbox_exec_reason():
+    if "sandboxed_git" not in request.fixturenames or _sandbox_exec_reason():
         from kiro_crew.dashboard.handlers import worktree as wt
 
         monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
+
+
+@pytest.fixture
+def sandboxed_git():
+    """Named by a case that runs its git under the host's real sandbox (see ``git_here``)."""
 
 
 def _init(root, branch: str = "main") -> str:
@@ -87,7 +96,7 @@ def _commit_in(path: str, name: str, message: str) -> None:
 # ── job 1: one worktree per crewmate and repository, on its own branch ──
 
 
-def test_two_crewmates_on_one_repo_get_their_own_worktree_and_branch(repo, tmp_path):
+def test_two_crewmates_on_one_repo_get_their_own_worktree_and_branch(sandboxed_git, repo, tmp_path):
     atlas_ws, briar_ws = str(tmp_path / "ws-atlas"), str(tmp_path / "ws-briar")
     atlas = cw.ensure("atlas", atlas_ws, repo)
     briar = cw.ensure("briar", briar_ws, os.path.join(repo, "docs"))
@@ -616,7 +625,7 @@ def test_paths_on_different_drives_are_not_contained(monkeypatch):
 # ── job 3: removal with the crewmate ──
 
 
-def test_removal_removes_clean_worktrees_and_keeps_everything_else(repo, tmp_path):
+def test_removal_removes_clean_worktrees_and_keeps_everything_else(sandboxed_git, repo, tmp_path):
     ws = str(tmp_path / "ws-atlas")
     other = _init(tmp_path / "shared" / "other")
     clean = cw.ensure("atlas", ws, repo)
