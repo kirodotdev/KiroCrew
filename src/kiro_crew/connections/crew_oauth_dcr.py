@@ -43,7 +43,13 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.connections.crew_oauth import CrewOAuthError, Tokens, TokenStore, _refresh_locks
+from kiro_crew.connections.crew_oauth import (
+    CrewOAuthError,
+    Tokens,
+    TokenStore,
+    _refresh_locks,
+    safe_error_code,
+)
 from kiro_crew.connections.registry import CALLBACK_PATH, DCR_CALLBACK_PORT, get_provider
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery_probe_state import MCP_CLIENT_PROTOCOL_VERSION
@@ -695,9 +701,7 @@ async def _token(client: Client, form: dict[str, str]) -> dict[str, Any]:
     status, doc, _ = await _post(client.token, form=form, auth=auth)
     error = doc.get("error")
     if status >= 400 or error:
-        raise CrewOAuthError(
-            str(error)[:64] if isinstance(error, str) and error else f"token_http_{status}"
-        )
+        raise CrewOAuthError(safe_error_code(error, f"token_http_{status}"))
     return doc
 
 

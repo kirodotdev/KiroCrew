@@ -30,6 +30,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 import urllib.parse
@@ -158,6 +159,20 @@ class CrewOAuthError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+_NOT_CODE_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def safe_error_code(value: Any, default: str) -> str:
+    """The vendor's ``error`` as a coarse code: ``[A-Za-z0-9_.-]``, at most 64 chars.
+
+    The vendor writes ``error``, so control characters, newlines and free text must
+    not reach a log line, an audit field, a mint row or the harness. Anything else
+    is dropped; *default* answers when nothing is left.
+    """
+    code = _NOT_CODE_CHARS.sub("", value)[:64] if isinstance(value, str) else ""
+    return code or default
 
 
 def enabled() -> bool:
@@ -560,7 +575,7 @@ def tokens_from_response(doc: dict[str, Any], now: float) -> Tokens:
     """A token-endpoint answer as :class:`Tokens`, or ``exchange_failed``."""
     access = doc.get("access_token")
     if not isinstance(access, str) or not access or doc.get("error"):
-        raise CrewOAuthError(str(doc.get("error") or "exchange_failed")[:64])
+        raise CrewOAuthError(safe_error_code(doc.get("error"), "exchange_failed"))
     expires_in = doc.get("expires_in")
     refresh = doc.get("refresh_token")
     return Tokens(
@@ -673,7 +688,9 @@ async def _post_token(slug: str, form: dict[str, str]) -> dict[str, Any]:
                         body = None
                     error = body.get("error") if isinstance(body, dict) else None
                     if isinstance(error, str) and error:
-                        raise CrewOAuthError(error[:64])
+                        raise CrewOAuthError(
+                            safe_error_code(error, f"token_http_{resp.status}")
+                        )
                     raise CrewOAuthError(f"token_http_{resp.status}")
                 try:
                     doc = await resp.json(content_type=None)
@@ -1166,6 +1183,7 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
 
 def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
     """One SEL record and one gateway.log line; a provider and a coarse code, never a value."""
+    detail = safe_error_code(detail, "")
     logger.info(
         "Crew OAuth %s for %s: %s%s", operation, slug, outcome, f" ({detail})" if detail else ""
     )
