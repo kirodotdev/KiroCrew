@@ -3,6 +3,7 @@ import { render } from "@testing-library/react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { act } from "react";
 import { StandaloneRouteRecorder } from "./StandaloneRouteRecorder";
+import { usePersistedBool } from "../hooks/usePersistedBool";
 import {
   STANDALONE_LAST_ROUTE_KEY,
   STANDALONE_REOPEN_KEY,
@@ -42,6 +43,27 @@ describe("StandaloneRouteRecorder", () => {
     );
     act(() => navigateTo("/schedule"));
     expect(localStorage.getItem(STANDALONE_LAST_ROUTE_KEY)).toBe("/schedule");
+  });
+
+  it("records the page showing when the switch is turned on, with no navigation", () => {
+    setStandalone(true);
+    let setReopen: (v: boolean) => void = () => {};
+    function Switch() {
+      const [, set] = usePersistedBool(STANDALONE_REOPEN_KEY, false);
+      setReopen = set;
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/settings/display/view"]}>
+        <StandaloneRouteRecorder />
+        <Switch />
+      </MemoryRouter>,
+    );
+    expect(localStorage.getItem(STANDALONE_LAST_ROUTE_KEY)).toBeNull();
+    act(() => setReopen(true));
+    expect(localStorage.getItem(STANDALONE_LAST_ROUTE_KEY)).toBe(
+      "/settings/display/view",
+    );
   });
 
   it("records nothing in the installed app until the person opts in", () => {
