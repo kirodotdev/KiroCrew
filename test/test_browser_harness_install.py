@@ -111,6 +111,37 @@ def _probe_package(root: Path, name: str) -> Path:
     return root
 
 
+#: A package only the gateway's import path holds (``PYTHONPATH``), never an ``-I`` child's.
+_ISOLATED_PROBE = "kc_isolated_probe"
+
+#: The real-interpreter cases share one worker under ``-n auto --dist loadgroup`` and one
+#: module-scoped set of children, so they never cold-start interpreters side by side.
+_REAL_CHILD = pytest.mark.xdist_group(name="browser_harness_install_real_child")
+
+
+@pytest.fixture(scope="module")
+def isolated_child_imports(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bool]:
+    """What a real ``-I`` child of the gateway interpreter can import, asked once per module.
+
+    ``_ISOLATED_PROBE`` is on the gateway's ``sys.path`` and ``PYTHONPATH`` only while the
+    children run; whether the gateway itself finds it is recorded under ``"gateway"``.
+    """
+    tmp = tmp_path_factory.mktemp("isolated_child")
+    root = _probe_package(tmp / "pythonpath", _ISOLATED_PROBE)
+    prefix = tmp / install.PREFIX_LEAF
+    prefix.mkdir()
+    run = functools.partial(install._run, cwd=prefix)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sys, "path", [*sys.path, str(root)])
+        mp.setenv("PYTHONPATH", str(root))
+        importlib.invalidate_caches()
+        verdicts = {"gateway": importlib.util.find_spec(_ISOLATED_PROBE) is not None}
+        for name in (_ISOLATED_PROBE, "json", "pip"):
+            verdicts[name] = install._has_module(name, run)
+    importlib.invalidate_caches()
+    return verdicts
+
+
 def test_the_lock_pins_the_harness_release_with_hashes_on_every_line() -> None:
     text = install.LOCK_FILE.read_text(encoding="utf-8")
     assert f"browser-harness=={HARNESS_VERSION}" in text
@@ -376,22 +407,15 @@ def test_neither_pip_nor_ensurepip_fails_before_any_spawn(tmp_path: Path, monkey
     assert "ensurepip" in excinfo.value.detail
 
 
+@_REAL_CHILD
 def test_a_module_the_gateway_imports_but_an_isolated_child_cannot_does_not_count(
-    tmp_path: Path, monkeypatch
+    isolated_child_imports: dict[str, bool],
 ) -> None:
     """A ``pip`` only on ``PYTHONPATH`` or in the user site is the gateway's, not the
     ``-I`` child's: counting it made the child exit "No module named pip"."""
-    name = "kc_isolated_probe"
-    root = _probe_package(tmp_path / "pythonpath", name)
-    monkeypatch.setattr(sys, "path", [*sys.path, str(root)])
-    monkeypatch.setenv("PYTHONPATH", str(root))
-    importlib.invalidate_caches()
-    assert importlib.util.find_spec(name) is not None  # the gateway sees it
-    prefix = tmp_path / install.PREFIX_LEAF
-    prefix.mkdir()
-    run = functools.partial(install._run, cwd=prefix)
-    assert install._has_module(name, run) is False
-    assert install._has_module("json", run) is True  # control: the child's stdlib
+    assert isolated_child_imports["gateway"] is True  # the gateway sees it
+    assert isolated_child_imports[_ISOLATED_PROBE] is False
+    assert isolated_child_imports["json"] is True  # control: the child's stdlib
 
 
 def test_the_pip_check_is_an_isolated_child_and_its_no_takes_the_ensurepip_path(
@@ -544,8 +568,9 @@ def test_the_installers_children_get_a_scrubbed_env_and_the_prefix_as_cwd(
     assert "PYTHONPATH" not in seen["env"]  # type: ignore[operator]
 
 
+@_REAL_CHILD
 def test_the_installers_pip_reads_no_index_from_the_owners_pip_config(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, isolated_child_imports: dict[str, bool]
 ) -> None:
     """A real pip under the installer's own spawn never sees the owner's pip config.
 
@@ -553,7 +578,7 @@ def test_the_installers_pip_reads_no_index_from_the_owners_pip_config(
     for every locked wheel) would otherwise replace the index the lock was audited
     against, and the Settings page would show pip's raw failure.
     """
-    if not install._has_module("pip", functools.partial(install._run, cwd=tmp_path)):
+    if not isolated_child_imports["pip"]:
         pytest.skip("this interpreter ships no pip an isolated child can run")
     owner_home = tmp_path / "owner"
     index = "https://owner-pip-config.invalid/simple/"
