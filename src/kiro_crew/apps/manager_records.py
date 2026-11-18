@@ -774,6 +774,9 @@ def _write_installed(
         # here go stale but keep their names (see _recorded_app_names).
         for key, (_, kept) in list(_recorded_names_cache.items()):
             _recorded_names_cache[key] = (_STALE_SIGNATURE, kept)
+        from kiro_crew.apps import execution  # module, not name: the facade serves names
+
+        execution.invalidate_shipped_builtin_apps()  # an install, update or re-registration
         try:
             os.utime(meta_path.parent.parent)
         except OSError:
