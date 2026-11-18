@@ -372,6 +372,10 @@ _MAX_PATH_TRANSFER_WORKERS = 8
 # whole run. Busy from ANOTHER process is the lock's answer, not this pool's.
 _MAX_UPDATE_WORKERS = 1
 
+#: Name prefix of the default executor's workers, which the executor liveness
+#: probe (:mod:`kiro_crew.dashboard.executor_watchdog`) counts and samples.
+DEFAULT_EXECUTOR_THREAD_PREFIX = "mc-default"
+
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _subprocess_pool: ThreadPoolExecutor | None = None
@@ -416,7 +420,7 @@ def configure_default_executor() -> None:
     loop = asyncio.get_running_loop()
     pool = ThreadPoolExecutor(
         max_workers=None,  # keep Python's default: min(32, cpu_count + 4)
-        thread_name_prefix="mc-default",
+        thread_name_prefix=DEFAULT_EXECUTOR_THREAD_PREFIX,
     )
     loop.set_default_executor(pool)
 
