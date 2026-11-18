@@ -313,6 +313,100 @@ def test_send_read_stop_close_each_land_on_their_route(env):
     assert env.peer.calls[0]["body"] == {"message": "go", "slot": target, "turn_origin": "agent"}
 
 
+def _page(first: int, total: int, roles: list[str]) -> dict:
+    """A peer slot-detail page: rows ``[first, first + len(roles))`` of *total*."""
+    return {
+        "title": "w",
+        "next_before": first,
+        "total": total,
+        "messages": [{"role": r, "content": f"m{first + i}"} for i, r in enumerate(roles)],
+    }
+
+
+def _read_since(env, page: dict, **fields) -> tuple[int, dict]:
+    target = _create(env)
+    env.peer.calls.clear()
+    env.peer.reply("GET", f"api/chat/slots/{target}", 200, page)
+    return _call(env, "read", crew="lab", target=target, **fields)
+
+
+def test_read_since_returns_only_later_rows_and_a_cursor(env):
+    page = _page(2, 7, ["user", "assistant", "user", "assistant", "user"])
+    status, body = _read_since(env, page, limit=5, since=4)
+    assert status == 200, body
+    assert [m["index"] for m in body["messages"]] == [4, 5, 6]
+    assert [m["content"] for m in body["messages"]] == ["m4", "m5", "m6"]
+    assert (body["next_since"], body["total"]) == (7, 7)
+    # since=N is the peer's older-page read for [N, N+limit), one GET.
+    (only,) = env.peer.calls
+    assert only["params"] == {"limit": "5", "before": "9"}
+
+
+def test_read_since_stops_before_an_in_flight_row(env):
+    page = _page(3, 6, ["user", "assistant", "streaming"])
+    status, body = _read_since(env, page, limit=5, since=4)
+    assert status == 200, body
+    assert [m["index"] for m in body["messages"]] == [4]
+    assert body["next_since"] == 5 and body["streaming"] is True
+
+
+def test_read_since_at_the_end_is_empty_with_the_same_cursor(env):
+    status, body = _read_since(env, _page(3, 6, ["user", "assistant", "user"]), since=6)
+    assert status == 200, body
+    assert body["messages"] == [] and body["next_since"] == 6
+
+
+def test_read_since_past_the_end_is_refused(env):
+    status, body = _read_since(env, _page(3, 6, ["user", "assistant", "user"]), since=9)
+    assert (status, body["code"]) == (409, "cursor_unavailable")
+
+
+def test_read_since_a_page_cut_short_by_bytes_is_refused(env):
+    # The crew dropped [4, 6) from its page for size: serving 6.. would skip them.
+    status, body = _read_since(env, _page(6, 9, ["user", "assistant", "user"]), since=4)
+    assert (status, body["code"]) == (409, "crew_page_cut")
+
+
+def test_read_since_needs_positions_in_the_crew_reply(env):
+    status, body = _read_since(env, {"title": "w", "messages": []}, since=1)
+    assert (status, body["code"]) == (502, "crew_reply_malformed")
+
+
+@pytest.mark.parametrize("since, code", [("-1", "invalid_since"), ("x", "invalid_pagination")])
+def test_a_bad_since_is_refused_before_any_peer_call(env, since, code):
+    target = _create(env)
+    env.peer.calls.clear()
+    status, body = _call(env, "read", crew="lab", target=target, since=since)
+    assert (status, body["code"]) == (400, code)
+    assert env.peer.calls == []
+
+
+def test_a_tail_read_carries_indexes_and_a_cursor(env):
+    status, body = _read_since(env, _page(4, 6, ["user", "assistant"]), limit=2)
+    assert status == 200, body
+    assert [m["index"] for m in body["messages"]] == [4, 5]
+    assert body["next_since"] == 6
+    assert env.peer.calls[0]["params"] == {"limit": "2"}
+
+
+def test_a_tail_read_of_a_running_session_issues_no_cursor(env):
+    # [user, streaming, tool]: limit=1 sees only the tool. The later segment cut
+    # deletes the chunk run and appends the reply at 2, so a cursor of 3 would
+    # skip it for good.
+    page = {**_page(2, 3, ["tool"]), "running": True}
+    status, body = _read_since(env, page, limit=1)
+    assert status == 200, body
+    assert [m["index"] for m in body["messages"]] == [2]
+    assert "next_since" not in body and body["total"] == 3
+
+
+def test_a_since_read_of_a_running_session_still_resumes(env):
+    page = {**_page(4, 6, ["user", "assistant"]), "running": True}
+    status, body = _read_since(env, page, limit=5, since=4)
+    assert status == 200, body
+    assert body["next_since"] == 6
+
+
 def test_close_forgets_the_slot(env):
     target = _create(env)
     assert _call(env, "close", crew="lab", target=target)[0] == 200
