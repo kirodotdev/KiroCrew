@@ -1,12 +1,12 @@
 """``forget_home_bound_caches`` really empties what the pre-boot witness checks.
 
-Upstream issue #33928: the boot smoke test asserts ``_process_is_clean()``, which
-calls ``home_bound_globals_are_clear()``, BEFORE it boots. Several of those globals are
+The boot smoke test asserts ``_process_is_clean()``, which calls
+``home_bound_globals_are_clear()``, BEFORE it boots. Several of those globals are
 caches that a unit test fills by doing real work (running a hook, loading an embedder,
-resolving app permissions) and that production never clears, so whichever test ran
-first on an xdist worker decided whether the boot smoke failed. ``#34112`` added
-``forget_home_bound_caches`` and the ``pytest_runtest_teardown`` call that runs it
-after every test.
+resolving app permissions) and that production never clears, so without a reset
+whichever test ran first on an xdist worker decides whether the boot smoke fails.
+``forget_home_bound_caches`` is that reset, and the ``pytest_runtest_teardown`` call
+runs it after every test.
 
 This module proves the function itself. It cannot be proved the way
 ``test_host_isolation_floor_restores.py`` proves a floor fixture, because the leak is
@@ -39,8 +39,10 @@ def test_real_work_fills_the_caches():
     sandbox_rlimit._SHIM_ARGV_CACHE["tool"] = ("/some/where/python", "-I", "-S")
     embeddings._shared_embedder = object()
     embeddings._download_manager = object()
-    token_auth._app_perms_cache = {"app": frozenset({"tool"})}
-    token_auth._app_perms_denied = {"app": frozenset({"tool"})}
+    # Filled in place: rebinding through the facade would leave the owner module
+    # holding a stand-in of the wrong type after the reset clears it.
+    token_auth._app_perms_cache["app"] = (0.0, ("tool",))
+    token_auth._app_perms_denied.add("app")
     assert governance._CONFIRM_PATTERNS_MEMO is not None
 """
 
