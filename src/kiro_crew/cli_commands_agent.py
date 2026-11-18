@@ -558,15 +558,15 @@ def _agent_reset_model(args: argparse.Namespace) -> None:
     try:
         spec_path, previous = reset_agent_model(name)
     except FileNotFoundError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         sys.exit(1)
     except ValueError as exc:
         # Ambiguous: two specs claim the name and the runtime's choice between
         # them is undefined, so resetting either could strip the wrong one.
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         sys.exit(1)
     except OSError as exc:
-        print(f"Error: Could not write the agent spec: {exc}", file=sys.stderr)
+        print(f"❌ Could not write the agent spec: {exc}", file=sys.stderr)
         sys.exit(1)
 
     if previous:
@@ -576,7 +576,7 @@ def _agent_reset_model(args: argparse.Namespace) -> None:
         # `model` value AND in the FILENAME -- the declared-name scan returns
         # whichever file declares the requested name, so its path is attacker-
         # shaped even though *name* itself is grammar-validated.
-        print(f"Done: Cleared {name}'s pinned model ({previous!r}) in {str(spec_path)!r}")
+        print(f"✅ Cleared {name}'s pinned model ({previous!r}) in {str(spec_path)!r}")
     else:
-        print(f"Done: {name} had no pinned model in {str(spec_path)!r}")
+        print(f"✅ {name} had no pinned model in {str(spec_path)!r}")
     print("   It now tracks the shipped default; restart the gateway to apply.")

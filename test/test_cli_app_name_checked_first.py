@@ -113,7 +113,7 @@ def test_disable_reports_a_failed_deregistration(
     captured = capsys.readouterr()
     assert "skill deregistration failed: EACCES" in captured.err
     assert "marked disabled" in captured.err
-    assert "Done: " not in captured.out
+    assert "✅" not in captured.out
     lifecycle_mocks.disable.assert_called_once_with("demo")
 
 
@@ -139,4 +139,4 @@ def test_good_name_still_runs_every_step(
     cc._handle_app(_ns(app_action=action, name="demo", purge_data=False))
     lifecycle_mocks.cleanup.assert_called_once_with("demo")
     lifecycle_mocks.deregister.assert_called_once_with("demo")
-    assert "Done: " in capsys.readouterr().out
+    assert "✅" in capsys.readouterr().out

@@ -178,7 +178,7 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
             config_dir(), port=port or None, bind_address=signin.BIND_HOST, signed_out=True
         ).acquire()
     except GatewayLockError as lock_err:
-        print(f"Error: {lock_err}", file=sys.stderr)
+        print(f"👻 {lock_err}", file=sys.stderr)
         # The same refusal as the gateway's own lock below, and the same notice.
         from kiro_crew.data_home_owner import print_if_data_home_not_owned
 
@@ -323,7 +323,7 @@ def _exit_on_pending_save(entry: Callable[[], None]) -> Callable[[], None]:
         try:
             entry()
         except PendingEditBlocksSave as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"❌ {exc}", file=sys.stderr)
             raise SystemExit(1) from None
 
     return run
@@ -370,14 +370,14 @@ def main() -> None:
             _port_val = int(_raw_port)
         except ValueError:
             print(
-                f"Error: KIROCREW_PORT={_raw_port!r} is not a valid integer.\n"
+                f"❌ KIROCREW_PORT={_raw_port!r} is not a valid integer.\n"
                 f"   Unset it or provide a numeric port (e.g. KIROCREW_PORT=6777).",
                 file=sys.stderr,
             )
             sys.exit(1)
         if not 1 <= _port_val <= 65535:
             print(
-                f"Error: KIROCREW_PORT={_raw_port!r} is outside the valid port range 1-65535.\n"
+                f"❌ KIROCREW_PORT={_raw_port!r} is outside the valid port range 1-65535.\n"
                 f"   Unset it or provide a bindable port (e.g. KIROCREW_PORT=6777).",
                 file=sys.stderr,
             )
@@ -819,7 +819,7 @@ def main() -> None:
                 # 'sandbox.enabeld' (fail-closed)"), so print it on one line
                 # and exit 1 instead of a traceback; doctor shows the detail.
                 logging.getLogger("kiro_crew").debug("platform composition failed", exc_info=True)
-                print(f"Error: {exc}", file=sys.stderr)
+                print(f"❌ {exc}", file=sys.stderr)
                 print("   Run `kirocrew doctor` for details.", file=sys.stderr)
                 raise SystemExit(1) from None
         else:
@@ -951,7 +951,7 @@ def main() -> None:
                 bind_address=_diagnostic_bind_address(),
             ).acquire()
         except GatewayLockError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"👻 {exc}", file=sys.stderr)
             # Files an earlier root run left are named here: this start ends before
             # the after-ready notice that would name them.
             from kiro_crew.data_home_owner import print_if_data_home_not_owned
@@ -1160,7 +1160,7 @@ def main() -> None:
         _stop(args.port, expect_pid=args.expect_pid)
     elif args.command == "restart":
         if args.max_wait is not None and not args.when_idle:
-            print("Error: --max-wait applies only with --when-idle.", file=sys.stderr)
+            print("❌ --max-wait applies only with --when-idle.", file=sys.stderr)
             sys.exit(2)
         if args.when_idle:
             from kiro_crew.cli_restart_idle import _restart_when_idle

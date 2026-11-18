@@ -57,7 +57,7 @@ def _refused(home: Path, key: str, value: str, *, local: bool = False, capsys) -
 def test_json_array_is_stored_as_a_list(home, capsys):
     _set(home, TRUSTED, '["a","b"]')
     assert _read(home / "config.json")["agent"]["apps_trusted"] == ["a", "b"]
-    assert "Done: " in capsys.readouterr().out
+    assert "✅" in capsys.readouterr().out
 
 
 def test_empty_json_array_clears_the_list(home):
@@ -257,7 +257,7 @@ def _refused_encoded(home: Path, *, capsys, **kwargs) -> str:
 def test_an_encoded_unicode_list_is_stored_exactly(home, capsys):
     _set_encoded(home, EXTRA_PATHS, UNICODE_TOKEN)
     assert _read(home / "config.json")["skills"]["extra_paths"] == [UNICODE_PATH]
-    assert "Done: " in capsys.readouterr().out
+    assert "✅" in capsys.readouterr().out
 
 
 def test_the_encoded_empty_list_token_writes_an_empty_list(home):
@@ -300,7 +300,7 @@ def test_the_equals_empty_form_is_empty_text_not_a_missing_value(home, capsys):
     _set_encoded(home, "dashboard.url", "")
     captured = capsys.readouterr()
     assert "Usage:" not in captured.err
-    assert "Done: " in captured.out
+    assert "✅" in captured.out
     assert _read(home / "config.json")["dashboard"]["url"] == ""
 
 
@@ -350,9 +350,7 @@ def test_a_malformed_token_leaves_a_stored_value_untouched(home, capsys):
 
     err = _refused_encoded(home, capsys=capsys, key=TRUSTED, token="W10")
 
-    assert (
-        err == "Error: --value-base64: not valid standard Base64 (check the padding and alphabet)\n"
-    )
+    assert err == "❌ --value-base64: not valid standard Base64 (check the padding and alphabet)\n"
     assert (home / "config.json").read_text(encoding="utf-8") == before
 
     # A well-formed token for the same key replaces the value, so the refusal above is

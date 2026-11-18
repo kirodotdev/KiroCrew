@@ -334,7 +334,7 @@ class TestAReplaceRestoreKeepsTheLiveTeamList:
         assert rc == 0, printed
         assert _read_teams(home) == AFTER, "a backslash skip removed the live team list"
         assert "kept the live teams.json" in printed
-        assert "Done: crew-teams" not in printed
+        assert "✅ crew-teams" not in printed
 
     @pytest.mark.parametrize("why", ["sandboxed", "unreadable"])
     def test_a_bundle_that_skipped_crew_teams(self, home, tmp_path, monkeypatch, capsys, why):
@@ -353,7 +353,7 @@ class TestAReplaceRestoreKeepsTheLiveTeamList:
         assert rc == 0, printed
         assert _read_teams(home) == AFTER, "the restore replaced or removed the live team list"
         assert "kept the live teams.json" in printed, printed
-        assert "Done: crew-teams" not in printed
+        assert "✅ crew-teams" not in printed
 
     def test_a_manifest_past_the_prune_read_bound_still_keeps_it(
         self, home, tmp_path, monkeypatch, capsys

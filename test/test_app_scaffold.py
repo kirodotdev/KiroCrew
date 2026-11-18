@@ -738,7 +738,7 @@ class TestScaffold:
         captured = capsys.readouterr()
         # Pin the contract (clean error prefix on stderr), not the specific
         # refusal wording, which differs by escape shape.
-        assert captured.err.startswith("Error: ")
+        assert captured.err.startswith("\u274c ")
         assert not (tmp_path / "evil").exists()
 
     def test_scaffold_cli_dir_that_is_a_file_prints_clean_error(self, tmp_path, monkeypatch, capsys):
@@ -761,7 +761,7 @@ class TestScaffold:
             pytest.fail(f"the OSError escaped as a traceback: {exc!r}")
         assert code == 1
         captured = capsys.readouterr()
-        assert captured.err.startswith("Error: cannot write ")
+        assert captured.err.startswith("\u274c cannot write ")
         assert captured.out == ""
 
     def test_scaffold_with_ui(self, tmp_path):

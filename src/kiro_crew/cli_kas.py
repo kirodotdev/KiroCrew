@@ -215,13 +215,13 @@ HOST_UNSUPPORTED_EXIT = 3
 
 #: The line an optional refresh ends with when it did not install the engine.
 _OPTIONAL_RETRY_LINE = (
-    "Warning: The KAS engine for this release was not installed; agent.kas_bundle is off, "
+    "⚠  The KAS engine for this release was not installed; agent.kas_bundle is off, "
     "so the update goes on. Retry with: kirocrew kas install"
 )
 
 #: The line an optional refresh ends with when this host cannot run the engine.
 _OPTIONAL_UNSUPPORTED_LINE = (
-    "Warning: This host cannot run the KAS engine (see above); agent.kas_bundle is off, "
+    "⚠  This host cannot run the KAS engine (see above); agent.kas_bundle is off, "
     "so the update goes on."
 )
 
@@ -255,7 +255,7 @@ def _install_optional(args: argparse.Namespace) -> int:
 
     def _hard_stop() -> None:
         print(
-            f"Error: the engine refresh did not finish within "
+            f"❌ the engine refresh did not finish within "
             f"{release_apply.ENGINE_OPTIONAL_HARD_STOP_SECS:.0f}s",
             file=sys.stderr,
         )
@@ -270,7 +270,7 @@ def _install_optional(args: argparse.Namespace) -> int:
             args, deadline=time.monotonic() + release_apply.ENGINE_OPTIONAL_DEADLINE_SECS
         )
     except Exception as exc:  # noqa: BLE001 - an optional refresh never fails the update
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         rc = 1
     finally:
         timer.cancel()
@@ -315,7 +315,7 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
             source_dir = Path(args.from_dir).expanduser().resolve()
             manifest_path = source_dir / kas_bundle.KAS_BUNDLE_MANIFEST_NAME
             if not manifest_path.is_file():
-                print(f"Error: {manifest_path} not found", file=sys.stderr)
+                print(f"❌ {manifest_path} not found", file=sys.stderr)
                 return 1
             import json
 
@@ -327,16 +327,13 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
                 manifest_bytes = manifest_path.read_bytes()
                 manifest_doc = json.loads(manifest_bytes.decode("utf-8"))
             except (OSError, UnicodeDecodeError, ValueError) as exc:
-                print(
-                    f"Error: {manifest_path} is not a readable JSON manifest: {exc}",
-                    file=sys.stderr,
-                )
+                print(f"❌ {manifest_path} is not a readable JSON manifest: {exc}", file=sys.stderr)
                 return 1
             manifest = kas_bundle.parse_manifest(manifest_doc)
             want = args.version or KAS_PIN_VERSION
             if manifest.version != want:
                 print(
-                    f"Error: {manifest_path} describes KAS {manifest.version}, not {want}",
+                    f"❌ {manifest_path} describes KAS {manifest.version}, not {want}",
                     file=sys.stderr,
                 )
                 return 1
@@ -345,7 +342,7 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
                 or kas_bundle.sha256_bytes(manifest_bytes) != KAS_PIN_MANIFEST_SHA256
             ):
                 print(
-                    f"Error: {manifest_path} is not the manifest this release pins "
+                    f"❌ {manifest_path} is not the manifest this release pins "
                     f"(KAS {KAS_PIN_VERSION}); pass --unpinned to install it anyway",
                     file=sys.stderr,
                 )
@@ -358,7 +355,7 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
             version = args.version or KAS_PIN_VERSION
             if version != KAS_PIN_VERSION and not args.unpinned:
                 print(
-                    f"Error: this release pins KAS {KAS_PIN_VERSION}; pass --unpinned to install "
+                    f"❌ this release pins KAS {KAS_PIN_VERSION}; pass --unpinned to install "
                     f"{version} for testing",
                     file=sys.stderr,
                 )
@@ -386,10 +383,10 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
             manifest, source=source, force=args.force, on_progress=on_progress
         )
     except kas_bundle.KasHostUnsupported as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         return HOST_UNSUPPORTED_EXIT
     except kas_bundle.KasBundleError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         return 1
     return _report_installed(installed, already=False)
 
@@ -397,11 +394,11 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
 def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool) -> int:
     if already:
         print(
-            f"Done: KAS {installed.version} is already installed at {installed.root} "
+            f"✅ KAS {installed.version} is already installed at {installed.root} "
             "(use --force to replace it)"
         )
     else:
-        print(f"Done: KAS {installed.version} installed at {installed.root}")
+        print(f"✅ KAS {installed.version} installed at {installed.root}")
     if installed.version != pinned_version():
         print(
             f"   (not the version the harness runs, {pinned_version()}; set "
@@ -473,11 +470,11 @@ def _remove(args: argparse.Namespace) -> int:
     # --version (an unset "$VAR") is refused before anything is read or deleted:
     # read as falsy it would widen a one-version delete to the whole engines root.
     if args.version is not None and not args.version.strip():
-        print("Error: --version is blank; omit it to remove every version", file=sys.stderr)
+        print("❌ --version is blank; omit it to remove every version", file=sys.stderr)
         return 2
     if args.version is not None:
         if args.version not in kas_bundle.installed_versions(root=root):
-            print(f"Error: KAS {args.version} is not installed", file=sys.stderr)
+            print(f"❌ KAS {args.version} is not installed", file=sys.stderr)
             return 1
         root = root / args.version
     if not root.exists():
@@ -503,7 +500,7 @@ def _remove(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:
-        print(f"Error: could not remove {root}: {exc}", file=sys.stderr)
+        print(f"❌ could not remove {root}: {exc}", file=sys.stderr)
         return 1
     print(f"removed {root}")
     return 0

@@ -316,7 +316,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         bad_path = None
     except ConfigReadError as exc:
         print(
-            f"Error: {bad_path} is not usable ({exc}); refusing to continue, because "
+            f"❌ {bad_path} is not usable ({exc}); refusing to continue, because "
             "even reading it would rewrite it. Fix that file, then retry.",
             file=sys.stderr,
         )
@@ -373,7 +373,7 @@ def _tailnet(args: argparse.Namespace) -> None:
             else None
         )
         if refused is not None:
-            print(f"Error: {refused.detail}", file=sys.stderr)
+            print(f"❌ {refused.detail}", file=sys.stderr)
             sys.exit(1)
 
     if action == "up" and not port_source:
@@ -390,7 +390,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # fallback: one only reports, and the other checks mount ownership before
         # removing anything.
         print(
-            f"Error: Cannot tell which port the dashboard is on, so refusing to publish "
+            f"❌ Cannot tell which port the dashboard is on, so refusing to publish "
             f"{port} — nothing is verified to be listening there, and `tailscale "
             f"serve` would expose whatever is. Start the gateway that serves the "
             f"dashboard (`kirocrew gateway`, or `kirocrew service install` to keep "
@@ -403,7 +403,7 @@ def _tailnet(args: argparse.Namespace) -> None:
     if action == "status":
         if tailnet.policy_off():
             # The enterprise policy does not turn tailnet on; no daemon is read.
-            print("Tailnet dashboard access")
+            print("👻 Tailnet dashboard access")
             print(f"   Policy:     {tailnet.POLICY_OFF_DETAIL}")
             print(
                 f"   Trust:      {'enabled' if enabled else 'disabled'} "
@@ -418,7 +418,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # "in the allowlist".
         name = tailnet.self_dns_name()
         state = tailnet_serve.serve_state(port)
-        print("Tailnet dashboard access")
+        print("👻 Tailnet dashboard access")
         if pinned:
             print(
                 "   Policy:     PINNED OFF by your administrator " "(capabilities.tailnet_origin)"
@@ -438,12 +438,12 @@ def _tailnet(args: argparse.Namespace) -> None:
         return
 
     if action not in ("up", "down"):
-        print(f"Error: Unknown tailnet action: {action}", file=sys.stderr)
+        print(f"❌ Unknown tailnet action: {action}", file=sys.stderr)
         sys.exit(1)
 
     if action == "down":
         result = tailnet_serve.unpublish(port)
-        print(("Done: " if result.ok else "Error: ") + result.detail)
+        print(("✅ " if result.ok else "❌ ") + result.detail)
         if result.ok:
             # The trust setting is deliberately left ON. It contributes one origin
             # that nothing can reach while serve is off, so clearing it would be
@@ -479,7 +479,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # disables this is caught here too -- printing "published" while the gateway
         # will still refuse the origin is the exact false promise to avoid.
         print(
-            "Error: dashboard.tailscale.enabled is false, so the gateway would refuse "
+            "❌ dashboard.tailscale.enabled is false, so the gateway would refuse "
             "your tailnet origin even once published — refusing to publish a "
             "dashboard that would answer 403.\n"
             "   Enable it once, then re-run this command:\n"
@@ -492,22 +492,22 @@ def _tailnet(args: argparse.Namespace) -> None:
 
     result = tailnet_serve.publish(port, audit_tool="tailnet_cli_up")
     if not result.ok:
-        print(f"Error: {result.detail}", file=sys.stderr)
+        print(f"❌ {result.detail}", file=sys.stderr)
         sys.exit(1)
-    print(f"Done: {result.detail}")
+    print(f"✅ {result.detail}")
 
     name = tailnet.self_dns_name()
     if name:
-        print(f"URL:        https://{name}")
+        print(f"👻 URL:        https://{name}")
     else:
         print(
-            "Warning: No tailnet name is resolvable right now, so the gateway will not "
+            "⚠️  No tailnet name is resolvable right now, so the gateway will not "
             "trust anything on restart. Check `tailscale status`."
         )
     # Said unconditionally, including when the switch was already on: the origin
     # is resolved once at startup, so a gateway that booted before this command
     # has an allowlist that does not contain the name yet.
-    print("Restart the gateway for the tailnet origin to be trusted.")
+    print("👻 Restart the gateway for the tailnet origin to be trusted.")
 
 
 def _telemetry(args: argparse.Namespace) -> None:
@@ -545,7 +545,7 @@ def _telemetry(args: argparse.Namespace) -> None:
         return
 
     if action not in ("disable", "enable"):
-        print(f"Error: Unknown telemetry action: {action}", file=sys.stderr)
+        print(f"❌ Unknown telemetry action: {action}", file=sys.stderr)
         sys.exit(1)
 
     want = action == "enable"
@@ -561,7 +561,7 @@ def _telemetry(args: argparse.Namespace) -> None:
     # the trail readable about WHICH control refused.
     if want and beacon.is_governance_pinned_off(audit_tool="telemetry_enable_cli"):
         print(
-            "Error: The anonymous beacon is pinned OFF by your administrator's "
+            "❌ The anonymous beacon is pinned OFF by your administrator's "
             "security policy (capabilities.telemetry).",
             file=sys.stderr,
         )
@@ -593,7 +593,7 @@ def _telemetry(args: argparse.Namespace) -> None:
             # Should not happen (read_config_for_update rejects non-objects),
             # but guard defensively.
             print(
-                f"Error: {path} is not a JSON object ({type(data).__name__}); refusing to "
+                f"❌ {path} is not a JSON object ({type(data).__name__}); refusing to "
                 "overwrite it. Fix or move the file, then retry.",
                 file=sys.stderr,
             )
@@ -610,7 +610,7 @@ def _telemetry(args: argparse.Namespace) -> None:
                 continue
             if not isinstance(existing, dict):
                 print(
-                    f'Error: {path} has a non-object "{name}" value '
+                    f'❌ {path} has a non-object "{name}" value '
                     f"({type(existing).__name__}); refusing to overwrite it. Fix or "
                     "remove it, then retry.",
                     file=sys.stderr,
@@ -657,15 +657,15 @@ def _telemetry(args: argparse.Namespace) -> None:
         err_str = str(exc)
         if "not a JSON object" in err_str:
             print(
-                f"Error: {path} is not a JSON object; refusing to "
+                f"❌ {path} is not a JSON object; refusing to "
                 "overwrite it. Fix or move the file, then retry.",
                 file=sys.stderr,
             )
         else:
-            print(f"Error: Could not read {path}: {exc}", file=sys.stderr)
+            print(f"❌ Could not read {path}: {exc}", file=sys.stderr)
         sys.exit(1)
     except OSError as exc:
-        print(f"Error: Could not write {path}: {exc}", file=sys.stderr)
+        print(f"❌ Could not write {path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
     # Verify the write actually took EFFECT before claiming success.
@@ -701,7 +701,7 @@ def _telemetry(args: argparse.Namespace) -> None:
     if effective != want:
         state = "ENABLED" if effective else "DISABLED"
         print(
-            f"Warning: Wrote {path.name}, but the beacon is still {state}: an overlay "
+            f"⚠️  Wrote {path.name}, but the beacon is still {state}: an overlay "
             "in config.local.json takes precedence.",
             file=sys.stderr,
         )
@@ -1052,7 +1052,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.cli_commands_gateway_api import (  # noqa: F401
         _SPAWN_WAIT_SECS,
-        _STATUS_WIDTH,
         _artifact,
         _client_port,
         _create_cron_folder,

@@ -236,7 +236,7 @@ def _print_marker(line: str) -> None:
 
 def _refuse(reason: str) -> NoReturn:
     """Exit :data:`EXIT_GATE_REFUSED` without restarting: idleness could not be established."""
-    print(f"Error: Not restarted: {reason}")
+    print(f"❌ Not restarted: {reason}")
     _print_marker(REFUSED_MARKER)
     sys.exit(EXIT_GATE_REFUSED)
 
@@ -346,7 +346,7 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
                 # No marker, and the service manager could not be read: nothing
                 # shows the service runs another process, so the idle answer stands.
                 print(
-                    "Note: Could not verify that this gateway is the kirocrew service's own "
+                    "ℹ️ Could not verify that this gateway is the kirocrew service's own "
                     "(its service definition has no marker, and the service manager did not "
                     "answer). Restarting the service. `kirocrew service install` refreshes "
                     "an older definition."
@@ -354,7 +354,7 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
             break
         if verdict.state == "unsupported":
             print(
-                "Error: Not restarted: the running gateway cannot report its in-flight work "
+                "❌ Not restarted: the running gateway cannot report its in-flight work "
                 "(it runs an older version). Restart it from its own dashboard, or run "
                 "`kirocrew restart` to restart it now and stop whatever is running."
             )
@@ -363,13 +363,13 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
         remaining = deadline - _now()
         if remaining <= 0:
             print(
-                f"Error: Not restarted: the gateway is still running {_describe(verdict)}. "
+                f"❌ Not restarted: the gateway is still running {_describe(verdict)}. "
                 "Try again later, or run `kirocrew restart` to restart it now and stop that work."
             )
             _print_marker(busy_marker(verdict.turns, verdict.background))
             sys.exit(EXIT_BUSY)
         pause = min(POLL_SECS, remaining)
-        print(f"The gateway is running {_describe(verdict)}; checking again in {pause:.0f}s.")
+        print(f"⏳ The gateway is running {_describe(verdict)}; checking again in {pause:.0f}s.")
         _sleep(pause)
     # Through the facade, so a patch of ``kiro_crew.cli_server._restart`` reaches it.
     from kiro_crew.cli_server import _restart

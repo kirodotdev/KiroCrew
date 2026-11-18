@@ -274,7 +274,7 @@ def test_platform_composition_error_still_aborts_mcp_core(monkeypatch, capsys) -
     assert exited.value.code == 1
     assert dispatched == [], "mcp-core dispatched despite a failed platform composition"
     err = capsys.readouterr().err
-    assert "Error: companion missing" in err
+    assert "❌ companion missing" in err
     assert "Traceback" not in err
 
 
@@ -296,6 +296,6 @@ def test_a_policy_error_reaches_policy_validate_as_one_line(monkeypatch, capsys)
     assert exited.value.code == 1
     assert ran == []
     err = capsys.readouterr().err
-    assert "Error: unknown governed key 'sandbox.enabeld' (fail-closed)" in err
+    assert "❌ unknown governed key 'sandbox.enabeld' (fail-closed)" in err
     assert "kirocrew doctor" in err
     assert "Traceback" not in err

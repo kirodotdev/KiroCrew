@@ -200,11 +200,11 @@ def _merge_memory(src_db: Path, dst_db: Path) -> bool:
             result = conn.execute("PRAGMA src.integrity_check;").fetchone()[0]
         except Exception as e:
             conn.rollback()
-            print(f"  Warning: Source DB unreadable: {e} — skipping merge")
+            print(f"  ⚠️  Source DB unreadable: {e} — skipping merge")
             return False
         if result != "ok":
             conn.rollback()
-            print(f"  Warning: Source DB integrity check failed: {result} — skipping merge")
+            print(f"  ⚠️  Source DB integrity check failed: {result} — skipping merge")
             return False
         for table, cols, where in [
             (
@@ -271,7 +271,7 @@ def _usable_cron_shape(parsed: object, path: Path) -> bool:
     one's. A missing ``jobs`` key keeps its existing meaning of "no jobs".
     """
     if not isinstance(parsed, dict):
-        print(f"  Warning: {path} is not a cron file — skipping cron merge")
+        print(f"  ⚠️  {path} is not a cron file — skipping cron merge")
         return False
     jobs = parsed.get("jobs", [])
     if not isinstance(jobs, list) or not all(
@@ -288,7 +288,7 @@ def _usable_cron_shape(parsed: object, path: Path) -> bool:
         )
         for job in jobs
     ):
-        print(f"  Warning: {path} has an unusable job list — skipping cron merge")
+        print(f"  ⚠️  {path} has an unusable job list — skipping cron merge")
         return False
     return True
 
@@ -321,7 +321,7 @@ def _merge_crons(src_path: Path, dst_path: Path) -> bool:
         try:
             src = json.loads(_read_cron_store_once(src_path, what="bundle's cron store")[0])
         except (OSError, ValueError) as exc:
-            print(f"  Warning: Could not read {src_path}: {exc} — skipping cron merge")
+            print(f"  ⚠️  Could not read {src_path}: {exc} — skipping cron merge")
             return False
         try:
             if pinned_fs.supports_pinned_walk():
@@ -338,7 +338,7 @@ def _merge_crons(src_path: Path, dst_path: Path) -> bool:
             )
             dst = json.loads(dst_text)
         except (OSError, ValueError) as exc:
-            print(f"  Warning: Could not read {dst_path}: {exc} — skipping cron merge")
+            print(f"  ⚠️  Could not read {dst_path}: {exc} — skipping cron merge")
             return False
         if not _usable_cron_shape(src, src_path) or not _usable_cron_shape(dst, dst_path):
             return False
@@ -463,7 +463,7 @@ def _write_merged_crons(
     # A backup from before "local" became the default keeps its unzoned jobs on UTC.
     if not settle_documents_before_merge(src, dst):
         print(
-            "  Warning: config.json could not be read, so cron jobs from before the local "
+            "  ⚠️  config.json could not be read, so cron jobs from before the local "
             "time zone default cannot be settled — skipping cron merge"
         )
         return False
@@ -489,9 +489,7 @@ def _write_merged_crons(
     else:
         now = pinned_fs.lstat_by_name(dst_path)
     if now is None or not _stat.S_ISREG(now.st_mode) or (now.st_dev, now.st_ino) != seen_ident:
-        print(
-            f"  Warning: {dst_path} was replaced while the cron merge read it — skipping cron merge"
-        )
+        print(f"  ⚠️  {dst_path} was replaced while the cron merge read it — skipping cron merge")
         return False
     if in_place and dst_fd is not None:
         data = document.encode("utf-8")
@@ -696,7 +694,7 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
         )
     except OSError as exc:
         # No `_safe_name`: this is the operator's live data home, not an archive name.
-        print(f"  Warning: Could not read {dst_path}: {exc} — merge aborted")
+        print(f"  ⚠️  Could not read {dst_path}: {exc} — merge aborted")
         raise
     try:
         out = os.fdopen(dst_fd, "r+b")
@@ -715,7 +713,7 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
         except (OSError, UnreadableRecord) as exc:
             # Same no-wrap rationale as the open above: the live path is the
             # operator's own, not archive-derived.
-            print(f"  Warning: Could not read {dst_path}: {exc} — merge aborted")
+            print(f"  ⚠️  Could not read {dst_path}: {exc} — merge aborted")
             raise
         # The ENTIRE source is validated before anything is appended. Without this
         # pass, a source whose Nth record is undecodable or over-cap has already
@@ -735,7 +733,7 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
             # trust the restore. The exception is safe to print raw:
             # `_open_notification_file`'s own refusals embed the path with `!r`,
             # and an `OSError` raised by the OS renders its filename repr-escaped.
-            print(f"  Warning: Could not read {_safe_name(src_path)}: {exc} — merge aborted")
+            print(f"  ⚠️  Could not read {_safe_name(src_path)}: {exc} — merge aborted")
             raise
         try:
             f = os.fdopen(src_fd, "rb")
@@ -758,7 +756,7 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
                 # directory name reaches neither exception's `str()` raw. Widening
                 # this `except` tuple means re-checking that, because a type
                 # formatting a path with `str()` would need the wrapper.
-                print(f"  Warning: Could not read {_safe_name(src_path)}: {exc} — merge aborted")
+                print(f"  ⚠️  Could not read {_safe_name(src_path)}: {exc} — merge aborted")
                 raise
             imported = 0
             try:
@@ -802,7 +800,7 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
                 # prefix landed, and identity-less rows in it will re-append on a
                 # retry.
                 print(
-                    f"  Warning: Stopped merging {_safe_name(src_path)} after {imported} record(s): {exc}"
+                    f"  ⚠️  Stopped merging {_safe_name(src_path)} after {imported} record(s): {exc}"
                 )
                 raise
     print(f"  Notifications imported: {imported}")
@@ -977,7 +975,7 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
         # `_safe_name` on the path: an archive-derived path can carry ANSI controls. The
         # exception needs none; both caught types render paths with repr escaping.
         tail = f"{written} imported" if opened_dst else "notifications not imported"
-        print(f"  Warning: Could not copy {_safe_name(src_path)}: {exc} — {tail}")
+        print(f"  ⚠️  Could not copy {_safe_name(src_path)}: {exc} — {tail}")
         raise
 
 
@@ -1094,7 +1092,7 @@ def _report_unmerged_databases(src_tree: Path, dst_tree: Path, tree: str) -> Non
         if not is_product_tree_database(rel) or not (dst_tree / leaf).is_file():
             continue
         print(
-            f"  Warning: {_safe_name(rel)}: kept the existing database; the bundle's copy was NOT "
+            f"  ⚠️  {_safe_name(rel)}: kept the existing database; the bundle's copy was NOT "
             "merged into it.\n"
             "      Merge mode does not combine this database's rows. To take the "
             "bundle's copy instead, use --mode replace."

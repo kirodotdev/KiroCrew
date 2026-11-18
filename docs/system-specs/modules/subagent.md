@@ -4099,15 +4099,12 @@ gateway judges it on shape only, it outranks the member's and the template's pin
 and it is never routed (`subagent_parts/model_choice.py` skips tier routing for
 any run that names a model). A name or model that sanitizes to empty (only
 whitespace or hidden characters) is refused before any request.
-`kirocrew spawn list` lists current runs, each led by a status word padded to
-one width so the columns line up. A finished run's word comes from its
-`outcome`, never from whether `error` is empty: `completed` shows `done`,
-`stopped` shows `stopped`, and `failed` or any other value shows `failed` with
-`(<error>)`, the error confined to one terminal line. A run in progress shows
-`running`, one waiting for spawn approval `waiting`, and an accepted spawn with no
-run yet `queued`. Only a row with
+`kirocrew spawn list` lists current runs. A finished run's icon comes from its
+`outcome`, never from whether `error` is empty: `completed` shows ✅, `stopped`
+shows ⏹ with `(stopped)`, and `failed` or any other value shows ❌ with
+`(failed: <error>)`, the error confined to one terminal line. Only a row with
 neither `outcome` nor `error`, from a gateway that sends no `outcome`, also
-shows `done`.
+shows ✅.
 
 ### MCP Tool: `spawn_run`
 
