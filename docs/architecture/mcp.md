@@ -132,6 +132,20 @@ kiro-cli-only. Managed servers are skipped by every merge loop: their
 `command`/`args` are set by `_refresh_dynamic_fields()` and must not be
 overwritten by a stale global entry.
 
+**A raw slash key's tool list reaches the alias it mounts as.** kiro-cli refuses a
+`/` in a server key, so `npm:@playwright/mcp` mounts as `playwright-mcp`, and a
+non-clean rebuild finds that rendered alias in its base beside the raw key the merge
+adds again. After command resolution and before key normalization,
+`mcp_sources.reconcile_raw_key_tool_overrides()` gives the alias the merged raw
+entry's `disabledTools`, or removes the alias's list when the merged entry has none.
+A list changed after the first rebuild, by the dashboard or by hand in any scope,
+therefore updates the one mount instead of mounting the server again as
+`playwright-mcp-2`. It applies only when no scope declares the alias itself and the
+two entries match apart from `disabledTools`
+(`mcp_aliases.raw_tools_project_onto_alias()`); any other pair keeps the normal
+collision handling. The merged entry is the one read, so a Kiro global guard on the
+raw key survives a store entry that omits the field.
+
 **Resolution-aware fallback.** The same server can be defined in several sources
 with different commands. If the merged winner's `command` does not resolve (a
 bare command whose binary is not on the rebuild PATH), the rebuild retries the
@@ -1112,6 +1126,15 @@ key, else the single raw key whose alias it is (`npm:@playwright/mcp` for the ro
 `playwright-mcp`). A name that is the alias of several raw keys is refused with `409`
 and `"code": "mcp_server_name_ambiguous"` before any write, both by `POST /api/mcp/apply`
 (uninstalls included) and by `POST /api/mcp/toggle`.
+
+Per-tool overrides edit that raw key only while it is the server mounted under the
+row's name. When the Kiro global or a provider global declares the alias itself
+(`playwright-mcp`), that declaration is the mount and the raw key mounts beside it as
+`playwright-mcp-2`, so the overrides go on an alias-keyed store entry, which the
+rebuild merges onto the declared mount. That entry is seeded from the declaring
+scope's own entry, not from the rendered spec, which can still mount the raw key's
+program under the alias until the next rebuild. It is not a leftover: from then on
+the store declares the alias too, so later switches on that row edit it.
 
 `POST /api/mcp/toggle` writes `disabled` into the Kiro global `mcp.json` for a
 server that file holds or that only another scope (an agent file, a provider
