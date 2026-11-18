@@ -663,6 +663,26 @@ def _progress(poll_n: int, res: Result, any_busy: bool) -> None:
     )
 
 
+#: Why a run stops before its seed while remote crews are reachable.
+_REMOTE_CREWS_REFUSAL = (
+    "headless conductor runs need work_ledger.remote_dispatch off while a remote crew "
+    "is registered: remote workers cannot be stopped"
+)
+
+
+def remote_crews_registered() -> bool:
+    """Whether this data home's Remote Crew registry lists any crew.
+
+    Every ``crew=`` call and every placement resolves its crew from this same file,
+    re-read per call, so with it empty no worker can land on another machine,
+    whatever ``instances.enabled`` says or whether the gateway has restarted since.
+    A damaged file reads as empty here exactly as it does for the gateway.
+    """
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    return bool(InstancesRegistry().list())
+
+
 # ---------- the run ----------
 def run(
     opts: Options,
@@ -676,14 +696,19 @@ def run(
     poll = POLL_SECS if poll_secs is None else poll_secs
     res = Result(mode=opts.mode, approval_mode=opts.approval_mode or "none", cwd=opts.cwd)
     t0 = clock()
-    if getattr(getattr(cfg, "work_ledger", None), "remote_dispatch", False) is True:
-        # A worker placed on a remote crew is reachable only through the conductor's
-        # own session tools, so this CLI could not stop it on timeout or budget.
-        # shortcut: refused while `work_ledger.remote_dispatch` is on (read once, at
-        # start); stop peer workers through the hub when headless runs need crews.
-        res.error = (
-            "headless runs need work_ledger.remote_dispatch off: remote workers cannot be stopped"
-        )
+    # A worker placed on a remote crew is reachable only through the conductor's own
+    # session tools, so this CLI could not stop it on timeout or budget. Only a
+    # conductor mode chat may place one (``conductor_mode_only``): a conductor run is
+    # refused here, and any other run once the gateway stamps its chat as one (an
+    # explicit or default conductor agent).
+    # shortcut: read once, at start; stop peer workers through the hub when
+    # headless runs need crews.
+    crews_reachable = (
+        getattr(getattr(cfg, "work_ledger", None), "remote_dispatch", False) is True
+        and remote_crews_registered()
+    )
+    if crews_reachable and opts.mode == "conductor":
+        res.error = _REMOTE_CREWS_REFUSAL
         return res
     client.sign_in()
     if opts.mode == "conductor":
@@ -716,6 +741,9 @@ def run(
         return res
     res.transcript = str(transcript_path(res.slot))
     run_slots = {res.slot}
+    if crews_reachable and slot.get("crew_mode_agent"):
+        res.error = _REMOTE_CREWS_REFUSAL
+        return _stop(client, run_slots, res, "error")
     # Wall clock, for the transcripts' mtimes (``clock`` is monotonic); a minute of slack.
     since = time.time() - 60
     settled = Spawns()

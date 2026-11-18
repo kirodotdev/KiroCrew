@@ -192,10 +192,11 @@ def _create(env, **fields) -> str:
 # ── switch off: nothing changes ──────────────────────────────────────────────
 
 
-def test_the_switch_defaults_off_and_reads_only_a_real_bool():
-    assert _build_work_ledger_config({}).remote_dispatch is False
+def test_the_switch_defaults_on_and_reads_only_a_real_bool():
+    assert _build_work_ledger_config({}).remote_dispatch is True
+    assert _build_work_ledger_config({"remote_dispatch": False}).remote_dispatch is False
     assert _build_work_ledger_config({"remote_dispatch": True}).remote_dispatch is True
-    assert _build_work_ledger_config({"remote_dispatch": "true"}).remote_dispatch is False
+    assert _build_work_ledger_config({"remote_dispatch": "false"}).remote_dispatch is True
     assert _build_work_ledger_config({"remote_dispatch": True, "max_depth": 3}).max_depth == 3
 
 

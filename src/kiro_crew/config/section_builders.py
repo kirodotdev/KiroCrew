@@ -244,7 +244,7 @@ def _positive_gb(data: dict, key: str) -> float:
 def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
     return WorkLedgerConfig(
         max_depth=_work_ledger_max_depth(work_ledger_data),
-        remote_dispatch=_safe_bool(work_ledger_data.get("remote_dispatch"), False),
+        remote_dispatch=_safe_bool(work_ledger_data.get("remote_dispatch"), True),
         remote_dispatch_memory_gb=_positive_gb(work_ledger_data, "remote_dispatch_memory_gb"),
         remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
         remote_dispatch_retire_minutes=_positive_gb(

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def remote_dispatch() -> bool:
-    """Whether the remote-dispatch Feature Preview is on. Default and any failure: off.
+    """Whether the remote-dispatch Feature Preview is on. Default: on. Any failure: off.
 
     Read per call, not at import: the config loader caches by file fingerprint, so a
     changed setting is seen without a restart. Fails closed, because off is exactly the

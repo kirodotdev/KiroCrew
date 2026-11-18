@@ -21,8 +21,8 @@ type KirocrewCfg = { work_ledger?: { remote_dispatch?: boolean } }
  * Like the KAS card, the switch is not a `dashboard.feature_previews` flag: it is
  * the gateway's own `work_ledger.remote_dispatch`, which every remote-dispatch path
  * reads per call, so the card writes it through the ordinary config PATCH and a
- * save applies with no restart. Only a literal `true` is on, the rule the gateway
- * reads. Hidden while the config read has not answered or the gateway's config
+ * save applies with no restart. The read is the gateway's effective value: on when
+ * the key is absent or `true`, the rule the gateway reads. Hidden while the config read has not answered or the gateway's config
  * does not carry the key (an older gateway refuses the write); a failed read says so.
  */
 export function RemoteDispatchCard() {

@@ -670,9 +670,11 @@ def test_a_reason_left_on_a_finished_peer_item_is_dropped_not_refused(recorded, 
     asyncio.run(go())
 
 
-def test_work_item_without_crew_is_refused_by_the_tool():
+def test_work_item_without_crew_is_refused_by_the_tool(monkeypatch):
+    from kiro_crew import remote_dispatch
     from kiro_crew.mcp_dashboard_session_runs import _run_session_create
 
+    monkeypatch.setattr(remote_dispatch, "remote_dispatch_enabled", lambda: False)
     ctx = MagicMock()
     out = _run_session_create({"title": "t", "work_item": "it_0000abcd"}, ctx)
     assert out.startswith("Error: work_item is taken only with crew")

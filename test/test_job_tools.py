@@ -46,13 +46,16 @@ JOB_TOOL_BUDGETS: dict[str, int] = {
     "kirocrew": 4_950,
     "kirocrew-worker": 1_200,
     "kirocrew-mate-worker": 1_200,
-    # 7,653 with ``mcp_server_wait`` (63 tokens, on every row): the next 50 up.
-    "kirocrew-pipeline-conductor": 7_700,
-    "kirocrew-security-conductor": 7_700,
-    # 7,808 with it: the next 50 up.
-    "kirocrew-conductor": 7_850,
-    "kirocrew-ledger-conductor": 7_850,
-    "kirocrew-team-lead": 7_850,
+    # 7,653 with ``mcp_server_wait`` (63 tokens, on every row), plus 956 for the
+    # remote-dispatch schema ``work_ledger.remote_dispatch`` adds while on, which is
+    # its default (``crew`` on the session tools, ``work_item`` on
+    # ``session_create``): 8,609, the next 50 up.
+    "kirocrew-pipeline-conductor": 8_650,
+    "kirocrew-security-conductor": 8_650,
+    # 7,808 with it, plus the same 956: 8,764, the next 50 up.
+    "kirocrew-conductor": 8_800,
+    "kirocrew-ledger-conductor": 8_800,
+    "kirocrew-team-lead": 8_800,
 }
 
 

@@ -30,7 +30,7 @@ REMOTE_DISPATCH_DISABLED = "remote_dispatch_disabled"
 #: The refusal text, naming the setting that turns the feature on.
 REMOTE_DISPATCH_DISABLED_MESSAGE = (
     "remote dispatch is a preview and is off on this gateway "
-    "(set work_ledger.remote_dispatch=true to use crew=)"
+    "(set work_ledger.remote_dispatch=true, or remove the key, to use crew=)"
 )
 
 

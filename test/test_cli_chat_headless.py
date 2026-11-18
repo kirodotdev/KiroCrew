@@ -909,16 +909,61 @@ def test_nested_and_closed_chat_background_agents_count_too(monkeypatch):
     assert sorted(settled.credits) == ["sa-1", "sa-2", "sa-3"]
 
 
-def test_remote_dispatch_on_refuses_the_run_before_any_chat(monkeypatch):
+_DISPATCH_ON = SimpleNamespace(
+    agent=SimpleNamespace(crew_mode_agent=""),
+    work_ledger=SimpleNamespace(remote_dispatch=True),
+)
+
+
+def test_remote_dispatch_with_a_registered_crew_refuses_a_conductor_run_before_any_chat(
+    monkeypatch,
+):
     # A remote crew's worker could not be stopped by this CLI, so nothing starts.
-    cfg = SimpleNamespace(
-        agent=SimpleNamespace(crew_mode_agent=""),
-        work_ledger=SimpleNamespace(remote_dispatch=True),
-    )
+    monkeypatch.setattr(h, "remote_crews_registered", lambda: True)
     gw = FakeGateway([REPLY])
-    r = _run(_opts(), gw, monkeypatch, cfg=cfg)
+    r = _run(_opts(mode="conductor"), gw, monkeypatch, cfg=_DISPATCH_ON)
     assert r.status == "error" and "remote_dispatch" in r.error and not r.slot
     assert gw.calls == []
+
+
+def test_remote_dispatch_with_a_registered_crew_runs_a_chat_mode_run(monkeypatch):
+    # Only a conductor mode chat may place a remote worker, so a plain chat runs.
+    monkeypatch.setattr(h, "remote_crews_registered", lambda: True)
+    gw = FakeGateway([REPLY])
+    r = _run(_opts(), gw, monkeypatch, cfg=_DISPATCH_ON)
+    assert r.status == "done", r.error
+
+
+def test_a_chat_mode_run_the_gateway_stamps_as_a_conductor_is_stopped_before_its_seed(
+    monkeypatch,
+):
+    # `--agent kirocrew-conductor` in chat mode opens a conductor mode chat, which
+    # could place a remote worker: the run closes it and never sends the seed.
+    monkeypatch.setattr(h, "remote_crews_registered", lambda: True)
+    gw = FakeGateway([REPLY], slot_extra={"crew_mode_agent": "kirocrew-conductor"})
+    r = _run(_opts(agent="kirocrew-conductor"), gw, monkeypatch, cfg=_DISPATCH_ON)
+    assert r.status == "error" and "remote_dispatch" in r.error
+    assert not any(path.startswith("/api/chat?") for _, path, _ in gw.calls)
+    assert any(path == f"/api/chat/slots/{ROOT}" and m == "DELETE" for m, path, _ in gw.calls)
+
+
+def test_remote_dispatch_with_no_registered_crew_runs(monkeypatch):
+    # The default config: the switch is on but no crew is registered, so no
+    # worker can land on another machine.
+    monkeypatch.setattr(h, "remote_crews_registered", lambda: False)
+    gw = FakeGateway([REPLY])
+    r = _run(_opts(), gw, monkeypatch, cfg=_DISPATCH_ON)
+    assert r.status == "done", r.error
+    assert gw.calls
+
+
+def test_remote_crews_registered_reads_the_crew_registry(monkeypatch):
+    from kiro_crew.instances.registry import InstancesRegistry
+
+    monkeypatch.setattr(InstancesRegistry, "list", lambda self: [])
+    assert h.remote_crews_registered() is False
+    monkeypatch.setattr(InstancesRegistry, "list", lambda self: [SimpleNamespace(id="peer")])
+    assert h.remote_crews_registered() is True
 
 
 def test_a_just_finished_background_agent_holds_the_run_open(monkeypatch):

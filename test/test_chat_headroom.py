@@ -124,9 +124,9 @@ MEASURED_MEMORY_GB = 5.0
 MEASURED_DISK_GB = 5.0
 
 
-def test_config_defaults_are_off_with_the_measured_estimates():
+def test_config_defaults_are_on_with_the_measured_estimates():
     cfg = _build_work_ledger_config({})
-    assert cfg.remote_dispatch is False
+    assert cfg.remote_dispatch is True
     assert cfg.remote_dispatch_memory_gb == MEASURED_MEMORY_GB
     assert cfg.remote_dispatch_disk_gb == MEASURED_DISK_GB
 
@@ -141,7 +141,7 @@ def test_nothing_configured_falls_back_to_the_measured_estimates(monkeypatch):
 
 def test_flag_off_ignores_the_estimates(monkeypatch):
     """Switch off: no estimate reaches the gate, defaults or configured."""
-    _config_load(monkeypatch)
+    _config_load(monkeypatch, remote_dispatch=False)
     assert headroom_mod.remote_dispatch_settings() == headroom_mod.RemoteDispatchSettings(
         False, 0.0, 0.0
     )
@@ -157,9 +157,9 @@ def test_flag_off_ignores_the_estimates(monkeypatch):
 
 
 @pytest.mark.parametrize("raw", ["true", 1, None, "yes"])
-def test_only_a_real_true_turns_the_preview_on(raw):
-    assert _build_work_ledger_config({"remote_dispatch": raw}).remote_dispatch is False
-    assert _build_work_ledger_config({"remote_dispatch": True}).remote_dispatch is True
+def test_a_value_that_is_not_a_bool_falls_back_to_the_default_on(raw):
+    assert _build_work_ledger_config({"remote_dispatch": raw}).remote_dispatch is True
+    assert _build_work_ledger_config({"remote_dispatch": False}).remote_dispatch is False
 
 
 @pytest.mark.parametrize("raw", [0, -1, "big", True, float("nan")])
@@ -196,6 +196,8 @@ def test_an_unloadable_config_reads_as_off(monkeypatch):
 
 def test_settings_read_the_config_keys(monkeypatch):
     _config_load(monkeypatch)
+    assert headroom_mod.remote_dispatch_settings().enabled is True
+    _config_load(monkeypatch, remote_dispatch=False)
     assert headroom_mod.remote_dispatch_settings().enabled is False
     _config_load(
         monkeypatch,

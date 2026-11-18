@@ -178,7 +178,7 @@ One call, four statuses, and a fifth under a Feature Preview:
 | `blocked` | an external dependency stopped the work | the conductor clears or re-plans around it |
 | `question` | a decision the conductor owns is needed | the conductor answers |
 | `done` | the worker claims acceptance is met | the conductor verifies |
-| `reply` | the worker's answer to a follow-up the conductor sent it; needs no evidence and claims nothing finished. Accepted only while `work_ledger.remote_dispatch` is `true` (default `false`, read on every call); with it off, `reply` is refused as an unknown status. Like any report it replaces the item's last status, and like `done` it leaves the next move with the conductor, so it is never flagged `stale` | the conductor relays it |
+| `reply` | the worker's answer to a follow-up the conductor sent it; needs no evidence and claims nothing finished. Accepted only while `work_ledger.remote_dispatch` is `true` (default `true`, read on every call); with it off, `reply` is refused as an unknown status. Like any report it replaces the item's last status, and like `done` it leaves the next move with the conductor, so it is never flagged `stale` | the conductor relays it |
 
 **`blocked` and `question` differ by who must act.** That is why they are
 separate values and not one "stuck". A build the worker does not control is

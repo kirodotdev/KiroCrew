@@ -56,7 +56,7 @@ WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question", "reply")
 #: :data:`WORK_REMOTE_DISPATCH_SETTING` off, a report carrying one is refused as an
 #: unknown status and no wake reads it, exactly as before the status existed.
 WORK_REMOTE_DISPATCH_STATUSES: tuple[str, ...] = ("reply",)
-#: The config key of the remote-dispatch Feature Preview (default off), read per call
+#: The config key of the remote-dispatch Feature Preview (default on), read per call
 #: by ``work_preview.remote_dispatch``.
 WORK_REMOTE_DISPATCH_SETTING: str = "work_ledger.remote_dispatch"
 #: When a ``blocked`` or ``question`` report waits on a person, as data rather than

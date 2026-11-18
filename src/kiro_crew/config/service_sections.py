@@ -429,15 +429,15 @@ class WorkLedgerConfig:
         ),
     )
     remote_dispatch: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Remote dispatch (preview)",
             "Preview: lets a conductor on another machine place work items on this "
-            "crew. When true, GET /api/chat/headroom answers this machine's free "
+            "crew. On (the default), GET /api/chat/headroom answers this machine's free "
             "memory, CPU load and free scratch disk to the owner, and an owner session "
-            "create that carries a work item is refused as crew_busy when one of them is short. Off (the "
-            "default): the route answers 404 and no create is checked. Read on every "
-            "request, so no restart is needed.",
+            "create that carries a work item is refused as crew_busy when one of them is short. "
+            "Set false to turn it off: the route answers 404 and no create is checked. "
+            "Read on every request, so no restart is needed.",
         ),
     )
     # Measured defaults (RFC wave 6; method and numbers in

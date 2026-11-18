@@ -73,12 +73,24 @@ def _item(title: str = "answer a follow-up") -> str:
 # ── the switch itself ─────────────────────────────────────────────────────
 
 
-def test_the_preview_is_off_by_default():
-    assert KiroCrewConfig.load().work_ledger.remote_dispatch is False
-    assert work_preview.remote_dispatch() is False
+def test_the_preview_is_on_by_default():
+    assert KiroCrewConfig.load().work_ledger.remote_dispatch is True
+    assert work_preview.remote_dispatch() is True
+
+
+def test_a_work_ledger_section_without_the_key_reads_as_on(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.json").write_text(
+        json.dumps({"work_ledger": {"max_depth": 3}}), encoding="utf-8"
+    )
+    _invalidate_config_cache()
+    assert work_preview.remote_dispatch() is True
 
 
 def test_the_preview_reads_true_from_config_without_a_restart(tmp_path: Path):
+    _preview(tmp_path, False)
+    assert work_preview.remote_dispatch() is False
     _preview(tmp_path, True)
     assert work_preview.remote_dispatch() is True
     _preview(tmp_path, False)
@@ -86,9 +98,10 @@ def test_the_preview_reads_true_from_config_without_a_restart(tmp_path: Path):
 
 
 @pytest.mark.parametrize("bad", ["true", 1, None, [True], {"on": True}])
-def test_a_value_that_is_not_a_bool_reads_as_off(tmp_path: Path, bad: object):
+def test_a_value_that_is_not_a_bool_reads_as_the_default_on(tmp_path: Path, bad: object):
+    # The loader ignores a wrong-typed value with a warning and applies the default.
     _preview(tmp_path, bad)
-    assert work_preview.remote_dispatch() is False
+    assert work_preview.remote_dispatch() is True
 
 
 def test_an_unreadable_config_reads_as_off(monkeypatch: pytest.MonkeyPatch):
