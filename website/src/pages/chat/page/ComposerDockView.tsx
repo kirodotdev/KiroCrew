@@ -28,6 +28,8 @@ import type { SessionRef } from '../../../utils/sessionRefs'
 import type { SlotApprovalMode } from '../../../utils/slotApprovalMode'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../../../hooks/useSettingHighlight'
 import { settingsPath } from '../../../components/settingsPath'
+import { useKiroCliCanRunHere, useKiroCliSignInInTerminal } from '../../../components/KiroCliSignInInTerminal'
+import { useModelsAuthRequired } from '../../../providers/modelListHealth'
 import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
@@ -384,6 +386,14 @@ export default function ComposerDockView({
   // A worker's steer is refused past the steer route's limit BEFORE the draft is
   // cleared, so an over-long paste stays in the box with the reason beside it.
   const [steerTooLong, setSteerTooLong] = useState(false)
+  // The configured list is short because kiro-cli's own login is missing: the
+  // picker says so and signs kiro-cli in through the Terminal panel. The flag
+  // speaks only for the configured list, never a harness's own (`modelsBackend`).
+  const kiroCliSignedOut = useModelsAuthRequired(provider.id) && modelsBackend === undefined
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // An embedded chat has no dock to run it in, and a chat that is not known to
+  // run here refuses a local run: those copy the command instead.
+  const kiroCliCanRun = useKiroCliCanRunHere(!embedded && currentSlot?.executor !== 'remote' ? runsHere : false)
   const steerFits = (text?: string): boolean => {
     if (steerWorker === undefined) return true
     const fits = (text ?? composerDraft.get()).length <= CREW_STEER_MAX_CHARS
@@ -898,6 +908,7 @@ export default function ComposerDockView({
                 modelsFailedMessage={i18nT('components.modelEffortDropdown.harness_models_failed', { harness: acpBackendName({ id: modelsBackend ?? '' }) })}
                 retryingModels={ownModelsFetching}
                 onRetryModels={retryOwnModels}
+                kiroCliSignIn={kiroCliSignedOut ? { run: () => { setModelDropdown(false); kiroCliSignIn.askToSignIn() }, command: kiroCliSignIn.command, canRun: kiroCliCanRun } : undefined}
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}
@@ -940,6 +951,8 @@ export default function ComposerDockView({
                 }}
               />
             </OverlayPortal>}
+            {/* Outside the model picker's portal: the picker closes before it opens. */}
+            {kiroCliSignIn.dialog}
             {/* Project picker — triggered from input bar */}
             <ProjectPicker
               open={projectPickerOpen}

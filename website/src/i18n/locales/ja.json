@@ -7803,6 +7803,11 @@
       "previous_sign_in_not_removed": "サインインしましたが、以前のサインインを削除できませんでした",
       "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。"
     },
+    "kiroCliSignInInTerminal": {
+      "copy_sign_in": "サインインのコマンドをコピー",
+      "models_signed_out": "Kiro CLI にサインインしていないため、モデルの一覧をすべて読み込めないよ。",
+      "sign_in": "Kiro CLI にサインイン"
+    },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "セットアップの完了が記録されませんでした",
       "setup_marker_retry_body": "{{productName}} はダッシュボードを開きましたが、セットアップが完了したことを記録できませんでした。これが成功するまで、このゲートウェイの他のブラウザーやユーザーにはセットアップ画面が表示され続ける可能性があります。",
@@ -19000,7 +19005,8 @@
         "expand_the_side_panel_to_the_git_tab_each_time_yo": "git プロジェクトでチャットを開始するたびに、サイドパネルを Git タブで開きます。オフでも Git タブは作成されます。",
         "expanded_icon_name_stats": "展開（アイコン + 名前 + 統計）",
         "failed_to_load_config": "設定の読み込みに失敗しました。",
-        "failed_to_load_config_kiro_signed_out": "Kiro CLI にサインインしていないか、ログインの有効期限が切れているよ。ターミナルで 'kiro-cli login' を実行してから、「再試行」をクリックしてね。",
+        "failed_to_load_config_kiro_signed_out": "Kiro CLI にサインインしていないか、ログインの有効期限が切れているよ。「Kiro CLI にサインイン」をクリックしてから、「再試行」をクリックしてね。",
+        "failed_to_load_config_kiro_signed_out_copy": "Kiro CLI にサインインしていないか、ログインの有効期限が切れているよ。サインインコマンドをコピーしてターミナルで実行してから、「再試行」をクリックしてね。",
         "failed_to_load_dashboard_config": "ダッシュボード設定の読み込みに失敗しました。",
         "failed_to_save_auto_compact_threshold": "自動圧縮のしきい値を保存できませんでした",
         "failed_to_save_completion_keep_characters": "完了保持文字数を保存できませんでした",
