@@ -87,9 +87,14 @@ def _admit_native_call(info: dict, tc_card: dict, card_id: str, tcid: str, title
         info["calls_refused"] = int(info.get("calls_refused") or 0) + 1
         return False
     tc_card[tcid] = card_id
-    if not info.get("done"):
+    titles = info.setdefault("call_titles", {}) if not info.get("done") else None
+    # A background child's call can span parent turns: its record (and its
+    # titles) is carried into the next turn, whose attribution map starts
+    # empty, so the call's next frame reaches here again. It was counted and
+    # titled when first admitted; re-admit it to the map only.
+    if titles is not None and tcid not in titles:
         info["tool_count"] = int(info.get("tool_count") or 0) + 1
-        info.setdefault("call_titles", {})[tcid] = title
+        titles[tcid] = title
     return True
 
 

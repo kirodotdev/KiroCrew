@@ -50,6 +50,7 @@ from kiro_crew.dashboard.native_subagent_cards import (
     NATIVE_SUBAGENT_INPUT_CHARS,
     NATIVE_SUBAGENT_RESULT_CHARS,
     NATIVE_SUBAGENT_UNNAMED_FEED_LINE,
+    _admit_native_call,
 )
 from kiro_crew.dashboard.state import NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE
 from kiro_crew.testing.synthetic_credentials import github_classic
@@ -1373,3 +1374,21 @@ def test_the_feeds_past_bound_line_is_not_the_clients_pending_name_label():
     assert pending and feed_line
     assert feed_line != pending
     assert feed_line in NATIVE_SUBAGENT_CALLS_OVERFLOW_FEED_LINE
+
+
+def test_a_carried_call_seen_again_next_turn_keeps_its_count_and_title() -> None:
+    """A background child's call that spans parent turns is counted and titled once.
+
+    The record (and its ``call_titles``) is carried into the next turn, whose
+    attribution map starts empty, so the call's next frame -- its result, with
+    no title -- is admitted again there.
+    """
+    info: dict = {}
+    assert _admit_native_call(info, {}, "card-1", TCID, "Running: ls")
+    next_turn_map: dict = {}
+    assert _admit_native_call(info, next_turn_map, "card-1", TCID, "")
+    assert next_turn_map == {TCID: "card-1"}
+    assert info["tool_count"] == 1
+    assert info["call_titles"] == {TCID: "Running: ls"}
+    assert _admit_native_call(info, next_turn_map, "card-1", "other-call", "Running: pwd")
+    assert info["tool_count"] == 2
