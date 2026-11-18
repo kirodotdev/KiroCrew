@@ -421,7 +421,10 @@ the link for locking and writing does not lose it. The one endorsement of a file
 start endorses each protected file that has no copy yet (`adopt_unendorsed`), once, before any
 session of the run, only a regular file holding a JSON object stored as Kiro Crew writes one; a
 leaf that already has a copy is never adopted again, so a later start leaves a differing file
-pending. Any other file with no copy is not pending and loads as written until the gateway's own
+pending, except a `config.json` whose `meta.lastTouchedVersion` names a release before 0.13 (the first
+that keeps the copy), which the gateway endorses before its first config load
+(`adopt_older_build_write`; an older build saves without updating the copy); a writer able to forge that
+stamp gets the same result, which is accepted. Any other file with no copy is not pending and loads as written until the gateway's own
 first save of it (which endorses first, so the usual detach leaves no gap) or a later start
 adopts it. Known limit, for such a file only: a host-side rename by something else (an
 editor that saves by rename) also detaches the bind, and until the gateway's first save of that

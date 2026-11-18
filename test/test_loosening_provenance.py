@@ -117,6 +117,120 @@ def test_start_adopts_a_file_with_no_copy_once(monkeypatch) -> None:
     assert [entry["leaf"] for entry in lp.pending_changes()] == ["config.json"]
 
 
+def _stamped(version: object, **agent: object) -> bytes:
+    doc = {"meta": {"lastTouchedVersion": version}, "agent": agent}
+    return (json.dumps(doc, indent=2) + "\n").encode("utf-8")
+
+
+def test_start_endorses_a_config_an_older_build_wrote(monkeypatch) -> None:
+    """An older build's save is taken as the copy, so settings saves are not refused."""
+    import kiro_crew
+    from kiro_crew import cli_server
+
+    src = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(cli_server._gateway))))
+    adopt = "await asyncio.to_thread(loosening_provenance.adopt_older_build_write)"
+    # Before the gateway's first config load, so the run starts from the adopted file.
+    assert adopt in src
+    assert src.index(adopt) < src.index("config_path().exists()")
+    monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+    monkeypatch.setattr(kiro_crew, "__version__", "0.13.0rc5")
+    lp.record("config.json", _stamped("0.13.0rc5", sandbox="auto"))
+    older = _stamped("0.12.2.6", sandbox="auto", privacy=False)
+    (config_dir() / "config.json").write_bytes(older)
+    assert [entry["leaf"] for entry in lp.pending_changes()] == ["config.json"]
+    from kiro_crew.config import loader
+
+    # The CLI loads config before the gateway adopts, caching the old copy.
+    cleared: list[bool] = []
+    real_clear = loader._invalidate_config_cache
+    monkeypatch.setattr(
+        loader, "_invalidate_config_cache", lambda: (cleared.append(True), real_clear())
+    )
+    lp.adopt_older_build_write()
+    assert cleared == [True]
+    assert lp._endorsed_path("config.json").read_bytes() == older
+    assert lp.pending_changes() == []
+    lp.refuse_save_if_pending("config.json")  # does not raise
+
+
+def test_older_build_adoption_reads_and_records_under_the_config_write_lock(monkeypatch) -> None:
+    """A concurrent save or Discard takes the same lock, so adoption never reverts it."""
+    import contextlib
+
+    import kiro_crew
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+    monkeypatch.setattr(kiro_crew, "__version__", "0.13.0")
+    lp.record("config.json", _config(sandbox="auto"))
+    (config_dir() / "config.json").write_bytes(_stamped("0.12.2", sandbox="auto"))
+    held: list[bool] = []
+    events: list[tuple[str, bool]] = []
+    real_lock = loader._config_write_lock
+    real_read, real_record = lp._read_regular, lp.record
+
+    @contextlib.contextmanager
+    def _tracking_lock(target, **kwargs):
+        with real_lock(target, **kwargs):
+            held.append(True)
+            try:
+                yield
+            finally:
+                held.pop()
+
+    def _read(target):
+        events.append(("read", bool(held)))
+        return real_read(target)
+
+    def _record(leaf, content, **kwargs):
+        events.append(("record", bool(held)))
+        return real_record(leaf, content, **kwargs)
+
+    monkeypatch.setattr(loader, "_config_write_lock", _tracking_lock)
+    monkeypatch.setattr(lp, "_read_regular", _read)
+    monkeypatch.setattr(lp, "record", _record)
+    lp.adopt_older_build_write()
+    assert events == [("read", True), ("record", True)]
+
+
+@pytest.mark.parametrize(
+    "leaf, content",
+    [
+        ("config.json", _stamped("0.13.0", sandbox="off")),
+        ("config.json", _stamped("0.13", sandbox="off")),
+        ("config.json", _stamped("0.14.0", sandbox="off")),
+        ("config.json", _stamped("0.13.0rc1", sandbox="off")),
+        ("config.json", _config(sandbox="off")),
+        ("config.json", _stamped("unknown", sandbox="off")),
+        ("config.json", _stamped(12, sandbox="off")),
+        ("config.json", b"\xef\xbb\xbf" + _stamped("0.12.2", sandbox="off")),
+        ("config.local.json", _stamped("0.12.2", sandbox="off")),
+    ],
+    ids=[
+        "first-keeper",
+        "first-keeper-short",
+        "newer",
+        "first-keeper-rc",
+        "unstamped",
+        "unparsable",
+        "not-a-string",
+        "bom",
+        "overlay",
+    ],
+)
+def test_start_keeps_pending_a_change_no_older_build_wrote(monkeypatch, leaf, content) -> None:
+    import kiro_crew
+
+    monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+    monkeypatch.setattr(kiro_crew, "__version__", "0.15.0")
+    safe = _config(sandbox="auto")
+    lp.record(leaf, safe)
+    (config_dir() / leaf).write_bytes(content)
+    lp.adopt_older_build_write()
+    assert lp._endorsed_path(leaf).read_bytes() == safe
+    assert [entry["leaf"] for entry in lp.pending_changes()] == [leaf]
+
+
 @pytest.mark.parametrize("leaf", lp.PROTECTED_LEAVES)
 def test_start_never_replaces_a_copy_a_writer_endorsed_after_its_check(monkeypatch, leaf) -> None:
     """A save that endorses the leaf between adoption's read and its publish keeps its copy."""

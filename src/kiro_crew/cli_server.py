@@ -375,6 +375,12 @@ async def _gateway(
                 "Could not restore the launchd live-gateway launcher: %s", exc
             )
 
+    # Before the first load, so this run starts from a config.json an older build
+    # saved (the older build does not update the endorsed copy). Imported here: this
+    # module's import list is a frozen facade inventory.
+    from kiro_crew.config import loosening_provenance
+
+    await asyncio.to_thread(loosening_provenance.adopt_older_build_write)
     if not config_path().exists():
         cfg = KiroCrewConfig()
         # Boot has installed the context, so an edition's default STT provider is

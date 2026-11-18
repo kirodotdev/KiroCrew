@@ -153,7 +153,12 @@ always a writer's published bytes, with one exception: the gateway's start endor
 protected file that has no copy yet (`adopt_unendorsed`), once, after the previous run's
 sessions are swept and before any session of the run, publishing the copy only while none
 exists (a hard link, so a save that endorses the file meanwhile keeps its own copy): only a
-regular file holding a JSON object stored as Kiro Crew writes one (no byte-order mark or carriage return). Any other file with no copy is not pending and is served as
+regular file holding a JSON object stored as Kiro Crew writes one (no byte-order mark or carriage return).
+Before its first config load (`adopt_older_build_write`, under the config write lock) the gateway
+also endorses a `config.json` that differs from its copy when its
+`meta.lastTouchedVersion` names a release before 0.13 (the first that keeps the copy), because an older build
+saves without updating the copy; a writer able to forge that stamp gets the same result, which
+is accepted. Any other file with no copy is not pending and is served as
 written until the gateway's first save of it endorses it or a later start adopts it (the known
 limit for such a file is in
 [security](../modules/security.md)). A file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,

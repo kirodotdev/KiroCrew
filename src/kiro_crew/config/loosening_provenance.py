@@ -21,7 +21,9 @@ no key table. A file that differs is pending, and an ordinary save of it is refu
 (:func:`refuse_save_if_pending`) until the owner applies or discards the change, so the
 change is neither endorsed nor silently overwritten. A file with no endorsed copy yet
 (one written before this check existed) is endorsed as it is once, at gateway start
-before any session of the run (:func:`adopt_unendorsed`); one it cannot take as written
+before any session of the run (:func:`adopt_unendorsed`), and a ``config.json`` whose
+writer stamp names an older Kiro Crew build is endorsed before the gateway's first
+config load (:func:`adopt_older_build_write`); one it cannot take as written
 (missing, malformed, or not stored as Kiro Crew writes it) is served as written until the
 gateway's first save of it or a later start that can adopt it.
 
@@ -76,6 +78,7 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import stat
 import sys
@@ -586,7 +589,8 @@ def adopt_unendorsed() -> None:
     gateway's first save of it. A leaf with anything at its copy's name is skipped, also
     when a writer endorses it after that check (the copy is hard-linked into place, which
     never replaces a name): the copy is the record that it was adopted, so a file that
-    differs from its copy stays pending. Read with the pending scan's own reader (:func:`_read_regular`), so a link
+    differs from its copy stays pending (a ``config.json`` an older build wrote is
+    handled earlier, by :func:`adopt_older_build_write`). Read with the pending scan's own reader (:func:`_read_regular`), so a link
     to a FIFO or ``/dev/zero`` cannot hang the start. Only a JSON object stored as Kiro
     Crew writes one is adopted: a malformed file would become a baseline that blocks
     Apply and Discard, and one with a byte-order mark or a carriage return is left as
@@ -630,6 +634,77 @@ def adopt_unendorsed() -> None:
             if created:
                 with contextlib.suppress(OSError):
                     os.unlink(staging)
+
+
+#: The release numbers a version string starts with (``0.12.2.6`` from ``0.12.2.6``,
+#: ``0.13.0`` from ``0.13.0rc5``).
+_RELEASE_PREFIX = re.compile(r"\d{1,6}(?:\.\d{1,6}){0,5}")
+#: The first release that updates the endorsed copy on every save. A stamp naming it or
+#: a later release proves nothing about a pending edit: those builds keep the copy
+#: current, so a difference is an outside edit that left the stamp in place.
+_FIRST_ENDORSING_RELEASE = (0, 13)
+
+
+def _release(version: object) -> tuple[int, ...] | None:
+    """The leading release numbers of *version*, trailing zeros dropped, or ``None``.
+
+    Dropping trailing zeros makes ``0.14`` and ``0.14.0`` the same release.
+    """
+    match = _RELEASE_PREFIX.match(version) if isinstance(version, str) else None
+    if match is None:
+        return None
+    parts = [int(part) for part in match[0].split(".")]
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def adopt_older_build_write() -> None:
+    """Endorse ``config.json`` as written when an older Kiro Crew build wrote it.
+
+    An older build saves ``config.json`` without updating its endorsed copy, so a person
+    who moves between versions would find the file pending and every settings save
+    refused. A file that differs from its copy and whose writer stamp
+    (``meta.lastTouchedVersion``) names a release before the first one that keeps the
+    copy (``_FIRST_ENDORSING_RELEASE``) is taken as the new copy, under the same "stored as Kiro Crew writes it" test as
+    :func:`adopt_unendorsed`. A writer able to forge the stamp gets the same result,
+    which is the accepted cost. A missing, unreadable or same-or-newer stamp leaves the
+    file pending.
+
+    The gateway runs this before its first config load, so the run starts from the
+    adopted file. The read, the comparison and the record hold the sidecar lock every
+    config writer takes, so a concurrent save or Discard is never reverted.
+    """
+    from kiro_crew.config.loader_document import (
+        _config_write_lock,
+        _invalidate_config_cache,
+        _lock_target,
+    )
+
+    path = config_dir() / LEAF_CONFIG
+    if not os.path.lexists(path) or not os.path.lexists(_endorsed_path(LEAF_CONFIG)):
+        return
+    try:
+        with _config_write_lock(_lock_target(path)):
+            endorsed = endorsed_bytes(LEAF_CONFIG)
+            content = _read_regular(path)
+            if endorsed is None or endorsed == content:
+                return
+            if content.startswith(codecs.BOM_UTF8) or b"\r" in content:
+                return
+            doc = _parse_object(content)
+            meta = doc.get("meta") if doc is not None else None
+            stamp = _release(meta.get("lastTouchedVersion") if isinstance(meta, dict) else None)
+            if stamp is None or stamp >= _FIRST_ENDORSING_RELEASE:
+                return
+            record(LEAF_CONFIG, content)
+            # A load earlier in this process cached the old copy under the same file
+            # fingerprint.
+            _invalidate_config_cache()
+    except OSError:
+        logger.warning(
+            "loosening provenance: could not adopt an older build's config.json", exc_info=True
+        )
 
 
 @contextlib.contextmanager
