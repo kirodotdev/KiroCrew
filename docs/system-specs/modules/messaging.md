@@ -5569,7 +5569,7 @@ the rolling `StreamRedactor` it uses for the answer — so a credential split ac
 two chunks passes both halves and is reconstituted by the renderer's join. The
 assembled string is redacted at the send boundary, which closes that and also covers
 an unsplit credential. Same placement, and the same reason, as Slack's
-`_maybe_post_thinking`.
+`_thinking_text`.
 
 **Reasoning has a native home.** WeCom renders whatever sits inside
 `<think></think>` in `stream.content` as a collapsed reasoning block, so
