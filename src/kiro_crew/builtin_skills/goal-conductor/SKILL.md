@@ -266,6 +266,8 @@ instruction to report through `work_report`. Without `work_dispatch`, or to
 bind an existing session to a new item (Patrol step 4), read
 `<this skill's dir>/references/manual-dispatch.md` and follow its four steps in order.
 
+**A file the person gave you travels as its path, as your prompt's send-files rule says.** A pasted screenshot shows up as `[image: <name>] <absolute path>`; copy that path into the seed or `session_send` message.
+
 **A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft whose checks have not finished costs a whole verify cycle that answers `refused`, which you surface to the user rather than retry.
 
 **A `pr_checks` seed may name the PR procedure.** The worker gets no per-message

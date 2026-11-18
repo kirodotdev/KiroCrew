@@ -651,6 +651,7 @@ SKILL_POINTERS: dict[str, str] = {
     "own_files": "your prompt's rules on one owner per shared file",
     "item_budget": "your prompt's item-budget rule",
     "bind_before_seed": "bind before you seed, as your prompt's rule says",
+    "send_files": "as your prompt's send-files rule says",
     "patrol_watch": "exactly as your prompt's patrol rules say",
     "routine_incidents": "your prompt's routine-incidents rule lists them",
     "report_before_park": "report before you park, as your prompt's rule says",
