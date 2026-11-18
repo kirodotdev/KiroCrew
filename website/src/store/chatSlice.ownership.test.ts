@@ -176,7 +176,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['selectors', selectors, [
     'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendAccepted', 'selectSendAttempts', 'selectSendConfirmed', 'selectSlotMessages',
     'selectPendingTurn', 'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
-    'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
+    'selectResumeInterrupted', 'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],
   ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'setSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
   ['slotRefresh', slotRefresh, ['refreshSlot', 'warmSlotCache']],
