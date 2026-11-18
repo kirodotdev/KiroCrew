@@ -1672,6 +1672,37 @@ and versions are untouched, and nothing is kept between calls apart from that ca
 Granted without a prompt in `_MEMBER_PANEL_GRANTS`, on the same read test as
 `dashboard_fields`.
 
+**A Bot can read its own page from the person's open tab.** The `dashboard_capture`
+MCP tool (`mcp_panel_capture.py`, no arguments) asks
+`GET /api/agent-panel/dashboard/capture` (`handlers/agent_panel_capture.py`), which
+resolves the caller through the same gate and sends one owner-only
+`dashboard_capture` frame, `{request_id, slug}`, to the owner's sockets
+(`dashboard/dashboard_capture.py`, `CaptureHub`). Only a tab that is visible and shows
+that Bot's live page answers (`website/src/hooks/websocket/dashboardCapture.ts`): it
+shows a "{{crew}} is reading this page" sign (the visible-tab rule is in
+`useDashboardLiveCapture.ts`), asks its frame by message
+(`dashboard_frame._CAPTURE_JS`, answered only to `parent`), and posts the page's
+`innerText` and its controls to the owner-only `POST /api/members/{slug}/dashboard/capture`. That route accepts a reply
+only for the request pending for that slug, at most `TEXT_MAX_CHARS` (16,000) of text
+and `FIELDS_MAX` (64) values of `FIELD_VALUE_MAX` (500) characters, refused whole when
+larger; the first valid reply wins and a later one is refused, so tabs are never
+merged. No tab, only hidden tabs, or no reply in `CAPTURE_WAIT_SECONDS` answers
+`not_captured` with `no_tab`; a page served without script answers `unavailable`. The
+whole answer crosses `kirocrew-panel`'s redaction pass. Nothing is written or kept.
+What a person typed and has not submitted is never read: the frame script takes
+`innerText` with every `textarea` and `contenteditable` region out of the layout for that
+one synchronous read (inline `display` restored before it returns), and sends a control's
+value only for a checkbox or radio (checked or not), a select (the option shown) or a
+button (its caption). Every other control is listed by label with the value
+`dashboard_capture.UNREAD_VALUE` (`(not read)`); password, hidden and file inputs are not
+listed. A control's label is read the same way (an editable or undrawn label is skipped).
+The script is installed before the page's, listens in the capture phase, and takes
+`innerText` and `querySelectorAll` from the prototypes before the page runs, so a page
+script cannot pre-empt the request or swap those out. A page written to draw or relay
+what is typed into it still shows that text: the tab cannot tell. `test_dashboard_capture.py`
+runs the script over a stand-in DOM to pin the rest.
+Granted without a prompt in `_MEMBER_PANEL_GRANTS`, on the same read test.
+
 The MCP text preserves the catalog's `row_keys`, `names_the_row`, `row_note`
 and `nested_rows` beside each path. Nested rows are script-readable metadata,
 not new dotted index paths. Each nested group is bracketed and retains its

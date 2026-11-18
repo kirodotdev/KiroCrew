@@ -22594,6 +22594,7 @@
       "profile_dynamic_capabilities_failed": "यह सेटिंग सहेजी नहीं जा सकी। फिर कोशिश करो।",
       "dashboard_send_failed": "जवाब भेजा नहीं जा सका। वह चैट बॉक्स में रख दिया गया है।",
       "dashboard_send_unsure": "हो सकता है \"{{reply}}\" न भेजा गया हो। दोबारा भेजने से पहले थ्रेड देख लो।",
+      "dashboard_capture_sign": "{{crew}} द्वारा यह पेज पढ़ा जा रहा है",
       "dashboard_card_send_badge": "जवाब बटन तुरंत भेजते हैं — प्रोफ़ाइल में बदलो",
       "dashboard_card_send_badge_label": "एक क्लिक में भेजना चालू है: इस टैब का जवाब बटन जवाब तुरंत भेजता है। इसे प्रोफ़ाइल टैब पर बदलो।",
       "profile_dashboard_card_send_switch": "एक क्लिक में जवाब भेजो",

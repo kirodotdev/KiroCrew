@@ -76,6 +76,8 @@ import math
 import re
 from typing import Any, Final, Mapping, cast
 
+from kiro_crew.dashboard import dashboard_capture
+
 logger = logging.getLogger(__name__)
 
 #: The size ceiling for one template page, in bytes of UTF-8.
@@ -1134,6 +1136,136 @@ _BEACON_JS: Final[str] = f"""
 }})();
 """
 
+#: The host's request to read this page as it is drawn now: ``{type, nonce}``.
+CAPTURE_MESSAGE_TYPE: Final[str] = "kirocrew-dashboard:capture"
+#: The page's answer: ``{type, nonce, text, fields: [{label, value}], truncated}``.
+CAPTURED_MESSAGE_TYPE: Final[str] = "kirocrew-dashboard:captured"
+
+#: The caps, from the gateway's own so the frame cannot send more than it accepts.
+_CAPTURE_TEXT_MAX = dashboard_capture.TEXT_MAX_CHARS
+_CAPTURE_FIELDS_MAX = dashboard_capture.FIELDS_MAX
+_CAPTURE_LABEL_MAX = dashboard_capture.FIELD_LABEL_MAX
+_CAPTURE_VALUE_MAX = dashboard_capture.FIELD_VALUE_MAX
+#: What a field's value reads as when the person's own typing could be in it.
+_CAPTURE_UNREAD = dashboard_capture.UNREAD_VALUE
+
+#: THE LIVE CAPTURE (``dashboard_capture``), answered only when the HOST asks.
+#:
+#: The frame is an opaque origin, so the host cannot read its DOM; this script reads it
+#: from inside and posts the result to ``parent`` only, in answer to a message from
+#: ``parent`` carrying a nonce. It READS ONLY what the page shows, never what a person
+#: has typed and not submitted: ``innerText`` is read with every ``textarea`` and
+#: ``contenteditable`` region out of the layout for that one synchronous read (their
+#: inline ``display`` is put back before the script returns), and a control's value is
+#: sent only when it is a checkbox or radio (checked or not), a select (the option
+#: shown) or a button (its caption). Every other control, a text input of any type or a
+#: textarea, is listed by its label with its value reading ``(not read)``. A password,
+#: hidden or file input is not listed. Every part is cut to the gateway's caps, and
+#: ``truncated`` says so. This script is installed first and listens in the capture
+#: phase, with ``innerText`` and ``querySelectorAll`` taken from the prototypes before the
+#: page runs, so a page script that registers a listener or redefines them later cannot
+#: pre-empt or alter the answer; the host takes the first answer with its nonce. It is not
+#: a wall against a page that is written to show or relay what is typed into it: that
+#: page is the Bot's own, and what it draws is what the tab shows.
+_CAPTURE_JS: Final[str] = f"""
+(function () {{
+  // Taken now, before the page's own scripts run, so a page that redefines
+  // ``innerText`` or ``querySelectorAll`` afterwards does not change what is read.
+  var innerDesc = typeof HTMLElement === 'undefined'
+    ? null : Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'innerText');
+  var queryAll = typeof Document === 'undefined' ? null : Document.prototype.querySelectorAll;
+  function innerOf(el) {{ return innerDesc && innerDesc.get ? innerDesc.get.call(el) : el.innerText; }}
+  function all(selector) {{
+    return queryAll ? queryAll.call(document, selector) : document.querySelectorAll(selector);
+  }}
+  function cut(value, max) {{
+    var s = String(value == null ? '' : value);
+    return s.length > max ? s.slice(0, max) : s;
+  }}
+  function labelOf(el) {{
+    var aria = el.getAttribute('aria-label');
+    if (aria) return aria;
+    if (el.labels && el.labels.length) {{
+      // A label the person can edit, or one not drawn, is skipped: ``innerText`` of a
+      // hidden element is its raw ``textContent``, which would carry what was typed.
+      var lab = el.labels[0];
+      if (!lab.isContentEditable && lab.getClientRects().length) return innerOf(lab);
+    }}
+    return el.getAttribute('name') || el.getAttribute('placeholder') || el.id || '';
+  }}
+  function valueOf(el) {{
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'select') {{
+      var picked = [];
+      for (var i = 0; i < el.options.length; i++) {{
+        if (el.options[i].selected) picked.push(el.options[i].text);
+      }}
+      return picked.join(', ');
+    }}
+    var type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {{
+      return el.checked ? 'checked' : 'unchecked';
+    }}
+    if (tag === 'input' && (type === 'button' || type === 'submit' || type === 'reset')) {{
+      return el.value;
+    }}
+    return {_CAPTURE_UNREAD!r};
+  }}
+  // Runs *read* with every textarea and contenteditable region out of the layout, then
+  // puts each one's own inline ``display`` back. Everything the answer is read from
+  // goes through it, so no part of the answer is read while typed text is drawn.
+  function withTypedHidden(read) {{
+    var held = [];
+    var typed = all('textarea, [contenteditable]');
+    for (var n = 0; n < typed.length; n++) {{
+      var t = typed[n];
+      if (!t.style || !(t.tagName === 'TEXTAREA' || t.isContentEditable)) continue;
+      held.push([t, t.style.getPropertyValue('display'), t.style.getPropertyPriority('display')]);
+    }}
+    try {{
+      for (var a = 0; a < held.length; a++) held[a][0].style.setProperty('display', 'none', 'important');
+      return read();
+    }} finally {{
+      for (var b = held.length - 1; b >= 0; b--) {{
+        if (held[b][1]) held[b][0].style.setProperty('display', held[b][1], held[b][2]);
+        else held[b][0].style.removeProperty('display');
+      }}
+    }}
+  }}
+  function readPage() {{
+    var text = document.body && document.designMode !== 'on' ? innerOf(document.body) : '';
+    var truncated = text.length > {_CAPTURE_TEXT_MAX};
+    var fields = [];
+    var controls = all('input, textarea, select');
+    for (var n = 0; n < controls.length; n++) {{
+      var el = controls[n];
+      var type = (el.getAttribute('type') || '').toLowerCase();
+      if (type === 'password' || type === 'hidden' || type === 'file') continue;
+      if (fields.length >= {_CAPTURE_FIELDS_MAX}) {{ truncated = true; break; }}
+      var label = labelOf(el), value = valueOf(el);
+      if (label.length > {_CAPTURE_LABEL_MAX} || value.length > {_CAPTURE_VALUE_MAX}) truncated = true;
+      fields.push({{
+        label: cut(label, {_CAPTURE_LABEL_MAX}), value: cut(value, {_CAPTURE_VALUE_MAX})
+      }});
+    }}
+    return {{ text: text, fields: fields, truncated: truncated }};
+  }}
+  // In the capture phase and first in line (this script is installed before the page's),
+  // so the page's own message listeners cannot stop the request before it is answered.
+  addEventListener('message', function (event) {{
+    if (event.source !== parent) return;
+    var data = event.data;
+    if (!data || data.type !== {CAPTURE_MESSAGE_TYPE!r} || typeof data.nonce !== 'string') return;
+    var page = withTypedHidden(readPage);
+    var text = page.text, fields = page.fields, truncated = page.truncated;
+    parent.postMessage({{
+      type: {CAPTURED_MESSAGE_TYPE!r}, nonce: data.nonce,
+      text: cut(text, {_CAPTURE_TEXT_MAX}), fields: fields, truncated: truncated
+    }}, '*');
+  }}, true);
+}})();
+"""
+
 #: The frame's base styles. Type comes from three ROLE variables built only from CSS
 #: generic families, never a named typeface, so each system draws its own face:
 #: ``--font-sans`` (the default, for reading), ``--font-serif`` and ``--font-mono``
@@ -1294,6 +1426,9 @@ def compose(html: str, read: Mapping[str, Any], title: str = "") -> str:
         # BEFORE the page, so an error in the page's first script is counted.
         f"<script>{_INIT_GUARD_JS}</script>\n"
         f"<script>{_BOOTSTRAP_JS}</script>\n"
+        # Before the refill probe, so its own listener is not counted as the page
+        # handling refills, and before the page: only the host asks, by message.
+        f"<script>{_CAPTURE_JS}</script>\n"
         f"<script>{_REFILL_PROBE_JS}</script>\n"
         f"{html}\n"
         f"<script>{_BEACON_JS}</script>\n"

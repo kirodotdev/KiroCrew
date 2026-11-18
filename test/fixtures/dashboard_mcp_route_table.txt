@@ -67,9 +67,12 @@ POST /api/agent-panel/dashboard/apply api_dashboard_apply
 POST /api/agent-panel/dashboard/rollback api_dashboard_rollback
 HEAD /api/agent-panel/dashboard/snapshot api_dashboard_snapshot
 GET /api/agent-panel/dashboard/snapshot api_dashboard_snapshot
+HEAD /api/agent-panel/dashboard/capture api_dashboard_capture
+GET /api/agent-panel/dashboard/capture api_dashboard_capture
 POST /api/agent-panel/dashboard/record api_dashboard_record
 HEAD /api/members/{slug}/panel api_member_panel
 GET /api/members/{slug}/panel api_member_panel
+POST /api/members/{slug}/dashboard/capture api_member_dashboard_capture
 POST /api/member-records/{slug} api_member_record
 HEAD /api/members/{slug}/dashboard api_member_dashboard
 GET /api/members/{slug}/dashboard api_member_dashboard

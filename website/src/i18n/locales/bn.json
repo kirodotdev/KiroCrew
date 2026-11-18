@@ -22594,6 +22594,7 @@
       "profile_dynamic_capabilities_failed": "এই সেটিং সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
       "dashboard_send_failed": "উত্তর পাঠানো যায়নি। তার বদলে চ্যাট বক্সে রাখা হয়েছে।",
       "dashboard_send_unsure": "\"{{reply}}\" হয়তো পাঠানো হয়নি। আবার পাঠানোর আগে থ্রেডটি দেখে নাও।",
+      "dashboard_capture_sign": "{{crew}} এই পেজটি পড়ছে",
       "dashboard_card_send_badge": "উত্তর বোতাম সঙ্গে সঙ্গে পাঠায় — প্রোফাইলে বদলাও",
       "dashboard_card_send_badge_label": "এক ক্লিকে পাঠানো চালু আছে: এই ট্যাবের উত্তর বোতাম সঙ্গে সঙ্গে উত্তর পাঠায়। প্রোফাইল ট্যাবে এটি বদলাও।",
       "profile_dashboard_card_send_switch": "এক ক্লিকে উত্তর পাঠাও",

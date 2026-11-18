@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { RotateCw, SendHorizontal } from 'lucide-react'
+import { Eye, RotateCw, SendHorizontal } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
 import { retryPolicy } from '../../api/queryClient'
@@ -22,6 +22,7 @@ import CrewDashboardBehindBand from './CrewDashboardBehindBand'
 import CrewDashboardDownload from './CrewDashboardDownload'
 import { applyPushedRead, withIslandRead, type DashboardRead } from './dashboardDownloadFile'
 import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'
+import { useDashboardLiveCapture } from './useDashboardLiveCapture'
 
 // The grant set lives in lib/crewDashboardSandbox.ts so the artifact viewer can
 // open a crewmate's report in the same sandbox without loading this page.
@@ -867,6 +868,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const failed = mint.failed || mint.stalled
   const runsScript = Boolean(mayRunScript && shown?.scripts)
   const grantKey = crewDashboardSandbox(runsScript)
+  // A Bot reading its own LIVE page (`dashboard_capture`): never a staged preview.
+  const capturing = useDashboardLiveCapture({ slug: liveMember && !preview ? memberSlug : '', frameRef, runsScript })
 
   /**
    * A NEW DOCUMENT LOADS OFF SCREEN, AND THE OPEN FRAME IS REPLACED ONLY WHEN IT IS UP.
@@ -1239,7 +1242,16 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     </div>
   ) : null
   // The badge rows above the page, so the floating Download control sits below them.
-  const badgeRows = cardSendBadge ? 1 : 0
+  // The sign while the Bot reads this page: on screen, since only a visible tab answers.
+  const captureSign = capturing ? (
+    <div className="shrink-0 flex justify-end px-2 pt-1">
+      <Badge variant="muted" role="status" aria-live="polite" data-testid="crew-dashboard-capture-sign" style={{ cursor: 'default' }}>
+        <Eye size={11} aria-hidden="true" />
+        {i18nT('pages.membersPage.dashboard_capture_sign', { crew: displayName })}
+      </Badge>
+    </div>
+  ) : null
+  const badgeRows = (cardSendBadge ? 1 : 0) + (captureSign ? 1 : 0)
 
   // `!shown`: a new query key (a language switch) loads with nothing cached, and
   // a page already on screen stays mounted through it. Unmounting it here meant a
@@ -1377,6 +1389,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   return (
     <div className="group relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
       {cardSendBadge}
+      {captureSign}
       {target.kind === 'member' && !preview && (
         // The bot's live page only: a staged preview is not the page anyone keeps,
         // and a session's page is not a bot's Dashboard. Floated over the page's

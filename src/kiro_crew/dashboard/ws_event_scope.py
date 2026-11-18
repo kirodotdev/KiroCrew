@@ -337,6 +337,10 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # floor, and a later literal broadcast of this name must not silently start
     # reaching an app token.
     "dashboard_fields",
+    # A Bot asking the owner's tabs to read its own live page
+    # (``dashboard_capture.WS_DASHBOARD_CAPTURE``, ``deliver_ws_owners``): a request id
+    # and a slug only, but the answer it asks for is the owner's screen.
+    "dashboard_capture",
     # The outcome of one bulk Resume run (``chat_resume_all.RESUME_ALL_DONE_FRAME``,
     # ``broadcast_ws_owners``): slot keys and refusal codes across every slot on
     # the install, for the owner who pressed the button and no one else.

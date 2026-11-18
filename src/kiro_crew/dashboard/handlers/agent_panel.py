@@ -31,6 +31,7 @@ Two halves with deliberately different auth, because they are different acts:
 #   ``agent_panel_publish`` -- vetting a publishing caller, and the two publish routes
 #   ``agent_panel_dashboard`` -- the dynamic dashboard's ``/api/agent-panel/dashboard/`` routes
 #   ``agent_panel_snapshot`` -- the picture of a crewmate's own page, ``.../dashboard/snapshot``
+#   ``agent_panel_capture`` -- the crewmate's own page read from the person's open tab, ``.../dashboard/capture``
 #   ``agent_panel_record`` -- the record door a script cron appends through, ``.../dashboard/record``
 #   ``agent_panel_record_app`` -- the same door for an installed app, ``/api/member-records/{slug}``
 
@@ -44,6 +45,10 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.dashboard.handlers.agent_panel_capture import (
+    api_dashboard_capture,
+    api_member_dashboard_capture,
+)
 from kiro_crew.dashboard.handlers.agent_panel_dashboard import (
     api_dashboard_apply,
     api_dashboard_fields,
@@ -96,6 +101,10 @@ def register_agent_panel_routes(app: web.Application) -> None:
     # A picture of the caller's own page in force, over its real data. On this prefix
     # because that picture is the crewmate's own record, which is nobody else's to ask for.
     app.router.add_get("/api/agent-panel/dashboard/snapshot", api_dashboard_snapshot)
+    # The caller's own page as the person's open tab shows it, asked of that tab. On
+    # this prefix for the snapshot's reason; the tab's answer comes back on the
+    # owner-only browser route below.
+    app.router.add_get("/api/agent-panel/dashboard/capture", api_dashboard_capture)
     # The record door. Under the same prefix for the same reason as the write: a
     # record lands in a crewmate's own crew log, so a caller holding only a dashboard
     # cookie must not reach it. Its own gate then admits a member-bound script cron
@@ -104,6 +113,9 @@ def register_agent_panel_routes(app: web.Application) -> None:
     # The drawer's read. NOT under /api/agent-panel: that prefix is
     # strict-internal (MCP-only), and this one is called by the browser.
     app.router.add_get("/api/members/{slug}/panel", api_member_panel)
+    # A tab's answer to a ``dashboard_capture`` frame: owner-only, and accepted only
+    # for the request pending for that slug (``dashboard_capture.CaptureHub``).
+    app.router.add_post("/api/members/{slug}/dashboard/capture", api_member_dashboard_capture)
     # The installed app's record door. NOT under /api/agent-panel (strict-internal) and
     # NOT under /api/members (every route there turns an app token away): its own
     # prefix, so an app reaches it only through a ``permissions.api`` grant the owner
@@ -118,6 +130,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.agent_panel_publish",
     "kiro_crew.dashboard.handlers.agent_panel_dashboard",
     "kiro_crew.dashboard.handlers.agent_panel_snapshot",
+    "kiro_crew.dashboard.handlers.agent_panel_capture",
     "kiro_crew.dashboard.handlers.agent_panel_record",
     "kiro_crew.dashboard.handlers.agent_panel_record_app",
 )
@@ -130,6 +143,13 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.dashboard.handlers.agent_panel_capture import (  # noqa: F401
+        _IN_FLIGHT,
+        CAPTURE_BODY_MAX,
+        ROOT_SESSION,
+        _deliver,
+        _not_captured,
+    )
     from kiro_crew.dashboard.handlers.agent_panel_dashboard import (  # noqa: F401
         _SESSION_PACKAGE_REFUSAL,
         _apply_own_package,
