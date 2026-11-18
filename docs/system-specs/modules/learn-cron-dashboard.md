@@ -885,6 +885,18 @@ channel-first ladder above and keep Slack as the fallback:
   only the classes above get a next-run line, and a paused job or one with no
   readable row gets none (see [cli](cli.md)).
 
+A command run that exits non-zero says its exit code once, in the alert's header
+(`❌ Run failed with exit code N on <host>`), and the fenced body holds only what
+the command wrote: the stderr tail first, then `stdout:` and stdout when both are
+non-empty, or `no output`. `run_command_sandboxed` returns the two streams apart
+(`stdout`/`stderr`) with blank edge lines trimmed, and its stored `output` leaves
+an empty stream out. The body cap keeps a head, so the alert hands it the last
+`_CRON_FAILURE_DETAIL_CAP` characters of stderr. A command that never ran (a
+timeout, a spawn error: exit code `-1` and no streams) keeps its one-line reason
+with no exit code; a process that exited keeps its code, `-1` (SIGHUP) included.
+Pinned by `TestCommandFailureReachesTheUser` in
+`test/test_cron_run_failure_alert.py`.
+
 An alert reaching only the dashboard bell while the results reach a chat is worse
 than a uniform gap: the success path is what taught the operator to watch the
 channel, so a job crashing every minute there reads as an idle one — the exact

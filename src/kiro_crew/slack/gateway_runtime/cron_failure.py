@@ -208,7 +208,12 @@ def _advance_failure_dedup(
 
 
 async def _alert_cron_failure(
-    self: GatewayOrchestrator, job: CronJob, detail: str, *, denied: bool = False
+    self: GatewayOrchestrator,
+    job: CronJob,
+    detail: str,
+    *,
+    denied: bool = False,
+    exit_code: int | None = None,
 ) -> None:
     """Tell the user WHY a script/command cron run failed or was denied.
 
@@ -260,9 +265,13 @@ async def _alert_cron_failure(
         label, _ = redact_credentials(label)
         mark = "⛔" if denied else "❌"
         headline = "Blocked by policy" if denied else "Run failed"
+        if exit_code is not None and not denied:
+            # Said once, here, so the fenced body is only what the command wrote.
+            headline = f"Run failed with exit code {exit_code}"
         # Denials and failures hash apart so a policy denial does not read
-        # as a dup of a same-worded crash (and vice versa).
-        fh = _result_hash(f"{'denied' if denied else 'failed'}:{text}")
+        # as a dup of a same-worded crash (and vice versa); so do exit codes.
+        reason = text if exit_code is None else f"{exit_code}:{text}"
+        fh = _result_hash(f"{'denied' if denied else 'failed'}:{reason}")
         # Every call site counted the run already, so the streak is the counter.
         streak = job.consecutive_failures
         if not _failure_alert_due(job, streak, denied=denied):
